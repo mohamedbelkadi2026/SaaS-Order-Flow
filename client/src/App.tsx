@@ -15,6 +15,7 @@ import Team from "@/pages/team";
 import Integrations from "@/pages/integrations";
 import ShippingIntegrations from "@/pages/shipping-integrations";
 import Invoices from "@/pages/invoices";
+import Magasins from "@/pages/magasins";
 
 function Router() {
   return (
@@ -24,6 +25,7 @@ function Router() {
         <Route path="/orders" component={Orders}/>
         <Route path="/inventory" component={Inventory}/>
         <Route path="/team" component={Team}/>
+        <Route path="/magasins" component={Magasins}/>
         <Route path="/invoices" component={Invoices}/>
         <Route path="/profitability" component={Profitability}/>
         <Route path="/integrations" component={Integrations}/>

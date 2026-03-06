@@ -13,7 +13,8 @@ import {
   Menu,
   Sun,
   Moon,
-  ChevronDown
+  ChevronDown,
+  Store
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { name: "Orders", href: "/orders", icon: ShoppingCart },
   { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Team Management", href: "/team", icon: Users },
+  { name: "Magasins", href: "/magasins", icon: Store },
   { name: "Invoices", href: "/invoices", icon: FileText },
   { name: "Adv. Profitability", href: "/profitability", icon: Calculator },
   { name: "Integrations", href: "/integrations", icon: Plug },
