@@ -31,6 +31,11 @@ const NAV_ITEMS = [
   { name: "Integrations", href: "/integrations", icon: Plug },
 ];
 
+const INTEGRATION_SUB_ITEMS = [
+  { name: "Stores", href: "/integrations/stores" },
+  { name: "Sociétés de Livraison", href: "/integrations/shipping" },
+];
+
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [isDark, setIsDark] = useState(false);
@@ -44,9 +49,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">
       <div className="p-6 flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold text-xl shadow-lg shadow-primary/25">
-          O
+          G
         </div>
-        <span className="font-display font-bold text-xl text-sidebar-foreground">OmniOMS</span>
+        <span className="font-display font-bold text-xl text-sidebar-foreground">Garean</span>
       </div>
       
       <div className="px-4 pb-2">
@@ -55,17 +60,36 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
       <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
         {NAV_ITEMS.map((item) => {
-          const isActive = location === item.href;
+          const isActive = location === item.href || (item.name === "Integrations" && location.startsWith("/integrations"));
+          const isIntegrations = item.name === "Integrations";
+
           return (
-            <Link key={item.name} href={item.href} className={cn(
-              "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
-              isActive 
-                ? "bg-primary/10 text-primary" 
-                : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            )}>
-              <item.icon className={cn("w-5 h-5", isActive ? "text-primary" : "text-sidebar-foreground/50")} />
-              {item.name}
-            </Link>
+            <div key={item.name} className="space-y-1">
+              <Link href={item.href} className={cn(
+                "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
+                isActive 
+                  ? "bg-primary/10 text-primary" 
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              )}>
+                <item.icon className={cn("w-5 h-5", isActive ? "text-primary" : "text-sidebar-foreground/50")} />
+                {item.name}
+              </Link>
+              
+              {isIntegrations && (
+                <div className="ml-9 space-y-1 mt-1">
+                  {INTEGRATION_SUB_ITEMS.map((sub) => (
+                    <Link key={sub.name} href={sub.name === "Stores" ? "/integrations" : sub.href} className={cn(
+                      "block px-3 py-1.5 text-xs rounded-lg transition-colors",
+                      location === sub.href || (sub.name === "Stores" && location === "/integrations")
+                        ? "text-primary font-medium" 
+                        : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
+                    )}>
+                      {sub.name}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
           );
         })}
       </nav>

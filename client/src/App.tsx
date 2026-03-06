@@ -13,6 +13,7 @@ import Profitability from "@/pages/profitability";
 import Inventory from "@/pages/inventory";
 import Team from "@/pages/team";
 import Integrations from "@/pages/integrations";
+import ShippingIntegrations from "@/pages/shipping-integrations";
 import Invoices from "@/pages/invoices";
 
 function Router() {
@@ -26,6 +27,7 @@ function Router() {
         <Route path="/invoices" component={Invoices}/>
         <Route path="/profitability" component={Profitability}/>
         <Route path="/integrations" component={Integrations}/>
+        <Route path="/integrations/shipping" component={ShippingIntegrations}/>
         
         {/* Fallback to 404 */}
         <Route component={NotFound} />
