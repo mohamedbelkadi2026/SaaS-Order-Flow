@@ -11,8 +11,11 @@ export const stores = pgTable("stores", {
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   username: text("username").notNull().unique(),
+  email: text("email"),
+  phone: text("phone"),
   role: text("role").notNull(), // 'owner' or 'agent'
   storeId: integer("store_id").references(() => stores.id),
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const products = pgTable("products", {
@@ -22,6 +25,7 @@ export const products = pgTable("products", {
   sku: text("sku").notNull(),
   stock: integer("stock").notNull().default(0),
   costPrice: integer("cost_price").notNull().default(0), // in cents
+  reference: text("reference"),
 });
 
 export const orders = pgTable("orders", {
@@ -30,12 +34,21 @@ export const orders = pgTable("orders", {
   orderNumber: text("order_number").notNull(),
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),
+  customerAddress: text("customer_address"),
+  customerCity: text("customer_city"),
   status: text("status").notNull().default('new'), // new, confirmed, in_progress, cancelled, delivered, refused
   totalPrice: integer("total_price").notNull().default(0), // in cents
   productCost: integer("product_cost").notNull().default(0), // in cents
   shippingCost: integer("shipping_cost").notNull().default(0), // in cents
   adSpend: integer("ad_spend").notNull().default(0), // in cents
   assignedToId: integer("assigned_to_id").references(() => users.id),
+  comment: text("comment"),
+  trackNumber: text("track_number"),
+  replacementTrackNumber: text("replacement_track_number"),
+  isStock: integer("is_stock").default(0), // boolean as 0/1
+  upSell: integer("up_sell").default(0),
+  canOpen: integer("can_open").default(1),
+  replace: integer("replace").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

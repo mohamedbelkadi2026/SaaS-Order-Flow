@@ -141,55 +141,53 @@ async function seedDatabase() {
     if (!existingStores) {
       const store = await storage.createStore({ name: "Garean Demo Store" });
       const admin = await storage.createUser({ username: "Mohamed", role: "owner", storeId: store.id });
-      const agent1 = await storage.createUser({ username: "Sarah", role: "agent", storeId: store.id });
-      const agent2 = await storage.createUser({ username: "Fatima", role: "agent", storeId: store.id });
+      const agent1 = await storage.createUser({ username: "khawla", role: "agent", storeId: store.id });
+      const agent2 = await storage.createUser({ username: "fatima", role: "agent", storeId: store.id });
 
-      const prod1 = await storage.createProduct({ storeId: store.id, name: "Smart Watch", sku: "SW-01", stock: 150, costPrice: 2000 });
-      const prod2 = await storage.createProduct({ storeId: store.id, name: "Wireless Earbuds", sku: "WE-02", stock: 300, costPrice: 1500 });
+      const prod1 = await storage.createProduct({ storeId: store.id, name: "Smart Watch", sku: "SW-01", stock: 150, costPrice: 2000, reference: "ZOMAX حذاء" });
+      const prod2 = await storage.createProduct({ storeId: store.id, name: "Wireless Earbuds", sku: "WE-02", stock: 300, costPrice: 1500, reference: "ماكينة تلميع" });
       
       await storage.createOrder({
         storeId: store.id,
-        orderNumber: "ORD-1001",
-        customerName: "Ahmed",
-        customerPhone: "+212600000001",
+        orderNumber: "3906",
+        customerName: "Aziz Aziz",
+        customerPhone: "+212606604135",
+        customerCity: "Casablanca",
+        customerAddress: "sidi massoud sidi",
         status: "new",
-        totalPrice: 5000,
-        productCost: 2000,
-        shippingCost: 300,
-        adSpend: 500,
-        assignedToId: agent1.id
+        totalPrice: 42900,
+        productCost: 20000,
+        shippingCost: 3000,
+        adSpend: 5000,
+        assignedToId: agent1.id,
+        comment: "Test order",
+        isStock: 0,
+        upSell: 0,
+        canOpen: 1,
+        replace: 0
       }, [
-        { productId: prod1.id, quantity: 1, price: 5000 }
+        { productId: prod1.id, quantity: 1, price: 42900 }
       ]);
 
       await storage.createOrder({
         storeId: store.id,
-        orderNumber: "ORD-1002",
-        customerName: "Karim",
-        customerPhone: "+212600000002",
-        status: "confirmed",
-        totalPrice: 4000,
-        productCost: 1500,
-        shippingCost: 300,
-        adSpend: 400,
-        assignedToId: agent2.id
+        orderNumber: "3907",
+        customerName: "Saad el habti",
+        customerPhone: "+212682093205",
+        customerCity: "Fez",
+        customerAddress: "شفشاون",
+        status: "new",
+        totalPrice: 37900,
+        productCost: 15000,
+        shippingCost: 3000,
+        adSpend: 4000,
+        assignedToId: agent2.id,
+        isStock: 0,
+        upSell: 0,
+        canOpen: 1,
+        replace: 0
       }, [
-        { productId: prod2.id, quantity: 2, price: 2000 }
-      ]);
-      
-      await storage.createOrder({
-        storeId: store.id,
-        orderNumber: "ORD-1003",
-        customerName: "Youssef",
-        customerPhone: "+212600000003",
-        status: "in_progress",
-        totalPrice: 5000,
-        productCost: 2000,
-        shippingCost: 300,
-        adSpend: 500,
-        assignedToId: agent1.id
-      }, [
-        { productId: prod1.id, quantity: 1, price: 5000 }
+        { productId: prod2.id, quantity: 1, price: 37900 }
       ]);
     }
   } catch (err) {
