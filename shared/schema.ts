@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, date, boolean } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -6,15 +6,22 @@ import { z } from "zod";
 export const stores = pgTable("stores", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
-  username: text("username").notNull().unique(),
+  username: text("username").notNull(),
+  // username is not unique - multiple stores can have same name
   email: text("email"),
   phone: text("phone"),
-  role: text("role").notNull(), // 'owner' or 'agent'
+  password: text("password").notNull(),
+  role: text("role").notNull(),
   storeId: integer("store_id").references(() => stores.id),
+  paymentType: text("payment_type").default("commission"),
+  paymentAmount: integer("payment_amount").default(0),
+  distributionMethod: text("distribution_method").default("auto"),
+  isActive: integer("is_active").default(1),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -24,7 +31,7 @@ export const products = pgTable("products", {
   name: text("name").notNull(),
   sku: text("sku").notNull(),
   stock: integer("stock").notNull().default(0),
-  costPrice: integer("cost_price").notNull().default(0), // in cents
+  costPrice: integer("cost_price").notNull().default(0),
   reference: text("reference"),
 });
 
@@ -36,19 +43,20 @@ export const orders = pgTable("orders", {
   customerPhone: text("customer_phone").notNull(),
   customerAddress: text("customer_address"),
   customerCity: text("customer_city"),
-  status: text("status").notNull().default('new'), // new, confirmed, in_progress, cancelled, delivered, refused
-  totalPrice: integer("total_price").notNull().default(0), // in cents
-  productCost: integer("product_cost").notNull().default(0), // in cents
-  shippingCost: integer("shipping_cost").notNull().default(0), // in cents
-  adSpend: integer("ad_spend").notNull().default(0), // in cents
+  status: text("status").notNull().default('new'),
+  totalPrice: integer("total_price").notNull().default(0),
+  productCost: integer("product_cost").notNull().default(0),
+  shippingCost: integer("shipping_cost").notNull().default(0),
+  adSpend: integer("ad_spend").notNull().default(0),
   assignedToId: integer("assigned_to_id").references(() => users.id),
   comment: text("comment"),
   trackNumber: text("track_number"),
   replacementTrackNumber: text("replacement_track_number"),
-  isStock: integer("is_stock").default(0), // boolean as 0/1
+  isStock: integer("is_stock").default(0),
   upSell: integer("up_sell").default(0),
   canOpen: integer("can_open").default(1),
   replace: integer("replace").default(0),
+  source: text("source").default("manual"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -57,10 +65,24 @@ export const orderItems = pgTable("order_items", {
   orderId: integer("order_id").references(() => orders.id).notNull(),
   productId: integer("product_id").references(() => products.id).notNull(),
   quantity: integer("quantity").notNull().default(1),
-  price: integer("price").notNull().default(0), // in cents
+  price: integer("price").notNull().default(0),
 });
 
-// Relations
+export const adSpendTracking = pgTable("ad_spend_tracking", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  productId: integer("product_id").references(() => products.id),
+  date: text("date").notNull(),
+  amount: integer("amount").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const sessions = pgTable("sessions", {
+  sid: text("sid").primaryKey(),
+  sess: text("sess").notNull(),
+  expire: timestamp("expire").notNull(),
+});
+
 export const storesRelations = relations(stores, ({ many }) => ({
   users: many(users),
   products: many(products),
@@ -98,19 +120,36 @@ export const orderItemsRelations = relations(orderItems, ({ one }) => ({
   }),
 }));
 
-// Schemas
-export const insertStoreSchema = createInsertSchema(stores).omit({ id: true });
-export const insertUserSchema = createInsertSchema(users).omit({ id: true });
+export const adSpendTrackingRelations = relations(adSpendTracking, ({ one }) => ({
+  store: one(stores, {
+    fields: [adSpendTracking.storeId],
+    references: [stores.id],
+  }),
+  product: one(products, {
+    fields: [adSpendTracking.productId],
+    references: [products.id],
+  }),
+}));
+
+export const insertStoreSchema = createInsertSchema(stores).omit({ id: true, createdAt: true });
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
 export const insertProductSchema = createInsertSchema(products).omit({ id: true });
 export const insertOrderSchema = createInsertSchema(orders).omit({ id: true, createdAt: true });
 export const insertOrderItemSchema = createInsertSchema(orderItems).omit({ id: true });
+export const insertAdSpendSchema = createInsertSchema(adSpendTracking).omit({ id: true, createdAt: true });
 
-// Types
 export type Store = typeof stores.$inferSelect;
+export type InsertStore = z.infer<typeof insertStoreSchema>;
 export type User = typeof users.$inferSelect;
+export type InsertUser = z.infer<typeof insertUserSchema>;
 export type Product = typeof products.$inferSelect;
+export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type Order = typeof orders.$inferSelect;
+export type InsertOrder = z.infer<typeof insertOrderSchema>;
 export type OrderItem = typeof orderItems.$inferSelect;
+export type InsertOrderItem = z.infer<typeof insertOrderItemSchema>;
+export type AdSpendEntry = typeof adSpendTracking.$inferSelect;
+export type InsertAdSpend = z.infer<typeof insertAdSpendSchema>;
 
 export type OrderWithDetails = Order & {
   agent?: User | null;

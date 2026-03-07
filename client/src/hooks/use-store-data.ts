@@ -1,43 +1,37 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, buildUrl } from "@shared/routes";
-
-const STORE_ID = 1; // Hardcoded as per instructions
+import { apiRequest } from "@/lib/queryClient";
 
 export function useDashboardStats() {
   return useQuery({
-    queryKey: [api.stats.get.path, STORE_ID],
+    queryKey: ["/api/stats"],
     queryFn: async () => {
-      const url = buildUrl(api.stats.get.path, { storeId: STORE_ID });
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch("/api/stats", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch stats");
-      const data = await res.json();
-      return api.stats.get.responses[200].parse(data);
+      return res.json();
     },
   });
 }
 
-export function useOrders() {
+export function useOrders(status?: string) {
+  const url = status ? `/api/orders?status=${status}` : "/api/orders";
   return useQuery({
-    queryKey: [api.orders.list.path, STORE_ID],
+    queryKey: ["/api/orders", status || "all"],
     queryFn: async () => {
-      const url = buildUrl(api.orders.list.path, { storeId: STORE_ID });
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch orders");
-      const data = await res.json();
-      return data; // Trusting backend for complex OrderWithDetails type
+      return res.json();
     },
   });
 }
 
 export function useOrder(id: number) {
   return useQuery({
-    queryKey: [api.orders.get.path, id],
+    queryKey: ["/api/orders", id],
     queryFn: async () => {
-      const url = buildUrl(api.orders.get.path, { id });
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch(`/api/orders/${id}`, { credentials: "include" });
       if (res.status === 404) return null;
       if (!res.ok) throw new Error("Failed to fetch order");
-      return await res.json();
+      return res.json();
     },
     enabled: !!id,
   });
@@ -47,19 +41,13 @@ export function useUpdateOrderStatus() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, status }: { id: number; status: string }) => {
-      const url = buildUrl(api.orders.updateStatus.path, { id });
-      const res = await fetch(url, {
-        method: api.orders.updateStatus.method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to update status");
-      return await res.json();
+      const res = await apiRequest("PATCH", `/api/orders/${id}/status`, { status });
+      return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [api.orders.list.path, STORE_ID] });
-      queryClient.invalidateQueries({ queryKey: [api.stats.get.path, STORE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
     },
   });
 }
@@ -68,44 +56,80 @@ export function useAssignAgent() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, agentId }: { id: number; agentId: number | null }) => {
-      const url = buildUrl(api.orders.assign.path, { id });
-      const res = await fetch(url, {
-        method: api.orders.assign.method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId }),
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to assign agent");
-      return await res.json();
+      const res = await apiRequest("PATCH", `/api/orders/${id}/assign`, { agentId });
+      return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [api.orders.list.path, STORE_ID] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
     },
   });
 }
 
 export function useProducts() {
   return useQuery({
-    queryKey: [api.products.list.path, STORE_ID],
+    queryKey: ["/api/products"],
     queryFn: async () => {
-      const url = buildUrl(api.products.list.path, { storeId: STORE_ID });
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch("/api/products", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch products");
-      const data = await res.json();
-      return api.products.list.responses[200].parse(data);
+      return res.json();
     },
   });
 }
 
 export function useAgents() {
   return useQuery({
-    queryKey: [api.agents.list.path, STORE_ID],
+    queryKey: ["/api/agents"],
     queryFn: async () => {
-      const url = buildUrl(api.agents.list.path, { storeId: STORE_ID });
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch("/api/agents", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch agents");
-      const data = await res.json();
-      return api.agents.list.responses[200].parse(data);
+      return res.json();
+    },
+  });
+}
+
+export function useCreateAgent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      username: string;
+      email: string;
+      phone?: string;
+      password: string;
+      paymentType?: string;
+      paymentAmount?: number;
+      distributionMethod?: string;
+      isActive?: number;
+    }) => {
+      const res = await apiRequest("POST", "/api/agents", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+    },
+  });
+}
+
+export function useAdSpend(date?: string) {
+  const url = date ? `/api/ad-spend?date=${date}` : "/api/ad-spend";
+  return useQuery({
+    queryKey: ["/api/ad-spend", date || "all"],
+    queryFn: async () => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch ad spend");
+      return res.json();
+    },
+  });
+}
+
+export function useUpsertAdSpend() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { productId?: number | null; date: string; amount: number }) => {
+      const res = await apiRequest("POST", "/api/ad-spend", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/ad-spend"] });
     },
   });
 }

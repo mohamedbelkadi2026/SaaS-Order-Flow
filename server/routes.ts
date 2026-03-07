@@ -3,21 +3,20 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { insertOrderSchema } from "@shared/schema";
+import { createHmac } from "crypto";
+import { requireAuth, requireAdmin, hashPassword } from "./auth";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
 
-  // Seed DB with mock data for testing
-  seedDatabase();
-
-  app.get(api.stats.get.path, async (req, res) => {
-    const storeId = Number(req.params.storeId);
+  app.get(api.stats.get.path, requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
     const ordersList = await storage.getOrdersByStore(storeId);
     
     let totalOrders = ordersList.length;
+    let newOrders = 0;
     let confirmed = 0;
     let inProgress = 0;
     let cancelled = 0;
@@ -27,7 +26,8 @@ export async function registerRoutes(
     let profit = 0;
     
     ordersList.forEach(o => {
-      if (o.status === 'confirmed') confirmed++;
+      if (o.status === 'new') newOrders++;
+      else if (o.status === 'confirmed') confirmed++;
       else if (o.status === 'in_progress') inProgress++;
       else if (o.status === 'cancelled') cancelled++;
       else if (o.status === 'delivered') delivered++;
@@ -39,36 +39,61 @@ export async function registerRoutes(
       }
     });
 
+    const confirmationRate = totalOrders > 0 ? Math.round((confirmed + delivered) / totalOrders * 100) : 0;
+
     res.json({
       totalOrders,
+      newOrders,
       confirmed,
       inProgress,
       cancelled,
       delivered,
       refused,
       revenue,
-      profit
+      profit,
+      confirmationRate,
     });
   });
 
-  app.get(api.orders.list.path, async (req, res) => {
-    const storeId = Number(req.params.storeId);
-    const ordersList = await storage.getOrdersByStore(storeId);
-    res.json(ordersList);
+  app.get(api.orders.list.path, requireAuth, async (req, res) => {
+    const user = req.user!;
+    const status = req.query.status as string | undefined;
+    
+    if (user.role === 'agent') {
+      const ordersList = await storage.getOrdersByAgent(user.id);
+      if (status) {
+        res.json(ordersList.filter(o => o.status === status));
+      } else {
+        res.json(ordersList);
+      }
+    } else {
+      const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
+      res.json(ordersList);
+    }
   });
 
-  app.get(api.orders.get.path, async (req, res) => {
+  app.get("/api/orders/:id", requireAuth, async (req, res) => {
     const orderId = Number(req.params.id);
     const order = await storage.getOrder(orderId);
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
+    if (order.storeId !== req.user!.storeId && req.user!.role !== 'owner') {
+      return res.status(403).json({ message: "Access denied" });
+    }
     res.json(order);
   });
 
-  app.patch(api.orders.updateStatus.path, async (req, res) => {
+  app.patch("/api/orders/:id/status", requireAuth, async (req, res) => {
     try {
       const orderId = Number(req.params.id);
+      const order = await storage.getOrder(orderId);
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+      if (order.storeId !== req.user!.storeId) {
+        return res.status(403).json({ message: "Access denied" });
+      }
       const { status } = api.orders.updateStatus.input.parse(req.body);
       const updated = await storage.updateOrderStatus(orderId, status);
       if (!updated) {
@@ -76,17 +101,14 @@ export async function registerRoutes(
       }
       res.json(updated);
     } catch (err) {
-       if (err instanceof z.ZodError) {
-        return res.status(400).json({
-          message: err.errors[0].message,
-          field: err.errors[0].path.join('.'),
-        });
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
       }
       throw err;
     }
   });
 
-  app.patch(api.orders.assign.path, async (req, res) => {
+  app.patch("/api/orders/:id/assign", requireAuth, async (req, res) => {
     try {
       const orderId = Number(req.params.id);
       const { agentId } = api.orders.assign.input.parse(req.body);
@@ -96,101 +118,177 @@ export async function registerRoutes(
       }
       res.json(updated);
     } catch (err) {
-       if (err instanceof z.ZodError) {
-        return res.status(400).json({
-          message: err.errors[0].message,
-          field: err.errors[0].path.join('.'),
-        });
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
       }
       throw err;
     }
   });
   
-  app.get(api.products.list.path, async (req, res) => {
-    const storeId = Number(req.params.storeId);
+  app.get(api.products.list.path, requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
     const productsList = await storage.getProductsByStore(storeId);
     res.json(productsList);
   });
 
-  app.get(api.agents.list.path, async (req, res) => {
-    const storeId = Number(req.params.storeId);
+  app.get(api.agents.list.path, requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
     const agentsList = await storage.getUsersByStore(storeId);
-    res.json(agentsList);
+    const safeAgents = agentsList.map(({ password, ...rest }) => rest);
+    res.json(safeAgents);
   });
 
-  // Mock Shopify webhook to create order
-  app.post(api.orders.shopifyWebhook.path, async (req, res) => {
-    // A simplified webhook handler for demo
+  app.post(api.agents.create.path, requireAdmin, async (req, res) => {
     try {
-      // In a real app, you would parse the shopify webhook payload here
-      // This is just a stub for demonstrating the webhook integration
-      console.log('Received shopify webhook:', req.body);
-      res.json({ success: true });
+      const data = api.agents.create.input.parse(req.body);
+      const storeId = req.user!.storeId!;
+
+      const existingUser = await storage.getUserByEmail(data.email);
+      if (existingUser) {
+        return res.status(400).json({ message: "Cet email est déjà utilisé" });
+      }
+
+      const hashedPassword = await hashPassword(data.password);
+      const user = await storage.createUser({
+        username: data.username,
+        email: data.email,
+        phone: data.phone || null,
+        password: hashedPassword,
+        role: "agent",
+        storeId,
+        paymentType: data.paymentType || "commission",
+        paymentAmount: data.paymentAmount || 0,
+        distributionMethod: data.distributionMethod || "auto",
+        isActive: data.isActive ?? 1,
+      });
+
+      const { password: _, ...safeUser } = user;
+      res.status(201).json(safeUser);
     } catch (err) {
-      console.error('Webhook error:', err);
-      res.status(500).json({ message: 'Webhook failed' });
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
+      }
+      throw err;
+    }
+  });
+
+  app.get(api.adSpend.list.path, requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const date = req.query.date as string | undefined;
+    const entries = await storage.getAdSpend(storeId, date);
+    res.json(entries);
+  });
+
+  app.post(api.adSpend.upsert.path, requireAuth, async (req, res) => {
+    try {
+      const data = api.adSpend.upsert.input.parse(req.body);
+      const storeId = req.user!.storeId!;
+      const entry = await storage.upsertAdSpend({
+        storeId,
+        productId: data.productId || null,
+        date: data.date,
+        amount: data.amount,
+      });
+      res.json(entry);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
+      }
+      throw err;
+    }
+  });
+
+  app.post(api.orders.shopifyWebhook.path, async (req, res) => {
+    try {
+      const hmacHeader = req.headers['x-shopify-hmac-sha256'] as string | undefined;
+      const shopifySecret = process.env.SHOPIFY_WEBHOOK_SECRET;
+
+      if (shopifySecret && hmacHeader) {
+        const rawBody = JSON.stringify(req.body);
+        const computed = createHmac('sha256', shopifySecret)
+          .update(rawBody, 'utf8')
+          .digest('base64');
+        if (computed !== hmacHeader) {
+          return res.status(401).json({ message: "Invalid HMAC signature" });
+        }
+      }
+
+      const payload = req.body;
+      
+      if (!payload || !payload.id) {
+        return res.status(400).json({ message: "Invalid webhook payload" });
+      }
+
+      const shopifyStoreId = req.query.store_id ? Number(req.query.store_id) : null;
+      if (!shopifyStoreId) {
+        return res.status(400).json({ message: "store_id query param required" });
+      }
+
+      const store = await storage.getStore(shopifyStoreId);
+      if (!store) {
+        return res.status(404).json({ message: "Store not found" });
+      }
+
+      const customerName = payload.customer 
+        ? `${payload.customer.first_name || ''} ${payload.customer.last_name || ''}`.trim()
+        : (payload.shipping_address?.name || 'Client Shopify');
+      
+      const customerPhone = payload.customer?.phone 
+        || payload.shipping_address?.phone 
+        || payload.billing_address?.phone 
+        || '';
+
+      const customerAddress = payload.shipping_address
+        ? `${payload.shipping_address.address1 || ''} ${payload.shipping_address.address2 || ''}`.trim()
+        : '';
+
+      const customerCity = payload.shipping_address?.city || '';
+
+      const totalPrice = Math.round(parseFloat(payload.total_price || '0') * 100);
+
+      const order = await storage.createOrder({
+        storeId: shopifyStoreId,
+        orderNumber: String(payload.order_number || payload.id),
+        customerName,
+        customerPhone,
+        customerAddress,
+        customerCity,
+        status: 'new',
+        totalPrice,
+        productCost: 0,
+        shippingCost: 0,
+        adSpend: 0,
+        source: 'shopify',
+        comment: payload.note || null,
+      }, []);
+
+      if (payload.line_items && Array.isArray(payload.line_items)) {
+        const storeProducts = await storage.getProductsByStore(shopifyStoreId);
+
+        for (const item of payload.line_items) {
+          const matchedProduct = storeProducts.find(
+            p => p.sku === item.sku || p.name === item.title
+          );
+
+          if (matchedProduct) {
+            const { orderItems: oi } = await import("@shared/schema");
+            const { db: database } = await import("./db");
+            await database.insert(oi).values({
+              orderId: order.id,
+              productId: matchedProduct.id,
+              quantity: item.quantity || 1,
+              price: Math.round(parseFloat(item.price || '0') * 100),
+            });
+          }
+        }
+      }
+
+      res.json({ success: true, orderId: order.id });
+    } catch (err) {
+      console.error('Shopify webhook error:', err);
+      res.status(500).json({ message: 'Webhook processing failed' });
     }
   });
 
   return httpServer;
-}
-
-async function seedDatabase() {
-  try {
-    const existingStores = await storage.getStore(1);
-    if (!existingStores) {
-      const store = await storage.createStore({ name: "Garean Demo Store" });
-      const admin = await storage.createUser({ username: "Mohamed", role: "owner", storeId: store.id });
-      const agent1 = await storage.createUser({ username: "khawla", role: "agent", storeId: store.id });
-      const agent2 = await storage.createUser({ username: "fatima", role: "agent", storeId: store.id });
-
-      const prod1 = await storage.createProduct({ storeId: store.id, name: "Smart Watch", sku: "SW-01", stock: 150, costPrice: 2000, reference: "ZOMAX حذاء" });
-      const prod2 = await storage.createProduct({ storeId: store.id, name: "Wireless Earbuds", sku: "WE-02", stock: 300, costPrice: 1500, reference: "ماكينة تلميع" });
-      
-      await storage.createOrder({
-        storeId: store.id,
-        orderNumber: "3906",
-        customerName: "Aziz Aziz",
-        customerPhone: "+212606604135",
-        customerCity: "Casablanca",
-        customerAddress: "sidi massoud sidi",
-        status: "new",
-        totalPrice: 42900,
-        productCost: 20000,
-        shippingCost: 3000,
-        adSpend: 5000,
-        assignedToId: agent1.id,
-        comment: "Test order",
-        isStock: 0,
-        upSell: 0,
-        canOpen: 1,
-        replace: 0
-      }, [
-        { productId: prod1.id, quantity: 1, price: 42900 }
-      ]);
-
-      await storage.createOrder({
-        storeId: store.id,
-        orderNumber: "3907",
-        customerName: "Saad el habti",
-        customerPhone: "+212682093205",
-        customerCity: "Fez",
-        customerAddress: "شفشاون",
-        status: "new",
-        totalPrice: 37900,
-        productCost: 15000,
-        shippingCost: 3000,
-        adSpend: 4000,
-        assignedToId: agent2.id,
-        isStock: 0,
-        upSell: 0,
-        canOpen: 1,
-        replace: 0
-      }, [
-        { productId: prod2.id, quantity: 1, price: 37900 }
-      ]);
-    }
-  } catch (err) {
-    console.error("Seed failed", err);
-  }
 }

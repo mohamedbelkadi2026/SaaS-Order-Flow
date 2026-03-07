@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { orders, products, users, stores, orderItems } from './schema';
 
 export const errorSchemas = {
   validation: z.object({ message: z.string(), field: z.string().optional() }),
@@ -11,10 +10,11 @@ export const api = {
   stats: {
     get: {
       method: 'GET' as const,
-      path: '/api/stores/:storeId/stats' as const,
+      path: '/api/stats' as const,
       responses: {
         200: z.object({
           totalOrders: z.number(),
+          newOrders: z.number(),
           confirmed: z.number(),
           inProgress: z.number(),
           cancelled: z.number(),
@@ -22,6 +22,7 @@ export const api = {
           refused: z.number(),
           revenue: z.number(),
           profit: z.number(),
+          confirmationRate: z.number(),
         }),
       }
     }
@@ -29,16 +30,16 @@ export const api = {
   orders: {
     list: {
       method: 'GET' as const,
-      path: '/api/stores/:storeId/orders' as const,
+      path: '/api/orders' as const,
       responses: {
-        200: z.array(z.custom<any>()), // array of OrderWithDetails
+        200: z.array(z.custom<any>()),
       },
     },
     get: {
       method: 'GET' as const,
       path: '/api/orders/:id' as const,
       responses: {
-        200: z.custom<any>(), // OrderWithDetails
+        200: z.custom<any>(),
         404: errorSchemas.notFound,
       },
     },
@@ -47,7 +48,7 @@ export const api = {
       path: '/api/orders/:id/status' as const,
       input: z.object({ status: z.string() }),
       responses: {
-        200: z.custom<typeof orders.$inferSelect>(),
+        200: z.custom<any>(),
         404: errorSchemas.notFound,
       },
     },
@@ -56,7 +57,7 @@ export const api = {
       path: '/api/orders/:id/assign' as const,
       input: z.object({ agentId: z.number().nullable() }),
       responses: {
-        200: z.custom<typeof orders.$inferSelect>(),
+        200: z.custom<any>(),
         404: errorSchemas.notFound,
       },
     },
@@ -72,18 +73,56 @@ export const api = {
   products: {
     list: {
       method: 'GET' as const,
-      path: '/api/stores/:storeId/products' as const,
+      path: '/api/products' as const,
       responses: {
-        200: z.array(z.custom<typeof products.$inferSelect>()),
+        200: z.array(z.custom<any>()),
       },
     },
   },
   agents: {
     list: {
       method: 'GET' as const,
-      path: '/api/stores/:storeId/agents' as const,
+      path: '/api/agents' as const,
       responses: {
-        200: z.array(z.custom<typeof users.$inferSelect>()),
+        200: z.array(z.custom<any>()),
+      }
+    },
+    create: {
+      method: 'POST' as const,
+      path: '/api/agents' as const,
+      input: z.object({
+        username: z.string().min(1),
+        email: z.string().email(),
+        phone: z.string().optional(),
+        password: z.string().min(4),
+        paymentType: z.string().optional(),
+        paymentAmount: z.number().optional(),
+        distributionMethod: z.string().optional(),
+        isActive: z.number().optional(),
+      }),
+      responses: {
+        201: z.custom<any>(),
+      }
+    }
+  },
+  adSpend: {
+    list: {
+      method: 'GET' as const,
+      path: '/api/ad-spend' as const,
+      responses: {
+        200: z.array(z.custom<any>()),
+      }
+    },
+    upsert: {
+      method: 'POST' as const,
+      path: '/api/ad-spend' as const,
+      input: z.object({
+        productId: z.number().nullable().optional(),
+        date: z.string(),
+        amount: z.number(),
+      }),
+      responses: {
+        200: z.custom<any>(),
       }
     }
   }
