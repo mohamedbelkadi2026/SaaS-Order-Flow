@@ -1,13 +1,14 @@
 import { useState } from "react";
-import { useOrders, useUpdateOrderStatus, useAssignAgent, useAgents } from "@/hooks/use-store-data";
+import { useOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Search, Filter, AlertCircle, ShoppingBag, XCircle } from "lucide-react";
+import { Search, Filter, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 
@@ -33,12 +34,15 @@ export default function Orders() {
   
   const { data: orders, isLoading } = useOrders(statusFilter || "new");
   const { data: agents } = useAgents();
+  const { data: shippingIntegrations } = useIntegrations("shipping");
   const updateStatus = useUpdateOrderStatus();
   const assignAgent = useAssignAgent();
+  const shipOrder = useShipOrder();
   const { toast } = useToast();
   
   const [search, setSearch] = useState("");
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [shippingProvider, setShippingProvider] = useState<string>("");
 
   const filteredOrders = orders?.filter((o: any) => 
     o.orderNumber?.toLowerCase().includes(search.toLowerCase()) ||
@@ -263,6 +267,72 @@ export default function Orders() {
                   ))}
                 </div>
               </div>
+
+              {selectedOrder.trackNumber && (
+                <div className="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-blue-700 font-bold text-sm">
+                    <Truck className="w-4 h-4" /> Informations de livraison
+                  </div>
+                  <div className="grid grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <span className="text-muted-foreground text-xs block">Transporteur</span>
+                      <Badge variant="outline" className="capitalize mt-1">{selectedOrder.shippingProvider}</Badge>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs block">N° Suivi</span>
+                      <span className="font-mono font-bold text-xs mt-1 block">{selectedOrder.trackNumber}</span>
+                    </div>
+                    {selectedOrder.labelLink && (
+                      <div>
+                        <span className="text-muted-foreground text-xs block">Étiquette</span>
+                        <a href={selectedOrder.labelLink} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-blue-600 text-xs font-semibold mt-1 hover:underline">
+                          <ExternalLink className="w-3 h-3" /> Télécharger PDF
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(selectedOrder.status === 'confirmed' || selectedOrder.status === 'new') && !selectedOrder.trackNumber && shippingIntegrations?.length > 0 && (
+                <div className="mt-6 bg-muted/30 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center gap-2 font-bold text-sm">
+                    <Truck className="w-4 h-4 text-primary" /> Envoyer en livraison
+                  </div>
+                  <div className="flex gap-3">
+                    <Select value={shippingProvider} onValueChange={setShippingProvider}>
+                      <SelectTrigger className="flex-1 bg-white" data-testid="select-shipping-provider">
+                        <SelectValue placeholder="Choisir un transporteur..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {shippingIntegrations.map((si: any) => (
+                          <SelectItem key={si.provider} value={si.provider}>{si.provider}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      data-testid="button-ship-order"
+                      className="bg-indigo-500 hover:bg-indigo-600 text-white"
+                      disabled={!shippingProvider || shipOrder.isPending}
+                      onClick={() => {
+                        shipOrder.mutate({ id: selectedOrder.id, provider: shippingProvider }, {
+                          onSuccess: (data) => {
+                            toast({ title: "Envoyé!", description: `Tracking: ${data.trackingNumber}` });
+                            setSelectedOrder({ ...selectedOrder, trackNumber: data.trackingNumber, labelLink: data.labelLink, shippingProvider: data.provider, status: 'in_progress' });
+                            setShippingProvider("");
+                          },
+                          onError: (err: any) => {
+                            toast({ title: "Erreur", description: err.message || "Erreur d'envoi", variant: "destructive" });
+                          }
+                        });
+                      }}
+                    >
+                      {shipOrder.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Truck className="w-4 h-4 mr-2" />}
+                      {shipOrder.isPending ? "Envoi..." : "Envoyer"}
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               <div className="mt-6 grid grid-cols-4 gap-3">
                 <Button

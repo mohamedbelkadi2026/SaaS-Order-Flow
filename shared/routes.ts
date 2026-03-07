@@ -125,7 +125,43 @@ export const api = {
         200: z.custom<any>(),
       }
     }
-  }
+  },
+  integrations: {
+    list: {
+      method: 'GET' as const,
+      path: '/api/integrations' as const,
+    },
+    create: {
+      method: 'POST' as const,
+      path: '/api/integrations' as const,
+      input: z.object({
+        provider: z.string().min(1),
+        type: z.enum(["store", "shipping"]),
+        credentials: z.record(z.string()).default({}),
+      }),
+    },
+    update: {
+      method: 'PATCH' as const,
+      path: '/api/integrations/:id' as const,
+    },
+    delete: {
+      method: 'DELETE' as const,
+      path: '/api/integrations/:id' as const,
+    },
+    logs: {
+      method: 'GET' as const,
+      path: '/api/integration-logs' as const,
+    },
+    webhook: {
+      method: 'POST' as const,
+      path: '/api/integrations/webhook/:provider' as const,
+    },
+    ship: {
+      method: 'POST' as const,
+      path: '/api/orders/:id/ship' as const,
+      input: z.object({ provider: z.string().min(1) }),
+    },
+  },
 };
 
 export function buildUrl(path: string, params?: Record<string, string | number>): string {

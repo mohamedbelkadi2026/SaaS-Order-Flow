@@ -133,3 +133,82 @@ export function useUpsertAdSpend() {
     },
   });
 }
+
+export function useIntegrations(type?: string) {
+  const url = type ? `/api/integrations?type=${type}` : "/api/integrations";
+  return useQuery({
+    queryKey: ["/api/integrations", type || "all"],
+    queryFn: async () => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch integrations");
+      return res.json();
+    },
+  });
+}
+
+export function useCreateIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { provider: string; type: string; credentials: Record<string, string> }) => {
+      const res = await apiRequest("POST", "/api/integrations", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+    },
+  });
+}
+
+export function useUpdateIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...data }: { id: number; credentials?: Record<string, string>; isActive?: number }) => {
+      const res = await apiRequest("PATCH", `/api/integrations/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+    },
+  });
+}
+
+export function useDeleteIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/integrations/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/integrations"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+    },
+  });
+}
+
+export function useIntegrationLogs(limit = 100) {
+  return useQuery({
+    queryKey: ["/api/integration-logs", limit],
+    queryFn: async () => {
+      const res = await fetch(`/api/integration-logs?limit=${limit}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch integration logs");
+      return res.json();
+    },
+  });
+}
+
+export function useShipOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, provider }: { id: number; provider: string }) => {
+      const res = await apiRequest("POST", `/api/orders/${id}/ship`, { provider });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+    },
+  });
+}

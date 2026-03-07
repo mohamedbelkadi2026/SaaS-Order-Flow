@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { setupAuth } from "./auth";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 
 const app = express();
 const httpServer = createServer(app);
@@ -93,6 +94,7 @@ app.use((req, res, next) => {
     },
     () => {
       log(`serving on port ${port}`);
+      startWooCommerceSync();
     },
   );
 })();

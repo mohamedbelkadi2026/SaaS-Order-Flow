@@ -51,6 +51,8 @@ export const orders = pgTable("orders", {
   assignedToId: integer("assigned_to_id").references(() => users.id),
   comment: text("comment"),
   trackNumber: text("track_number"),
+  labelLink: text("label_link"),
+  shippingProvider: text("shipping_provider"),
   replacementTrackNumber: text("replacement_track_number"),
   isStock: integer("is_stock").default(0),
   upSell: integer("up_sell").default(0),
@@ -74,6 +76,28 @@ export const adSpendTracking = pgTable("ad_spend_tracking", {
   productId: integer("product_id").references(() => products.id),
   date: text("date").notNull(),
   amount: integer("amount").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const storeIntegrations = pgTable("store_integrations", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  provider: text("provider").notNull(),
+  type: text("type").notNull(),
+  credentials: text("credentials").notNull().default('{}'),
+  isActive: integer("is_active").default(1),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const integrationLogs = pgTable("integration_logs", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  integrationId: integer("integration_id").references(() => storeIntegrations.id),
+  provider: text("provider").notNull(),
+  action: text("action").notNull(),
+  status: text("status").notNull(),
+  message: text("message"),
+  payload: text("payload"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -131,12 +155,33 @@ export const adSpendTrackingRelations = relations(adSpendTracking, ({ one }) => 
   }),
 }));
 
+export const storeIntegrationsRelations = relations(storeIntegrations, ({ one, many }) => ({
+  store: one(stores, {
+    fields: [storeIntegrations.storeId],
+    references: [stores.id],
+  }),
+  logs: many(integrationLogs),
+}));
+
+export const integrationLogsRelations = relations(integrationLogs, ({ one }) => ({
+  store: one(stores, {
+    fields: [integrationLogs.storeId],
+    references: [stores.id],
+  }),
+  integration: one(storeIntegrations, {
+    fields: [integrationLogs.integrationId],
+    references: [storeIntegrations.id],
+  }),
+}));
+
 export const insertStoreSchema = createInsertSchema(stores).omit({ id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
 export const insertProductSchema = createInsertSchema(products).omit({ id: true });
 export const insertOrderSchema = createInsertSchema(orders).omit({ id: true, createdAt: true });
 export const insertOrderItemSchema = createInsertSchema(orderItems).omit({ id: true });
 export const insertAdSpendSchema = createInsertSchema(adSpendTracking).omit({ id: true, createdAt: true });
+export const insertIntegrationSchema = createInsertSchema(storeIntegrations).omit({ id: true, createdAt: true });
+export const insertIntegrationLogSchema = createInsertSchema(integrationLogs).omit({ id: true, createdAt: true });
 
 export type Store = typeof stores.$inferSelect;
 export type InsertStore = z.infer<typeof insertStoreSchema>;
@@ -150,6 +195,10 @@ export type OrderItem = typeof orderItems.$inferSelect;
 export type InsertOrderItem = z.infer<typeof insertOrderItemSchema>;
 export type AdSpendEntry = typeof adSpendTracking.$inferSelect;
 export type InsertAdSpend = z.infer<typeof insertAdSpendSchema>;
+export type StoreIntegration = typeof storeIntegrations.$inferSelect;
+export type InsertIntegration = z.infer<typeof insertIntegrationSchema>;
+export type IntegrationLog = typeof integrationLogs.$inferSelect;
+export type InsertIntegrationLog = z.infer<typeof insertIntegrationLogSchema>;
 
 export type OrderWithDetails = Order & {
   agent?: User | null;

@@ -1,9 +1,10 @@
 import { db } from "./db";
 import { 
-  users, stores, products, orders, orderItems, adSpendTracking,
+  users, stores, products, orders, orderItems, adSpendTracking, storeIntegrations, integrationLogs,
   type User, type Store, type Product, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertOrder, type InsertOrderItem,
-  type AdSpendEntry, type InsertAdSpend
+  type AdSpendEntry, type InsertAdSpend,
+  type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog
 } from "@shared/schema";
 import { eq, desc, and, sql } from "drizzle-orm";
 
@@ -30,6 +31,20 @@ export interface IStorage {
 
   getAdSpend(storeId: number, date?: string): Promise<AdSpendEntry[]>;
   upsertAdSpend(entry: InsertAdSpend): Promise<AdSpendEntry>;
+
+  getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]>;
+  getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]>;
+  getIntegration(id: number): Promise<StoreIntegration | undefined>;
+  getIntegrationByProvider(storeId: number, provider: string): Promise<StoreIntegration | undefined>;
+  createIntegration(data: InsertIntegration): Promise<StoreIntegration>;
+  updateIntegration(id: number, data: Partial<InsertIntegration>): Promise<StoreIntegration | undefined>;
+  deleteIntegration(id: number): Promise<void>;
+
+  getIntegrationLogs(storeId: number, limit?: number): Promise<IntegrationLog[]>;
+  createIntegrationLog(data: InsertIntegrationLog): Promise<IntegrationLog>;
+
+  updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined>;
+  getOrderByNumber(storeId: number, orderNumber: string): Promise<Order | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -221,6 +236,79 @@ export class DatabaseStorage implements IStorage {
 
     const [created] = await db.insert(adSpendTracking).values(entry).returning();
     return created;
+  }
+
+  async getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]> {
+    if (type) {
+      return await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.type, type)))
+        .orderBy(desc(storeIntegrations.createdAt));
+    }
+    return await db.select().from(storeIntegrations)
+      .where(eq(storeIntegrations.storeId, storeId))
+      .orderBy(desc(storeIntegrations.createdAt));
+  }
+
+  async getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]> {
+    return await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.provider, provider), eq(storeIntegrations.isActive, 1)));
+  }
+
+  async getIntegration(id: number): Promise<StoreIntegration | undefined> {
+    const [integration] = await db.select().from(storeIntegrations).where(eq(storeIntegrations.id, id));
+    return integration;
+  }
+
+  async getIntegrationByProvider(storeId: number, provider: string): Promise<StoreIntegration | undefined> {
+    const [integration] = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, provider)));
+    return integration;
+  }
+
+  async createIntegration(data: InsertIntegration): Promise<StoreIntegration> {
+    const [created] = await db.insert(storeIntegrations).values(data).returning();
+    return created;
+  }
+
+  async updateIntegration(id: number, data: Partial<InsertIntegration>): Promise<StoreIntegration | undefined> {
+    const [updated] = await db.update(storeIntegrations)
+      .set(data)
+      .where(eq(storeIntegrations.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteIntegration(id: number): Promise<void> {
+    await db.update(integrationLogs)
+      .set({ integrationId: null })
+      .where(eq(integrationLogs.integrationId, id));
+    await db.delete(storeIntegrations).where(eq(storeIntegrations.id, id));
+  }
+
+  async getIntegrationLogs(storeId: number, limit = 100): Promise<IntegrationLog[]> {
+    return await db.select().from(integrationLogs)
+      .where(eq(integrationLogs.storeId, storeId))
+      .orderBy(desc(integrationLogs.createdAt))
+      .limit(limit);
+  }
+
+  async createIntegrationLog(data: InsertIntegrationLog): Promise<IntegrationLog> {
+    const [created] = await db.insert(integrationLogs).values(data).returning();
+    return created;
+  }
+
+  async updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined> {
+    const [updated] = await db.update(orders)
+      .set({ trackNumber: trackingNumber, labelLink, shippingProvider })
+      .where(eq(orders.id, orderId))
+      .returning();
+    return updated;
+  }
+
+  async getOrderByNumber(storeId: number, orderNumber: string): Promise<Order | undefined> {
+    const [order] = await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), eq(orders.orderNumber, orderNumber)));
+    return order;
   }
 }
 

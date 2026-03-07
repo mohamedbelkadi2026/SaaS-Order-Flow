@@ -16,6 +16,7 @@ import Inventory from "@/pages/inventory";
 import Team from "@/pages/team";
 import Integrations from "@/pages/integrations";
 import ShippingIntegrations from "@/pages/shipping-integrations";
+import IntegrationLogs from "@/pages/integration-logs";
 import Invoices from "@/pages/invoices";
 import Magasins from "@/pages/magasins";
 
@@ -47,6 +48,7 @@ function ProtectedRoutes() {
         <Route path="/profitability" component={Profitability}/>
         <Route path="/integrations" component={Integrations}/>
         <Route path="/integrations/shipping" component={ShippingIntegrations}/>
+        <Route path="/integrations/logs" component={IntegrationLogs}/>
         <Route component={NotFound} />
       </Switch>
     </AppLayout>

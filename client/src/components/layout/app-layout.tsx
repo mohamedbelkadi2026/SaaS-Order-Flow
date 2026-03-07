@@ -49,8 +49,9 @@ const ORDER_SUB_ITEMS = [
 ];
 
 const INTEGRATION_SUB_ITEMS = [
-  { name: "Stores", href: "/integrations" },
+  { name: "Boutiques", href: "/integrations" },
   { name: "Sociétés de Livraison", href: "/integrations/shipping" },
+  { name: "Journal", href: "/integrations/logs" },
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
