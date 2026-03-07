@@ -24,13 +24,21 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 const NAV_ITEMS = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
-  { name: "Orders", href: "/orders", icon: ShoppingCart },
+  { name: "Mes Commandes", href: "/orders", icon: ShoppingCart },
   { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Team Management", href: "/team", icon: Users },
   { name: "Magasins", href: "/magasins", icon: Store },
   { name: "Invoices", href: "/invoices", icon: FileText },
   { name: "Adv. Profitability", href: "/profitability", icon: Calculator },
   { name: "Integrations", href: "/integrations", icon: Plug },
+];
+
+const ORDER_SUB_ITEMS = [
+  { name: "Nouveaux", href: "/orders" },
+  { name: "Confirmation", href: "/orders/confirmation" },
+  { name: "Annules", href: "/orders/annules" },
+  { name: "Suivies", href: "/orders/suivies" },
+  { name: "Livrées", href: "/orders/livrees" },
 ];
 
 const INTEGRATION_SUB_ITEMS = [
@@ -62,8 +70,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
       <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
         {NAV_ITEMS.map((item) => {
-          const isActive = location === item.href || (item.name === "Integrations" && location.startsWith("/integrations"));
+          const isActive = location === item.href || 
+            (item.name === "Integrations" && location.startsWith("/integrations")) ||
+            (item.name === "Mes Commandes" && location.startsWith("/orders"));
           const isIntegrations = item.name === "Integrations";
+          const isOrders = item.name === "Mes Commandes";
 
           return (
             <div key={item.name} className="space-y-1">
@@ -77,6 +88,21 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 {item.name}
               </Link>
               
+              {isOrders && (
+                <div className="ml-9 space-y-1 mt-1">
+                  {ORDER_SUB_ITEMS.map((sub) => (
+                    <Link key={sub.name} href={sub.href} className={cn(
+                      "block px-3 py-1.5 text-xs rounded-lg transition-colors",
+                      location === sub.href
+                        ? "text-primary font-medium" 
+                        : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
+                    )}>
+                      {sub.name}
+                    </Link>
+                  ))}
+                </div>
+              )}
+
               {isIntegrations && (
                 <div className="ml-9 space-y-1 mt-1">
                   {INTEGRATION_SUB_ITEMS.map((sub) => (

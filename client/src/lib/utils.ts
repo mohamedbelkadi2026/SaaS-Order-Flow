@@ -6,8 +6,8 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amountInCents: number) {
-  return new Intl.NumberFormat('en-US', {
+  return new Intl.NumberFormat('fr-MA', {
     style: 'currency',
-    currency: 'USD',
+    currency: 'MAD',
   }).format(amountInCents / 100)
 }

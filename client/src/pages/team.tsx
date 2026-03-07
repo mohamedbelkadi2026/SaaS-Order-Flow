@@ -1,13 +1,19 @@
+import { useState } from "react";
 import { useAgents } from "@/hooks/use-store-data";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Settings } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Settings, X } from "lucide-react";
 
 export default function Team() {
   const { data: agents, isLoading } = useAgents();
+  const [open, setOpen] = useState(false);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -16,9 +22,93 @@ export default function Team() {
           <h1 className="text-3xl font-display font-bold uppercase">Liste des membres</h1>
           <p className="text-muted-foreground mt-1">Gestion de l'équipe / Membres</p>
         </div>
-        <Button className="bg-primary hover:bg-primary/90 text-white rounded-md px-4 py-2 flex items-center gap-2">
-          <UserPlus className="w-4 h-4" /> Ajouter un membre
-        </Button>
+        
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button className="bg-primary hover:bg-primary/90 text-white rounded-md px-4 py-2 flex items-center gap-2">
+              <UserPlus className="w-4 h-4" /> Ajouter un membre
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-3xl p-0 overflow-hidden border-none shadow-2xl rounded-2xl bg-white">
+            <div className="flex justify-between items-center p-6 border-b bg-white">
+              <h2 className="text-xl font-bold text-slate-800">Ajouter un nouveau membre</h2>
+              <Button variant="ghost" size="icon" onClick={() => setOpen(false)} className="rounded-full">
+                <X className="w-5 h-5 text-slate-400" />
+              </Button>
+            </div>
+            
+            <div className="p-8 space-y-8">
+              <div className="grid grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Nom complet</label>
+                  <Input placeholder="Entrer le nom complet" className="h-11 bg-slate-50/50 border-slate-200" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Téléphone</label>
+                  <Input placeholder="ex: 01 23 45 67 89" className="h-11 bg-slate-50/50 border-slate-200" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Adresse e-mail</label>
+                  <Input placeholder="ex: 0Glt4@garean.com" className="h-11 bg-slate-50/50 border-slate-200" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Mot de passe</label>
+                  <Input type="password" placeholder="••••••••" className="h-11 bg-slate-50/50 border-slate-200" />
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100">
+                <p className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-6">Assigner à des magasins et rôles.</p>
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-slate-700">Choisir les magasins</label>
+                    <Input placeholder="Sélectionner les Botiques" className="h-11 bg-slate-50/50 border-slate-200" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-slate-700">Choisir les rôles</label>
+                    <Input placeholder="Sélectionner les Rôles" className="h-11 bg-slate-50/50 border-slate-200" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-slate-700">Type de Paiement</label>
+                    <Select defaultValue="commission">
+                      <SelectTrigger className="h-11 bg-slate-50/50 border-slate-200">
+                        <SelectValue placeholder="Comission" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="commission">Comission</SelectItem>
+                        <SelectItem value="fixe">Fixe</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-slate-700">Montant</label>
+                    <Input placeholder="Ex: 50.00" className="h-11 bg-slate-50/50 border-slate-200" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 rounded-xl border border-slate-100">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Méthode de répartition</p>
+                <div className="grid grid-cols-4 border rounded-lg bg-white overflow-hidden">
+                  <button className="py-2.5 text-sm font-bold bg-blue-500 text-white">Auto</button>
+                  <button className="py-2.5 text-sm font-medium text-slate-500 border-l hover:bg-slate-50">Pourcentage</button>
+                  <button className="py-2.5 text-sm font-medium text-slate-500 border-l hover:bg-slate-50">Produit</button>
+                  <button className="py-2.5 text-sm font-medium text-slate-500 border-l hover:bg-slate-50">Région</button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2">
+                <Switch id="active" defaultChecked className="data-[state=checked]:bg-blue-500" />
+                <label htmlFor="active" className="text-sm font-bold text-slate-700">Actif</label>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 p-6 bg-slate-50 border-t">
+              <Button variant="outline" onClick={() => setOpen(false)} className="px-8 border-slate-300 text-slate-600 bg-white hover:bg-slate-50">Fermer</Button>
+              <Button className="px-8 bg-blue-500 hover:bg-blue-600 text-white font-bold">Enregistrer</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">

@@ -77,64 +77,46 @@ export default function Orders() {
                 <TableHead className="font-semibold">Destinataire</TableHead>
                 <TableHead className="font-semibold">Téléphone</TableHead>
                 <TableHead className="font-semibold">Ville</TableHead>
-                <TableHead className="font-semibold">Statut</TableHead>
+                <TableHead className="font-semibold">Boutique</TableHead>
+                <TableHead className="font-semibold">comment</TableHead>
+                <TableHead className="font-semibold">Dernière action</TableHead>
+                <TableHead className="font-semibold">Status</TableHead>
                 <TableHead className="font-semibold">Prix</TableHead>
-                <TableHead className="font-semibold">Agent</TableHead>
-                <TableHead className="text-right font-semibold">Action</TableHead>
+                <TableHead className="font-semibold">Adresse</TableHead>
+                <TableHead className="font-semibold">Référence</TableHead>
+                <TableHead className="font-semibold">Infos supplémentaires</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 Array(5).fill(0).map((_, i) => (
                   <TableRow key={i}>
-                    <TableCell><div className="h-5 w-16 bg-muted rounded animate-pulse"></div></TableCell>
-                    <TableCell><div className="h-5 w-32 bg-muted rounded animate-pulse"></div></TableCell>
-                    <TableCell><div className="h-5 w-32 bg-muted rounded animate-pulse"></div></TableCell>
-                    <TableCell><div className="h-5 w-24 bg-muted rounded animate-pulse"></div></TableCell>
-                    <TableCell><div className="h-6 w-20 bg-muted rounded-full animate-pulse"></div></TableCell>
-                    <TableCell><div className="h-5 w-16 bg-muted rounded animate-pulse"></div></TableCell>
-                    <TableCell><div className="h-5 w-24 bg-muted rounded animate-pulse"></div></TableCell>
-                    <TableCell className="text-right"><div className="h-8 w-16 bg-muted rounded-md inline-block animate-pulse"></div></TableCell>
+                    <TableCell colSpan={12}><div className="h-12 w-full bg-muted rounded animate-pulse"></div></TableCell>
                   </TableRow>
                 ))
               ) : filteredOrders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-48 text-center text-muted-foreground">
+                  <TableCell colSpan={12} className="h-48 text-center text-muted-foreground">
                     <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
                     No orders found.
                   </TableCell>
                 </TableRow>
               ) : (
                 filteredOrders.map((order: any) => (
-                  <TableRow key={order.id} className="hover:bg-muted/20 transition-colors group cursor-pointer" onClick={() => setSelectedOrder(order)}>
-                    <TableCell className="font-medium">N/D</TableCell>
-                    <TableCell>
-                      <div className="font-medium">{order.customerName}</div>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{order.customerPhone}</TableCell>
-                    <TableCell>{order.customerCity || "-"}</TableCell>
+                  <TableRow key={order.id} className="hover:bg-muted/20 transition-colors group cursor-pointer text-xs" onClick={() => setSelectedOrder(order)}>
+                    <TableCell className="font-medium whitespace-nowrap">N/D</TableCell>
+                    <TableCell className="whitespace-nowrap font-medium">{order.customerName}</TableCell>
+                    <TableCell className="whitespace-nowrap">{order.customerPhone}</TableCell>
+                    <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>
+                    <TableCell className="whitespace-nowrap">promomarkett</TableCell>
+                    <TableCell className="whitespace-nowrap">{order.comment || "-"}</TableCell>
+                    <TableCell className="whitespace-nowrap">{order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}</TableCell>
                     <TableCell><StatusBadge status={order.status} /></TableCell>
-                    <TableCell className="font-semibold">{formatCurrency(order.totalPrice)}</TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <Select 
-                        value={order.assignedToId?.toString() || "unassigned"} 
-                        onValueChange={(val) => assignAgent.mutate({ id: order.id, agentId: val === "unassigned" ? null : parseInt(val) })}
-                      >
-                        <SelectTrigger className="w-[140px] h-8 text-xs border-transparent group-hover:border-border hover:bg-muted bg-transparent">
-                          <SelectValue placeholder="Assign Agent" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="unassigned">Unassigned</SelectItem>
-                          {agents?.map((agent: any) => (
-                            <SelectItem key={agent.id} value={agent.id.toString()}>{agent.username}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="sm" className="text-primary hover:text-primary hover:bg-primary/10">
-                        View <ArrowRight className="w-4 h-4 ml-1" />
-                      </Button>
+                    <TableCell className="font-semibold">{(order.totalPrice / 100).toFixed(2)}</TableCell>
+                    <TableCell className="max-w-[150px] truncate">{order.customerAddress || "-"}</TableCell>
+                    <TableCell className="max-w-[150px] truncate text-right text-muted-foreground" dir="rtl">{order.items?.[0]?.product?.reference || order.items?.[0]?.product?.sku || "-"}</TableCell>
+                    <TableCell className="whitespace-nowrap font-medium">
+                      quantity: {order.items?.[0]?.quantity || 1} order_number: {order.orderNumber}
                     </TableCell>
                   </TableRow>
                 ))
