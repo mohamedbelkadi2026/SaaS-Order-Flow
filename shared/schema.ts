@@ -21,6 +21,7 @@ export const users = pgTable("users", {
   paymentType: text("payment_type").default("commission"),
   paymentAmount: integer("payment_amount").default(0),
   distributionMethod: text("distribution_method").default("auto"),
+  isSuperAdmin: integer("is_super_admin").default(0),
   isActive: integer("is_active").default(1),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -101,16 +102,57 @@ export const integrationLogs = pgTable("integration_logs", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const subscriptions = pgTable("subscriptions", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  plan: text("plan").notNull().default('starter'),
+  monthlyLimit: integer("monthly_limit").notNull().default(1500),
+  pricePerMonth: integer("price_per_month").notNull().default(20000),
+  currentMonthOrders: integer("current_month_orders").notNull().default(0),
+  billingCycleStart: timestamp("billing_cycle_start").defaultNow(),
+  isActive: integer("is_active").default(1),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const customers = pgTable("customers", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  name: text("name").notNull(),
+  phone: text("phone").notNull(),
+  address: text("address"),
+  city: text("city"),
+  email: text("email"),
+  orderCount: integer("order_count").notNull().default(0),
+  totalSpent: integer("total_spent").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const sessions = pgTable("sessions", {
   sid: text("sid").primaryKey(),
   sess: text("sess").notNull(),
   expire: timestamp("expire").notNull(),
 });
 
+export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
+  store: one(stores, {
+    fields: [subscriptions.storeId],
+    references: [stores.id],
+  }),
+}));
+
+export const customersRelations = relations(customers, ({ one }) => ({
+  store: one(stores, {
+    fields: [customers.storeId],
+    references: [stores.id],
+  }),
+}));
+
 export const storesRelations = relations(stores, ({ many }) => ({
   users: many(users),
   products: many(products),
   orders: many(orders),
+  customers: many(customers),
+  subscriptions: many(subscriptions),
 }));
 
 export const usersRelations = relations(users, ({ one, many }) => ({
@@ -182,6 +224,8 @@ export const insertOrderItemSchema = createInsertSchema(orderItems).omit({ id: t
 export const insertAdSpendSchema = createInsertSchema(adSpendTracking).omit({ id: true, createdAt: true });
 export const insertIntegrationSchema = createInsertSchema(storeIntegrations).omit({ id: true, createdAt: true });
 export const insertIntegrationLogSchema = createInsertSchema(integrationLogs).omit({ id: true, createdAt: true });
+export const insertSubscriptionSchema = createInsertSchema(subscriptions).omit({ id: true, createdAt: true });
+export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true, createdAt: true });
 
 export type Store = typeof stores.$inferSelect;
 export type InsertStore = z.infer<typeof insertStoreSchema>;
@@ -199,6 +243,11 @@ export type StoreIntegration = typeof storeIntegrations.$inferSelect;
 export type InsertIntegration = z.infer<typeof insertIntegrationSchema>;
 export type IntegrationLog = typeof integrationLogs.$inferSelect;
 export type InsertIntegrationLog = z.infer<typeof insertIntegrationLogSchema>;
+
+export type Subscription = typeof subscriptions.$inferSelect;
+export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
+export type Customer = typeof customers.$inferSelect;
+export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
 
 export type OrderWithDetails = Order & {
   agent?: User | null;

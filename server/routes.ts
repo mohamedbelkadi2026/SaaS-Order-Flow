@@ -98,6 +98,12 @@ export async function registerRoutes(
     res.json({ totalOrders, newOrders, confirmed, inProgress, cancelled, delivered, refused, revenue, profit, confirmationRate });
   });
 
+  app.get("/api/store", requireAuth, async (req, res) => {
+    const store = await storage.getStore(req.user!.storeId!);
+    if (!store) return res.status(404).json({ message: "Boutique introuvable" });
+    res.json(store);
+  });
+
   app.get(api.orders.list.path, requireAuth, async (req, res) => {
     const user = req.user!;
     const status = req.query.status as string | undefined;
@@ -411,6 +417,16 @@ export async function registerRoutes(
         }
       }
 
+      const limitCheck = await storage.checkOrderLimit(storeId);
+      if (!limitCheck.allowed) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: integration?.id || null, provider,
+          action: 'order_synced', status: 'fail',
+          message: `Limite de commandes atteinte (${limitCheck.current}/${limitCheck.limit}). Commande ${parsed.orderNumber} refusée.`,
+        });
+        return res.status(403).json({ message: "Order limit reached" });
+      }
+
       const order = await storage.createOrder({
         storeId,
         orderNumber: parsed.orderNumber,
@@ -426,6 +442,10 @@ export async function registerRoutes(
         source: provider,
         comment: parsed.comment,
       }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+
+      const customer = await storage.getOrCreateCustomer(storeId, parsed.customerName, parsed.customerPhone, parsed.customerAddress, parsed.customerCity);
+      await storage.updateCustomerStats(customer.id, parsed.totalPrice);
+      await storage.incrementMonthlyOrders(storeId);
 
       await storage.createIntegrationLog({
         storeId, integrationId: integration?.id || null, provider,
@@ -489,6 +509,253 @@ export async function registerRoutes(
       console.error('Shopify webhook error:', err);
       res.status(500).json({ message: 'Webhook processing failed' });
     }
+  });
+
+  // ============================================================
+  // MANUAL ORDER CREATION
+  // ============================================================
+  app.post("/api/orders", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        customerName: z.string().min(1),
+        customerPhone: z.string().min(1),
+        customerAddress: z.string().optional().default(''),
+        customerCity: z.string().optional().default(''),
+        items: z.array(z.object({
+          productId: z.number(),
+          quantity: z.number().min(1),
+          price: z.number().min(0),
+        })).min(1),
+        shippingCost: z.number().optional().default(0),
+        comment: z.string().optional().default(''),
+      });
+      const data = schema.parse(req.body);
+      const storeId = req.user!.storeId!;
+
+      const limitCheck = await storage.checkOrderLimit(storeId);
+      if (!limitCheck.allowed) {
+        return res.status(403).json({
+          message: `Limite de commandes atteinte (${limitCheck.current}/${limitCheck.limit}). Passez au plan Pro pour continuer.`,
+        });
+      }
+
+      let totalPrice = data.shippingCost;
+      let productCost = 0;
+      const orderItemsToCreate: { productId: number; quantity: number; price: number; orderId: number }[] = [];
+
+      for (const item of data.items) {
+        const product = await storage.getProduct(item.productId);
+        if (!product || product.storeId !== storeId) {
+          return res.status(400).json({ message: `Produit #${item.productId} introuvable` });
+        }
+        totalPrice += item.price * item.quantity;
+        productCost += product.costPrice * item.quantity;
+        orderItemsToCreate.push({ ...item, orderId: 0 });
+      }
+
+      const orderNumber = `MAN-${Date.now()}`;
+      const order = await storage.createOrder({
+        storeId,
+        orderNumber,
+        customerName: data.customerName,
+        customerPhone: data.customerPhone,
+        customerAddress: data.customerAddress,
+        customerCity: data.customerCity,
+        status: 'new',
+        totalPrice,
+        productCost,
+        shippingCost: data.shippingCost,
+        adSpend: 0,
+        source: 'manual',
+        comment: data.comment || null,
+      }, orderItemsToCreate);
+
+      const customer = await storage.getOrCreateCustomer(storeId, data.customerName, data.customerPhone, data.customerAddress, data.customerCity);
+      await storage.updateCustomerStats(customer.id, totalPrice);
+      await storage.incrementMonthlyOrders(storeId);
+
+      res.status(201).json(order);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // UPDATE ORDER FIELDS
+  // ============================================================
+  app.patch("/api/orders/:id", requireAuth, async (req, res) => {
+    try {
+      const orderId = Number(req.params.id);
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Commande non trouvée" });
+      if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+
+      const schema = z.object({
+        customerName: z.string().optional(),
+        customerPhone: z.string().optional(),
+        customerAddress: z.string().optional(),
+        customerCity: z.string().optional(),
+        shippingCost: z.number().optional(),
+        comment: z.string().nullable().optional(),
+        canOpen: z.number().optional(),
+        upSell: z.number().optional(),
+      });
+      const data = schema.parse(req.body);
+      const updated = await storage.updateOrder(orderId, data);
+      res.json(updated);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // PRODUCTS CRUD
+  // ============================================================
+  app.post("/api/products", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        name: z.string().min(1),
+        sku: z.string().min(1),
+        stock: z.number().min(0).default(0),
+        costPrice: z.number().min(0).default(0),
+        reference: z.string().optional(),
+      });
+      const data = schema.parse(req.body);
+      const storeId = req.user!.storeId!;
+      const product = await storage.createProduct({ ...data, storeId, reference: data.reference || null });
+      res.status(201).json(product);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  app.patch("/api/products/:id", requireAuth, async (req, res) => {
+    try {
+      const productId = Number(req.params.id);
+      const product = await storage.getProduct(productId);
+      if (!product) return res.status(404).json({ message: "Produit non trouvé" });
+      if (product.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+      const schema = z.object({
+        name: z.string().optional(),
+        sku: z.string().optional(),
+        stock: z.number().optional(),
+        costPrice: z.number().optional(),
+        reference: z.string().nullable().optional(),
+      });
+      const data = schema.parse(req.body);
+      const updated = await storage.updateProduct(productId, data);
+      res.json(updated);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  app.delete("/api/products/:id", requireAuth, async (req, res) => {
+    const productId = Number(req.params.id);
+    const product = await storage.getProduct(productId);
+    if (!product) return res.status(404).json({ message: "Produit non trouvé" });
+    if (product.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+    await storage.deleteProduct(productId);
+    res.json({ message: "Supprimé" });
+  });
+
+  // ============================================================
+  // CUSTOMERS (CRM)
+  // ============================================================
+  app.get("/api/customers", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    res.json(await storage.getCustomersByStore(storeId));
+  });
+
+  // ============================================================
+  // SUBSCRIPTION / BILLING
+  // ============================================================
+  app.get("/api/subscription", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    let sub = await storage.getSubscription(storeId);
+    if (!sub) {
+      sub = await storage.createSubscription({
+        storeId,
+        plan: 'starter',
+        monthlyLimit: 1500,
+        pricePerMonth: 20000,
+        currentMonthOrders: 0,
+        isActive: 1,
+      });
+    }
+    const limitCheck = await storage.checkOrderLimit(storeId);
+    res.json({ ...sub, ...limitCheck });
+  });
+
+  app.post("/api/subscription", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        plan: z.enum(['starter', 'pro']),
+      });
+      const { plan } = schema.parse(req.body);
+      const storeId = req.user!.storeId!;
+
+      const planConfig = plan === 'pro'
+        ? { plan: 'pro' as const, monthlyLimit: 99999, pricePerMonth: 40000 }
+        : { plan: 'starter' as const, monthlyLimit: 1500, pricePerMonth: 20000 };
+
+      let sub = await storage.getSubscription(storeId);
+      if (sub) {
+        sub = (await storage.updateSubscription(sub.id, planConfig))!;
+      } else {
+        sub = await storage.createSubscription({ storeId, ...planConfig, currentMonthOrders: 0, isActive: 1 });
+      }
+      res.json(sub);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // AGENT PERFORMANCE & DELETE
+  // ============================================================
+  app.get("/api/agents/performance", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    res.json(await storage.getAgentPerformance(storeId));
+  });
+
+  app.delete("/api/agents/:id", requireAdmin, async (req, res) => {
+    const agentId = Number(req.params.id);
+    const agent = await storage.getUserById(agentId);
+    if (!agent) return res.status(404).json({ message: "Agent non trouvé" });
+    if (agent.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+    if (agent.role === 'owner') return res.status(400).json({ message: "Impossible de supprimer le propriétaire" });
+    await storage.deleteUser(agentId);
+    res.json({ message: "Supprimé" });
+  });
+
+  // ============================================================
+  // SUPER ADMIN ROUTES
+  // ============================================================
+  const requireSuperAdmin: typeof requireAuth = (req, res, next) => {
+    if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+    if (!req.user!.isSuperAdmin) return res.status(403).json({ message: "Accès refusé" });
+    next();
+  };
+
+  app.get("/api/admin/stores", requireSuperAdmin, async (_req, res) => {
+    res.json(await storage.getAllStores());
+  });
+
+  app.get("/api/admin/stats", requireSuperAdmin, async (_req, res) => {
+    res.json(await storage.getGlobalStats());
+  });
+
+  app.patch("/api/admin/stores/:id/toggle", requireSuperAdmin, async (req, res) => {
+    const storeId = Number(req.params.id);
+    const { isActive } = z.object({ isActive: z.number() }).parse(req.body);
+    await storage.toggleStoreActive(storeId, isActive);
+    res.json({ message: "Mis à jour" });
   });
 
   // ============================================================

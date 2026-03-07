@@ -14,71 +14,101 @@ Garean is a SaaS Order Management System (OMS) for Moroccan e-commerce store own
 - Session-based auth using `express-session` + `connect-pg-simple`
 - Passport.js with local strategy (email/password)
 - Password hashing: Node.js `scrypt`
-- Two roles: `owner` (admin/store owner) and `agent` (confirmation staff)
-- Multi-tenancy: each signup creates a new store. All data filtered by `storeId`
+- Three roles: `owner` (admin/store owner), `agent` (confirmation staff), `superadmin` (isSuperAdmin flag)
+- Multi-tenancy: each signup creates a new store + starter subscription. All data filtered by `storeId`
 
 ## Database Tables
 - `stores` - Multi-tenant stores
-- `users` - Auth users with roles (owner/agent), password, payment config
+- `users` - Auth users with roles (owner/agent), isSuperAdmin flag, password, payment config
 - `products` - Store products with stock tracking
-- `orders` - Orders with status workflow, costs, source tracking, shipping info (trackNumber, labelLink, shippingProvider)
+- `orders` - Orders with status workflow, costs, source tracking, shipping info
 - `order_items` - Order line items linked to products
+- `customers` - Auto-populated CRM from orders (name, phone, orderCount, totalSpent)
+- `subscriptions` - Plan management (starter/pro, monthlyLimit, currentMonthOrders)
 - `ad_spend_tracking` - Ad spend per product per day
 - `store_integrations` - Integration credentials (provider, type, JSON credentials, isActive)
-- `integration_logs` - Log entries for all integration activities (webhooks, syncs, shipping)
+- `integration_logs` - Log entries for all integration activities
 - `sessions` - Express session storage
 
 ## Key Features
-1. **Auth**: Signup/Login with multi-tenancy
-2. **Order Management**: CRUD with status workflow (new -> confirmed -> in_progress -> delivered)
+1. **Auth**: Signup/Login with multi-tenancy, auto-creates starter subscription
+2. **Order Management**: Manual order creation + webhook import with status workflow
 3. **Stock Logic**: Auto-decrease stock when order confirmed, restore when un-confirmed
-4. **Agent Management**: Admin creates agents, agents see only assigned orders
-5. **Store Integrations**: Connect Shopify, YouCan (webhooks), WooCommerce (REST API polling every 10 min), Google Sheets, LightFunnels, Magento
-6. **Unified Webhook**: POST /api/integrations/webhook/:provider?store_id=X — verifies HMAC for Shopify/YouCan, maps payload to orders, logs success/fail
-7. **Shipping Integrations**: Connect Moroccan carriers (Cathedis, Digylog, Onessta, etc.) with API keys
-8. **Send to Delivery**: Button in order modal sends to carrier API, saves tracking number + label link
-9. **Integration Logs**: Full audit trail of all webhook/sync/shipping attempts with success/fail status
-10. **WooCommerce Background Sync**: server/jobs/woocommerce-sync.ts polls every 10 minutes
-11. **Ad Spend Tracking**: Save spend per product per day
-12. **Dashboard**: Real-time stats from database
-13. **Profitability**: Revenue/cost/profit breakdown per order
+4. **Agent Management**: Create/delete agents, real performance tracking (confirmation/delivery rates)
+5. **Client List (CRM)**: Auto-populated from orders, searchable customer table
+6. **Subscription/Billing**: Starter (200 DH/1500 orders) and Pro (400 DH/unlimited) plans with enforcement
+7. **Super Admin Panel**: Global stats, all stores list, toggle store activation
+8. **Store Integrations**: Shopify, YouCan, WooCommerce, Google Sheets, LightFunnels, Magento
+9. **Shipping Integrations**: Moroccan carriers (Cathedis, Digylog, Onessta, etc.)
+10. **Send to Delivery**: Ship button in order modal with tracking
+11. **Integration Logs**: Full audit trail
+12. **WooCommerce Background Sync**: Polls every 10 minutes
+13. **Inventory**: Full CRUD for products (create/edit/delete)
+14. **Dashboard**: Real-time stats
+15. **Profitability**: Revenue/cost/profit breakdown with ad spend tracking
 
-## API Routes (all require auth except webhook)
-- `POST /api/auth/signup` - Create store + admin
+## API Routes
+### Auth
+- `POST /api/auth/signup` - Create store + admin + starter subscription
 - `POST /api/auth/login` - Login
 - `POST /api/auth/logout` - Logout
-- `GET /api/user` - Current user
-- `GET /api/stats` - Dashboard stats
-- `GET /api/orders?status=X` - List orders (filtered by store)
+- `GET /api/user` - Current user (includes isSuperAdmin)
+
+### Orders
+- `GET /api/orders?status=X` - List orders
+- `POST /api/orders` - Create manual order (checks subscription limit, auto-creates customer)
+- `GET /api/orders/:id` - Get order details
+- `PATCH /api/orders/:id` - Update order fields
 - `PATCH /api/orders/:id/status` - Update order status
 - `PATCH /api/orders/:id/assign` - Assign agent
-- `POST /api/orders/:id/ship` - Send order to shipping carrier
+- `POST /api/orders/:id/ship` - Send to delivery carrier
+
+### Products
 - `GET /api/products` - List products
+- `POST /api/products` - Create product
+- `PATCH /api/products/:id` - Update product
+- `DELETE /api/products/:id` - Delete product
+
+### Team
 - `GET /api/agents` - List team members
-- `POST /api/agents` - Create agent (admin only)
-- `GET /api/ad-spend` - List ad spend entries
-- `POST /api/ad-spend` - Save ad spend entry
-- `GET /api/integrations?type=X` - List store integrations
-- `POST /api/integrations` - Connect integration (create/update)
-- `PATCH /api/integrations/:id` - Update integration credentials
-- `DELETE /api/integrations/:id` - Disconnect integration
-- `GET /api/integration-logs` - Get integration logs
+- `POST /api/agents` - Create agent
+- `DELETE /api/agents/:id` - Delete agent
+- `GET /api/agents/performance` - Agent performance stats
+
+### CRM & Billing
+- `GET /api/customers` - List customers
+- `GET /api/subscription` - Get subscription + usage
+- `POST /api/subscription` - Choose/switch plan
+
+### Integrations
+- `GET /api/integrations?type=X` - List integrations
+- `POST /api/integrations` - Connect integration
+- `PATCH /api/integrations/:id` - Update credentials
+- `DELETE /api/integrations/:id` - Disconnect
+- `GET /api/integration-logs` - Integration logs
 - `POST /api/integrations/webhook/:provider?store_id=X` - Unified webhook (no auth)
-- `POST /api/webhooks/shopify?store_id=X` - Legacy Shopify webhook (no auth)
+
+### Super Admin
+- `GET /api/admin/stores` - List all stores
+- `GET /api/admin/stats` - Global SaaS stats
+- `PATCH /api/admin/stores/:id/toggle` - Activate/deactivate store
 
 ## Frontend Pages
-- `/` - Auth page (login/signup) when not logged in
-- `/` - Dashboard (when logged in)
-- `/orders` - Orders list (new by default)
-- `/orders/:filter` - Filtered orders (confirmation, annules, suivies, livrees)
-- `/inventory` - Stock management
-- `/team` - Team management with "Ajouter un membre" modal
+- `/` - Auth page or Dashboard
+- `/orders` - Orders list
+- `/orders/new` - New order form
+- `/orders/:filter` - Filtered orders
+- `/inventory` - Stock management (CRUD)
+- `/team` - Team with performance tracking
+- `/clients` - Customer CRM list
 - `/magasins` - Store management
+- `/billing` - Subscription & plan management
 - `/invoices` - Invoices
-- `/profitability` - Advanced profitability with ad spend tracking
-- `/integrations` - Store integrations (connect Shopify, WooCommerce, YouCan, etc.)
-- `/integrations/shipping` - Shipping provider integrations (connect Moroccan carriers)
-- `/integrations/logs` - Integration activity logs
+- `/profitability` - Profitability with ad spend
+- `/integrations` - Store integrations
+- `/integrations/shipping` - Shipping carriers
+- `/integrations/logs` - Integration logs
+- `/admin` - Super admin panel (conditional)
 
 ## Environment
 - `DATABASE_URL` - PostgreSQL connection string

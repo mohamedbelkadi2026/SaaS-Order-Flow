@@ -114,6 +114,15 @@ export function setupAuth(app: Express) {
         storeId: store.id,
       });
 
+      await storage.createSubscription({
+        storeId: store.id,
+        plan: 'starter',
+        monthlyLimit: 1500,
+        pricePerMonth: 20000,
+        currentMonthOrders: 0,
+        isActive: 1,
+      });
+
       req.login(user, (err) => {
         if (err) return next(err);
         const { password: _, ...safeUser } = user;
@@ -155,8 +164,9 @@ export function setupAuth(app: Express) {
 }
 
 export function requireAuth(req: any, res: any, next: any) {
-  if (req.isAuthenticated()) return next();
-  return res.status(401).json({ message: "Non authentifié" });
+  if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+  if (req.user.isActive === 0) return res.status(403).json({ message: "Compte désactivé. Contactez l'administrateur." });
+  return next();
 }
 
 export function requireAdmin(req: any, res: any, next: any) {

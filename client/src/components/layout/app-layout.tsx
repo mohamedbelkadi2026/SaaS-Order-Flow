@@ -17,7 +17,11 @@ import {
   Store,
   LogOut,
   UserCircle,
-  ClipboardList
+  ClipboardList,
+  CreditCard,
+  Shield,
+  PlusCircle,
+  Contact
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -29,15 +33,15 @@ import { useAuth } from "@/hooks/use-auth";
 const ADMIN_NAV = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Mes Commandes", href: "/orders", icon: ShoppingCart, hasSubmenu: true },
-  { name: "Commandes (Toutes)", href: "/orders", icon: ClipboardList },
-  { name: "Nouvelle commande", href: "/orders", icon: ShoppingCart },
+  { name: "Nouvelle commande", href: "/orders/new", icon: PlusCircle },
   { name: "Stock", href: "/inventory", icon: Package },
   { name: "Magasins", href: "/magasins", icon: Store },
-  { name: "List Client", href: "/orders", icon: UserCircle },
-  { name: "Gestion de l'Équipe", href: "/team", icon: Users },
+  { name: "Liste Clients", href: "/clients", icon: Contact },
+  { name: "Gestion de l'\u00c9quipe", href: "/team", icon: Users },
   { name: "Factures", href: "/invoices", icon: FileText },
-  { name: "Advanced Profitability", href: "/profitability", icon: Calculator },
-  { name: "Integration", href: "/integrations", icon: Plug, hasSubmenu: true },
+  { name: "Facturation", href: "/billing", icon: CreditCard },
+  { name: "Rentabilit\u00e9", href: "/profitability", icon: Calculator },
+  { name: "Int\u00e9gration", href: "/integrations", icon: Plug, hasSubmenu: true },
 ];
 
 const ORDER_SUB_ITEMS = [
@@ -64,7 +68,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     else document.documentElement.classList.remove("dark");
   }, [isDark]);
 
-  const navItems = ADMIN_NAV;
+  const navItems = user?.isSuperAdmin
+    ? [...ADMIN_NAV, { name: "Super Admin", href: "/admin", icon: Shield }]
+    : ADMIN_NAV;
 
   const SidebarContent = () => (
     <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">
@@ -82,10 +88,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
         {navItems.map((item) => {
           const isActive = location === item.href || 
-            (item.name === "Integration" && location.startsWith("/integrations")) ||
+            (item.name === "Int\u00e9gration" && location.startsWith("/integrations")) ||
             (item.name === "Mes Commandes" && location.startsWith("/orders"));
           const isOrdersMenu = item.name === "Mes Commandes";
-          const isIntegrationMenu = item.name === "Integration";
+          const isIntegrationMenu = item.name === "Int\u00e9gration";
 
           return (
             <div key={item.name} className="space-y-0.5">
@@ -120,7 +126,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                   {INTEGRATION_SUB_ITEMS.map((sub) => (
                     <Link key={sub.name} href={sub.href} className={cn(
                       "block px-3 py-1.5 text-xs rounded-lg transition-colors",
-                      location === sub.href || (sub.name === "Stores" && location === "/integrations")
+                      location === sub.href || (sub.name === "Boutiques" && location === "/integrations")
                         ? "text-primary font-medium" 
                         : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
                     )}>

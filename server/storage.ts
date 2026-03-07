@@ -1,12 +1,14 @@
 import { db } from "./db";
 import { 
   users, stores, products, orders, orderItems, adSpendTracking, storeIntegrations, integrationLogs,
+  subscriptions, customers,
   type User, type Store, type Product, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend,
-  type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog
+  type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog,
+  type Subscription, type InsertSubscription, type Customer, type InsertCustomer
 } from "@shared/schema";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, and, sql, count } from "drizzle-orm";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -45,6 +47,27 @@ export interface IStorage {
 
   updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined>;
   getOrderByNumber(storeId: number, orderNumber: string): Promise<Order | undefined>;
+  updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
+  updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
+  deleteProduct(id: number): Promise<void>;
+  deleteUser(id: number): Promise<void>;
+
+  getCustomersByStore(storeId: number): Promise<Customer[]>;
+  getOrCreateCustomer(storeId: number, name: string, phone: string, address?: string | null, city?: string | null): Promise<Customer>;
+  updateCustomerStats(customerId: number, orderTotal: number): Promise<void>;
+
+  getSubscription(storeId: number): Promise<Subscription | undefined>;
+  createSubscription(data: InsertSubscription): Promise<Subscription>;
+  updateSubscription(id: number, data: Partial<InsertSubscription>): Promise<Subscription | undefined>;
+  incrementMonthlyOrders(storeId: number): Promise<void>;
+  resetMonthlyOrders(storeId: number): Promise<void>;
+  checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string }>;
+
+  getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
+  
+  getAllStores(): Promise<(Store & { ownerEmail?: string | null; subscription?: Subscription | null })[]>;
+  getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number }>;
+  toggleStoreActive(storeId: number, isActive: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -309,6 +332,147 @@ export class DatabaseStorage implements IStorage {
     const [order] = await db.select().from(orders)
       .where(and(eq(orders.storeId, storeId), eq(orders.orderNumber, orderNumber)));
     return order;
+  }
+
+  async updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined> {
+    const [updated] = await db.update(orders).set(data).where(eq(orders.id, id)).returning();
+    return updated;
+  }
+
+  async updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined> {
+    const [updated] = await db.update(products).set(data).where(eq(products.id, id)).returning();
+    return updated;
+  }
+
+  async deleteProduct(id: number): Promise<void> {
+    await db.delete(products).where(eq(products.id, id));
+  }
+
+  async deleteUser(id: number): Promise<void> {
+    await db.update(orders).set({ assignedToId: null }).where(eq(orders.assignedToId, id));
+    await db.delete(users).where(eq(users.id, id));
+  }
+
+  async getCustomersByStore(storeId: number): Promise<Customer[]> {
+    return await db.select().from(customers)
+      .where(eq(customers.storeId, storeId))
+      .orderBy(desc(customers.createdAt));
+  }
+
+  async getOrCreateCustomer(storeId: number, name: string, phone: string, address?: string | null, city?: string | null): Promise<Customer> {
+    const [existing] = await db.select().from(customers)
+      .where(and(eq(customers.storeId, storeId), eq(customers.phone, phone)));
+    if (existing) return existing;
+
+    const [created] = await db.insert(customers).values({
+      storeId, name, phone, address: address || null, city: city || null,
+      orderCount: 0, totalSpent: 0,
+    }).returning();
+    return created;
+  }
+
+  async updateCustomerStats(customerId: number, orderTotal: number): Promise<void> {
+    await db.update(customers).set({
+      orderCount: sql`${customers.orderCount} + 1`,
+      totalSpent: sql`${customers.totalSpent} + ${orderTotal}`,
+    }).where(eq(customers.id, customerId));
+  }
+
+  async getSubscription(storeId: number): Promise<Subscription | undefined> {
+    const [sub] = await db.select().from(subscriptions)
+      .where(eq(subscriptions.storeId, storeId));
+    return sub;
+  }
+
+  async createSubscription(data: InsertSubscription): Promise<Subscription> {
+    const [created] = await db.insert(subscriptions).values(data).returning();
+    return created;
+  }
+
+  async updateSubscription(id: number, data: Partial<InsertSubscription>): Promise<Subscription | undefined> {
+    const [updated] = await db.update(subscriptions).set(data).where(eq(subscriptions.id, id)).returning();
+    return updated;
+  }
+
+  async incrementMonthlyOrders(storeId: number): Promise<void> {
+    await db.update(subscriptions).set({
+      currentMonthOrders: sql`${subscriptions.currentMonthOrders} + 1`,
+    }).where(eq(subscriptions.storeId, storeId));
+  }
+
+  async resetMonthlyOrders(storeId: number): Promise<void> {
+    await db.update(subscriptions).set({
+      currentMonthOrders: 0,
+      billingCycleStart: new Date(),
+    }).where(eq(subscriptions.storeId, storeId));
+  }
+
+  async checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string }> {
+    const sub = await this.getSubscription(storeId);
+    if (!sub) {
+      return { allowed: true, current: 0, limit: 1500, plan: 'starter' };
+    }
+    const now = new Date();
+    const cycleStart = sub.billingCycleStart || sub.createdAt || now;
+    const monthsSinceCycle = (now.getFullYear() - cycleStart.getFullYear()) * 12 + (now.getMonth() - cycleStart.getMonth());
+    if (monthsSinceCycle >= 1) {
+      await this.resetMonthlyOrders(storeId);
+      return { allowed: true, current: 0, limit: sub.monthlyLimit, plan: sub.plan };
+    }
+    const allowed = sub.plan === 'pro' || sub.currentMonthOrders < sub.monthlyLimit;
+    return { allowed, current: sub.currentMonthOrders, limit: sub.monthlyLimit, plan: sub.plan };
+  }
+
+  async getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
+    const result = await db.select({
+      agentId: orders.assignedToId,
+      total: count(),
+      confirmed: sql<number>`count(*) filter (where ${orders.status} = 'confirmed')`,
+      delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
+      cancelled: sql<number>`count(*) filter (where ${orders.status} = 'cancelled')`,
+    }).from(orders)
+      .where(and(eq(orders.storeId, storeId), sql`${orders.assignedToId} IS NOT NULL`))
+      .groupBy(orders.assignedToId);
+
+    return result.map(r => ({
+      agentId: r.agentId!,
+      total: Number(r.total),
+      confirmed: Number(r.confirmed),
+      delivered: Number(r.delivered),
+      cancelled: Number(r.cancelled),
+    }));
+  }
+
+  async getAllStores(): Promise<(Store & { ownerEmail?: string | null; subscription?: Subscription | null })[]> {
+    const allStores = await db.select().from(stores).orderBy(desc(stores.createdAt));
+    const result = [];
+    for (const store of allStores) {
+      const [owner] = await db.select().from(users)
+        .where(and(eq(users.storeId, store.id), eq(users.role, 'owner')));
+      const [sub] = await db.select().from(subscriptions)
+        .where(eq(subscriptions.storeId, store.id));
+      result.push({
+        ...store,
+        ownerEmail: owner?.email || null,
+        subscription: sub || null,
+      });
+    }
+    return result;
+  }
+
+  async getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number }> {
+    const [storeCount] = await db.select({ count: count() }).from(stores);
+    const allSubs = await db.select().from(subscriptions).where(eq(subscriptions.isActive, 1));
+    const totalRevenue = allSubs.reduce((sum, s) => sum + s.pricePerMonth, 0);
+    return {
+      totalStores: Number(storeCount.count),
+      activeStores: allSubs.length,
+      totalRevenue,
+    };
+  }
+
+  async toggleStoreActive(storeId: number, isActive: number): Promise<void> {
+    await db.update(users).set({ isActive }).where(eq(users.storeId, storeId));
   }
 }
 

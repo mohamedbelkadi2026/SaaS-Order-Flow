@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder } from "@/hooks/use-store-data";
+import { useOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -7,8 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Search, Filter, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2 } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Search, Filter, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 
@@ -38,11 +38,54 @@ export default function Orders() {
   const updateStatus = useUpdateOrderStatus();
   const assignAgent = useAssignAgent();
   const shipOrder = useShipOrder();
+  const updateOrder = useUpdateOrder();
   const { toast } = useToast();
   
   const [search, setSearch] = useState("");
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [shippingProvider, setShippingProvider] = useState<string>("");
+  const [editFields, setEditFields] = useState<Record<string, string>>({});
+
+  const openOrder = (order: any) => {
+    setSelectedOrder(order);
+    setEditFields({
+      customerName: order.customerName || "",
+      customerPhone: order.customerPhone || "",
+      customerAddress: order.customerAddress || "",
+      customerCity: order.customerCity || "",
+      comment: order.comment || "",
+      shippingCost: ((order.shippingCost || 0) / 100).toFixed(2),
+    });
+  };
+
+  const hasEdits = selectedOrder && (
+    editFields.customerName !== (selectedOrder.customerName || "") ||
+    editFields.customerPhone !== (selectedOrder.customerPhone || "") ||
+    editFields.customerAddress !== (selectedOrder.customerAddress || "") ||
+    editFields.customerCity !== (selectedOrder.customerCity || "") ||
+    editFields.comment !== (selectedOrder.comment || "") ||
+    editFields.shippingCost !== ((selectedOrder.shippingCost || 0) / 100).toFixed(2)
+  );
+
+  const handleSaveEdits = () => {
+    if (!selectedOrder || !hasEdits) return;
+    const data: any = {};
+    if (editFields.customerName !== (selectedOrder.customerName || "")) data.customerName = editFields.customerName;
+    if (editFields.customerPhone !== (selectedOrder.customerPhone || "")) data.customerPhone = editFields.customerPhone;
+    if (editFields.customerAddress !== (selectedOrder.customerAddress || "")) data.customerAddress = editFields.customerAddress;
+    if (editFields.customerCity !== (selectedOrder.customerCity || "")) data.customerCity = editFields.customerCity;
+    if (editFields.comment !== (selectedOrder.comment || "")) data.comment = editFields.comment;
+    const newShipping = Math.round(parseFloat(editFields.shippingCost || "0") * 100);
+    if (newShipping !== (selectedOrder.shippingCost || 0)) data.shippingCost = newShipping;
+
+    updateOrder.mutate({ id: selectedOrder.id, ...data }, {
+      onSuccess: (updated: any) => {
+        toast({ title: "Commande mise à jour" });
+        setSelectedOrder({ ...selectedOrder, ...data, ...(data.shippingCost !== undefined ? { shippingCost: data.shippingCost } : {}) });
+      },
+      onError: () => toast({ title: "Erreur", description: "Impossible de sauvegarder", variant: "destructive" }),
+    });
+  };
 
   const filteredOrders = orders?.filter((o: any) => 
     o.orderNumber?.toLowerCase().includes(search.toLowerCase()) ||
@@ -95,8 +138,8 @@ export default function Orders() {
                 <TableHead className="font-semibold">Destinataire</TableHead>
                 <TableHead className="font-semibold">Téléphone</TableHead>
                 <TableHead className="font-semibold">Ville</TableHead>
-                <TableHead className="font-semibold">Boutique</TableHead>
-                <TableHead className="font-semibold">Dernière action</TableHead>
+                <TableHead className="font-semibold">Source</TableHead>
+                <TableHead className="font-semibold">Date</TableHead>
                 <TableHead className="font-semibold">Status</TableHead>
                 <TableHead className="font-semibold">Prix</TableHead>
                 <TableHead className="font-semibold">Adresse</TableHead>
@@ -122,19 +165,19 @@ export default function Orders() {
                   <TableRow 
                     key={order.id} 
                     className="hover:bg-muted/20 transition-colors group cursor-pointer text-xs" 
-                    onClick={() => setSelectedOrder(order)}
+                    onClick={() => openOrder(order)}
                     data-testid={`row-order-${order.id}`}
                   >
                     <TableCell className="font-medium whitespace-nowrap">N/D</TableCell>
                     <TableCell className="whitespace-nowrap font-medium">{order.customerName}</TableCell>
                     <TableCell className="whitespace-nowrap">{order.customerPhone}</TableCell>
                     <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>
-                    <TableCell className="whitespace-nowrap text-muted-foreground">{order.source === 'shopify' ? 'Shopify' : 'promomarkett'}</TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground capitalize">{order.source || 'manual'}</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground">
                       {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
                     </TableCell>
                     <TableCell><StatusBadge status={order.status} /></TableCell>
-                    <TableCell className="font-semibold">{(order.totalPrice / 100).toFixed(2)}</TableCell>
+                    <TableCell className="font-semibold">{formatCurrency(order.totalPrice)}</TableCell>
                     <TableCell className="max-w-[120px] truncate">{order.customerAddress || "-"}</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground text-[10px]">
                       qty: {order.items?.[0]?.quantity || 1} #{order.orderNumber}
@@ -147,37 +190,57 @@ export default function Orders() {
         </div>
       </div>
 
-      <Dialog open={!!selectedOrder} onOpenChange={(open) => !open && setSelectedOrder(null)}>
+      <Dialog open={!!selectedOrder} onOpenChange={(open) => { if (!open) setSelectedOrder(null); }}>
         {selectedOrder && (
           <DialogContent className="sm:max-w-3xl rounded-2xl overflow-hidden p-0 border-none shadow-2xl">
-            <div className="bg-white border-b p-6 flex justify-between items-center">
-              <h2 className="text-xl font-bold text-primary">Détails de la commande</h2>
+            <div className="bg-white dark:bg-card border-b p-6 flex justify-between items-center">
+              <DialogTitle className="text-xl font-bold text-primary">Détails de la commande</DialogTitle>
               <Button variant="ghost" size="icon" onClick={() => setSelectedOrder(null)}><XCircle className="w-6 h-6" /></Button>
             </div>
             
-            <div className="p-6 overflow-y-auto max-h-[80vh] bg-[#f8f9fc]">
+            <div className="p-6 overflow-y-auto max-h-[80vh] bg-[#f8f9fc] dark:bg-muted/10">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-4">
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Nom du client</label>
-                    <Input defaultValue={selectedOrder.customerName} className="bg-white" readOnly />
+                    <Input
+                      data-testid="input-edit-customer-name"
+                      value={editFields.customerName}
+                      onChange={e => setEditFields(f => ({ ...f, customerName: e.target.value }))}
+                      className="bg-white dark:bg-card"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Téléphone</label>
-                    <Input defaultValue={selectedOrder.customerPhone} className="bg-white" readOnly />
+                    <Input
+                      data-testid="input-edit-customer-phone"
+                      value={editFields.customerPhone}
+                      onChange={e => setEditFields(f => ({ ...f, customerPhone: e.target.value }))}
+                      className="bg-white dark:bg-card"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Adresse</label>
-                    <Input defaultValue={selectedOrder.customerAddress || ""} className="bg-white" readOnly />
+                    <Input
+                      data-testid="input-edit-customer-address"
+                      value={editFields.customerAddress}
+                      onChange={e => setEditFields(f => ({ ...f, customerAddress: e.target.value }))}
+                      className="bg-white dark:bg-card"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Ville</label>
-                    <Input defaultValue={selectedOrder.customerCity || ""} className="bg-white" readOnly />
+                    <Input
+                      data-testid="input-edit-customer-city"
+                      value={editFields.customerCity}
+                      onChange={e => setEditFields(f => ({ ...f, customerCity: e.target.value }))}
+                      className="bg-white dark:bg-card"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Statut</label>
                     <Select defaultValue={selectedOrder.status} onValueChange={(v) => handleStatusChange(selectedOrder.id, v)}>
-                      <SelectTrigger className="bg-white" data-testid="select-order-status">
+                      <SelectTrigger className="bg-white dark:bg-card" data-testid="select-order-status">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -196,7 +259,7 @@ export default function Orders() {
                       defaultValue={selectedOrder.assignedToId?.toString() || "unassigned"} 
                       onValueChange={(val) => assignAgent.mutate({ id: selectedOrder.id, agentId: val === "unassigned" ? null : parseInt(val) })}
                     >
-                      <SelectTrigger className="bg-white" data-testid="select-order-agent">
+                      <SelectTrigger className="bg-white dark:bg-card" data-testid="select-order-agent">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -231,21 +294,37 @@ export default function Orders() {
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-bold text-muted-foreground uppercase">Prix</label>
-                    <Input defaultValue={(selectedOrder.totalPrice / 100).toFixed(2)} className="bg-white" readOnly />
+                    <label className="text-xs font-bold text-muted-foreground uppercase">Prix Total</label>
+                    <Input value={formatCurrency(selectedOrder.totalPrice)} className="bg-white dark:bg-card" readOnly />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-muted-foreground uppercase">Frais de livraison (MAD)</label>
+                    <Input
+                      data-testid="input-edit-shipping-cost"
+                      type="number"
+                      step="0.01"
+                      value={editFields.shippingCost}
+                      onChange={e => setEditFields(f => ({ ...f, shippingCost: e.target.value }))}
+                      className="bg-white dark:bg-card"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Source</label>
-                    <Input defaultValue={selectedOrder.source || 'manual'} className="bg-white" readOnly />
+                    <Input defaultValue={selectedOrder.source || 'manual'} className="bg-white dark:bg-card" readOnly />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Commentaire</label>
-                    <Input defaultValue={selectedOrder.comment || ""} className="bg-white" readOnly />
+                    <Input
+                      data-testid="input-edit-comment"
+                      value={editFields.comment}
+                      onChange={e => setEditFields(f => ({ ...f, comment: e.target.value }))}
+                      className="bg-white dark:bg-card"
+                    />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-muted-foreground uppercase">Détails</label>
                     <textarea 
-                      className="w-full min-h-[80px] p-3 rounded-md border border-input bg-white text-sm"
+                      className="w-full min-h-[80px] p-3 rounded-md border border-input bg-white dark:bg-card text-sm"
                       readOnly
                       defaultValue={`quantity: ${selectedOrder.items?.[0]?.quantity || 1}\norder_number: ${selectedOrder.orderNumber}`}
                     />
@@ -253,11 +332,25 @@ export default function Orders() {
                 </div>
               </div>
 
+              {hasEdits && (
+                <div className="mt-4 flex justify-end">
+                  <Button
+                    data-testid="button-save-order-edits"
+                    onClick={handleSaveEdits}
+                    disabled={updateOrder.isPending}
+                    className="gap-2"
+                  >
+                    {updateOrder.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    Sauvegarder les modifications
+                  </Button>
+                </div>
+              )}
+
               <div className="mt-8">
                 <div className="flex items-center gap-2 text-primary font-bold mb-4">
                   <ShoppingBag className="w-5 h-5" /> Articles <span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs">{selectedOrder.items?.length || 0}</span>
                 </div>
-                <div className="bg-white rounded-xl border p-4 space-y-4">
+                <div className="bg-white dark:bg-card rounded-xl border p-4 space-y-4">
                   {selectedOrder.items?.map((item: any, idx: number) => (
                     <div key={idx} className="flex gap-4 items-center">
                       <Input value={item.product?.name || 'Produit'} className="flex-[2]" readOnly />
@@ -301,7 +394,7 @@ export default function Orders() {
                   </div>
                   <div className="flex gap-3">
                     <Select value={shippingProvider} onValueChange={setShippingProvider}>
-                      <SelectTrigger className="flex-1 bg-white" data-testid="select-shipping-provider">
+                      <SelectTrigger className="flex-1 bg-white dark:bg-card" data-testid="select-shipping-provider">
                         <SelectValue placeholder="Choisir un transporteur..." />
                       </SelectTrigger>
                       <SelectContent>

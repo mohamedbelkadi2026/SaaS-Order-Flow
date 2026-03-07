@@ -1,0 +1,22 @@
+"I need to transform the current static UI into a fully functional SaaS MVP. All the menu items (Team Management, Client List, Stores, My Orders, Stock, and New Order) must be functional with a database backend. I also need a Super Admin panel to manage the SaaS platform.
+1. Core Functionality Implementation:
+Gestion de l'Équipe: Implement a system to invite/add 'Agents'. Track their individual performance (Confirmation & Delivery rates).
+Stock / Inventory: Make it real. Adding a product must save it to the database. When an order status changes to 'Confirmed', the stock must automatically decrease.
+List Client: Create a table that automatically saves every unique customer from the 'Orders' table to build a CRM list.
+Nouvelle Commande: Make this form functional so Admins can manually add orders.
+Stores (Magasins): Allow users to create and manage multiple stores/boutiques under one account.
+2. Subscription & Pricing Logic (Billing System):
+Implement a Subscription Management system for users.
+Plan 1 (Starter): 200 DH/month - Limit: Up to 1500 orders/month.
+Plan 2 (Pro): 400 DH/month - Limit: Unlimited orders (or set at 10,000+).
+Logic: The system must count the orders created in the current month. If a user reaches their plan limit, disable the 'New Order' and Webhook functionality until they upgrade.
+Create a 'Billing' page where users can see their current usage and choose a plan.
+3. Super Admin Panel:
+Create a hidden route or a specific login for me (The SaaS Owner).
+I need to see: Total number of Stores (Users), Total Revenue from subscriptions, and the ability to manually activate/deactivate any store.
+4. Technical Requirements:
+Ensure all tables use PostgreSQL.
+Every database query must be filtered by store_id (Multi-tenancy).
+Use Server-side logic (Node.js) for all status updates and stock subtractions to prevent data errors.
+Bind all existing UI buttons from the screenshots to these real backend APIs.
+Goal: When I log in, I want to be able to add a product, receive an order from Shopify, assign it to an agent, and see my profit change—all while the system tracks my 1500 order limit."

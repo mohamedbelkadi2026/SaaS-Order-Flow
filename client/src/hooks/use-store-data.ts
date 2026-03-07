@@ -199,6 +199,189 @@ export function useIntegrationLogs(limit = 100) {
   });
 }
 
+export function useCreateOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      customerName: string;
+      customerPhone: string;
+      customerAddress?: string;
+      customerCity?: string;
+      items: { productId: number; quantity: number; price: number }[];
+      shippingCost?: number;
+      comment?: string;
+    }) => {
+      const res = await apiRequest("POST", "/api/orders", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
+    },
+  });
+}
+
+export function useUpdateOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...data }: { id: number; [key: string]: any }) => {
+      const res = await apiRequest("PATCH", `/api/orders/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+    },
+  });
+}
+
+export function useCreateProduct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { name: string; sku: string; stock?: number; costPrice?: number; reference?: string }) => {
+      const res = await apiRequest("POST", "/api/products", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    },
+  });
+}
+
+export function useUpdateProduct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...data }: { id: number; [key: string]: any }) => {
+      const res = await apiRequest("PATCH", `/api/products/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    },
+  });
+}
+
+export function useDeleteProduct() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/products/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    },
+  });
+}
+
+export function useCustomers() {
+  return useQuery({
+    queryKey: ["/api/customers"],
+    queryFn: async () => {
+      const res = await fetch("/api/customers", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch customers");
+      return res.json();
+    },
+  });
+}
+
+export function useSubscription() {
+  return useQuery({
+    queryKey: ["/api/subscription"],
+    queryFn: async () => {
+      const res = await fetch("/api/subscription", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch subscription");
+      return res.json();
+    },
+  });
+}
+
+export function useUpdateSubscription() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { plan: string }) => {
+      const res = await apiRequest("POST", "/api/subscription", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
+    },
+  });
+}
+
+export function useAgentPerformance() {
+  return useQuery({
+    queryKey: ["/api/agents/performance"],
+    queryFn: async () => {
+      const res = await fetch("/api/agents/performance", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch agent performance");
+      return res.json();
+    },
+  });
+}
+
+export function useDeleteAgent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/agents/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agents/performance"] });
+    },
+  });
+}
+
+export function useAdminStores() {
+  return useQuery({
+    queryKey: ["/api/admin/stores"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/stores", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch admin stores");
+      return res.json();
+    },
+  });
+}
+
+export function useAdminStats() {
+  return useQuery({
+    queryKey: ["/api/admin/stats"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/stats", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch admin stats");
+      return res.json();
+    },
+  });
+}
+
+export function useToggleStore() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ storeId, isActive }: { storeId: number; isActive: number }) => {
+      const res = await apiRequest("PATCH", `/api/admin/stores/${storeId}/toggle`, { isActive });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/stats"] });
+    },
+  });
+}
+
+export function useStore() {
+  return useQuery({
+    queryKey: ["/api/store"],
+    queryFn: async () => {
+      const res = await fetch("/api/store", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch store");
+      return res.json();
+    },
+  });
+}
+
 export function useShipOrder() {
   const queryClient = useQueryClient();
   return useMutation({
