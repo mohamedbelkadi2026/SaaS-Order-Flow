@@ -77,25 +77,71 @@ export async function registerRoutes(
     const ordersList = await storage.getOrdersByStore(storeId);
 
     let totalOrders = ordersList.length;
-    let newOrders = 0, confirmed = 0, inProgress = 0, cancelled = 0, delivered = 0, refused = 0;
+    let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
+    let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let revenue = 0, profit = 0;
 
     ordersList.forEach(o => {
-      if (o.status === 'new') newOrders++;
-      else if (o.status === 'confirmed') confirmed++;
+      if (o.status === 'nouveau') nouveau++;
+      else if (o.status === 'confirme') confirme++;
       else if (o.status === 'in_progress') inProgress++;
-      else if (o.status === 'cancelled') cancelled++;
       else if (o.status === 'delivered') delivered++;
       else if (o.status === 'refused') refused++;
+      else if (o.status === 'Injoignable') injoignable++;
+      else if (o.status === 'Annulé (fake)') annuleFake++;
+      else if (o.status === 'Annulé (faux numéro)') annuleFauxNumero++;
+      else if (o.status === 'Annulé (double)') annuleDouble++;
+      else if (o.status === 'boite vocale') boiteVocale++;
 
-      if (['confirmed', 'delivered'].includes(o.status)) {
+      if (['confirme', 'delivered'].includes(o.status)) {
         revenue += o.totalPrice;
-        profit += (o.totalPrice - o.productCost - o.shippingCost - o.adSpend);
+        profit += (o.totalPrice - o.productCost - 4000 - o.adSpend);
       }
     });
 
-    const confirmationRate = totalOrders > 0 ? Math.round((confirmed + delivered) / totalOrders * 100) : 0;
-    res.json({ totalOrders, newOrders, confirmed, inProgress, cancelled, delivered, refused, revenue, profit, confirmationRate });
+    const cancelled = annuleFake + annuleFauxNumero + annuleDouble;
+    const confirmationRate = totalOrders > 0 ? Math.round((confirme + delivered) / totalOrders * 100) : 0;
+    res.json({ totalOrders, nouveau, confirme, inProgress, cancelled, delivered, refused, injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale, revenue, profit, confirmationRate });
+  });
+
+  app.get("/api/stats/daily", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const ordersList = await storage.getOrdersByStore(storeId);
+    const dailyMap: Record<string, number> = {};
+    const now = new Date();
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      dailyMap[d.toISOString().slice(0, 10)] = 0;
+    }
+    ordersList.forEach(o => {
+      if (o.createdAt) {
+        const day = new Date(o.createdAt).toISOString().slice(0, 10);
+        if (dailyMap[day] !== undefined) dailyMap[day]++;
+      }
+    });
+    const daily = Object.entries(dailyMap).map(([date, count]) => ({ date, count }));
+    res.json(daily);
+  });
+
+  app.get("/api/stats/top-products", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const ordersList = await storage.getOrdersByStore(storeId);
+    const productMap: Record<number, { name: string; orders: number; quantity: number; revenue: number }> = {};
+    ordersList.forEach(o => {
+      if (['confirme', 'delivered'].includes(o.status) && o.items) {
+        o.items.forEach((item: any) => {
+          const pid = item.productId;
+          if (!productMap[pid]) productMap[pid] = { name: item.product?.name || `Produit #${pid}`, orders: 0, quantity: 0, revenue: 0 };
+          productMap[pid].orders++;
+          productMap[pid].quantity += item.quantity;
+          productMap[pid].revenue += item.price * item.quantity;
+        });
+      }
+    });
+    const sorted = Object.values(productMap).sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+    const maxRevenue = sorted[0]?.revenue || 1;
+    res.json(sorted.map(p => ({ ...p, share: Math.round((p.revenue / maxRevenue) * 100) })));
   });
 
   app.get("/api/store", requireAuth, async (req, res) => {
@@ -110,10 +156,19 @@ export async function registerRoutes(
 
     if (user.role === 'agent') {
       const ordersList = await storage.getOrdersByAgent(user.id);
-      res.json(status ? ordersList.filter(o => o.status === status) : ordersList);
+      if (status === 'annule_group') {
+        res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
+      } else {
+        res.json(status ? ordersList.filter(o => o.status === status) : ordersList);
+      }
     } else {
-      const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
-      res.json(ordersList);
+      if (status === 'annule_group') {
+        const ordersList = await storage.getOrdersByStore(user.storeId!);
+        res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
+      } else {
+        const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
+        res.json(ordersList);
+      }
     }
   });
 
@@ -434,7 +489,7 @@ export async function registerRoutes(
         customerPhone: parsed.customerPhone,
         customerAddress: parsed.customerAddress,
         customerCity: parsed.customerCity,
-        status: 'new',
+        status: 'nouveau',
         totalPrice: parsed.totalPrice,
         productCost,
         shippingCost: 0,
@@ -500,7 +555,7 @@ export async function registerRoutes(
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
-        customerCity: parsed.customerCity, status: 'new', totalPrice: parsed.totalPrice,
+        customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: 'shopify', comment: parsed.comment,
       }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
@@ -561,7 +616,7 @@ export async function registerRoutes(
         customerPhone: data.customerPhone,
         customerAddress: data.customerAddress,
         customerCity: data.customerCity,
-        status: 'new',
+        status: 'nouveau',
         totalPrice,
         productCost,
         shippingCost: data.shippingCost,

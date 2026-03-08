@@ -46,10 +46,13 @@ const ADMIN_NAV = [
 
 const ORDER_SUB_ITEMS = [
   { name: "Nouveaux", href: "/orders" },
-  { name: "Confirmation", href: "/orders/confirmation" },
-  { name: "Annules", href: "/orders/annules" },
-  { name: "Suivies", href: "/orders/suivies" },
+  { name: "Confirmés", href: "/orders/confirme" },
+  { name: "Injoignables", href: "/orders/injoignable" },
+  { name: "Annulés", href: "/orders/annules" },
+  { name: "Boite vocale", href: "/orders/boite-vocale" },
+  { name: "En cours", href: "/orders/en-cours" },
   { name: "Livrées", href: "/orders/livrees" },
+  { name: "Refusées", href: "/orders/refuses" },
 ];
 
 const INTEGRATION_SUB_ITEMS = [
@@ -76,9 +79,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">
       <div className="p-6 flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold text-xl shadow-lg shadow-primary/25">
-          G
+          T
         </div>
-        <span className="font-display font-bold text-xl text-sidebar-foreground">Garean</span>
+        <span className="font-display font-bold text-xl text-sidebar-foreground">TajerGrow</span>
       </div>
       
       <div className="px-4 pb-2">

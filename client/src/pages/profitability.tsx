@@ -22,14 +22,16 @@ export default function Profitability() {
   const validOrders = (selectedProduct === "all" 
     ? orders 
     : orders?.filter((o: any) => o.items?.some((i: any) => i.productId === parseInt(selectedProduct)))
-  )?.filter((o: any) => o.status === 'delivered' || o.status === 'confirmed') || [];
+  )?.filter((o: any) => o.status === 'delivered' || o.status === 'confirme') || [];
+
+  const FIXED_SHIPPING = 4000;
 
   const aggregate = validOrders.reduce((acc: any, order: any) => {
-    const profit = order.totalPrice - order.productCost - order.shippingCost - order.adSpend;
+    const profit = order.totalPrice - order.productCost - FIXED_SHIPPING - order.adSpend;
     return {
       revenue: acc.revenue + order.totalPrice,
       productCost: acc.productCost + order.productCost,
-      shippingCost: acc.shippingCost + order.shippingCost,
+      shippingCost: acc.shippingCost + FIXED_SHIPPING,
       adSpend: acc.adSpend + order.adSpend,
       netProfit: acc.netProfit + profit,
     };
@@ -175,7 +177,7 @@ export default function Profitability() {
                 <TableHead>Commande</TableHead>
                 <TableHead className="text-right">Revenu</TableHead>
                 <TableHead className="text-right text-destructive/80">Coût Produit</TableHead>
-                <TableHead className="text-right text-destructive/80">Livraison</TableHead>
+                <TableHead className="text-right text-destructive/80">Livraison (40 DH)</TableHead>
                 <TableHead className="text-right text-destructive/80">Dépense Pub</TableHead>
                 <TableHead className="text-right font-bold text-primary">Profit Net</TableHead>
               </TableRow>
@@ -187,13 +189,13 @@ export default function Profitability() {
                 <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">Aucune commande livrée ou confirmée.</TableCell></TableRow>
               ) : (
                 validOrders.map((order: any) => {
-                  const profit = order.totalPrice - order.productCost - order.shippingCost - order.adSpend;
+                  const profit = order.totalPrice - order.productCost - FIXED_SHIPPING - order.adSpend;
                   return (
                     <TableRow key={order.id}>
                       <TableCell className="font-medium">#{order.orderNumber}</TableCell>
                       <TableCell className="text-right">{formatCurrency(order.totalPrice)}</TableCell>
                       <TableCell className="text-right text-muted-foreground">-{formatCurrency(order.productCost)}</TableCell>
-                      <TableCell className="text-right text-muted-foreground">-{formatCurrency(order.shippingCost)}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">-{formatCurrency(FIXED_SHIPPING)}</TableCell>
                       <TableCell className="text-right text-muted-foreground">-{formatCurrency(order.adSpend)}</TableCell>
                       <TableCell className="text-right font-bold text-primary">{formatCurrency(profit)}</TableCell>
                     </TableRow>

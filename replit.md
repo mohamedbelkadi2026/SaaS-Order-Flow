@@ -1,7 +1,7 @@
-# Garean OMS - Order Management System
+# TajerGrow OMS - Order Management System
 
 ## Overview
-Garean is a SaaS Order Management System (OMS) for Moroccan e-commerce store owners. Built with React+Vite frontend, Node.js/Express backend, and PostgreSQL database.
+TajerGrow (formerly Garean) is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on Delivery) e-commerce market. Built with React+Vite frontend, Node.js/Express backend, and PostgreSQL database.
 
 ## Architecture
 - **Frontend**: React 18 + Vite + TailwindCSS + shadcn/ui + Recharts + wouter routing
@@ -16,6 +16,22 @@ Garean is a SaaS Order Management System (OMS) for Moroccan e-commerce store own
 - Password hashing: Node.js `scrypt`
 - Three roles: `owner` (admin/store owner), `agent` (confirmation staff), `superadmin` (isSuperAdmin flag)
 - Multi-tenancy: each signup creates a new store + starter subscription. All data filtered by `storeId`
+
+## Order Status System (7 COD Statuses)
+- `nouveau` (default) — New order
+- `confirme` — Confirmed by agent
+- `Injoignable` — Customer unreachable
+- `Annulé (fake)` — Cancelled as fake order
+- `Annulé (faux numéro)` — Cancelled due to wrong number
+- `Annulé (double)` — Cancelled as duplicate
+- `boite vocale` — Voicemail / no answer
+- Legacy delivery statuses: `in_progress`, `delivered`, `refused`
+
+Stock auto-decrements when status changes to `confirme`, restores when changed away from it.
+
+## Profitability Formula
+`Profit = Selling Price - Cost Price - 40 MAD (4000 cents fixed shipping) - Ad Spend`
+The 40 MAD fixed shipping cost is used in both backend stats and frontend profitability page.
 
 ## Database Tables
 - `stores` - Multi-tenant stores
@@ -32,20 +48,21 @@ Garean is a SaaS Order Management System (OMS) for Moroccan e-commerce store own
 
 ## Key Features
 1. **Auth**: Signup/Login with multi-tenancy, auto-creates starter subscription
-2. **Order Management**: Manual order creation + webhook import with status workflow
-3. **Stock Logic**: Auto-decrease stock when order confirmed, restore when un-confirmed
-4. **Agent Management**: Create/delete agents, real performance tracking (confirmation/delivery rates)
-5. **Client List (CRM)**: Auto-populated from orders, searchable customer table
-6. **Subscription/Billing**: Starter (200 DH/1500 orders) and Pro (400 DH/unlimited) plans with enforcement
-7. **Super Admin Panel**: Global stats, all stores list, toggle store activation
-8. **Store Integrations**: Shopify, YouCan, WooCommerce, Google Sheets, LightFunnels, Magento
-9. **Shipping Integrations**: Moroccan carriers (Cathedis, Digylog, Onessta, etc.)
-10. **Send to Delivery**: Ship button in order modal with tracking
-11. **Integration Logs**: Full audit trail
-12. **WooCommerce Background Sync**: Polls every 10 minutes
-13. **Inventory**: Full CRUD for products (create/edit/delete)
-14. **Dashboard**: Real-time stats
-15. **Profitability**: Revenue/cost/profit breakdown with ad spend tracking
+2. **Order Management**: Manual order creation + webhook import with 7-status COD workflow
+3. **Mobile Card View**: Touch-friendly order cards on mobile with Phone (tel:) and WhatsApp (wa.me) links per order
+4. **Stock Logic**: Auto-decrease stock when order set to 'confirme', restore when changed away
+5. **Agent Management**: Create/delete agents, real performance tracking (confirmation/delivery rates)
+6. **Client List (CRM)**: Auto-populated from orders, searchable customer table
+7. **Subscription/Billing**: Starter (200 DH/1500 orders) and Pro (400 DH/unlimited) plans with enforcement
+8. **Super Admin Panel**: Global stats, all stores list, toggle store activation
+9. **Store Integrations**: Shopify, YouCan, WooCommerce, Google Sheets, LightFunnels, Magento
+10. **Shipping Integrations**: Moroccan carriers (Cathedis, Digylog, Onessta, etc.)
+11. **Send to Delivery**: Ship button in order modal with tracking
+12. **Integration Logs**: Full audit trail
+13. **WooCommerce Background Sync**: Polls every 10 minutes
+14. **Inventory**: Full CRUD for products (create/edit/delete)
+15. **Enhanced Dashboard**: Line chart (30-day daily sales), pie charts (order/delivery statuses), team performance table, top products table
+16. **Profitability**: Revenue/cost/profit breakdown with 40 MAD fixed shipping and ad spend tracking
 
 ## API Routes
 ### Auth
@@ -55,13 +72,18 @@ Garean is a SaaS Order Management System (OMS) for Moroccan e-commerce store own
 - `GET /api/user` - Current user (includes isSuperAdmin)
 
 ### Orders
-- `GET /api/orders?status=X` - List orders
+- `GET /api/orders?status=X` - List orders (filter by status)
 - `POST /api/orders` - Create manual order (checks subscription limit, auto-creates customer)
 - `GET /api/orders/:id` - Get order details
 - `PATCH /api/orders/:id` - Update order fields
 - `PATCH /api/orders/:id/status` - Update order status
 - `PATCH /api/orders/:id/assign` - Assign agent
 - `POST /api/orders/:id/ship` - Send to delivery carrier
+
+### Stats
+- `GET /api/stats` - Dashboard stats (all status counts, revenue, profit)
+- `GET /api/stats/daily` - Daily order counts for last 30 days (line chart)
+- `GET /api/stats/top-products` - Top 10 products by revenue (from confirme/delivered orders)
 
 ### Products
 - `GET /api/products` - List products
@@ -95,20 +117,27 @@ Garean is a SaaS Order Management System (OMS) for Moroccan e-commerce store own
 
 ## Frontend Pages
 - `/` - Auth page or Dashboard
-- `/orders` - Orders list
+- `/orders` - Orders list (nouveau by default, mobile card view + desktop table)
 - `/orders/new` - New order form
-- `/orders/:filter` - Filtered orders
+- `/orders/:filter` - Filtered orders (confirme, injoignable, annules, boite-vocale, en-cours, livrees, refuses)
 - `/inventory` - Stock management (CRUD)
 - `/team` - Team with performance tracking
 - `/clients` - Customer CRM list
 - `/magasins` - Store management
 - `/billing` - Subscription & plan management
 - `/invoices` - Invoices
-- `/profitability` - Profitability with ad spend
+- `/profitability` - Profitability with ad spend and 40 MAD fixed shipping
 - `/integrations` - Store integrations
 - `/integrations/shipping` - Shipping carriers
 - `/integrations/logs` - Integration logs
 - `/admin` - Super admin panel (conditional)
+
+## Sidebar Navigation Sub-items
+### Orders submenu
+Nouveaux, Confirmés, Injoignables, Annulés, Boite vocale, En cours, Livrées, Refusées
+
+### Integration submenu
+Boutiques, Sociétés de Livraison, Journal
 
 ## Environment
 - `DATABASE_URL` - PostgreSQL connection string

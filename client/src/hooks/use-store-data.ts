@@ -371,6 +371,28 @@ export function useToggleStore() {
   });
 }
 
+export function useDailyStats() {
+  return useQuery({
+    queryKey: ["/api/stats/daily"],
+    queryFn: async () => {
+      const res = await fetch("/api/stats/daily", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch daily stats");
+      return res.json();
+    },
+  });
+}
+
+export function useTopProducts() {
+  return useQuery({
+    queryKey: ["/api/stats/top-products"],
+    queryFn: async () => {
+      const res = await fetch("/api/stats/top-products", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch top products");
+      return res.json();
+    },
+  });
+}
+
 export function useStore() {
   return useQuery({
     queryKey: ["/api/store"],

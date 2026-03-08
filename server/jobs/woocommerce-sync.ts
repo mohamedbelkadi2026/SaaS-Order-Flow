@@ -94,7 +94,7 @@ async function syncWooCommerceStore(integration: any) {
         customerPhone,
         customerAddress,
         customerCity,
-        status: 'new',
+        status: 'nouveau',
         totalPrice,
         productCost,
         shippingCost: 0,

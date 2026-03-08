@@ -206,14 +206,14 @@ export class DatabaseStorage implements IStorage {
       .where(eq(orders.id, id))
       .returning();
       
-    if (status === 'confirmed' && currentOrder.status !== 'confirmed') {
+    if (status === 'confirme' && currentOrder.status !== 'confirme') {
       const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
       for (const item of items) {
         await this.updateProductStock(item.productId, -item.quantity);
       }
     }
 
-    if (currentOrder.status === 'confirmed' && status !== 'confirmed') {
+    if (currentOrder.status === 'confirme' && status !== 'confirme') {
       const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
       for (const item of items) {
         await this.updateProductStock(item.productId, item.quantity);
@@ -427,9 +427,9 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select({
       agentId: orders.assignedToId,
       total: count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} = 'confirmed')`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} = 'confirme')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
-      cancelled: sql<number>`count(*) filter (where ${orders.status} = 'cancelled')`,
+      cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
     }).from(orders)
       .where(and(eq(orders.storeId, storeId), sql`${orders.assignedToId} IS NOT NULL`))
       .groupBy(orders.assignedToId);
