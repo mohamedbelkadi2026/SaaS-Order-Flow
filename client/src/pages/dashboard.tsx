@@ -161,15 +161,22 @@ export default function Dashboard() {
         )}
       </div>
 
-      <Card className="rounded-xl border-border/50 shadow-sm overflow-hidden" data-testid="card-filter-bar">
-        <CardContent className="p-3 sm:p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Filter className="w-4 h-4 text-primary shrink-0" />
-            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Filtres</span>
+      <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-filter-bar">
+        <CardContent className="p-2.5 md:p-4">
+          <div className="flex items-center justify-between mb-2 md:mb-3">
+            <div className="flex items-center gap-1.5">
+              <Filter className="w-3.5 h-3.5 text-primary shrink-0" />
+              <span className="text-[10px] md:text-xs font-bold text-muted-foreground uppercase tracking-wider">Filtres</span>
+            </div>
+            {hasActiveFilters && (
+              <button onClick={resetFilters} className="text-[10px] text-primary font-medium hover:underline md:hidden" data-testid="button-reset-filters-mobile">
+                Réinitialiser
+              </button>
+            )}
           </div>
-          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin" style={{ WebkitOverflowScrolling: 'touch' }}>
+          <div className="flex flex-col md:flex-row md:flex-wrap gap-1.5 md:gap-2">
             <Select value={filters.city} onValueChange={(v) => updateFilter('city', v)}>
-              <SelectTrigger className="min-w-[150px] h-9 text-xs shrink-0" data-testid="filter-city">
+              <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-city">
                 <SelectValue placeholder="Toutes les Villes" />
               </SelectTrigger>
               <SelectContent>
@@ -181,7 +188,7 @@ export default function Dashboard() {
             </Select>
 
             <Select value={filters.productId} onValueChange={(v) => updateFilter('productId', v)}>
-              <SelectTrigger className="min-w-[160px] h-9 text-xs shrink-0" data-testid="filter-product">
+              <SelectTrigger className="w-full md:w-auto md:min-w-[150px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-product">
                 <SelectValue placeholder="Tous les Produits" />
               </SelectTrigger>
               <SelectContent>
@@ -193,7 +200,7 @@ export default function Dashboard() {
             </Select>
 
             <Select value={filters.shippingProvider} onValueChange={(v) => updateFilter('shippingProvider', v)}>
-              <SelectTrigger className="min-w-[150px] h-9 text-xs shrink-0" data-testid="filter-shipper">
+              <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-shipper">
                 <SelectValue placeholder="Tous les Livreurs" />
               </SelectTrigger>
               <SelectContent>
@@ -205,7 +212,7 @@ export default function Dashboard() {
             </Select>
 
             <Select value={filters.agentId} onValueChange={(v) => updateFilter('agentId', v)}>
-              <SelectTrigger className="min-w-[150px] h-9 text-xs shrink-0" data-testid="filter-agent">
+              <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-agent">
                 <SelectValue placeholder="Tous les Agents" />
               </SelectTrigger>
               <SelectContent>
@@ -217,7 +224,7 @@ export default function Dashboard() {
             </Select>
 
             <Select value={filters.source} onValueChange={(v) => updateFilter('source', v)}>
-              <SelectTrigger className="min-w-[150px] h-9 text-xs shrink-0" data-testid="filter-source">
+              <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-source">
                 <SelectValue placeholder="Toutes les Sources" />
               </SelectTrigger>
               <SelectContent>
@@ -229,8 +236,8 @@ export default function Dashboard() {
             </Select>
 
             <Select value={filters.datePreset} onValueChange={handleDatePreset}>
-              <SelectTrigger className="min-w-[160px] h-9 text-xs shrink-0" data-testid="filter-date-preset">
-                <CalendarDays className="w-3.5 h-3.5 mr-1 shrink-0" />
+              <SelectTrigger className="w-full md:w-auto md:min-w-[150px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-preset">
+                <CalendarDays className="w-3 h-3 md:w-3.5 md:h-3.5 mr-1 shrink-0" />
                 <SelectValue placeholder="Période" />
               </SelectTrigger>
               <SelectContent>
@@ -244,22 +251,22 @@ export default function Dashboard() {
             </Select>
 
             {filters.datePreset === 'custom' && (
-              <>
+              <div className="flex gap-1.5 md:gap-2 w-full md:w-auto">
                 <Input
                   type="date"
                   value={filters.dateFrom}
                   onChange={(e) => updateFilter('dateFrom', e.target.value)}
-                  className="min-w-[140px] h-9 text-xs shrink-0"
+                  className="flex-1 md:w-[130px] md:flex-none h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60"
                   data-testid="filter-date-from"
                 />
                 <Input
                   type="date"
                   value={filters.dateTo}
                   onChange={(e) => updateFilter('dateTo', e.target.value)}
-                  className="min-w-[140px] h-9 text-xs shrink-0"
+                  className="flex-1 md:w-[130px] md:flex-none h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60"
                   data-testid="filter-date-to"
                 />
-              </>
+              </div>
             )}
           </div>
         </CardContent>
