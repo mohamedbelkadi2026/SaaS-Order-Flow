@@ -1,9 +1,9 @@
 import { db } from "./db";
 import { 
-  users, stores, products, orders, orderItems, adSpendTracking, storeIntegrations, integrationLogs,
+  users, stores, products, productVariants, orders, orderItems, adSpendTracking, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts,
-  type User, type Store, type Product, type Order, type OrderItem, type OrderWithDetails,
-  type InsertUser, type InsertStore, type InsertProduct, type InsertOrder, type InsertOrderItem,
+  type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
+  type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend,
   type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog,
   type Subscription, type InsertSubscription, type Customer, type InsertCustomer,
@@ -57,6 +57,10 @@ export interface IStorage {
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
+  getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]>;
+  createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
+  getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
+  getInventoryStats(storeId: number): Promise<any>;
   deleteUser(id: number): Promise<void>;
 
   getCustomersByStore(storeId: number): Promise<Customer[]>;
@@ -439,7 +443,129 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteProduct(id: number): Promise<void> {
+    await db.delete(productVariants).where(eq(productVariants.productId, id));
     await db.delete(products).where(eq(products.id, id));
+  }
+
+  async getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]> {
+    const allProducts = await db.select().from(products)
+      .where(eq(products.storeId, storeId))
+      .orderBy(desc(products.createdAt));
+    const result: ProductWithVariants[] = [];
+    for (const p of allProducts) {
+      const variants = await db.select().from(productVariants)
+        .where(eq(productVariants.productId, p.id));
+      result.push({ ...p, variants });
+    }
+    return result;
+  }
+
+  async createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants> {
+    const [newProduct] = await db.insert(products).values(product).returning();
+    const createdVariants: ProductVariant[] = [];
+    for (const v of variants) {
+      const [nv] = await db.insert(productVariants).values({ ...v, productId: newProduct.id, storeId: newProduct.storeId }).returning();
+      createdVariants.push(nv);
+    }
+    return { ...newProduct, variants: createdVariants };
+  }
+
+  async getVariantsByProduct(productId: number): Promise<ProductVariant[]> {
+    return await db.select().from(productVariants).where(eq(productVariants.productId, productId));
+  }
+
+  async getInventoryStats(storeId: number): Promise<any> {
+    const allProducts = await db.select().from(products).where(eq(products.storeId, storeId));
+    const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+    
+    const totalProducts = allProducts.length;
+    const totalVariants = allVariants.length;
+    const totalQuantity = allProducts.reduce((s, p) => s + p.stock, 0) + allVariants.reduce((s, v) => s + v.stock, 0);
+    const getAggStock = (p: Product) => {
+      const pvs = allVariants.filter(v => v.productId === p.id);
+      return pvs.length > 0 ? pvs.reduce((s, v) => s + v.stock, 0) : p.stock;
+    };
+    const lowStock = allProducts.filter(p => { const s = getAggStock(p); return s > 0 && s < 10; }).length;
+    const outOfStock = allProducts.filter(p => getAggStock(p) === 0).length;
+    
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const newProducts = allProducts.filter(p => p.createdAt && new Date(p.createdAt) >= startOfMonth).length;
+
+    const productStats = [];
+    for (const p of allProducts) {
+      const variants = allVariants.filter(v => v.productId === p.id);
+      const totalStock = p.stock + variants.reduce((s, v) => s + v.stock, 0);
+      
+      const confirmedItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orderItems.productId, p.id),
+          eq(orders.storeId, storeId),
+          eq(orders.status, 'confirme')
+        ));
+      
+      const deliveredItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orderItems.productId, p.id),
+          eq(orders.storeId, storeId),
+          eq(orders.status, 'delivered')
+        ));
+
+      const totalOrderItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orderItems.productId, p.id),
+          eq(orders.storeId, storeId)
+        ));
+
+      const sortie = Number(confirmedItems[0]?.qty || 0) + Number(deliveredItems[0]?.qty || 0);
+      const totalOrdered = Number(totalOrderItems[0]?.qty || 0);
+      const available = totalStock;
+      const initialStock = available + sortie;
+      const confirmRate = totalOrdered > 0 ? Math.round(Number(confirmedItems[0]?.qty || 0) / totalOrdered * 100) : 0;
+      const deliverRate = totalOrdered > 0 ? Math.round(Number(deliveredItems[0]?.qty || 0) / totalOrdered * 100) : 0;
+
+      productStats.push({
+        id: p.id,
+        name: p.name,
+        sku: p.sku,
+        imageUrl: p.imageUrl,
+        costPrice: p.costPrice,
+        sellingPrice: p.sellingPrice,
+        description: p.description,
+        reference: p.reference,
+        hasVariants: p.hasVariants,
+        baseStock: p.stock,
+        stock: totalStock,
+        variantCount: variants.length || 1,
+        recu: initialStock,
+        sortie,
+        available,
+        confirmRate,
+        deliverRate,
+        totalOrdered,
+        totalConfirmed: Number(confirmedItems[0]?.qty || 0),
+        totalDelivered: Number(deliveredItems[0]?.qty || 0),
+        stockReel: available * p.costPrice,
+        stockTotal: available * p.sellingPrice,
+        storeName: '',
+      });
+    }
+
+    return {
+      totalProducts,
+      totalVariants,
+      totalQuantity,
+      lowStock,
+      outOfStock,
+      newProducts,
+      productStats,
+    };
   }
 
   async deleteUser(id: number): Promise<void> {

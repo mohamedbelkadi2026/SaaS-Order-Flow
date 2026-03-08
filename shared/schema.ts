@@ -35,7 +35,24 @@ export const products = pgTable("products", {
   sku: text("sku").notNull(),
   stock: integer("stock").notNull().default(0),
   costPrice: integer("cost_price").notNull().default(0),
+  sellingPrice: integer("selling_price").notNull().default(0),
+  description: text("description"),
+  imageUrl: text("image_url"),
   reference: text("reference"),
+  hasVariants: integer("has_variants").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const productVariants = pgTable("product_variants", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").references(() => products.id).notNull(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  name: text("name").notNull(),
+  sku: text("sku").notNull(),
+  costPrice: integer("cost_price").notNull().default(0),
+  sellingPrice: integer("selling_price").notNull().default(0),
+  stock: integer("stock").notNull().default(0),
+  imageUrl: text("image_url"),
 });
 
 export const orders = pgTable("orders", {
@@ -225,6 +242,17 @@ export const integrationLogsRelations = relations(integrationLogs, ({ one }) => 
   }),
 }));
 
+export const productVariantsRelations = relations(productVariants, ({ one }) => ({
+  product: one(products, {
+    fields: [productVariants.productId],
+    references: [products.id],
+  }),
+  store: one(stores, {
+    fields: [productVariants.storeId],
+    references: [stores.id],
+  }),
+}));
+
 export const agentProductsRelations = relations(agentProducts, ({ one }) => ({
   agent: one(users, {
     fields: [agentProducts.agentId],
@@ -242,7 +270,8 @@ export const agentProductsRelations = relations(agentProducts, ({ one }) => ({
 
 export const insertStoreSchema = createInsertSchema(stores).omit({ id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
-export const insertProductSchema = createInsertSchema(products).omit({ id: true });
+export const insertProductSchema = createInsertSchema(products).omit({ id: true, createdAt: true });
+export const insertProductVariantSchema = createInsertSchema(productVariants).omit({ id: true });
 export const insertOrderSchema = createInsertSchema(orders).omit({ id: true, createdAt: true });
 export const insertOrderItemSchema = createInsertSchema(orderItems).omit({ id: true });
 export const insertAdSpendSchema = createInsertSchema(adSpendTracking).omit({ id: true, createdAt: true });
@@ -276,6 +305,12 @@ export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
 
 export type AgentProduct = typeof agentProducts.$inferSelect;
 export type InsertAgentProduct = z.infer<typeof insertAgentProductSchema>;
+export type ProductVariant = typeof productVariants.$inferSelect;
+export type InsertProductVariant = z.infer<typeof insertProductVariantSchema>;
+
+export type ProductWithVariants = Product & {
+  variants: ProductVariant[];
+};
 
 export type OrderWithDetails = Order & {
   agent?: User | null;

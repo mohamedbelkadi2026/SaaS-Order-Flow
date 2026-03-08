@@ -924,21 +924,50 @@ export async function registerRoutes(
   // ============================================================
   app.post("/api/products", requireAuth, async (req, res) => {
     try {
+      const variantSchema = z.object({
+        name: z.string().min(1),
+        sku: z.string().min(1),
+        costPrice: z.number().min(0).default(0),
+        sellingPrice: z.number().min(0).default(0),
+        stock: z.number().min(0).default(0),
+        imageUrl: z.string().nullable().optional(),
+      });
       const schema = z.object({
         name: z.string().min(1),
         sku: z.string().min(1),
         stock: z.number().min(0).default(0),
         costPrice: z.number().min(0).default(0),
-        reference: z.string().optional(),
+        sellingPrice: z.number().min(0).default(0),
+        description: z.string().nullable().optional(),
+        imageUrl: z.string().nullable().optional(),
+        reference: z.string().nullable().optional(),
+        hasVariants: z.number().optional().default(0),
+        variants: z.array(variantSchema).optional(),
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
-      const product = await storage.createProduct({ ...data, storeId, reference: data.reference || null });
-      res.status(201).json(product);
+      const { variants, ...productData } = data;
+      
+      if (variants && variants.length > 0) {
+        const product = await storage.createProductWithVariants(
+          { ...productData, storeId, hasVariants: 1, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null },
+          variants.map(v => ({ ...v, productId: 0, storeId, imageUrl: v.imageUrl || null }))
+        );
+        res.status(201).json(product);
+      } else {
+        const product = await storage.createProduct({ ...productData, storeId, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null });
+        res.status(201).json(product);
+      }
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
     }
+  });
+
+  app.get("/api/products/inventory", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const stats = await storage.getInventoryStats(storeId);
+    res.json(stats);
   });
 
   app.patch("/api/products/:id", requireAuth, async (req, res) => {
@@ -952,6 +981,9 @@ export async function registerRoutes(
         sku: z.string().optional(),
         stock: z.number().optional(),
         costPrice: z.number().optional(),
+        sellingPrice: z.number().optional(),
+        description: z.string().nullable().optional(),
+        imageUrl: z.string().nullable().optional(),
         reference: z.string().nullable().optional(),
       });
       const data = schema.parse(req.body);

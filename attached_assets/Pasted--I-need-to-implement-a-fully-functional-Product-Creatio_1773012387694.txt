@@ -1,0 +1,33 @@
+"I need to implement a fully functional 'Product Creation' and 'Inventory Index' system for TajerGrow, matching the logic and UI shown in the uploaded screenshots.
+1. Page 1: Create New Product (Refer to Image 1)
+Main Form Fields:
+Choisir les magasins: Multi-select dropdown to link product to one or more boutiques.
+Nom Produit, Prix Achat, Prix Vente, and Description.
+Main Image Upload: Functional drag-and-drop or file selector.
+Multiple Variants Logic:
+Implement a Toggle Switch: 'This product has multiple variants'.
+If toggled ON, show a Dynamic Table to add variants.
+Variant Table Columns: Image (small upload), Variant Name (e.g., Color/Size), SKU (unique), Prix Achat, Prix Vente, and Quantity.
+Add a '+' button to add rows and a 'Trash' icon to delete rows.
+Action: Clicking 'Save Product' must create a record in the Products table and associated records in a Variants table in the PostgreSQL database.
+2. Page 2: Inventory Index (Refer to Image 2)
+Stats Overview Cards:
+Total Produits: Count of unique products.
+Stock Faible: Count of items below 10 units.
+Rupture: Count of items at 0 units.
+Total Quantity, Total Variants, and Nouveaux.
+Advanced Inventory Table:
+Product Column: Show thumbnail, name, and a 'In Stock/Out of Stock' status badge.
+Quantities: Show 'Reçu' (Initial Stock), 'Sortie' (Confirmed Orders), and 'Available' (Remaining).
+Taux %: Visual progress bars for Confirmation and Delivery rates per product.
+Financials:
+Stock Réel (DH): Calculated as (Available Quantity × Prix Achat).
+Stock Total (DH): Calculated as (Available Quantity × Prix Vente).
+Filters & Search: Inline search by 'Reference/SKU' and Date range filter.
+3. Backend & Logic Integration:
+Automated Stock Sync: When an order for a specific SKU is marked as 'confirme' in the 'Mes Commandes' page, the backend must automatically increment the 'Sortie' count and decrement the 'Available' count in the Inventory.
+Multi-tenancy: Ensure all stock data is isolated by store_id.
+4. Design Requirements:
+Use Tailwind CSS to match the clean white and blue theme.
+Ensure the table is responsive. On mobile, use a condensed view or horizontal scroll.
+Use Lucide Icons for 'Actions' (three dots menu) and 'Filter'."

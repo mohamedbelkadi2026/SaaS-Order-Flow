@@ -272,15 +272,27 @@ export function useUpdateOrder() {
   });
 }
 
+export function useInventoryStats() {
+  return useQuery({
+    queryKey: ["/api/products/inventory"],
+    queryFn: async () => {
+      const res = await fetch("/api/products/inventory", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch inventory stats");
+      return res.json();
+    },
+  });
+}
+
 export function useCreateProduct() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: { name: string; sku: string; stock?: number; costPrice?: number; reference?: string }) => {
+    mutationFn: async (data: any) => {
       const res = await apiRequest("POST", "/api/products", data);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
     },
   });
 }
@@ -294,6 +306,7 @@ export function useUpdateProduct() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
     },
   });
 }
@@ -307,6 +320,7 @@ export function useDeleteProduct() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/inventory"] });
     },
   });
 }

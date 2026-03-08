@@ -37,7 +37,8 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 ## Database Tables
 - `stores` - Multi-tenant stores with `ownerId` for ownership tracking
 - `users` - Auth users with roles (owner/agent), isSuperAdmin flag, password, payment config
-- `products` - Store products with stock tracking
+- `products` - Store products with stock tracking, sellingPrice, description, imageUrl, hasVariants, createdAt
+- `product_variants` - Product variants with name, sku, costPrice, sellingPrice, stock, imageUrl per variant
 - `orders` - Orders with status workflow, costs, source tracking, shipping info
 - `order_items` - Order line items linked to products
 - `customers` - Auto-populated CRM from orders (name, phone, orderCount, totalSpent)
@@ -64,7 +65,7 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 13. **Send to Delivery**: Ship button in order modal with tracking
 14. **Integration Logs**: Full audit trail
 15. **WooCommerce Background Sync**: Polls every 10 minutes
-16. **Inventory**: Full CRUD for products (create/edit/delete)
+16. **Inventory**: Full CRUD for products with variant support. Stats dashboard (total products, quantity, low stock, out of stock, new this month). Advanced table with Reçu/Sortie/Disponible/Conf%/Livr% analytics per product. Product creation form with variant toggle (name/sku/cost/selling/stock per variant). Stock value summaries (coûtant, vente, marge potentielle). API: `GET /api/products/inventory`
 17. **Multi-Filter Dashboard**: Horizontal filter bar with city, product, agent, source, shipping provider, and date preset filters. All stat cards, charts, pie charts, team performance, and top products update in real-time when any filter changes. Product performance drill-down with confirmation/delivery rates and per-product ROI. Date presets: Today, Yesterday, This Month, Last Month, Custom range.
 18. **Profitability**: Delivered-only profit calculation with ROI/ROAS metrics, ad spend tracking, 40 MAD fixed shipping. Dynamic: Net Profit = Revenue(Livré) - COGS - Shipping(40 MAD) - Ad Spend
 19. **Multi-Store CRUD**: Create/edit/delete stores, owner-linked store management
@@ -100,9 +101,10 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 
 ### Products
 - `GET /api/products` - List products
-- `POST /api/products` - Create product
-- `PATCH /api/products/:id` - Update product
-- `DELETE /api/products/:id` - Delete product
+- `GET /api/products/inventory` - Inventory stats with product performance analytics
+- `POST /api/products` - Create product (supports variants array)
+- `PATCH /api/products/:id` - Update product (name, sku, stock, costPrice, sellingPrice, description, imageUrl, reference)
+- `DELETE /api/products/:id` - Delete product (cascades to variants)
 
 ### Team
 - `GET /api/agents` - List team members
