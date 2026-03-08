@@ -1,0 +1,33 @@
+1. UI Implementation: The Filter Bar (Refer to the Screenshot)
+Create a horizontal filter bar at the top of the Dashboard with the following dropdowns (Select components):
+Toutes les Villes (Filter by city).
+Tous les Produits (Filter by specific product).
+Tous les Livreurs (Filter by shipping company/driver).
+Tous les Agents (Filter by confirmation staff).
+Toutes les Sources (Filter by Facebook, TikTok, etc.).
+Tous les Sites (Filter by Store/Boutique).
+Campaign Source (Filter by UTM campaign).
+Date Picker (Custom range).
+Pack (Filter by product bundle).
+Use Tailwind CSS to make it look clean and responsive (horizontal scroll on mobile).
+2. Date Filtering Logic (Practical)
+Implement a Date Presets menu with the following options:
+Today (Aujourd'hui): Shows data from 00:00 to 23:59 of the current day.
+Yesterday (Hier): Shows data for the previous 24 hours.
+This Month: From the 1st of the current month to today.
+Last Month: The entire previous month.
+Personalized (Custom): User selects start and end date.
+3. Product Performance Drill-down
+When a user filters by 'Tous les Produits':
+Confirmation Tracking: Calculate the confirmation rate for that specific product ONLY.
+Delivery Tracking (Livraison): Calculate the delivery rate (Delivered / Confirmed) for that specific product.
+Ad Spend Link: Sync with the ad_spend table to show the ROI of that specific product for the selected date range.
+4. Backend & Database Sync (The Engine)
+Update the Backend API to accept these filter parameters in the SQL queries.
+Example: SELECT * FROM orders WHERE product_id = :p AND created_at BETWEEN :start AND :end.
+Ensure all Charts (Sales Comparison & Status Pie Chart) update automatically in real-time as soon as any filter is changed.
+If a filter is 'All' (Toutes), the query should ignore that specific filter.
+5. Profitability formula update:
+Profit must be calculated dynamically based on the filters:
+Net Profit = (Price of 'Livré' orders) - (Cost of Goods) - (Shipping Fees) - (Ad Spend).
+Instruction: Rewrite the Dashboard component and the backend Analytics controller to support this multi-filter logic. Make sure it is fast and uses efficient database indexing."

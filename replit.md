@@ -65,8 +65,8 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 14. **Integration Logs**: Full audit trail
 15. **WooCommerce Background Sync**: Polls every 10 minutes
 16. **Inventory**: Full CRUD for products (create/edit/delete)
-17. **Enhanced Dashboard**: Line chart (30-day daily sales), pie charts (order/delivery statuses), team performance table, top products table
-18. **Profitability**: Delivered-only profit calculation with ROI/ROAS metrics, ad spend tracking, 40 MAD fixed shipping
+17. **Multi-Filter Dashboard**: Horizontal filter bar with city, product, agent, source, shipping provider, and date preset filters. All stat cards, charts, pie charts, team performance, and top products update in real-time when any filter changes. Product performance drill-down with confirmation/delivery rates and per-product ROI. Date presets: Today, Yesterday, This Month, Last Month, Custom range.
+18. **Profitability**: Delivered-only profit calculation with ROI/ROAS metrics, ad spend tracking, 40 MAD fixed shipping. Dynamic: Net Profit = Revenue(Livré) - COGS - Shipping(40 MAD) - Ad Spend
 19. **Multi-Store CRUD**: Create/edit/delete stores, owner-linked store management
 
 ## API Routes
@@ -89,6 +89,8 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 - `GET /api/stats` - Dashboard stats (all status counts, revenue from confirme+delivered, profit from delivered only)
 - `GET /api/stats/daily` - Daily order counts for last 30 days (line chart)
 - `GET /api/stats/top-products` - Top 10 products by revenue (from confirme/delivered orders)
+- `GET /api/stats/filter-options` - Distinct filter values (cities, sources, agents, products, shippingProviders)
+- `GET /api/stats/filtered?city=X&productId=X&agentId=X&source=X&shippingProvider=X&dateFrom=X&dateTo=X` - Filtered analytics with all stats, daily chart, top products, ROI/ROAS
 
 ### Products
 - `GET /api/products` - List products

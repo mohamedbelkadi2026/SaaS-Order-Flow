@@ -12,6 +12,34 @@ export function useDashboardStats() {
   });
 }
 
+export function useFilterOptions() {
+  return useQuery({
+    queryKey: ["/api/stats/filter-options"],
+    queryFn: async () => {
+      const res = await fetch("/api/stats/filter-options", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch filter options");
+      return res.json();
+    },
+  });
+}
+
+export function useFilteredStats(filters: Record<string, string>) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value && value !== 'all') params.set(key, value);
+  });
+  const queryString = params.toString();
+  const url = `/api/stats/filtered${queryString ? `?${queryString}` : ''}`;
+  return useQuery({
+    queryKey: ["/api/stats/filtered", queryString],
+    queryFn: async () => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch filtered stats");
+      return res.json();
+    },
+  });
+}
+
 export function useOrders(status?: string) {
   const url = status ? `/api/orders?status=${status}` : "/api/orders";
   return useQuery({

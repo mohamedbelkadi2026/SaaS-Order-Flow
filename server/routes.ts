@@ -146,6 +146,146 @@ export async function registerRoutes(
     res.json(sorted.map(p => ({ ...p, share: Math.round((p.revenue / maxRevenue) * 100) })));
   });
 
+  app.get("/api/stats/filter-options", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const allOrders = await storage.getOrdersByStore(storeId);
+    const storeProducts = await storage.getProductsByStore(storeId);
+    const storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
+
+    const cities = [...new Set(allOrders.map(o => o.customerCity).filter(Boolean))].sort();
+    const sources = [...new Set(allOrders.map(o => o.source).filter(Boolean))].sort();
+    const shippingProviders = [...new Set(allOrders.map(o => o.shippingProvider).filter(Boolean))].sort();
+
+    res.json({
+      cities,
+      sources,
+      shippingProviders,
+      products: storeProducts.map(p => ({ id: p.id, name: p.name })),
+      agents: storeAgents.map(a => ({ id: a.id, username: a.username })),
+    });
+  });
+
+  app.get("/api/stats/filtered", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { city, productId, agentId, source, dateFrom, dateTo, shippingProvider } = req.query as Record<string, string>;
+
+    let allOrders = await storage.getOrdersByStore(storeId);
+
+    if (city && city !== 'all') {
+      allOrders = allOrders.filter(o => o.customerCity === city);
+    }
+    if (productId && productId !== 'all') {
+      const pid = Number(productId);
+      allOrders = allOrders.filter(o => o.items?.some((i: any) => i.productId === pid));
+    }
+    if (agentId && agentId !== 'all') {
+      allOrders = allOrders.filter(o => o.assignedToId === Number(agentId));
+    }
+    if (source && source !== 'all') {
+      allOrders = allOrders.filter(o => o.source === source);
+    }
+    if (shippingProvider && shippingProvider !== 'all') {
+      allOrders = allOrders.filter(o => o.shippingProvider === shippingProvider);
+    }
+    if (dateFrom) {
+      const from = new Date(dateFrom);
+      from.setHours(0, 0, 0, 0);
+      allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
+    }
+    if (dateTo) {
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
+    }
+
+    let totalOrders = allOrders.length;
+    let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
+    let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
+    let revenue = 0, profit = 0, totalProductCost = 0, totalShipping = 0;
+
+    allOrders.forEach(o => {
+      if (o.status === 'nouveau') nouveau++;
+      else if (o.status === 'confirme') confirme++;
+      else if (o.status === 'in_progress') inProgress++;
+      else if (o.status === 'delivered') delivered++;
+      else if (o.status === 'refused') refused++;
+      else if (o.status === 'Injoignable') injoignable++;
+      else if (o.status === 'Annulé (fake)') annuleFake++;
+      else if (o.status === 'Annulé (faux numéro)') annuleFauxNumero++;
+      else if (o.status === 'Annulé (double)') annuleDouble++;
+      else if (o.status === 'boite vocale') boiteVocale++;
+
+      if (['confirme', 'delivered'].includes(o.status)) {
+        revenue += o.totalPrice;
+      }
+      if (o.status === 'delivered') {
+        totalProductCost += o.productCost;
+        totalShipping += 4000;
+        profit += (o.totalPrice - o.productCost - 4000 - o.adSpend);
+      }
+    });
+
+    const cancelled = annuleFake + annuleFauxNumero + annuleDouble;
+    const confirmationRate = totalOrders > 0 ? Math.round((confirme + delivered) / totalOrders * 100) : 0;
+    const deliveryRate = (confirme + delivered) > 0 ? Math.round(delivered / (confirme + delivered) * 100) : 0;
+
+    const dailyMap: Record<string, number> = {};
+    const now = new Date();
+    const startDate = dateFrom ? new Date(dateFrom + 'T00:00:00') : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
+    const endDate = dateTo ? new Date(dateTo + 'T00:00:00') : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const cursor = new Date(startDate);
+    while (cursor <= endDate) {
+      dailyMap[cursor.toISOString().slice(0, 10)] = 0;
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    allOrders.forEach(o => {
+      if (o.createdAt) {
+        const day = new Date(o.createdAt).toISOString().slice(0, 10);
+        if (dailyMap[day] !== undefined) dailyMap[day]++;
+      }
+    });
+    const daily = Object.entries(dailyMap).map(([date, count]) => ({ date, count }));
+
+    const productMap: Record<number, { name: string; orders: number; quantity: number; revenue: number }> = {};
+    allOrders.forEach(o => {
+      if (['confirme', 'delivered'].includes(o.status) && o.items) {
+        o.items.forEach((item: any) => {
+          const pid = item.productId;
+          if (!productMap[pid]) productMap[pid] = { name: item.product?.name || `Produit #${pid}`, orders: 0, quantity: 0, revenue: 0 };
+          productMap[pid].orders++;
+          productMap[pid].quantity += item.quantity;
+          productMap[pid].revenue += item.price * item.quantity;
+        });
+      }
+    });
+    const topProducts = Object.values(productMap).sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+    const maxRevenue = topProducts[0]?.revenue || 1;
+
+    let adSpendTotal = 0;
+    const adSpendEntries = await storage.getAdSpend(storeId);
+    adSpendEntries.forEach(e => {
+      if (productId && productId !== 'all') {
+        if (e.productId !== Number(productId) && e.productId !== null) return;
+      }
+      if (dateFrom && e.date < dateFrom) return;
+      if (dateTo && e.date > dateTo) return;
+      adSpendTotal += e.amount;
+    });
+
+    const netProfit = revenue - totalProductCost - totalShipping - adSpendTotal;
+    const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
+    const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
+
+    res.json({
+      totalOrders, nouveau, confirme, inProgress, cancelled, delivered, refused,
+      injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
+      revenue, profit: netProfit, confirmationRate, deliveryRate,
+      totalProductCost, totalShipping, adSpendTotal, roas, roi,
+      daily,
+      topProducts: topProducts.map(p => ({ ...p, share: Math.round((p.revenue / maxRevenue) * 100) })),
+    });
+  });
+
   app.get("/api/store", requireAuth, async (req, res) => {
     const store = await storage.getStore(req.user!.storeId!);
     if (!store) return res.status(404).json({ message: "Boutique introuvable" });
