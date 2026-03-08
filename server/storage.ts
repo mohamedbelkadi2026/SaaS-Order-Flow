@@ -9,7 +9,7 @@ import {
   type Subscription, type InsertSubscription, type Customer, type InsertCustomer,
   type AgentProduct
 } from "@shared/schema";
-import { eq, desc, and, sql, count, ne } from "drizzle-orm";
+import { eq, desc, and, sql, count, ne, like, gte, lte, inArray, or } from "drizzle-orm";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -28,6 +28,12 @@ export interface IStorage {
   getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
   getOrder(id: number): Promise<OrderWithDetails | undefined>;
+  getFilteredOrders(storeId: number, filters: {
+    status?: string; agentId?: number; city?: string; source?: string;
+    dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
+  }, agentOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
+  bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
+  bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]>;
   createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order>;
   updateOrderStatus(id: number, status: string): Promise<Order | undefined>;
   assignOrder(id: number, agentId: number | null): Promise<Order | undefined>;
@@ -194,6 +200,85 @@ export class DatabaseStorage implements IStorage {
       agent,
       items: itemsWithProducts
     };
+  }
+
+  async getFilteredOrders(storeId: number, filters: {
+    status?: string; agentId?: number; city?: string; source?: string;
+    dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
+  }, agentOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
+    const conditions: any[] = [eq(orders.storeId, storeId)];
+
+    if (agentOnly) {
+      conditions.push(eq(orders.assignedToId, agentOnly));
+    }
+
+    if (filters.status) {
+      if (filters.status === 'annule_group') {
+        conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
+      } else {
+        conditions.push(eq(orders.status, filters.status));
+      }
+    }
+    if (filters.agentId) {
+      conditions.push(eq(orders.assignedToId, filters.agentId));
+    }
+    if (filters.city) {
+      conditions.push(eq(orders.customerCity, filters.city));
+    }
+    if (filters.source) {
+      conditions.push(eq(orders.source, filters.source));
+    }
+    if (filters.dateFrom) {
+      conditions.push(gte(orders.createdAt, new Date(filters.dateFrom + 'T00:00:00')));
+    }
+    if (filters.dateTo) {
+      conditions.push(lte(orders.createdAt, new Date(filters.dateTo + 'T23:59:59')));
+    }
+    if (filters.search) {
+      const term = `%${filters.search}%`;
+      conditions.push(or(
+        like(orders.customerName, term),
+        like(orders.customerPhone, term),
+        like(orders.orderNumber, term),
+        like(orders.customerCity, term)
+      ));
+    }
+
+    const whereClause = and(...conditions);
+    const page = filters.page || 1;
+    const limit = filters.limit || 25;
+    const offset = (page - 1) * limit;
+
+    const [{ value: total }] = await db.select({ value: count() }).from(orders).where(whereClause);
+
+    const allOrders = await db.select().from(orders)
+      .where(whereClause)
+      .orderBy(desc(orders.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const hydrated = await this.hydrateOrders(allOrders);
+    return { orders: hydrated, total };
+  }
+
+  async bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number> {
+    if (orderIds.length === 0) return 0;
+    const result = await db.update(orders)
+      .set({ assignedToId: agentId })
+      .where(and(inArray(orders.id, orderIds), eq(orders.storeId, storeId)))
+      .returning();
+    return result.length;
+  }
+
+  async bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]> {
+    if (orderIds.length === 0) return [];
+    const eligible = await db.select().from(orders)
+      .where(and(
+        inArray(orders.id, orderIds),
+        eq(orders.storeId, storeId),
+        eq(orders.status, 'confirme')
+      ));
+    return eligible;
   }
 
   async createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order> {

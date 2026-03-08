@@ -68,6 +68,7 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 17. **Multi-Filter Dashboard**: Horizontal filter bar with city, product, agent, source, shipping provider, and date preset filters. All stat cards, charts, pie charts, team performance, and top products update in real-time when any filter changes. Product performance drill-down with confirmation/delivery rates and per-product ROI. Date presets: Today, Yesterday, This Month, Last Month, Custom range.
 18. **Profitability**: Delivered-only profit calculation with ROI/ROAS metrics, ad spend tracking, 40 MAD fixed shipping. Dynamic: Net Profit = Revenue(Livré) - COGS - Shipping(40 MAD) - Ad Spend
 19. **Multi-Store CRUD**: Create/edit/delete stores, owner-linked store management
+20. **Advanced Orders Table**: Server-side filtered/paginated table with columns (Code, Destinataire, Téléphone+WhatsApp/Call, Ville, Comment, Dernière action, Status, Prix, Adresse, Référence, Action icons). Multi-select checkboxes, bulk assign modal (service type + agent), bulk ship modal. Responsive mobile cards with checkboxes.
 
 ## API Routes
 ### Auth
@@ -84,6 +85,9 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 - `PATCH /api/orders/:id/status` - Update order status
 - `PATCH /api/orders/:id/assign` - Assign agent
 - `POST /api/orders/:id/ship` - Send to delivery carrier
+- `GET /api/orders/filtered?status=X&agentId=X&city=X&source=X&dateFrom=X&dateTo=X&search=X&page=X&limit=X` - Server-side filtered/paginated orders
+- `POST /api/orders/bulk-assign` - Bulk assign orders to agent (owner/admin only, validates agent store)
+- `POST /api/orders/bulk-ship` - Bulk ship confirmed orders (owner/admin only, validates shipping integration)
 
 ### Stats
 - `GET /api/stats` - Dashboard stats (all status counts, revenue from confirme+delivered, profit from delivered only)

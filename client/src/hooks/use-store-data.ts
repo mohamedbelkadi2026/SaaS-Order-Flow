@@ -523,3 +523,48 @@ export function useShipOrder() {
     },
   });
 }
+
+export function useFilteredOrders(filters: Record<string, any>) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => {
+    if (v !== undefined && v !== '' && v !== 'all') params.set(k, String(v));
+  });
+  const url = `/api/orders/filtered?${params.toString()}`;
+  return useQuery({
+    queryKey: ["/api/orders/filtered", filters],
+    queryFn: async () => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch filtered orders");
+      return res.json();
+    },
+  });
+}
+
+export function useBulkAssign() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ orderIds, agentId }: { orderIds: number[]; agentId: number }) => {
+      const res = await apiRequest("POST", "/api/orders/bulk-assign", { orderIds, agentId });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+    },
+  });
+}
+
+export function useBulkShip() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ orderIds, provider }: { orderIds: number[]; provider: string }) => {
+      const res = await apiRequest("POST", "/api/orders/bulk-ship", { orderIds, provider });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+    },
+  });
+}

@@ -324,6 +324,77 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/orders/filtered", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const filters = {
+      status: req.query.status as string | undefined,
+      agentId: req.query.agentId ? Number(req.query.agentId) : undefined,
+      city: req.query.city as string | undefined,
+      source: req.query.source as string | undefined,
+      dateFrom: req.query.dateFrom as string | undefined,
+      dateTo: req.query.dateTo as string | undefined,
+      search: req.query.search as string | undefined,
+      page: req.query.page ? Number(req.query.page) : 1,
+      limit: req.query.limit ? Number(req.query.limit) : 25,
+    };
+    const agentOnly = user.role === 'agent' ? user.id : undefined;
+    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly);
+    res.json(result);
+  });
+
+  app.post("/api/orders/bulk-assign", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent') {
+        return res.status(403).json({ message: "Agents cannot bulk assign orders" });
+      }
+      const { orderIds, agentId } = req.body;
+      if (!Array.isArray(orderIds) || !agentId) {
+        return res.status(400).json({ message: "orderIds (array) and agentId required" });
+      }
+      const targetAgent = await storage.getUserById(Number(agentId));
+      if (!targetAgent || targetAgent.storeId !== user.storeId) {
+        return res.status(400).json({ message: "Agent not found in your store" });
+      }
+      const updated = await storage.bulkAssignOrders(orderIds, Number(agentId), user.storeId!);
+      res.json({ updated });
+    } catch (err) {
+      res.status(500).json({ message: "Bulk assign failed" });
+    }
+  });
+
+  app.post("/api/orders/bulk-ship", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent') {
+        return res.status(403).json({ message: "Agents cannot bulk ship orders" });
+      }
+      const { orderIds, provider } = req.body;
+      if (!Array.isArray(orderIds) || !provider) {
+        return res.status(400).json({ message: "orderIds (array) and provider required" });
+      }
+      const integration = await storage.getIntegrationByProvider(user.storeId!, provider);
+      if (!integration) {
+        return res.status(400).json({ message: `No shipping integration found for ${provider}` });
+      }
+      const eligible = await storage.bulkShipOrders(orderIds, user.storeId!);
+      if (eligible.length === 0) {
+        return res.status(400).json({ message: "No eligible orders (must be 'confirme' status)" });
+      }
+      const results: any[] = [];
+      for (const order of eligible) {
+        const trackingNumber = `${provider.toUpperCase()}-${Date.now()}-${order.id}`;
+        const labelLink = `/api/labels/${trackingNumber}.pdf`;
+        await storage.updateOrderShipping(order.id, trackingNumber, labelLink, provider);
+        await storage.updateOrderStatus(order.id, 'in_progress');
+        results.push({ orderId: order.id, trackingNumber, labelLink, status: 'shipped' });
+      }
+      res.json({ shipped: results.length, results });
+    } catch (err) {
+      res.status(500).json({ message: "Bulk ship failed" });
+    }
+  });
+
   app.get("/api/orders/:id", requireAuth, async (req, res) => {
     const orderId = Number(req.params.id);
     const order = await storage.getOrder(orderId);
