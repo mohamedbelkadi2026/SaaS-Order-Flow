@@ -342,6 +342,24 @@ export async function registerRoutes(
     res.json(result);
   });
 
+  app.get("/api/orders/all", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const filters = {
+      status: req.query.status as string | undefined,
+      agentId: req.query.agentId ? Number(req.query.agentId) : undefined,
+      city: req.query.city as string | undefined,
+      source: req.query.source as string | undefined,
+      dateFrom: req.query.dateFrom as string | undefined,
+      dateTo: req.query.dateTo as string | undefined,
+      search: req.query.search as string | undefined,
+      page: req.query.page ? Number(req.query.page) : 1,
+      limit: req.query.limit ? Number(req.query.limit) : 25,
+    };
+    const agentOnly = user.role === 'agent' ? user.id : undefined;
+    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly);
+    res.json(result);
+  });
+
   app.post("/api/orders/bulk-assign", requireAuth, async (req, res) => {
     try {
       const user = req.user!;

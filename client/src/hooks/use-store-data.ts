@@ -74,6 +74,8 @@ export function useUpdateOrderStatus() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
     },
@@ -89,6 +91,8 @@ export function useAssignAgent() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
     },
   });
 }
@@ -244,6 +248,8 @@ export function useCreateOrder() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
       queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
@@ -260,6 +266,8 @@ export function useUpdateOrder() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
     },
   });
 }
@@ -519,6 +527,8 @@ export function useShipOrder() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
       queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
     },
   });
@@ -540,6 +550,22 @@ export function useFilteredOrders(filters: Record<string, any>) {
   });
 }
 
+export function useAllOrders(filters: Record<string, any>) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => {
+    if (v !== undefined && v !== '' && v !== 'all') params.set(k, String(v));
+  });
+  const url = `/api/orders/all?${params.toString()}`;
+  return useQuery({
+    queryKey: ["/api/orders/all", filters],
+    queryFn: async () => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch all orders");
+      return res.json();
+    },
+  });
+}
+
 export function useBulkAssign() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -550,6 +576,7 @@ export function useBulkAssign() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
     },
   });
 }
@@ -564,6 +591,7 @@ export function useBulkShip() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
       queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
     },
   });

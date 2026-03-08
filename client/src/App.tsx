@@ -23,6 +23,7 @@ import ShippingIntegrations from "@/pages/shipping-integrations";
 import IntegrationLogs from "@/pages/integration-logs";
 import Invoices from "@/pages/invoices";
 import Magasins from "@/pages/magasins";
+import AllOrders from "@/pages/all-orders";
 
 function ProtectedRoutes() {
   const { user, isLoading } = useAuth();
@@ -43,6 +44,7 @@ function ProtectedRoutes() {
     <AppLayout>
       <Switch>
         <Route path="/" component={Dashboard}/>
+        <Route path="/orders/all" component={AllOrders}/>
         <Route path="/orders/new" component={NewOrder}/>
         <Route path="/orders" component={Orders}/>
         <Route path="/orders/:filter" component={Orders}/>

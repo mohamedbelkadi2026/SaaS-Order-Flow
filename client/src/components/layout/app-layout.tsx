@@ -21,7 +21,8 @@ import {
   CreditCard,
   Shield,
   PlusCircle,
-  Contact
+  Contact,
+  ListOrdered
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,7 @@ import { useAuth } from "@/hooks/use-auth";
 
 const ADMIN_NAV = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
+  { name: "Commandes (Toutes)", href: "/orders/all", icon: ListOrdered },
   { name: "Mes Commandes", href: "/orders", icon: ShoppingCart, hasSubmenu: true },
   { name: "Nouvelle commande", href: "/orders/new", icon: PlusCircle },
   { name: "Stock", href: "/inventory", icon: Package },
@@ -92,7 +94,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {navItems.map((item) => {
           const isActive = location === item.href || 
             (item.name === "Int\u00e9gration" && location.startsWith("/integrations")) ||
-            (item.name === "Mes Commandes" && location.startsWith("/orders"));
+            (item.name === "Mes Commandes" && location.startsWith("/orders") && location !== "/orders/all") ||
+            (item.name === "Commandes (Toutes)" && location === "/orders/all");
           const isOrdersMenu = item.name === "Mes Commandes";
           const isIntegrationMenu = item.name === "Int\u00e9gration";
 
