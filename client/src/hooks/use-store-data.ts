@@ -371,6 +371,84 @@ export function useToggleStore() {
   });
 }
 
+export function useAgentProducts(agentId: number | undefined) {
+  return useQuery({
+    queryKey: ["/api/agents", agentId, "products"],
+    queryFn: async () => {
+      if (!agentId) return [];
+      const res = await fetch(`/api/agents/${agentId}/products`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch agent products");
+      return res.json();
+    },
+    enabled: !!agentId,
+  });
+}
+
+export function useSetAgentProducts() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ agentId, productIds }: { agentId: number; productIds: number[] }) => {
+      const res = await apiRequest("PUT", `/api/agents/${agentId}/products`, { productIds });
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents", variables.agentId, "products"] });
+    },
+  });
+}
+
+export function useMagasins() {
+  return useQuery({
+    queryKey: ["/api/magasins"],
+    queryFn: async () => {
+      const res = await fetch("/api/magasins", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch magasins");
+      return res.json();
+    },
+  });
+}
+
+export function useCreateMagasin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { name: string }) => {
+      const res = await apiRequest("POST", "/api/magasins", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/magasins"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/store"] });
+    },
+  });
+}
+
+export function useUpdateMagasin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, ...data }: { id: number; name?: string }) => {
+      const res = await apiRequest("PATCH", `/api/magasins/${id}`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/magasins"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/store"] });
+    },
+  });
+}
+
+export function useDeleteMagasin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/magasins/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/magasins"] });
+    },
+  });
+}
+
 export function useDailyStats() {
   return useQuery({
     queryKey: ["/api/stats/daily"],

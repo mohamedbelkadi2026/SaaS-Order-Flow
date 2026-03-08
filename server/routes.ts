@@ -95,6 +95,8 @@ export async function registerRoutes(
 
       if (['confirme', 'delivered'].includes(o.status)) {
         revenue += o.totalPrice;
+      }
+      if (o.status === 'delivered') {
         profit += (o.totalPrice - o.productCost - 4000 - o.adSpend);
       }
     });
@@ -498,6 +500,12 @@ export async function registerRoutes(
         comment: parsed.comment,
       }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
+      const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
+      const nextAgentId = await storage.getNextAgent(storeId, firstProductId);
+      if (nextAgentId) {
+        await storage.assignOrder(order.id, nextAgentId);
+      }
+
       const customer = await storage.getOrCreateCustomer(storeId, parsed.customerName, parsed.customerPhone, parsed.customerAddress, parsed.customerCity);
       await storage.updateCustomerStats(customer.id, parsed.totalPrice);
       await storage.incrementMonthlyOrders(storeId);
@@ -505,10 +513,10 @@ export async function registerRoutes(
       await storage.createIntegrationLog({
         storeId, integrationId: integration?.id || null, provider,
         action: 'order_synced', status: 'success',
-        message: `Commande ${parsed.orderNumber} importée (${parsed.lineItems.length} articles, ${orderItemsToCreate.length} matchés)`,
+        message: `Commande ${parsed.orderNumber} importée${nextAgentId ? ` (assignée à agent #${nextAgentId})` : ''} (${parsed.lineItems.length} articles, ${orderItemsToCreate.length} matchés)`,
       });
 
-      res.json({ success: true, orderId: order.id });
+      res.json({ success: true, orderId: order.id, assignedTo: nextAgentId });
     } catch (err: any) {
       console.error(`Webhook error (${provider}):`, err);
       await storage.createIntegrationLog({
@@ -625,11 +633,18 @@ export async function registerRoutes(
         comment: data.comment || null,
       }, orderItemsToCreate);
 
+      const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
+      const nextAgentId = await storage.getNextAgent(storeId, firstProductId);
+      if (nextAgentId) {
+        await storage.assignOrder(order.id, nextAgentId);
+      }
+
       const customer = await storage.getOrCreateCustomer(storeId, data.customerName, data.customerPhone, data.customerAddress, data.customerCity);
       await storage.updateCustomerStats(customer.id, totalPrice);
       await storage.incrementMonthlyOrders(storeId);
 
-      res.status(201).json(order);
+      const finalOrder = await storage.getOrder(order.id);
+      res.status(201).json(finalOrder || order);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -786,6 +801,53 @@ export async function registerRoutes(
     if (agent.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
     if (agent.role === 'owner') return res.status(400).json({ message: "Impossible de supprimer le propriétaire" });
     await storage.deleteUser(agentId);
+    res.json({ message: "Supprimé" });
+  });
+
+  app.get("/api/agents/:id/products", requireAuth, async (req, res) => {
+    const agentId = Number(req.params.id);
+    const agent = await storage.getUserById(agentId);
+    if (!agent || agent.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+    res.json(await storage.getAgentProducts(agentId));
+  });
+
+  app.put("/api/agents/:id/products", requireAdmin, async (req, res) => {
+    const agentId = Number(req.params.id);
+    const agent = await storage.getUserById(agentId);
+    if (!agent || agent.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+    const { productIds } = req.body;
+    if (!Array.isArray(productIds)) return res.status(400).json({ message: "productIds doit être un tableau" });
+    const result = await storage.setAgentProducts(agentId, req.user!.storeId!, productIds);
+    res.json(result);
+  });
+
+  app.get("/api/magasins", requireAuth, async (req, res) => {
+    res.json(await storage.getStoresByOwner(req.user!.id));
+  });
+
+  app.post("/api/magasins", requireAdmin, async (req, res) => {
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ message: "Nom requis" });
+    const newStore = await storage.createStore({ name, ownerId: req.user!.id });
+    await storage.createSubscription({ storeId: newStore.id, plan: 'starter', monthlyLimit: 1500, pricePerMonth: 20000, currentMonthOrders: 0, isActive: 1 });
+    res.json(newStore);
+  });
+
+  app.patch("/api/magasins/:id", requireAdmin, async (req, res) => {
+    const storeId = Number(req.params.id);
+    const store = await storage.getStore(storeId);
+    if (!store) return res.status(404).json({ message: "Magasin non trouvé" });
+    if (store.ownerId !== req.user!.id && storeId !== req.user!.storeId) {
+      return res.status(403).json({ message: "Accès refusé" });
+    }
+    const updated = await storage.updateStore(storeId, req.body);
+    res.json(updated);
+  });
+
+  app.delete("/api/magasins/:id", requireAdmin, async (req, res) => {
+    const storeId = Number(req.params.id);
+    if (storeId === req.user!.storeId) return res.status(400).json({ message: "Impossible de supprimer votre magasin actuel" });
+    await storage.deleteStore(storeId);
     res.json({ message: "Supprimé" });
   });
 

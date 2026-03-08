@@ -1,0 +1,26 @@
+"I need to fix the non-functional parts of my SaaS and implement real backend logic. The UI is there, but the buttons and data are not working. Please implement the following:
+1. Team Management Fix (Gestion d'Équipe)
+Agent Creation: Make the 'Add Agent' button functional. Save agents to the database linked to the store_id.
+Product Assignment: Allow the Admin to assign specific products to specific agents.
+Lead Distribution Logic: Implement a setting for 'Automatic Assignment' (Round Robin): New orders from Shopify/Webhooks should be automatically assigned to the next available agent.
+Performance Tracking: Calculate and display each agent's 'Confirmation Percentage' and 'Delivery Percentage' based on real database records.
+2. Multi-Store Fix (Gestion des Magasins)
+Real CRUD: Make the 'Add New Magasin' form functional.
+Data Isolation: When I add a new store (magasin), it must appear in the dropdown.
+Filtering: Ensure that when I switch between 'Magasins', the Dashboard and Orders list update to show only that store's data.
+3. Advanced Profitability (Rentabilité Avancée)
+COD Logic: The profit must ONLY be calculated when the order status is 'Livré' (Delivered).
+Ad Spend Integration:
+Create a section in the Advanced Profitability page to add 'Ad Spend' costs per product and per day.
+Save this in a Marketing_Spend table.
+The Profit Formula: Update the calculation engine:
+Real Net Profit = (Total Revenue from 'Livré' orders) - (Cost of Goods for 'Livré' orders) - (Total Shipping Fees for 'Livré' orders) - (Total Ad Spend entered by Admin).
+ROI/ROAS: Show the Return on Ad Spend clearly on the Dashboard.
+4. Stock & New Order Fix
+Manual Orders: Make the 'Nouvelle Commande' form functional. It must save to the database.
+Status Sync: When status is changed to 'confirme', subtract the quantity from the Current_Stock.
+Status Sync: When status is changed to 'Annulé' (any cancellation type), DO NOT subtract stock.
+Technical Instructions:
+Use PostgreSQL for all data persistence.
+Create API endpoints for: POST /api/agents, POST /api/magasins, and POST /api/ad-spend.
+Ensure the Mobile View for agents reflects these changes (they should only see orders assigned to them by the auto-assignment logic)."

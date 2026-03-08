@@ -1,14 +1,15 @@
 import { db } from "./db";
 import { 
   users, stores, products, orders, orderItems, adSpendTracking, storeIntegrations, integrationLogs,
-  subscriptions, customers,
+  subscriptions, customers, agentProducts,
   type User, type Store, type Product, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend,
   type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog,
-  type Subscription, type InsertSubscription, type Customer, type InsertCustomer
+  type Subscription, type InsertSubscription, type Customer, type InsertCustomer,
+  type AgentProduct
 } from "@shared/schema";
-import { eq, desc, and, sql, count } from "drizzle-orm";
+import { eq, desc, and, sql, count, ne } from "drizzle-orm";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -64,7 +65,15 @@ export interface IStorage {
   checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string }>;
 
   getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
-  
+
+  getAgentProducts(agentId: number): Promise<AgentProduct[]>;
+  setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
+  getNextAgent(storeId: number, productId?: number): Promise<number | null>;
+
+  getStoresByOwner(userId: number): Promise<Store[]>;
+  updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
+  deleteStore(id: number): Promise<void>;
+
   getAllStores(): Promise<(Store & { ownerEmail?: string | null; subscription?: Subscription | null })[]>;
   getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number }>;
   toggleStoreActive(storeId: number, isActive: number): Promise<void>;
@@ -473,6 +482,74 @@ export class DatabaseStorage implements IStorage {
 
   async toggleStoreActive(storeId: number, isActive: number): Promise<void> {
     await db.update(users).set({ isActive }).where(eq(users.storeId, storeId));
+  }
+
+  async getAgentProducts(agentId: number): Promise<AgentProduct[]> {
+    return await db.select().from(agentProducts).where(eq(agentProducts.agentId, agentId));
+  }
+
+  async setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]> {
+    await db.delete(agentProducts).where(eq(agentProducts.agentId, agentId));
+    if (productIds.length === 0) return [];
+    const values = productIds.map(pid => ({ agentId, productId: pid, storeId }));
+    return await db.insert(agentProducts).values(values).returning();
+  }
+
+  async getNextAgent(storeId: number, productId?: number): Promise<number | null> {
+    const storeAgents = await db.select().from(users)
+      .where(and(eq(users.storeId, storeId), eq(users.role, 'agent'), eq(users.isActive, 1)));
+    
+    if (storeAgents.length === 0) return null;
+
+    let eligibleAgents = storeAgents;
+    if (productId) {
+      const assignments = await db.select().from(agentProducts)
+        .where(and(eq(agentProducts.storeId, storeId), eq(agentProducts.productId, productId)));
+      if (assignments.length > 0) {
+        const assignedIds = new Set(assignments.map(a => a.agentId));
+        eligibleAgents = storeAgents.filter(a => assignedIds.has(a.id));
+        if (eligibleAgents.length === 0) eligibleAgents = storeAgents;
+      }
+    }
+
+    const [store] = await db.select().from(stores).where(eq(stores.id, storeId));
+    const lastId = store?.lastAssignedAgentId || 0;
+
+    eligibleAgents.sort((a, b) => a.id - b.id);
+    const nextAgent = eligibleAgents.find(a => a.id > lastId) || eligibleAgents[0];
+
+    await db.update(stores).set({ lastAssignedAgentId: nextAgent.id }).where(eq(stores.id, storeId));
+
+    return nextAgent.id;
+  }
+
+  async getStoresByOwner(userId: number): Promise<Store[]> {
+    const user = await this.getUserById(userId);
+    if (!user?.storeId) return [];
+    const owned = await db.select().from(stores).where(eq(stores.ownerId, userId));
+    if (owned.length > 0) return owned;
+    return await db.select().from(stores).where(eq(stores.id, user.storeId));
+  }
+
+  async updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined> {
+    const [updated] = await db.update(stores).set(data).where(eq(stores.id, id)).returning();
+    return updated;
+  }
+
+  async deleteStore(id: number): Promise<void> {
+    await db.delete(agentProducts).where(eq(agentProducts.storeId, id));
+    await db.delete(orderItems).where(
+      sql`${orderItems.orderId} IN (SELECT id FROM orders WHERE store_id = ${id})`
+    );
+    await db.delete(orders).where(eq(orders.storeId, id));
+    await db.delete(products).where(eq(products.storeId, id));
+    await db.delete(customers).where(eq(customers.storeId, id));
+    await db.delete(adSpendTracking).where(eq(adSpendTracking.storeId, id));
+    await db.delete(integrationLogs).where(eq(integrationLogs.storeId, id));
+    await db.delete(storeIntegrations).where(eq(storeIntegrations.storeId, id));
+    await db.delete(subscriptions).where(eq(subscriptions.storeId, id));
+    await db.delete(users).where(eq(users.storeId, id));
+    await db.delete(stores).where(eq(stores.id, id));
   }
 }
 
