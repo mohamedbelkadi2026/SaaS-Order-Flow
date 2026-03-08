@@ -246,19 +246,24 @@ export async function registerRoutes(
     });
     const daily = Object.entries(dailyMap).map(([date, count]) => ({ date, count }));
 
-    const productMap: Record<number, { name: string; orders: number; quantity: number; revenue: number }> = {};
+    const productMap: Record<number, { name: string; total: number; confirme: number; inProgress: number; delivered: number; revenue: number }> = {};
     allOrders.forEach(o => {
-      if (['confirme', 'delivered'].includes(o.status) && o.items) {
+      if (o.items) {
         o.items.forEach((item: any) => {
           const pid = item.productId;
-          if (!productMap[pid]) productMap[pid] = { name: item.product?.name || `Produit #${pid}`, orders: 0, quantity: 0, revenue: 0 };
-          productMap[pid].orders++;
-          productMap[pid].quantity += item.quantity;
-          productMap[pid].revenue += item.price * item.quantity;
+          if (!productMap[pid]) productMap[pid] = { name: item.product?.name || `Produit #${pid}`, total: 0, confirme: 0, inProgress: 0, delivered: 0, revenue: 0 };
+          productMap[pid].total++;
+          if (o.status === 'confirme') productMap[pid].confirme++;
+          if (o.status === 'in_progress') productMap[pid].inProgress++;
+          if (o.status === 'delivered') {
+            productMap[pid].delivered++;
+            productMap[pid].revenue += item.price * item.quantity;
+          }
         });
       }
     });
-    const topProducts = Object.values(productMap).sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+    const productPerformance = Object.values(productMap).sort((a, b) => b.total - a.total);
+    const topProducts = productPerformance.slice(0, 10);
     const maxRevenue = topProducts[0]?.revenue || 1;
 
     let adSpendTotal = 0;
@@ -283,6 +288,11 @@ export async function registerRoutes(
       totalProductCost, totalShipping, adSpendTotal, roas, roi,
       daily,
       topProducts: topProducts.map(p => ({ ...p, share: Math.round((p.revenue / maxRevenue) * 100) })),
+      productPerformance: productPerformance.map(p => ({
+        ...p,
+        confirmationRate: p.total > 0 ? Math.round((p.confirme / p.total) * 100) : 0,
+        deliveryRate: p.confirme > 0 ? Math.round((p.delivered / p.confirme) * 100) : 0,
+      })),
     });
   });
 

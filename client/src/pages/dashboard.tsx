@@ -463,47 +463,75 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <Card className="rounded-xl shadow-sm border-border/50">
-        <CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="text-base font-semibold">Produits les plus vendus</CardTitle>
-          <span className="text-xs text-primary font-medium">Top 10</span>
+      <Card className="rounded-xl border-border/50 shadow-sm bg-white dark:bg-card" data-testid="card-product-performance">
+        <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between">
+          <CardTitle className="text-base font-semibold uppercase tracking-wide">Produits Commandés</CardTitle>
+          <span className="text-xs text-muted-foreground">{stats?.productPerformance?.length || 0} produit(s)</span>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table>
-              <TableHeader className="bg-muted/20">
+              <TableHeader className="bg-muted/30">
                 <TableRow>
-                  <TableHead className="text-xs">Produit</TableHead>
-                  <TableHead className="text-xs text-center">Commandes</TableHead>
-                  <TableHead className="text-xs text-center">Quantité</TableHead>
-                  <TableHead className="text-xs text-right">Revenu Total</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Produit</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">Total</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">Confirmés</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">% Confirmation</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">En Cours</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">Livrées</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">% Livraison</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {stats?.topProducts && stats.topProducts.length > 0 ? stats.topProducts.map((p: any, i: number) => (
-                  <TableRow key={i} data-testid={`top-product-${i}`}>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded bg-muted flex items-center justify-center text-xs font-bold text-muted-foreground">{i + 1}</div>
+                {stats?.productPerformance && stats.productPerformance.length > 0 ? stats.productPerformance.map((p: any, i: number) => {
+                  const confColor = p.confirmationRate >= 70 ? 'text-emerald-600' : p.confirmationRate >= 40 ? 'text-amber-500' : 'text-red-500';
+                  const confBg = p.confirmationRate >= 70 ? 'bg-emerald-500' : p.confirmationRate >= 40 ? 'bg-amber-400' : 'bg-red-400';
+                  const delColor = p.deliveryRate >= 70 ? 'text-emerald-600' : p.deliveryRate >= 40 ? 'text-amber-500' : 'text-red-500';
+                  const delBg = p.deliveryRate >= 70 ? 'bg-emerald-500' : p.deliveryRate >= 40 ? 'bg-amber-400' : 'bg-red-400';
+                  return (
+                    <TableRow key={i} className="hover:bg-muted/20 transition-colors" data-testid={`product-perf-${i}`}>
+                      <TableCell>
                         <span className="font-medium text-sm">{p.name}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="outline" className="text-primary">{p.orders}</Badge>
-                    </TableCell>
-                    <TableCell className="text-center font-semibold">{p.quantity}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <span className="font-bold text-primary text-sm">{formatCurrency(p.revenue)}</span>
-                        <div className="w-20 bg-muted rounded-full h-1.5">
-                          <div className="bg-primary h-1.5 rounded-full" style={{ width: `${p.share}%` }} />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className="font-bold text-sm">{p.total}</span>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline" className="text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30">{p.confirme}</Badge>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`font-bold text-sm ${confColor}`}>{p.confirmationRate}%</span>
+                          <div className="w-16 bg-muted rounded-full h-1.5">
+                            <div className={`${confBg} h-1.5 rounded-full transition-all`} style={{ width: `${Math.min(p.confirmationRate, 100)}%` }} />
+                          </div>
                         </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30">{p.inProgress}</Badge>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline" className="text-primary border-primary/20 bg-primary/5">{p.delivered}</Badge>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`font-bold text-sm ${delColor}`}>{p.deliveryRate}%</span>
+                          <div className="w-16 bg-muted rounded-full h-1.5">
+                            <div className={`${delBg} h-1.5 rounded-full transition-all`} style={{ width: `${Math.min(p.deliveryRate, 100)}%` }} />
+                          </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                }) : (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                      <div className="flex flex-col items-center gap-2">
+                        <Package className="w-8 h-8 text-muted-foreground/40" />
+                        <span className="text-sm">Aucune donnée disponible</span>
+                        <span className="text-xs text-muted-foreground/60">Modifiez les filtres ou la période pour voir les résultats</span>
                       </div>
                     </TableCell>
-                  </TableRow>
-                )) : (
-                  <TableRow>
-                    <TableCell colSpan={4} className="text-center py-8 text-muted-foreground text-sm">Aucun produit vendu</TableCell>
                   </TableRow>
                 )}
               </TableBody>
