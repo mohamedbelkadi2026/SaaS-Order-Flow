@@ -68,7 +68,7 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 17. **Multi-Filter Dashboard**: Horizontal filter bar with city, product, agent, source, shipping provider, and date preset filters. All stat cards, charts, pie charts, team performance, and top products update in real-time when any filter changes. Product performance drill-down with confirmation/delivery rates and per-product ROI. Date presets: Today, Yesterday, This Month, Last Month, Custom range.
 18. **Profitability**: Delivered-only profit calculation with ROI/ROAS metrics, ad spend tracking, 40 MAD fixed shipping. Dynamic: Net Profit = Revenue(Livré) - COGS - Shipping(40 MAD) - Ad Spend
 19. **Multi-Store CRUD**: Create/edit/delete stores, owner-linked store management
-20. **Advanced Orders Table**: Server-side filtered/paginated table with columns (Code, Destinataire, Téléphone+WhatsApp/Call, Ville, Comment, Dernière action, Status, Prix, Adresse, Référence, Action icons). Multi-select checkboxes, bulk assign modal (service type + agent), bulk ship modal. Responsive mobile cards with checkboxes.
+20. **Advanced Orders Table**: Server-side filtered/paginated table with 15 toggleable columns. Column visibility controller (Colonnes dropdown) with localStorage persistence. Inline per-column search filters (Code, Destinataire, Téléphone, Ville, Produit, Action By). Color-coded action bar (Assign/Delete/Ship/Export/Columns). Bulk assign modal (service type + agent), bulk ship modal. Responsive mobile cards. Source filter in filter bar.
 
 ## API Routes
 ### Auth

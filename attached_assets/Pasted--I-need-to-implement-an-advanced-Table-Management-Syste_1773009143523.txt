@@ -1,0 +1,27 @@
+"I need to implement an advanced Table Management System and a functional Shipping Integration for the 'TajerGrow' Orders page, exactly as shown in the provided screenshots.
+1. Column Visibility Controller (Refer to Image 1):
+Implement a 'Columns' dropdown menu (triggered by the Layout icon in the top right).
+It must contain checkboxes for every column: ID Commande, Destinataire, Ville, Produit, Comment, Livraison, Prix, Référence, Source, etc.
+Logic: The Admin must be able to toggle these checkboxes to show or hide columns in the table in real-time. Store these preferences in the local storage or database so they persist.
+2. Inline Advanced Search & Filtering (Refer to Image 2):
+Under each column header, add an Input Search Field (e.g., under 'Téléphone', 'Destinataire', 'Ville', 'Produit', and 'Agent').
+Functionality:
+Searching by Phone must detect Moroccan formats.
+Searching by Agent should filter orders confirmed by specific staff (e.g., khawla, fatima).
+All filters must work together (e.g., find 'Product X' in 'Casablanca' confirmed by 'Khawla').
+3. Shipping Integration - The 'Truck' Icon (Refer to Image 4):
+Add the Green Truck Icon button in the top action bar.
+Action Logic:
+The Admin selects one or more orders using the checkboxes.
+The system must verify that the selected orders have the status 'confirme'.
+When the Truck icon is clicked, trigger a backend API call to the Shipping Carrier's API.
+Payload: Send customer details, address, city, and product items.
+Response: Receive the Tracking Number from the carrier and automatically update the order record in our database. Show a success notification with the tracking ID.
+4. Row Details & Status UI (Refer to Image 3):
+Each row should display the Shipping Carrier Logo in the 'Livraison' column once sent.
+Display the 'Action By' (Agent Name) and 'Comment' clearly.
+Statuses must use the color-coded labels (e.g., 'En attente de confirmation' in light blue).
+5. Technical Specifications:
+Use TanStack Table (React Table) for managing the table state and column visibility.
+Backend: Create an endpoint POST /api/shipping/dispatch to handle the bulk shipping request.
+Database: Ensure the Orders table has fields for is_visible (for columns) and carrier_id."

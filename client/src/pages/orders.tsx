@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
@@ -8,9 +8,10 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones } from "lucide-react";
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
@@ -35,6 +36,34 @@ const TITLE_MAP: Record<string, string> = {
   livrees: "LIVRÉES",
   refuses: "REFUSÉES",
 };
+
+const ALL_COLUMNS = [
+  { key: 'code', label: 'Code', locked: false },
+  { key: 'destinataire', label: 'Destinataire', locked: false },
+  { key: 'telephone', label: 'Téléphone', locked: false },
+  { key: 'ville', label: 'Ville', locked: false },
+  { key: 'produit', label: 'Produit', locked: false },
+  { key: 'actionBy', label: 'Action By', locked: false },
+  { key: 'comment', label: 'Comment', locked: false },
+  { key: 'livraison', label: 'Livraison', locked: false },
+  { key: 'derniereAction', label: 'Dernière action', locked: false },
+  { key: 'status', label: 'Status', locked: false },
+  { key: 'prix', label: 'Prix', locked: false },
+  { key: 'adresse', label: 'Adresse', locked: false },
+  { key: 'reference', label: 'Référence', locked: false },
+  { key: 'source', label: 'Source', locked: false },
+  { key: 'action', label: 'Action', locked: true },
+] as const;
+
+const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','comment','derniereAction','status','prix','adresse','reference','source','action'];
+
+function getStoredColumns(): string[] {
+  try {
+    const stored = localStorage.getItem('tajergrow_columns');
+    if (stored) return JSON.parse(stored);
+  } catch {}
+  return DEFAULT_VISIBLE;
+}
 
 function formatPhone(phone: string) {
   return phone.replace(/\s+/g, '').replace(/^0/, '+212');
@@ -93,13 +122,69 @@ export default function Orders() {
   const [assignAgentId, setAssignAgentId] = useState("");
   const [bulkShipProvider, setBulkShipProvider] = useState("");
 
-  const [colSearch, setColSearch] = useState('');
-  const colSearchDebounced = useMemo(() => colSearch, [colSearch]);
+  const [visibleCols, setVisibleCols] = useState<string[]>(getStoredColumns);
+  const [showColMenu, setShowColMenu] = useState(false);
+
+  const [colFilters, setColFilters] = useState<Record<string, string>>({});
+  const [showInlineFilters, setShowInlineFilters] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('tajergrow_columns', JSON.stringify(visibleCols));
+  }, [visibleCols]);
+
+  const toggleColumn = (key: string) => {
+    setVisibleCols(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    );
+  };
+
+  const resetColumns = () => {
+    setVisibleCols(DEFAULT_VISIBLE);
+  };
+
+  const isColVisible = (key: string) => visibleCols.includes(key);
 
   const ordersList = data?.orders || [];
   const totalOrders = data?.total || 0;
   const totalPages = Math.ceil(totalOrders / filters.limit);
-  const filteredOrders = ordersList;
+
+  const normalizePhone = (phone: string) => {
+    const digits = phone.replace(/[^0-9]/g, '');
+    if (digits.startsWith('212')) return digits.slice(3);
+    if (digits.startsWith('0')) return digits.slice(1);
+    return digits;
+  };
+
+  const filteredOrders = useMemo(() => {
+    if (!Object.values(colFilters).some(v => v)) return ordersList;
+    return ordersList.filter((o: any) => {
+      if (colFilters.code && !o.orderNumber?.toLowerCase().includes(colFilters.code.toLowerCase())) return false;
+      if (colFilters.destinataire && !o.customerName?.toLowerCase().includes(colFilters.destinataire.toLowerCase())) return false;
+      if (colFilters.telephone) {
+        const normalizedSearch = normalizePhone(colFilters.telephone);
+        const normalizedPhone = normalizePhone(o.customerPhone || '');
+        if (!normalizedPhone.includes(normalizedSearch)) return false;
+      }
+      if (colFilters.ville && !o.customerCity?.toLowerCase().includes(colFilters.ville.toLowerCase())) return false;
+      if (colFilters.produit) {
+        const allNames = (o.items || []).map((i: any) => i.product?.name || '').join(' ').toLowerCase();
+        if (!allNames.includes(colFilters.produit.toLowerCase())) return false;
+      }
+      if (colFilters.actionBy) {
+        const agentName = o.agent?.username || '';
+        if (!agentName.toLowerCase().includes(colFilters.actionBy.toLowerCase())) return false;
+      }
+      return true;
+    });
+  }, [ordersList, colFilters]);
+
+  useEffect(() => {
+    setSelectedIds(prev => {
+      const visibleIds = new Set(filteredOrders.map((o: any) => o.id));
+      const next = new Set([...prev].filter(id => visibleIds.has(id)));
+      return next.size !== prev.size ? next : prev;
+    });
+  }, [filteredOrders]);
 
   const openOrder = (order: any) => {
     setSelectedOrder(order);
@@ -198,6 +283,18 @@ export default function Orders() {
   };
 
   const pageTitle = TITLE_MAP[filterKey] || "NOUVELLES";
+  const visibleCount = visibleCols.length;
+  const colSpanTotal = visibleCount + 1;
+
+  const renderColFilter = (key: string, placeholder: string) => (
+    <Input
+      placeholder={placeholder}
+      value={colFilters[key] || ''}
+      onChange={e => setColFilters(f => ({ ...f, [key]: e.target.value }))}
+      className="h-6 text-[10px] bg-white dark:bg-card border-border/50 px-1.5 mt-0.5"
+      data-testid={`col-filter-${key}`}
+    />
+  );
 
   return (
     <div className="space-y-3 animate-in fade-in duration-500">
@@ -206,26 +303,67 @@ export default function Orders() {
           <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-orders-title">{pageTitle}</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Commandes / {pageTitle}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {selectedIds.size > 0 && (
-            <>
-              <Badge variant="secondary" className="text-xs" data-testid="badge-selected-count">{selectedIds.size} sélectionnée(s)</Badge>
-              <Button variant="outline" size="icon" className="h-9 w-9" title="Assigner" onClick={() => setShowAssignModal(true)} data-testid="button-bulk-assign">
-                <Users className="w-4 h-4" />
-              </Button>
-              {shippingIntegrations?.length > 0 && (
-                <Button variant="outline" size="icon" className="h-9 w-9" title="Expédier" onClick={() => setShowBulkShipModal(true)} data-testid="button-bulk-ship">
-                  <Truck className="w-4 h-4" />
-                </Button>
-              )}
-            </>
+            <Badge variant="secondary" className="text-xs mr-1" data-testid="badge-selected-count">{selectedIds.size} sélectionnée(s)</Badge>
           )}
+          <Button variant="outline" size="icon" className="h-9 w-9 border-blue-200 text-blue-500 hover:bg-blue-50" title="Assigner" onClick={() => { if (selectedIds.size > 0) setShowAssignModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-assign">
+            <Headphones className="w-4 h-4" />
+          </Button>
+          <Button variant="outline" size="icon" className="h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 opacity-50 cursor-not-allowed" title="Supprimer (bientôt)" disabled data-testid="button-bulk-delete">
+            <Trash2 className="w-4 h-4" />
+          </Button>
+          <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
+            <Truck className="w-4 h-4" />
+          </Button>
+          <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
+            <FileSpreadsheet className="w-4 h-4" />
+          </Button>
+          <Popover open={showColMenu} onOpenChange={setShowColMenu}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="icon" className="h-9 w-9 border-gray-300 text-gray-600 hover:bg-gray-50" title="Colonnes" data-testid="button-columns-menu">
+                <LayoutGrid className="w-4 h-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80 p-3" align="end" data-testid="popover-columns">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-semibold text-blue-600">Colonnes</span>
+                <button onClick={resetColumns} className="text-muted-foreground hover:text-foreground" title="Réinitialiser" data-testid="button-reset-columns">
+                  <RotateCcw className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                {ALL_COLUMNS.map(col => (
+                  <label key={col.key} className="flex items-center gap-2 text-xs cursor-pointer">
+                    <Checkbox
+                      checked={visibleCols.includes(col.key)}
+                      onCheckedChange={() => !col.locked && toggleColumn(col.key)}
+                      disabled={col.locked}
+                      data-testid={`col-toggle-${col.key}`}
+                    />
+                    <span className={col.locked ? 'text-muted-foreground' : ''}>{col.label}</span>
+                    {col.locked && <span className="text-[10px] text-muted-foreground">🔒</span>}
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
       <Card className="rounded-xl border-border/50 shadow-sm p-2.5 md:p-3" data-testid="card-orders-filter-bar">
         <div className="flex flex-col md:flex-row md:flex-wrap gap-1.5 md:gap-2 items-stretch md:items-center">
-          <div className="relative flex-1 min-w-0 md:max-w-[220px]">
+          <Select value={String(filters.limit)} onValueChange={(v) => updateFilter('limit', Number(v))}>
+            <SelectTrigger className="w-full md:w-[70px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-page-size">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="10">10</SelectItem>
+              <SelectItem value="25">25</SelectItem>
+              <SelectItem value="50">50</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="relative flex-1 min-w-0 md:max-w-[200px]">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
             <Input
               data-testid="input-search-orders"
@@ -246,18 +384,20 @@ export default function Orders() {
               ))}
             </SelectContent>
           </Select>
-          <Input type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-from" />
-          <Input type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-to" />
-          <Select value={String(filters.limit)} onValueChange={(v) => updateFilter('limit', Number(v))}>
-            <SelectTrigger className="w-full md:w-[80px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-page-size">
-              <SelectValue />
+          <Select value={filters.source || 'all'} onValueChange={(v) => updateFilter('source', v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-full md:w-auto md:min-w-[120px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-statut">
+              <SelectValue placeholder="Toutes Sources" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="10">10</SelectItem>
-              <SelectItem value="25">25</SelectItem>
-              <SelectItem value="50">50</SelectItem>
+              <SelectItem value="all">Toutes Sources</SelectItem>
+              <SelectItem value="manual">Manual</SelectItem>
+              <SelectItem value="shopify">Shopify</SelectItem>
+              <SelectItem value="youcan">YouCan</SelectItem>
+              <SelectItem value="woocommerce">WooCommerce</SelectItem>
             </SelectContent>
           </Select>
+          <Input type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-from" />
+          <Input type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-to" />
         </div>
       </Card>
 
@@ -269,76 +409,128 @@ export default function Orders() {
                 <TableHead className="w-10 px-2">
                   <Checkbox checked={selectedIds.size === filteredOrders.length && filteredOrders.length > 0} onCheckedChange={toggleAll} data-testid="checkbox-select-all" />
                 </TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Code</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Destinataire</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Téléphone</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Ville</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Comment</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Dernière action</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Status</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Prix</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Adresse</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Référence</TableHead>
-                <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Action</TableHead>
+                {isColVisible('code') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Code</div>{showInlineFilters && renderColFilter('code', 'Filtr...')}</TableHead>}
+                {isColVisible('destinataire') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Destinataire</div>{showInlineFilters && renderColFilter('destinataire', 'Filtr...')}</TableHead>}
+                {isColVisible('telephone') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Téléphone</div>{showInlineFilters && renderColFilter('telephone', 'Filtr...')}</TableHead>}
+                {isColVisible('ville') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Ville</div>{showInlineFilters && renderColFilter('ville', 'Filtr...')}</TableHead>}
+                {isColVisible('produit') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Produit</div>{showInlineFilters && renderColFilter('produit', 'Filtr...')}</TableHead>}
+                {isColVisible('actionBy') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Action By</div>{showInlineFilters && renderColFilter('actionBy', 'Filtr...')}</TableHead>}
+                {isColVisible('comment') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Comment</TableHead>}
+                {isColVisible('livraison') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Livraison</TableHead>}
+                {isColVisible('derniereAction') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Dernière action</TableHead>}
+                {isColVisible('status') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Status</TableHead>}
+                {isColVisible('prix') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Prix</TableHead>}
+                {isColVisible('adresse') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Adresse</TableHead>}
+                {isColVisible('reference') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Référence</TableHead>}
+                {isColVisible('source') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Source</TableHead>}
+                {isColVisible('action') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Action</TableHead>}
               </TableRow>
+              {!showInlineFilters && (
+                <TableRow className="bg-muted/10 border-t-0">
+                  <TableHead className="py-1 px-2">
+                    <button onClick={() => setShowInlineFilters(true)} className="text-[9px] text-primary hover:underline" data-testid="button-show-inline-filters">Filtr.</button>
+                  </TableHead>
+                  {visibleCols.filter(c => c !== 'action').map(c => (
+                    <TableHead key={c} className="py-1" />
+                  ))}
+                  {isColVisible('action') && <TableHead className="py-1" />}
+                </TableRow>
+              )}
+              {showInlineFilters && (
+                <TableRow className="bg-muted/10 border-t-0">
+                  <TableHead className="py-1 px-2">
+                    <button onClick={() => { setShowInlineFilters(false); setColFilters({}); }} className="text-[9px] text-red-500 hover:underline" data-testid="button-hide-inline-filters">×</button>
+                  </TableHead>
+                  {visibleCols.filter(c => c !== 'action').map(c => <TableHead key={c} className="py-0" />)}
+                  {isColVisible('action') && <TableHead className="py-0" />}
+                </TableRow>
+              )}
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 Array(5).fill(0).map((_, i) => (
                   <TableRow key={i}>
-                    <TableCell colSpan={12}><div className="h-10 w-full bg-muted rounded animate-pulse"></div></TableCell>
+                    <TableCell colSpan={colSpanTotal}><div className="h-10 w-full bg-muted rounded animate-pulse"></div></TableCell>
                   </TableRow>
                 ))
               ) : filteredOrders.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={12} className="h-48 text-center text-muted-foreground">
+                  <TableCell colSpan={colSpanTotal} className="h-48 text-center text-muted-foreground">
                     <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
                     Aucune commande trouvée.
                   </TableCell>
                 </TableRow>
               ) : (
                 filteredOrders.map((order: any) => {
-                  const productRef = order.items?.[0]?.product?.sku || order.items?.[0]?.product?.name || '-';
+                  const productName = order.items?.[0]?.product?.name || '-';
+                  const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';
+                  const agentName = order.agent?.username || '-';
                   return (
                     <TableRow key={order.id} className="hover:bg-muted/20 transition-colors text-xs" data-testid={`row-order-${order.id}`}>
                       <TableCell className="px-2" onClick={e => e.stopPropagation()}>
                         <Checkbox checked={selectedIds.has(order.id)} onCheckedChange={() => toggleSelect(order.id)} data-testid={`checkbox-order-${order.id}`} />
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground font-mono text-[10px]">{order.orderNumber || 'N/D'}</TableCell>
-                      <TableCell className="whitespace-nowrap font-medium">{order.customerName}</TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        <div className="flex items-center gap-1">
-                          <span className="text-[11px]">{order.customerPhone}</span>
-                          <a href={whatsappLink(order.customerPhone, order.customerName)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`whatsapp-${order.id}`}>
-                            <SiWhatsapp className="w-3.5 h-3.5" />
-                          </a>
-                          <a href={telLink(order.customerPhone)} onClick={e => e.stopPropagation()} className="text-blue-500 hover:text-blue-700" data-testid={`phone-${order.id}`}>
-                            <Phone className="w-3.5 h-3.5" />
-                          </a>
-                        </div>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>
-                      <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || "-"}</TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground text-[11px]">
-                        {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
-                      </TableCell>
-                      <TableCell><StatusBadge status={order.status} /></TableCell>
-                      <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>
-                      <TableCell className="max-w-[140px] truncate text-muted-foreground text-[11px]">{order.customerAddress || "-"}</TableCell>
-                      <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Voir" data-testid={`action-view-${order.id}`}>
-                            <Eye className="w-3.5 h-3.5 text-blue-500" />
-                          </button>
-                          <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Modifier" data-testid={`action-edit-${order.id}`}>
-                            <Pencil className="w-3.5 h-3.5 text-amber-500" />
-                          </button>
-                          <button className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`action-history-${order.id}`}>
-                            <Clock className="w-3.5 h-3.5 text-gray-400" />
-                          </button>
-                        </div>
-                      </TableCell>
+                      {isColVisible('code') && <TableCell className="whitespace-nowrap text-muted-foreground font-mono text-[10px]">{order.orderNumber || 'N/D'}</TableCell>}
+                      {isColVisible('destinataire') && <TableCell className="whitespace-nowrap font-medium">{order.customerName}</TableCell>}
+                      {isColVisible('telephone') && (
+                        <TableCell className="whitespace-nowrap">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[11px]">{order.customerPhone}</span>
+                            <a href={whatsappLink(order.customerPhone, order.customerName)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`whatsapp-${order.id}`}>
+                              <SiWhatsapp className="w-3.5 h-3.5" />
+                            </a>
+                            <a href={telLink(order.customerPhone)} onClick={e => e.stopPropagation()} className="text-blue-500 hover:text-blue-700" data-testid={`phone-${order.id}`}>
+                              <Phone className="w-3.5 h-3.5" />
+                            </a>
+                          </div>
+                        </TableCell>
+                      )}
+                      {isColVisible('ville') && <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>}
+                      {isColVisible('produit') && <TableCell className="max-w-[120px] truncate text-[11px]">{productName}</TableCell>}
+                      {isColVisible('actionBy') && (
+                        <TableCell className="whitespace-nowrap text-[11px]">
+                          {agentName !== '-' ? (
+                            <Badge variant="outline" className="text-[10px] font-medium">{agentName}</Badge>
+                          ) : <span className="text-muted-foreground">-</span>}
+                        </TableCell>
+                      )}
+                      {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || "-"}</TableCell>}
+                      {isColVisible('livraison') && (
+                        <TableCell className="whitespace-nowrap text-[11px]">
+                          {order.shippingProvider ? (
+                            <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
+                          ) : <span className="text-muted-foreground">-</span>}
+                        </TableCell>
+                      )}
+                      {isColVisible('derniereAction') && (
+                        <TableCell className="whitespace-nowrap text-muted-foreground text-[11px]">
+                          {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
+                        </TableCell>
+                      )}
+                      {isColVisible('status') && <TableCell><StatusBadge status={order.status} /></TableCell>}
+                      {isColVisible('prix') && <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>}
+                      {isColVisible('adresse') && <TableCell className="max-w-[140px] truncate text-muted-foreground text-[11px]">{order.customerAddress || "-"}</TableCell>}
+                      {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}
+                      {isColVisible('source') && (
+                        <TableCell className="whitespace-nowrap text-[11px]">
+                          <span className="capitalize text-muted-foreground">{order.source || 'manual'}</span>
+                        </TableCell>
+                      )}
+                      {isColVisible('action') && (
+                        <TableCell>
+                          <div className="flex items-center gap-0.5">
+                            <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Voir" data-testid={`action-view-${order.id}`}>
+                              <Eye className="w-3.5 h-3.5 text-blue-500" />
+                            </button>
+                            <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Modifier" data-testid={`action-edit-${order.id}`}>
+                              <Pencil className="w-3.5 h-3.5 text-amber-500" />
+                            </button>
+                            <button className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`action-history-${order.id}`}>
+                              <Clock className="w-3.5 h-3.5 text-gray-400" />
+                            </button>
+                          </div>
+                        </TableCell>
+                      )}
                     </TableRow>
                   );
                 })
@@ -346,10 +538,10 @@ export default function Orders() {
             </TableBody>
           </Table>
         </div>
-        {totalPages > 1 && (
+        {totalPages > 0 && (
           <div className="flex items-center justify-between px-4 py-2.5 border-t bg-muted/10" data-testid="pagination-bar">
             <span className="text-xs text-muted-foreground">
-              Page {filters.page} / {totalPages} ({totalOrders} commandes)
+              Page {filters.page} / {Math.max(totalPages, 1)} ({totalOrders} commandes)
             </span>
             <div className="flex items-center gap-1">
               <Button variant="outline" size="icon" className="h-7 w-7" disabled={filters.page <= 1} onClick={() => updateFilter('page', filters.page - 1)} data-testid="button-prev-page">
@@ -398,6 +590,9 @@ export default function Orders() {
                     <span className="truncate">{order.customerAddress || "-"}</span>
                     <span className="text-right text-[10px]">{order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : "-"}</span>
                   </div>
+                  {order.shippingProvider && (
+                    <Badge className="mt-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-1.5 border-t pt-2">
@@ -431,6 +626,7 @@ export default function Orders() {
         <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-bulk-assign">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Assigner une équipe</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">Assignez les commandes sélectionnées à un agent</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
@@ -475,6 +671,7 @@ export default function Orders() {
         <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-bulk-ship">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold">Expédier les commandes</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">Seules les commandes confirmées seront expédiées</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <p className="text-sm text-muted-foreground">Seules les commandes avec le statut <Badge variant="outline" className="text-emerald-600 mx-1">confirmé</Badge> seront expédiées.</p>
@@ -510,6 +707,7 @@ export default function Orders() {
               <DialogTitle className="text-lg sm:text-xl font-bold text-primary">Détails de la commande</DialogTitle>
               <Button variant="ghost" size="icon" onClick={() => setSelectedOrder(null)}><XCircle className="w-6 h-6" /></Button>
             </div>
+            <DialogDescription className="sr-only">Détails et modification de la commande #{selectedOrder.orderNumber}</DialogDescription>
             
             <div className="p-4 sm:p-6 overflow-y-auto max-h-[80vh] bg-[#f8f9fc] dark:bg-muted/10">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
