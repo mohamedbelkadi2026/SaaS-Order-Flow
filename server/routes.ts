@@ -1092,6 +1092,30 @@ export async function registerRoutes(
     res.json(result);
   });
 
+  app.post("/api/magasins/:id/logo", requireAdmin, async (req, res) => {
+    const storeId = Number(req.params.id);
+    const store = await storage.getStore(storeId);
+    if (!store) return res.status(404).json({ message: "Magasin non trouvé" });
+    if (store.ownerId !== req.user!.id && storeId !== req.user!.storeId) {
+      return res.status(403).json({ message: "Accès refusé" });
+    }
+    const { logoData } = req.body;
+    if (!logoData || typeof logoData !== 'string') {
+      return res.status(400).json({ message: "Logo data requis (base64)" });
+    }
+    const base64Data = logoData.includes(',') ? logoData.split(',')[1] : logoData;
+    const binarySize = Math.ceil(base64Data.length * 3 / 4);
+    if (binarySize > 500000) {
+      return res.status(400).json({ message: "Image trop volumineuse (max 500KB)" });
+    }
+    const mimeMatch = logoData.match(/^data:(image\/(png|jpeg|jpg|webp|gif|svg\+xml));base64,/);
+    if (!mimeMatch && logoData.startsWith('data:')) {
+      return res.status(400).json({ message: "Format non supporté. Utilisez PNG, JPEG, WebP ou GIF." });
+    }
+    const updated = await storage.updateStore(storeId, { logoUrl: logoData });
+    res.json(updated);
+  });
+
   app.get("/api/magasins", requireAuth, async (req, res) => {
     res.json(await storage.getStoresByOwner(req.user!.id));
   });

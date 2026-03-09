@@ -29,7 +29,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/hooks/use-auth";
+import { useActiveStore } from "@/hooks/use-active-store";
 
 const ADMIN_NAV = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -67,6 +69,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [isDark, setIsDark] = useState(false);
   const { user, logout } = useAuth();
+  const { activeStoreId, setActiveStoreId, stores, activeStore } = useActiveStore();
 
   useEffect(() => {
     if (isDark) document.documentElement.classList.add("dark");
@@ -190,6 +193,25 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
+            {stores.length > 1 && (
+              <Select
+                value={String(activeStoreId || '')}
+                onValueChange={(val) => setActiveStoreId(Number(val))}
+              >
+                <SelectTrigger className="w-[160px] h-9 text-sm rounded-xl border-border/50" data-testid="select-store-switcher">
+                  <Store className="w-4 h-4 mr-1 text-muted-foreground shrink-0" />
+                  <SelectValue placeholder="Magasin" />
+                </SelectTrigger>
+                <SelectContent>
+                  {stores.map((s: any) => (
+                    <SelectItem key={s.id} value={String(s.id)} data-testid={`option-store-${s.id}`}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
             <Button variant="ghost" size="icon" onClick={() => setIsDark(!isDark)} className="rounded-full" data-testid="button-theme">
               {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </Button>

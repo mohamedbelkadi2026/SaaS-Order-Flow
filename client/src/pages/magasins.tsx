@@ -1,6 +1,6 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useAuth } from "@/hooks/use-auth";
-import { useAgents, useIntegrations, useStore, useMagasins, useCreateMagasin, useUpdateMagasin, useDeleteMagasin } from "@/hooks/use-store-data";
+import { useAgents, useIntegrations, useStore, useMagasins, useCreateMagasin, useUpdateMagasin, useDeleteMagasin, useUploadLogo } from "@/hooks/use-store-data";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -73,7 +73,7 @@ function WhatsAppPreview({ storeName, message }: { storeName: string; message: s
   );
 }
 
-function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, agents, shippingIntegrations, storeIntegrationsList }: {
+function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, agents, shippingIntegrations, storeIntegrationsList, logoUrl, onLogoUpload, isUploadingLogo }: {
   isOpen: boolean;
   onClose: () => void;
   title: string;
@@ -84,8 +84,27 @@ function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, 
   agents: any[];
   shippingIntegrations: any[];
   storeIntegrationsList: any[];
+  logoUrl?: string | null;
+  onLogoUpload?: (base64: string) => void;
+  isUploadingLogo?: boolean;
 }) {
   const templateRef = useRef<HTMLTextAreaElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
+
+  const handleLogoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 500000) {
+      alert("Image trop volumineuse (max 500KB)");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result as string;
+      if (onLogoUpload) onLogoUpload(base64);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const insertVariable = (variable: string) => {
     const textarea = templateRef.current;
@@ -112,8 +131,10 @@ function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, 
           <div className="md:w-[240px] shrink-0 space-y-5 py-4">
             <div className="flex flex-col items-center">
               <p className="text-sm text-muted-foreground mb-2">Photo du business (Logo)</p>
-              <div className="w-[150px] h-[150px] border-2 border-dashed border-border rounded-xl flex items-center justify-center bg-muted/30">
-                {form.name ? (
+              <div className="w-[150px] h-[150px] border-2 border-dashed border-border rounded-xl flex items-center justify-center bg-muted/30 overflow-hidden">
+                {logoUrl ? (
+                  <img src={logoUrl} alt="Logo" className="w-full h-full object-cover rounded-xl" />
+                ) : form.name ? (
                   <div className="text-center">
                     <Package className="w-10 h-10 mx-auto text-muted-foreground mb-1" />
                     <p className="text-xs font-semibold text-muted-foreground">{form.name}</p>
@@ -122,8 +143,17 @@ function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, 
                   <p className="text-sm text-muted-foreground">150 x 150</p>
                 )}
               </div>
-              <Button variant="outline" size="sm" className="mt-2 text-xs opacity-50" disabled title="Bientôt disponible" data-testid="button-change-logo">
-                Changer l'image
+              <input type="file" ref={logoInputRef} accept="image/*" className="hidden" onChange={handleLogoSelect} data-testid="input-logo-file" />
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2 text-xs"
+                disabled={isUploadingLogo}
+                onClick={() => logoInputRef.current?.click()}
+                data-testid="button-change-logo"
+              >
+                {isUploadingLogo ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
+                {logoUrl ? "Changer l'image" : "Ajouter une image"}
               </Button>
             </div>
 
@@ -308,11 +338,13 @@ export default function Magasins() {
   const createMagasin = useCreateMagasin();
   const updateMagasin = useUpdateMagasin();
   const deleteMagasin = useDeleteMagasin();
+  const uploadLogo = useUploadLogo();
   const { toast } = useToast();
 
   const [addOpen, setAddOpen] = useState(false);
   const [editStore, setEditStore] = useState<any>(null);
   const [form, setForm] = useState<StoreForm>({ ...defaultForm });
+  const [newLogoPreview, setNewLogoPreview] = useState<string | null>(null);
 
   const resetForm = () => setForm({ ...defaultForm });
 
@@ -340,15 +372,37 @@ export default function Magasins() {
     whatsappTemplate: f.whatsappTemplate || null,
   });
 
+  const handleLogoUpload = async (storeId: number, base64: string) => {
+    try {
+      await uploadLogo.mutateAsync({ id: storeId, logoData: base64 });
+      setNewLogoPreview(base64);
+      toast({ title: "Logo mis à jour", description: "L'image a été enregistrée" });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message || "Impossible de télécharger le logo", variant: "destructive" });
+    }
+  };
+
   const handleCreate = async () => {
     if (!form.name.trim()) {
       toast({ title: "Erreur", description: "Nom du magasin requis", variant: "destructive" });
       return;
     }
     try {
-      await createMagasin.mutateAsync(formToPayload(form));
+      const newStore = await createMagasin.mutateAsync(formToPayload(form));
+      if (newLogoPreview && newStore?.id) {
+        try {
+          await uploadLogo.mutateAsync({ id: newStore.id, logoData: newLogoPreview });
+        } catch {
+          toast({ title: "Magasin créé", description: `${form.name} ajouté mais le logo n'a pas pu être enregistré.`, variant: "default" });
+          resetForm();
+          setNewLogoPreview(null);
+          setAddOpen(false);
+          return;
+        }
+      }
       toast({ title: "Magasin créé", description: `${form.name} a été ajouté` });
       resetForm();
+      setNewLogoPreview(null);
       setAddOpen(false);
     } catch (err: any) {
       toast({ title: "Erreur", description: err.message || "Impossible de créer le magasin", variant: "destructive" });
@@ -384,6 +438,7 @@ export default function Magasins() {
   const openEdit = (store: any) => {
     setEditStore(store);
     setForm(storeToForm(store));
+    setNewLogoPreview(null);
   };
 
   const openAdd = () => {
@@ -416,7 +471,11 @@ export default function Magasins() {
             <div className="flex justify-between items-start mb-6">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center overflow-hidden border">
-                  <Store className="w-6 h-6 text-muted-foreground" />
+                  {storeData?.logoUrl ? (
+                    <img src={storeData.logoUrl} alt={storeName} className="w-full h-full object-cover" />
+                  ) : (
+                    <Store className="w-6 h-6 text-muted-foreground" />
+                  )}
                 </div>
                 <div>
                   <h3 className="font-bold text-lg uppercase tracking-tight" data-testid="text-store-name">{storeName}</h3>
@@ -491,8 +550,12 @@ export default function Magasins() {
             <CardContent className="p-6">
               <div className="flex justify-between items-start mb-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center border">
-                    <Store className="w-6 h-6 text-muted-foreground" />
+                  <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center border overflow-hidden">
+                    {store.logoUrl ? (
+                      <img src={store.logoUrl} alt={store.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <Store className="w-6 h-6 text-muted-foreground" />
+                    )}
                   </div>
                   <div>
                     <h3 className="font-bold text-lg uppercase tracking-tight">{store.name}</h3>
@@ -533,7 +596,7 @@ export default function Magasins() {
 
       <StoreModal
         isOpen={addOpen}
-        onClose={() => { setAddOpen(false); resetForm(); }}
+        onClose={() => { setAddOpen(false); resetForm(); setNewLogoPreview(null); }}
         title="Ajouter un nouveau business"
         form={form}
         setForm={setForm}
@@ -542,11 +605,14 @@ export default function Magasins() {
         agents={agentList}
         shippingIntegrations={shippingList}
         storeIntegrationsList={platformList}
+        logoUrl={newLogoPreview}
+        onLogoUpload={(base64) => setNewLogoPreview(base64)}
+        isUploadingLogo={false}
       />
 
       <StoreModal
         isOpen={!!editStore}
-        onClose={() => { setEditStore(null); resetForm(); }}
+        onClose={() => { setEditStore(null); resetForm(); setNewLogoPreview(null); }}
         title="Modifier le magasin"
         form={form}
         setForm={setForm}
@@ -555,6 +621,9 @@ export default function Magasins() {
         agents={agentList}
         shippingIntegrations={shippingList}
         storeIntegrationsList={platformList}
+        logoUrl={newLogoPreview || editStore?.logoUrl}
+        onLogoUpload={(base64) => editStore && handleLogoUpload(editStore.id, base64)}
+        isUploadingLogo={uploadLogo.isPending}
       />
     </div>
   );

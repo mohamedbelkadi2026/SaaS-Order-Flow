@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/layout/app-layout";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
+import { ActiveStoreProvider } from "@/hooks/use-active-store";
 import { Loader2 } from "lucide-react";
 
 import AuthPage from "@/pages/auth-page";
@@ -41,27 +42,29 @@ function ProtectedRoutes() {
   }
 
   return (
-    <AppLayout>
-      <Switch>
-        <Route path="/" component={Dashboard}/>
-        <Route path="/orders/all" component={AllOrders}/>
-        <Route path="/orders/new" component={NewOrder}/>
-        <Route path="/orders" component={Orders}/>
-        <Route path="/orders/:filter" component={Orders}/>
-        <Route path="/inventory" component={Inventory}/>
-        <Route path="/team" component={Team}/>
-        <Route path="/clients" component={Clients}/>
-        <Route path="/magasins" component={Magasins}/>
-        <Route path="/invoices" component={Invoices}/>
-        <Route path="/billing" component={Billing}/>
-        <Route path="/profitability" component={Profitability}/>
-        <Route path="/integrations" component={Integrations}/>
-        <Route path="/integrations/shipping" component={ShippingIntegrations}/>
-        <Route path="/integrations/logs" component={IntegrationLogs}/>
-        <Route path="/admin" component={Admin}/>
-        <Route component={NotFound} />
-      </Switch>
-    </AppLayout>
+    <ActiveStoreProvider>
+      <AppLayout>
+        <Switch>
+          <Route path="/" component={Dashboard} />
+          <Route path="/orders/all" component={AllOrders} />
+          <Route path="/orders/new" component={NewOrder} />
+          <Route path="/orders" component={Orders} />
+          <Route path="/orders/:filter" component={Orders} />
+          <Route path="/inventory" component={Inventory} />
+          <Route path="/team" component={Team} />
+          <Route path="/clients" component={Clients} />
+          <Route path="/magasins" component={Magasins} />
+          <Route path="/invoices" component={Invoices} />
+          <Route path="/billing" component={Billing} />
+          <Route path="/profitability" component={Profitability} />
+          <Route path="/integrations" component={Integrations} />
+          <Route path="/integrations/shipping" component={ShippingIntegrations} />
+          <Route path="/integrations/logs" component={IntegrationLogs} />
+          <Route path="/admin" component={Admin} />
+          <Route component={NotFound} />
+        </Switch>
+      </AppLayout>
+    </ActiveStoreProvider>
   );
 }
 

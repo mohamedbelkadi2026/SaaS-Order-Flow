@@ -499,6 +499,20 @@ export function useDeleteMagasin() {
   });
 }
 
+export function useUploadLogo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, logoData }: { id: number; logoData: string }) => {
+      const res = await apiRequest("POST", `/api/magasins/${id}/logo`, { logoData });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/magasins"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/store"] });
+    },
+  });
+}
+
 export function useDailyStats() {
   return useQuery({
     queryKey: ["/api/stats/daily"],
