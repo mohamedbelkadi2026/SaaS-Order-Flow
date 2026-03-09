@@ -162,6 +162,30 @@ export const agentProducts = pgTable("agent_products", {
   storeId: integer("store_id").references(() => stores.id).notNull(),
 });
 
+// New table: per-store agent configuration (role, lead %, allowed products)
+export const storeAgentSettings = pgTable("store_agent_settings", {
+  id: serial("id").primaryKey(),
+  agentId: integer("agent_id").references(() => users.id).notNull(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  // 'confirmation' | 'suivi' | 'both'
+  roleInStore: text("role_in_store").notNull().default("confirmation"),
+  // 0-100, used for weighted lead distribution
+  leadPercentage: integer("lead_percentage").notNull().default(100),
+  // JSON array of product IDs, e.g. '[1,2,3]'. Empty array means all products allowed.
+  allowedProductIds: text("allowed_product_ids").notNull().default("[]"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// New table: follow-up log entries per order (Journal de Suivi)
+export const orderFollowUpLogs = pgTable("order_follow_up_logs", {
+  id: serial("id").primaryKey(),
+  orderId: integer("order_id").references(() => orders.id).notNull(),
+  agentId: integer("agent_id").references(() => users.id),
+  agentName: text("agent_name"),
+  note: text("note").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const sessions = pgTable("sessions", {
   sid: text("sid").primaryKey(),
   sess: text("sess").notNull(),
@@ -188,6 +212,7 @@ export const storesRelations = relations(stores, ({ many }) => ({
   orders: many(orders),
   customers: many(customers),
   subscriptions: many(subscriptions),
+  agentSettings: many(storeAgentSettings),
 }));
 
 export const usersRelations = relations(users, ({ one, many }) => ({
@@ -196,6 +221,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
     references: [stores.id],
   }),
   assignedOrders: many(orders),
+  storeSettings: many(storeAgentSettings),
 }));
 
 export const ordersRelations = relations(orders, ({ one, many }) => ({
@@ -208,6 +234,7 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
     references: [users.id],
   }),
   items: many(orderItems),
+  followUpLogs: many(orderFollowUpLogs),
 }));
 
 export const orderItemsRelations = relations(orderItems, ({ one }) => ({
@@ -277,6 +304,28 @@ export const agentProductsRelations = relations(agentProducts, ({ one }) => ({
   }),
 }));
 
+export const storeAgentSettingsRelations = relations(storeAgentSettings, ({ one }) => ({
+  agent: one(users, {
+    fields: [storeAgentSettings.agentId],
+    references: [users.id],
+  }),
+  store: one(stores, {
+    fields: [storeAgentSettings.storeId],
+    references: [stores.id],
+  }),
+}));
+
+export const orderFollowUpLogsRelations = relations(orderFollowUpLogs, ({ one }) => ({
+  order: one(orders, {
+    fields: [orderFollowUpLogs.orderId],
+    references: [orders.id],
+  }),
+  agent: one(users, {
+    fields: [orderFollowUpLogs.agentId],
+    references: [users.id],
+  }),
+}));
+
 export const insertStoreSchema = createInsertSchema(stores).omit({ id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
 export const insertProductSchema = createInsertSchema(products).omit({ id: true, createdAt: true });
@@ -289,6 +338,8 @@ export const insertIntegrationLogSchema = createInsertSchema(integrationLogs).om
 export const insertAgentProductSchema = createInsertSchema(agentProducts).omit({ id: true });
 export const insertSubscriptionSchema = createInsertSchema(subscriptions).omit({ id: true, createdAt: true });
 export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true, createdAt: true });
+export const insertStoreAgentSettingsSchema = createInsertSchema(storeAgentSettings).omit({ id: true, createdAt: true });
+export const insertOrderFollowUpLogSchema = createInsertSchema(orderFollowUpLogs).omit({ id: true, createdAt: true });
 
 export type Store = typeof stores.$inferSelect;
 export type InsertStore = z.infer<typeof insertStoreSchema>;
@@ -306,16 +357,18 @@ export type StoreIntegration = typeof storeIntegrations.$inferSelect;
 export type InsertIntegration = z.infer<typeof insertIntegrationSchema>;
 export type IntegrationLog = typeof integrationLogs.$inferSelect;
 export type InsertIntegrationLog = z.infer<typeof insertIntegrationLogSchema>;
-
 export type Subscription = typeof subscriptions.$inferSelect;
 export type InsertSubscription = z.infer<typeof insertSubscriptionSchema>;
 export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
-
 export type AgentProduct = typeof agentProducts.$inferSelect;
 export type InsertAgentProduct = z.infer<typeof insertAgentProductSchema>;
 export type ProductVariant = typeof productVariants.$inferSelect;
 export type InsertProductVariant = z.infer<typeof insertProductVariantSchema>;
+export type StoreAgentSetting = typeof storeAgentSettings.$inferSelect;
+export type InsertStoreAgentSetting = z.infer<typeof insertStoreAgentSettingsSchema>;
+export type OrderFollowUpLog = typeof orderFollowUpLogs.$inferSelect;
+export type InsertOrderFollowUpLog = z.infer<typeof insertOrderFollowUpLogSchema>;
 
 export type ProductWithVariants = Product & {
   variants: ProductVariant[];

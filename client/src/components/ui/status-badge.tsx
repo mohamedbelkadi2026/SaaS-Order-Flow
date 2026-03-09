@@ -10,9 +10,13 @@ export const ORDER_STATUSES = [
   { value: 'Annulé (double)', label: 'Annulé (double)', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 border-orange-200 dark:border-orange-800' },
   { value: 'boite vocale', label: 'boite vocale', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400 border-purple-200 dark:border-purple-800' },
   { value: 'in_progress', label: 'En cours', color: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400 border-sky-200 dark:border-sky-800' },
+  { value: 'expédié', label: 'Expédié', color: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400 border-cyan-200 dark:border-cyan-800' },
+  { value: 'retourné', label: 'Retourné', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 border-orange-200 dark:border-orange-800' },
   { value: 'delivered', label: 'Livré', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800' },
   { value: 'refused', label: 'Refusé', color: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700' },
 ] as const;
+
+export const SUIVI_STATUSES = ['in_progress', 'expédié', 'retourné'];
 
 const STATUS_MAP = Object.fromEntries(ORDER_STATUSES.map(s => [s.value, s]));
 

@@ -1,4 +1,4 @@
-import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance } from "@/hooks/use-store-data";
+import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance, useAgentStoreSettings } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -71,6 +71,7 @@ export default function Dashboard() {
   const { data: filterOptions } = useFilterOptions();
   const { data: agents } = useAgents();
   const { data: agentPerf } = useAgentPerformance();
+  const { data: agentSettings = [] } = useAgentStoreSettings();
 
   const handleDatePreset = (preset: string) => {
     if (preset === 'custom') {
@@ -149,6 +150,15 @@ export default function Dashboard() {
   })) || [];
 
   const agentMap = new Map((agents || []).map((a: any) => [a.id, a]));
+  const agentSettingsMap = new Map((agentSettings as any[]).map((s: any) => [s.agentId, s]));
+
+  const roleBadge = (agentId: number) => {
+    const s = agentSettingsMap.get(agentId);
+    const role = s?.roleInStore || 'confirmation';
+    if (role === 'suivi') return <Badge className="text-[10px] h-4 px-1.5 bg-sky-100 text-sky-700 border-sky-200">Suivi</Badge>;
+    if (role === 'both') return <Badge className="text-[10px] h-4 px-1.5 bg-purple-100 text-purple-700 border-purple-200">Les deux</Badge>;
+    return <Badge className="text-[10px] h-4 px-1.5 bg-green-100 text-green-700 border-green-200">Confirmation</Badge>;
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -399,6 +409,7 @@ export default function Dashboard() {
                       <TableRow key={perf.agentId} data-testid={`perf-row-${perf.agentId}`}>
                         <TableCell>
                           <div className="font-medium text-sm">{agent?.username || `Agent #${perf.agentId}`}</div>
+                          <div className="mt-0.5">{roleBadge(perf.agentId)}</div>
                         </TableCell>
                         <TableCell className="text-center">
                           <Badge className="bg-orange-500 text-white text-xs">{perf.total}</Badge>

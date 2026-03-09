@@ -624,3 +624,58 @@ export function useBulkShip() {
     },
   });
 }
+
+export function useAgentStoreSettings() {
+  return useQuery({
+    queryKey: ["/api/agents/store-settings"],
+    queryFn: async () => {
+      const res = await fetch("/api/agents/store-settings", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch agent store settings");
+      return res.json();
+    },
+  });
+}
+
+export function useUpsertAgentStoreSetting() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ agentId, roleInStore, leadPercentage, allowedProductIds }: {
+      agentId: number;
+      roleInStore?: string;
+      leadPercentage?: number;
+      allowedProductIds?: number[];
+    }) => {
+      const res = await apiRequest("PUT", `/api/agents/${agentId}/store-settings`, { roleInStore, leadPercentage, allowedProductIds });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents/store-settings"] });
+    },
+  });
+}
+
+export function useOrderFollowUpLogs(orderId: number | undefined) {
+  return useQuery({
+    queryKey: ["/api/orders", orderId, "followup-logs"],
+    queryFn: async () => {
+      if (!orderId) return [];
+      const res = await fetch(`/api/orders/${orderId}/followup-logs`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch follow-up logs");
+      return res.json();
+    },
+    enabled: !!orderId,
+  });
+}
+
+export function useCreateFollowUpLog() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ orderId, note }: { orderId: number; note: string }) => {
+      const res = await apiRequest("POST", `/api/orders/${orderId}/followup-logs`, { note });
+      return res.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders", variables.orderId, "followup-logs"] });
+    },
+  });
+}

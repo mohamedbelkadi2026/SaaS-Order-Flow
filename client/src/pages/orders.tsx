@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore } from "@/hooks/use-store-data";
+import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones } from "lucide-react";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send } from "lucide-react";
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
@@ -22,6 +22,7 @@ const STATUS_MAP: Record<string, string> = {
   annules: "annule_group",
   "boite-vocale": "boite vocale",
   "en-cours": "in_progress",
+  suivi: "suivi_group",
   livrees: "delivered",
   refuses: "refused",
 };
@@ -33,6 +34,7 @@ const TITLE_MAP: Record<string, string> = {
   annules: "ANNULÉES",
   "boite-vocale": "BOITE VOCALE",
   "en-cours": "EN COURS",
+  suivi: "SUIVI DES COLIS",
   livrees: "LIVRÉES",
   refuses: "REFUSÉES",
 };
@@ -91,6 +93,65 @@ function buildWhatsappLink(phone: string, order: any, template?: string | null) 
 
 function telLink(phone: string) {
   return `tel:${formatPhone(phone)}`;
+}
+
+function FollowUpLogsPanel({ orderId }: { orderId: number }) {
+  const { data: logs = [], isLoading } = useOrderFollowUpLogs(orderId);
+  const createLog = useCreateFollowUpLog();
+  const [note, setNote] = useState("");
+  const { toast } = useToast();
+
+  const handleSubmit = () => {
+    if (!note.trim()) return;
+    createLog.mutate({ orderId, note: note.trim() }, {
+      onSuccess: () => { setNote(""); },
+      onError: () => toast({ title: "Erreur", variant: "destructive" }),
+    });
+  };
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-2 text-primary font-bold mb-3">
+        <BookOpen className="w-5 h-5" /> Journal de suivi
+      </div>
+      <div className="bg-white dark:bg-card rounded-xl border p-3 space-y-3 max-h-48 overflow-y-auto mb-3">
+        {isLoading ? (
+          <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+        ) : logs.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-4">Aucune entrée de suivi</p>
+        ) : (
+          logs.map((log: any) => (
+            <div key={log.id} className="flex gap-3 text-sm border-b last:border-0 pb-2">
+              <div className="shrink-0 pt-0.5">
+                <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center">
+                  <Users className="w-3 h-3 text-primary" />
+                </div>
+              </div>
+              <div className="flex-1">
+                <div className="flex justify-between gap-2">
+                  <span className="font-semibold text-xs">{log.agentName || 'Système'}</span>
+                  <span className="text-xs text-muted-foreground">{new Date(log.createdAt).toLocaleString('fr-MA')}</span>
+                </div>
+                <p className="text-sm mt-0.5">{log.note}</p>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Input
+          placeholder="Ajouter une note de suivi..."
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+          className="flex-1 bg-white dark:bg-card"
+        />
+        <Button size="sm" onClick={handleSubmit} disabled={createLog.isPending || !note.trim()}>
+          {createLog.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export default function Orders() {
@@ -849,6 +910,8 @@ export default function Orders() {
                   </div>
                 </div>
               )}
+
+              <FollowUpLogsPanel orderId={selectedOrder.id} />
 
               {(selectedOrder.status === 'confirme' || selectedOrder.status === 'nouveau') && !selectedOrder.trackNumber && shippingIntegrations?.length > 0 && (
                 <div className="mt-4 bg-muted/30 rounded-xl p-4 space-y-3">

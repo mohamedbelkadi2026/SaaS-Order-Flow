@@ -310,6 +310,8 @@ export async function registerRoutes(
       const ordersList = await storage.getOrdersByAgent(user.id);
       if (status === 'annule_group') {
         res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
+      } else if (status === 'suivi_group') {
+        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné'].includes(o.status)));
       } else {
         res.json(status ? ordersList.filter(o => o.status === status) : ordersList);
       }
@@ -317,6 +319,9 @@ export async function registerRoutes(
       if (status === 'annule_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
+      } else if (status === 'suivi_group') {
+        const ordersList = await storage.getOrdersByStore(user.storeId!);
+        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné'].includes(o.status)));
       } else {
         const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
         res.json(ordersList);
@@ -1090,6 +1095,117 @@ export async function registerRoutes(
     if (!Array.isArray(productIds)) return res.status(400).json({ message: "productIds doit être un tableau" });
     const result = await storage.setAgentProducts(agentId, req.user!.storeId!, productIds);
     res.json(result);
+  });
+
+  // ============================================================
+  // AGENT STORE SETTINGS (role, lead %, allowed products)
+  // ============================================================
+  app.get("/api/agents/store-settings", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const settings = await storage.getStoreAgentSettings(storeId);
+    res.json(settings);
+  });
+
+  app.put("/api/agents/:id/store-settings", requireAdmin, async (req, res) => {
+    try {
+      const agentId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const agent = await storage.getUserById(agentId);
+      if (!agent || agent.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+      const schema = z.object({
+        roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
+        leadPercentage: z.number().min(0).max(100).optional(),
+        allowedProductIds: z.array(z.number()).optional(),
+      });
+      const data = schema.parse(req.body);
+      const payload: any = {};
+      if (data.roleInStore !== undefined) payload.roleInStore = data.roleInStore;
+      if (data.leadPercentage !== undefined) payload.leadPercentage = data.leadPercentage;
+      if (data.allowedProductIds !== undefined) payload.allowedProductIds = JSON.stringify(data.allowedProductIds);
+      const result = await storage.upsertStoreAgentSetting(agentId, storeId, payload);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // ORDER FOLLOW-UP LOGS (Journal de Suivi)
+  // ============================================================
+  app.get("/api/orders/:id/followup-logs", requireAuth, async (req, res) => {
+    const orderId = Number(req.params.id);
+    const order = await storage.getOrder(orderId);
+    if (!order) return res.status(404).json({ message: "Commande non trouvée" });
+    if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+    const logs = await storage.getOrderFollowUpLogs(orderId);
+    res.json(logs);
+  });
+
+  app.post("/api/orders/:id/followup-logs", requireAuth, async (req, res) => {
+    try {
+      const orderId = Number(req.params.id);
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Commande non trouvée" });
+      if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+      const schema = z.object({ note: z.string().min(1) });
+      const { note } = schema.parse(req.body);
+      const log = await storage.createOrderFollowUpLog({
+        orderId,
+        agentId: req.user!.id,
+        agentName: req.user!.username,
+        note,
+      });
+      res.status(201).json(log);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // DIGYLOG SHIPPING WEBHOOK — update order status from carrier
+  // ============================================================
+  app.post("/api/shipping/digylog/webhook", async (req, res) => {
+    try {
+      const storeId = req.query.store_id ? Number(req.query.store_id) : null;
+      const { trackingNumber, status, message } = req.body || {};
+      if (!trackingNumber || !status) {
+        return res.status(400).json({ message: "trackingNumber and status required" });
+      }
+      // Map Digylog statuses to internal statuses
+      const statusMap: Record<string, string> = {
+        "livré": "delivered",
+        "livrée": "delivered",
+        "delivered": "delivered",
+        "retourné": "retourné",
+        "retournée": "retourné",
+        "returned": "retourné",
+        "en cours": "in_progress",
+        "in_transit": "in_progress",
+        "expédié": "in_progress",
+        "shipped": "in_progress",
+      };
+      const internalStatus = statusMap[status.toLowerCase()] || status;
+
+      // Find the order by tracking number
+      if (storeId) {
+        const ordersList = await storage.getOrdersByStore(storeId);
+        const order = ordersList.find(o => o.trackNumber === trackingNumber);
+        if (order) {
+          await storage.updateOrderStatus(order.id, internalStatus);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id,
+            agentId: null,
+            agentName: "Digylog",
+            note: `Statut mis à jour automatiquement: ${status}${message ? ` — ${message}` : ''}`,
+          });
+        }
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ message: "Webhook processing failed" });
+    }
   });
 
   app.post("/api/magasins/:id/logo", requireAdmin, async (req, res) => {

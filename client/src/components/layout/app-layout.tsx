@@ -55,6 +55,7 @@ const ORDER_SUB_ITEMS = [
   { name: "Annulés", href: "/orders/annules" },
   { name: "Boite vocale", href: "/orders/boite-vocale" },
   { name: "En cours", href: "/orders/en-cours" },
+  { name: "Suivi des Colis", href: "/orders/suivi" },
   { name: "Livrées", href: "/orders/livrees" },
   { name: "Refusées", href: "/orders/refuses" },
 ];

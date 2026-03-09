@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { useAuth } from "@/hooks/use-auth";
-import { useAgents, useIntegrations, useStore, useMagasins, useCreateMagasin, useUpdateMagasin, useDeleteMagasin, useUploadLogo } from "@/hooks/use-store-data";
+import { useAgents, useIntegrations, useStore, useMagasins, useCreateMagasin, useUpdateMagasin, useDeleteMagasin, useUploadLogo, useAgentStoreSettings, useUpsertAgentStoreSetting } from "@/hooks/use-store-data";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Store, User, CheckCircle2, Truck, Globe, Plus, Pencil, Save, Loader2, X, Home, Users, MessageCircle, Tag, Trash2, Package } from "lucide-react";
+import { Store, User, CheckCircle2, Truck, Globe, Plus, Pencil, Save, Loader2, X, Home, Users, MessageCircle, Tag, Trash2, Package, Percent } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 
@@ -69,6 +70,94 @@ function WhatsAppPreview({ storeName, message }: { storeName: string; message: s
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function AgentSettingsSection({ agents }: { agents: any[] }) {
+  const { data: settings = [] } = useAgentStoreSettings();
+  const upsert = useUpsertAgentStoreSetting();
+  const { toast } = useToast();
+
+  const getSettingFor = (agentId: number) =>
+    settings.find((s: any) => s.agentId === agentId);
+
+  const [localSettings, setLocalSettings] = useState<Record<number, { roleInStore: string; leadPercentage: string }>>({});
+
+  const get = (agentId: number, field: 'roleInStore' | 'leadPercentage') => {
+    if (localSettings[agentId]) return localSettings[agentId][field];
+    const s = getSettingFor(agentId);
+    if (field === 'roleInStore') return s?.roleInStore || 'confirmation';
+    return String(s?.leadPercentage ?? 100);
+  };
+
+  const set = (agentId: number, field: 'roleInStore' | 'leadPercentage', value: string) => {
+    setLocalSettings(prev => ({
+      ...prev,
+      [agentId]: {
+        roleInStore: get(agentId, 'roleInStore'),
+        leadPercentage: get(agentId, 'leadPercentage'),
+        ...prev[agentId],
+        [field]: value,
+      },
+    }));
+  };
+
+  const save = (agentId: number) => {
+    const local = localSettings[agentId];
+    if (!local) return;
+    const pct = parseInt(local.leadPercentage);
+    if (isNaN(pct) || pct < 0 || pct > 100) {
+      toast({ title: "Pourcentage invalide", description: "Doit être entre 0 et 100", variant: "destructive" });
+      return;
+    }
+    upsert.mutate({ agentId, roleInStore: local.roleInStore, leadPercentage: pct }, {
+      onSuccess: () => {
+        toast({ title: "Paramètres mis à jour" });
+        setLocalSettings(prev => { const n = { ...prev }; delete n[agentId]; return n; });
+      },
+      onError: () => toast({ title: "Erreur", variant: "destructive" }),
+    });
+  };
+
+  if (agents.length === 0) {
+    return <p className="text-sm text-muted-foreground">Aucun agent dans ce magasin</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {agents.map((a: any) => {
+        const isDirty = !!localSettings[a.id];
+        return (
+          <div key={a.id} className="flex items-center gap-2 p-2 border rounded-lg bg-background">
+            <User className="w-4 h-4 text-muted-foreground shrink-0" />
+            <span className="text-sm font-medium w-28 truncate">{a.username}</span>
+            <Select value={get(a.id, 'roleInStore')} onValueChange={v => set(a.id, 'roleInStore', v)}>
+              <SelectTrigger className="h-7 text-xs w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="confirmation">Confirmation</SelectItem>
+                <SelectItem value="suivi">Suivi</SelectItem>
+                <SelectItem value="both">Les deux</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="flex items-center gap-1">
+              <Input
+                type="number" min={0} max={100} value={get(a.id, 'leadPercentage')}
+                onChange={e => set(a.id, 'leadPercentage', e.target.value)}
+                className="h-7 text-xs w-16 text-center"
+              />
+              <Percent className="w-3 h-3 text-muted-foreground" />
+            </div>
+            {isDirty && (
+              <Button size="sm" className="h-7 text-xs ml-auto" onClick={() => save(a.id)} disabled={upsert.isPending}>
+                {upsert.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+              </Button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -215,30 +304,14 @@ function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, 
             <div className="space-y-4">
               <div className="flex items-center gap-2 text-blue-600">
                 <Users className="w-4 h-4" />
-                <h3 className="font-semibold text-base">Ajouter votre équipe au magasin</h3>
+                <h3 className="font-semibold text-base">Configuration de l'équipe</h3>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Sélectionnez une ou plusieurs équipes</Label>
-                  <div className="flex flex-wrap gap-1.5 p-2 border rounded-lg min-h-[40px] bg-background">
-                    {agents.length > 0 ? agents.map((a: any) => (
-                      <Badge key={a.id} variant="secondary" className="text-xs gap-1 px-2 py-1">
-                        {a.username}
-                      </Badge>
-                    )) : (
-                      <span className="text-sm text-muted-foreground">Sélectionnez une ou plusieurs équipes</span>
-                    )}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Choisissez les services disponibles</Label>
-                  <div className="flex flex-wrap gap-1.5 p-2 border rounded-lg min-h-[40px] bg-background">
-                    <Badge variant="secondary" className="text-xs gap-1 px-2 py-1">
-                      Confirmation
-                    </Badge>
-                  </div>
-                </div>
+              <div className="grid grid-cols-3 gap-1 mb-1">
+                <span className="text-xs text-muted-foreground font-medium pl-6">Agent</span>
+                <span className="text-xs text-muted-foreground font-medium">Rôle</span>
+                <span className="text-xs text-muted-foreground font-medium">Leads %</span>
               </div>
+              <AgentSettingsSection agents={agents} />
             </div>
 
             <div className="space-y-4">

@@ -1,13 +1,15 @@
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, storeIntegrations, integrationLogs,
-  subscriptions, customers, agentProducts,
+  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend,
   type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog,
   type Subscription, type InsertSubscription, type Customer, type InsertCustomer,
-  type AgentProduct
+  type AgentProduct,
+  type StoreAgentSetting, type InsertStoreAgentSetting,
+  type OrderFollowUpLog, type InsertOrderFollowUpLog,
 } from "@shared/schema";
 import { eq, desc, and, sql, count, ne, like, gte, lte, inArray, or } from "drizzle-orm";
 
@@ -79,6 +81,13 @@ export interface IStorage {
   getAgentProducts(agentId: number): Promise<AgentProduct[]>;
   setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
   getNextAgent(storeId: number, productId?: number): Promise<number | null>;
+
+  getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]>;
+  getAgentStoreSetting(agentId: number, storeId: number): Promise<StoreAgentSetting | undefined>;
+  upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string }): Promise<StoreAgentSetting>;
+
+  getOrderFollowUpLogs(orderId: number): Promise<OrderFollowUpLog[]>;
+  createOrderFollowUpLog(data: InsertOrderFollowUpLog): Promise<OrderFollowUpLog>;
 
   getStoresByOwner(userId: number): Promise<Store[]>;
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
@@ -219,6 +228,8 @@ export class DatabaseStorage implements IStorage {
     if (filters.status) {
       if (filters.status === 'annule_group') {
         conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
+      } else if (filters.status === 'suivi_group') {
+        conditions.push(inArray(orders.status, ['in_progress', 'expédié', 'retourné']));
       } else {
         conditions.push(eq(orders.status, filters.status));
       }
@@ -712,26 +723,92 @@ export class DatabaseStorage implements IStorage {
     
     if (storeAgents.length === 0) return null;
 
-    let eligibleAgents = storeAgents;
+    // Load per-store agent settings for role and lead percentage
+    const settings = await db.select().from(storeAgentSettings)
+      .where(eq(storeAgentSettings.storeId, storeId));
+    const settingsMap = new Map(settings.map(s => [s.agentId, s]));
+
+    // Filter agents to only those with a confirmation role (confirmation or both)
+    let eligibleAgents = storeAgents.filter(a => {
+      const setting = settingsMap.get(a.id);
+      if (!setting) return true; // no settings = default to confirmation eligible
+      return setting.roleInStore === 'confirmation' || setting.roleInStore === 'both';
+    });
+
+    if (eligibleAgents.length === 0) eligibleAgents = storeAgents;
+
+    // Filter by allowed products if configured
     if (productId) {
-      const assignments = await db.select().from(agentProducts)
-        .where(and(eq(agentProducts.storeId, storeId), eq(agentProducts.productId, productId)));
-      if (assignments.length > 0) {
-        const assignedIds = new Set(assignments.map(a => a.agentId));
-        eligibleAgents = storeAgents.filter(a => assignedIds.has(a.id));
-        if (eligibleAgents.length === 0) eligibleAgents = storeAgents;
+      const productFilteredAgents = eligibleAgents.filter(a => {
+        const setting = settingsMap.get(a.id);
+        if (!setting) return true;
+        try {
+          const allowed: number[] = JSON.parse(setting.allowedProductIds || '[]');
+          if (allowed.length === 0) return true; // empty = all products
+          return allowed.includes(productId);
+        } catch {
+          return true;
+        }
+      });
+      if (productFilteredAgents.length > 0) {
+        eligibleAgents = productFilteredAgents;
       }
     }
 
-    const [store] = await db.select().from(stores).where(eq(stores.id, storeId));
-    const lastId = store?.lastAssignedAgentId || 0;
+    // Build weighted pool based on leadPercentage
+    // Each agent contributes leadPercentage "tickets" into the pool
+    const pool: number[] = [];
+    for (const agent of eligibleAgents) {
+      const setting = settingsMap.get(agent.id);
+      const pct = setting ? Math.max(1, setting.leadPercentage) : 100;
+      for (let i = 0; i < pct; i++) pool.push(agent.id);
+    }
 
-    eligibleAgents.sort((a, b) => a.id - b.id);
-    const nextAgent = eligibleAgents.find(a => a.id > lastId) || eligibleAgents[0];
+    if (pool.length === 0) return null;
 
-    await db.update(stores).set({ lastAssignedAgentId: nextAgent.id }).where(eq(stores.id, storeId));
+    // Pick a random agent from the weighted pool
+    const randomIndex = Math.floor(Math.random() * pool.length);
+    const nextAgentId = pool[randomIndex];
 
-    return nextAgent.id;
+    await db.update(stores).set({ lastAssignedAgentId: nextAgentId }).where(eq(stores.id, storeId));
+    return nextAgentId;
+  }
+
+  async getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]> {
+    return await db.select().from(storeAgentSettings)
+      .where(eq(storeAgentSettings.storeId, storeId));
+  }
+
+  async getAgentStoreSetting(agentId: number, storeId: number): Promise<StoreAgentSetting | undefined> {
+    const [setting] = await db.select().from(storeAgentSettings)
+      .where(and(eq(storeAgentSettings.agentId, agentId), eq(storeAgentSettings.storeId, storeId)));
+    return setting;
+  }
+
+  async upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string }): Promise<StoreAgentSetting> {
+    const existing = await this.getAgentStoreSetting(agentId, storeId);
+    if (existing) {
+      const [updated] = await db.update(storeAgentSettings)
+        .set({ ...data })
+        .where(and(eq(storeAgentSettings.agentId, agentId), eq(storeAgentSettings.storeId, storeId)))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(storeAgentSettings)
+      .values({ agentId, storeId, ...data })
+      .returning();
+    return created;
+  }
+
+  async getOrderFollowUpLogs(orderId: number): Promise<OrderFollowUpLog[]> {
+    return await db.select().from(orderFollowUpLogs)
+      .where(eq(orderFollowUpLogs.orderId, orderId))
+      .orderBy(desc(orderFollowUpLogs.createdAt));
+  }
+
+  async createOrderFollowUpLog(data: InsertOrderFollowUpLog): Promise<OrderFollowUpLog> {
+    const [log] = await db.insert(orderFollowUpLogs).values(data).returning();
+    return log;
   }
 
   async getStoresByOwner(userId: number): Promise<Store[]> {
