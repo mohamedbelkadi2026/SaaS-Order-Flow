@@ -1,6 +1,10 @@
 import { useState, useRef, useCallback } from "react";
 import { useAuth } from "@/hooks/use-auth";
-import { useAgents, useIntegrations, useStore, useMagasins, useCreateMagasin, useUpdateMagasin, useDeleteMagasin, useUploadLogo, useAgentStoreSettings, useUpsertAgentStoreSetting } from "@/hooks/use-store-data";
+import {
+  useAgents, useIntegrations, useStore, useMagasins, useCreateMagasin,
+  useUpdateMagasin, useDeleteMagasin, useUploadLogo,
+  useAgentStoreSettings, useUpsertAgentStoreSetting,
+} from "@/hooks/use-store-data";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,21 +13,31 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Store, User, CheckCircle2, Truck, Globe, Plus, Pencil, Save, Loader2, X, Home, Users, MessageCircle, Tag, Trash2, Package, Percent } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Store, User, CheckCircle2, Truck, Globe, Plus, Pencil, Save, Loader2,
+  X, Home, Users, MessageCircle, Tag, Trash2, Package, Percent, ChevronDown,
+} from "lucide-react";
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 
 const WHATSAPP_VARIABLES = [
-  { label: "*{Nom_Client}*", color: "text-blue-600 bg-blue-50 border-blue-200" },
-  { label: "*{Ville_Client}*", color: "text-blue-600 bg-blue-50 border-blue-200" },
-  { label: "*{Address_Client}*", color: "text-blue-600 bg-blue-50 border-blue-200" },
-  { label: "*{Phone_Client}*", color: "text-red-500 bg-red-50 border-red-200" },
-  { label: "*{Date_Commande}*", color: "text-red-500 bg-red-50 border-red-200" },
-  { label: "*{Heure}*", color: "text-gray-700 bg-gray-50 border-gray-200" },
-  { label: "*{Nom_Produit}*", color: "text-gray-700 bg-gray-50 border-gray-200" },
-  { label: "*{Transporteur}*", color: "text-green-600 bg-green-50 border-green-200" },
-  { label: "*{Date_Livraison}*", color: "text-red-500 bg-red-50 border-red-200" },
+  { label: "*{Nom_Client}*", color: "text-blue-600 bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800" },
+  { label: "*{Ville_Client}*", color: "text-blue-600 bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800" },
+  { label: "*{Address_Client}*", color: "text-blue-600 bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800" },
+  { label: "*{Phone_Client}*", color: "text-orange-500 bg-orange-50 border-orange-200 dark:bg-orange-900/20 dark:border-orange-800" },
+  { label: "*{Date_Commande}*", color: "text-red-500 bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800" },
+  { label: "*{Heure}*", color: "text-gray-700 bg-gray-50 border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700" },
+  { label: "*{Nom_Produit}*", color: "text-gray-700 bg-gray-50 border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700" },
+  { label: "*{Transporteur}*", color: "text-green-600 bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800" },
+  { label: "*{Date_Livraison}*", color: "text-red-500 bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800" },
+];
+
+const SERVICES_OPTIONS = [
+  { value: "confirmation", label: "Confirmation" },
+  { value: "suivi", label: "Suivi" },
 ];
 
 interface StoreForm {
@@ -44,125 +58,127 @@ const defaultForm: StoreForm = {
   whatsappTemplate: "",
 };
 
+// ---- Reusable inline multi-select dropdown ----
+function InlineMultiSelect({
+  placeholder,
+  items,
+  selected,
+  onToggle,
+  getLabel,
+  getId,
+  searchable = true,
+}: {
+  placeholder: string;
+  items: any[];
+  selected: (string | number)[];
+  onToggle: (id: string | number) => void;
+  getLabel: (item: any) => string;
+  getId: (item: any) => string | number;
+  searchable?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const filtered = items.filter(item =>
+    !search || getLabel(item).toLowerCase().includes(search.toLowerCase())
+  );
+  const selectedItems = items.filter(item => selected.includes(getId(item)));
+
+  return (
+    <div className="relative">
+      <div
+        className="flex items-center flex-wrap gap-1.5 min-h-[40px] px-3 py-2 border rounded-lg bg-background cursor-pointer hover:border-primary/50 transition-colors"
+        onClick={() => setOpen(v => !v)}
+      >
+        {selectedItems.length > 0 ? (
+          <>
+            {selectedItems.map(item => (
+              <Badge key={getId(item)} variant="secondary" className="text-xs gap-1 pr-1 h-6">
+                {getLabel(item)}
+                <button type="button" onClick={e => { e.stopPropagation(); onToggle(getId(item)); }} className="ml-0.5 hover:text-red-500">
+                  <X className="w-3 h-3" />
+                </button>
+              </Badge>
+            ))}
+          </>
+        ) : (
+          <span className="text-sm text-muted-foreground flex-1">{placeholder}</span>
+        )}
+        <ChevronDown className={cn("w-4 h-4 text-muted-foreground ml-auto shrink-0 transition-transform", open && "rotate-180")} />
+      </div>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white dark:bg-card border rounded-lg shadow-xl max-h-52 overflow-y-auto">
+            {searchable && (
+              <div className="p-2 border-b">
+                <Input
+                  className="h-8 text-sm"
+                  placeholder="Rechercher..."
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  onClick={e => e.stopPropagation()}
+                  autoFocus
+                />
+              </div>
+            )}
+            {filtered.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">Aucun résultat</p>
+            ) : filtered.map(item => {
+              const id = getId(item);
+              const isChecked = selected.includes(id);
+              return (
+                <label
+                  key={id}
+                  className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/50 cursor-pointer transition-colors"
+                  onClick={e => e.stopPropagation()}
+                >
+                  <Checkbox checked={isChecked} onCheckedChange={() => onToggle(id)} />
+                  <span className="text-sm">{getLabel(item)}</span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- WhatsApp live preview ----
 function WhatsAppPreview({ storeName, message }: { storeName: string; message: string }) {
-  const preview = message || "Hello";
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted-foreground">Aperçu du message</p>
-      <div className="bg-[#e5ddd5] dark:bg-[#1a1a2e] rounded-2xl p-4 min-h-[200px] relative" style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"200\" fill=\"none\"%3E%3Cpath d=\"M0 0h200v200H0z\" fill=\"%23e5ddd5\"/%3E%3C/svg%3E')" }}>
-        <div className="bg-white dark:bg-gray-800 rounded-xl p-3 shadow-sm mb-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center text-white">
-              <Package className="w-5 h-5" />
-            </div>
-            <div className="flex-1">
-              <p className="font-semibold text-sm">{storeName || "Boutique"}</p>
-              <p className="text-xs text-green-600">en ligne</p>
-            </div>
-            <div className="text-muted-foreground">
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
-            </div>
+      <p className="text-sm font-medium text-muted-foreground">Aperçu du message</p>
+      <div className="bg-[#e5ddd5] dark:bg-[#1a1a2e] rounded-2xl overflow-hidden">
+        <div className="bg-[#075e54] px-3 py-2 flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-green-400 flex items-center justify-center">
+            <Package className="w-4 h-4 text-white" />
           </div>
+          <div className="flex-1">
+            <p className="font-semibold text-sm text-white">{storeName || "Boutique"}</p>
+            <p className="text-xs text-green-300">en ligne</p>
+          </div>
+          <svg className="w-5 h-5 text-white/70" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </div>
-        <div className="max-w-[85%]">
-          <div className="bg-[#dcf8c6] dark:bg-green-900 rounded-lg rounded-tl-none px-3 py-2 shadow-sm">
-            <p className="text-sm whitespace-pre-wrap break-words">{preview}</p>
-          </div>
+        <div className="p-3 min-h-[120px]">
+          {(message || "Hello 👋") && (
+            <div className="max-w-[90%]">
+              <div className="bg-[#dcf8c6] dark:bg-green-900 rounded-lg rounded-tl-none px-3 py-2 shadow-sm inline-block">
+                <p className="text-sm whitespace-pre-wrap break-words">{message || "Hello 👋"}</p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function AgentSettingsSection({ agents }: { agents: any[] }) {
-  const { data: settings = [] } = useAgentStoreSettings();
-  const upsert = useUpsertAgentStoreSetting();
-  const { toast } = useToast();
-
-  const getSettingFor = (agentId: number) =>
-    settings.find((s: any) => s.agentId === agentId);
-
-  const [localSettings, setLocalSettings] = useState<Record<number, { roleInStore: string; leadPercentage: string }>>({});
-
-  const get = (agentId: number, field: 'roleInStore' | 'leadPercentage') => {
-    if (localSettings[agentId]) return localSettings[agentId][field];
-    const s = getSettingFor(agentId);
-    if (field === 'roleInStore') return s?.roleInStore || 'confirmation';
-    return String(s?.leadPercentage ?? 100);
-  };
-
-  const set = (agentId: number, field: 'roleInStore' | 'leadPercentage', value: string) => {
-    setLocalSettings(prev => ({
-      ...prev,
-      [agentId]: {
-        roleInStore: get(agentId, 'roleInStore'),
-        leadPercentage: get(agentId, 'leadPercentage'),
-        ...prev[agentId],
-        [field]: value,
-      },
-    }));
-  };
-
-  const save = (agentId: number) => {
-    const local = localSettings[agentId];
-    if (!local) return;
-    const pct = parseInt(local.leadPercentage);
-    if (isNaN(pct) || pct < 0 || pct > 100) {
-      toast({ title: "Pourcentage invalide", description: "Doit être entre 0 et 100", variant: "destructive" });
-      return;
-    }
-    upsert.mutate({ agentId, roleInStore: local.roleInStore, leadPercentage: pct }, {
-      onSuccess: () => {
-        toast({ title: "Paramètres mis à jour" });
-        setLocalSettings(prev => { const n = { ...prev }; delete n[agentId]; return n; });
-      },
-      onError: () => toast({ title: "Erreur", variant: "destructive" }),
-    });
-  };
-
-  if (agents.length === 0) {
-    return <p className="text-sm text-muted-foreground">Aucun agent dans ce magasin</p>;
-  }
-
-  return (
-    <div className="space-y-2">
-      {agents.map((a: any) => {
-        const isDirty = !!localSettings[a.id];
-        return (
-          <div key={a.id} className="flex items-center gap-2 p-2 border rounded-lg bg-background">
-            <User className="w-4 h-4 text-muted-foreground shrink-0" />
-            <span className="text-sm font-medium w-28 truncate">{a.username}</span>
-            <Select value={get(a.id, 'roleInStore')} onValueChange={v => set(a.id, 'roleInStore', v)}>
-              <SelectTrigger className="h-7 text-xs w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="confirmation">Confirmation</SelectItem>
-                <SelectItem value="suivi">Suivi</SelectItem>
-                <SelectItem value="both">Les deux</SelectItem>
-              </SelectContent>
-            </Select>
-            <div className="flex items-center gap-1">
-              <Input
-                type="number" min={0} max={100} value={get(a.id, 'leadPercentage')}
-                onChange={e => set(a.id, 'leadPercentage', e.target.value)}
-                className="h-7 text-xs w-16 text-center"
-              />
-              <Percent className="w-3 h-3 text-muted-foreground" />
-            </div>
-            {isDirty && (
-              <Button size="sm" className="h-7 text-xs ml-auto" onClick={() => save(a.id)} disabled={upsert.isPending}>
-                {upsert.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-              </Button>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, agents, shippingIntegrations, storeIntegrationsList, logoUrl, onLogoUpload, isUploadingLogo }: {
+// ---- Store Modal ----
+function StoreModal({
+  isOpen, onClose, title, form, setForm, onSave, isPending,
+  agents, shippingIntegrations, storeIntegrationsList, logoUrl, onLogoUpload, isUploadingLogo,
+}: {
   isOpen: boolean;
   onClose: () => void;
   title: string;
@@ -180,18 +196,35 @@ function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, 
   const templateRef = useRef<HTMLTextAreaElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
+  // Local state for team/delivery multi-selects
+  const [selectedAgentIds, setSelectedAgentIds] = useState<number[]>([]);
+  const [selectedServices, setSelectedServices] = useState<string[]>([]);
+  const [selectedCarriers, setSelectedCarriers] = useState<string[]>([]);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
+
+  const toggleAgent = (id: string | number) => {
+    const nid = Number(id);
+    setSelectedAgentIds(prev => prev.includes(nid) ? prev.filter(x => x !== nid) : [...prev, nid]);
+  };
+  const toggleService = (v: string | number) => {
+    const val = String(v);
+    setSelectedServices(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val]);
+  };
+  const toggleCarrier = (v: string | number) => {
+    const val = String(v);
+    setSelectedCarriers(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val]);
+  };
+  const togglePlatform = (v: string | number) => {
+    const val = String(v);
+    setSelectedPlatforms(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val]);
+  };
+
   const handleLogoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 500000) {
-      alert("Image trop volumineuse (max 500KB)");
-      return;
-    }
+    if (file.size > 500000) { alert("Image trop volumineuse (max 500KB)"); return; }
     const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result as string;
-      if (onLogoUpload) onLogoUpload(base64);
-    };
+    reader.onload = () => { if (onLogoUpload) onLogoUpload(reader.result as string); };
     reader.readAsDataURL(file);
   };
 
@@ -212,54 +245,64 @@ function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, 
     }, 0);
   };
 
+  const agentItems = (agents || []).filter((a: any) => a.role === 'agent');
+  const carrierItems = shippingIntegrations.map((s: any) => ({ value: s.provider, label: s.provider }));
+  const platformItems = storeIntegrationsList.map((s: any) => ({ value: s.provider, label: s.provider }));
+
+  const isCreate = !title.includes("Modifier");
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-[900px] max-h-[90vh] overflow-y-auto p-0">
-        <DialogTitle className="px-6 pt-5 text-lg font-bold">{title}</DialogTitle>
-        <div className="flex flex-col md:flex-row gap-0 md:gap-6 px-6 pb-6">
-          <div className="md:w-[240px] shrink-0 space-y-5 py-4">
-            <div className="flex flex-col items-center">
-              <p className="text-sm text-muted-foreground mb-2">Photo du business (Logo)</p>
-              <div className="w-[150px] h-[150px] border-2 border-dashed border-border rounded-xl flex items-center justify-center bg-muted/30 overflow-hidden">
+      <DialogContent className="max-w-[940px] max-h-[92vh] overflow-hidden p-0 rounded-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b bg-white dark:bg-card">
+          <DialogTitle className="text-lg font-bold">{title}</DialogTitle>
+          <Button variant="ghost" size="icon" onClick={onClose} className="rounded-full">
+            <X className="w-5 h-5 text-muted-foreground" />
+          </Button>
+        </div>
+
+        <div className="flex overflow-hidden" style={{ height: "calc(92vh - 130px)" }}>
+          {/* LEFT COLUMN */}
+          <div className="w-[260px] shrink-0 border-r flex flex-col gap-5 p-5 overflow-y-auto bg-gray-50/50 dark:bg-muted/5">
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-sm font-medium text-muted-foreground">Photo du business (Logo)</p>
+              <div className="w-[150px] h-[150px] border-2 border-dashed border-border rounded-xl flex items-center justify-center bg-white dark:bg-card overflow-hidden">
                 {logoUrl ? (
                   <img src={logoUrl} alt="Logo" className="w-full h-full object-cover rounded-xl" />
-                ) : form.name ? (
-                  <div className="text-center">
-                    <Package className="w-10 h-10 mx-auto text-muted-foreground mb-1" />
-                    <p className="text-xs font-semibold text-muted-foreground">{form.name}</p>
-                  </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">150 x 150</p>
+                  <p className="text-sm text-muted-foreground">150 × 150</p>
                 )}
               </div>
               <input type="file" ref={logoInputRef} accept="image/*" className="hidden" onChange={handleLogoSelect} data-testid="input-logo-file" />
               <Button
                 variant="outline"
                 size="sm"
-                className="mt-2 text-xs"
+                className="text-xs bg-gray-100 dark:bg-muted border-gray-300"
                 disabled={isUploadingLogo}
                 onClick={() => logoInputRef.current?.click()}
                 data-testid="button-change-logo"
               >
                 {isUploadingLogo ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
-                {logoUrl ? "Changer l'image" : "Ajouter une image"}
+                Changer l'image
               </Button>
             </div>
 
-            <div className="space-y-3 pt-2">
+            <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <Label className="text-sm">Peut ouvrir</Label>
+                <span className="text-sm">Peut ouvrir</span>
                 <Switch checked={form.canOpen} onCheckedChange={v => setForm(f => ({ ...f, canOpen: v }))} data-testid="switch-can-open" />
               </div>
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-5">
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="radio" name="stock-mode" checked={form.isStock && !form.isRamassage} onChange={() => setForm(f => ({ ...f, isStock: true, isRamassage: false }))} className="accent-primary" />
+                  <input type="radio" name="stock-mode-modal" checked={form.isStock && !form.isRamassage}
+                    onChange={() => setForm(f => ({ ...f, isStock: true, isRamassage: false }))} className="accent-primary" />
                   <span className="text-sm">Stock</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="radio" name="stock-mode" checked={form.isRamassage} onChange={() => setForm(f => ({ ...f, isRamassage: true, isStock: false }))} className="accent-green-500" />
-                  <span className="text-sm flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>
+                  <input type="radio" name="stock-mode-modal" checked={form.isRamassage}
+                    onChange={() => setForm(f => ({ ...f, isRamassage: true, isStock: false }))} className="accent-green-500" />
+                  <span className="text-sm flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
                     Ramassage
                   </span>
                 </label>
@@ -269,129 +312,158 @@ function StoreModal({ isOpen, onClose, title, form, setForm, onSave, isPending, 
             <WhatsAppPreview storeName={form.name} message={form.whatsappTemplate} />
           </div>
 
-          <div className="flex-1 space-y-6 py-4">
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-blue-600">
+          {/* RIGHT COLUMN */}
+          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-7">
+
+            {/* Business Info */}
+            <section>
+              <div className="flex items-center gap-2 text-blue-600 mb-4">
                 <Home className="w-4 h-4" />
                 <h3 className="font-semibold text-base">Informations du business</h3>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Nom du business*</Label>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground">Nom du business*</Label>
                   <Input data-testid="input-store-name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Nom du business" />
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Téléphone de l'auteur*</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground">Téléphone de l'auteur*</Label>
                   <Input data-testid="input-store-phone" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="0600000000" />
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-4">
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Site web</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground">Site web</Label>
                   <Input data-testid="input-store-website" value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} placeholder="https://example.com" />
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Facebook</Label>
-                  <Input data-testid="input-store-facebook" value={form.facebook} onChange={e => setForm(f => ({ ...f, facebook: e.target.value }))} placeholder="Lien vers la page Facebook" />
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground">Facebook</Label>
+                  <Input data-testid="input-store-facebook" value={form.facebook} onChange={e => setForm(f => ({ ...f, facebook: e.target.value }))} placeholder="Lien Facebook" />
                 </div>
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Instagram</Label>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground">Instagram</Label>
                   <Input data-testid="input-store-instagram" value={form.instagram} onChange={e => setForm(f => ({ ...f, instagram: e.target.value }))} placeholder="Lien Instagram" />
                 </div>
               </div>
-            </div>
+            </section>
 
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-blue-600">
+            {/* Team */}
+            <section>
+              <div className="flex items-center gap-2 text-blue-600 mb-4">
                 <Users className="w-4 h-4" />
-                <h3 className="font-semibold text-base">Configuration de l'équipe</h3>
+                <h3 className="font-semibold text-base">Ajouter votre équipe au magasin</h3>
               </div>
-              <div className="grid grid-cols-3 gap-1 mb-1">
-                <span className="text-xs text-muted-foreground font-medium pl-6">Agent</span>
-                <span className="text-xs text-muted-foreground font-medium">Rôle</span>
-                <span className="text-xs text-muted-foreground font-medium">Leads %</span>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Sélectionnez une ou plusieurs équipes</Label>
+                  <InlineMultiSelect
+                    placeholder="Sélectionnez une ou plusieurs équipes"
+                    items={agentItems}
+                    selected={selectedAgentIds}
+                    onToggle={toggleAgent}
+                    getId={(a: any) => a.id}
+                    getLabel={(a: any) => a.username}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-muted-foreground">Choisissez les services disponibles</Label>
+                  <InlineMultiSelect
+                    placeholder="Choisissez les services disponibles"
+                    items={SERVICES_OPTIONS}
+                    selected={selectedServices}
+                    onToggle={toggleService}
+                    getId={(s: any) => s.value}
+                    getLabel={(s: any) => s.label}
+                    searchable={false}
+                  />
+                </div>
               </div>
-              <AgentSettingsSection agents={agents} />
-            </div>
+            </section>
 
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-blue-600">
+            {/* Delivery */}
+            <section>
+              <div className="flex items-center gap-2 text-blue-600 mb-4">
                 <Truck className="w-4 h-4" />
                 <h3 className="font-semibold text-base">Configuration de livraison</h3>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Société de livraison</Label>
-                  <div className="flex flex-wrap gap-1.5 p-2 border rounded-lg min-h-[40px] bg-background">
-                    {shippingIntegrations.length > 0 ? shippingIntegrations.map((s: any) => (
-                      <Badge key={s.id} variant="secondary" className="text-xs gap-1 px-2 py-1">
-                        <Truck className="w-3 h-3" />
-                        {s.provider}
-                      </Badge>
-                    )) : (
-                      <span className="text-sm text-muted-foreground">Choisir une ou plusieurs sociétés</span>
-                    )}
-                  </div>
+                  <InlineMultiSelect
+                    placeholder="Choisir une ou plusieurs sociétés"
+                    items={carrierItems.length > 0 ? carrierItems : []}
+                    selected={selectedCarriers}
+                    onToggle={toggleCarrier}
+                    getId={(s: any) => s.value}
+                    getLabel={(s: any) => s.label}
+                  />
                 </div>
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Choisir la plateforme</Label>
-                  <div className="flex flex-wrap gap-1.5 p-2 border rounded-lg min-h-[40px] bg-background">
-                    {storeIntegrationsList.length > 0 ? storeIntegrationsList.map((s: any) => (
-                      <Badge key={s.id} variant="secondary" className="text-xs gap-1 px-2 py-1">
-                        <Globe className="w-3 h-3" />
-                        {s.provider}
-                      </Badge>
-                    )) : (
-                      <span className="text-sm text-muted-foreground">Choisir une ou plusieurs plateformes</span>
-                    )}
-                  </div>
+                  <InlineMultiSelect
+                    placeholder="Choisir une ou plusieurs plateformes"
+                    items={platformItems.length > 0 ? platformItems : []}
+                    selected={selectedPlatforms}
+                    onToggle={togglePlatform}
+                    getId={(s: any) => s.value}
+                    getLabel={(s: any) => s.label}
+                  />
                 </div>
               </div>
-            </div>
+            </section>
 
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 text-blue-600">
-                <MessageCircle className="w-4 h-4" />
+            {/* WhatsApp */}
+            <section>
+              <div className="flex items-center gap-2 text-blue-600 mb-4">
+                <SiWhatsapp className="w-4 h-4" />
                 <h3 className="font-semibold text-base">Configuration de WhatsApp</h3>
               </div>
-              <div className="space-y-2">
-                <Label className="text-sm font-semibold">Message WhatsApp</Label>
-                <Textarea
-                  ref={templateRef}
-                  data-testid="input-whatsapp-template"
-                  value={form.whatsappTemplate}
-                  onChange={e => setForm(f => ({ ...f, whatsappTemplate: e.target.value }))}
-                  placeholder="Saisissez votre message ici..."
-                  rows={4}
-                  className="resize-none"
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Tag className="w-4 h-4 text-muted-foreground" />
-                  <Label className="text-sm font-semibold">Variables disponibles:</Label>
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-semibold">Message WhatsApp</Label>
+                  <Textarea
+                    ref={templateRef}
+                    data-testid="input-whatsapp-template"
+                    value={form.whatsappTemplate}
+                    onChange={e => setForm(f => ({ ...f, whatsappTemplate: e.target.value }))}
+                    placeholder="Saisissez votre message ici..."
+                    rows={4}
+                    className="resize-none"
+                  />
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {WHATSAPP_VARIABLES.map((v) => (
-                    <button
-                      key={v.label}
-                      type="button"
-                      onClick={() => insertVariable(v.label)}
-                      className={`px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${v.color}`}
-                      data-testid={`tag-${v.label.replace(/[*{}]/g, '')}`}
-                    >
-                      {v.label}
-                    </button>
-                  ))}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Tag className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-sm font-semibold">Variables disponibles:</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {WHATSAPP_VARIABLES.map(v => (
+                      <button
+                        key={v.label}
+                        type="button"
+                        onClick={() => insertVariable(v.label)}
+                        className={`px-2.5 py-1 rounded-md border text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${v.color}`}
+                        data-testid={`tag-${v.label.replace(/[*{}]/g, '')}`}
+                      >
+                        {v.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
+            </section>
 
-            <div className="flex justify-end gap-3 pt-4 border-t">
-              <Button variant="outline" onClick={onClose}>Annuler</Button>
-              <Button data-testid="button-save-store" onClick={onSave} disabled={isPending} className="gap-2 bg-blue-600 hover:bg-blue-700">
-                {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                {title.includes("Modifier") ? "Sauvegarder" : "Créer boutique"}
+            {/* Actions */}
+            <div className="flex justify-end gap-3 pt-2 border-t">
+              <Button variant="outline" onClick={onClose} className="px-6">Annuler</Button>
+              <Button
+                data-testid="button-save-store"
+                onClick={onSave}
+                disabled={isPending}
+                className="px-6 bg-blue-600 hover:bg-blue-700 text-white gap-2"
+              >
+                {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                {isCreate ? "Créer boutique" : "Sauvegarder"}
               </Button>
             </div>
           </div>
@@ -449,9 +521,9 @@ export default function Magasins() {
     try {
       await uploadLogo.mutateAsync({ id: storeId, logoData: base64 });
       setNewLogoPreview(base64);
-      toast({ title: "Logo mis à jour", description: "L'image a été enregistrée" });
+      toast({ title: "Logo mis à jour" });
     } catch (err: any) {
-      toast({ title: "Erreur", description: err.message || "Impossible de télécharger le logo", variant: "destructive" });
+      toast({ title: "Erreur logo", description: err.message || "Impossible de télécharger", variant: "destructive" });
     }
   };
 
@@ -463,22 +535,14 @@ export default function Magasins() {
     try {
       const newStore = await createMagasin.mutateAsync(formToPayload(form));
       if (newLogoPreview && newStore?.id) {
-        try {
-          await uploadLogo.mutateAsync({ id: newStore.id, logoData: newLogoPreview });
-        } catch {
-          toast({ title: "Magasin créé", description: `${form.name} ajouté mais le logo n'a pas pu être enregistré.`, variant: "default" });
-          resetForm();
-          setNewLogoPreview(null);
-          setAddOpen(false);
-          return;
-        }
+        try { await uploadLogo.mutateAsync({ id: newStore.id, logoData: newLogoPreview }); } catch {}
       }
-      toast({ title: "Magasin créé", description: `${form.name} a été ajouté` });
+      toast({ title: "Boutique créée", description: `${form.name} a été ajouté` });
       resetForm();
       setNewLogoPreview(null);
       setAddOpen(false);
     } catch (err: any) {
-      toast({ title: "Erreur", description: err.message || "Impossible de créer le magasin", variant: "destructive" });
+      toast({ title: "Erreur", description: err.message || "Impossible de créer", variant: "destructive" });
     }
   };
 
@@ -514,162 +578,94 @@ export default function Magasins() {
     setNewLogoPreview(null);
   };
 
-  const openAdd = () => {
-    resetForm();
-    setAddOpen(true);
-  };
-
-  const storeName = storeData?.name || "Ma Boutique";
-  const ownerName = user?.username || "Propriétaire";
-  const connectedStores = storeIntegrations?.filter((i: any) => i.isActive) || [];
   const agentList = agents || [];
-  const shippingList = shippingIntegrations?.filter((i: any) => i.isActive) || [];
-  const platformList = storeIntegrations?.filter((i: any) => i.isActive) || [];
+  const shippingList = shippingIntegrations || [];
+  const platformList = storeIntegrations || [];
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-display font-bold" data-testid="text-magasins-title">Mes magasins</h1>
+          <h1 className="text-3xl font-display font-bold uppercase">Mes Magasins</h1>
           <p className="text-muted-foreground mt-1">Gérez vos boutiques, équipes et configurations.</p>
         </div>
-        <Button data-testid="button-add-magasin" className="gap-2 shadow-lg shadow-primary/20" onClick={openAdd}>
+        <Button
+          className="gap-2 bg-primary hover:bg-primary/90"
+          data-testid="button-create-store"
+          onClick={() => { resetForm(); setNewLogoPreview(null); setAddOpen(true); }}
+        >
           <Plus className="w-4 h-4" /> Ajouter un magasin
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <Card className="rounded-2xl border-border/50 shadow-sm overflow-hidden" data-testid="card-store-main">
-          <CardContent className="p-6">
-            <div className="flex justify-between items-start mb-6">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center overflow-hidden border">
-                  {storeData?.logoUrl ? (
-                    <img src={storeData.logoUrl} alt={storeName} className="w-full h-full object-cover" />
-                  ) : (
-                    <Store className="w-6 h-6 text-muted-foreground" />
-                  )}
-                </div>
-                <div>
-                  <h3 className="font-bold text-lg uppercase tracking-tight" data-testid="text-store-name">{storeName}</h3>
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <User className="w-3 h-3" /> {ownerName}
-                  </div>
-                </div>
-              </div>
-              <Button variant="ghost" size="icon" className="w-8 h-8" onClick={() => openEdit(storeData)} data-testid="button-edit-store">
-                <Pencil className="w-4 h-4 text-muted-foreground" />
-              </Button>
-            </div>
-
-            <div className="flex gap-2 mb-6 flex-wrap">
-              <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400 px-3 py-1 flex items-center gap-1.5 rounded-lg font-medium">
-                <div className="w-4 h-4 rounded-full bg-green-500 flex items-center justify-center text-white">
-                  <CheckCircle2 className="w-2.5 h-2.5" />
-                </div>
-                Actif
-              </Badge>
-              <Badge variant="outline" className="text-xs">Magasin principal</Badge>
-              {storeData?.whatsappTemplate && (
-                <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400">
-                  <SiWhatsapp className="w-3 h-3 mr-1" /> WhatsApp
-                </Badge>
-              )}
-            </div>
-
-            <div className="bg-muted/30 rounded-xl p-4 mb-6">
-              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-3">ÉQUIPE DE TRAITEMENT</p>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-sm">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                  <span className="font-semibold">Agents:</span>
-                  <span className="text-muted-foreground" data-testid="text-agent-list">
-                    {agentList.length > 0 ? agentList.map((a: any) => a.username).join(", ") : "Aucun agent"}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <Truck className="w-4 h-4 text-blue-500" />
-                  <span className="font-semibold">Livraison:</span>
-                  <span className="text-muted-foreground">
-                    {shippingList.length > 0 ? shippingList.map((s: any) => s.provider).join(", ") : "Aucun transporteur"}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {storeData?.phone && (
-              <p className="text-xs text-muted-foreground mb-4">Tel: {storeData.phone}</p>
-            )}
-
-            <div className="flex justify-between items-center">
-              <div className="flex gap-2 flex-wrap">
-                {connectedStores.length > 0 ? connectedStores.map((s: any) => (
-                  <div key={s.id} className="w-6 h-6 rounded bg-muted flex items-center justify-center text-muted-foreground" title={s.provider}>
-                    <Globe className="w-3.5 h-3.5" />
-                  </div>
-                )) : (
-                  <span className="text-xs text-muted-foreground">Aucune intégration connectée</span>
-                )}
-              </div>
-              <div className="flex items-center h-6 w-10 bg-green-500 rounded-full relative px-1">
-                <div className="w-4 h-4 bg-white rounded-full ml-auto shadow-sm"></div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {magasins?.filter((m: any) => m.id !== storeData?.id).map((store: any) => (
-          <Card key={store.id} className="rounded-2xl border-border/50 shadow-sm overflow-hidden" data-testid={`card-store-${store.id}`}>
-            <CardContent className="p-6">
-              <div className="flex justify-between items-start mb-4">
+      {/* Store cards */}
+      {(!magasins || magasins.length === 0) ? (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <Store className="w-14 h-14 text-muted-foreground/30 mb-4" />
+          <p className="text-lg font-semibold text-muted-foreground">Aucun magasin</p>
+          <p className="text-sm text-muted-foreground mt-1">Créez votre première boutique pour commencer</p>
+        </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {magasins.map((store: any) => (
+            <Card key={store.id} className="p-5 border-border/50 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex justify-between items-start mb-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center border overflow-hidden">
-                    {store.logoUrl ? (
-                      <img src={store.logoUrl} alt={store.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <Store className="w-6 h-6 text-muted-foreground" />
-                    )}
-                  </div>
+                  {store.logoUrl ? (
+                    <img src={store.logoUrl} alt={store.name} className="w-10 h-10 rounded-lg object-cover" />
+                  ) : (
+                    <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
+                      <Store className="w-5 h-5 text-primary" />
+                    </div>
+                  )}
                   <div>
-                    <h3 className="font-bold text-lg uppercase tracking-tight">{store.name}</h3>
-                    <p className="text-xs text-muted-foreground">
-                      {store.phone || `ID: ${store.id}`}
-                    </p>
+                    <p className="font-bold text-base" data-testid="text-store-name">{store.name}</p>
+                    {storeData?.id === store.id && (
+                      <Badge className="text-[10px] bg-primary/10 text-primary border-none mt-0.5">Boutique active</Badge>
+                    )}
                   </div>
                 </div>
                 <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" className="w-8 h-8" onClick={() => openEdit(store)} data-testid={`button-edit-store-${store.id}`}>
-                    <Pencil className="w-4 h-4 text-muted-foreground" />
+                  <Button variant="ghost" size="icon" className="w-8 h-8 hover:bg-muted" onClick={() => openEdit(store)} data-testid={`button-edit-store-${store.id}`}>
+                    <Pencil className="w-4 h-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700" onClick={() => handleDelete(store)} data-testid={`button-delete-store-${store.id}`}>
+                  <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => handleDelete(store)} data-testid={`button-delete-store-${store.id}`}>
                     <Trash2 className="w-4 h-4" />
                   </Button>
                 </div>
               </div>
-              <div className="flex gap-2 flex-wrap">
-                {store.canOpen !== 0 && (
-                  <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400">Peut ouvrir</Badge>
-                )}
-                {store.isRamassage === 1 && (
-                  <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/20 dark:text-blue-400">Ramassage</Badge>
-                )}
-                {store.whatsappTemplate && (
-                  <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200 dark:bg-green-900/20 dark:text-green-400">
-                    <SiWhatsapp className="w-3 h-3 mr-1" /> WhatsApp
-                  </Badge>
-                )}
-                <Badge variant="outline" className="text-xs">
-                  Créé le {store.createdAt ? new Date(store.createdAt).toLocaleDateString('fr-MA') : '-'}
-                </Badge>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
 
+              <div className="text-xs text-muted-foreground space-y-1">
+                {store.phone && <p>📞 {store.phone}</p>}
+                {store.website && <p>🌐 <a href={store.website} target="_blank" className="hover:text-primary">{store.website}</a></p>}
+              </div>
+
+              <div className="flex gap-2 flex-wrap mt-3">
+                <Badge variant="outline" className={cn("text-[10px]", store.canOpen ? "bg-green-50 text-green-700 border-green-200" : "bg-red-50 text-red-600 border-red-200")}>
+                  {store.canOpen ? "Ouvert" : "Fermé"}
+                </Badge>
+                {store.isRamassage ? (
+                  <Badge variant="outline" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200">Ramassage</Badge>
+                ) : store.isStock ? (
+                  <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200">Stock</Badge>
+                ) : null}
+              </div>
+
+              <div className="mt-3 text-xs text-muted-foreground">
+                <span className="font-semibold">Agents:</span>{" "}
+                <span data-testid="text-agent-list">
+                  {agentList.length > 0 ? agentList.map((a: any) => a.username).join(", ") : "Aucun agent"}
+                </span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Create Modal */}
       <StoreModal
         isOpen={addOpen}
-        onClose={() => { setAddOpen(false); resetForm(); setNewLogoPreview(null); }}
+        onClose={() => setAddOpen(false)}
         title="Ajouter un nouveau business"
         form={form}
         setForm={setForm}
@@ -679,25 +675,28 @@ export default function Magasins() {
         shippingIntegrations={shippingList}
         storeIntegrationsList={platformList}
         logoUrl={newLogoPreview}
-        onLogoUpload={(base64) => setNewLogoPreview(base64)}
-        isUploadingLogo={false}
-      />
-
-      <StoreModal
-        isOpen={!!editStore}
-        onClose={() => { setEditStore(null); resetForm(); setNewLogoPreview(null); }}
-        title="Modifier le magasin"
-        form={form}
-        setForm={setForm}
-        onSave={handleUpdate}
-        isPending={updateMagasin.isPending}
-        agents={agentList}
-        shippingIntegrations={shippingList}
-        storeIntegrationsList={platformList}
-        logoUrl={newLogoPreview || editStore?.logoUrl}
-        onLogoUpload={(base64) => editStore && handleLogoUpload(editStore.id, base64)}
+        onLogoUpload={setNewLogoPreview}
         isUploadingLogo={uploadLogo.isPending}
       />
+
+      {/* Edit Modal */}
+      {editStore && (
+        <StoreModal
+          isOpen={!!editStore}
+          onClose={() => { setEditStore(null); resetForm(); }}
+          title={`Modifier: ${editStore.name}`}
+          form={form}
+          setForm={setForm}
+          onSave={handleUpdate}
+          isPending={updateMagasin.isPending}
+          agents={agentList}
+          shippingIntegrations={shippingList}
+          storeIntegrationsList={platformList}
+          logoUrl={editStore.logoUrl || newLogoPreview}
+          onLogoUpload={async (base64) => { await handleLogoUpload(editStore.id, base64); }}
+          isUploadingLogo={uploadLogo.isPending}
+        />
+      )}
     </div>
   );
 }

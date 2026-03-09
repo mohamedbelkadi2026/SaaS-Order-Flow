@@ -1,0 +1,31 @@
+"I need to implement a fully functional 'Magasins' (Store Management) module for TajerGrow, matching the exact UI and logic shown in the provided screenshots.
+1. Database & Backend Setup (PostgreSQL):
+Create a stores table with fields for:
+Business Info: name, logo_url, author_phone, website, facebook_link, instagram_link.
+Settings: can_open (toggle), stock_mode (toggle), pickup_mode (toggle).
+WhatsApp: whatsapp_message_template (text).
+Implement relationships:
+store_agents: Link stores to specific users/agents and their services (Confirmation, Suivi).
+store_carriers: Link stores to shipping companies (Digylog, etc.).
+store_platforms: Link stores to e-commerce platforms (Shopify, YouCan, WooCommerce).
+2. Modal UI Structure (Refer to Screenshot 1 & 2):
+Two-Column Layout:
+Left Side:
+Logo upload area (150x150).
+Toggle switches for 'Peut ouvrir', 'Stock', and 'Ramassage'.
+Live WhatsApp Preview: A visual 'WhatsApp Chat Bubble' that updates in real-time as the user types in the message template field.
+Right Side (Form):
+Informations du business: Input fields for Name, Phone, Web, FB, and IG.
+Ajouter votre équipe: Multi-select dropdown for Agents (e.g., fatima, khawla) and a multi-select for Services (Confirmation, Suivi).
+Configuration de livraison: Multi-select for Shipping Carriers and Platforms.
+3. WhatsApp Variable Logic (Refer to Screenshot 2):
+In the Configuration de WhatsApp section, implement the Message Template Editor.
+Display the clickable Variable Tags: *{Nom_Client}*, *{Ville_Client}*, *{Address_Client}*, *{Phone_Client}*, *{Date_Commande}*, *{Heure}*, *{Nom_Product}*, *{Transporteur}*, *{Date_Livraison}*.
+Functionality: Clicking a tag must insert it into the textarea at the cursor position.
+Backend Utility: Write a function formatWhatsAppMessage(order, template) that replaces these placeholders with actual data from the Orders table to generate the final wa.me link used by agents.
+4. Practical Integration:
+The 'Créer boutique' button must hit a POST /api/stores endpoint to save all data.
+Ensure Multi-tenancy: Every store created must be linked to the logged-in Admin's user_id.
+The 'Integration' page should automatically list the platforms selected in this modal.
+5. UI Styling:
+Match the professional clean look: Light grey/blue borders, rounded corners, and Lucide-react icons for 'Home', 'Users', 'Truck', and 'Message' sections."

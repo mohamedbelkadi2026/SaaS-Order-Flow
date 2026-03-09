@@ -6,6 +6,32 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, hashPassword } from "./auth";
 
+/**
+ * Replaces WhatsApp template variables with actual order data.
+ * Returns the formatted message and a wa.me deep link.
+ */
+function formatWhatsAppMessage(order: any, template: string): { message: string; link: string } {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('fr-MA', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  const timeStr = now.toLocaleTimeString('fr-MA', { hour: '2-digit', minute: '2-digit' });
+
+  const message = template
+    .replace(/\*?\{Nom_Client\}\*?/g, order.customerName || '')
+    .replace(/\*?\{Ville_Client\}\*?/g, order.customerCity || '')
+    .replace(/\*?\{Address_Client\}\*?/g, order.customerAddress || '')
+    .replace(/\*?\{Phone_Client\}\*?/g, order.customerPhone || '')
+    .replace(/\*?\{Date_Commande\}\*?/g, dateStr)
+    .replace(/\*?\{Heure\}\*?/g, timeStr)
+    .replace(/\*?\{Nom_Produit\}\*?/g, order.productName || (order.items?.[0]?.productName) || '')
+    .replace(/\*?\{Transporteur\}\*?/g, order.shippingProvider || '')
+    .replace(/\*?\{Date_Livraison\}\*?/g, order.expectedDelivery || '');
+
+  const phone = (order.customerPhone || '').replace(/[^0-9]/g, '');
+  const intlPhone = phone.startsWith('0') ? '212' + phone.slice(1) : phone;
+  const link = `https://wa.me/${intlPhone}?text=${encodeURIComponent(message)}`;
+  return { message, link };
+}
+
 function parseWebhookOrder(provider: string, payload: any) {
   if (provider === 'shopify') {
     const customerName = payload.customer
@@ -426,6 +452,17 @@ export async function registerRoutes(
       return res.status(403).json({ message: "Access denied" });
     }
     res.json(order);
+  });
+
+  app.get("/api/orders/:id/whatsapp-link", requireAuth, async (req, res) => {
+    const orderId = Number(req.params.id);
+    const order = await storage.getOrder(orderId);
+    if (!order) return res.status(404).json({ message: "Order not found" });
+    if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Access denied" });
+    const store = await storage.getStore(order.storeId);
+    const template = store?.whatsappTemplate || "Bonjour *{Nom_Client}* 👋\nVotre commande est en cours de traitement.\nVille: *{Ville_Client}*\nAdresse: *{Address_Client}*";
+    const result = formatWhatsAppMessage(order, template);
+    res.json(result);
   });
 
   app.patch("/api/orders/:id/status", requireAuth, async (req, res) => {
