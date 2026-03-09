@@ -1,0 +1,27 @@
+"I need to upgrade the Team Management and Order Tracking logic for TajerGrow to make it a fully automated SaaS. Please implement the following features:
+1. Advanced Agent Configuration (Magasins Settings):
+Roles & Services: In the 'Modifier le magasin' modal, for each assigned agent, add a dropdown to select their service: 'Confirmation ONLY', 'Suivi ONLY', or 'Confirmation & Suivi'.
+Lead Distribution Percentage: Add an input field next to each agent called 'Lead Share (%)'.
+Product Restrictions: Add a multi-select dropdown for each agent called 'Allowed Products'.
+Backend Logic (Lead Rotation): Implement an automated distribution script. When a new order arrives (Shopify/Webhook):
+Filter agents who are assigned to this store and handle 'Confirmation'.
+Check if the order product matches their 'Allowed Products' list.
+Assign the order based on their 'Lead Share (%)' (e.g., if Khawla has 70% and Fatima 30%, Khawla gets 7 out of 10 orders).
+2. Order Follow-up System (Le Suivi) in 'Mes Commandes':
+New Section 'Suivies': Add a tab or filtered view in 'Mes Commandes' called 'Suivi des Colis'.
+Functionality: This view should only show orders with status: expédié (shipped), en cours de livraison, or retourné.
+Suivi Workflow:
+Agents with the 'Suivi' role will use this page to call clients after the shipping company receives the package to ensure delivery.
+Add a 'Journal de Suivi' (History Log) inside the order modal to see every update: (e.g., 'Agent Khawla called: Client will be home at 6 PM').
+Shipping Status Sync: Add the logic to update the status automatically if the Shipping API (Digylog) provides a status update.
+3. Mobile View Update for Suivi:
+In the mobile card view for agents, if they are in 'Suivi' mode, show a specific button: 'Notifier Client' (opens WhatsApp with a tracking link template).
+4. Statistics & Dashboard:
+Update the Admin Dashboard to show:
+Confirmation Rate (per Agent).
+Delivery Rate (Taux de Livraison) (per Agent).
+This allows the Admin to see who is good at 'Confirming' and who is better at 'Following up' (Suivi).
+Technical Instructions:
+Update the Users and Stores tables in PostgreSQL to include role_in_store, lead_percentage, and assigned_products_metadata.
+Ensure the assignment logic is executed on the server side (Node.js) to avoid conflicts.
+Maintain the #C5A059 (Gold) luxury brand color for all new UI elements."
