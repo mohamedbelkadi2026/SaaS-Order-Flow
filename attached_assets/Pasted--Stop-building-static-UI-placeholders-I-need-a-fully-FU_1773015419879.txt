@@ -1,0 +1,24 @@
+"Stop building static UI placeholders. I need a fully FUNCTIONAL Full-Stack SaaS MVP. Every button and form shown in the screenshots must now work with a real PostgreSQL database.
+1. Authentication & Multi-tenancy (The Core):
+Build a real Sign-up & Login system.
+Implement Multi-tenancy: Every user gets a unique store_id. Data (Orders, Products, Agents, Settings) must be 100% isolated. An Admin must not see another Admin's data.
+Roles: Admin (Store Owner) and Agent (Confirmation staff).
+2. Functional Magasin & WhatsApp Logic:
+The 'Ajouter un magasin' form must actually SAVE to the database.
+WhatsApp Template: Implement the logic where the message template is saved. When an agent clicks the WhatsApp icon on an order, the system must automatically replace variables like *{Nom_Client}* with real data from that order and open the link.
+3. Functional Team & Lead Assignment:
+The 'Add Agent' must create a real user account.
+Lead Assignment: Implement a real function to assign orders to agents. Agents should ONLY see orders assigned to them when they log in.
+4. Real-time Stock & Orders:
+Inventory Logic: When an order is marked as 'confirme', the backend MUST automatically subtract the quantity from the stock_quantity in the database.
+Statuses: Implement the exact statuses: nouveau, confirme, Injoignable, Annulé (fake/double/faux), boite vocale.
+5. Integration & Shipping (The 'Truck' Icon):
+Create a functional Webhook endpoint to receive orders from Shopify/YouCan.
+Digylog API: Build the logic for the Green Truck Icon. When clicked for a confirmed order, it must send a real API request to Digylog and save the Tracking Number returned into the database.
+6. Billing & Limits:
+Implement the order counter.
+Plan 1 (200dh): Block new orders if total orders this month > 1500.
+Plan 2 (400dh): Unlimited orders.
+7. Admin Panel (Super Admin):
+Create a private route for me to manage all subscribers, see their usage, and activate/deactivate accounts.
+Final Instruction: Rewrite the frontend to use API calls (fetch/axios) to communicate with the Node.js backend. Ensure every chart on the Dashboard calculates real data from the database using SQL queries."
