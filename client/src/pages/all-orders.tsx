@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useAllOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip } from "@/hooks/use-store-data";
+import { useAllOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -61,10 +61,24 @@ function formatPhone(phone: string) {
   return phone.replace(/\s+/g, '').replace(/^0/, '+212');
 }
 
-function whatsappLink(phone: string, customerName: string) {
+function buildWhatsappLink(phone: string, order: any, template?: string | null) {
   const cleaned = formatPhone(phone).replace('+', '');
-  const msg = encodeURIComponent(`Bonjour ${customerName}, nous vous contactons pour confirmer votre commande. Merci de nous confirmer votre adresse de livraison.`);
-  return `https://wa.me/${cleaned}?text=${msg}`;
+  let msg: string;
+  if (template) {
+    msg = template
+      .replace(/\*\{Nom_Client\}\*/g, order.customerName || '')
+      .replace(/\*\{Ville_Client\}\*/g, order.customerCity || '')
+      .replace(/\*\{Address_Client\}\*/g, order.customerAddress || '')
+      .replace(/\*\{Phone_Client\}\*/g, order.customerPhone || '')
+      .replace(/\*\{Date_Commande\}\*/g, order.createdAt ? new Date(order.createdAt).toLocaleDateString('fr-MA') : '')
+      .replace(/\*\{Heure\}\*/g, order.createdAt ? new Date(order.createdAt).toLocaleTimeString('fr-MA', { hour: '2-digit', minute: '2-digit' }) : '')
+      .replace(/\*\{Nom_Produit\}\*/g, order.items?.map((i: any) => i.product?.name).filter(Boolean).join(', ') || '')
+      .replace(/\*\{Transporteur\}\*/g, order.shippingProvider || '')
+      .replace(/\*\{Date_Livraison\}\*/g, '');
+  } else {
+    msg = `Bonjour ${order.customerName}, nous vous contactons pour confirmer votre commande. Merci de nous confirmer votre adresse de livraison.`;
+  }
+  return `https://wa.me/${cleaned}?text=${encodeURIComponent(msg)}`;
 }
 
 function telLink(phone: string) {
@@ -79,6 +93,9 @@ function normalizePhone(phone: string) {
 }
 
 export default function AllOrders() {
+  const { data: storeData } = useStore();
+  const whatsappLink = (phone: string, order: any) => buildWhatsappLink(phone, order, storeData?.whatsappTemplate);
+
   const [filters, setFilters] = useState({
     status: '',
     agentId: '',
@@ -474,7 +491,7 @@ export default function AllOrders() {
                         <TableCell className="whitespace-nowrap">
                           <div className="flex items-center gap-1">
                             <span className="text-[11px]">{order.customerPhone}</span>
-                            <a href={whatsappLink(order.customerPhone, order.customerName)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`all-whatsapp-${order.id}`}>
+                            <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`all-whatsapp-${order.id}`}>
                               <SiWhatsapp className="w-3.5 h-3.5" />
                             </a>
                             <a href={telLink(order.customerPhone)} onClick={e => e.stopPropagation()} className="text-blue-500 hover:text-blue-700" data-testid={`all-phone-${order.id}`}>
@@ -578,7 +595,7 @@ export default function AllOrders() {
                     <a href={telLink(order.customerPhone)} className="p-1 rounded-full bg-blue-100 text-blue-600" data-testid={`all-phone-mobile-${order.id}`}>
                       <Phone className="w-3 h-3" />
                     </a>
-                    <a href={whatsappLink(order.customerPhone, order.customerName)} target="_blank" rel="noopener noreferrer" className="p-1 rounded-full bg-green-100 text-green-600" data-testid={`all-whatsapp-mobile-${order.id}`}>
+                    <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" className="p-1 rounded-full bg-green-100 text-green-600" data-testid={`all-whatsapp-mobile-${order.id}`}>
                       <SiWhatsapp className="w-3 h-3" />
                     </a>
                   </div>

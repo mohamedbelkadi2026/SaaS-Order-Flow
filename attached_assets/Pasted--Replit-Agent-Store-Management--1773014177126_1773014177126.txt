@@ -1,0 +1,32 @@
+
+هذا البرومبت مصمم ليجعل Replit Agent يبني لك نظام "إدارة المتاجر" (Store Management) باحترافية كاملة، مع ميزة تخصيص رسائل الواتساب تلقائياً (WhatsApp Automation Setup) ومعاينة حية (Live Preview)، تماماً كما في الصور التي أرفقتها.
+البرومبت النهائي لنظام إدارة المتاجر (TajerGrow)
+انسخ النص التالي وضعه في Replit Agent وأرفق معه الصور الثلاث الأخيرة:
+"I need to implement the 'Magasins' (Store Management) module for TajerGrow, matching the exact UI and logic shown in the 3 uploaded screenshots.
+1. Modal UI Structure (Refer to Image 1 & 3):
+Create a multi-section Modal ('Ajouter un nouveau business' / 'Modifier le magasin').
+Layout: Two-column design.
+Left Column:
+Business Logo upload (150x150).
+Toggles: 'Peut ouvrir' (Can open package), 'Stock', and 'Ramassage' (Pickup).
+Live WhatsApp Preview: A visual 'WhatsApp chat bubble' that updates in real-time as the user types the template message.
+Right Column (Form Sections):
+Informations du business: Nom du business, Téléphone, Site web, Facebook Link, Instagram Link.
+Ajouter votre équipe: Multi-select for Agents (e.g., fatima, khawla) and Multi-select for Services (Confirmation, Suivi).
+Configuration de livraison: Multi-select for Shipping Carriers (e.g., Digylog) and Multi-select for Platforms (Shopify, YouCan).
+2. WhatsApp Configuration Logic (Refer to Image 2):
+Implement a Message Template Editor (Textarea).
+Below the textarea, show Dynamic Variable Tags that the user can click to insert into the message:
+*{Nom_Client}*, *{Ville_Client}*, *{Address_Client}*, *{Phone_Client}*, *{Date_Commande}*, *{Nom_Produit}*, *{Transporteur}*, *{Date_Livraison}*.
+Functionality: When an Agent clicks the WhatsApp icon in the 'Orders' page, the system must generate a link: https://wa.me/[phone]?text=[encoded_template_with_real_data].
+3. Backend & Database Integration:
+Create a Stores table in PostgreSQL to save all these settings.
+Ensure the 'Team' and 'Carriers' selections are saved as arrays or in a join table.
+Multi-tenancy: Users should only see and edit stores they have created or have permission to manage.
+4. Frontend Index Page:
+Create a main page listing all stores as cards, showing the logo, name, and quick stats (Total orders per store).
+Add the 'Ajouter un magasin' button to trigger the modal.
+5. Technical Specs:
+Use React-Select or a similar library for the multi-select dropdowns.
+Use Tailwind CSS for the clean grey/blue professional aesthetic.
+Use Lucide Icons for the section headers (Home, Users, Truck, Message icons)."

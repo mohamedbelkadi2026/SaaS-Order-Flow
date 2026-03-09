@@ -8,6 +8,15 @@ export const stores = pgTable("stores", {
   name: text("name").notNull(),
   ownerId: integer("owner_id"),
   lastAssignedAgentId: integer("last_assigned_agent_id"),
+  phone: text("phone"),
+  website: text("website"),
+  facebook: text("facebook"),
+  instagram: text("instagram"),
+  logoUrl: text("logo_url"),
+  canOpen: integer("can_open").default(1),
+  isStock: integer("is_stock").default(0),
+  isRamassage: integer("is_ramassage").default(0),
+  whatsappTemplate: text("whatsapp_template"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

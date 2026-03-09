@@ -461,7 +461,7 @@ export function useMagasins() {
 export function useCreateMagasin() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (data: { name: string }) => {
+    mutationFn: async (data: any) => {
       const res = await apiRequest("POST", "/api/magasins", data);
       return res.json();
     },
@@ -475,7 +475,7 @@ export function useCreateMagasin() {
 export function useUpdateMagasin() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...data }: { id: number; name?: string }) => {
+    mutationFn: async ({ id, ...data }: { id: number; [key: string]: any }) => {
       const res = await apiRequest("PATCH", `/api/magasins/${id}`, data);
       return res.json();
     },

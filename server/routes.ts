@@ -1097,9 +1097,14 @@ export async function registerRoutes(
   });
 
   app.post("/api/magasins", requireAdmin, async (req, res) => {
-    const { name } = req.body;
+    const { name, phone, website, facebook, instagram, logoUrl, canOpen, isStock, isRamassage, whatsappTemplate } = req.body;
     if (!name) return res.status(400).json({ message: "Nom requis" });
-    const newStore = await storage.createStore({ name, ownerId: req.user!.id });
+    const newStore = await storage.createStore({
+      name, ownerId: req.user!.id,
+      phone: phone || null, website: website || null, facebook: facebook || null,
+      instagram: instagram || null, logoUrl: logoUrl || null, canOpen: canOpen ?? 1,
+      isStock: isStock ?? 0, isRamassage: isRamassage ?? 0, whatsappTemplate: whatsappTemplate || null,
+    });
     await storage.createSubscription({ storeId: newStore.id, plan: 'starter', monthlyLimit: 1500, pricePerMonth: 20000, currentMonthOrders: 0, isActive: 1 });
     res.json(newStore);
   });
@@ -1111,13 +1116,21 @@ export async function registerRoutes(
     if (store.ownerId !== req.user!.id && storeId !== req.user!.storeId) {
       return res.status(403).json({ message: "Accès refusé" });
     }
-    const updated = await storage.updateStore(storeId, req.body);
+    const allowedFields = ['name', 'phone', 'website', 'facebook', 'instagram', 'logoUrl', 'canOpen', 'isStock', 'isRamassage', 'whatsappTemplate'];
+    const updateData: any = {};
+    for (const key of allowedFields) {
+      if (req.body[key] !== undefined) updateData[key] = req.body[key];
+    }
+    const updated = await storage.updateStore(storeId, updateData);
     res.json(updated);
   });
 
   app.delete("/api/magasins/:id", requireAdmin, async (req, res) => {
     const storeId = Number(req.params.id);
     if (storeId === req.user!.storeId) return res.status(400).json({ message: "Impossible de supprimer votre magasin actuel" });
+    const store = await storage.getStore(storeId);
+    if (!store) return res.status(404).json({ message: "Magasin non trouvé" });
+    if (store.ownerId !== req.user!.id) return res.status(403).json({ message: "Accès refusé" });
     await storage.deleteStore(storeId);
     res.json({ message: "Supprimé" });
   });

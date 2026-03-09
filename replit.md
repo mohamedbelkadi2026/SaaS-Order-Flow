@@ -35,7 +35,7 @@ Only calculated for `delivered` orders (COD logic — profit counted only when m
 ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 
 ## Database Tables
-- `stores` - Multi-tenant stores with `ownerId` for ownership tracking
+- `stores` - Multi-tenant stores with ownerId, phone, website, facebook, instagram, logoUrl, canOpen, isStock, isRamassage, whatsappTemplate
 - `users` - Auth users with roles (owner/agent), isSuperAdmin flag, password, payment config
 - `products` - Store products with stock tracking, sellingPrice, description, imageUrl, hasVariants, createdAt
 - `product_variants` - Product variants with name, sku, costPrice, sellingPrice, stock, imageUrl per variant
@@ -68,7 +68,7 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 16. **Inventory**: Full CRUD for products with variant support. Stats dashboard (total products, quantity, low stock, out of stock, new this month). Advanced table with Reçu/Sortie/Disponible/Conf%/Livr% analytics per product. Product creation form with variant toggle (name/sku/cost/selling/stock per variant). Stock value summaries (coûtant, vente, marge potentielle). API: `GET /api/products/inventory`
 17. **Multi-Filter Dashboard**: Horizontal filter bar with city, product, agent, source, shipping provider, and date preset filters. All stat cards, charts, pie charts, team performance, and top products update in real-time when any filter changes. Product performance drill-down with confirmation/delivery rates and per-product ROI. Date presets: Today, Yesterday, This Month, Last Month, Custom range.
 18. **Profitability**: Delivered-only profit calculation with ROI/ROAS metrics, ad spend tracking, 40 MAD fixed shipping. Dynamic: Net Profit = Revenue(Livré) - COGS - Shipping(40 MAD) - Ad Spend
-19. **Multi-Store CRUD**: Create/edit/delete stores, owner-linked store management
+19. **Multi-Store CRUD**: Professional two-column modal matching SaaS UI design. Left column: Logo placeholder (150x150), toggles (Peut ouvrir, Stock, Ramassage), live WhatsApp chat preview. Right column: Business info (Nom, Téléphone, Site web, Facebook, Instagram), Team section (agents display), Delivery config (carriers + platforms display), WhatsApp message template editor with clickable variable tags ({Nom_Client}, {Ville_Client}, {Address_Client}, {Phone_Client}, {Date_Commande}, {Heure}, {Nom_Produit}, {Transporteur}, {Date_Livraison}). Variable substitution in order WhatsApp links (wa.me). Store cards with badges (Peut ouvrir, Ramassage, WhatsApp)
 20. **Advanced Orders Table**: Server-side filtered/paginated table with 15 toggleable columns. Column visibility controller (Colonnes dropdown) with localStorage persistence. Inline per-column search filters (Code, Destinataire, Téléphone, Ville, Produit, Action By). Color-coded action bar (Assign/Delete/Ship/Export/Columns). Bulk assign modal (service type + agent), bulk ship modal. Responsive mobile cards. Source filter in filter bar.
 21. **Commandes (Toutes)**: Central hub page showing ALL orders regardless of status. Full feature parity with Mes Commandes: same advanced table, column visibility, inline filters, bulk actions, mobile card view. Status filter dropdown, agent filter, source filter, date range. Bulk ship warns when non-confirmed orders selected. Route: `/orders/all`, API: `GET /api/orders/all`.
 
