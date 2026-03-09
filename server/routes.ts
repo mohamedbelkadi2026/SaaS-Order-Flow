@@ -483,6 +483,23 @@ export async function registerRoutes(
         distributionMethod: data.distributionMethod || "auto",
         isActive: data.isActive ?? 1,
       });
+
+      // Save store-specific agent settings (role, distribution rules)
+      const settingsPayload: any = {
+        roleInStore: (req.body.roleInStore as string) || "confirmation",
+      };
+      const distMethod = data.distributionMethod || "auto";
+      if (distMethod === "pourcentage") {
+        settingsPayload.leadPercentage = req.body.leadPercentage || 100;
+      }
+      if (distMethod === "produit" && Array.isArray(req.body.allowedProductIds)) {
+        settingsPayload.allowedProductIds = JSON.stringify(req.body.allowedProductIds);
+      }
+      if (distMethod === "region" && Array.isArray(req.body.allowedRegions)) {
+        settingsPayload.allowedRegions = JSON.stringify(req.body.allowedRegions);
+      }
+      await storage.upsertStoreAgentSetting(user.id, storeId, settingsPayload);
+
       const { password: _, ...safeUser } = user;
       res.status(201).json(safeUser);
     } catch (err) {
@@ -745,7 +762,7 @@ export async function registerRoutes(
       }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
-      const nextAgentId = await storage.getNextAgent(storeId, firstProductId);
+      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);
       if (nextAgentId) {
         await storage.assignOrder(order.id, nextAgentId);
       }
@@ -878,7 +895,7 @@ export async function registerRoutes(
       }, orderItemsToCreate);
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
-      const nextAgentId = await storage.getNextAgent(storeId, firstProductId);
+      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, data.customerCity);
       if (nextAgentId) {
         await storage.assignOrder(order.id, nextAgentId);
       }
@@ -1116,12 +1133,14 @@ export async function registerRoutes(
         roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
         leadPercentage: z.number().min(0).max(100).optional(),
         allowedProductIds: z.array(z.number()).optional(),
+        allowedRegions: z.array(z.string()).optional(),
       });
       const data = schema.parse(req.body);
       const payload: any = {};
       if (data.roleInStore !== undefined) payload.roleInStore = data.roleInStore;
       if (data.leadPercentage !== undefined) payload.leadPercentage = data.leadPercentage;
       if (data.allowedProductIds !== undefined) payload.allowedProductIds = JSON.stringify(data.allowedProductIds);
+      if (data.allowedRegions !== undefined) payload.allowedRegions = JSON.stringify(data.allowedRegions);
       const result = await storage.upsertStoreAgentSetting(agentId, storeId, payload);
       res.json(result);
     } catch (err) {

@@ -173,6 +173,8 @@ export const storeAgentSettings = pgTable("store_agent_settings", {
   leadPercentage: integer("lead_percentage").notNull().default(100),
   // JSON array of product IDs, e.g. '[1,2,3]'. Empty array means all products allowed.
   allowedProductIds: text("allowed_product_ids").notNull().default("[]"),
+  // JSON array of Moroccan region values, e.g. '["casablanca","rabat"]'. Empty means all regions.
+  allowedRegions: text("allowed_regions").notNull().default("[]"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

@@ -131,12 +131,17 @@ export function useCreateAgent() {
       paymentAmount?: number;
       distributionMethod?: string;
       isActive?: number;
+      roleInStore?: string;
+      leadPercentage?: number;
+      allowedProductIds?: number[];
+      allowedRegions?: string[];
     }) => {
       const res = await apiRequest("POST", "/api/agents", data);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agents/store-settings"] });
     },
   });
 }

@@ -1,0 +1,27 @@
+I need to implement a fully functional 'Team Management' module for TajerGrow, specifically building the 'Ajouter un nouveau membre' (Add New Member) modal with complex lead distribution logic as shown in the screenshots.
+1. Modal UI Structure (Refer to Screenshots):
+Create a multi-step/section Modal with the following fields:
+Basic Info: Nom complet, Téléphone (Moroccan format), Adresse e-mail, Mot de passe.
+Assignments: Multi-select for 'Choisir les magasins' and 'Choisir les rôles'.
+Compensation: 'Type de Paiement' (Dropdown: Commission, Fixed) and 'Montant' (Input).
+Status: 'Actif' toggle switch.
+2. Lead Distribution Engine (Méthode de répartition) - CRITICAL:
+Implement the 4 functional tabs shown in the image with their specific backend logic:
+Tab 1: Auto: Leads are assigned using a Round Robin algorithm (distributed equally among all active agents).
+Tab 2: Pourcentage: Admin sets a specific % for the agent. Logic: If Agent A has 70%, they get 7 out of 10 incoming orders.
+Tab 3: Produit: Multi-select dropdown to choose specific products (e.g., 'حذاء ZOMAX', 'قطرات العسل'). Logic: This agent ONLY receives leads containing these products.
+Tab 4: Région: Multi-select dropdown for Moroccan regions (e.g., 'Région Casablanca-Settat', 'Région Tanger-Tétouan'). Logic: This agent ONLY receives leads from these specific geographic areas.
+3. Backend & Logic Integration (Practical):
+User Creation: Saving a member must create a real account in the PostgreSQL Users table with the role assigned.
+Rules Table: Create an agent_rules table to store the Distribution Method, selected products, and selected regions.
+Assignment Function: Write a backend function assignIncomingOrder(order) that runs whenever a new order arrives from Shopify/YouCan. It must:
+Check all active agents for the store.
+Filter agents based on Product and Region rules.
+If multiple agents match, use the Percentage or Auto logic to pick one.
+Update the assigned_agent_id in the Orders table immediately.
+4. Performance UI:
+Ensure the main 'Gestion de l'équipe' list displays real-time stats for each member: Total Traitées, Confirmées, Livrées, and Tx. Liv (Delivery Rate).
+5. Technical Specs:
+Use PostgreSQL for data persistence.
+Use Tailwind CSS for the clean blue/grey theme.
+Ensure the modal is responsive and all dropdowns are searchable."

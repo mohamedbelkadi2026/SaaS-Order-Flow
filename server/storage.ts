@@ -80,11 +80,11 @@ export interface IStorage {
 
   getAgentProducts(agentId: number): Promise<AgentProduct[]>;
   setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
-  getNextAgent(storeId: number, productId?: number): Promise<number | null>;
+  getNextAgent(storeId: number, productId?: number, customerCity?: string): Promise<number | null>;
 
   getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]>;
   getAgentStoreSetting(agentId: number, storeId: number): Promise<StoreAgentSetting | undefined>;
-  upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string }): Promise<StoreAgentSetting>;
+  upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string }): Promise<StoreAgentSetting>;
 
   getOrderFollowUpLogs(orderId: number): Promise<OrderFollowUpLog[]>;
   createOrderFollowUpLog(data: InsertOrderFollowUpLog): Promise<OrderFollowUpLog>;
@@ -97,6 +97,22 @@ export interface IStorage {
   getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number }>;
   toggleStoreActive(storeId: number, isActive: number): Promise<void>;
 }
+
+// Moroccan region to city keyword mapping for order assignment
+const REGION_CITY_MAP: Record<string, string[]> = {
+  tanger: ['tanger', 'tétouan', 'tetouan', 'al hoceima', 'hoceima', 'chefchaouen', 'larache', 'ouazzane', 'mdiq', 'fnideq'],
+  oriental: ['oujda', 'nador', 'berkane', 'taourirt', 'jerada', 'guercif', 'figuig'],
+  'fes-meknes': ['fès', 'fes', 'meknès', 'meknes', 'ifrane', 'taza', 'sefrou', 'boulemane', 'el hajeb'],
+  rabat: ['rabat', 'salé', 'sale', 'kénitra', 'kenitra', 'skhirat', 'témara', 'temara', 'khémisset', 'khemisset'],
+  'beni-mellal': ['beni mellal', 'khénifra', 'khenifra', 'azilal', 'khouribga', 'fquih ben salah', 'kasba tadla'],
+  casablanca: ['casablanca', 'casa', 'settat', 'mohammedia', 'benslimane', 'el jadida', 'berrechid', 'mediouna', 'nouaceur'],
+  marrakech: ['marrakech', 'marrakesh', 'safi', 'essaouira', 'chichaoua', 'al haouz', 'kelâa', 'kelaa', 'youssoufia'],
+  draa: ['errachidia', 'ouarzazate', 'midelt', 'tinghir', 'zagora', 'draa'],
+  souss: ['agadir', 'tiznit', 'taroudant', 'taroudante', 'chtouka', 'inezgane', 'ait melloul', 'tata'],
+  guelmim: ['guelmim', 'tan-tan', 'tantan', 'sidi ifni', 'assa', 'zag'],
+  laayoune: ['laâyoune', 'laayoune', 'boujdour', 'smara', 'tarfaya'],
+  dakhla: ['dakhla', 'aousserd', 'oued dahab'],
+};
 
 export class DatabaseStorage implements IStorage {
   async getStore(id: number): Promise<Store | undefined> {
@@ -717,7 +733,7 @@ export class DatabaseStorage implements IStorage {
     return await db.insert(agentProducts).values(values).returning();
   }
 
-  async getNextAgent(storeId: number, productId?: number): Promise<number | null> {
+  async getNextAgent(storeId: number, productId?: number, customerCity?: string): Promise<number | null> {
     const storeAgents = await db.select().from(users)
       .where(and(eq(users.storeId, storeId), eq(users.role, 'agent'), eq(users.isActive, 1)));
     
@@ -755,13 +771,40 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    // Filter by allowed regions if customerCity is provided
+    if (customerCity) {
+      const regionFilteredAgents = eligibleAgents.filter(a => {
+        const setting = settingsMap.get(a.id);
+        if (!setting) return true;
+        try {
+          const allowedRegions: string[] = JSON.parse(setting.allowedRegions || '[]');
+          if (allowedRegions.length === 0) return true; // empty = all regions
+          // Check if the customerCity matches any of the agent's allowed regions using keyword matching
+          const cityLower = customerCity.toLowerCase();
+          return allowedRegions.some(region => {
+            const regionKeywords = REGION_CITY_MAP[region] || [];
+            return regionKeywords.some(kw => cityLower.includes(kw));
+          });
+        } catch {
+          return true;
+        }
+      });
+      if (regionFilteredAgents.length > 0) {
+        eligibleAgents = regionFilteredAgents;
+      }
+    }
+
+    // Determine distribution method for the store's agents
+    // Prefer per-agent distributionMethod. If multiple agents: weighted random by leadPercentage.
     // Build weighted pool based on leadPercentage
-    // Each agent contributes leadPercentage "tickets" into the pool
     const pool: number[] = [];
     for (const agent of eligibleAgents) {
       const setting = settingsMap.get(agent.id);
       const pct = setting ? Math.max(1, setting.leadPercentage) : 100;
-      for (let i = 0; i < pct; i++) pool.push(agent.id);
+      // If the agent uses auto (round robin), give 1 ticket; else use their leadPercentage
+      const method = agent.distributionMethod || 'auto';
+      const tickets = method === 'pourcentage' ? pct : 1;
+      for (let i = 0; i < tickets; i++) pool.push(agent.id);
     }
 
     if (pool.length === 0) return null;
@@ -785,7 +828,7 @@ export class DatabaseStorage implements IStorage {
     return setting;
   }
 
-  async upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string }): Promise<StoreAgentSetting> {
+  async upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string }): Promise<StoreAgentSetting> {
     const existing = await this.getAgentStoreSetting(agentId, storeId);
     if (existing) {
       const [updated] = await db.update(storeAgentSettings)
