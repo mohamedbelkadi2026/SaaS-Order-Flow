@@ -1025,6 +1025,175 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // ENHANCED MANUAL ORDER CREATION (from new-order-add.tsx)
+  // ============================================================
+  app.post("/api/orders/manual", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        customerName: z.string().min(1),
+        customerPhone: z.string().min(1),
+        customerAddress: z.string().optional().default(''),
+        customerCity: z.string().optional().default(''),
+        status: z.string().optional().default('nouveau'),
+        canOpen: z.number().optional().default(1),
+        isStock: z.number().optional().default(0),
+        replace: z.number().optional().default(0),
+        agentId: z.number().nullable().optional(),
+        comment: z.string().nullable().optional(),
+        totalPrice: z.number().optional().default(0),
+        items: z.array(z.object({
+          rawProductName: z.string().optional().default(''),
+          sku: z.string().nullable().optional(),
+          variantInfo: z.string().nullable().optional(),
+          price: z.number().min(0),
+          quantity: z.number().min(1),
+        })).optional().default([]),
+      });
+      const data = schema.parse(req.body);
+      const storeId = req.user!.storeId!;
+
+      const limitCheck = await storage.checkOrderLimit(storeId);
+      if (!limitCheck.allowed) {
+        return res.status(403).json({ message: `Limite de commandes atteinte (${limitCheck.current}/${limitCheck.limit}).` });
+      }
+
+      const totalPriceCents = Math.round(data.totalPrice * 100);
+      const rawProductName = data.items.map(i => i.rawProductName).filter(Boolean).join(' + ') || null;
+      const orderNumber = `MAN-${Date.now()}`;
+
+      const order = await storage.createOrder({
+        storeId,
+        orderNumber,
+        customerName: data.customerName,
+        customerPhone: data.customerPhone,
+        customerAddress: data.customerAddress,
+        customerCity: data.customerCity,
+        status: data.status,
+        totalPrice: totalPriceCents,
+        productCost: 0,
+        shippingCost: 0,
+        adSpend: 0,
+        source: 'manual',
+        comment: data.comment || null,
+        rawProductName,
+        canOpen: data.canOpen,
+        isStock: data.isStock,
+        replace: data.replace,
+      } as any, data.items.filter(i => i.rawProductName).map(i => ({
+        orderId: 0,
+        productId: null,
+        rawProductName: i.rawProductName,
+        sku: i.sku || null,
+        variantInfo: i.variantInfo || null,
+        price: Math.round(i.price),
+        quantity: i.quantity,
+      })) as any);
+
+      if (data.status === 'confirme') {
+        await storage.updateOrderStatus(order.id, 'confirme');
+      }
+
+      const agentId = data.agentId || await storage.getNextAgent(storeId, undefined, data.customerCity);
+      if (agentId) await storage.assignOrder(order.id, agentId);
+
+      const customer = await storage.getOrCreateCustomer(storeId, data.customerName, data.customerPhone, data.customerAddress, data.customerCity);
+      await storage.updateCustomerStats(customer.id, totalPriceCents);
+      await storage.incrementMonthlyOrders(storeId);
+
+      res.status(201).json(order);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // BULK IMPORT ORDERS FROM EXCEL/CSV
+  // ============================================================
+  app.post("/api/orders/import", requireAuth, async (req, res) => {
+    const multer = (await import("multer")).default;
+    const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+    upload.single("file")(req as any, res as any, async (err) => {
+      if (err) return res.status(400).json({ message: err.message });
+      try {
+        const file = (req as any).file;
+        if (!file) return res.status(400).json({ message: "Aucun fichier reçu" });
+
+        const mappingRaw = req.body.mapping;
+        const mapping: Record<string, string> = typeof mappingRaw === "string" ? JSON.parse(mappingRaw) : mappingRaw;
+
+        const XLSX = await import("xlsx");
+        const wb = XLSX.read(file.buffer, { type: "buffer" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows: Record<string, any>[] = XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+        const storeId = req.user!.storeId!;
+        let imported = 0;
+        let skipped = 0;
+        const errors: string[] = [];
+
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          try {
+            const mapped: Record<string, string> = {};
+            Object.entries(mapping).forEach(([col, field]) => {
+              if (field && row[col] !== undefined && row[col] !== '') {
+                mapped[field] = String(row[col]).trim();
+              }
+            });
+
+            const customerName = mapped.customerName || '';
+            const customerPhone = mapped.customerPhone || '';
+            if (!customerName && !customerPhone) { skipped++; continue; }
+
+            const totalPrice = mapped.totalPrice ? Math.round(parseFloat(mapped.totalPrice) * 100) : 0;
+            const quantity = mapped.quantity ? parseInt(mapped.quantity) || 1 : 1;
+            const orderNumber = `IMP-${Date.now()}-${i}`;
+
+            const order = await storage.createOrder({
+              storeId,
+              orderNumber,
+              customerName: customerName || 'Client importé',
+              customerPhone: customerPhone || '',
+              customerAddress: mapped.customerAddress || '',
+              customerCity: mapped.customerCity || '',
+              status: mapped.status || 'nouveau',
+              totalPrice,
+              productCost: 0,
+              shippingCost: 0,
+              adSpend: 0,
+              source: 'import',
+              comment: mapped.comment || null,
+              rawProductName: mapped.rawProductName || null,
+            } as any, mapped.rawProductName ? [{
+              orderId: 0,
+              productId: null,
+              rawProductName: mapped.rawProductName,
+              sku: mapped.sku || null,
+              variantInfo: mapped.variantInfo || null,
+              price: totalPrice,
+              quantity,
+            }] as any : []);
+
+            if (mapped.status === 'confirme') {
+              await storage.updateOrderStatus(order.id, 'confirme');
+            }
+
+            await storage.incrementMonthlyOrders(storeId);
+            imported++;
+          } catch (rowErr: any) {
+            errors.push(`Ligne ${i + 2}: ${rowErr.message}`);
+          }
+        }
+
+        res.json({ imported, skipped, errors });
+      } catch (err: any) {
+        res.status(500).json({ message: err.message || "Erreur d'importation" });
+      }
+    });
+  });
+
+  // ============================================================
   // MANUAL ORDER CREATION
   // ============================================================
   app.post("/api/orders", requireAuth, async (req, res) => {

@@ -37,7 +37,7 @@ const ADMIN_NAV = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Commandes (Toutes)", href: "/orders/all", icon: ListOrdered },
   { name: "Mes Commandes", href: "/orders", icon: ShoppingCart, hasSubmenu: true },
-  { name: "Nouvelle commande", href: "/orders/new", icon: PlusCircle },
+  { name: "Nouvelle commande", href: "/orders/add", icon: PlusCircle, hasSubmenu: true, submenuKey: "nouvelle" },
   { name: "Stock", href: "/inventory", icon: Package },
   { name: "Magasins", href: "/magasins", icon: Store },
   { name: "Liste Clients", href: "/clients", icon: Contact },
@@ -64,6 +64,11 @@ const INTEGRATION_SUB_ITEMS = [
   { name: "Boutiques", href: "/integrations" },
   { name: "Sociétés de Livraison", href: "/integrations/shipping" },
   { name: "Journal", href: "/integrations/logs" },
+];
+
+const NOUVELLE_SUB_ITEMS = [
+  { name: "Ajouter", href: "/orders/add" },
+  { name: "Importer", href: "/orders/import" },
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -96,10 +101,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
       <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
         {navItems.map((item) => {
-          const isActive = location === item.href || 
+          const isNouvelleMenu = item.name === "Nouvelle commande";
+          const isActive = location === item.href ||
             (item.name === "Int\u00e9gration" && location.startsWith("/integrations")) ||
-            (item.name === "Mes Commandes" && location.startsWith("/orders") && location !== "/orders/all") ||
-            (item.name === "Commandes (Toutes)" && location === "/orders/all");
+            (item.name === "Mes Commandes" && location.startsWith("/orders") && location !== "/orders/all" && location !== "/orders/add" && location !== "/orders/import") ||
+            (item.name === "Commandes (Toutes)" && location === "/orders/all") ||
+            (isNouvelleMenu && (location === "/orders/add" || location === "/orders/import"));
           const isOrdersMenu = item.name === "Mes Commandes";
           const isIntegrationMenu = item.name === "Int\u00e9gration";
 
@@ -138,6 +145,21 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                       "block px-3 py-1.5 text-xs rounded-lg transition-colors",
                       location === sub.href || (sub.name === "Boutiques" && location === "/integrations")
                         ? "text-primary font-medium" 
+                        : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
+                    )}>
+                      {sub.name}
+                    </Link>
+                  ))}
+                </div>
+              )}
+
+              {isNouvelleMenu && (
+                <div className="ml-8 space-y-0.5 mt-0.5">
+                  {NOUVELLE_SUB_ITEMS.map((sub) => (
+                    <Link key={sub.name} href={sub.href} className={cn(
+                      "block px-3 py-1.5 text-xs rounded-lg transition-colors",
+                      location === sub.href
+                        ? "text-primary font-medium"
                         : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
                     )}>
                       {sub.name}

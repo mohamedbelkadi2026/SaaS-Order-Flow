@@ -13,6 +13,8 @@ import AuthPage from "@/pages/auth-page";
 import Dashboard from "@/pages/dashboard";
 import Orders from "@/pages/orders";
 import NewOrder from "@/pages/new-order";
+import NewOrderAdd from "@/pages/new-order-add";
+import NewOrderImport from "@/pages/new-order-import";
 import Profitability from "@/pages/profitability";
 import Inventory from "@/pages/inventory";
 import Team from "@/pages/team";
@@ -47,6 +49,8 @@ function ProtectedRoutes() {
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/orders/all" component={AllOrders} />
+          <Route path="/orders/add" component={NewOrderAdd} />
+          <Route path="/orders/import" component={NewOrderImport} />
           <Route path="/orders/new" component={NewOrder} />
           <Route path="/orders" component={Orders} />
           <Route path="/orders/:filter" component={Orders} />

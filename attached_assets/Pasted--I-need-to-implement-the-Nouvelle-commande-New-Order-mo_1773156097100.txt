@@ -1,0 +1,26 @@
+"I need to implement the 'Nouvelle commande' (New Order) module for TajerGrow, making it 100% functional with two sub-pages: 'Ajouter' and 'Importer', as shown in the uploaded screenshots.
+1. Page 1: Ajouter (Manual Order Form - Refer to Image 1)
+Header: Title 'Ajouter une commande' with an 'Importer' button shortcut.
+Form Fields Implementation:
+Top Row (Settings): Boutique (Dropdown), Toggles for 'Ouvrable' (Can open), 'En Stock', and 'Remplacement'.
+Customer Info: Destinataire, Téléphone (with validation), Adresse, Ville (Dropdown), Status, Equipe (Agent Assignment), and Commentaire.
+Dynamic Product Items Section:
+Create a dynamic table 'Produits de la commande' with an '+ Ajouter un produit' button.
+Each row must have: Nom du Produit, Reference (SKU), Variant, Prix (U), Qte, and Row Total.
+Logic: Implement an auto-calculator for the 'Prix Total de la Commande (DH)' that updates in real-time as quantities or prices are changed.
+Action: The 'Enregistrer la Commande' button must save the order to the PostgreSQL Orders table.
+2. Page 2: Importer (Bulk Import - Refer to Image 2)
+UI: Create the 'Configuration d'importation des commandes' area.
+Features:
+Implement a functional Drag-and-Drop zone and a 'Choisir un fichier' button.
+Support for .xlsx, .xls, and .csv formats.
+Backend Logic (The Engine):
+Write a Node.js worker to parse the uploaded file.
+Mapping System: Create a step where the user can map their file columns (e.g., 'Nom') to our database fields (e.g., 'customer_name').
+Batch Processing: Insert all valid rows into the Orders table linked to the user's store_id. Show a success summary (e.g., '150 orders imported successfully').
+3. Backend Integration:
+Create endpoints: POST /api/orders (manual) and POST /api/orders/import (bulk).
+Ensure that if an order is imported or added with a 'confirme' status, the Stock Management logic triggers to decrease product inventory.
+4. Design Requirements:
+Use Tailwind CSS for the clean white/grey professional UI.
+Use Lucide Icons for icons and ensure the 'Total Price' box is prominent as seen in the screenshot."
