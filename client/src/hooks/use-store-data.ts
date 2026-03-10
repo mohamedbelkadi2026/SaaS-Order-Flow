@@ -171,6 +171,26 @@ export function useUpsertAdSpend() {
   });
 }
 
+export function useWebhookKey() {
+  return useQuery({
+    queryKey: ["/api/store/webhook-key"],
+    queryFn: async () => {
+      const res = await fetch("/api/store/webhook-key", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch webhook key");
+      return res.json() as Promise<{ webhookKey: string }>;
+    },
+  });
+}
+
+export function useVerifyConnection() {
+  return useMutation({
+    mutationFn: async (provider: string) => {
+      const res = await apiRequest("POST", `/api/integrations/verify/${provider}`, {});
+      return res.json();
+    },
+  });
+}
+
 export function useIntegrations(type?: string) {
   const url = type ? `/api/integrations?type=${type}` : "/api/integrations";
   return useQuery({

@@ -17,6 +17,7 @@ export const stores = pgTable("stores", {
   isStock: integer("is_stock").default(0),
   isRamassage: integer("is_ramassage").default(0),
   whatsappTemplate: text("whatsapp_template"),
+  webhookKey: text("webhook_key"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

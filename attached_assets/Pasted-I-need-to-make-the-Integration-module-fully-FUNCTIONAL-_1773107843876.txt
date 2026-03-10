@@ -1,0 +1,28 @@
+I need to make the 'Integration' module fully FUNCTIONAL. Stop building static guide pages and implement the backend logic to sync orders from external stores into TajerGrow, following the 6 provided screenshots.
+1. Universal Webhook Receiver (Backend):
+Create a dynamic endpoint: POST /api/webhooks/:store_id/:platform.
+Logic: This endpoint must handle incoming JSON data from various platforms and map it to our internal Orders table.
+Platform Mapping:
+Shopify/YouCan/Lightfunnels: Parse customer, address, total_price, and line_items.
+Google Sheets: Create a dedicated API route that receives data from a Google Apps Script.
+2. Google Sheets Integration (Refer to Screenshot 1):
+Script Generator: In the Google Sheets tab, provide a functional 'Copy Code' button.
+The Code: This button should copy a pre-made Google Apps Script that includes the user's specific API_KEY and the WEBHOOK_URL.
+Action: Clicking 'Verify Connection' should check the database for the latest ping from that specific Sheet.
+3. Platform Specifics (Refer to Screenshots 2-6):
+Shopify & Storeep: Generate a Unique Webhook URL for each magasin. (e.g., https://tajergrow.app/api/webhooks/123/shopify).
+Toggles Integration: Ensure that settings like 'Can Open', 'Ramassage', and 'Stock Sync' selected in the modal are saved and applied to every order coming from that specific integration.
+YouCan OAuth: Implement the button 'Connecter ma boutique YouCan' to handle the API redirection or Token input.
+4. Integration Dashboard UI:
+Build the Tabs system exactly as shown (Google Sheets, Shopify, YouCan, etc.).
+Each tab must show the Statut de la connexion (Connected/Disconnected) based on real data.
+Show a Webhook Log table for each integration to help the user debug if orders are not arriving.
+5. Inventory Syncing:
+When an order arrives via any integration, the system must:
+Match the SKU from the incoming order with our Inventory table.
+If status is set to 'auto-confirm', subtract stock immediately.
+If not, wait until the agent clicks 'confirme' in the Dashboard.
+Technical Instructions:
+Use PostgreSQL to store integration credentials securely.
+Ensure Multi-tenancy: Webhook URLs must contain the store_id to ensure data goes to the correct user.
+Add a 'Verify Connection' button that sends a test notification to the user's Dashboard."

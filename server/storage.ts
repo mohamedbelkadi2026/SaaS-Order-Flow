@@ -43,6 +43,9 @@ export interface IStorage {
   getAdSpend(storeId: number, date?: string): Promise<AdSpendEntry[]>;
   upsertAdSpend(entry: InsertAdSpend): Promise<AdSpendEntry>;
 
+  getOrGenerateWebhookKey(storeId: number): Promise<string>;
+  getStoreByWebhookKey(key: string): Promise<Store | undefined>;
+
   getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]>;
   getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]>;
   getIntegration(id: number): Promise<StoreIntegration | undefined>;
@@ -123,6 +126,21 @@ export class DatabaseStorage implements IStorage {
   async createStore(store: InsertStore): Promise<Store> {
     const [newStore] = await db.insert(stores).values(store).returning();
     return newStore;
+  }
+
+  async getOrGenerateWebhookKey(storeId: number): Promise<string> {
+    const store = await this.getStore(storeId);
+    if (!store) throw new Error("Store not found");
+    if (store.webhookKey) return store.webhookKey;
+    const { randomBytes } = await import('crypto');
+    const key = randomBytes(9).toString('base64url').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12).padEnd(12, '0');
+    await db.update(stores).set({ webhookKey: key }).where(eq(stores.id, storeId));
+    return key;
+  }
+
+  async getStoreByWebhookKey(key: string): Promise<Store | undefined> {
+    const [store] = await db.select().from(stores).where(eq(stores.webhookKey, key));
+    return store;
   }
 
   async getUserById(id: number): Promise<User | undefined> {

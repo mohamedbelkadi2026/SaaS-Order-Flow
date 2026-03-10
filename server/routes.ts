@@ -328,6 +328,15 @@ export async function registerRoutes(
     res.json(store);
   });
 
+  app.get("/api/store/webhook-key", requireAuth, async (req, res) => {
+    try {
+      const key = await storage.getOrGenerateWebhookKey(req.user!.storeId!);
+      res.json({ webhookKey: key });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
   app.get(api.orders.list.path, requireAuth, async (req, res) => {
     const user = req.user!;
     const status = req.query.status as string | undefined;
@@ -824,6 +833,129 @@ export async function registerRoutes(
         payload: JSON.stringify(req.body).slice(0, 2000),
       });
       res.status(500).json({ message: 'Webhook processing failed' });
+    }
+  });
+
+  // Universal webhook via token URL: POST /api/webhooks/:provider/order/:webhookKey
+  app.post("/api/webhooks/:provider/order/:webhookKey", async (req, res) => {
+    const provider = req.params.provider;
+    const webhookKey = req.params.webhookKey;
+    try {
+      const store = await storage.getStoreByWebhookKey(webhookKey);
+      if (!store) return res.status(404).json({ message: "Invalid webhook key" });
+      const storeId = store.id;
+
+      const payload = req.body;
+      const parsed = parseWebhookOrder(provider, payload);
+      if (!parsed.orderNumber) {
+        await storage.createIntegrationLog({ storeId, integrationId: null, provider, action: 'webhook_received', status: 'fail', message: 'Payload invalide — numéro de commande manquant', payload: JSON.stringify(payload).slice(0, 2000) });
+        return res.status(400).json({ message: "Invalid payload" });
+      }
+
+      const existingOrder = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+      if (existingOrder) {
+        return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
+      }
+
+      const limitCheck = await storage.checkOrderLimit(storeId);
+      if (!limitCheck.allowed) return res.status(403).json({ message: "Order limit reached" });
+
+      const storeProducts = await storage.getProductsByStore(storeId);
+      let productCost = 0;
+      const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
+      for (const item of parsed.lineItems) {
+        const matched = storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title);
+        if (matched) {
+          orderItemsToCreate.push({ productId: matched.id, quantity: item.quantity, price: item.price });
+          productCost += matched.costPrice * item.quantity;
+        }
+      }
+
+      const order = await storage.createOrder({
+        storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
+        customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
+        customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
+        productCost, shippingCost: 0, adSpend: 0, source: provider, comment: parsed.comment,
+      }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+
+      const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
+      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);
+      if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+
+      const customer = await storage.getOrCreateCustomer(storeId, parsed.customerName, parsed.customerPhone, parsed.customerAddress, parsed.customerCity);
+      await storage.updateCustomerStats(customer.id, parsed.totalPrice);
+      await storage.incrementMonthlyOrders(storeId);
+
+      const integration = await storage.getIntegrationByProvider(storeId, provider);
+      await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider, action: 'order_synced', status: 'success', message: `Commande ${parsed.orderNumber} importée via token webhook` });
+
+      res.json({ success: true, orderId: order.id });
+    } catch (err: any) {
+      console.error(`Token webhook error (${provider}):`, err);
+      res.status(500).json({ message: 'Webhook processing failed' });
+    }
+  });
+
+  // Google Sheets webhook
+  app.post("/api/webhooks/gsheets/:webhookKey", async (req, res) => {
+    const webhookKey = req.params.webhookKey;
+    try {
+      const store = await storage.getStoreByWebhookKey(webhookKey);
+      if (!store) return res.status(404).json({ message: "Invalid webhook key" });
+      const storeId = store.id;
+      const data = req.body;
+      const customerName = data.name || data.customer_name || data['Nom'] || '';
+      const customerPhone = data.phone || data.telephone || data['Téléphone'] || '';
+      const customerCity = data.city || data.ville || data['Ville'] || '';
+      const customerAddress = data.address || data.adresse || data['Adresse'] || '';
+      const productName = data.product || data.produit || data['Produit'] || '';
+      const totalPrice = Math.round(parseFloat(String(data.price || data.prix || data['Prix'] || '0').replace(',', '.')) * 100) || 0;
+      const orderNumber = data.ref || data.order_id || `GS-${Date.now()}`;
+      if (!customerName && !customerPhone) return res.status(400).json({ message: "Missing customer data" });
+      const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
+      if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
+      const limitCheck = await storage.checkOrderLimit(storeId);
+      if (!limitCheck.allowed) return res.status(403).json({ message: "Order limit reached" });
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
+      const orderItems = matched ? [{ productId: matched.id, quantity: 1, price: totalPrice, orderId: 0 }] : [];
+      const order = await storage.createOrder({
+        storeId, orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        status: 'nouveau', totalPrice, productCost: matched ? matched.costPrice : 0,
+        shippingCost: 0, adSpend: 0, source: 'gsheets', comment: null,
+      }, orderItems);
+      const nextAgentId = await storage.getNextAgent(storeId, matched?.id, customerCity);
+      if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+      const customer = await storage.getOrCreateCustomer(storeId, customerName, customerPhone, customerAddress, customerCity);
+      await storage.updateCustomerStats(customer.id, totalPrice);
+      await storage.incrementMonthlyOrders(storeId);
+      const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
+      await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: 'gsheets', action: 'order_synced', status: 'success', message: `Commande Google Sheets ${orderNumber} importée` });
+      res.json({ success: true, orderId: order.id });
+    } catch (err: any) {
+      console.error('GSheets webhook error:', err);
+      res.status(500).json({ message: 'Processing failed' });
+    }
+  });
+
+  // Verify connection: check if integration has received recent logs
+  app.post("/api/integrations/verify/:provider", requireAuth, async (req, res) => {
+    const provider = req.params.provider;
+    const storeId = req.user!.storeId!;
+    try {
+      const logs = await storage.getIntegrationLogs(storeId, 50);
+      const providerLogs = logs.filter(l => l.provider === provider);
+      const successLog = providerLogs.find(l => l.status === 'success');
+      const integration = await storage.getIntegrationByProvider(storeId, provider);
+      res.json({
+        connected: !!integration,
+        hasActivity: providerLogs.length > 0,
+        lastSuccess: successLog ? successLog.createdAt : null,
+        lastLog: providerLogs[0] || null,
+        logsCount: providerLogs.length,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
     }
   });
 
