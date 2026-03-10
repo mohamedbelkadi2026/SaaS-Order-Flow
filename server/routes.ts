@@ -795,7 +795,11 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Order limit reached" });
       }
 
-      const rawProductName = parsed.lineItems[0]?.title || null;
+      const rawProductName = parsed.lineItems.length > 0
+        ? parsed.lineItems.map((li: any) => li.title).filter(Boolean).join(' + ')
+        : null;
+      const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
+      const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
       const order = await storage.createOrder({
         storeId,
@@ -812,6 +816,8 @@ export async function registerRoutes(
         source: provider,
         comment: parsed.comment,
         rawProductName,
+        variantDetails,
+        rawQuantity,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
       const firstProductId = orderItemsToCreate.find(i => i.productId)?.productId ?? undefined;
@@ -878,12 +884,19 @@ export async function registerRoutes(
         }
       }
 
+      const rawProductName = parsed.lineItems.length > 0
+        ? parsed.lineItems.map((li: any) => li.title).filter(Boolean).join(' + ')
+        : null;
+      const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
+      const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
+
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
         customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: provider, comment: parsed.comment,
-      }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+        rawProductName, variantDetails, rawQuantity,
+      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
       const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);

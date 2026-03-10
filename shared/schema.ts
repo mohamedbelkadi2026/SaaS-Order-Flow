@@ -90,6 +90,8 @@ export const orders = pgTable("orders", {
   replace: integer("replace").default(0),
   source: text("source").default("manual"),
   rawProductName: text("raw_product_name"),
+  variantDetails: text("variant_details"),
+  rawQuantity: integer("raw_quantity"),
   commentStatus: text("comment_status"),
   commentOrder: text("comment_order"),
   createdAt: timestamp("created_at").defaultNow(),

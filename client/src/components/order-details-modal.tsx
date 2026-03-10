@@ -282,12 +282,22 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   };
 
   // ── Build "Détails" string ──
-  const detailsText = localItems.map((item, i) => {
-    const parts = [`quantity: ${item.quantity}`];
+  const detailsText = (() => {
+    if (localItems.length > 0) {
+      return localItems.map((item) => {
+        const parts: string[] = [`quantity: ${item.quantity}`];
+        if (order?.orderNumber) parts.push(`order_number: ${order.orderNumber}`);
+        if (item.variantInfo) parts.push(`variant: ${item.variantInfo}`);
+        return parts.join(" | ");
+      }).join("\n");
+    }
+    // Fallback: use order-level raw fields saved from webhook
+    const parts: string[] = [];
+    if ((order as any)?.rawQuantity) parts.push(`quantity: ${(order as any).rawQuantity}`);
     if (order?.orderNumber) parts.push(`order_number: ${order.orderNumber}`);
-    if (item.variantInfo) parts.push(item.variantInfo);
-    return parts.join(" ");
-  }).join("\n");
+    if ((order as any)?.variantDetails) parts.push(`variant: ${(order as any).variantDetails}`);
+    return parts.join(" | ");
+  })();
 
   if (!order) return null;
 
