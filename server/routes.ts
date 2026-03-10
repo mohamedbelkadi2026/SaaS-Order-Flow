@@ -1112,6 +1112,7 @@ export async function registerRoutes(
       if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
 
       const schema = z.object({
+        status: z.string().optional(),
         customerName: z.string().optional(),
         customerPhone: z.string().optional(),
         customerAddress: z.string().optional(),
@@ -1129,7 +1130,20 @@ export async function registerRoutes(
         totalPrice: z.number().optional(),
       });
       const data = schema.parse(req.body);
-      const updated = await storage.updateOrder(orderId, data);
+      console.log(`[PATCH /api/orders/${orderId}] status=${data.status ?? '(unchanged)'} storeId=${req.user!.storeId}`);
+
+      // Route status changes through updateOrderStatus for proper stock handling
+      if (data.status && data.status !== order.status) {
+        console.log(`[PATCH /api/orders/${orderId}] Updating status ${order.status} → ${data.status}`);
+        await storage.updateOrderStatus(orderId, data.status);
+      }
+      const { status: _s, ...fieldsWithoutStatus } = data;
+      let updated: any;
+      if (Object.keys(fieldsWithoutStatus).length > 0) {
+        updated = await storage.updateOrder(orderId, fieldsWithoutStatus);
+      } else {
+        updated = await storage.getOrder(orderId);
+      }
       res.json(updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });

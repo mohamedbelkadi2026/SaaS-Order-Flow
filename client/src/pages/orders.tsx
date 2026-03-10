@@ -600,7 +600,28 @@ export default function Orders() {
                           {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
                         </TableCell>
                       )}
-                      {isColVisible('status') && <TableCell><StatusBadge status={order.status} /></TableCell>}
+                      {isColVisible('status') && (
+                        <TableCell onClick={e => e.stopPropagation()}>
+                          <Select
+                            value={order.status}
+                            onValueChange={(newStatus) => {
+                              console.log(`[STATUS CHANGE] order #${order.orderNumber} ${order.status} → ${newStatus}`);
+                              handleStatusChange(order.id, newStatus);
+                            }}
+                          >
+                            <SelectTrigger className="h-7 text-[11px] border-0 bg-transparent p-0 shadow-none focus:ring-0 w-auto gap-1" data-testid={`status-select-${order.id}`}>
+                              <StatusBadge status={order.status} className="cursor-pointer" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ORDER_STATUSES.map(s => (
+                                <SelectItem key={s.value} value={s.value} className="text-xs">
+                                  {s.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                      )}
                       {isColVisible('prix') && <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>}
                       {isColVisible('adresse') && <TableCell className="max-w-[140px] truncate text-muted-foreground text-[11px]">{order.customerAddress || "-"}</TableCell>}
                       {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}

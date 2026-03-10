@@ -216,6 +216,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         totalPrice: Math.round(parseFloat(fields.totalPrice || "0") * 100),
         commentOrder: fields.commentOrder || null,
       };
+      console.log(`[MODAL SAVE] order #${order.orderNumber} status=${payload.status}`, payload);
       await apiRequest("PATCH", `/api/orders/${order.id}`, payload);
 
       // Sync items: delete removed ones and add new ones
@@ -241,10 +242,18 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       }
     },
     onSuccess: () => {
-      toast({ title: "Modifications enregistrées", description: "La commande a été mise à jour." });
+      const statusChanged = fields.status !== order?.status;
+      const msg = statusChanged
+        ? `Statut mis à jour : ${fields.status}`
+        : "La commande a été mise à jour.";
+      toast({ title: "Modifications enregistrées", description: msg });
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
       queryClient.invalidateQueries({ queryKey: ["/api/all-orders"] });
-      onUpdated?.({ ...order, ...fields });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      onUpdated?.({ ...order, ...fields, status: fields.status });
+      if (statusChanged) onClose();
     },
     onError: (err: any) => {
       toast({ title: "Erreur", description: err.message || "Erreur lors de la sauvegarde", variant: "destructive" });
