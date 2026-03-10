@@ -192,6 +192,7 @@ export default function Orders() {
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
   const [shippingProvider, setShippingProvider] = useState<string>("");
   const [editFields, setEditFields] = useState<Record<string, string>>({});
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -234,8 +235,9 @@ export default function Orders() {
   };
 
   const filteredOrders = useMemo(() => {
-    if (!Object.values(colFilters).some(v => v)) return ordersList;
-    return ordersList.filter((o: any) => {
+    const visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
+    if (!Object.values(colFilters).some(v => v)) return visible;
+    return visible.filter((o: any) => {
       if (colFilters.code && !o.orderNumber?.toLowerCase().includes(colFilters.code.toLowerCase())) return false;
       if (colFilters.destinataire && !o.customerName?.toLowerCase().includes(colFilters.destinataire.toLowerCase())) return false;
       if (colFilters.telephone) {
@@ -245,7 +247,10 @@ export default function Orders() {
       }
       if (colFilters.ville && !o.customerCity?.toLowerCase().includes(colFilters.ville.toLowerCase())) return false;
       if (colFilters.produit) {
-        const allNames = (o.items || []).map((i: any) => i.product?.name || '').join(' ').toLowerCase();
+        const allNames = [
+          o.rawProductName || '',
+          ...(o.items || []).map((i: any) => i.rawProductName || i.product?.name || ''),
+        ].join(' ').toLowerCase();
         if (!allNames.includes(colFilters.produit.toLowerCase())) return false;
       }
       if (colFilters.actionBy) {
@@ -263,6 +268,10 @@ export default function Orders() {
       return next.size !== prev.size ? next : prev;
     });
   }, [filteredOrders]);
+
+  useEffect(() => {
+    setHiddenOrderIds(new Set());
+  }, [urlStatus]);
 
   const openOrder = (order: any) => {
     setSelectedOrder(order);
@@ -308,7 +317,13 @@ export default function Orders() {
     updateStatus.mutate({ id, status }, {
       onSuccess: () => {
         toast({ title: "Statut mis à jour", description: `Commande changée en ${status}` });
-        if (selectedOrder && selectedOrder.id === id) setSelectedOrder({ ...selectedOrder, status });
+        if (selectedOrder && selectedOrder.id === id) {
+          setSelectedOrder({ ...selectedOrder, status });
+          setSelectedOrder(null);
+        }
+        if (status !== urlStatus) {
+          setHiddenOrderIds(prev => new Set([...prev, id]));
+        }
       }
     });
   };
@@ -540,7 +555,7 @@ export default function Orders() {
                 </TableRow>
               ) : (
                 filteredOrders.map((order: any) => {
-                  const productName = order.items?.[0]?.product?.name || '-';
+                  const productName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
                   const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';
                   const agentName = order.agent?.username || '-';
                   return (

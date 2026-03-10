@@ -164,7 +164,7 @@ export default function AllOrders() {
       }
       if (colFilters.ville && !o.customerCity?.toLowerCase().includes(colFilters.ville.toLowerCase())) return false;
       if (colFilters.produit) {
-        const allNames = (o.items || []).map((i: any) => i.product?.name || '').join(' ').toLowerCase();
+        const allNames = [o.rawProductName || '', ...(o.items || []).map((i: any) => i.rawProductName || i.product?.name || '')].join(' ').toLowerCase();
         if (!allNames.includes(colFilters.produit.toLowerCase())) return false;
       }
       if (colFilters.actionBy) {
@@ -478,7 +478,7 @@ export default function AllOrders() {
                 </TableRow>
               ) : (
                 filteredOrders.map((order: any) => {
-                  const productName = order.items?.[0]?.product?.name || '-';
+                  const productName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
                   const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';
                   const agentName = order.agent?.username || '-';
                   return (
