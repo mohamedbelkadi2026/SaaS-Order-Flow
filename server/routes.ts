@@ -48,8 +48,9 @@ function parseWebhookOrder(provider: string, payload: any) {
     const totalPrice = Math.round(parseFloat(payload.total_price || '0') * 100);
     const orderNumber = String(payload.order_number || payload.id);
     const lineItems = (payload.line_items || []).map((item: any) => ({
-      sku: item.sku,
-      title: item.title,
+      sku: item.sku || '',
+      title: item.title || '',
+      variantInfo: item.variant_title || (item.variant_id ? `variant_id: ${item.variant_id}` : ''),
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
@@ -66,6 +67,7 @@ function parseWebhookOrder(provider: string, payload: any) {
     const lineItems = (payload.items || payload.line_items || []).map((item: any) => ({
       sku: item.sku || '',
       title: item.name || item.title || '',
+      variantInfo: item.variant_title || '',
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
@@ -84,6 +86,7 @@ function parseWebhookOrder(provider: string, payload: any) {
     const lineItems = (payload.line_items || []).map((item: any) => ({
       sku: item.sku || '',
       title: item.name || '',
+      variantInfo: item.variation_id ? `variation_id: ${item.variation_id}` : '',
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
@@ -765,20 +768,21 @@ export async function registerRoutes(
 
       const storeProducts = await storage.getProductsByStore(storeId);
       let productCost = 0;
-      const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
+      const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
 
       for (const item of parsed.lineItems) {
         const matchedProduct = storeProducts.find(
           p => (item.sku && p.sku === item.sku) || p.name === item.title
         );
-        if (matchedProduct) {
-          orderItemsToCreate.push({
-            productId: matchedProduct.id,
-            quantity: item.quantity,
-            price: item.price,
-          });
-          productCost += matchedProduct.costPrice * item.quantity;
-        }
+        orderItemsToCreate.push({
+          productId: matchedProduct?.id ?? null,
+          quantity: item.quantity,
+          price: item.price,
+          rawProductName: item.title,
+          sku: item.sku || '',
+          variantInfo: (item as any).variantInfo || '',
+        });
+        if (matchedProduct) productCost += matchedProduct.costPrice * item.quantity;
       }
 
       const limitCheck = await storage.checkOrderLimit(storeId);
@@ -790,6 +794,8 @@ export async function registerRoutes(
         });
         return res.status(403).json({ message: "Order limit reached" });
       }
+
+      const rawProductName = parsed.lineItems[0]?.title || null;
 
       const order = await storage.createOrder({
         storeId,
@@ -805,9 +811,10 @@ export async function registerRoutes(
         adSpend: 0,
         source: provider,
         comment: parsed.comment,
-      }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+        rawProductName,
+      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
-      const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
+      const firstProductId = orderItemsToCreate.find(i => i.productId)?.productId ?? undefined;
       const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);
       if (nextAgentId) {
         await storage.assignOrder(order.id, nextAgentId);
@@ -1100,6 +1107,13 @@ export async function registerRoutes(
         comment: z.string().nullable().optional(),
         canOpen: z.number().optional(),
         upSell: z.number().optional(),
+        replace: z.number().optional(),
+        isStock: z.number().optional(),
+        replacementTrackNumber: z.string().nullable().optional(),
+        rawProductName: z.string().nullable().optional(),
+        commentStatus: z.string().nullable().optional(),
+        commentOrder: z.string().nullable().optional(),
+        totalPrice: z.number().optional(),
       });
       const data = schema.parse(req.body);
       const updated = await storage.updateOrder(orderId, data);
@@ -1107,6 +1121,45 @@ export async function registerRoutes(
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
+    }
+  });
+
+  // Order item CRUD
+  app.post("/api/orders/:id/items", requireAuth, async (req, res) => {
+    const orderId = parseInt(req.params.id);
+    try {
+      const item = await storage.addOrderItem({
+        orderId,
+        productId: req.body.productId || null,
+        rawProductName: req.body.rawProductName || null,
+        sku: req.body.sku || null,
+        variantInfo: req.body.variantInfo || null,
+        quantity: req.body.quantity || 1,
+        price: req.body.price || 0,
+      });
+      res.json(item);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.patch("/api/order-items/:id", requireAuth, async (req, res) => {
+    const id = parseInt(req.params.id);
+    try {
+      const item = await storage.updateOrderItem(id, req.body);
+      res.json(item);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/order-items/:id", requireAuth, async (req, res) => {
+    const id = parseInt(req.params.id);
+    try {
+      await storage.deleteOrderItem(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
     }
   });
 

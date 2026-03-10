@@ -89,15 +89,21 @@ export const orders = pgTable("orders", {
   canOpen: integer("can_open").default(1),
   replace: integer("replace").default(0),
   source: text("source").default("manual"),
+  rawProductName: text("raw_product_name"),
+  commentStatus: text("comment_status"),
+  commentOrder: text("comment_order"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const orderItems = pgTable("order_items", {
   id: serial("id").primaryKey(),
   orderId: integer("order_id").references(() => orders.id).notNull(),
-  productId: integer("product_id").references(() => products.id).notNull(),
+  productId: integer("product_id").references(() => products.id),
   quantity: integer("quantity").notNull().default(1),
   price: integer("price").notNull().default(0),
+  rawProductName: text("raw_product_name"),
+  variantInfo: text("variant_info"),
+  sku: text("sku"),
 });
 
 export const adSpendTracking = pgTable("ad_spend_tracking", {

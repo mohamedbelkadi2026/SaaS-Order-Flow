@@ -92,6 +92,10 @@ export interface IStorage {
   getOrderFollowUpLogs(orderId: number): Promise<OrderFollowUpLog[]>;
   createOrderFollowUpLog(data: InsertOrderFollowUpLog): Promise<OrderFollowUpLog>;
 
+  addOrderItem(data: { orderId: number; productId?: number | null; rawProductName?: string; sku?: string; variantInfo?: string; quantity: number; price: number }): Promise<OrderItem>;
+  updateOrderItem(id: number, data: { quantity?: number; price?: number; rawProductName?: string; sku?: string; variantInfo?: string }): Promise<OrderItem | undefined>;
+  deleteOrderItem(id: number): Promise<void>;
+
   getStoresByOwner(userId: number): Promise<Store[]>;
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
   deleteStore(id: number): Promise<void>;
@@ -352,14 +356,14 @@ export class DatabaseStorage implements IStorage {
     if (status === 'confirme' && currentOrder.status !== 'confirme') {
       const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
       for (const item of items) {
-        await this.updateProductStock(item.productId, -item.quantity);
+        if (item.productId) await this.updateProductStock(item.productId, -item.quantity);
       }
     }
 
     if (currentOrder.status === 'confirme' && status !== 'confirme') {
       const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
       for (const item of items) {
-        await this.updateProductStock(item.productId, item.quantity);
+        if (item.productId) await this.updateProductStock(item.productId, item.quantity);
       }
     }
       
@@ -870,6 +874,28 @@ export class DatabaseStorage implements IStorage {
   async createOrderFollowUpLog(data: InsertOrderFollowUpLog): Promise<OrderFollowUpLog> {
     const [log] = await db.insert(orderFollowUpLogs).values(data).returning();
     return log;
+  }
+
+  async addOrderItem(data: { orderId: number; productId?: number | null; rawProductName?: string; sku?: string; variantInfo?: string; quantity: number; price: number }): Promise<OrderItem> {
+    const [item] = await db.insert(orderItems).values({
+      orderId: data.orderId,
+      productId: data.productId ?? null,
+      rawProductName: data.rawProductName ?? null,
+      sku: data.sku ?? null,
+      variantInfo: data.variantInfo ?? null,
+      quantity: data.quantity,
+      price: data.price,
+    } as any).returning();
+    return item;
+  }
+
+  async updateOrderItem(id: number, data: { quantity?: number; price?: number; rawProductName?: string; sku?: string; variantInfo?: string }): Promise<OrderItem | undefined> {
+    const [item] = await db.update(orderItems).set(data as any).where(eq(orderItems.id, id)).returning();
+    return item;
+  }
+
+  async deleteOrderItem(id: number): Promise<void> {
+    await db.delete(orderItems).where(eq(orderItems.id, id));
   }
 
   async getStoresByOwner(userId: number): Promise<Store[]> {
