@@ -275,25 +275,36 @@ export async function registerRoutes(
     });
     const daily = Object.entries(dailyMap).map(([date, count]) => ({ date, count }));
 
-    const productMap: Record<number, { name: string; total: number; confirme: number; inProgress: number; delivered: number; revenue: number }> = {};
+    const storeProducts = await storage.getProductsByStore(storeId);
+    const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
+
+    const rawProductMap: Record<string, { name: string; total: number; confirme: number; inProgress: number; delivered: number; inStock: boolean }> = {};
     allOrders.forEach(o => {
-      if (o.items) {
-        o.items.forEach((item: any) => {
-          const pid = item.productId;
-          if (!productMap[pid]) productMap[pid] = { name: item.product?.name || `Produit #${pid}`, total: 0, confirme: 0, inProgress: 0, delivered: 0, revenue: 0 };
-          productMap[pid].total++;
-          if (o.status === 'confirme') productMap[pid].confirme++;
-          if (o.status === 'in_progress') productMap[pid].inProgress++;
-          if (o.status === 'delivered') {
-            productMap[pid].delivered++;
-            productMap[pid].revenue += item.price * item.quantity;
-          }
-        });
+      const rawName: string | null = (o as any).rawProductName
+        || (o.items && o.items.length > 0
+          ? ((o.items[0] as any).rawProductName || o.items[0].product?.name)
+          : null)
+        || null;
+      if (!rawName) return;
+      const key = rawName.toLowerCase().trim();
+      if (!rawProductMap[key]) {
+        rawProductMap[key] = {
+          name: rawName,
+          total: 0,
+          confirme: 0,
+          inProgress: 0,
+          delivered: 0,
+          inStock: internalProductNames.has(key),
+        };
       }
+      rawProductMap[key].total++;
+      if (o.status === 'confirme') rawProductMap[key].confirme++;
+      if (o.status === 'in_progress') rawProductMap[key].inProgress++;
+      if (o.status === 'delivered') rawProductMap[key].delivered++;
     });
-    const productPerformance = Object.values(productMap).sort((a, b) => b.total - a.total);
+    const productPerformance = Object.values(rawProductMap).sort((a, b) => b.total - a.total);
     const topProducts = productPerformance.slice(0, 10);
-    const maxRevenue = topProducts[0]?.revenue || 1;
+    const maxRevenue = 1;
 
     let adSpendTotal = 0;
     const adSpendEntries = await storage.getAdSpend(storeId);
@@ -316,7 +327,7 @@ export async function registerRoutes(
       revenue, profit: netProfit, confirmationRate, deliveryRate,
       totalProductCost, totalShipping, adSpendTotal, roas, roi,
       daily,
-      topProducts: topProducts.map(p => ({ ...p, share: Math.round((p.revenue / maxRevenue) * 100) })),
+      topProducts: topProducts.map(p => ({ ...p, share: 100 })),
       productPerformance: productPerformance.map(p => ({
         ...p,
         confirmationRate: p.total > 0 ? Math.round((p.confirme / p.total) * 100) : 0,

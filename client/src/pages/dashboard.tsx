@@ -502,7 +502,14 @@ export default function Dashboard() {
                   return (
                     <TableRow key={i} className="hover:bg-muted/20 transition-colors" data-testid={`product-perf-${i}`}>
                       <TableCell>
-                        <span className="font-medium text-sm">{p.name}</span>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-sm">{p.name}</span>
+                          {!p.inStock && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/50 font-medium">
+                              Hors Stock
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-center">
                         <span className="font-bold text-sm">{p.total}</span>
