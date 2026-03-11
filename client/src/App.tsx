@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -8,6 +8,8 @@ import { AppLayout } from "@/components/layout/app-layout";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ActiveStoreProvider } from "@/hooks/use-active-store";
 import { Loader2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { useEffect } from "react";
 
 import AuthPage from "@/pages/auth-page";
 import Dashboard from "@/pages/dashboard";
@@ -28,6 +30,31 @@ import Invoices from "@/pages/invoices";
 import Magasins from "@/pages/magasins";
 import AllOrders from "@/pages/all-orders";
 
+const AGENT_BLOCKED_PATHS = [
+  "/inventory", "/magasins", "/team", "/clients",
+  "/invoices", "/billing", "/profitability",
+  "/integrations", "/integrations/shipping", "/integrations/logs",
+  "/orders/all", "/admin",
+];
+
+function AgentGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const [location, navigate] = useLocation();
+  const { toast } = useToast();
+
+  const isBlocked = user?.role === 'agent' && AGENT_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
+
+  useEffect(() => {
+    if (isBlocked) {
+      toast({ title: "Accès refusé", description: "Vous n'avez pas accès à cette section.", variant: "destructive" });
+      navigate("/");
+    }
+  }, [isBlocked]);
+
+  if (isBlocked) return null;
+  return <>{children}</>;
+}
+
 function ProtectedRoutes() {
   const { user, isLoading } = useAuth();
 
@@ -46,27 +73,29 @@ function ProtectedRoutes() {
   return (
     <ActiveStoreProvider>
       <AppLayout>
-        <Switch>
-          <Route path="/" component={Dashboard} />
-          <Route path="/orders/all" component={AllOrders} />
-          <Route path="/orders/add" component={NewOrderAdd} />
-          <Route path="/orders/import" component={NewOrderImport} />
-          <Route path="/orders/new" component={NewOrder} />
-          <Route path="/orders" component={Orders} />
-          <Route path="/orders/:filter" component={Orders} />
-          <Route path="/inventory" component={Inventory} />
-          <Route path="/team" component={Team} />
-          <Route path="/clients" component={Clients} />
-          <Route path="/magasins" component={Magasins} />
-          <Route path="/invoices" component={Invoices} />
-          <Route path="/billing" component={Billing} />
-          <Route path="/profitability" component={Profitability} />
-          <Route path="/integrations" component={Integrations} />
-          <Route path="/integrations/shipping" component={ShippingIntegrations} />
-          <Route path="/integrations/logs" component={IntegrationLogs} />
-          <Route path="/admin" component={Admin} />
-          <Route component={NotFound} />
-        </Switch>
+        <AgentGuard>
+          <Switch>
+            <Route path="/" component={Dashboard} />
+            <Route path="/orders/all" component={AllOrders} />
+            <Route path="/orders/add" component={NewOrderAdd} />
+            <Route path="/orders/import" component={NewOrderImport} />
+            <Route path="/orders/new" component={NewOrder} />
+            <Route path="/orders" component={Orders} />
+            <Route path="/orders/:filter" component={Orders} />
+            <Route path="/inventory" component={Inventory} />
+            <Route path="/team" component={Team} />
+            <Route path="/clients" component={Clients} />
+            <Route path="/magasins" component={Magasins} />
+            <Route path="/invoices" component={Invoices} />
+            <Route path="/billing" component={Billing} />
+            <Route path="/profitability" component={Profitability} />
+            <Route path="/integrations" component={Integrations} />
+            <Route path="/integrations/shipping" component={ShippingIntegrations} />
+            <Route path="/integrations/logs" component={IntegrationLogs} />
+            <Route path="/admin" component={Admin} />
+            <Route component={NotFound} />
+          </Switch>
+        </AgentGuard>
       </AppLayout>
     </ActiveStoreProvider>
   );

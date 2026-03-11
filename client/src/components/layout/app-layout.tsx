@@ -97,21 +97,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     ? [...ADMIN_NAV, { name: "Super Admin", href: "/admin", icon: Shield }]
     : ADMIN_NAV;
 
+  const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add'];
+
   const navItems = useMemo(() => {
     if (!isAgent) return baseNav;
     return baseNav.filter((item) => {
-      if (item.href === '/inventory' && !agentPerms.show_inventory) return false;
-      if (item.href === '/orders/all' && !agentPerms.show_all_orders) return false;
-      if (agentSpecialty === 'suivi') {
-        if (item.name === 'Nouvelle commande') return false;
-        if (item.name === 'Commandes (Toutes)') return false;
-      }
-      if (agentSpecialty === 'confirmation') {
-        if (item.name === 'Commandes (Toutes)') return false;
-      }
+      if (!AGENT_ALLOWED_HREFS.includes(item.href)) return false;
+      if (agentSpecialty === 'suivi' && item.name === 'Nouvelle commande') return false;
       return true;
     });
-  }, [isAgent, baseNav, agentPerms, agentSpecialty]);
+  }, [isAgent, baseNav, agentSpecialty]);
 
   const visibleOrderSubItems = useMemo(() => {
     if (!isAgent || agentSpecialty === 'both') return ORDER_SUB_ITEMS;

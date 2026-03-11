@@ -185,13 +185,14 @@ export default function Dashboard() {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex justify-between items-center flex-wrap gap-2">
         <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Dashboard</h1>
-        {hasActiveFilters && (
+        {!isAgent && hasActiveFilters && (
           <Button variant="outline" size="sm" onClick={resetFilters} className="gap-1.5 text-xs" data-testid="button-reset-filters">
             <Filter className="w-3.5 h-3.5" /> Réinitialiser les filtres
           </Button>
         )}
       </div>
 
+      {!isAgent && (
       <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-filter-bar">
         <CardContent className="p-2.5 md:p-4">
           <div className="flex items-center justify-between mb-2 md:mb-3">
@@ -302,6 +303,7 @@ export default function Dashboard() {
           </div>
         </CardContent>
       </Card>
+      )}
 
       {isAgent && walletData && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:gap-4">
@@ -464,7 +466,7 @@ export default function Dashboard() {
       </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
+      {!isAgent && <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
         <Card className="col-span-1 lg:col-span-2 rounded-xl shadow-sm border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-base font-semibold flex items-center gap-2">
@@ -557,7 +559,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
         )}
-      </div>
+      </div>}
 
       {canSeeTopProducts && (
       <Card className="rounded-xl border-border/50 shadow-sm bg-white dark:bg-card" data-testid="card-product-performance">

@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
-import { useAgents, useProducts, useStore } from "@/hooks/use-store-data";
+import { useAgents, useProducts, useStore, useAgentStoreSettings } from "@/hooks/use-store-data";
+import { useAuth } from "@/hooks/use-auth";
 import { apiRequest } from "@/lib/queryClient";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -50,9 +51,22 @@ export default function NewOrderAdd() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const isAgent = user?.role === 'agent';
   const { data: agents = [] } = useAgents();
-  const { data: products = [] } = useProducts();
+  const { data: allProducts = [] } = useProducts();
   const { data: storeData } = useStore();
+  const { data: agentSettings = [] } = useAgentStoreSettings();
+
+  const myAgentSetting = (agentSettings as any[]).find((s: any) => s.agentId === user?.id);
+  const allowedProductIds: number[] = useMemo(() => {
+    try { return JSON.parse(myAgentSetting?.allowedProductIds || '[]'); } catch { return []; }
+  }, [myAgentSetting]);
+
+  const products = useMemo(() => {
+    if (!isAgent || allowedProductIds.length === 0) return allProducts as any[];
+    return (allProducts as any[]).filter((p: any) => allowedProductIds.includes(p.id));
+  }, [isAgent, allProducts, allowedProductIds]);
 
   const [saving, setSaving] = useState(false);
   const [canOpen, setCanOpen] = useState(true);
@@ -63,7 +77,7 @@ export default function NewOrderAdd() {
   const [customerAddress, setCustomerAddress] = useState("");
   const [customerCity, setCustomerCity] = useState("");
   const [status, setStatus] = useState("nouveau");
-  const [agentId, setAgentId] = useState("");
+  const [agentId, setAgentId] = useState(isAgent ? String(user?.id || "") : "");
   const [comment, setComment] = useState("");
   const [items, setItems] = useState<LineItem[]>([newItem()]);
 
@@ -207,6 +221,7 @@ export default function NewOrderAdd() {
                 </SelectContent>
               </Select>
             </div>
+            {!isAgent && (
             <div>
               <Label className="text-xs mb-1.5 block">Equipe</Label>
               <Select value={agentId} onValueChange={setAgentId}>
@@ -217,6 +232,7 @@ export default function NewOrderAdd() {
                 </SelectContent>
               </Select>
             </div>
+            )}
           </div>
 
           <div>

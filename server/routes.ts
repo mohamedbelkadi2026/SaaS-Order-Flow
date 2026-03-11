@@ -498,6 +498,9 @@ export async function registerRoutes(
     if (order.storeId !== req.user!.storeId && req.user!.role !== 'owner') {
       return res.status(403).json({ message: "Access denied" });
     }
+    if (req.user!.role === 'agent' && order.assignedToId !== req.user!.id) {
+      return res.status(403).json({ message: "Accès refusé" });
+    }
     res.json(order);
   });
 
