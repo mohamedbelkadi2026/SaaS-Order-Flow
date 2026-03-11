@@ -89,7 +89,7 @@ export default function NewOrderAdd() {
     const p = (products as any[]).find(p => p.id === parseInt(productId));
     if (p) {
       setItems(prev => prev.map(it => it.id === id
-        ? { ...it, rawProductName: p.name, sku: p.sku || "", price: p.costPrice || 0 }
+        ? { ...it, rawProductName: p.name, sku: p.sku || "", price: (p.sellingPrice || p.costPrice || 0) / 100 }
         : it));
     }
   };

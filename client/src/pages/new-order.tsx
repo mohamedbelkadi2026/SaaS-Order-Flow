@@ -269,7 +269,7 @@ export default function NewOrder() {
                     />
                   </div>
                   <div className="w-32 space-y-1">
-                    <Label>Prix (MAD)</Label>
+                    <Label>Prix (DH)</Label>
                     <Input
                       type="number"
                       min={0}
@@ -310,7 +310,7 @@ export default function NewOrder() {
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="shippingCost">Frais de livraison (MAD)</Label>
+                <Label htmlFor="shippingCost">Frais de livraison (DH)</Label>
                 <Input
                   id="shippingCost"
                   type="number"

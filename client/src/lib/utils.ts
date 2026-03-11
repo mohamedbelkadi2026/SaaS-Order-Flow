@@ -6,8 +6,6 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amountInCents: number) {
-  return new Intl.NumberFormat('fr-MA', {
-    style: 'currency',
-    currency: 'MAD',
-  }).format(amountInCents / 100)
+  const amount = (amountInCents / 100).toFixed(2);
+  return `${amount} DH`;
 }

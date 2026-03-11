@@ -348,11 +348,11 @@ export default function Inventory() {
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
-                <Label>Prix coûtant (MAD)</Label>
+                <Label>Prix coûtant (DH)</Label>
                 <Input data-testid="input-product-cost" type="number" step="0.01" value={form.costPrice} onChange={e => setForm(f => ({ ...f, costPrice: e.target.value }))} placeholder="0.00" />
               </div>
               <div className="space-y-2">
-                <Label>Prix de vente (MAD)</Label>
+                <Label>Prix de vente (DH)</Label>
                 <Input data-testid="input-product-selling" type="number" step="0.01" value={form.sellingPrice} onChange={e => setForm(f => ({ ...f, sellingPrice: e.target.value }))} placeholder="0.00" />
               </div>
               <div className="space-y-2">
@@ -443,11 +443,11 @@ export default function Inventory() {
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
-                <Label>Prix coûtant (MAD)</Label>
+                <Label>Prix coûtant (DH)</Label>
                 <Input data-testid="input-edit-product-cost" type="number" step="0.01" value={form.costPrice} onChange={e => setForm(f => ({ ...f, costPrice: e.target.value }))} />
               </div>
               <div className="space-y-2">
-                <Label>Prix de vente (MAD)</Label>
+                <Label>Prix de vente (DH)</Label>
                 <Input data-testid="input-edit-product-selling" type="number" step="0.01" value={form.sellingPrice} onChange={e => setForm(f => ({ ...f, sellingPrice: e.target.value }))} />
               </div>
               <div className="space-y-2">

@@ -162,7 +162,7 @@ export default function Profitability() {
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-semibold">Montant (MAD)</label>
+              <label className="text-sm font-semibold">Montant (DH)</label>
               <Input
                 data-testid="input-ad-amount"
                 type="number"

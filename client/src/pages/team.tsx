@@ -675,7 +675,7 @@ export default function Team() {
                     <div className="flex flex-col gap-1">
                       <Badge variant="outline" className="bg-primary/5 text-primary border-primary text-[10px] w-fit capitalize">{agent.paymentType || 'commission'}</Badge>
                       {agent.paymentAmount > 0 && (
-                        <Badge variant="outline" className="bg-yellow-100 text-yellow-700 border-none text-[10px] w-fit">{(agent.paymentAmount / 100).toFixed(2)} MAD</Badge>
+                        <Badge variant="outline" className="bg-yellow-100 text-yellow-700 border-none text-[10px] w-fit">{(agent.paymentAmount / 100).toFixed(2)} DH</Badge>
                       )}
                     </div>
                   </TableCell>
@@ -921,7 +921,7 @@ export default function Team() {
                       </Select>
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-sm font-semibold text-foreground">Montant (MAD)</Label>
+                      <Label className="text-sm font-semibold text-foreground">Montant (DH)</Label>
                       <Input data-testid="input-edit-amount" placeholder="Ex: 50.00" value={editForm.paymentAmount} onChange={e => setEditForm(d => ({ ...d, paymentAmount: e.target.value }))} className="h-11" />
                     </div>
                     <div className="space-y-1.5">
