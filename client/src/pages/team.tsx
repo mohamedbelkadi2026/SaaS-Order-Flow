@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck } from "lucide-react";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const DEFAULT_PERMISSIONS: Record<string, boolean> = {
@@ -163,6 +163,9 @@ export default function Team() {
   const setAgentProducts = useSetAgentProducts();
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<any>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm, setEditForm] = useState({ ...defaultForm });
   const [productDialogAgent, setProductDialogAgent] = useState<any>(null);
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
   const [formData, setFormData] = useState({ ...defaultForm });
@@ -201,7 +204,78 @@ export default function Team() {
     }
   };
 
+  const updateAgentMutation = useMutation({
+    mutationFn: async ({ agentId, payload }: { agentId: number; payload: any }) => {
+      const res = await apiRequest("PUT", `/api/users/${agentId}`, payload);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "Erreur lors de la mise à jour");
+      }
+      return res.json();
+    },
+    onSuccess: (_, { payload }) => {
+      toast({ title: "Modifications enregistrées", description: `${payload.username || editingAgent?.username} a été mis à jour avec succès.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/agents"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agents/store-settings"] });
+      setEditOpen(false);
+      setEditingAgent(null);
+    },
+    onError: (err: any) => {
+      toast({ title: "Erreur", description: err.message?.replace(/^\d+:\s*/, '') || "Erreur lors de la mise à jour", variant: "destructive" });
+    },
+  });
+
   const agentSettingsMap = new Map((agentSettings as any[]).map((s: any) => [s.agentId, s]));
+
+  const openEditDialog = (agent: any) => {
+    const setting = agentSettingsMap.get(agent.id);
+    let parsedProductIds: number[] = [];
+    let parsedRegions: string[] = [];
+    try { parsedProductIds = JSON.parse(setting?.allowedProductIds || '[]'); } catch {}
+    try { parsedRegions = JSON.parse(setting?.allowedRegions || '[]'); } catch {}
+    setEditingAgent(agent);
+    setEditForm({
+      username: agent.username || "",
+      phone: agent.phone || "",
+      email: agent.email || "",
+      password: "",
+      paymentType: agent.paymentType || "commission",
+      paymentAmount: agent.paymentAmount ? String(agent.paymentAmount / 100) : "",
+      distributionMethod: (agent.distributionMethod || "auto") as DistMethod,
+      roleInStore: setting?.roleInStore || "confirmation",
+      isActive: agent.isActive === 1 || agent.isActive === true,
+      leadPercentage: String(setting?.leadPercentage || 50),
+      allowedProductIds: parsedProductIds,
+      allowedRegions: parsedRegions,
+      commissionRate: setting?.commissionRate != null ? String(setting.commissionRate) : "",
+    });
+    setEditOpen(true);
+  };
+
+  const handleUpdateAgent = async () => {
+    if (!editingAgent) return;
+    if (!editForm.username || !editForm.email) {
+      toast({ title: "Erreur", description: "Nom et email requis", variant: "destructive" });
+      return;
+    }
+    const payload: any = {
+      username: editForm.username,
+      email: editForm.email,
+      phone: editForm.phone || null,
+      paymentType: editForm.paymentType,
+      paymentAmount: editForm.paymentAmount ? Math.round(parseFloat(editForm.paymentAmount) * 100) : 0,
+      distributionMethod: editForm.distributionMethod,
+      isActive: editForm.isActive ? 1 : 0,
+    };
+    if (editingAgent.role === 'agent') {
+      payload.roleInStore = editForm.roleInStore;
+      payload.commissionRate = editForm.commissionRate ? parseInt(editForm.commissionRate) : 0;
+      if (editForm.distributionMethod === "pourcentage") payload.leadPercentage = parseInt(editForm.leadPercentage) || 50;
+      if (editForm.distributionMethod === "produit") payload.allowedProductIds = editForm.allowedProductIds;
+      if (editForm.distributionMethod === "region") payload.allowedRegions = editForm.allowedRegions;
+    }
+    updateAgentMutation.mutate({ agentId: editingAgent.id, payload });
+  };
 
   const handleCreateAgent = async () => {
     if (!formData.username || !formData.email || !formData.password) {
@@ -671,6 +745,18 @@ export default function Team() {
                         </Button>
                       )}
                       {agent.role !== 'owner' && (
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="w-8 h-8 text-blue-500 border-blue-200 hover:bg-blue-50 hover:border-blue-400"
+                          data-testid={`button-edit-agent-${agent.id}`}
+                          onClick={() => openEditDialog(agent)}
+                          title="Modifier le membre"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                      )}
+                      {agent.role !== 'owner' && (
                         <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 hover:bg-red-50" data-testid={`button-delete-agent-${agent.id}`} onClick={() => handleDeleteAgent(agent.id, agent.username)} disabled={deleteAgent.isPending}>
                           <Trash2 className="w-4 h-4" />
                         </Button>
@@ -769,6 +855,147 @@ export default function Team() {
               <Button data-testid="button-save-agent-products" onClick={handleSaveProducts} disabled={setAgentProducts.isPending} className="gap-2">
                 {setAgentProducts.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                 Sauvegarder ({selectedProductIds.length})
+              </Button>
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
+
+      {/* ── Edit Member Modal ── */}
+      <Dialog open={editOpen} onOpenChange={(o) => { if (!o) { setEditOpen(false); setEditingAgent(null); } }}>
+        {editingAgent && (
+          <DialogContent className="sm:max-w-2xl rounded-2xl p-0 overflow-hidden border-none shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-3 px-7 pt-6 pb-4 border-b border-border/40 sticky top-0 bg-background z-10">
+              <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200">
+                <Pencil className="w-5 h-5 text-blue-500" />
+              </div>
+              <div>
+                <DialogTitle className="text-lg font-bold">Modifier le membre</DialogTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{editingAgent.username} — {editingAgent.email}</p>
+              </div>
+            </div>
+
+            <div className="px-7 py-5 space-y-6">
+              <div className="grid grid-cols-2 gap-5">
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-semibold text-foreground">Nom complet</Label>
+                  <Input data-testid="input-edit-name" value={editForm.username} onChange={e => setEditForm(d => ({ ...d, username: e.target.value }))} className="h-11" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-semibold text-foreground">Téléphone</Label>
+                  <Input data-testid="input-edit-phone" placeholder="ex: 0661234567" value={editForm.phone} onChange={e => setEditForm(d => ({ ...d, phone: e.target.value }))} className="h-11" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-semibold text-foreground">Email</Label>
+                  <Input data-testid="input-edit-email" type="email" value={editForm.email} onChange={e => setEditForm(d => ({ ...d, email: e.target.value }))} className="h-11" />
+                </div>
+              </div>
+
+              {editingAgent.role === 'agent' && (
+                <div>
+                  <p className="text-sm text-muted-foreground mb-3">Configuration du rôle et de la commission.</p>
+                  <div className="grid grid-cols-2 gap-5">
+                    <div className="space-y-1.5">
+                      <Label className="text-sm font-semibold text-foreground">Spécialité Agent</Label>
+                      <Select value={editForm.roleInStore} onValueChange={v => setEditForm(d => ({ ...d, roleInStore: v }))}>
+                        <SelectTrigger className="h-11" data-testid="select-edit-role">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="confirmation">Confirmation</SelectItem>
+                          <SelectItem value="suivi">Suivi</SelectItem>
+                          <SelectItem value="both">Les deux</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-sm font-semibold text-foreground">Type de Paiement</Label>
+                      <Select value={editForm.paymentType} onValueChange={v => setEditForm(d => ({ ...d, paymentType: v }))}>
+                        <SelectTrigger className="h-11" data-testid="select-edit-payment-type">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="commission">Commission</SelectItem>
+                          <SelectItem value="fixe">Fixe</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-sm font-semibold text-foreground">Montant (MAD)</Label>
+                      <Input data-testid="input-edit-amount" placeholder="Ex: 50.00" value={editForm.paymentAmount} onChange={e => setEditForm(d => ({ ...d, paymentAmount: e.target.value }))} className="h-11" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-sm font-semibold" style={{ color: '#C5A059' }}>Commission par Livré (DH)</Label>
+                      <div className="relative">
+                        <Input
+                          data-testid="input-edit-commission-rate"
+                          type="number"
+                          min="0"
+                          placeholder="Ex: 5"
+                          value={editForm.commissionRate}
+                          onChange={e => setEditForm(d => ({ ...d, commissionRate: e.target.value }))}
+                          className="h-11 pr-10"
+                          style={{ borderColor: editForm.commissionRate ? '#C5A059' : undefined }}
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold" style={{ color: '#C5A059' }}>DH</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editingAgent.role === 'agent' && (
+                <div className="bg-muted/30 rounded-xl border p-5 space-y-4">
+                  <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Méthode de répartition</p>
+                  <div className="grid grid-cols-4 border rounded-lg bg-background overflow-hidden">
+                    {DIST_METHOD_TABS.map(method => (
+                      <button
+                        key={method}
+                        type="button"
+                        onClick={() => setEditForm(d => ({ ...d, distributionMethod: method }))}
+                        className={cn("py-2.5 text-sm font-medium border-l first:border-l-0 transition-colors", editForm.distributionMethod === method ? "bg-primary text-primary-foreground font-bold" : "text-primary hover:bg-muted/50")}
+                      >
+                        {method === "auto" ? "Auto" : method === "pourcentage" ? "%" : method === "produit" ? "Produit" : "Région"}
+                      </button>
+                    ))}
+                  </div>
+                  {editForm.distributionMethod === "pourcentage" && (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={editForm.leadPercentage}
+                        onChange={e => setEditForm(d => ({ ...d, leadPercentage: e.target.value }))}
+                        className="w-24 h-9"
+                        data-testid="input-edit-lead-percentage"
+                      />
+                      <span className="text-sm text-muted-foreground">% des leads assignés</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="edit-active"
+                  checked={editForm.isActive}
+                  onCheckedChange={v => setEditForm(d => ({ ...d, isActive: v }))}
+                  data-testid="switch-edit-active"
+                />
+                <label htmlFor="edit-active" className="text-sm font-semibold cursor-pointer">Actif</label>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 px-7 py-5 bg-muted/10 border-t sticky bottom-0 bg-background">
+              <Button variant="outline" onClick={() => { setEditOpen(false); setEditingAgent(null); }} className="px-7">Annuler</Button>
+              <Button
+                data-testid="button-save-edit-agent"
+                onClick={handleUpdateAgent}
+                disabled={updateAgentMutation.isPending}
+                className="px-7 gap-2"
+              >
+                {updateAgentMutation.isPending ? <><Loader2 className="w-4 h-4 animate-spin" />Enregistrement...</> : <><Save className="w-4 h-4" />Enregistrer</>}
               </Button>
             </div>
           </DialogContent>

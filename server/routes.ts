@@ -1543,6 +1543,68 @@ export async function registerRoutes(
     res.json(await storage.getAgentPerformance(storeId));
   });
 
+  // ============================================================
+  // UPDATE USER (PUT /api/users/:id)
+  // ============================================================
+  app.put("/api/users/:id", requireAdmin, async (req, res) => {
+    try {
+      const userId = Number(req.params.id);
+      const admin = req.user!;
+      const agent = await storage.getUserById(userId);
+      if (!agent) return res.status(404).json({ message: "Utilisateur non trouvé" });
+      if (agent.storeId !== admin.storeId) return res.status(403).json({ message: "Accès refusé" });
+      if (agent.role === 'owner' && admin.id !== userId) return res.status(400).json({ message: "Impossible de modifier un autre propriétaire" });
+
+      const schema = z.object({
+        username: z.string().min(1).optional(),
+        email: z.string().email().optional(),
+        phone: z.string().nullable().optional(),
+        paymentType: z.enum(["commission", "fixe"]).optional(),
+        paymentAmount: z.number().min(0).optional(),
+        distributionMethod: z.enum(["auto", "pourcentage", "produit", "region"]).optional(),
+        isActive: z.number().int().min(0).max(1).optional(),
+        roleInStore: z.enum(["confirmation", "suivi", "both"]).optional(),
+        leadPercentage: z.number().min(0).max(100).optional(),
+        allowedProductIds: z.array(z.number()).optional(),
+        allowedRegions: z.array(z.string()).optional(),
+        commissionRate: z.number().min(0).optional(),
+      });
+      const data = schema.parse(req.body);
+
+      const userPayload: any = {};
+      if (data.username !== undefined) userPayload.username = data.username;
+      if (data.email !== undefined) userPayload.email = data.email;
+      if (data.phone !== undefined) userPayload.phone = data.phone;
+      if (data.paymentType !== undefined) userPayload.paymentType = data.paymentType;
+      if (data.paymentAmount !== undefined) userPayload.paymentAmount = data.paymentAmount;
+      if (data.distributionMethod !== undefined) userPayload.distributionMethod = data.distributionMethod;
+      if (data.isActive !== undefined) userPayload.isActive = data.isActive;
+
+      if (Object.keys(userPayload).length > 0) {
+        await storage.updateUser(userId, userPayload);
+      }
+
+      if (agent.role === 'agent') {
+        const settingsPayload: any = {};
+        if (data.roleInStore !== undefined) settingsPayload.roleInStore = data.roleInStore;
+        if (data.leadPercentage !== undefined) settingsPayload.leadPercentage = data.leadPercentage;
+        if (data.allowedProductIds !== undefined) settingsPayload.allowedProductIds = JSON.stringify(data.allowedProductIds);
+        if (data.allowedRegions !== undefined) settingsPayload.allowedRegions = JSON.stringify(data.allowedRegions);
+        if (data.commissionRate !== undefined) settingsPayload.commissionRate = data.commissionRate;
+        if (Object.keys(settingsPayload).length > 0) {
+          await storage.upsertStoreAgentSetting(userId, admin.storeId!, settingsPayload);
+        }
+      }
+
+      const updated = await storage.getUserById(userId);
+      const { password: _, ...safeUser } = updated as any;
+      res.json(safeUser);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
   app.delete("/api/agents/:id", requireAdmin, async (req, res) => {
     const agentId = Number(req.params.id);
     const agent = await storage.getUserById(agentId);

@@ -66,6 +66,7 @@ export interface IStorage {
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
   getInventoryStats(storeId: number): Promise<any>;
+  updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number }): Promise<User | undefined>;
   deleteUser(id: number): Promise<void>;
 
   getCustomersByStore(storeId: number): Promise<Customer[]>;
@@ -620,6 +621,11 @@ export class DatabaseStorage implements IStorage {
       newProducts,
       productStats,
     };
+  }
+
+  async updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number }): Promise<User | undefined> {
+    const [updated] = await db.update(users).set(data).where(eq(users.id, id)).returning();
+    return updated;
   }
 
   async deleteUser(id: number): Promise<void> {
