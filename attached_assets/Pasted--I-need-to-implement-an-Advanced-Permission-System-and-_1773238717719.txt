@@ -1,0 +1,27 @@
+"I need to implement an Advanced Permission System and a Commission Engine for my SaaS MVP. Please update the backend logic and the frontend UI based on these specific rules:
+1. Agent Role Specialization (Access Control):
+Divide the 'Agent' role into 3 sub-types. When an agent logs in, their Sidebar and access must change accordingly:
+Type 1: Agent Confirmation ONLY:
+Access: Dashboard, Mes Commandes (Filters: Nouveau, Confirme, Annulé), and Nouvelle Commande.
+RESTRICTION: Must NOT see 'Suivi des Colis'.
+Type 2: Agent Suivi ONLY:
+Access: Dashboard, Suivi des Colis (Filters: Expédié, En cours, Retourné).
+RESTRICTION: Must NOT see 'Mes Commandes' (New/Confirmation).
+Type 3: Agent Confirmation & Suivi:
+Access: Full access to Dashboard, Mes Commandes, Suivi des Colis, and Nouvelle Commande.
+2. Commission Engine (The Wallet):
+Admin Configuration: In the 'Gestion de l’équipe' page, add a field for each agent called 'Commission par Livré (DH)'. The Admin can set a specific amount for each girl (e.g., 5 DH or 10 DH per order).
+Calculation Logic: The system must calculate earnings ONLY when an order status changes to 'Livré' (Delivered).
+Agent View: Add a 'Mon Portefeuille' (My Wallet) card on the Agent's Dashboard showing:
+Total Commission Earned: (Number of 'Livré' orders × Commission amount).
+Livraisons du mois: Number of items delivered this month.
+3. Admin Management UI:
+In the 'Ajouter/Modifier un membre' modal, implement:
+A dropdown to select the Agent Specialty (Confirmation, Suivi, or Both).
+An input field to set the Commission per Delivered Order.
+In the Admin Dashboard, show a summary of Total Commissions to Pay to all agents.
+4. Technical Implementation:
+Update the Users table in PostgreSQL to include agent_specialty and commission_rate.
+Ensure that the 'Suivi des Colis' view filters orders correctly based on the assigned agent.
+Implement a backend function that recalculates commissions in real-time as shipping statuses are updated via API (Digylog).
+Design Goal: Protect the business data (Revenue/Profit) from agents while giving them a clear view of their own work and money earned. Use the brand's Gold (#C5A059) for the commission/money sections."

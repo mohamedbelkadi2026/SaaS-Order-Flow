@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import { 
   LayoutDashboard, 
@@ -85,17 +86,40 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const isAgent = user?.role === 'agent';
   const agentPerms = (user?.dashboardPermissions || {}) as Record<string, boolean>;
 
+  const { data: agentSettingsData } = useQuery<any[]>({
+    queryKey: ["/api/agents/store-settings"],
+    enabled: isAgent,
+  });
+  const myAgentSetting = agentSettingsData?.find((s: any) => s.agentId === user?.id);
+  const agentSpecialty = myAgentSetting?.roleInStore || 'confirmation';
+
   const baseNav = user?.isSuperAdmin
     ? [...ADMIN_NAV, { name: "Super Admin", href: "/admin", icon: Shield }]
     : ADMIN_NAV;
 
-  const navItems = isAgent
-    ? baseNav.filter((item) => {
-        if (item.href === '/inventory' && !agentPerms.show_inventory) return false;
-        if (item.href === '/orders/all' && !agentPerms.show_all_orders) return false;
-        return true;
-      })
-    : baseNav;
+  const navItems = useMemo(() => {
+    if (!isAgent) return baseNav;
+    return baseNav.filter((item) => {
+      if (item.href === '/inventory' && !agentPerms.show_inventory) return false;
+      if (item.href === '/orders/all' && !agentPerms.show_all_orders) return false;
+      if (agentSpecialty === 'suivi') {
+        if (item.name === 'Nouvelle commande') return false;
+        if (item.name === 'Commandes (Toutes)') return false;
+      }
+      if (agentSpecialty === 'confirmation') {
+        if (item.name === 'Commandes (Toutes)') return false;
+      }
+      return true;
+    });
+  }, [isAgent, baseNav, agentPerms, agentSpecialty]);
+
+  const visibleOrderSubItems = useMemo(() => {
+    if (!isAgent || agentSpecialty === 'both') return ORDER_SUB_ITEMS;
+    if (agentSpecialty === 'confirmation') {
+      return ORDER_SUB_ITEMS.filter(s => !['Suivi des Colis', 'En cours', 'Livrées', 'Refusées'].includes(s.name));
+    }
+    return ORDER_SUB_ITEMS.filter(s => ['En cours', 'Suivi des Colis', 'Livrées', 'Refusées'].includes(s.name));
+  }, [isAgent, agentSpecialty]);
 
   const SidebarContent = () => (
     <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">
@@ -136,7 +160,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               
               {isOrdersMenu && (
                 <div className="ml-8 space-y-0.5 mt-0.5">
-                  {ORDER_SUB_ITEMS.map((sub) => (
+                  {visibleOrderSubItems.map((sub) => (
                     <Link key={sub.name} href={sub.href} className={cn(
                       "block px-3 py-1.5 text-xs rounded-lg transition-colors",
                       location === sub.href

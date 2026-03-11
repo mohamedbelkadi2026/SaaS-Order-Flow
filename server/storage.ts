@@ -98,6 +98,8 @@ export interface IStorage {
 
   getAgentPermissions(agentId: number): Promise<Record<string, boolean>>;
   updateAgentPermissions(agentId: number, permissions: Record<string, boolean>): Promise<void>;
+  getAgentWallet(agentId: number, storeId: number): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }>;
+  getCommissionsSummary(storeId: number): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>;
 
   getStoresByOwner(userId: number): Promise<Store[]>;
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
@@ -853,7 +855,7 @@ export class DatabaseStorage implements IStorage {
     return setting;
   }
 
-  async upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string }): Promise<StoreAgentSetting> {
+  async upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting> {
     const existing = await this.getAgentStoreSetting(agentId, storeId);
     if (existing) {
       const [updated] = await db.update(storeAgentSettings)
@@ -919,6 +921,37 @@ export class DatabaseStorage implements IStorage {
 
   async updateAgentPermissions(agentId: number, permissions: Record<string, boolean>): Promise<void> {
     await db.update(users).set({ dashboardPermissions: permissions }).where(eq(users.id, agentId));
+  }
+
+  async getAgentWallet(agentId: number, storeId: number): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }> {
+    const setting = await this.getAgentStoreSetting(agentId, storeId);
+    const rate = setting?.commissionRate ?? 0;
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const [totalRow] = await db.select({ count: sql<number>`count(*)` })
+      .from(orders)
+      .where(and(eq(orders.assignedToId, agentId), eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
+    const [monthRow] = await db.select({ count: sql<number>`count(*)` })
+      .from(orders)
+      .where(and(eq(orders.assignedToId, agentId), eq(orders.storeId, storeId), eq(orders.status, 'delivered'), gte(orders.createdAt, startOfMonth)));
+    const deliveredTotal = Number(totalRow?.count ?? 0);
+    const deliveredThisMonth = Number(monthRow?.count ?? 0);
+    return { totalEarned: deliveredTotal * rate, deliveredThisMonth, deliveredTotal, commissionRate: rate };
+  }
+
+  async getCommissionsSummary(storeId: number): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {
+    const agents = await db.select().from(users).where(and(eq(users.storeId, storeId), eq(users.role, 'agent')));
+    const result = [];
+    for (const agent of agents) {
+      const setting = await this.getAgentStoreSetting(agent.id, storeId);
+      const rate = setting?.commissionRate ?? 0;
+      const [row] = await db.select({ count: sql<number>`count(*)` })
+        .from(orders)
+        .where(and(eq(orders.assignedToId, agent.id), eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
+      const deliveredTotal = Number(row?.count ?? 0);
+      result.push({ agentId: agent.id, agentName: agent.username, commissionRate: rate, deliveredTotal, totalOwed: deliveredTotal * rate });
+    }
+    return result;
   }
 
   async getStoresByOwner(userId: number): Promise<Store[]> {

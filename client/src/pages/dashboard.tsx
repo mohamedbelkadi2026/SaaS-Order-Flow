@@ -1,5 +1,6 @@
 import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance, useAgentStoreSettings } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
+import { useQuery } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -76,6 +77,16 @@ export default function Dashboard() {
   const canSeeProfit = !isAgent || !!perms.show_profit;
   const canSeeCharts = !isAgent || !!perms.show_charts;
   const canSeeTopProducts = !isAgent || !!perms.show_top_products;
+
+  const { data: walletData } = useQuery<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }>({
+    queryKey: ['/api/agents/wallet'],
+    enabled: isAgent,
+  });
+  const { data: commissionsSummary } = useQuery<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>({
+    queryKey: ['/api/stats/commissions-summary'],
+    enabled: !isAgent,
+  });
+  const totalCommissionsOwed = commissionsSummary?.reduce((sum, a) => sum + a.totalOwed, 0) ?? 0;
 
   const { data: stats, isLoading } = useFilteredStats(activeFilters);
   const { data: filterOptions } = useFilterOptions();
@@ -291,6 +302,62 @@ export default function Dashboard() {
           </div>
         </CardContent>
       </Card>
+
+      {isAgent && walletData && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:gap-4">
+          <Card className="sm:col-span-3 rounded-xl border-0 shadow-md overflow-hidden" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #8a6930 100%)' }} data-testid="card-wallet">
+            <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center gap-5">
+              <div className="flex items-center gap-4 flex-1">
+                <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center shrink-0">
+                  <DollarSign className="w-7 h-7 text-white" />
+                </div>
+                <div>
+                  <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Mon Portefeuille</p>
+                  <p className="text-white text-3xl font-bold">{walletData.totalEarned.toFixed(2)} <span className="text-white/70 text-lg font-normal">DH</span></p>
+                  <p className="text-white/70 text-xs mt-0.5">Total commissions gagnées ({walletData.deliveredTotal} livraisons)</p>
+                </div>
+              </div>
+              <div className="flex sm:flex-col gap-4 sm:gap-2 sm:items-end">
+                <div className="text-center sm:text-right">
+                  <p className="text-white/70 text-xs uppercase tracking-wide">Ce mois</p>
+                  <p className="text-white text-xl font-bold">{walletData.deliveredThisMonth}</p>
+                  <p className="text-white/60 text-xs">livraisons</p>
+                </div>
+                <div className="text-center sm:text-right">
+                  <p className="text-white/70 text-xs uppercase tracking-wide">Taux</p>
+                  <p className="text-white text-xl font-bold">{walletData.commissionRate} DH</p>
+                  <p className="text-white/60 text-xs">par livraison</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {!isAgent && totalCommissionsOwed > 0 && (
+        <Card className="rounded-xl border-0 shadow-md overflow-hidden" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 100%)' }} data-testid="card-commissions-summary">
+          <CardContent className="p-4 flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center">
+                <DollarSign className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <p className="text-white/80 text-xs font-semibold uppercase tracking-wider">Total Commissions à Payer</p>
+                <p className="text-white text-2xl font-bold">{totalCommissionsOwed.toFixed(2)} DH</p>
+              </div>
+            </div>
+            <div className="flex gap-4">
+              {commissionsSummary?.filter(a => a.totalOwed > 0).map(a => (
+                <div key={a.agentId} className="text-center">
+                  <p className="text-white/70 text-xs">{a.agentName}</p>
+                  <p className="text-white font-semibold text-sm">{a.totalOwed} DH</p>
+                  <p className="text-white/60 text-xs">{a.deliveredTotal} livrées</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
         <StatCard title="Commandes" value={totalOrders} icon={ShoppingCart} iconBg="bg-slate-400" subtitle="100% voir plus" />

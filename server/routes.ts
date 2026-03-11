@@ -582,6 +582,9 @@ export async function registerRoutes(
       if (distMethod === "region" && Array.isArray(req.body.allowedRegions)) {
         settingsPayload.allowedRegions = JSON.stringify(req.body.allowedRegions);
       }
+      if (typeof req.body.commissionRate === 'number') {
+        settingsPayload.commissionRate = req.body.commissionRate;
+      }
       await storage.upsertStoreAgentSetting(user.id, storeId, settingsPayload);
 
       const { password: _, ...safeUser } = user;
@@ -1587,6 +1590,7 @@ export async function registerRoutes(
         leadPercentage: z.number().min(0).max(100).optional(),
         allowedProductIds: z.array(z.number()).optional(),
         allowedRegions: z.array(z.string()).optional(),
+        commissionRate: z.number().min(0).optional(),
       });
       const data = schema.parse(req.body);
       const payload: any = {};
@@ -1594,6 +1598,7 @@ export async function registerRoutes(
       if (data.leadPercentage !== undefined) payload.leadPercentage = data.leadPercentage;
       if (data.allowedProductIds !== undefined) payload.allowedProductIds = JSON.stringify(data.allowedProductIds);
       if (data.allowedRegions !== undefined) payload.allowedRegions = JSON.stringify(data.allowedRegions);
+      if (data.commissionRate !== undefined) payload.commissionRate = data.commissionRate;
       const result = await storage.upsertStoreAgentSetting(agentId, storeId, payload);
       res.json(result);
     } catch (err) {
@@ -1637,6 +1642,22 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
     }
+  });
+
+  // ============================================================
+  // AGENT WALLET & COMMISSIONS SUMMARY
+  // ============================================================
+  app.get("/api/agents/wallet", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const wallet = await storage.getAgentWallet(user.id, storeId);
+    res.json(wallet);
+  });
+
+  app.get("/api/stats/commissions-summary", requireAdmin, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const summary = await storage.getCommissionsSummary(storeId);
+    res.json(summary);
   });
 
   // ============================================================

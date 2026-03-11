@@ -185,6 +185,8 @@ export const storeAgentSettings = pgTable("store_agent_settings", {
   allowedProductIds: text("allowed_product_ids").notNull().default("[]"),
   // JSON array of Moroccan region values, e.g. '["casablanca","rabat"]'. Empty means all regions.
   allowedRegions: text("allowed_regions").notNull().default("[]"),
+  // Commission en DH par commande livrée (statut 'delivered')
+  commissionRate: integer("commission_rate").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

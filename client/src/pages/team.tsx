@@ -75,6 +75,7 @@ const defaultForm = {
   leadPercentage: "50",
   allowedProductIds: [] as number[],
   allowedRegions: [] as string[],
+  commissionRate: "",
 };
 
 function MultiSelectDropdown({
@@ -218,6 +219,7 @@ export default function Team() {
         distributionMethod: formData.distributionMethod,
         isActive: formData.isActive ? 1 : 0,
         roleInStore: formData.roleInStore,
+        commissionRate: formData.commissionRate ? parseInt(formData.commissionRate) : 0,
       };
       if (formData.distributionMethod === "pourcentage") {
         payload.leadPercentage = parseInt(formData.leadPercentage) || 50;
@@ -392,6 +394,23 @@ export default function Team() {
                   <div className="space-y-1.5">
                     <Label className="text-sm font-semibold text-foreground">Montant</Label>
                     <Input data-testid="input-agent-amount" placeholder="Ex: 50.00" value={formData.paymentAmount} onChange={e => setFormData(d => ({ ...d, paymentAmount: e.target.value }))} className="h-11" />
+                  </div>
+                  <div className="col-span-2 space-y-1.5">
+                    <Label className="text-sm font-semibold" style={{ color: '#C5A059' }}>Commission par Livré (DH)</Label>
+                    <div className="relative">
+                      <Input
+                        data-testid="input-agent-commission-rate"
+                        type="number"
+                        min="0"
+                        placeholder="Ex: 5 (DH par commande livrée)"
+                        value={formData.commissionRate}
+                        onChange={e => setFormData(d => ({ ...d, commissionRate: e.target.value }))}
+                        className="h-11 pr-10"
+                        style={{ borderColor: formData.commissionRate ? '#C5A059' : undefined }}
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-semibold" style={{ color: '#C5A059' }}>DH</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Montant gagné par l'agent pour chaque commande livrée (statut Livré)</p>
                   </div>
                 </div>
               </div>
