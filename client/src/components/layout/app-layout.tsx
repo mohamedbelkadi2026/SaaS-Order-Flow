@@ -82,9 +82,20 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     else document.documentElement.classList.remove("dark");
   }, [isDark]);
 
-  const navItems = user?.isSuperAdmin
+  const isAgent = user?.role === 'agent';
+  const agentPerms = (user?.dashboardPermissions || {}) as Record<string, boolean>;
+
+  const baseNav = user?.isSuperAdmin
     ? [...ADMIN_NAV, { name: "Super Admin", href: "/admin", icon: Shield }]
     : ADMIN_NAV;
+
+  const navItems = isAgent
+    ? baseNav.filter((item) => {
+        if (item.href === '/inventory' && !agentPerms.show_inventory) return false;
+        if (item.href === '/orders/all' && !agentPerms.show_all_orders) return false;
+        return true;
+      })
+    : baseNav;
 
   const SidebarContent = () => (
     <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">

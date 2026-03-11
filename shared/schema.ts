@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, timestamp, date, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -35,6 +35,7 @@ export const users = pgTable("users", {
   distributionMethod: text("distribution_method").default("auto"),
   isSuperAdmin: integer("is_super_admin").default(0),
   isActive: integer("is_active").default(1),
+  dashboardPermissions: jsonb("dashboard_permissions"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

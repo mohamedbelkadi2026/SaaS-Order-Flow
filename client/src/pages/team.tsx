@@ -1,6 +1,9 @@
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -12,8 +15,28 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent } from "lucide-react";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+
+const DEFAULT_PERMISSIONS: Record<string, boolean> = {
+  show_store_orders: false,
+  show_revenue: false,
+  show_profit: false,
+  show_charts: false,
+  show_top_products: false,
+  show_inventory: false,
+  show_all_orders: false,
+};
+
+const PERMISSION_LABELS: Record<string, { label: string; description: string }> = {
+  show_store_orders: { label: "Commandes globales de la boutique", description: "Voir toutes les commandes, pas seulement les siennes" },
+  show_revenue: { label: "Chiffre d'affaires & ROI", description: "Voir les stats de revenus, ROAS et dépenses publicitaires" },
+  show_profit: { label: "Profit Net", description: "Voir les bénéfices nets — données très sensibles" },
+  show_charts: { label: "Graphiques & Analyses", description: "Voir les graphiques de ventes et les courbes de statuts" },
+  show_top_products: { label: "Table Produits Commandés", description: "Voir quels produits se vendent le mieux" },
+  show_inventory: { label: "Accès au Stock / Inventaire", description: "Voir et gérer les niveaux de stock" },
+  show_all_orders: { label: "Page Commandes (Toutes)", description: "Accéder à la vue centrale de toutes les commandes" },
+};
 
 const MOROCCAN_REGIONS = [
   { value: "tanger", label: "Région Tanger-Tétouan-Al Hoceima" },
@@ -144,6 +167,38 @@ export default function Team() {
   const [formData, setFormData] = useState({ ...defaultForm });
   const [productSearch, setProductSearch] = useState("");
   const [regionSearch, setRegionSearch] = useState("");
+  const [permissionsDialogAgent, setPermissionsDialogAgent] = useState<any>(null);
+  const [currentPermissions, setCurrentPermissions] = useState<Record<string, boolean>>({ ...DEFAULT_PERMISSIONS });
+
+  const savePermissionsMutation = useMutation({
+    mutationFn: async ({ agentId, permissions }: { agentId: number; permissions: Record<string, boolean> }) => {
+      const res = await apiRequest("PATCH", `/api/agents/${agentId}/permissions`, permissions);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Permissions sauvegardées", description: "Les accès de l'agent ont été mis à jour." });
+      queryClient.invalidateQueries({ queryKey: ["/api/user"] });
+      setPermissionsDialogAgent(null);
+    },
+    onError: () => {
+      toast({ title: "Erreur", description: "Impossible de sauvegarder les permissions.", variant: "destructive" });
+    },
+  });
+
+  const openPermissionsDialog = async (agent: any) => {
+    setPermissionsDialogAgent(agent);
+    try {
+      const res = await fetch(`/api/agents/${agent.id}/permissions`, { credentials: "include" });
+      if (res.ok) {
+        const perms = await res.json();
+        setCurrentPermissions({ ...DEFAULT_PERMISSIONS, ...perms });
+      } else {
+        setCurrentPermissions({ ...DEFAULT_PERMISSIONS });
+      }
+    } catch {
+      setCurrentPermissions({ ...DEFAULT_PERMISSIONS });
+    }
+  };
 
   const agentSettingsMap = new Map((agentSettings as any[]).map((s: any) => [s.agentId, s]));
 
@@ -584,6 +639,18 @@ export default function Team() {
                           <Package className="w-3.5 h-3.5" /> Produits
                         </Button>
                       )}
+                      {agent.role === 'agent' && (
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="w-8 h-8 text-[#C5A059] border-[#C5A059]/30 hover:bg-[#C5A059]/10 hover:border-[#C5A059]"
+                          data-testid={`button-permissions-${agent.id}`}
+                          onClick={() => openPermissionsDialog(agent)}
+                          title="Gérer les permissions"
+                        >
+                          <ShieldCheck className="w-4 h-4" />
+                        </Button>
+                      )}
                       {agent.role !== 'owner' && (
                         <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 hover:bg-red-50" data-testid={`button-delete-agent-${agent.id}`} onClick={() => handleDeleteAgent(agent.id, agent.username)} disabled={deleteAgent.isPending}>
                           <Trash2 className="w-4 h-4" />
@@ -597,6 +664,65 @@ export default function Team() {
           </TableBody>
         </Table>
       )}
+
+      {/* ── Permissions Modal ── */}
+      <Dialog open={!!permissionsDialogAgent} onOpenChange={(open) => { if (!open) setPermissionsDialogAgent(null); }}>
+        {permissionsDialogAgent && (
+          <DialogContent className="sm:max-w-md rounded-2xl p-0 overflow-hidden border-none shadow-2xl">
+            <div className="bg-gradient-to-r from-[#C5A059]/10 to-[#C5A059]/5 border-b border-[#C5A059]/20 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-[#C5A059]/15 border border-[#C5A059]/30">
+                  <ShieldCheck className="w-5 h-5 text-[#C5A059]" />
+                </div>
+                <div>
+                  <DialogTitle className="text-base font-bold text-foreground">
+                    Permissions du Dashboard
+                  </DialogTitle>
+                  <p className="text-xs text-muted-foreground mt-0.5">{permissionsDialogAgent.username}</p>
+                </div>
+              </div>
+            </div>
+            <div className="px-6 py-4 space-y-1">
+              {Object.entries(PERMISSION_LABELS).map(([key, { label, description }]) => (
+                <div
+                  key={key}
+                  className="flex items-start justify-between gap-4 py-3 border-b border-border/30 last:border-0"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium leading-tight">{label}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 leading-tight">{description}</p>
+                  </div>
+                  <Switch
+                    checked={!!currentPermissions[key]}
+                    onCheckedChange={(checked) => setCurrentPermissions(prev => ({ ...prev, [key]: checked }))}
+                    data-testid={`switch-perm-${key}`}
+                    style={{
+                      backgroundColor: currentPermissions[key] ? '#C5A059' : undefined,
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="px-6 py-4 border-t border-border/30 flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setPermissionsDialogAgent(null)}>
+                Annuler
+              </Button>
+              <Button
+                data-testid="button-save-permissions"
+                onClick={() => savePermissionsMutation.mutate({ agentId: permissionsDialogAgent.id, permissions: currentPermissions })}
+                disabled={savePermissionsMutation.isPending}
+                className="gap-2 bg-[#C5A059] hover:bg-[#b8904a] text-white border-0"
+              >
+                {savePermissionsMutation.isPending
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <Save className="w-4 h-4" />
+                }
+                Sauvegarder les permissions
+              </Button>
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
 
       <Dialog open={!!productDialogAgent} onOpenChange={(open) => { if (!open) setProductDialogAgent(null); }}>
         {productDialogAgent && (

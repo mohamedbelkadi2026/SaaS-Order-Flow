@@ -196,7 +196,18 @@ export async function registerRoutes(
 
   app.get("/api/stats/filtered", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    const { city, productId, agentId, source, dateFrom, dateTo, shippingProvider } = req.query as Record<string, string>;
+    const currentUser = req.user!;
+    const isAgent = currentUser.role === 'agent';
+    const { city, productId, source, dateFrom, dateTo, shippingProvider } = req.query as Record<string, string>;
+    let { agentId } = req.query as Record<string, string>;
+
+    let agentPermissions: Record<string, boolean> = {};
+    if (isAgent) {
+      agentPermissions = await storage.getAgentPermissions(currentUser.id);
+      if (!agentPermissions.show_store_orders) {
+        agentId = String(currentUser.id);
+      }
+    }
 
     let allOrders = await storage.getOrdersByStore(storeId);
 
@@ -321,18 +332,31 @@ export async function registerRoutes(
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
+    const canRevenue = !isAgent || agentPermissions.show_revenue;
+    const canProfit = !isAgent || agentPermissions.show_profit;
+    const canCharts = !isAgent || agentPermissions.show_charts;
+    const canProducts = !isAgent || agentPermissions.show_top_products;
+
     res.json({
       totalOrders, nouveau, confirme, inProgress, cancelled, delivered, refused,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
-      revenue, profit: netProfit, confirmationRate, deliveryRate,
-      totalProductCost, totalShipping, adSpendTotal, roas, roi,
-      daily,
-      topProducts: topProducts.map(p => ({ ...p, share: 100 })),
-      productPerformance: productPerformance.map(p => ({
-        ...p,
-        confirmationRate: p.total > 0 ? Math.round((p.confirme / p.total) * 100) : 0,
-        deliveryRate: p.confirme > 0 ? Math.round((p.delivered / p.confirme) * 100) : 0,
-      })),
+      confirmationRate, deliveryRate,
+      revenue: canRevenue ? revenue : undefined,
+      roas: canRevenue ? roas : undefined,
+      roi: canRevenue ? roi : undefined,
+      adSpendTotal: canRevenue ? adSpendTotal : undefined,
+      profit: canProfit ? netProfit : undefined,
+      totalProductCost: canProfit ? totalProductCost : undefined,
+      totalShipping: canProfit ? totalShipping : undefined,
+      daily: canCharts ? daily : [],
+      topProducts: canProducts ? topProducts.map(p => ({ ...p, share: 100 })) : [],
+      productPerformance: canProducts
+        ? productPerformance.map(p => ({
+            ...p,
+            confirmationRate: p.total > 0 ? Math.round((p.confirme / p.total) * 100) : 0,
+            deliveryRate: p.confirme > 0 ? Math.round((p.delivered / p.confirme) * 100) : 0,
+          }))
+        : [],
     });
   });
 
@@ -1572,6 +1596,43 @@ export async function registerRoutes(
       if (data.allowedRegions !== undefined) payload.allowedRegions = JSON.stringify(data.allowedRegions);
       const result = await storage.upsertStoreAgentSetting(agentId, storeId, payload);
       res.json(result);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // AGENT DASHBOARD PERMISSIONS
+  // ============================================================
+  app.get("/api/agents/:id/permissions", requireAuth, async (req, res) => {
+    const agentId = Number(req.params.id);
+    const storeId = req.user!.storeId!;
+    const agent = await storage.getUserById(agentId);
+    if (!agent || agent.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+    const permissions = await storage.getAgentPermissions(agentId);
+    res.json(permissions);
+  });
+
+  app.patch("/api/agents/:id/permissions", requireAdmin, async (req, res) => {
+    try {
+      const agentId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const agent = await storage.getUserById(agentId);
+      if (!agent || agent.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+      if (agent.role !== 'agent') return res.status(400).json({ message: "Cet utilisateur n'est pas un agent" });
+      const schema = z.object({
+        show_store_orders: z.boolean().optional(),
+        show_revenue: z.boolean().optional(),
+        show_profit: z.boolean().optional(),
+        show_charts: z.boolean().optional(),
+        show_top_products: z.boolean().optional(),
+        show_inventory: z.boolean().optional(),
+        show_all_orders: z.boolean().optional(),
+      });
+      const permissions = schema.parse(req.body);
+      await storage.updateAgentPermissions(agentId, permissions);
+      res.json({ success: true, permissions });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;

@@ -15,6 +15,7 @@ type User = {
   distributionMethod: string | null;
   isActive: number | null;
   createdAt: string | null;
+  dashboardPermissions: Record<string, boolean> | null;
 };
 
 type AuthContextType = {

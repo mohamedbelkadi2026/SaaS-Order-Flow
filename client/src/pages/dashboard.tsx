@@ -1,4 +1,5 @@
 import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance, useAgentStoreSettings } from "@/hooks/use-store-data";
+import { useAuth } from "@/hooks/use-auth";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -66,6 +67,15 @@ export default function Dashboard() {
     if (filters.dateTo) f.dateTo = filters.dateTo;
     return f;
   }, [filters]);
+
+  const { user } = useAuth();
+  const isAgent = user?.role === 'agent';
+  const perms = (user?.dashboardPermissions || {}) as Record<string, boolean>;
+
+  const canSeeRevenue = !isAgent || !!perms.show_revenue;
+  const canSeeProfit = !isAgent || !!perms.show_profit;
+  const canSeeCharts = !isAgent || !!perms.show_charts;
+  const canSeeTopProducts = !isAgent || !!perms.show_top_products;
 
   const { data: stats, isLoading } = useFilteredStats(activeFilters);
   const { data: filterOptions } = useFilterOptions();
@@ -291,13 +301,17 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
         <StatCard title="Livrées" value={delivered} icon={Truck} iconBg="bg-emerald-500" subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}% voir plus`} />
-        <StatCard title="Profit Net" value={stats?.profit || 0} icon={DollarSign} iconBg="bg-primary" isCurrency subtitle={`Livraison: ${stats?.deliveryRate || 0}%`} />
+        {canSeeProfit && (
+          <StatCard title="Profit Net" value={stats?.profit || 0} icon={DollarSign} iconBg="bg-primary" isCurrency subtitle={`Livraison: ${stats?.deliveryRate || 0}%`} />
+        )}
         <StatCard title="Refusées" value={stats?.refused || 0} icon={XCircle} iconBg="bg-orange-400" subtitle={`${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`} />
-        <StatCard title="ROI / ROAS" value={null} icon={TrendingUp} iconBg="bg-amber-500" subtitle={
-          stats?.adSpendTotal > 0
-            ? `ROI: ${stats.roi?.toFixed(1)}% | ROAS: ${stats.roas?.toFixed(2)}x`
-            : 'Aucune dépense pub'
-        } />
+        {canSeeRevenue && (
+          <StatCard title="ROI / ROAS" value={null} icon={TrendingUp} iconBg="bg-amber-500" subtitle={
+            stats?.adSpendTotal > 0
+              ? `ROI: ${stats.roi?.toFixed(1)}% | ROAS: ${stats.roas?.toFixed(2)}x`
+              : 'Aucune dépense pub'
+          } />
+        )}
       </div>
 
       {filters.productId !== 'all' && (
@@ -331,6 +345,7 @@ export default function Dashboard() {
         </Card>
       )}
 
+      {canSeeCharts && (
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
         <Card className="col-span-1 lg:col-span-2 rounded-xl shadow-sm border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -380,6 +395,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
         <Card className="col-span-1 lg:col-span-2 rounded-xl shadow-sm border-border/50">
@@ -450,6 +466,7 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
+        {canSeeCharts && (
         <Card className="col-span-1 rounded-xl shadow-sm border-border/50">
           <CardHeader className="pb-2">
             <CardTitle className="text-base font-semibold">Statut des livraisons</CardTitle>
@@ -472,8 +489,10 @@ export default function Dashboard() {
             )}
           </CardContent>
         </Card>
+        )}
       </div>
 
+      {canSeeTopProducts && (
       <Card className="rounded-xl border-border/50 shadow-sm bg-white dark:bg-card" data-testid="card-product-performance">
         <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between">
           <CardTitle className="text-base font-semibold uppercase tracking-wide">Produits Commandés</CardTitle>
@@ -557,6 +576,7 @@ export default function Dashboard() {
           </div>
         </CardContent>
       </Card>
+      )}
     </div>
   );
 }

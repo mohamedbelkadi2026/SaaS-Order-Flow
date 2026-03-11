@@ -96,6 +96,9 @@ export interface IStorage {
   updateOrderItem(id: number, data: { quantity?: number; price?: number; rawProductName?: string; sku?: string; variantInfo?: string }): Promise<OrderItem | undefined>;
   deleteOrderItem(id: number): Promise<void>;
 
+  getAgentPermissions(agentId: number): Promise<Record<string, boolean>>;
+  updateAgentPermissions(agentId: number, permissions: Record<string, boolean>): Promise<void>;
+
   getStoresByOwner(userId: number): Promise<Store[]>;
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
   deleteStore(id: number): Promise<void>;
@@ -896,6 +899,26 @@ export class DatabaseStorage implements IStorage {
 
   async deleteOrderItem(id: number): Promise<void> {
     await db.delete(orderItems).where(eq(orderItems.id, id));
+  }
+
+  async getAgentPermissions(agentId: number): Promise<Record<string, boolean>> {
+    const [user] = await db.select().from(users).where(eq(users.id, agentId));
+    const defaults: Record<string, boolean> = {
+      show_store_orders: false,
+      show_revenue: false,
+      show_profit: false,
+      show_charts: false,
+      show_top_products: false,
+      show_inventory: false,
+      show_all_orders: false,
+    };
+    if (!user) return defaults;
+    const stored = user.dashboardPermissions as Record<string, boolean> | null;
+    return stored ? { ...defaults, ...stored } : defaults;
+  }
+
+  async updateAgentPermissions(agentId: number, permissions: Record<string, boolean>): Promise<void> {
+    await db.update(users).set({ dashboardPermissions: permissions }).where(eq(users.id, agentId));
   }
 
   async getStoresByOwner(userId: number): Promise<Store[]> {
