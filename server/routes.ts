@@ -522,8 +522,18 @@ export async function registerRoutes(
       if (!order) return res.status(404).json({ message: "Order not found" });
       if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Access denied" });
       const { status } = api.orders.updateStatus.input.parse(req.body);
+      const previousStatus = order.status;
       const updated = await storage.updateOrderStatus(orderId, status);
       if (!updated) return res.status(404).json({ message: "Order not found" });
+      if (status === 'delivered' && previousStatus !== 'delivered') {
+        await storage.syncCustomerOnDelivery(order.storeId, {
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerAddress: order.customerAddress,
+          customerCity: order.customerCity,
+          totalPrice: order.totalPrice ?? 0,
+        });
+      }
       res.json(updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
@@ -867,8 +877,6 @@ export async function registerRoutes(
         await storage.assignOrder(order.id, nextAgentId);
       }
 
-      const customer = await storage.getOrCreateCustomer(storeId, parsed.customerName, parsed.customerPhone, parsed.customerAddress, parsed.customerCity);
-      await storage.updateCustomerStats(customer.id, parsed.totalPrice);
       await storage.incrementMonthlyOrders(storeId);
 
       await storage.createIntegrationLog({
@@ -943,8 +951,6 @@ export async function registerRoutes(
       const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);
       if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
 
-      const customer = await storage.getOrCreateCustomer(storeId, parsed.customerName, parsed.customerPhone, parsed.customerAddress, parsed.customerCity);
-      await storage.updateCustomerStats(customer.id, parsed.totalPrice);
       await storage.incrementMonthlyOrders(storeId);
 
       const integration = await storage.getIntegrationByProvider(storeId, provider);
@@ -987,8 +993,6 @@ export async function registerRoutes(
       }, orderItems);
       const nextAgentId = await storage.getNextAgent(storeId, matched?.id, customerCity);
       if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
-      const customer = await storage.getOrCreateCustomer(storeId, customerName, customerPhone, customerAddress, customerCity);
-      await storage.updateCustomerStats(customer.id, totalPrice);
       await storage.incrementMonthlyOrders(storeId);
       const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: 'gsheets', action: 'order_synced', status: 'success', message: `Commande Google Sheets ${orderNumber} importée` });
@@ -1137,8 +1141,6 @@ export async function registerRoutes(
       const agentId = data.agentId || await storage.getNextAgent(storeId, undefined, data.customerCity);
       if (agentId) await storage.assignOrder(order.id, agentId);
 
-      const customer = await storage.getOrCreateCustomer(storeId, data.customerName, data.customerPhone, data.customerAddress, data.customerCity);
-      await storage.updateCustomerStats(customer.id, totalPriceCents);
       await storage.incrementMonthlyOrders(storeId);
 
       res.status(201).json(order);
@@ -1299,8 +1301,6 @@ export async function registerRoutes(
         await storage.assignOrder(order.id, nextAgentId);
       }
 
-      const customer = await storage.getOrCreateCustomer(storeId, data.customerName, data.customerPhone, data.customerAddress, data.customerCity);
-      await storage.updateCustomerStats(customer.id, totalPrice);
       await storage.incrementMonthlyOrders(storeId);
 
       const finalOrder = await storage.getOrder(order.id);
@@ -1346,6 +1346,15 @@ export async function registerRoutes(
       if (data.status && data.status !== order.status) {
         console.log(`[PATCH /api/orders/${orderId}] Updating status ${order.status} → ${data.status}`);
         await storage.updateOrderStatus(orderId, data.status);
+        if (data.status === 'delivered') {
+          await storage.syncCustomerOnDelivery(order.storeId!, {
+            customerName: order.customerName,
+            customerPhone: order.customerPhone,
+            customerAddress: order.customerAddress,
+            customerCity: order.customerCity,
+            totalPrice: order.totalPrice ?? 0,
+          });
+        }
       }
       const { status: _s, ...fieldsWithoutStatus } = data;
       let updated: any;
@@ -1488,9 +1497,19 @@ export async function registerRoutes(
   // ============================================================
   // CUSTOMERS (CRM)
   // ============================================================
-  app.get("/api/customers", requireAuth, async (req, res) => {
+  app.get("/api/customers", requireAdmin, async (req, res) => {
     const storeId = req.user!.storeId!;
     res.json(await storage.getCustomersByStore(storeId));
+  });
+
+  app.post("/api/customers/migrate", requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const count = await storage.migrateCustomersFromDeliveredOrders(storeId);
+      res.json({ success: true, customersCreated: count, message: `Migration terminée : ${count} client(s) traité(s)` });
+    } catch (err) {
+      throw err;
+    }
   });
 
   // ============================================================

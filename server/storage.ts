@@ -72,6 +72,8 @@ export interface IStorage {
   getCustomersByStore(storeId: number): Promise<Customer[]>;
   getOrCreateCustomer(storeId: number, name: string, phone: string, address?: string | null, city?: string | null): Promise<Customer>;
   updateCustomerStats(customerId: number, orderTotal: number): Promise<void>;
+  syncCustomerOnDelivery(storeId: number, order: { customerName: string; customerPhone: string; customerAddress?: string | null; customerCity?: string | null; totalPrice: number }): Promise<void>;
+  migrateCustomersFromDeliveredOrders(storeId: number): Promise<number>;
 
   getSubscription(storeId: number): Promise<Subscription | undefined>;
   createSubscription(data: InsertSubscription): Promise<Subscription>;
@@ -656,6 +658,38 @@ export class DatabaseStorage implements IStorage {
       orderCount: sql`${customers.orderCount} + 1`,
       totalSpent: sql`${customers.totalSpent} + ${orderTotal}`,
     }).where(eq(customers.id, customerId));
+  }
+
+  async syncCustomerOnDelivery(storeId: number, order: { customerName: string; customerPhone: string; customerAddress?: string | null; customerCity?: string | null; totalPrice: number }): Promise<void> {
+    if (!order.customerPhone) return;
+    const customer = await this.getOrCreateCustomer(
+      storeId,
+      order.customerName,
+      order.customerPhone,
+      order.customerAddress,
+      order.customerCity
+    );
+    await this.updateCustomerStats(customer.id, order.totalPrice);
+  }
+
+  async migrateCustomersFromDeliveredOrders(storeId: number): Promise<number> {
+    await db.delete(customers).where(eq(customers.storeId, storeId));
+    const deliveredOrders = await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
+    for (const order of deliveredOrders) {
+      if (!order.customerPhone) continue;
+      const customer = await this.getOrCreateCustomer(
+        storeId,
+        order.customerName,
+        order.customerPhone,
+        order.customerAddress,
+        order.customerCity
+      );
+      await this.updateCustomerStats(customer.id, order.totalPrice ?? 0);
+    }
+    const [result] = await db.select({ count: sql<number>`count(*)` })
+      .from(customers).where(eq(customers.storeId, storeId));
+    return Number(result?.count ?? 0);
   }
 
   async getSubscription(storeId: number): Promise<Subscription | undefined> {
