@@ -19,6 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 
 const STATUS_MAP: Record<string, string> = {
+  nouvelles: "nouveau",
   confirme: "confirme",
   injoignable: "Injoignable",
   annules: "annule_group",
@@ -184,8 +185,9 @@ export default function Orders() {
   const actualFilters = useMemo(() => ({
     ...filters,
     status: urlStatus,
-    ...(isMediaBuyer && user?.buyerCode ? { utmSource: user.buyerCode } : {}),
-  }), [filters, urlStatus, isMediaBuyer, user?.buyerCode]);
+    // For media buyers, the backend scopes orders to their ID + UTM pattern automatically
+    // Do NOT override utmSource here — it breaks deep tracking (CODE*PLATFORM) matching
+  }), [filters, urlStatus]);
 
   const { data, isLoading } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();

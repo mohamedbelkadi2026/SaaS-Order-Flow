@@ -475,7 +475,9 @@ export async function registerRoutes(
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
     const agentOnly = user.role === 'agent' ? user.id : undefined;
-    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly);
+    // Media buyers only see their own attributed orders (by ID or UTM pattern CODE*%)
+    const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
+    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
     res.json(result);
   });
 
@@ -495,7 +497,8 @@ export async function registerRoutes(
       limit: req.query.limit ? Number(req.query.limit) : 25,
     };
     const agentOnly = user.role === 'agent' ? user.id : undefined;
-    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly);
+    const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
+    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
     res.json(result);
   });
 

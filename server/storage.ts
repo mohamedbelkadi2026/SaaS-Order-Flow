@@ -38,7 +38,7 @@ export interface IStorage {
     status?: string; agentId?: number; city?: string; source?: string;
     utmSource?: string; utmCampaign?: string;
     dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
-  }, agentOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
+  }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
   bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]>;
   createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order>;
@@ -270,11 +270,26 @@ export class DatabaseStorage implements IStorage {
     status?: string; agentId?: number; city?: string; source?: string;
     utmSource?: string; utmCampaign?: string;
     dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
-  }, agentOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
+  }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
     const conditions: any[] = [eq(orders.storeId, storeId)];
 
     if (agentOnly) {
       conditions.push(eq(orders.assignedToId, agentOnly));
+    }
+
+    // Media buyer scoping: show only orders attributed to this buyer (by ID or UTM pattern)
+    if (mediaBuyerOnly) {
+      const [buyer] = await db.select({ buyerCode: users.buyerCode }).from(users).where(eq(users.id, mediaBuyerOnly));
+      const buyerCode = buyer?.buyerCode;
+      conditions.push(
+        buyerCode
+          ? or(
+              eq(orders.mediaBuyerId, mediaBuyerOnly),
+              sql`${orders.utmSource} ILIKE ${buyerCode + '*%'}`,
+              sql`upper(${orders.utmSource}) = upper(${buyerCode})`
+            )
+          : eq(orders.mediaBuyerId, mediaBuyerOnly)
+      );
     }
 
     if (filters.status) {
