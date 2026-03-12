@@ -32,36 +32,52 @@ function formatWhatsAppMessage(order: any, template: string): { message: string;
   return { message, link };
 }
 
-function extractUtmParams(payload: any): { utmSource: string | null; utmCampaign: string | null } {
+function splitUtmSource(raw: string | null): { buyerCode: string | null; trafficPlatform: string | null } {
+  if (!raw) return { buyerCode: null, trafficPlatform: null };
+  const parts = raw.split('*');
+  const buyerCode = parts[0].trim() || null;
+  const trafficPlatform = parts.length > 1 ? parts[1].trim() || null : null;
+  return { buyerCode, trafficPlatform };
+}
+
+function extractUtmParams(payload: any): { utmSource: string | null; utmCampaign: string | null; trafficPlatform: string | null } {
+  let rawSource: string | null = null;
+  let rawCampaign: string | null = null;
+
   const noteAttributes = payload.note_attributes || payload.note_attribute || [];
   if (Array.isArray(noteAttributes) && noteAttributes.length > 0) {
     const src = noteAttributes.find((a: any) => a.name === 'utm_source')?.value || null;
     const cmp = noteAttributes.find((a: any) => a.name === 'utm_campaign')?.value || null;
-    if (src || cmp) return { utmSource: src, utmCampaign: cmp };
+    if (src || cmp) { rawSource = src; rawCampaign = cmp; }
   }
-  const metaData = payload.meta_data || [];
-  if (Array.isArray(metaData) && metaData.length > 0) {
-    const srcMeta = metaData.find((m: any) => m.key === '_utm_source' || m.key === 'utm_source');
-    const cmpMeta = metaData.find((m: any) => m.key === '_utm_campaign' || m.key === 'utm_campaign');
-    if (srcMeta || cmpMeta) return { utmSource: srcMeta?.value || null, utmCampaign: cmpMeta?.value || null };
+  if (!rawSource && !rawCampaign) {
+    const metaData = payload.meta_data || [];
+    if (Array.isArray(metaData) && metaData.length > 0) {
+      const srcMeta = metaData.find((m: any) => m.key === '_utm_source' || m.key === 'utm_source');
+      const cmpMeta = metaData.find((m: any) => m.key === '_utm_campaign' || m.key === 'utm_campaign');
+      if (srcMeta || cmpMeta) { rawSource = srcMeta?.value || null; rawCampaign = cmpMeta?.value || null; }
+    }
   }
-  if (payload.utm_source || payload.utm_campaign) {
-    return { utmSource: payload.utm_source || null, utmCampaign: payload.utm_campaign || null };
+  if (!rawSource && !rawCampaign && (payload.utm_source || payload.utm_campaign)) {
+    rawSource = payload.utm_source || null;
+    rawCampaign = payload.utm_campaign || null;
   }
-  const landingSite = payload.landing_site || payload.landing_site_ref || '';
-  if (landingSite) {
-    try {
-      const url = new URL(landingSite.startsWith('http') ? landingSite : `https://x.com${landingSite}`);
-      const src = url.searchParams.get('utm_source');
-      const cmp = url.searchParams.get('utm_campaign');
-      if (src || cmp) return { utmSource: src, utmCampaign: cmp };
-    } catch {}
+  if (!rawSource && !rawCampaign) {
+    const landingSite = payload.landing_site || payload.landing_site_ref || '';
+    if (landingSite) {
+      try {
+        const url = new URL(landingSite.startsWith('http') ? landingSite : `https://x.com${landingSite}`);
+        rawSource = url.searchParams.get('utm_source');
+        rawCampaign = url.searchParams.get('utm_campaign');
+      } catch {}
+    }
   }
-  return { utmSource: null, utmCampaign: null };
+  const { buyerCode, trafficPlatform } = splitUtmSource(rawSource);
+  return { utmSource: buyerCode, utmCampaign: rawCampaign, trafficPlatform };
 }
 
 function parseWebhookOrder(provider: string, payload: any) {
-  const { utmSource, utmCampaign } = extractUtmParams(payload);
+  const { utmSource, utmCampaign, trafficPlatform } = extractUtmParams(payload);
 
   if (provider === 'shopify') {
     const customerName = payload.customer
@@ -84,7 +100,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign, trafficPlatform };
   }
 
   if (provider === 'youcan') {
@@ -101,7 +117,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign, trafficPlatform };
   }
 
   if (provider === 'woocommerce') {
@@ -120,7 +136,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.customer_note || null, utmSource, utmCampaign };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.customer_note || null, utmSource, utmCampaign, trafficPlatform };
   }
 
   throw new Error(`Unknown provider: ${provider}`);
@@ -921,6 +937,7 @@ export async function registerRoutes(
         rawQuantity,
         utmSource: parsed.utmSource || null,
         utmCampaign: parsed.utmCampaign || null,
+        trafficPlatform: parsed.trafficPlatform || null,
         mediaBuyerId: mediaBuyer?.id || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
@@ -1001,6 +1018,7 @@ export async function registerRoutes(
         productCost, shippingCost: 0, adSpend: 0, source: provider, comment: parsed.comment,
         rawProductName, variantDetails, rawQuantity,
         utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
+        trafficPlatform: parsed.trafficPlatform || null,
         mediaBuyerId: mediaBuyerToken?.id || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
@@ -1120,6 +1138,7 @@ export async function registerRoutes(
         customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: 'shopify', comment: parsed.comment,
         utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
+        trafficPlatform: parsed.trafficPlatform || null,
         mediaBuyerId: mediaBuyerShopify?.id || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
@@ -1633,7 +1652,8 @@ export async function registerRoutes(
     const user = req.user!;
     const storeId = user.storeId!;
     if (user.role !== 'media_buyer') return res.status(403).json({ message: "Accès réservé aux Media Buyers" });
-    const stats = await storage.getMediaBuyerStats(storeId, user.id);
+    const platform = req.query.platform as string | undefined;
+    const stats = await storage.getMediaBuyerStats(storeId, user.id, platform);
     res.json(stats);
   });
 

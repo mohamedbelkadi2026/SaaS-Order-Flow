@@ -22,7 +22,7 @@ export interface IStorage {
   getUsersByStore(storeId: number): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
   getMediaBuyerByCode(storeId: number, code: string): Promise<User | undefined>;
-  getMediaBuyerStats(storeId: number, mediaBuyerId: number): Promise<any>;
+  getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string): Promise<any>;
   getMediaBuyersSummary(storeId: number): Promise<any[]>;
   getOrdersByMediaBuyer(storeId: number, mediaBuyerId: number): Promise<any[]>;
   
@@ -648,16 +648,20 @@ export class DatabaseStorage implements IStorage {
     return buyer;
   }
 
-  async getMediaBuyerStats(storeId: number, mediaBuyerId: number): Promise<any> {
-    const allOrders = await db.select().from(orders)
+  async getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string): Promise<any> {
+    let allOrders = await db.select().from(orders)
       .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)));
+    if (platform && platform !== 'all') {
+      allOrders = allOrders.filter(o => (o as any).trafficPlatform === platform);
+    }
     const total = allOrders.length;
     const confirmed = allOrders.filter(o => ['confirmé', 'en cours', 'livré'].includes(o.status)).length;
     const delivered = allOrders.filter(o => o.status === 'livré').length;
     const cancelled = allOrders.filter(o => ['annulé', 'refusé'].includes(o.status)).length;
     const revenue = allOrders.filter(o => o.status === 'livré').reduce((s, o) => s + o.totalPrice, 0);
     const confirmRate = total > 0 ? Math.round((confirmed / total) * 100) : 0;
-    return { total, confirmed, delivered, cancelled, revenue, confirmRate };
+    const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
+    return { total, confirmed, delivered, cancelled, revenue, confirmRate, platforms };
   }
 
   async getMediaBuyersSummary(storeId: number): Promise<any[]> {
@@ -665,7 +669,22 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(users.storeId, storeId), eq(users.role, 'media_buyer')));
     const result = await Promise.all(buyers.map(async (buyer) => {
       const stats = await this.getMediaBuyerStats(storeId, buyer.id);
-      return { id: buyer.id, username: buyer.username, buyerCode: buyer.buyerCode, ...stats };
+      const buyerOrders = await db.select().from(orders)
+        .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, buyer.id)));
+      const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
+      for (const o of buyerOrders) {
+        const plt = (o as any).trafficPlatform || 'Organique';
+        if (!platformMap[plt]) platformMap[plt] = { total: 0, confirmed: 0, delivered: 0, revenue: 0 };
+        platformMap[plt].total++;
+        if (['confirmé', 'en cours', 'livré'].includes(o.status)) platformMap[plt].confirmed++;
+        if (o.status === 'livré') { platformMap[plt].delivered++; platformMap[plt].revenue += o.totalPrice; }
+      }
+      const platformBreakdown = Object.entries(platformMap).map(([platform, s]) => ({
+        platform,
+        ...s,
+        confirmRate: s.total > 0 ? Math.round((s.confirmed / s.total) * 100) : 0,
+      }));
+      return { id: buyer.id, username: buyer.username, email: buyer.email, buyerCode: buyer.buyerCode, ...stats, platformBreakdown };
     }));
     return result;
   }

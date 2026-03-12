@@ -14,7 +14,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown } from "lucide-react";
 
 const PIE_COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#64748b'];
 
@@ -88,11 +88,22 @@ export default function Dashboard() {
     enabled: isAgent,
   });
 
-  const { data: mediaBuyerStats } = useQuery<{ total: number; confirmed: number; delivered: number; cancelled: number; revenue: number; confirmRate: number }>({
-    queryKey: ['/api/media-buyer/stats'],
+  const [platformFilter, setPlatformFilter] = useState('all');
+  const [linkPlatform, setLinkPlatform] = useState('');
+  const [linkCampaign, setLinkCampaign] = useState('');
+  const [linkBaseUrl, setLinkBaseUrl] = useState('');
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const { data: mediaBuyerStats } = useQuery<{ total: number; confirmed: number; delivered: number; cancelled: number; revenue: number; confirmRate: number; platforms: string[] }>({
+    queryKey: ['/api/media-buyer/stats', platformFilter],
+    queryFn: async () => {
+      const params = platformFilter && platformFilter !== 'all' ? `?platform=${encodeURIComponent(platformFilter)}` : '';
+      const res = await fetch(`/api/media-buyer/stats${params}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch');
+      return res.json();
+    },
     enabled: isMediaBuyer,
   });
-  const [linkBaseUrl, setLinkBaseUrl] = useState('');
   const { data: commissionsSummary } = useQuery<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>({
     queryKey: ['/api/stats/commissions-summary'],
     enabled: !isAgent,
@@ -194,16 +205,53 @@ export default function Dashboard() {
   };
 
   if (isMediaBuyer) {
-    const generatedLink = linkBaseUrl
-      ? `${linkBaseUrl.replace(/\/$/, '')}?utm_source=${user?.buyerCode || ''}`
-      : '';
+    const PLATFORMS = ['Facebook-Ads', 'TikTok-Ads', 'Google-Ads', 'Snapchat-Ads'];
+    const allPlatforms = [...new Set([...PLATFORMS, ...(mediaBuyerStats?.platforms || [])])];
+
+    const generatedLink = (() => {
+      if (!linkBaseUrl) return '';
+      const base = linkBaseUrl.replace(/\/$/, '');
+      const baseUrl = base.startsWith('http') ? base : `https://${base}`;
+      const effectivePlatform = linkPlatform && linkPlatform !== 'none' ? linkPlatform : '';
+      const src = effectivePlatform
+        ? `${user?.buyerCode || ''}*${effectivePlatform}`
+        : (user?.buyerCode || '');
+      const params = new URLSearchParams();
+      params.set('utm_source', src);
+      if (linkCampaign.trim()) params.set('utm_campaign', linkCampaign.trim());
+      return `${baseUrl}?${params.toString()}`;
+    })();
+
+    const copyLink = () => {
+      if (!generatedLink) return;
+      navigator.clipboard.writeText(generatedLink);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    };
+
     return (
       <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Mon Espace Media Buyer</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Bonjour <span className="font-semibold">{user?.username}</span> — Code: <span className="font-mono font-bold text-violet-600">{user?.buyerCode || '—'}</span>
-          </p>
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Mon Espace Media Buyer</h1>
+            <p className="text-muted-foreground text-sm mt-1">
+              Bonjour <span className="font-semibold">{user?.username}</span> — Code: <span className="font-mono font-bold text-violet-600">{user?.buyerCode || '—'}</span>
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Monitor className="w-4 h-4 text-muted-foreground" />
+            <Select value={platformFilter} onValueChange={setPlatformFilter}>
+              <SelectTrigger className="h-9 text-xs w-44 rounded-xl" data-testid="select-platform-filter">
+                <SelectValue placeholder="Toutes les plateformes" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Toutes les plateformes</SelectItem>
+                {allPlatforms.map(p => (
+                  <SelectItem key={p} value={p}>{p}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -211,6 +259,7 @@ export default function Dashboard() {
             <CardContent className="p-4">
               <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Total Leads</p>
               <p className="text-3xl font-bold mt-1">{mediaBuyerStats?.total ?? '—'}</p>
+              {platformFilter !== 'all' && <p className="text-[10px] text-violet-500 mt-0.5">Filtré: {platformFilter}</p>}
             </CardContent>
           </Card>
           <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-confirmed">
@@ -234,42 +283,78 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        <Card className="rounded-xl border-border/50 shadow-sm p-6" data-testid="card-link-builder">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-violet-100 flex items-center justify-center">
-              <DollarSign className="w-4 h-4 text-violet-600" />
-            </div>
-            <div>
-              <h2 className="text-base font-bold">Générateur de Lien UTM</h2>
-              <p className="text-xs text-muted-foreground">Créez votre lien trackable avec votre code unique</p>
-            </div>
-          </div>
-          <div className="flex gap-2 items-center">
-            <Input
-              data-testid="input-link-base-url"
-              placeholder="ex: anakio.com ou https://monsite.com/produit"
-              value={linkBaseUrl}
-              onChange={e => setLinkBaseUrl(e.target.value)}
-              className="flex-1 h-10 text-sm"
-            />
-          </div>
-          {generatedLink && (
-            <div className="mt-4 p-3 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-lg">
-              <p className="text-xs font-semibold text-violet-600 mb-1">Lien généré :</p>
-              <div className="flex items-center gap-2">
-                <code className="text-sm text-violet-800 dark:text-violet-300 font-mono break-all flex-1">{generatedLink}</code>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="shrink-0 h-7 text-xs border-violet-300 text-violet-600 hover:bg-violet-100"
-                  onClick={() => { navigator.clipboard.writeText(generatedLink); }}
-                  data-testid="button-copy-link"
-                >
-                  Copier
-                </Button>
+        <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-link-builder">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 mb-5">
+              <div className="w-8 h-8 rounded-lg bg-violet-100 flex items-center justify-center">
+                <Link2 className="w-4 h-4 text-violet-600" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold">Générateur de Lien UTM Pro</h2>
+                <p className="text-xs text-muted-foreground">Lien deep-tracking avec <code className="bg-muted px-1 rounded text-[11px]">CODE*PLATEFORME</code></p>
               </div>
             </div>
-          )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="md:col-span-3 space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Étape 1 — URL de la page</label>
+                <Input
+                  data-testid="input-link-base-url"
+                  placeholder="ex: monsite.com/produit ou https://anakio.com/chaussures"
+                  value={linkBaseUrl}
+                  onChange={e => setLinkBaseUrl(e.target.value)}
+                  className="h-10 text-sm"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Étape 2 — Plateforme</label>
+                <Select value={linkPlatform} onValueChange={setLinkPlatform}>
+                  <SelectTrigger className="h-10 text-sm" data-testid="select-link-platform">
+                    <SelectValue placeholder="Choisir la plateforme" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Aucune (code seul)</SelectItem>
+                    <SelectItem value="Facebook-Ads">Facebook Ads</SelectItem>
+                    <SelectItem value="TikTok-Ads">TikTok Ads</SelectItem>
+                    <SelectItem value="Google-Ads">Google Ads</SelectItem>
+                    <SelectItem value="Snapchat-Ads">Snapchat Ads</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="md:col-span-2 space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Étape 3 — Nom de la campagne</label>
+                <Input
+                  data-testid="input-link-campaign"
+                  placeholder="ex: mocasan-promo, ramadan-2025"
+                  value={linkCampaign}
+                  onChange={e => setLinkCampaign(e.target.value)}
+                  className="h-10 text-sm"
+                />
+              </div>
+            </div>
+            {generatedLink && (
+              <div className="mt-4 p-4 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-xl">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-bold text-violet-700">Lien généré :</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs border-violet-300 text-violet-600 hover:bg-violet-100 gap-1.5"
+                    onClick={copyLink}
+                    data-testid="button-copy-link"
+                  >
+                    {copiedLink ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copié !</> : <><Link2 className="w-3.5 h-3.5" /> Copier</>}
+                  </Button>
+                </div>
+                <code className="text-sm text-violet-800 dark:text-violet-300 font-mono break-all block">{generatedLink}</code>
+                {linkPlatform && linkPlatform !== 'none' && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[11px]">utm_source: {user?.buyerCode}*{linkPlatform}</Badge>
+                    {linkCampaign && <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[11px]">utm_campaign: {linkCampaign}</Badge>}
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
         </Card>
       </div>
     );

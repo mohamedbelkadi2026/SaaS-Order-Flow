@@ -93,6 +93,7 @@ export const orders = pgTable("orders", {
   source: text("source").default("manual"),
   utmSource: text("utm_source"),
   utmCampaign: text("utm_campaign"),
+  trafficPlatform: text("traffic_platform"),
   mediaBuyerId: integer("media_buyer_id").references(() => users.id),
   rawProductName: text("raw_product_name"),
   variantDetails: text("variant_details"),

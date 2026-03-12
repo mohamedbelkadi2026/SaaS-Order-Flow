@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation } from "wouter";
 import { formatCurrency } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import { Target, UserPlus, Loader2, Copy, Check, TrendingUp, ShoppingCart, Truck, DollarSign, Pencil, Trash2, X } from "lucide-react";
+import { Target, UserPlus, Loader2, Copy, Check, TrendingUp, ShoppingCart, Truck, DollarSign, Pencil, Trash2, X, ChevronDown, ChevronRight, Monitor } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +24,7 @@ export default function MediaBuyersPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editBuyer, setEditBuyer] = useState<any>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [expandedBuyer, setExpandedBuyer] = useState<number | null>(null);
 
   const [form, setForm] = useState({ username: '', email: '', password: '', buyerCode: '' });
   const [editForm, setEditForm] = useState({ username: '', email: '', buyerCode: '' });
@@ -178,69 +179,109 @@ export default function MediaBuyersPage() {
             </TableHeader>
             <TableBody>
               {buyers.map((buyer: any) => (
-                <TableRow key={buyer.id} className="hover:bg-muted/5 transition-colors" data-testid={`row-buyer-${buyer.id}`}>
-                  <TableCell>
-                    <div className="flex items-center gap-2.5">
-                      <Avatar className="w-8 h-8 border border-border">
-                        <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${buyer.username}`} />
-                        <AvatarFallback className="text-xs font-bold">{buyer.username?.[0]?.toUpperCase()}</AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <p className="font-semibold text-sm">{buyer.username}</p>
-                        {buyer.email && <p className="text-xs text-muted-foreground">{buyer.email}</p>}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {buyer.buyerCode ? (
-                      <div className="flex items-center gap-1.5">
-                        <Badge className="bg-violet-100 text-violet-700 border-violet-200 font-mono text-xs">{buyer.buyerCode}</Badge>
+                <Fragment key={buyer.id}>
+                  <TableRow className="hover:bg-muted/5 transition-colors" data-testid={`row-buyer-${buyer.id}`}>
+                    <TableCell>
+                      <div className="flex items-center gap-2.5">
                         <button
-                          onClick={() => copyCode(buyer.buyerCode)}
-                          className="text-muted-foreground hover:text-violet-600 transition-colors"
-                          data-testid={`button-copy-code-${buyer.id}`}
+                          onClick={() => setExpandedBuyer(expandedBuyer === buyer.id ? null : buyer.id)}
+                          className="text-muted-foreground hover:text-primary transition-colors"
+                          data-testid={`button-expand-${buyer.id}`}
                         >
-                          {copiedCode === buyer.buyerCode
-                            ? <Check className="w-3.5 h-3.5 text-green-500" />
-                            : <Copy className="w-3.5 h-3.5" />}
+                          {expandedBuyer === buyer.id ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                         </button>
+                        <Avatar className="w-8 h-8 border border-border">
+                          <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${buyer.username}`} />
+                          <AvatarFallback className="text-xs font-bold">{buyer.username?.[0]?.toUpperCase()}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className="font-semibold text-sm">{buyer.username}</p>
+                          {buyer.email && <p className="text-xs text-muted-foreground">{buyer.email}</p>}
+                        </div>
                       </div>
-                    ) : <span className="text-muted-foreground text-xs italic">Non défini</span>}
-                  </TableCell>
-                  <TableCell>
-                    <span className="font-bold text-sm">{buyer.total}</span>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className={cn("text-xs font-semibold",
-                      buyer.confirmRate >= 60 ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                        : buyer.confirmRate >= 40 ? "bg-amber-50 text-amber-700 border-amber-200"
-                          : "bg-red-50 text-red-700 border-red-200"
-                    )}>
-                      {buyer.confirmRate}%
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-xs">
-                      {buyer.delivered}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <span className="font-bold text-emerald-600 text-sm">{formatCurrency(buyer.revenue)}</span>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-muted-foreground hover:text-primary"
-                        onClick={() => openEdit(buyer)}
-                        data-testid={`button-edit-buyer-${buyer.id}`}
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
+                    </TableCell>
+                    <TableCell>
+                      {buyer.buyerCode ? (
+                        <div className="flex items-center gap-1.5">
+                          <Badge className="bg-violet-100 text-violet-700 border-violet-200 font-mono text-xs">{buyer.buyerCode}</Badge>
+                          <button
+                            onClick={() => copyCode(buyer.buyerCode)}
+                            className="text-muted-foreground hover:text-violet-600 transition-colors"
+                            data-testid={`button-copy-code-${buyer.id}`}
+                          >
+                            {copiedCode === buyer.buyerCode
+                              ? <Check className="w-3.5 h-3.5 text-green-500" />
+                              : <Copy className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      ) : <span className="text-muted-foreground text-xs italic">Non défini</span>}
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-bold text-sm">{buyer.total}</span>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className={cn("text-xs font-semibold",
+                        buyer.confirmRate >= 60 ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : buyer.confirmRate >= 40 ? "bg-amber-50 text-amber-700 border-amber-200"
+                            : "bg-red-50 text-red-700 border-red-200"
+                      )}>
+                        {buyer.confirmRate}%
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-xs">
+                        {buyer.delivered}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-bold text-emerald-600 text-sm">{formatCurrency(buyer.revenue)}</span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-muted-foreground hover:text-primary"
+                          onClick={() => openEdit(buyer)}
+                          data-testid={`button-edit-buyer-${buyer.id}`}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {expandedBuyer === buyer.id && buyer.platformBreakdown && buyer.platformBreakdown.length > 0 && (
+                    <TableRow key={`${buyer.id}-breakdown`} className="bg-violet-50/40 dark:bg-violet-900/5">
+                      <TableCell colSpan={7} className="py-3 px-6">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <Monitor className="w-3.5 h-3.5 text-violet-500" />
+                            <span className="text-xs font-bold text-violet-600 uppercase tracking-wider">Performance par Plateforme</span>
+                          </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                            {buyer.platformBreakdown.map((pb: any) => (
+                              <div key={pb.platform} className="bg-white dark:bg-card border border-border/50 rounded-lg p-3 space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-bold text-muted-foreground">{pb.platform}</span>
+                                  <Badge variant="outline" className={cn("text-[10px]",
+                                    pb.confirmRate >= 60 ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                      : pb.confirmRate >= 40 ? "bg-amber-50 text-amber-700 border-amber-200"
+                                        : "bg-red-50 text-red-700 border-red-200"
+                                  )}>{pb.confirmRate}%</Badge>
+                                </div>
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="text-muted-foreground">{pb.total} leads</span>
+                                  <span className="text-blue-600 font-medium">{pb.delivered} livrés</span>
+                                </div>
+                                <p className="text-xs font-semibold text-emerald-600">{formatCurrency(pb.revenue)}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
               ))}
             </TableBody>
           </Table>
