@@ -128,15 +128,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   const SidebarContent = () => (
     <div className="flex flex-col h-full bg-sidebar border-r border-sidebar-border w-64">
-      <div className="p-6 flex items-center gap-3">
-        <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground font-bold text-xl shadow-lg shadow-primary/25">
+      <div className="p-5 flex items-center gap-3 border-b border-sidebar-border">
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-lg shadow-lg" style={{ background: 'hsl(45 67% 52%)', color: '#1e1b4b' }}>
           T
         </div>
-        <span className="font-display font-bold text-xl text-sidebar-foreground">TajerGrow</span>
+        <span className="font-display font-bold text-lg text-sidebar-foreground tracking-wide">TajerGrow</span>
       </div>
       
-      <div className="px-4 pb-2">
-        <div className="text-xs font-semibold text-sidebar-foreground/50 uppercase tracking-wider mb-2 px-2">Menu</div>
+      <div className="px-4 pb-2 pt-3">
+        <div className="text-[10px] font-bold text-sidebar-foreground/40 uppercase tracking-widest mb-2 px-2">Navigation</div>
       </div>
 
       <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
@@ -153,24 +153,24 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           return (
             <div key={item.name} className="space-y-0.5">
               <Link href={item.href} className={cn(
-                "flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200",
-                isActive 
-                  ? "bg-primary/10 text-primary" 
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
+                isActive
+                  ? "text-sidebar-foreground bg-sidebar-accent"
+                  : "text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
               )}>
-                <item.icon className={cn("w-4 h-4", isActive ? "text-primary" : "text-sidebar-foreground/50")} />
+                <item.icon className={cn("w-4 h-4 shrink-0", isActive ? "text-sidebar-primary" : "text-sidebar-foreground/40")} />
                 {item.name}
-                {item.hasSubmenu && <ChevronDown className="w-3 h-3 ml-auto" />}
+                {item.hasSubmenu && <ChevronDown className="w-3 h-3 ml-auto opacity-50" />}
               </Link>
               
               {isOrdersMenu && (
-                <div className="ml-8 space-y-0.5 mt-0.5">
+                <div className="ml-7 pl-3 border-l border-sidebar-border/40 space-y-0.5 mt-0.5">
                   {visibleOrderSubItems.map((sub) => (
                     <Link key={sub.name} href={sub.href} className={cn(
-                      "block px-3 py-1.5 text-xs rounded-lg transition-colors",
+                      "block px-3 py-1.5 text-xs rounded-lg transition-colors font-medium",
                       location === sub.href
-                        ? "text-primary font-medium" 
-                        : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
+                        ? "text-sidebar-primary"
+                        : "text-sidebar-foreground/45 hover:text-sidebar-foreground"
                     )}>
                       {sub.name}
                     </Link>
@@ -179,13 +179,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               )}
 
               {isIntegrationMenu && (
-                <div className="ml-8 space-y-0.5 mt-0.5">
+                <div className="ml-7 pl-3 border-l border-sidebar-border/40 space-y-0.5 mt-0.5">
                   {INTEGRATION_SUB_ITEMS.map((sub) => (
                     <Link key={sub.name} href={sub.href} className={cn(
-                      "block px-3 py-1.5 text-xs rounded-lg transition-colors",
+                      "block px-3 py-1.5 text-xs rounded-lg transition-colors font-medium",
                       location === sub.href || (sub.name === "Boutiques" && location === "/integrations")
-                        ? "text-primary font-medium" 
-                        : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
+                        ? "text-sidebar-primary"
+                        : "text-sidebar-foreground/45 hover:text-sidebar-foreground"
                     )}>
                       {sub.name}
                     </Link>
@@ -194,13 +194,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               )}
 
               {isNouvelleMenu && (
-                <div className="ml-8 space-y-0.5 mt-0.5">
+                <div className="ml-7 pl-3 border-l border-sidebar-border/40 space-y-0.5 mt-0.5">
                   {NOUVELLE_SUB_ITEMS.map((sub) => (
                     <Link key={sub.name} href={sub.href} className={cn(
-                      "block px-3 py-1.5 text-xs rounded-lg transition-colors",
+                      "block px-3 py-1.5 text-xs rounded-lg transition-colors font-medium",
                       location === sub.href
-                        ? "text-primary font-medium"
-                        : "text-sidebar-foreground/50 hover:text-sidebar-foreground"
+                        ? "text-sidebar-primary"
+                        : "text-sidebar-foreground/45 hover:text-sidebar-foreground"
                     )}>
                       {sub.name}
                     </Link>
@@ -213,9 +213,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </nav>
 
       <div className="p-4 mt-auto border-t border-sidebar-border">
-        <button 
+        <div className="mb-3 px-3 py-2 rounded-xl bg-sidebar-accent/50">
+          <p className="text-xs font-bold text-sidebar-foreground/80 truncate">{user?.username}</p>
+          <p className="text-[10px] text-sidebar-foreground/50 capitalize">{user?.role === 'owner' ? 'Administrateur' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}</p>
+        </div>
+        <button
           onClick={logout}
-          className="flex items-center gap-3 px-3 py-2 w-full rounded-xl text-sm font-medium text-sidebar-foreground/70 hover:bg-destructive/10 hover:text-destructive transition-colors"
+          className="flex items-center gap-3 px-3 py-2 w-full rounded-xl text-sm font-semibold text-sidebar-foreground/60 hover:bg-red-500/15 hover:text-red-400 transition-colors"
           data-testid="button-logout"
         >
           <LogOut className="w-4 h-4" />
@@ -227,81 +231,79 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background flex w-full font-sans">
-      <div className="hidden lg:block h-screen sticky top-0 shrink-0 z-20">
+      {/* Desktop sidebar — sticky full height */}
+      <div className="hidden lg:flex h-screen sticky top-0 shrink-0 z-20">
         <SidebarContent />
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 bg-background/80 backdrop-blur-md border-b border-border sticky top-0 z-10 flex items-center justify-between px-4 lg:px-8">
-          <div className="flex items-center gap-4">
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Top header */}
+        <header className="h-14 bg-card/90 backdrop-blur-md border-b border-border sticky top-0 z-10 flex items-center justify-between px-3 lg:px-6 gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            {/* Mobile hamburger — opens full sliding drawer */}
             <Sheet>
               <SheetTrigger asChild>
-                <Button variant="ghost" size="icon" className="lg:hidden">
+                <Button variant="ghost" size="icon" className="lg:hidden shrink-0 h-9 w-9" data-testid="button-mobile-menu">
                   <Menu className="w-5 h-5" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="p-0 w-64 bg-sidebar border-none">
+              <SheetContent side="left" className="p-0 w-[260px] max-w-[80vw] border-none">
                 <SidebarContent />
               </SheetContent>
             </Sheet>
 
-            <div className="relative hidden md:block w-96 group">
+            <div className="relative hidden md:block w-72 group">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
-              <Input 
-                placeholder="Rechercher commandes, clients, tracking..." 
-                className="pl-9 bg-muted/50 border-transparent focus-visible:bg-background focus-visible:ring-primary/20 rounded-xl transition-all"
+              <Input
+                placeholder="Rechercher commandes, clients..."
+                className="pl-9 h-9 bg-muted/50 border-transparent focus-visible:bg-background focus-visible:ring-primary/20 rounded-xl transition-all text-sm"
                 data-testid="input-search"
               />
             </div>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-4">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {stores.length > 1 && (
-              <Select
-                value={String(activeStoreId || '')}
-                onValueChange={(val) => setActiveStoreId(Number(val))}
-              >
-                <SelectTrigger className="w-[160px] h-9 text-sm rounded-xl border-border/50" data-testid="select-store-switcher">
-                  <Store className="w-4 h-4 mr-1 text-muted-foreground shrink-0" />
+              <Select value={String(activeStoreId || '')} onValueChange={(val) => setActiveStoreId(Number(val))}>
+                <SelectTrigger className="w-[130px] h-8 text-xs rounded-xl border-border/50" data-testid="select-store-switcher">
+                  <Store className="w-3.5 h-3.5 mr-1 text-muted-foreground shrink-0" />
                   <SelectValue placeholder="Magasin" />
                 </SelectTrigger>
                 <SelectContent>
                   {stores.map((s: any) => (
-                    <SelectItem key={s.id} value={String(s.id)} data-testid={`option-store-${s.id}`}>
-                      {s.name}
-                    </SelectItem>
+                    <SelectItem key={s.id} value={String(s.id)} data-testid={`option-store-${s.id}`}>{s.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             )}
 
-            <Button variant="ghost" size="icon" onClick={() => setIsDark(!isDark)} className="rounded-full" data-testid="button-theme">
-              {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-            </Button>
-            
-            <Button variant="ghost" size="icon" className="relative rounded-full" data-testid="button-notifications">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-2 right-2 w-2 h-2 bg-destructive rounded-full border-2 border-background"></span>
+            <Button variant="ghost" size="icon" onClick={() => setIsDark(!isDark)} className="rounded-full h-8 w-8" data-testid="button-theme">
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </Button>
 
-            <div className="h-8 w-px bg-border mx-1"></div>
+            <Button variant="ghost" size="icon" className="relative rounded-full h-8 w-8" data-testid="button-notifications">
+              <Bell className="w-4 h-4" />
+              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-destructive rounded-full border-2 border-background"></span>
+            </Button>
 
-            <div className="flex items-center gap-3 p-1.5 rounded-full sm:rounded-xl text-left">
-              <Avatar className="w-9 h-9 border border-border">
+            <div className="h-6 w-px bg-border mx-0.5"></div>
+
+            <div className="flex items-center gap-2 px-1 rounded-xl text-left">
+              <Avatar className="w-8 h-8 border-2 border-primary/20">
                 <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.username || 'U'}`} />
-                <AvatarFallback>{user?.username?.[0] || 'U'}</AvatarFallback>
+                <AvatarFallback className="text-xs font-bold">{user?.username?.[0]?.toUpperCase() || 'U'}</AvatarFallback>
               </Avatar>
               <div className="hidden sm:block">
-                <p className="text-sm font-semibold leading-none" data-testid="text-username">{user?.username || 'User'}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">{user?.role === 'owner' ? 'Admin' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}</p>
+                <p className="text-xs font-bold leading-none" data-testid="text-username">{user?.username || 'User'}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">{user?.role === 'owner' ? 'Admin' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}</p>
               </div>
-              <ChevronDown className="w-4 h-4 text-muted-foreground hidden sm:block" />
             </div>
           </div>
         </header>
 
-        <main className="flex-1 p-4 lg:p-8 overflow-x-hidden">
-          <div className="max-w-7xl mx-auto w-full">
+        {/* Page content — full width, no max-w cap */}
+        <main className="flex-1 p-3 sm:p-5 lg:p-6 overflow-x-hidden overflow-y-auto">
+          <div className="w-full">
             {children}
           </div>
         </main>

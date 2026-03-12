@@ -400,27 +400,31 @@ export default function Orders() {
 
   return (
     <div className="space-y-3 animate-in fade-in duration-500">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-orders-title">{pageTitle}</h1>
-          <p className="text-muted-foreground text-sm mt-0.5">Commandes / {pageTitle}</p>
+          <h1 className="text-xl sm:text-2xl font-display font-bold uppercase tracking-tight" data-testid="text-orders-title">{pageTitle}</h1>
+          <p className="text-muted-foreground text-xs mt-0.5">Commandes / {pageTitle}</p>
         </div>
-        <div className="flex items-center gap-1.5">
-          {selectedIds.size > 0 && (
+        <div className="flex items-center gap-1.5 shrink-0">
+          {!isMediaBuyer && selectedIds.size > 0 && (
             <Badge variant="secondary" className="text-xs mr-1" data-testid="badge-selected-count">{selectedIds.size} sélectionnée(s)</Badge>
           )}
-          <Button variant="outline" size="icon" className="h-9 w-9 border-blue-200 text-blue-500 hover:bg-blue-50" title="Assigner" onClick={() => { if (selectedIds.size > 0) setShowAssignModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-assign">
-            <Headphones className="w-4 h-4" />
-          </Button>
-          <Button variant="outline" size="icon" className="h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 opacity-50 cursor-not-allowed" title="Supprimer (bientôt)" disabled data-testid="button-bulk-delete">
-            <Trash2 className="w-4 h-4" />
-          </Button>
-          <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
-            <Truck className="w-4 h-4" />
-          </Button>
-          <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
-            <FileSpreadsheet className="w-4 h-4" />
-          </Button>
+          {!isMediaBuyer && (
+            <>
+              <Button variant="outline" size="icon" className="h-9 w-9 border-blue-200 text-blue-500 hover:bg-blue-50" title="Assigner" onClick={() => { if (selectedIds.size > 0) setShowAssignModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-assign">
+                <Headphones className="w-4 h-4" />
+              </Button>
+              <Button variant="outline" size="icon" className="h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 opacity-50 cursor-not-allowed" title="Supprimer (bientôt)" disabled data-testid="button-bulk-delete">
+                <Trash2 className="w-4 h-4" />
+              </Button>
+              <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
+                <Truck className="w-4 h-4" />
+              </Button>
+              <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
+                <FileSpreadsheet className="w-4 h-4" />
+              </Button>
+            </>
+          )}
           <Popover open={showColMenu} onOpenChange={setShowColMenu}>
             <PopoverTrigger asChild>
               <Button variant="outline" size="icon" className="h-9 w-9 border-gray-300 text-gray-600 hover:bg-gray-50" title="Colonnes" data-testid="button-columns-menu">
@@ -429,7 +433,7 @@ export default function Orders() {
             </PopoverTrigger>
             <PopoverContent className="w-80 p-3" align="end" data-testid="popover-columns">
               <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-semibold text-blue-600">Colonnes</span>
+                <span className="text-sm font-semibold text-primary">Colonnes visibles</span>
                 <button onClick={resetColumns} className="text-muted-foreground hover:text-foreground" title="Réinitialiser" data-testid="button-reset-columns">
                   <RotateCcw className="w-4 h-4" />
                 </button>
@@ -453,10 +457,10 @@ export default function Orders() {
         </div>
       </div>
 
-      <Card className="rounded-xl border-border/50 shadow-sm p-2.5 md:p-3" data-testid="card-orders-filter-bar">
-        <div className="flex flex-col md:flex-row md:flex-wrap gap-1.5 md:gap-2 items-stretch md:items-center">
+      <Card className="rounded-xl border-border/50 shadow-sm p-2.5 sm:p-3" data-testid="card-orders-filter-bar">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 items-stretch sm:items-center">
           <Select value={String(filters.limit)} onValueChange={(v) => updateFilter('limit', Number(v))}>
-            <SelectTrigger className="w-full md:w-[70px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-page-size">
+            <SelectTrigger className="w-full sm:w-[70px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-page-size">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -465,18 +469,18 @@ export default function Orders() {
               <SelectItem value="50">50</SelectItem>
             </SelectContent>
           </Select>
-          <div className="relative flex-1 min-w-0 md:max-w-[200px]">
+          <div className="relative flex-1 min-w-0 sm:max-w-[200px]">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
             <Input
               data-testid="input-search-orders"
               placeholder="Recherche..."
               value={filters.search}
               onChange={(e) => updateFilter('search', e.target.value)}
-              className="pl-8 h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60"
+              className="pl-8 h-8 text-xs bg-white dark:bg-card border-border/60 w-full"
             />
           </div>
           <Select value={filters.agentId || 'all'} onValueChange={(v) => updateFilter('agentId', v === 'all' ? '' : v)}>
-            <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-equipe">
+            <SelectTrigger className="w-full sm:w-auto sm:min-w-[140px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-equipe">
               <SelectValue placeholder="Toutes les Équipes" />
             </SelectTrigger>
             <SelectContent>
@@ -487,7 +491,7 @@ export default function Orders() {
             </SelectContent>
           </Select>
           <Select value={filters.source || 'all'} onValueChange={(v) => updateFilter('source', v === 'all' ? '' : v)}>
-            <SelectTrigger className="w-full md:w-auto md:min-w-[120px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-statut">
+            <SelectTrigger className="w-full sm:w-auto sm:min-w-[120px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-statut">
               <SelectValue placeholder="Toutes Sources" />
             </SelectTrigger>
             <SelectContent>
@@ -506,7 +510,7 @@ export default function Orders() {
           ) : (
             <>
               <Select value={filters.utmSource || 'all'} onValueChange={(v) => updateFilter('utmSource', v === 'all' ? '' : v)}>
-                <SelectTrigger className="w-full md:w-auto md:min-w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-source">
+                <SelectTrigger className="w-full sm:w-auto sm:min-w-[130px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-source">
                   <SelectValue placeholder="UTM Source" />
                 </SelectTrigger>
                 <SelectContent>
@@ -517,7 +521,7 @@ export default function Orders() {
                 </SelectContent>
               </Select>
               <Select value={filters.utmCampaign || 'all'} onValueChange={(v) => updateFilter('utmCampaign', v === 'all' ? '' : v)}>
-                <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-campaign">
+                <SelectTrigger className="w-full sm:w-auto sm:min-w-[140px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-campaign">
                   <SelectValue placeholder="UTM Campagne" />
                 </SelectTrigger>
                 <SelectContent>
@@ -529,12 +533,12 @@ export default function Orders() {
               </Select>
             </>
           )}
-          <Input type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-from" />
-          <Input type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-to" />
+          <Input type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} className="w-full sm:w-[130px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-from" />
+          <Input type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} className="w-full sm:w-[130px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-to" />
         </div>
       </Card>
 
-      <div className="hidden md:block bg-white dark:bg-card rounded-xl border border-border/50 shadow-sm overflow-hidden">
+      <div className="hidden md:block bg-card rounded-xl border border-border/50 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <Table>
             <TableHeader className="bg-muted/30">
@@ -729,7 +733,8 @@ export default function Orders() {
         )}
       </div>
 
-      <div className="md:hidden space-y-3">
+      {/* Mobile card list — shown below sm breakpoint */}
+      <div className="md:hidden space-y-2.5 mt-1">
         {isLoading ? (
           Array(3).fill(0).map((_, i) => (
             <div key={i} className="h-36 bg-muted rounded-xl animate-pulse" />
@@ -737,61 +742,72 @@ export default function Orders() {
         ) : filteredOrders.length === 0 ? (
           <div className="text-center py-16 text-muted-foreground">
             <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            Aucune commande trouvée.
+            <p className="text-sm font-medium">Aucune commande trouvée.</p>
           </div>
         ) : (
           filteredOrders.map((order: any) => (
-            <Card key={order.id} className="p-3 rounded-xl border-border/50 shadow-sm" data-testid={`card-order-${order.id}`}>
-              <div className="flex items-start gap-2 mb-2">
-                <Checkbox checked={selectedIds.has(order.id)} onCheckedChange={() => toggleSelect(order.id)} className="mt-1" data-testid={`checkbox-mobile-${order.id}`} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">{order.customerName}</span>
-                    <StatusBadge status={order.status} className="text-[10px] shrink-0" />
-                  </div>
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <span className="font-mono text-xs text-muted-foreground">{order.customerPhone}</span>
-                    <a href={telLink(order.customerPhone)} className="p-1 rounded-full bg-blue-100 text-blue-600" data-testid={`phone-mobile-${order.id}`}>
-                      <Phone className="w-3 h-3" />
+            <Card key={order.id} className="p-4 rounded-xl border-border/60 shadow-sm bg-card" data-testid={`card-order-${order.id}`}>
+              {/* Row 1: Name + Status */}
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="font-bold text-sm text-foreground truncate leading-tight">{order.customerName}</span>
+                <StatusBadge status={order.status} className="text-[10px] shrink-0" />
+              </div>
+              {/* Row 2: Phone + Actions */}
+              <div className="flex items-center gap-1.5 mb-3">
+                <span className="font-mono text-xs text-muted-foreground flex-1">{order.customerPhone}</span>
+                {!isMediaBuyer && (
+                  <>
+                    <a href={telLink(order.customerPhone)} className="p-1.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100" data-testid={`phone-mobile-${order.id}`}>
+                      <Phone className="w-3.5 h-3.5" />
                     </a>
-                    <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" className="p-1 rounded-full bg-green-100 text-green-600" data-testid={`whatsapp-mobile-${order.id}`}>
-                      <SiWhatsapp className="w-3 h-3" />
+                    <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-full bg-green-50 text-green-600 border border-green-100" data-testid={`whatsapp-mobile-${order.id}`}>
+                      <SiWhatsapp className="w-3.5 h-3.5" />
                     </a>
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                    <span>{order.customerCity || "-"}</span>
-                    <span className="text-right font-bold text-foreground">{formatCurrency(order.totalPrice)}</span>
-                    <span className="truncate">{order.customerAddress || "-"}</span>
-                    <span className="text-right text-[10px]">{order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : "-"}</span>
-                  </div>
-                  {order.shippingProvider && (
-                    <Badge className="mt-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
-                  )}
-                  {order.utmSource && (
-                    <Badge className="mt-1 ml-1 bg-violet-100 text-violet-700 border-violet-200 text-[10px]">{order.utmSource}</Badge>
-                  )}
+                  </>
+                )}
+              </div>
+              {/* Row 3: City + Price */}
+              <div className="flex items-center justify-between text-xs mb-2">
+                <span className="text-muted-foreground">{order.customerCity || "—"}</span>
+                <span className="font-bold text-base text-foreground">{formatCurrency(order.totalPrice)}</span>
+              </div>
+              {/* Row 4: Address + Date */}
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2">
+                <span className="truncate max-w-[55%]">{order.customerAddress || "—"}</span>
+                <span>{order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : "—"}</span>
+              </div>
+              {/* Badges */}
+              <div className="flex flex-wrap gap-1 mb-2">
+                {order.shippingProvider && (
+                  <Badge className="bg-blue-50 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
+                )}
+                {order.utmSource && (
+                  <Badge className="bg-violet-50 text-violet-700 border-violet-200 text-[10px] font-mono">{order.utmSource}</Badge>
+                )}
+              </div>
+              {/* Footer: actions */}
+              {!isMediaBuyer && (
+                <div className="flex items-center gap-1.5 border-t border-border/50 pt-2.5 mt-1">
+                  <Button variant="outline" size="sm" className="h-8 w-8 p-0" onClick={() => openOrder(order)} data-testid={`view-mobile-${order.id}`}>
+                    <Eye className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-8 w-8 p-0" onClick={() => openOrder(order)} data-testid={`edit-mobile-${order.id}`}>
+                    <Pencil className="w-3.5 h-3.5" />
+                  </Button>
+                  <span className="ml-auto text-[10px] text-muted-foreground capitalize font-medium">{order.source || 'manual'}</span>
                 </div>
-              </div>
-              <div className="flex items-center gap-1.5 border-t pt-2">
-                <Button variant="outline" size="sm" className="h-7 w-7 p-0" onClick={() => openOrder(order)} data-testid={`view-mobile-${order.id}`}>
-                  <Eye className="w-3 h-3" />
-                </Button>
-                <Button variant="outline" size="sm" className="h-7 w-7 p-0" onClick={() => openOrder(order)} data-testid={`edit-mobile-${order.id}`}>
-                  <Pencil className="w-3 h-3" />
-                </Button>
-                <span className="ml-auto text-[10px] text-muted-foreground capitalize">{order.source || 'manual'}</span>
-              </div>
+              )}
             </Card>
           ))
         )}
         {totalPages > 1 && (
           <div className="flex items-center justify-between py-2" data-testid="pagination-bar-mobile">
-            <span className="text-xs text-muted-foreground">Page {filters.page}/{totalPages}</span>
-            <div className="flex gap-1">
-              <Button variant="outline" size="sm" className="h-8" disabled={filters.page <= 1} onClick={() => updateFilter('page', filters.page - 1)}>
+            <span className="text-xs text-muted-foreground font-medium">Page {filters.page}/{totalPages}</span>
+            <div className="flex gap-1.5">
+              <Button variant="outline" size="sm" className="h-9 px-3 text-xs" disabled={filters.page <= 1} onClick={() => updateFilter('page', filters.page - 1)}>
                 <ChevronLeft className="w-3.5 h-3.5 mr-1" /> Préc
               </Button>
-              <Button variant="outline" size="sm" className="h-8" disabled={filters.page >= totalPages} onClick={() => updateFilter('page', filters.page + 1)}>
+              <Button variant="outline" size="sm" className="h-9 px-3 text-xs" disabled={filters.page >= totalPages} onClick={() => updateFilter('page', filters.page + 1)}>
                 Suiv <ChevronRight className="w-3.5 h-3.5 ml-1" />
               </Button>
             </div>

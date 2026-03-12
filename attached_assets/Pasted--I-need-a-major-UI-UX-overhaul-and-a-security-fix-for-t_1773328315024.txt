@@ -1,0 +1,22 @@
+"I need a major UI/UX overhaul and a security fix for the TajerGrow SaaS. The current mobile view has overlapping elements and the Media Buyer permissions are too broad. Please implement the following changes:
+1. Strict Permissions for Media Buyers (Security):
+Read-Only Mode: Users with the role 'Media Buyer' must have ZERO control over order management.
+Action Column: Hide the 'Action' column (icons for eye, pencil, history) entirely from their view.
+Status Dropdown: Disable the status dropdown (e.g., nouveau/confirme) for them. It should be a static text label, not a clickable menu.
+Bulk Actions: Remove all top header icons (Trash, Shipping Truck, Excel Export, Assign Agent) for Media Buyer accounts. They should only see the 'Filter' button.
+2. Layout & Full Width Optimization:
+Full Space: Ensure the dashboard and all pages take 100% of the screen width (max-w-full). Remove any forced margins or containers that make the site look narrow on large screens.
+Typography: Increase font weight for all headings and data points. Use font-semibold or font-bold for prices and customer names to make them stand out.
+Clean Sidebar: Fix the mobile sidebar. It should be a sliding drawer that closes completely, not a half-transparent overlay that causes the overlap seen in my screenshot.
+3. Mobile UI Repair (Crucial - Refer to the Screenshot):
+Fix Overlap: The text 'Mes Commandes' and the filter bar are currently overlapping with the order cards.
+Vertical Stack: On mobile, ensure a clear vertical flow:
+Header.
+Vertical Filter Stack (one under another).
+The List of Order Cards.
+Card Spacing: Add more padding between cards and ensure the text doesn't bleed out of the card borders.
+4. Eye-Comfort Color Palette:
+Primary Background: Change the background to a soft Slate Grey or Zinc (#f8fafc or #f4f4f5) instead of harsh pure white.
+Secondary Color: Use a professional Indigo-Blue (#1e1b4b) for the sidebar and a Soft Muted Gold (#d4af37) for primary call-to-action buttons.
+Contrast: Ensure all text is high-contrast (Deep Black/Navy) against the soft background for easy reading on mobile screens under sunlight.
+Technical Goal: Fix the broken mobile layout, lock the Media Buyer out of any editing features, and make the entire platform look like a premium, bold, and easy-to-read mobile app."
