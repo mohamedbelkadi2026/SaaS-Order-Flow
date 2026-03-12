@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send } from "lucide-react";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal } from "lucide-react";
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
@@ -733,75 +733,173 @@ export default function Orders() {
         )}
       </div>
 
-      {/* Mobile card list — shown below sm breakpoint */}
-      <div className="md:hidden space-y-2.5 mt-1">
+      {/* ── MOBILE CARD LIST ─────────────────────────────── */}
+      <div className="md:hidden pb-24">
+
+        {/* Mobile search bar */}
+        <div className="flex gap-2 mb-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Rechercher…"
+              value={filters.search}
+              onChange={e => updateFilter('search', e.target.value)}
+              className="pl-9 h-10 text-sm bg-card border-border/60 rounded-xl w-full"
+              data-testid="input-mobile-search"
+            />
+          </div>
+          <button
+            className="h-10 w-10 rounded-xl border border-border/60 bg-card flex items-center justify-center shrink-0"
+            onClick={() => setShowColMenu(v => !v)}
+            data-testid="button-mobile-filter"
+          >
+            <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
+          </button>
+        </div>
+
+        {/* Breadcrumb + count */}
+        <div className="flex items-center justify-between mb-2 px-0.5">
+          <p className="text-[11px] text-muted-foreground">Commandes / <span className="font-semibold text-foreground">{pageTitle}</span></p>
+          <span className="text-[11px] text-muted-foreground">{totalOrders} commande{totalOrders > 1 ? 's' : ''}</span>
+        </div>
+
+        {/* Cards */}
         {isLoading ? (
-          Array(3).fill(0).map((_, i) => (
-            <div key={i} className="h-36 bg-muted rounded-xl animate-pulse" />
-          ))
+          <div className="space-y-3">
+            {Array(4).fill(0).map((_, i) => (
+              <div key={i} className="h-40 bg-muted rounded-2xl animate-pulse" />
+            ))}
+          </div>
         ) : filteredOrders.length === 0 ? (
           <div className="text-center py-16 text-muted-foreground">
-            <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
+            <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-40" />
             <p className="text-sm font-medium">Aucune commande trouvée.</p>
           </div>
         ) : (
-          filteredOrders.map((order: any) => (
-            <Card key={order.id} className="p-4 rounded-xl border-border/60 shadow-sm bg-card" data-testid={`card-order-${order.id}`}>
-              {/* Row 1: Name + Status */}
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <span className="font-bold text-sm text-foreground truncate leading-tight">{order.customerName}</span>
-                <StatusBadge status={order.status} className="text-[10px] shrink-0" />
-              </div>
-              {/* Row 2: Phone + Actions */}
-              <div className="flex items-center gap-1.5 mb-3">
-                <span className="font-mono text-xs text-muted-foreground flex-1">{order.customerPhone}</span>
-                {!isMediaBuyer && (
-                  <>
-                    <a href={telLink(order.customerPhone)} className="p-1.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100" data-testid={`phone-mobile-${order.id}`}>
-                      <Phone className="w-3.5 h-3.5" />
-                    </a>
-                    <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-full bg-green-50 text-green-600 border border-green-100" data-testid={`whatsapp-mobile-${order.id}`}>
-                      <SiWhatsapp className="w-3.5 h-3.5" />
-                    </a>
-                  </>
-                )}
-              </div>
-              {/* Row 3: City + Price */}
-              <div className="flex items-center justify-between text-xs mb-2">
-                <span className="text-muted-foreground">{order.customerCity || "—"}</span>
-                <span className="font-bold text-base text-foreground">{formatCurrency(order.totalPrice)}</span>
-              </div>
-              {/* Row 4: Address + Date */}
-              <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2">
-                <span className="truncate max-w-[55%]">{order.customerAddress || "—"}</span>
-                <span>{order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : "—"}</span>
-              </div>
-              {/* Badges */}
-              <div className="flex flex-wrap gap-1 mb-2">
-                {order.shippingProvider && (
-                  <Badge className="bg-blue-50 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
-                )}
-                {order.utmSource && (
-                  <Badge className="bg-violet-50 text-violet-700 border-violet-200 text-[10px] font-mono">{order.utmSource}</Badge>
-                )}
-              </div>
-              {/* Footer: actions */}
-              {!isMediaBuyer && (
-                <div className="flex items-center gap-1.5 border-t border-border/50 pt-2.5 mt-1">
-                  <Button variant="outline" size="sm" className="h-8 w-8 p-0" onClick={() => openOrder(order)} data-testid={`view-mobile-${order.id}`}>
-                    <Eye className="w-3.5 h-3.5" />
-                  </Button>
-                  <Button variant="outline" size="sm" className="h-8 w-8 p-0" onClick={() => openOrder(order)} data-testid={`edit-mobile-${order.id}`}>
-                    <Pencil className="w-3.5 h-3.5" />
-                  </Button>
-                  <span className="ml-auto text-[10px] text-muted-foreground capitalize font-medium">{order.source || 'manual'}</span>
+          <div className="space-y-2.5">
+            {filteredOrders.map((order: any) => {
+              const itemCount = (order.items?.length) || 1;
+              const productName = order.rawProductName
+                || order.items?.[0]?.rawProductName
+                || order.items?.[0]?.product?.name
+                || '—';
+              const orderDate = order.createdAt
+                ? new Date(order.createdAt).toLocaleString('fr-MA', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short', year: 'numeric' })
+                : '—';
+
+              return (
+                <div
+                  key={order.id}
+                  className="bg-white dark:bg-card rounded-2xl shadow-sm border border-border/40 overflow-hidden"
+                  data-testid={`card-order-${order.id}`}
+                >
+                  {/* ── TOP BAR: checkbox + phone + call icons + status ── */}
+                  <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+                    {!isMediaBuyer && (
+                      <Checkbox
+                        checked={selectedIds.has(order.id)}
+                        onCheckedChange={() => toggleSelect(order.id)}
+                        className="shrink-0 border-border"
+                        data-testid={`checkbox-mobile-${order.id}`}
+                      />
+                    )}
+                    <span className="font-bold text-[13px] text-foreground tracking-wide flex-1 min-w-0 truncate">
+                      {order.customerPhone}
+                    </span>
+                    {itemCount > 1 && (
+                      <span className="text-[10px] font-extrabold text-white bg-amber-500 rounded-full px-1.5 py-0.5 shrink-0">
+                        x{itemCount}
+                      </span>
+                    )}
+                    {!isMediaBuyer && (
+                      <>
+                        <a
+                          href={telLink(order.customerPhone)}
+                          onClick={e => e.stopPropagation()}
+                          className="shrink-0 w-8 h-8 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 active:scale-95"
+                          data-testid={`phone-mobile-${order.id}`}
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                        </a>
+                        <a
+                          href={whatsappLink(order.customerPhone, order)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          className="shrink-0 w-8 h-8 rounded-full bg-green-50 border border-green-100 flex items-center justify-center text-green-600 active:scale-95"
+                          data-testid={`whatsapp-mobile-${order.id}`}
+                        >
+                          <SiWhatsapp className="w-3.5 h-3.5" />
+                        </a>
+                      </>
+                    )}
+                    <StatusBadge status={order.status} className="text-[10px] shrink-0 ml-1" />
+                  </div>
+
+                  {/* ── MIDDLE: customer name, city, store, carrier ── */}
+                  <div className="px-3 pb-2 flex items-center gap-1.5 flex-wrap">
+                    <span className="text-sm font-semibold text-foreground">{order.customerName}</span>
+                    <span className="text-muted-foreground text-[11px]">·</span>
+                    <span className="text-[12px] font-bold text-foreground/80">{order.customerCity || '—'}</span>
+                    {storeData?.name && (
+                      <>
+                        <span className="text-muted-foreground text-[11px]">·</span>
+                        <span className="text-[11px] text-muted-foreground">{storeData.name}</span>
+                      </>
+                    )}
+                    {order.shippingProvider && (
+                      <Badge className="ml-auto text-[10px] font-semibold bg-blue-50 text-blue-700 border-blue-200 shrink-0">
+                        {order.shippingProvider}
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* ── DIVIDER ── */}
+                  <div className="mx-3 border-t border-border/30" />
+
+                  {/* ── PRODUCT ROW: name + price + date ── */}
+                  <div className="px-3 py-2.5 flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[12px] font-semibold text-foreground/90 truncate leading-snug">{productName}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{orderDate}</p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <span className="text-[15px] font-extrabold text-foreground">{formatCurrency(order.totalPrice)}</span>
+                    </div>
+                  </div>
+
+                  {/* ── BOTTOM ACTIONS ── */}
+                  <div className="px-3 pb-3 flex items-center gap-2">
+                    <button
+                      onClick={() => openOrder(order)}
+                      className="w-8 h-8 rounded-lg border border-border/60 bg-muted/40 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors active:scale-95"
+                      data-testid={`history-mobile-${order.id}`}
+                      title="Historique"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => openOrder(order)}
+                      className="w-8 h-8 rounded-lg border border-border/60 bg-muted/40 flex items-center justify-center text-muted-foreground hover:text-primary transition-colors active:scale-95"
+                      data-testid={`view-mobile-${order.id}`}
+                      title="Voir"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                    </button>
+                    {order.utmSource && (
+                      <Badge className="text-[9px] font-mono bg-violet-50 text-violet-700 border-violet-200 ml-1">{order.utmSource}</Badge>
+                    )}
+                    <span className="ml-auto text-[10px] text-muted-foreground/70 font-medium capitalize">{order.source || 'manual'}</span>
+                  </div>
                 </div>
-              )}
-            </Card>
-          ))
+              );
+            })}
+          </div>
         )}
+
+        {/* Pagination */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between py-2" data-testid="pagination-bar-mobile">
+          <div className="flex items-center justify-between pt-3 pb-1" data-testid="pagination-bar-mobile">
             <span className="text-xs text-muted-foreground font-medium">Page {filters.page}/{totalPages}</span>
             <div className="flex gap-1.5">
               <Button variant="outline" size="sm" className="h-9 px-3 text-xs" disabled={filters.page <= 1} onClick={() => updateFilter('page', filters.page - 1)}>
@@ -814,6 +912,72 @@ export default function Orders() {
           </div>
         )}
       </div>
+
+      {/* ── FIXED BOTTOM BAR (mobile only) ─────────────────────── */}
+      {!isMediaBuyer && (
+        <div className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-white dark:bg-card border-t border-border shadow-[0_-4px_20px_rgba(0,0,0,0.08)]" data-testid="bottom-action-bar">
+          <div className="flex items-center gap-2.5 px-3 py-2.5">
+            {/* Select all */}
+            <div className="flex items-center gap-2 shrink-0">
+              <Checkbox
+                checked={selectedIds.size === filteredOrders.length && filteredOrders.length > 0}
+                onCheckedChange={toggleAll}
+                className="border-border"
+                data-testid="checkbox-select-all-mobile"
+              />
+              <span className="text-[11px] font-bold text-foreground/70 whitespace-nowrap">Tout</span>
+            </div>
+
+            {/* Count */}
+            <div className="flex-1 min-w-0">
+              {selectedIds.size > 0 ? (
+                <span className="text-[12px] font-bold text-primary">
+                  {selectedIds.size} Cmd{selectedIds.size > 1 ? 's' : ''} choisie{selectedIds.size > 1 ? 's' : ''}
+                </span>
+              ) : (
+                <span className="text-[11px] text-muted-foreground">{totalOrders} commande{totalOrders > 1 ? 's' : ''}</span>
+              )}
+            </div>
+
+            {/* Action icons */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                className="w-9 h-9 rounded-xl bg-muted/60 flex items-center justify-center text-muted-foreground hover:text-foreground active:scale-95"
+                title="Rafraîchir"
+                data-testid="button-mobile-refresh"
+                onClick={() => setSelectedIds(new Set())}
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+              <button
+                className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600 border border-blue-100 active:scale-95"
+                title="Assigner"
+                data-testid="button-mobile-assign"
+                onClick={() => { if (selectedIds.size > 0) setShowAssignModal(true); else toast({ title: "Sélectionnez des commandes" }); }}
+              >
+                <Headphones className="w-4 h-4" />
+              </button>
+              <button
+                className="w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center text-red-500 border border-red-100 active:scale-95 opacity-50"
+                title="Supprimer (bientôt)"
+                data-testid="button-mobile-delete"
+                disabled
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+              <button
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-white active:scale-95"
+                style={{ background: '#16a34a' }}
+                title="Expédier"
+                data-testid="button-mobile-ship"
+                onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }}
+              >
+                <Truck className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
         <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-bulk-assign">
