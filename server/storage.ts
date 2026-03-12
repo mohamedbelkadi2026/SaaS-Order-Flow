@@ -32,6 +32,7 @@ export interface IStorage {
   getOrder(id: number): Promise<OrderWithDetails | undefined>;
   getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
+    utmSource?: string; utmCampaign?: string;
     dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
@@ -263,6 +264,7 @@ export class DatabaseStorage implements IStorage {
 
   async getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
+    utmSource?: string; utmCampaign?: string;
     dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
     const conditions: any[] = [eq(orders.storeId, storeId)];
@@ -288,6 +290,12 @@ export class DatabaseStorage implements IStorage {
     }
     if (filters.source) {
       conditions.push(eq(orders.source, filters.source));
+    }
+    if (filters.utmSource) {
+      conditions.push(eq(orders.utmSource, filters.utmSource));
+    }
+    if (filters.utmCampaign) {
+      conditions.push(eq(orders.utmCampaign, filters.utmCampaign));
     }
     if (filters.dateFrom) {
       conditions.push(gte(orders.createdAt, new Date(filters.dateFrom + 'T00:00:00')));

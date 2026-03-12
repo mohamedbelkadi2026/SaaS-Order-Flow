@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog } from "@/hooks/use-store-data";
+import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions } from "@/hooks/use-store-data";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
@@ -55,6 +55,8 @@ const ALL_COLUMNS = [
   { key: 'adresse', label: 'Adresse', locked: false },
   { key: 'reference', label: 'Référence', locked: false },
   { key: 'source', label: 'Source', locked: false },
+  { key: 'utmSource', label: 'UTM Source', locked: false },
+  { key: 'utmCampaign', label: 'UTM Campagne', locked: false },
   { key: 'action', label: 'Action', locked: true },
 ] as const;
 
@@ -167,6 +169,8 @@ export default function Orders() {
     agentId: '',
     city: '',
     source: '',
+    utmSource: '',
+    utmCampaign: '',
     dateFrom: '',
     dateTo: '',
     search: '',
@@ -181,6 +185,7 @@ export default function Orders() {
 
   const { data, isLoading } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();
+  const { data: filterOptions } = useFilterOptions();
   const { data: shippingIntegrations } = useIntegrations("shipping");
   const updateStatus = useUpdateOrderStatus();
   const assignAgent = useAssignAgent();
@@ -489,6 +494,28 @@ export default function Orders() {
               <SelectItem value="woocommerce">WooCommerce</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={filters.utmSource || 'all'} onValueChange={(v) => updateFilter('utmSource', v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-full md:w-auto md:min-w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-source">
+              <SelectValue placeholder="UTM Source" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">UTM Source</SelectItem>
+              {filterOptions?.utmSources?.map((s: string) => (
+                <SelectItem key={s} value={s}>{s}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={filters.utmCampaign || 'all'} onValueChange={(v) => updateFilter('utmCampaign', v === 'all' ? '' : v)}>
+            <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-campaign">
+              <SelectValue placeholder="UTM Campagne" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">UTM Campagne</SelectItem>
+              {filterOptions?.utmCampaigns?.map((c: string) => (
+                <SelectItem key={c} value={c}>{c}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Input type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-from" />
           <Input type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-to" />
         </div>
@@ -516,6 +543,8 @@ export default function Orders() {
                 {isColVisible('adresse') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Adresse</TableHead>}
                 {isColVisible('reference') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Référence</TableHead>}
                 {isColVisible('source') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Source</TableHead>}
+                {isColVisible('utmSource') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">UTM Source</TableHead>}
+                {isColVisible('utmCampaign') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">UTM Campagne</TableHead>}
                 {isColVisible('action') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Action</TableHead>}
               </TableRow>
               {!showInlineFilters && (
@@ -630,6 +659,20 @@ export default function Orders() {
                           <span className="capitalize text-muted-foreground">{order.source || 'manual'}</span>
                         </TableCell>
                       )}
+                      {isColVisible('utmSource') && (
+                        <TableCell className="whitespace-nowrap text-[11px]">
+                          {order.utmSource ? (
+                            <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[10px] font-medium">{order.utmSource}</Badge>
+                          ) : <span className="text-muted-foreground">-</span>}
+                        </TableCell>
+                      )}
+                      {isColVisible('utmCampaign') && (
+                        <TableCell className="max-w-[120px] truncate text-[11px]">
+                          {order.utmCampaign ? (
+                            <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px] font-medium max-w-[110px] truncate block">{order.utmCampaign}</Badge>
+                          ) : <span className="text-muted-foreground">-</span>}
+                        </TableCell>
+                      )}
                       {isColVisible('action') && (
                         <TableCell>
                           <div className="flex items-center gap-0.5">
@@ -706,6 +749,9 @@ export default function Orders() {
                   </div>
                   {order.shippingProvider && (
                     <Badge className="mt-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
+                  )}
+                  {order.utmSource && (
+                    <Badge className="mt-1 ml-1 bg-violet-100 text-violet-700 border-violet-200 text-[10px]">{order.utmSource}</Badge>
                   )}
                 </div>
               </div>
