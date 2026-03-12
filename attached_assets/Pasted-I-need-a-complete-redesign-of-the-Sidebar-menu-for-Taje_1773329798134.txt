@@ -1,0 +1,36 @@
+I need a complete redesign of the Sidebar menu for TajerGrow to match the provided screenshots. The goal is a clean, modern, and highly responsive navigation that works seamlessly on both mobile and desktop. Please implement the following:
+1. Core Layout & Responsiveness:
+Desktop (PC): The sidebar must be a fixed, full-height navigation bar on the left side, clearly visible.
+Mobile (Phone): The sidebar must be a sliding drawer (Hamburger menu triggered) that smoothly opens from the left and completely covers the main content area when open. When closed, it should be entirely hidden.
+Toggle (Hamburger Icon): Ensure the top-left hamburger icon opens/closes the sidebar smoothly.
+2. Color Palette for Eye Comfort:
+Primary Background (Sidebar): Use a clean, deep Navy Blue (#1a202c or similar dark blue that is easy on the eyes).
+Text & Icons (Sidebar): Use Pure White (#FFFFFF) for clarity.
+Active Item (Highlight): When a menu item is selected (e.g., 'Nouveaux'), highlight its background in a Light, Soothing Blue (#3b82f6 or similar, but lighter for subtle contrast) with white text.
+Main Content Background: Keep the main content area (Dashboard, Orders) with a Soft, Off-White or Light Grey background (#f8fafc or #f4f4f5) for visual comfort.
+3. Menu Structure & Icons (Refer to Screenshot 2):
+Main Sections:
+Dashboard (Home icon)
+Mes Commandes (Shopping Cart icon, with dropdown arrow)
+Nouveaux
+Confirmations
+Annules
+Suivies
+Livrées
+Commandes (Toutes) (Grid icon)
+Nouvelle Commande (Upload icon, with dropdown arrow)
+Stock (Box icon, with dropdown arrow)
+Magasins (Storefront icon)
+List Client (Users icon)
+Gestion de l'Équipe (Users group icon, with dropdown arrow)
+Factures (Invoice icon)
+Advanced Profitability (Money icon)
+Integration (Puzzle piece icon, with dropdown arrow)
+4. Design Details:
+Branding: Place the TajerGrow logo (blue 'T' icon and text) prominently at the top left of the sidebar.
+Order Count Badge: Ensure the 'Nouveaux' (New Orders) count appears as a Red Badge (e.g., 18) next to the text.
+Font: Use a clean, modern Sans-serif font (e.g., 'Inter' or 'Montserrat') for all text in the sidebar, ensuring it's clearly readable.
+5. Functional Integration:
+Ensure all menu items are linked to their respective functional pages in the application.
+The sidebar should reflect the role-based access control we implemented (e.g., Agents see a restricted menu).
+Instruction: Prioritize a smooth user experience on both desktop and mobile, with colors chosen for readability and a premium feel."

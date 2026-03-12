@@ -41,15 +41,15 @@
 
     --radius: 0.75rem;
 
-    /* Sidebar — Deep Indigo #1e1b4b */
-    --sidebar-background: 244 46% 20%;
-    --sidebar-foreground: 240 5% 90%;
-    --sidebar-primary: 45 67% 52%;
-    --sidebar-primary-foreground: 240 40% 10%;
-    --sidebar-accent: 244 46% 28%;
-    --sidebar-accent-foreground: 240 5% 95%;
-    --sidebar-border: 244 40% 27%;
-    --sidebar-ring: 45 67% 52%;
+    /* Sidebar — Royal Blue matching Garean screenshots */
+    --sidebar-background: 220 72% 38%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 45 67% 60%;
+    --sidebar-primary-foreground: 220 72% 20%;
+    --sidebar-accent: 220 72% 28%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 220 72% 30%;
+    --sidebar-ring: 220 72% 55%;
   }
 
   .dark {
