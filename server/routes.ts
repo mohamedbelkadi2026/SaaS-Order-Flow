@@ -35,7 +35,8 @@ function formatWhatsAppMessage(order: any, template: string): { message: string;
 function splitUtmSource(raw: string | null): { buyerCode: string | null; trafficPlatform: string | null } {
   if (!raw) return { buyerCode: null, trafficPlatform: null };
   const parts = raw.split('*');
-  const buyerCode = parts[0].trim() || null;
+  // Always uppercase the buyer code so it matches the DB (stored as uppercase)
+  const buyerCode = parts[0].trim().toUpperCase() || null;
   const trafficPlatform = parts.length > 1 ? parts[1].trim() || null : null;
   return { buyerCode, trafficPlatform };
 }
@@ -917,6 +918,7 @@ export async function registerRoutes(
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
       const mediaBuyer = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
+      console.log(`[Attribution] Order=${parsed.orderNumber} UTM="${parsed.utmSource}" → Code=${parsed.buyerCode || 'none'} Platform=${parsed.trafficPlatform || 'none'} → Buyer=${mediaBuyer ? mediaBuyer.username + ' (#' + mediaBuyer.id + ')' : 'NOT FOUND'}`);
 
       const order = await storage.createOrder({
         storeId,
@@ -1010,6 +1012,7 @@ export async function registerRoutes(
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
       const mediaBuyerToken = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
+      console.log(`[Attribution] Order=${parsed.orderNumber} UTM="${parsed.utmSource}" → Code=${parsed.buyerCode || 'none'} Platform=${parsed.trafficPlatform || 'none'} → Buyer=${mediaBuyerToken ? mediaBuyerToken.username + ' (#' + mediaBuyerToken.id + ')' : 'NOT FOUND'}`);
 
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
@@ -1131,6 +1134,7 @@ export async function registerRoutes(
       }
 
       const mediaBuyerShopify = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
+      console.log(`[Attribution] Order=${parsed.orderNumber} UTM="${parsed.utmSource}" → Code=${parsed.buyerCode || 'none'} Platform=${parsed.trafficPlatform || 'none'} → Buyer=${mediaBuyerShopify ? mediaBuyerShopify.username + ' (#' + mediaBuyerShopify.id + ')' : 'NOT FOUND'}`);
 
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,

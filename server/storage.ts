@@ -649,8 +649,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string, dateFrom?: string, dateTo?: string, city?: string): Promise<any> {
+    // Get buyer's code for UTM fallback matching
+    const [buyer] = await db.select({ buyerCode: users.buyerCode }).from(users).where(eq(users.id, mediaBuyerId));
+    const buyerCode = buyer?.buyerCode;
+
+    // Fetch by mediaBuyerId OR by UTM source pattern (CODE*%) for backward compatibility
     let allOrders = await db.select().from(orders)
-      .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)));
+      .where(and(
+        eq(orders.storeId, storeId),
+        buyerCode
+          ? or(eq(orders.mediaBuyerId, mediaBuyerId), sql`${orders.utmSource} ILIKE ${buyerCode + '*%'}`)
+          : eq(orders.mediaBuyerId, mediaBuyerId)
+      ));
     if (platform && platform !== 'all') {
       allOrders = allOrders.filter(o => (o as any).trafficPlatform === platform);
     }
@@ -666,12 +676,17 @@ export class DatabaseStorage implements IStorage {
     if (city && city !== 'all') {
       allOrders = allOrders.filter(o => (o.customerCity || '').toLowerCase() === city.toLowerCase());
     }
+    // Correct status strings matching the actual DB values
+    const CONFIRMED_STATUSES = ['confirme', 'in_progress', 'expédié', 'retourné', 'delivered'];
+    const DELIVERED_STATUS = 'delivered';
+    const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
+
     const total = allOrders.length;
-    const confirmed = allOrders.filter(o => ['confirmé', 'en cours', 'livré'].includes(o.status)).length;
-    const inProgress = allOrders.filter(o => o.status === 'en cours').length;
-    const delivered = allOrders.filter(o => o.status === 'livré').length;
-    const cancelled = allOrders.filter(o => ['annulé', 'refusé'].includes(o.status)).length;
-    const revenue = allOrders.filter(o => o.status === 'livré').reduce((s, o) => s + o.totalPrice, 0);
+    const confirmed = allOrders.filter(o => CONFIRMED_STATUSES.includes(o.status)).length;
+    const inProgress = allOrders.filter(o => o.status === 'in_progress').length;
+    const delivered = allOrders.filter(o => o.status === DELIVERED_STATUS).length;
+    const cancelled = allOrders.filter(o => CANCELLED_STATUSES.includes(o.status) || o.status.startsWith('Annulé')).length;
+    const revenue = allOrders.filter(o => o.status === DELIVERED_STATUS).reduce((s, o) => s + o.totalPrice, 0);
     const confirmRate = total > 0 ? Math.round((confirmed / total) * 100) : 0;
     const deliveryRate = total > 0 ? Math.round((delivered / total) * 100) : 0;
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
@@ -683,8 +698,8 @@ export class DatabaseStorage implements IStorage {
       const day = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
       if (!dailyMap[day]) dailyMap[day] = { total: 0, confirmed: 0, delivered: 0 };
       dailyMap[day].total++;
-      if (['confirmé', 'en cours', 'livré'].includes(o.status)) dailyMap[day].confirmed++;
-      if (o.status === 'livré') dailyMap[day].delivered++;
+      if (CONFIRMED_STATUSES.includes(o.status)) dailyMap[day].confirmed++;
+      if (o.status === DELIVERED_STATUS) dailyMap[day].delivered++;
     }
     const daily = Object.entries(dailyMap)
       .sort(([a], [b]) => {
@@ -699,8 +714,8 @@ export class DatabaseStorage implements IStorage {
       const c = o.customerCity || 'Inconnue';
       if (!cityMap[c]) cityMap[c] = { total: 0, confirmed: 0, delivered: 0 };
       cityMap[c].total++;
-      if (['confirmé', 'en cours', 'livré'].includes(o.status)) cityMap[c].confirmed++;
-      if (o.status === 'livré') cityMap[c].delivered++;
+      if (CONFIRMED_STATUSES.includes(o.status)) cityMap[c].confirmed++;
+      if (o.status === DELIVERED_STATUS) cityMap[c].delivered++;
     }
     const cities = Object.entries(cityMap)
       .map(([name, d]) => ({
@@ -726,9 +741,9 @@ export class DatabaseStorage implements IStorage {
         const name = item.rawProductName || 'Inconnu';
         if (!productMap[name]) productMap[name] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
         productMap[name].total++;
-        if (['confirmé', 'en cours', 'livré'].includes(item.orderStatus)) productMap[name].confirmed++;
-        if (item.orderStatus === 'en cours') productMap[name].inProgress++;
-        if (item.orderStatus === 'livré') productMap[name].delivered++;
+        if (['confirme', 'in_progress', 'expédié', 'retourné', 'delivered'].includes(item.orderStatus)) productMap[name].confirmed++;
+        if (item.orderStatus === 'in_progress') productMap[name].inProgress++;
+        if (item.orderStatus === 'delivered') productMap[name].delivered++;
       }
       products = Object.entries(productMap)
         .map(([name, d]) => ({
@@ -748,15 +763,23 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(users.storeId, storeId), eq(users.role, 'media_buyer')));
     const result = await Promise.all(buyers.map(async (buyer) => {
       const stats = await this.getMediaBuyerStats(storeId, buyer.id);
+      // Use UTM fallback so orders attributed only by UTM string are included
+      const buyerCode = buyer.buyerCode;
       const buyerOrders = await db.select().from(orders)
-        .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, buyer.id)));
+        .where(and(
+          eq(orders.storeId, storeId),
+          buyerCode
+            ? or(eq(orders.mediaBuyerId, buyer.id), sql`${orders.utmSource} ILIKE ${buyerCode + '*%'}`)
+            : eq(orders.mediaBuyerId, buyer.id)
+        ));
+      const CONF_STATUSES = ['confirme', 'in_progress', 'expédié', 'retourné', 'delivered'];
       const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
       for (const o of buyerOrders) {
         const plt = (o as any).trafficPlatform || 'Organique';
         if (!platformMap[plt]) platformMap[plt] = { total: 0, confirmed: 0, delivered: 0, revenue: 0 };
         platformMap[plt].total++;
-        if (['confirmé', 'en cours', 'livré'].includes(o.status)) platformMap[plt].confirmed++;
-        if (o.status === 'livré') { platformMap[plt].delivered++; platformMap[plt].revenue += o.totalPrice; }
+        if (CONF_STATUSES.includes(o.status)) platformMap[plt].confirmed++;
+        if (o.status === 'delivered') { platformMap[plt].delivered++; platformMap[plt].revenue += o.totalPrice; }
       }
       const platformBreakdown = Object.entries(platformMap).map(([platform, s]) => ({
         platform,
@@ -769,8 +792,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getOrdersByMediaBuyer(storeId: number, mediaBuyerId: number): Promise<any[]> {
+    const [buyer] = await db.select({ buyerCode: users.buyerCode }).from(users).where(eq(users.id, mediaBuyerId));
+    const buyerCode = buyer?.buyerCode;
     return await db.select().from(orders)
-      .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)))
+      .where(and(
+        eq(orders.storeId, storeId),
+        buyerCode
+          ? or(eq(orders.mediaBuyerId, mediaBuyerId), sql`${orders.utmSource} ILIKE ${buyerCode + '*%'}`)
+          : eq(orders.mediaBuyerId, mediaBuyerId)
+      ))
       .orderBy(desc(orders.createdAt));
   }
 
