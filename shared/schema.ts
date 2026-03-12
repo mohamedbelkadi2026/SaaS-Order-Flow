@@ -36,6 +36,7 @@ export const users = pgTable("users", {
   isSuperAdmin: integer("is_super_admin").default(0),
   isActive: integer("is_active").default(1),
   dashboardPermissions: jsonb("dashboard_permissions"),
+  buyerCode: text("buyer_code"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -92,6 +93,7 @@ export const orders = pgTable("orders", {
   source: text("source").default("manual"),
   utmSource: text("utm_source"),
   utmCampaign: text("utm_campaign"),
+  mediaBuyerId: integer("media_buyer_id").references(() => users.id),
   rawProductName: text("raw_product_name"),
   variantDetails: text("variant_details"),
   rawQuantity: integer("raw_quantity"),

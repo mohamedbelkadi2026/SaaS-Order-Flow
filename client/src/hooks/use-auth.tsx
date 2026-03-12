@@ -16,6 +16,7 @@ type User = {
   isActive: number | null;
   createdAt: string | null;
   dashboardPermissions: Record<string, boolean> | null;
+  buyerCode: string | null;
 };
 
 type AuthContextType = {

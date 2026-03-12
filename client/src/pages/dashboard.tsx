@@ -75,6 +75,7 @@ export default function Dashboard() {
 
   const { user } = useAuth();
   const isAgent = user?.role === 'agent';
+  const isMediaBuyer = user?.role === 'media_buyer';
   const perms = (user?.dashboardPermissions || {}) as Record<string, boolean>;
 
   const canSeeRevenue = !isAgent || !!perms.show_revenue;
@@ -86,6 +87,12 @@ export default function Dashboard() {
     queryKey: ['/api/agents/wallet'],
     enabled: isAgent,
   });
+
+  const { data: mediaBuyerStats } = useQuery<{ total: number; confirmed: number; delivered: number; cancelled: number; revenue: number; confirmRate: number }>({
+    queryKey: ['/api/media-buyer/stats'],
+    enabled: isMediaBuyer,
+  });
+  const [linkBaseUrl, setLinkBaseUrl] = useState('');
   const { data: commissionsSummary } = useQuery<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>({
     queryKey: ['/api/stats/commissions-summary'],
     enabled: !isAgent,
@@ -185,6 +192,88 @@ export default function Dashboard() {
     if (role === 'both') return <Badge className="text-[10px] h-4 px-1.5 bg-purple-100 text-purple-700 border-purple-200">Les deux</Badge>;
     return <Badge className="text-[10px] h-4 px-1.5 bg-green-100 text-green-700 border-green-200">Confirmation</Badge>;
   };
+
+  if (isMediaBuyer) {
+    const generatedLink = linkBaseUrl
+      ? `${linkBaseUrl.replace(/\/$/, '')}?utm_source=${user?.buyerCode || ''}`
+      : '';
+    return (
+      <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Mon Espace Media Buyer</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Bonjour <span className="font-semibold">{user?.username}</span> — Code: <span className="font-mono font-bold text-violet-600">{user?.buyerCode || '—'}</span>
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-total">
+            <CardContent className="p-4">
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Total Leads</p>
+              <p className="text-3xl font-bold mt-1">{mediaBuyerStats?.total ?? '—'}</p>
+            </CardContent>
+          </Card>
+          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-confirmed">
+            <CardContent className="p-4">
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Taux Confirmé</p>
+              <p className="text-3xl font-bold mt-1 text-green-600">{mediaBuyerStats ? `${mediaBuyerStats.confirmRate}%` : '—'}</p>
+              <p className="text-xs text-muted-foreground">{mediaBuyerStats?.confirmed ?? 0} confirmés</p>
+            </CardContent>
+          </Card>
+          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-delivered">
+            <CardContent className="p-4">
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Livrés</p>
+              <p className="text-3xl font-bold mt-1 text-blue-600">{mediaBuyerStats?.delivered ?? '—'}</p>
+            </CardContent>
+          </Card>
+          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-revenue">
+            <CardContent className="p-4">
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Revenue Généré</p>
+              <p className="text-2xl font-bold mt-1 text-emerald-600">{mediaBuyerStats ? formatCurrency(mediaBuyerStats.revenue) : '—'}</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="rounded-xl border-border/50 shadow-sm p-6" data-testid="card-link-builder">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-violet-100 flex items-center justify-center">
+              <DollarSign className="w-4 h-4 text-violet-600" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold">Générateur de Lien UTM</h2>
+              <p className="text-xs text-muted-foreground">Créez votre lien trackable avec votre code unique</p>
+            </div>
+          </div>
+          <div className="flex gap-2 items-center">
+            <Input
+              data-testid="input-link-base-url"
+              placeholder="ex: anakio.com ou https://monsite.com/produit"
+              value={linkBaseUrl}
+              onChange={e => setLinkBaseUrl(e.target.value)}
+              className="flex-1 h-10 text-sm"
+            />
+          </div>
+          {generatedLink && (
+            <div className="mt-4 p-3 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-lg">
+              <p className="text-xs font-semibold text-violet-600 mb-1">Lien généré :</p>
+              <div className="flex items-center gap-2">
+                <code className="text-sm text-violet-800 dark:text-violet-300 font-mono break-all flex-1">{generatedLink}</code>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 h-7 text-xs border-violet-300 text-violet-600 hover:bg-violet-100"
+                  onClick={() => { navigator.clipboard.writeText(generatedLink); }}
+                  data-testid="button-copy-link"
+                >
+                  Copier
+                </Button>
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">

@@ -37,12 +37,21 @@ const AGENT_BLOCKED_PATHS = [
   "/orders/all", "/admin",
 ];
 
+const MEDIA_BUYER_BLOCKED_PATHS = [
+  "/inventory", "/magasins", "/team", "/clients",
+  "/invoices", "/billing", "/profitability",
+  "/integrations", "/integrations/shipping", "/integrations/logs",
+  "/orders/all", "/admin", "/orders/add", "/orders/import", "/orders/new",
+];
+
 function AgentGuard({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [location, navigate] = useLocation();
   const { toast } = useToast();
 
-  const isBlocked = user?.role === 'agent' && AGENT_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
+  const isAgentBlocked = user?.role === 'agent' && AGENT_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
+  const isMediaBuyerBlocked = user?.role === 'media_buyer' && MEDIA_BUYER_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
+  const isBlocked = isAgentBlocked || isMediaBuyerBlocked;
 
   useEffect(() => {
     if (isBlocked) {

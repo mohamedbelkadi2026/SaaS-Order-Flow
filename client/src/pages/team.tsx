@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
@@ -15,8 +15,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil } from "lucide-react";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { formatCurrency } from "@/lib/utils";
 
 const DEFAULT_PERMISSIONS: Record<string, boolean> = {
   show_store_orders: false,
@@ -76,6 +77,8 @@ const defaultForm = {
   allowedProductIds: [] as number[],
   allowedRegions: [] as string[],
   commissionRate: "",
+  memberType: "agent" as "agent" | "media_buyer",
+  buyerCode: "",
 };
 
 function MultiSelectDropdown({
@@ -149,6 +152,69 @@ function MultiSelectDropdown({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function MediaBuyersSummaryTable() {
+  const { data: buyers, isLoading } = useQuery<any[]>({ queryKey: ['/api/media-buyers/summary'] });
+  if (isLoading) return null;
+  if (!buyers || buyers.length === 0) return null;
+
+  return (
+    <div className="space-y-3 mt-2">
+      <div className="flex items-center gap-2">
+        <div className="w-7 h-7 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+          <TrendingUp className="w-4 h-4 text-violet-600" />
+        </div>
+        <h2 className="text-lg font-bold">Performance Media Buyers</h2>
+      </div>
+      <Table className="bg-card rounded-2xl border overflow-hidden">
+        <TableHeader className="bg-violet-50/50 dark:bg-violet-900/10">
+          <TableRow>
+            <TableHead className="text-xs font-bold uppercase tracking-wider">Nom</TableHead>
+            <TableHead className="text-xs font-bold uppercase tracking-wider">Code</TableHead>
+            <TableHead className="text-xs font-bold uppercase tracking-wider">Total Leads</TableHead>
+            <TableHead className="text-xs font-bold uppercase tracking-wider">Confirmés</TableHead>
+            <TableHead className="text-xs font-bold uppercase tracking-wider">Livrés</TableHead>
+            <TableHead className="text-xs font-bold uppercase tracking-wider">Taux Confirm.</TableHead>
+            <TableHead className="text-xs font-bold uppercase tracking-wider">Revenue Généré</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {buyers.map((buyer: any) => (
+            <TableRow key={buyer.id} className="hover:bg-muted/5">
+              <TableCell>
+                <div className="flex items-center gap-2">
+                  <Avatar className="w-7 h-7">
+                    <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${buyer.username}`} />
+                    <AvatarFallback className="text-[10px]">{buyer.username?.[0]}</AvatarFallback>
+                  </Avatar>
+                  <span className="font-semibold text-sm">{buyer.username}</span>
+                </div>
+              </TableCell>
+              <TableCell>
+                {buyer.buyerCode ? (
+                  <Badge className="bg-violet-100 text-violet-700 border-violet-200 font-mono text-xs">#{buyer.buyerCode}</Badge>
+                ) : <span className="text-muted-foreground text-xs">—</span>}
+              </TableCell>
+              <TableCell><span className="font-semibold">{buyer.total}</span></TableCell>
+              <TableCell>
+                <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 text-xs">{buyer.confirmed}</Badge>
+              </TableCell>
+              <TableCell>
+                <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-xs">{buyer.delivered}</Badge>
+              </TableCell>
+              <TableCell>
+                <Badge variant="outline" className={cn("text-xs", buyer.confirmRate >= 50 ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200")}>
+                  {buyer.confirmRate}%
+                </Badge>
+              </TableCell>
+              <TableCell className="font-semibold text-emerald-600">{formatCurrency(buyer.revenue)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }
@@ -248,6 +314,8 @@ export default function Team() {
       allowedProductIds: parsedProductIds,
       allowedRegions: parsedRegions,
       commissionRate: setting?.commissionRate != null ? String(setting.commissionRate) : "",
+      memberType: agent.role === 'media_buyer' ? 'media_buyer' : 'agent',
+      buyerCode: agent.buyerCode || "",
     });
     setEditOpen(true);
   };
@@ -262,12 +330,14 @@ export default function Team() {
       username: editForm.username,
       email: editForm.email,
       phone: editForm.phone || null,
-      paymentType: editForm.paymentType,
-      paymentAmount: editForm.paymentAmount ? Math.round(parseFloat(editForm.paymentAmount) * 100) : 0,
-      distributionMethod: editForm.distributionMethod,
       isActive: editForm.isActive ? 1 : 0,
     };
-    if (editingAgent.role === 'agent') {
+    if (editingAgent.role === 'media_buyer') {
+      payload.buyerCode = editForm.buyerCode ? editForm.buyerCode.trim().toUpperCase() : null;
+    } else if (editingAgent.role === 'agent') {
+      payload.paymentType = editForm.paymentType;
+      payload.paymentAmount = editForm.paymentAmount ? Math.round(parseFloat(editForm.paymentAmount) * 100) : 0;
+      payload.distributionMethod = editForm.distributionMethod;
       payload.roleInStore = editForm.roleInStore;
       payload.commissionRate = editForm.commissionRate ? parseInt(editForm.commissionRate) : 0;
       if (editForm.distributionMethod === "pourcentage") payload.leadPercentage = parseInt(editForm.leadPercentage) || 50;
@@ -282,27 +352,30 @@ export default function Team() {
       toast({ title: "Erreur", description: "Nom, email et mot de passe requis", variant: "destructive" });
       return;
     }
+    if (formData.memberType === 'media_buyer' && !formData.buyerCode.trim()) {
+      toast({ title: "Erreur", description: "Le code Media Buyer est requis (ex: RED1, FB-ADS)", variant: "destructive" });
+      return;
+    }
     try {
       const payload: any = {
         username: formData.username,
         email: formData.email,
         phone: formData.phone || undefined,
         password: formData.password,
-        paymentType: formData.paymentType,
-        paymentAmount: formData.paymentAmount ? Math.round(parseFloat(formData.paymentAmount) * 100) : 0,
-        distributionMethod: formData.distributionMethod,
         isActive: formData.isActive ? 1 : 0,
-        roleInStore: formData.roleInStore,
-        commissionRate: formData.commissionRate ? parseInt(formData.commissionRate) : 0,
+        role: formData.memberType,
       };
-      if (formData.distributionMethod === "pourcentage") {
-        payload.leadPercentage = parseInt(formData.leadPercentage) || 50;
-      }
-      if (formData.distributionMethod === "produit") {
-        payload.allowedProductIds = formData.allowedProductIds;
-      }
-      if (formData.distributionMethod === "region") {
-        payload.allowedRegions = formData.allowedRegions;
+      if (formData.memberType === 'media_buyer') {
+        payload.buyerCode = formData.buyerCode.trim().toUpperCase();
+      } else {
+        payload.paymentType = formData.paymentType;
+        payload.paymentAmount = formData.paymentAmount ? Math.round(parseFloat(formData.paymentAmount) * 100) : 0;
+        payload.distributionMethod = formData.distributionMethod;
+        payload.roleInStore = formData.roleInStore;
+        payload.commissionRate = formData.commissionRate ? parseInt(formData.commissionRate) : 0;
+        if (formData.distributionMethod === "pourcentage") payload.leadPercentage = parseInt(formData.leadPercentage) || 50;
+        if (formData.distributionMethod === "produit") payload.allowedProductIds = formData.allowedProductIds;
+        if (formData.distributionMethod === "region") payload.allowedRegions = formData.allowedRegions;
       }
       await createAgent.mutateAsync(payload);
       toast({ title: "Membre ajouté", description: `${formData.username} a été ajouté avec succès` });
@@ -412,6 +485,21 @@ export default function Team() {
             </div>
 
             <div className="px-7 py-5 space-y-6 max-h-[72vh] overflow-y-auto">
+              {/* Member type selector */}
+              <div className="space-y-2">
+                <Label className="text-sm font-semibold text-foreground">Type de membre</Label>
+                <div className="grid grid-cols-2 gap-2 border rounded-lg p-1 bg-muted/20">
+                  <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'agent' }))}
+                    className={cn("h-9 rounded-md text-sm font-medium transition-all", formData.memberType === 'agent' ? "bg-white dark:bg-card shadow-sm text-primary border border-border" : "text-muted-foreground hover:text-foreground")}>
+                    Agent
+                  </button>
+                  <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'media_buyer' }))}
+                    className={cn("h-9 rounded-md text-sm font-medium transition-all", formData.memberType === 'media_buyer' ? "bg-white dark:bg-card shadow-sm text-violet-600 border border-border" : "text-muted-foreground hover:text-foreground")}>
+                    Media Buyer
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-5">
                 <div className="space-y-1.5">
                   <Label className="text-sm font-semibold text-foreground">Nom complet</Label>
@@ -431,6 +519,28 @@ export default function Team() {
                 </div>
               </div>
 
+              {formData.memberType === 'media_buyer' ? (
+                <div className="bg-violet-50 dark:bg-violet-900/10 rounded-xl border border-violet-200 dark:border-violet-800 p-5 space-y-4">
+                  <p className="text-xs font-bold text-violet-600 uppercase tracking-widest">Configuration Media Buyer</p>
+                  <div className="space-y-1.5">
+                    <Label className="text-sm font-semibold text-foreground">Code d'attribution unique</Label>
+                    <div className="relative">
+                      <Input
+                        data-testid="input-buyer-code"
+                        placeholder="Ex: RED1, FB-ADS, MB-SOUF"
+                        value={formData.buyerCode}
+                        onChange={e => setFormData(d => ({ ...d, buyerCode: e.target.value.toUpperCase() }))}
+                        className="h-11 font-mono uppercase"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">Ce code doit correspondre exactement au UTM source entrant (ex: utm_source=RED1). Les commandes avec ce UTM source seront automatiquement attribuées à ce Media Buyer.</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Switch checked={formData.isActive} onCheckedChange={v => setFormData(d => ({ ...d, isActive: v }))} />
+                    <span className="text-sm text-muted-foreground">Compte actif</span>
+                  </div>
+                </div>
+              ) : (
               <div>
                 <p className="text-sm text-muted-foreground mb-3">Assigner à des magasins et rôles.</p>
                 <div className="grid grid-cols-2 gap-5">
@@ -488,7 +598,9 @@ export default function Team() {
                   </div>
                 </div>
               </div>
+              )}
 
+              {formData.memberType === 'agent' && (
               <div className="bg-muted/30 rounded-xl border p-5 space-y-4">
                 <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Méthode de répartition</p>
 
@@ -559,11 +671,14 @@ export default function Team() {
                   </div>
                 )}
               </div>
+              )}
 
+              {formData.memberType === 'agent' && (
               <div className="flex items-center gap-3 pb-1">
                 <Switch id="active" checked={formData.isActive} onCheckedChange={v => setFormData(d => ({ ...d, isActive: v }))} />
                 <label htmlFor="active" className="text-sm font-semibold cursor-pointer">Actif</label>
               </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-3 px-7 py-5 bg-muted/10 border-t">
@@ -655,8 +770,12 @@ export default function Team() {
                   </TableCell>
                   <TableCell>
                     <div className="space-y-1">
-                      <Badge variant="outline" className={cn("text-[10px]", agent.role === 'owner' ? "bg-purple-50 text-purple-700 border-purple-200" : "bg-blue-50 text-blue-600 border-blue-200")}>
-                        {agent.role === 'owner' ? 'Admin' : 'Agent'}
+                      <Badge variant="outline" className={cn("text-[10px]",
+                        agent.role === 'owner' ? "bg-purple-50 text-purple-700 border-purple-200" :
+                        agent.role === 'media_buyer' ? "bg-violet-50 text-violet-700 border-violet-200" :
+                        "bg-blue-50 text-blue-600 border-blue-200"
+                      )}>
+                        {agent.role === 'owner' ? 'Admin' : agent.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}
                       </Badge>
                       {agent.role === 'agent' && (
                         <div>
@@ -666,6 +785,13 @@ export default function Team() {
                             "bg-green-50 text-green-700 border-green-200"
                           )}>
                             {ROLE_LABELS[roleInStore] || roleInStore}
+                          </Badge>
+                        </div>
+                      )}
+                      {agent.role === 'media_buyer' && agent.buyerCode && (
+                        <div>
+                          <Badge variant="outline" className="text-[10px] bg-violet-50 text-violet-600 border-violet-200 font-mono">
+                            #{agent.buyerCode}
                           </Badge>
                         </div>
                       )}
@@ -769,6 +895,9 @@ export default function Team() {
           </TableBody>
         </Table>
       )}
+
+      {/* ── Media Buyers Summary Table ── */}
+      <MediaBuyersSummaryTable />
 
       {/* ── Permissions Modal ── */}
       <Dialog open={!!permissionsDialogAgent} onOpenChange={(open) => { if (!open) setPermissionsDialogAgent(null); }}>
@@ -890,6 +1019,23 @@ export default function Team() {
                   <Input data-testid="input-edit-email" type="email" value={editForm.email} onChange={e => setEditForm(d => ({ ...d, email: e.target.value }))} className="h-11" />
                 </div>
               </div>
+
+              {editingAgent.role === 'media_buyer' && (
+                <div className="bg-violet-50 dark:bg-violet-900/10 rounded-xl border border-violet-200 dark:border-violet-800 p-5 space-y-4">
+                  <p className="text-xs font-bold text-violet-600 uppercase tracking-widest">Code Media Buyer</p>
+                  <div className="space-y-1.5">
+                    <Label className="text-sm font-semibold text-foreground">Code d'attribution unique</Label>
+                    <Input
+                      data-testid="input-edit-buyer-code"
+                      placeholder="Ex: RED1, FB-ADS"
+                      value={editForm.buyerCode}
+                      onChange={e => setEditForm(d => ({ ...d, buyerCode: e.target.value.toUpperCase() }))}
+                      className="h-11 font-mono uppercase"
+                    />
+                    <p className="text-xs text-muted-foreground">Doit correspondre au utm_source entrant pour auto-attribution.</p>
+                  </div>
+                </div>
+              )}
 
               {editingAgent.role === 'agent' && (
                 <div>

@@ -99,6 +99,8 @@ export const api = {
         paymentAmount: z.number().optional(),
         distributionMethod: z.string().optional(),
         isActive: z.number().optional(),
+        role: z.enum(['agent', 'media_buyer']).optional(),
+        buyerCode: z.string().optional(),
       }),
       responses: {
         201: z.custom<any>(),

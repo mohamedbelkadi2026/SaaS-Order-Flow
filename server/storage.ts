@@ -21,6 +21,10 @@ export interface IStorage {
   getUserByEmail(email: string): Promise<User | undefined>;
   getUsersByStore(storeId: number): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
+  getMediaBuyerByCode(storeId: number, code: string): Promise<User | undefined>;
+  getMediaBuyerStats(storeId: number, mediaBuyerId: number): Promise<any>;
+  getMediaBuyersSummary(storeId: number): Promise<any[]>;
+  getOrdersByMediaBuyer(storeId: number, mediaBuyerId: number): Promise<any[]>;
   
   getProductsByStore(storeId: number): Promise<Product[]>;
   getProduct(id: number): Promise<Product | undefined>;
@@ -67,7 +71,7 @@ export interface IStorage {
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
   getInventoryStats(storeId: number): Promise<any>;
-  updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number }): Promise<User | undefined>;
+  updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null }): Promise<User | undefined>;
   deleteUser(id: number): Promise<void>;
 
   getCustomersByStore(storeId: number): Promise<Customer[]>;
@@ -633,9 +637,43 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number }): Promise<User | undefined> {
+  async updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null }): Promise<User | undefined> {
     const [updated] = await db.update(users).set(data).where(eq(users.id, id)).returning();
     return updated;
+  }
+
+  async getMediaBuyerByCode(storeId: number, code: string): Promise<User | undefined> {
+    const [buyer] = await db.select().from(users)
+      .where(and(eq(users.storeId, storeId), eq(users.role, 'media_buyer'), eq(users.buyerCode, code)));
+    return buyer;
+  }
+
+  async getMediaBuyerStats(storeId: number, mediaBuyerId: number): Promise<any> {
+    const allOrders = await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)));
+    const total = allOrders.length;
+    const confirmed = allOrders.filter(o => ['confirmé', 'en cours', 'livré'].includes(o.status)).length;
+    const delivered = allOrders.filter(o => o.status === 'livré').length;
+    const cancelled = allOrders.filter(o => ['annulé', 'refusé'].includes(o.status)).length;
+    const revenue = allOrders.filter(o => o.status === 'livré').reduce((s, o) => s + o.totalPrice, 0);
+    const confirmRate = total > 0 ? Math.round((confirmed / total) * 100) : 0;
+    return { total, confirmed, delivered, cancelled, revenue, confirmRate };
+  }
+
+  async getMediaBuyersSummary(storeId: number): Promise<any[]> {
+    const buyers = await db.select().from(users)
+      .where(and(eq(users.storeId, storeId), eq(users.role, 'media_buyer')));
+    const result = await Promise.all(buyers.map(async (buyer) => {
+      const stats = await this.getMediaBuyerStats(storeId, buyer.id);
+      return { id: buyer.id, username: buyer.username, buyerCode: buyer.buyerCode, ...stats };
+    }));
+    return result;
+  }
+
+  async getOrdersByMediaBuyer(storeId: number, mediaBuyerId: number): Promise<any[]> {
+    return await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)))
+      .orderBy(desc(orders.createdAt));
   }
 
   async deleteUser(id: number): Promise<void> {

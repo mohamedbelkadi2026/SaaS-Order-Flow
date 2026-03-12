@@ -615,34 +615,38 @@ export async function registerRoutes(
       const storeId = req.user!.storeId!;
       const existingUser = await storage.getUserByEmail(data.email);
       if (existingUser) return res.status(400).json({ message: "Cet email est déjà utilisé" });
+      const userRole = data.role || "agent";
       const hashedPassword = await hashPassword(data.password);
       const user = await storage.createUser({
         username: data.username, email: data.email, phone: data.phone || null,
-        password: hashedPassword, role: "agent", storeId,
+        password: hashedPassword, role: userRole, storeId,
         paymentType: data.paymentType || "commission",
         paymentAmount: data.paymentAmount || 0,
         distributionMethod: data.distributionMethod || "auto",
         isActive: data.isActive ?? 1,
-      });
+        buyerCode: (userRole === 'media_buyer' && data.buyerCode) ? data.buyerCode.trim().toUpperCase() : null,
+      } as any);
 
-      // Save store-specific agent settings (role, distribution rules)
-      const settingsPayload: any = {
-        roleInStore: (req.body.roleInStore as string) || "confirmation",
-      };
-      const distMethod = data.distributionMethod || "auto";
-      if (distMethod === "pourcentage") {
-        settingsPayload.leadPercentage = req.body.leadPercentage || 100;
+      // Save store-specific agent settings (role, distribution rules) — agents only
+      if (userRole === 'agent') {
+        const settingsPayload: any = {
+          roleInStore: (req.body.roleInStore as string) || "confirmation",
+        };
+        const distMethod = data.distributionMethod || "auto";
+        if (distMethod === "pourcentage") {
+          settingsPayload.leadPercentage = req.body.leadPercentage || 100;
+        }
+        if (distMethod === "produit" && Array.isArray(req.body.allowedProductIds)) {
+          settingsPayload.allowedProductIds = JSON.stringify(req.body.allowedProductIds);
+        }
+        if (distMethod === "region" && Array.isArray(req.body.allowedRegions)) {
+          settingsPayload.allowedRegions = JSON.stringify(req.body.allowedRegions);
+        }
+        if (typeof req.body.commissionRate === 'number') {
+          settingsPayload.commissionRate = req.body.commissionRate;
+        }
+        await storage.upsertStoreAgentSetting(user.id, storeId, settingsPayload);
       }
-      if (distMethod === "produit" && Array.isArray(req.body.allowedProductIds)) {
-        settingsPayload.allowedProductIds = JSON.stringify(req.body.allowedProductIds);
-      }
-      if (distMethod === "region" && Array.isArray(req.body.allowedRegions)) {
-        settingsPayload.allowedRegions = JSON.stringify(req.body.allowedRegions);
-      }
-      if (typeof req.body.commissionRate === 'number') {
-        settingsPayload.commissionRate = req.body.commissionRate;
-      }
-      await storage.upsertStoreAgentSetting(user.id, storeId, settingsPayload);
 
       const { password: _, ...safeUser } = user;
       res.status(201).json(safeUser);
@@ -896,6 +900,8 @@ export async function registerRoutes(
       const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
+      const mediaBuyer = parsed.utmSource ? await storage.getMediaBuyerByCode(storeId, parsed.utmSource) : null;
+
       const order = await storage.createOrder({
         storeId,
         orderNumber: parsed.orderNumber,
@@ -915,6 +921,7 @@ export async function registerRoutes(
         rawQuantity,
         utmSource: parsed.utmSource || null,
         utmCampaign: parsed.utmCampaign || null,
+        mediaBuyerId: mediaBuyer?.id || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
       const firstProductId = orderItemsToCreate.find(i => i.productId)?.productId ?? undefined;
@@ -985,6 +992,8 @@ export async function registerRoutes(
       const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
+      const mediaBuyerToken = parsed.utmSource ? await storage.getMediaBuyerByCode(storeId, parsed.utmSource) : null;
+
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
@@ -992,6 +1001,7 @@ export async function registerRoutes(
         productCost, shippingCost: 0, adSpend: 0, source: provider, comment: parsed.comment,
         rawProductName, variantDetails, rawQuantity,
         utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
+        mediaBuyerId: mediaBuyerToken?.id || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
@@ -1102,12 +1112,15 @@ export async function registerRoutes(
         }
       }
 
+      const mediaBuyerShopify = parsed.utmSource ? await storage.getMediaBuyerByCode(storeId, parsed.utmSource) : null;
+
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
         customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: 'shopify', comment: parsed.comment,
         utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
+        mediaBuyerId: mediaBuyerShopify?.id || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       res.json({ success: true, orderId: order.id });
@@ -1614,6 +1627,32 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // MEDIA BUYER ENDPOINTS
+  // ============================================================
+  app.get("/api/media-buyer/stats", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    if (user.role !== 'media_buyer') return res.status(403).json({ message: "Accès réservé aux Media Buyers" });
+    const stats = await storage.getMediaBuyerStats(storeId, user.id);
+    res.json(stats);
+  });
+
+  app.get("/api/media-buyer/orders", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    if (user.role !== 'media_buyer') return res.status(403).json({ message: "Accès réservé aux Media Buyers" });
+    const buyerOrders = await storage.getOrdersByMediaBuyer(storeId, user.id);
+    res.json(buyerOrders);
+  });
+
+  app.get("/api/media-buyers/summary", requireAuth, async (req, res) => {
+    const user = req.user!;
+    if (!['owner', 'admin'].includes(user.role) && !user.isSuperAdmin) return res.status(403).json({ message: "Accès admin requis" });
+    const storeId = user.storeId!;
+    res.json(await storage.getMediaBuyersSummary(storeId));
+  });
+
+  // ============================================================
   // UPDATE USER (PUT /api/users/:id)
   // ============================================================
   app.put("/api/users/:id", requireAdmin, async (req, res) => {
@@ -1638,6 +1677,7 @@ export async function registerRoutes(
         allowedProductIds: z.array(z.number()).optional(),
         allowedRegions: z.array(z.string()).optional(),
         commissionRate: z.number().min(0).optional(),
+        buyerCode: z.string().nullable().optional(),
       });
       const data = schema.parse(req.body);
 
@@ -1649,6 +1689,7 @@ export async function registerRoutes(
       if (data.paymentAmount !== undefined) userPayload.paymentAmount = data.paymentAmount;
       if (data.distributionMethod !== undefined) userPayload.distributionMethod = data.distributionMethod;
       if (data.isActive !== undefined) userPayload.isActive = data.isActive;
+      if (data.buyerCode !== undefined) userPayload.buyerCode = data.buyerCode ? data.buyerCode.trim().toUpperCase() : null;
 
       if (Object.keys(userPayload).length > 0) {
         await storage.updateUser(userId, userPayload);
