@@ -558,7 +558,7 @@ export default function Orders() {
                 {isColVisible('source') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Source</TableHead>}
                 {isColVisible('utmSource') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">UTM Source</TableHead>}
                 {isColVisible('utmCampaign') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">UTM Campagne</TableHead>}
-                {isColVisible('action') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Action</TableHead>}
+                {!isMediaBuyer && isColVisible('action') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Action</TableHead>}
               </TableRow>
               {!showInlineFilters && (
                 <TableRow className="bg-muted/10 border-t-0">
@@ -644,24 +644,28 @@ export default function Orders() {
                       )}
                       {isColVisible('status') && (
                         <TableCell onClick={e => e.stopPropagation()}>
-                          <Select
-                            value={order.status}
-                            onValueChange={(newStatus) => {
-                              console.log(`[STATUS CHANGE] order #${order.orderNumber} ${order.status} → ${newStatus}`);
-                              handleStatusChange(order.id, newStatus);
-                            }}
-                          >
-                            <SelectTrigger className="h-7 text-[11px] border-0 bg-transparent p-0 shadow-none focus:ring-0 w-auto gap-1" data-testid={`status-select-${order.id}`}>
-                              <StatusBadge status={order.status} className="cursor-pointer" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {ORDER_STATUSES.map(s => (
-                                <SelectItem key={s.value} value={s.value} className="text-xs">
-                                  {s.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          {isMediaBuyer ? (
+                            <StatusBadge status={order.status} />
+                          ) : (
+                            <Select
+                              value={order.status}
+                              onValueChange={(newStatus) => {
+                                console.log(`[STATUS CHANGE] order #${order.orderNumber} ${order.status} → ${newStatus}`);
+                                handleStatusChange(order.id, newStatus);
+                              }}
+                            >
+                              <SelectTrigger className="h-7 text-[11px] border-0 bg-transparent p-0 shadow-none focus:ring-0 w-auto gap-1" data-testid={`status-select-${order.id}`}>
+                                <StatusBadge status={order.status} className="cursor-pointer" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {ORDER_STATUSES.map(s => (
+                                  <SelectItem key={s.value} value={s.value} className="text-xs">
+                                    {s.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
                         </TableCell>
                       )}
                       {isColVisible('prix') && <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>}
@@ -686,7 +690,7 @@ export default function Orders() {
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
-                      {isColVisible('action') && (
+                      {!isMediaBuyer && isColVisible('action') && (
                         <TableCell>
                           <div className="flex items-center gap-0.5">
                             <button onClick={() => openOrder(order)} className="p-1.5 rounded hover:bg-muted transition-colors" title="Voir" data-testid={`action-view-${order.id}`}>

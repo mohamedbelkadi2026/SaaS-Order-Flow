@@ -1,0 +1,38 @@
+
+هذا البرومبت مصمم بدقة ليجعل Replit Agent ينفذ "نظام التتبع العميق" ويقوم بتعديل الواجهة (UI) للميديا باير لتبدو تماماً مثل الداشبورد الاحترافي الذي أرفقته في الصور، مع حماية أسرار العمل عبر إخفاء أزرار التحكم.
+البرومبت النهائي لتطوير حساب الـ Media Buyer والـ Deep Tracking
+انسخ النص التالي وضعه في Replit Agent:
+"I need to upgrade the Media Buyer module and the Dashboard analytics to support professional deep tracking and UI restrictions as shown in the screenshots.
+1. Deep Tracking Logic (utm_source Parsing):
+Update the incoming order logic (Shopify/YouCan webhooks).
+Format: The utm_source will follow the format CODE*PLATFORM (e.g., BB*Facebook-Ads).
+Backend Logic:
+Split the utm_source by the * character.
+*Part 1 (Before ): This is the Buyer Code (e.g., BB). Link the order to the Media Buyer user with this code.
+*Part 2 (After ): This is the Traffic Platform (e.g., Facebook-Ads, TikTok-Ads).
+Database Update: Add a column traffic_platform to the Orders table to store Part 2.
+Display: In the Orders Table, show the full string (e.g., BB*Facebook-Ads) in the UTM SOURCE column as seen in the screenshot.
+2. UI Restrictions for Media Buyers:
+When a user with the role 'Media Buyer' is logged in:
+Hide 'Action' Column: In all order tables, remove the 'ACTION' column (no call icons, no edit, no eye icons). They should only see the data, not interact with it.
+Hide 'Suivi des Colis': Remove the 'Suivi' section from their sidebar entirely.
+Read-Only Access: They are only allowed to see their own orders (where utm_source starts with their Buyer Code).
+3. Professional Dashboard Implementation (Refer to Screenshot 2):
+Rebuild the Media Buyer Dashboard to match the provided screenshot exactly:
+Top Stats Cards (with icons):
+Commandes Totales (Total leads).
+Confirmées (Count).
+Taux de Confirmation (%).
+En Cours de livraison (Count & %).
+Livrées (Count).
+Taux de Livraison (%).
+Charts: A 'Sales Comparison' line chart showing 'Commandes', 'Confirmées', and 'Livrées' daily volume.
+Tables below charts:
+PRODUITS COMMANDÉS: (Product | Total | Confirmed | % Conf | En Cours | Livrées | % Livr).
+COMMANDES PAR VILLE: (Ville | Total | Confirmed | % Conf | Livrées | % Livr).
+4. Filtering System for Media Buyers:
+Keep the horizontal filter bar at the top of their dashboard (as shown in image 2).
+Ensure filters for 'Product', 'City', and 'Date Range' work perfectly for their restricted data.
+5. Technical Requirement:
+Every SQL query for a Media Buyer must include WHERE utm_source LIKE '[Buyer_Code]*%'.
+Use the brand's luxury colors: Green (#22c55e), Light Blue (#0ea5e9), and Orange (#f97316) for the dashboard cards as per the image."

@@ -118,6 +118,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, [isMediaBuyer, isAgent, baseNav, agentSpecialty]);
 
   const visibleOrderSubItems = useMemo(() => {
+    if (isMediaBuyer) return ORDER_SUB_ITEMS.filter(s => s.name !== 'Suivi des Colis');
     if (!isAgent || agentSpecialty === 'both') return ORDER_SUB_ITEMS;
     if (agentSpecialty === 'confirmation') {
       return ORDER_SUB_ITEMS.filter(s => !['Suivi des Colis', 'En cours', 'Livrées', 'Refusées'].includes(s.name));

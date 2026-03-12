@@ -89,16 +89,25 @@ export default function Dashboard() {
   });
 
   const [platformFilter, setPlatformFilter] = useState('all');
+  const [mbDateFrom, setMbDateFrom] = useState('');
+  const [mbDateTo, setMbDateTo] = useState('');
+  const [mbCityFilter, setMbCityFilter] = useState('all');
   const [linkPlatform, setLinkPlatform] = useState('');
   const [linkCampaign, setLinkCampaign] = useState('');
   const [linkBaseUrl, setLinkBaseUrl] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
 
-  const { data: mediaBuyerStats } = useQuery<{ total: number; confirmed: number; delivered: number; cancelled: number; revenue: number; confirmRate: number; platforms: string[] }>({
-    queryKey: ['/api/media-buyer/stats', platformFilter],
+  const { data: mediaBuyerStats } = useQuery<{ total: number; confirmed: number; inProgress: number; delivered: number; cancelled: number; revenue: number; confirmRate: number; deliveryRate: number; platforms: string[]; daily: any[]; products: any[]; cities: any[] }>({
+    queryKey: ['/api/media-buyer/stats', platformFilter, mbDateFrom, mbDateTo, mbCityFilter],
     queryFn: async () => {
-      const params = platformFilter && platformFilter !== 'all' ? `?platform=${encodeURIComponent(platformFilter)}` : '';
-      const res = await fetch(`/api/media-buyer/stats${params}`, { credentials: 'include' });
+      const params = new URLSearchParams();
+      if (platformFilter && platformFilter !== 'all') params.set('platform', platformFilter);
+      if (mbDateFrom) params.set('dateFrom', mbDateFrom);
+      if (mbDateTo) params.set('dateTo', mbDateTo);
+      if (mbCityFilter && mbCityFilter !== 'all') params.set('city', mbCityFilter);
+      const qs = params.toString();
+      const url = `/api/media-buyer/stats${qs ? `?${qs}` : ''}`;
+      const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch');
       return res.json();
     },
@@ -207,6 +216,7 @@ export default function Dashboard() {
   if (isMediaBuyer) {
     const PLATFORMS = ['Facebook-Ads', 'TikTok-Ads', 'Google-Ads', 'Snapchat-Ads'];
     const allPlatforms = [...new Set([...PLATFORMS, ...(mediaBuyerStats?.platforms || [])])];
+    const allCities = [...new Set((mediaBuyerStats?.cities || []).map((c: any) => c.name))];
 
     const generatedLink = (() => {
       if (!linkBaseUrl) return '';
@@ -216,10 +226,10 @@ export default function Dashboard() {
       const src = effectivePlatform
         ? `${user?.buyerCode || ''}*${effectivePlatform}`
         : (user?.buyerCode || '');
-      const params = new URLSearchParams();
-      params.set('utm_source', src);
-      if (linkCampaign.trim()) params.set('utm_campaign', linkCampaign.trim());
-      return `${baseUrl}?${params.toString()}`;
+      const p = new URLSearchParams();
+      p.set('utm_source', src);
+      if (linkCampaign.trim()) p.set('utm_campaign', linkCampaign.trim());
+      return `${baseUrl}?${p.toString()}`;
     })();
 
     const copyLink = () => {
@@ -229,86 +239,250 @@ export default function Dashboard() {
       setTimeout(() => setCopiedLink(false), 2000);
     };
 
+    const mb = mediaBuyerStats;
+    const inProgressCount = mb?.inProgress ?? 0;
+    const inProgressPct = mb && mb.total > 0 ? Math.round((inProgressCount / mb.total) * 100) : 0;
+
     return (
-      <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-        <div className="flex items-start justify-between flex-wrap gap-3">
+      <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
+
+        {/* Header */}
+        <div className="flex items-start justify-between flex-wrap gap-2">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Mon Espace Media Buyer</h1>
-            <p className="text-muted-foreground text-sm mt-1">
+            <h1 className="text-xl sm:text-2xl font-display font-bold uppercase tracking-tight" data-testid="text-dashboard-title">STATISTICS</h1>
+            <p className="text-muted-foreground text-xs mt-0.5">
               Bonjour <span className="font-semibold">{user?.username}</span> — Code: <span className="font-mono font-bold text-violet-600">{user?.buyerCode || '—'}</span>
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <Monitor className="w-4 h-4 text-muted-foreground" />
-            <Select value={platformFilter} onValueChange={setPlatformFilter}>
-              <SelectTrigger className="h-9 text-xs w-44 rounded-xl" data-testid="select-platform-filter">
-                <SelectValue placeholder="Toutes les plateformes" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Toutes les plateformes</SelectItem>
-                {allPlatforms.map(p => (
-                  <SelectItem key={p} value={p}>{p}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        </div>
+
+        {/* Filter bar */}
+        <div className="flex flex-wrap gap-2 items-center p-3 bg-muted/30 rounded-xl border border-border/50">
+          <Select value={platformFilter} onValueChange={setPlatformFilter}>
+            <SelectTrigger className="h-8 text-xs w-40" data-testid="select-platform-filter">
+              <SelectValue placeholder="Toutes les Sources" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Toutes les Sources</SelectItem>
+              {allPlatforms.map(p => (
+                <SelectItem key={p} value={p}>{p}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={mbCityFilter} onValueChange={setMbCityFilter}>
+            <SelectTrigger className="h-8 text-xs w-36" data-testid="select-mb-city">
+              <SelectValue placeholder="Toutes les Villes" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Toutes les Villes</SelectItem>
+              {allCities.map(c => (
+                <SelectItem key={c} value={c}>{c}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="flex items-center gap-1.5">
+            <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
+            <input
+              type="date"
+              value={mbDateFrom}
+              onChange={e => setMbDateFrom(e.target.value)}
+              className="h-8 px-2 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              data-testid="input-mb-date-from"
+            />
+            <span className="text-muted-foreground text-xs">→</span>
+            <input
+              type="date"
+              value={mbDateTo}
+              onChange={e => setMbDateTo(e.target.value)}
+              className="h-8 px-2 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              data-testid="input-mb-date-to"
+            />
+          </div>
+          {(platformFilter !== 'all' || mbCityFilter !== 'all' || mbDateFrom || mbDateTo) && (
+            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => { setPlatformFilter('all'); setMbCityFilter('all'); setMbDateFrom(''); setMbDateTo(''); }} data-testid="button-mb-reset-filters">
+              Réinitialiser
+            </Button>
+          )}
+        </div>
+
+        {/* 6 Stats Cards — row 1 */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#22c55e' }} data-testid="card-mb-total">
+            <div>
+              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Commandes Totales</p>
+              <p className="text-4xl font-extrabold mt-1 leading-none">{mb?.total ?? '—'}</p>
+            </div>
+            <ShoppingCart className="w-12 h-12 opacity-30" />
+          </div>
+          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#0ea5e9' }} data-testid="card-mb-confirmed">
+            <div>
+              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Confirmées</p>
+              <p className="text-4xl font-extrabold mt-1 leading-none">{mb?.confirmed ?? '—'}</p>
+            </div>
+            <CheckCircle className="w-12 h-12 opacity-30" />
+          </div>
+          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#0ea5e9' }} data-testid="card-mb-confirm-rate">
+            <div>
+              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Taux de Confirmation</p>
+              <p className="text-4xl font-extrabold mt-1 leading-none">{mb ? `${mb.confirmRate}%` : '—'}</p>
+            </div>
+            <TrendingUp className="w-12 h-12 opacity-30" />
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-total">
+        {/* 6 Stats Cards — row 2 */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#a3a320' }} data-testid="card-mb-inprogress">
+            <div>
+              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">En Cours de livraison</p>
+              <p className="text-4xl font-extrabold mt-1 leading-none">{inProgressCount} <span className="text-lg font-bold">({inProgressPct}%)</span></p>
+            </div>
+            <Truck className="w-12 h-12 opacity-30" />
+          </div>
+          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#f97316' }} data-testid="card-mb-delivered">
+            <div>
+              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Livrées</p>
+              <p className="text-4xl font-extrabold mt-1 leading-none">{mb?.delivered ?? '—'}</p>
+            </div>
+            <Package className="w-12 h-12 opacity-30" />
+          </div>
+          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#f97316' }} data-testid="card-mb-delivery-rate">
+            <div>
+              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Taux de Livraison</p>
+              <p className="text-4xl font-extrabold mt-1 leading-none">{mb ? `${mb.deliveryRate}%` : '—'}</p>
+            </div>
+            <CheckCircle className="w-12 h-12 opacity-30" />
+          </div>
+        </div>
+
+        {/* Line Chart */}
+        {(mb?.daily?.length ?? 0) > 0 && (
+          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-chart">
             <CardContent className="p-4">
-              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Total Leads</p>
-              <p className="text-3xl font-bold mt-1">{mediaBuyerStats?.total ?? '—'}</p>
-              {platformFilter !== 'all' && <p className="text-[10px] text-violet-500 mt-0.5">Filtré: {platformFilter}</p>}
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={mb!.daily} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <RechartsTooltip contentStyle={{ fontSize: 12 }} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Line type="monotone" dataKey="total" name="Commandes" stroke="#22c55e" strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="confirmed" name="Confirmées" stroke="#0ea5e9" strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="delivered" name="Livrées" stroke="#f97316" strokeWidth={2} dot={{ r: 3 }} />
+                </LineChart>
+              </ResponsiveContainer>
             </CardContent>
           </Card>
-          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-confirmed">
-            <CardContent className="p-4">
-              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Taux Confirmé</p>
-              <p className="text-3xl font-bold mt-1 text-green-600">{mediaBuyerStats ? `${mediaBuyerStats.confirmRate}%` : '—'}</p>
-              <p className="text-xs text-muted-foreground">{mediaBuyerStats?.confirmed ?? 0} confirmés</p>
+        )}
+
+        {/* Tables: Products + Cities */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* PRODUITS COMMANDÉS */}
+          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-products">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-bold uppercase tracking-wider">Produits Commandés</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/30">
+                      <TableHead className="text-[11px] font-bold uppercase">Produit</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">Total</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">Confirmé</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">% Conf</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">En Cours</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">Livrées</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">% Livr</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(mb?.products?.length ?? 0) === 0 ? (
+                      <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground text-xs py-6">Aucune donnée</TableCell></TableRow>
+                    ) : (mb?.products || []).map((p: any, i: number) => (
+                      <TableRow key={i} className="text-xs">
+                        <TableCell className="font-medium max-w-[120px] truncate">{p.name}</TableCell>
+                        <TableCell className="text-center font-bold">{p.total}</TableCell>
+                        <TableCell className="text-center text-sky-600 font-semibold">{p.confirmed}</TableCell>
+                        <TableCell className="text-center">
+                          <span className={`font-bold ${p.confirmRate >= 60 ? 'text-green-600' : p.confirmRate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{p.confirmRate}%</span>
+                        </TableCell>
+                        <TableCell className="text-center text-amber-600 font-semibold">{p.inProgress}</TableCell>
+                        <TableCell className="text-center text-orange-600 font-semibold">{p.delivered}</TableCell>
+                        <TableCell className="text-center">
+                          <span className={`font-bold ${p.deliveryRate >= 50 ? 'text-green-600' : p.deliveryRate >= 30 ? 'text-amber-600' : 'text-red-500'}`}>{p.deliveryRate}%</span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
-          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-delivered">
-            <CardContent className="p-4">
-              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Livrés</p>
-              <p className="text-3xl font-bold mt-1 text-blue-600">{mediaBuyerStats?.delivered ?? '—'}</p>
-            </CardContent>
-          </Card>
-          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-revenue">
-            <CardContent className="p-4">
-              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Revenue Généré</p>
-              <p className="text-2xl font-bold mt-1 text-emerald-600">{mediaBuyerStats ? formatCurrency(mediaBuyerStats.revenue) : '—'}</p>
+
+          {/* COMMANDES PAR VILLE */}
+          <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-mb-cities">
+            <CardHeader className="pb-2 pt-4 px-4">
+              <CardTitle className="text-sm font-bold uppercase tracking-wider">Commandes par Ville</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/30">
+                      <TableHead className="text-[11px] font-bold uppercase">Ville</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">Total</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">Confirmées</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">% Conf</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">Livrées</TableHead>
+                      <TableHead className="text-[11px] font-bold uppercase text-center">% Livr</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(mb?.cities?.length ?? 0) === 0 ? (
+                      <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground text-xs py-6">Aucune donnée</TableCell></TableRow>
+                    ) : (mb?.cities || []).map((c: any, i: number) => (
+                      <TableRow key={i} className="text-xs">
+                        <TableCell className="font-medium">{c.name}</TableCell>
+                        <TableCell className="text-center font-bold">{c.total}</TableCell>
+                        <TableCell className="text-center text-sky-600 font-semibold">{c.confirmed}</TableCell>
+                        <TableCell className="text-center">
+                          <span className={`font-bold ${c.confirmRate >= 60 ? 'text-green-600' : c.confirmRate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{c.confirmRate}%</span>
+                        </TableCell>
+                        <TableCell className="text-center text-orange-600 font-semibold">{c.delivered}</TableCell>
+                        <TableCell className="text-center">
+                          <span className={`font-bold ${c.deliveryRate >= 50 ? 'text-green-600' : c.deliveryRate >= 30 ? 'text-amber-600' : 'text-red-500'}`}>{c.deliveryRate}%</span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
         </div>
 
+        {/* UTM Pro Link Generator */}
         <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-link-builder">
-          <CardContent className="p-6">
-            <div className="flex items-center gap-2 mb-5">
+          <CardContent className="p-5">
+            <div className="flex items-center gap-2 mb-4">
               <div className="w-8 h-8 rounded-lg bg-violet-100 flex items-center justify-center">
                 <Link2 className="w-4 h-4 text-violet-600" />
               </div>
               <div>
-                <h2 className="text-base font-bold">Générateur de Lien UTM Pro</h2>
-                <p className="text-xs text-muted-foreground">Lien deep-tracking avec <code className="bg-muted px-1 rounded text-[11px]">CODE*PLATEFORME</code></p>
+                <h2 className="text-sm font-bold">Générateur de Lien UTM Pro</h2>
+                <p className="text-xs text-muted-foreground">Lien deep-tracking <code className="bg-muted px-1 rounded text-[10px]">CODE*PLATEFORME</code></p>
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="md:col-span-3 space-y-1">
                 <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Étape 1 — URL de la page</label>
-                <Input
-                  data-testid="input-link-base-url"
-                  placeholder="ex: monsite.com/produit ou https://anakio.com/chaussures"
-                  value={linkBaseUrl}
-                  onChange={e => setLinkBaseUrl(e.target.value)}
-                  className="h-10 text-sm"
-                />
+                <Input data-testid="input-link-base-url" placeholder="ex: monsite.com/produit" value={linkBaseUrl} onChange={e => setLinkBaseUrl(e.target.value)} className="h-9 text-sm" />
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Étape 2 — Plateforme</label>
                 <Select value={linkPlatform} onValueChange={setLinkPlatform}>
-                  <SelectTrigger className="h-10 text-sm" data-testid="select-link-platform">
+                  <SelectTrigger className="h-9 text-sm" data-testid="select-link-platform">
                     <SelectValue placeholder="Choisir la plateforme" />
                   </SelectTrigger>
                   <SelectContent>
@@ -322,34 +496,22 @@ export default function Dashboard() {
               </div>
               <div className="md:col-span-2 space-y-1">
                 <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Étape 3 — Nom de la campagne</label>
-                <Input
-                  data-testid="input-link-campaign"
-                  placeholder="ex: mocasan-promo, ramadan-2025"
-                  value={linkCampaign}
-                  onChange={e => setLinkCampaign(e.target.value)}
-                  className="h-10 text-sm"
-                />
+                <Input data-testid="input-link-campaign" placeholder="ex: mocasan-promo, ramadan-2025" value={linkCampaign} onChange={e => setLinkCampaign(e.target.value)} className="h-9 text-sm" />
               </div>
             </div>
             {generatedLink && (
-              <div className="mt-4 p-4 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-xl">
-                <div className="flex items-center justify-between mb-2">
+              <div className="mt-3 p-3 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-xl">
+                <div className="flex items-center justify-between mb-1.5">
                   <p className="text-xs font-bold text-violet-700">Lien généré :</p>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs border-violet-300 text-violet-600 hover:bg-violet-100 gap-1.5"
-                    onClick={copyLink}
-                    data-testid="button-copy-link"
-                  >
+                  <Button size="sm" variant="outline" className="h-7 text-xs border-violet-300 text-violet-600 hover:bg-violet-100 gap-1.5" onClick={copyLink} data-testid="button-copy-link">
                     {copiedLink ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copié !</> : <><Link2 className="w-3.5 h-3.5" /> Copier</>}
                   </Button>
                 </div>
-                <code className="text-sm text-violet-800 dark:text-violet-300 font-mono break-all block">{generatedLink}</code>
+                <code className="text-xs text-violet-800 dark:text-violet-300 font-mono break-all block">{generatedLink}</code>
                 {linkPlatform && linkPlatform !== 'none' && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[11px]">utm_source: {user?.buyerCode}*{linkPlatform}</Badge>
-                    {linkCampaign && <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[11px]">utm_campaign: {linkCampaign}</Badge>}
+                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                    <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[10px]">utm_source: {user?.buyerCode}*{linkPlatform}</Badge>
+                    {linkCampaign && <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px]">utm_campaign: {linkCampaign}</Badge>}
                   </div>
                 )}
               </div>

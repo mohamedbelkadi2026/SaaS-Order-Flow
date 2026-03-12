@@ -73,11 +73,11 @@ function extractUtmParams(payload: any): { utmSource: string | null; utmCampaign
     }
   }
   const { buyerCode, trafficPlatform } = splitUtmSource(rawSource);
-  return { utmSource: buyerCode, utmCampaign: rawCampaign, trafficPlatform };
+  return { utmSource: rawSource, buyerCode, utmCampaign: rawCampaign, trafficPlatform };
 }
 
 function parseWebhookOrder(provider: string, payload: any) {
-  const { utmSource, utmCampaign, trafficPlatform } = extractUtmParams(payload);
+  const { utmSource, buyerCode, utmCampaign, trafficPlatform } = extractUtmParams(payload);
 
   if (provider === 'shopify') {
     const customerName = payload.customer
@@ -100,7 +100,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign, trafficPlatform };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, buyerCode, utmCampaign, trafficPlatform };
   }
 
   if (provider === 'youcan') {
@@ -117,7 +117,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign, trafficPlatform };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, buyerCode, utmCampaign, trafficPlatform };
   }
 
   if (provider === 'woocommerce') {
@@ -136,7 +136,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.customer_note || null, utmSource, utmCampaign, trafficPlatform };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.customer_note || null, utmSource, buyerCode, utmCampaign, trafficPlatform };
   }
 
   throw new Error(`Unknown provider: ${provider}`);
@@ -916,7 +916,7 @@ export async function registerRoutes(
       const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
-      const mediaBuyer = parsed.utmSource ? await storage.getMediaBuyerByCode(storeId, parsed.utmSource) : null;
+      const mediaBuyer = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
 
       const order = await storage.createOrder({
         storeId,
@@ -1009,7 +1009,7 @@ export async function registerRoutes(
       const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
-      const mediaBuyerToken = parsed.utmSource ? await storage.getMediaBuyerByCode(storeId, parsed.utmSource) : null;
+      const mediaBuyerToken = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
 
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
@@ -1130,7 +1130,7 @@ export async function registerRoutes(
         }
       }
 
-      const mediaBuyerShopify = parsed.utmSource ? await storage.getMediaBuyerByCode(storeId, parsed.utmSource) : null;
+      const mediaBuyerShopify = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
 
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
@@ -1653,7 +1653,10 @@ export async function registerRoutes(
     const storeId = user.storeId!;
     if (user.role !== 'media_buyer') return res.status(403).json({ message: "Accès réservé aux Media Buyers" });
     const platform = req.query.platform as string | undefined;
-    const stats = await storage.getMediaBuyerStats(storeId, user.id, platform);
+    const dateFrom = req.query.dateFrom as string | undefined;
+    const dateTo = req.query.dateTo as string | undefined;
+    const city = req.query.city as string | undefined;
+    const stats = await storage.getMediaBuyerStats(storeId, user.id, platform, dateFrom, dateTo, city);
     res.json(stats);
   });
 

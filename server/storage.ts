@@ -648,20 +648,99 @@ export class DatabaseStorage implements IStorage {
     return buyer;
   }
 
-  async getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string): Promise<any> {
+  async getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string, dateFrom?: string, dateTo?: string, city?: string): Promise<any> {
     let allOrders = await db.select().from(orders)
       .where(and(eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)));
     if (platform && platform !== 'all') {
       allOrders = allOrders.filter(o => (o as any).trafficPlatform === platform);
     }
+    if (dateFrom) {
+      const from = new Date(dateFrom);
+      allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
+    }
+    if (dateTo) {
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
+    }
+    if (city && city !== 'all') {
+      allOrders = allOrders.filter(o => (o.customerCity || '').toLowerCase() === city.toLowerCase());
+    }
     const total = allOrders.length;
     const confirmed = allOrders.filter(o => ['confirmé', 'en cours', 'livré'].includes(o.status)).length;
+    const inProgress = allOrders.filter(o => o.status === 'en cours').length;
     const delivered = allOrders.filter(o => o.status === 'livré').length;
     const cancelled = allOrders.filter(o => ['annulé', 'refusé'].includes(o.status)).length;
     const revenue = allOrders.filter(o => o.status === 'livré').reduce((s, o) => s + o.totalPrice, 0);
     const confirmRate = total > 0 ? Math.round((confirmed / total) * 100) : 0;
+    const deliveryRate = total > 0 ? Math.round((delivered / total) * 100) : 0;
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
-    return { total, confirmed, delivered, cancelled, revenue, confirmRate, platforms };
+
+    const dailyMap: Record<string, { total: number; confirmed: number; delivered: number }> = {};
+    for (const o of allOrders) {
+      if (!o.createdAt) continue;
+      const d = new Date(o.createdAt);
+      const day = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+      if (!dailyMap[day]) dailyMap[day] = { total: 0, confirmed: 0, delivered: 0 };
+      dailyMap[day].total++;
+      if (['confirmé', 'en cours', 'livré'].includes(o.status)) dailyMap[day].confirmed++;
+      if (o.status === 'livré') dailyMap[day].delivered++;
+    }
+    const daily = Object.entries(dailyMap)
+      .sort(([a], [b]) => {
+        const [da, ma, ya] = a.split('/').map(Number);
+        const [db2, mb, yb] = b.split('/').map(Number);
+        return new Date(ya, ma-1, da).getTime() - new Date(yb, mb-1, db2).getTime();
+      })
+      .map(([date, d]) => ({ date, ...d }));
+
+    const cityMap: Record<string, { total: number; confirmed: number; delivered: number }> = {};
+    for (const o of allOrders) {
+      const c = o.customerCity || 'Inconnue';
+      if (!cityMap[c]) cityMap[c] = { total: 0, confirmed: 0, delivered: 0 };
+      cityMap[c].total++;
+      if (['confirmé', 'en cours', 'livré'].includes(o.status)) cityMap[c].confirmed++;
+      if (o.status === 'livré') cityMap[c].delivered++;
+    }
+    const cities = Object.entries(cityMap)
+      .map(([name, d]) => ({
+        name,
+        ...d,
+        confirmRate: d.total > 0 ? Math.round((d.confirmed / d.total) * 100) : 0,
+        deliveryRate: d.total > 0 ? Math.round((d.delivered / d.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    const orderIds = allOrders.map(o => o.id);
+    let products: any[] = [];
+    if (orderIds.length > 0) {
+      const items = await db.select({
+        orderId: orderItems.orderId,
+        rawProductName: orderItems.rawProductName,
+        orderStatus: orders.status,
+      }).from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(inArray(orderItems.orderId, orderIds));
+      const productMap: Record<string, { total: number; confirmed: number; inProgress: number; delivered: number }> = {};
+      for (const item of items) {
+        const name = item.rawProductName || 'Inconnu';
+        if (!productMap[name]) productMap[name] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
+        productMap[name].total++;
+        if (['confirmé', 'en cours', 'livré'].includes(item.orderStatus)) productMap[name].confirmed++;
+        if (item.orderStatus === 'en cours') productMap[name].inProgress++;
+        if (item.orderStatus === 'livré') productMap[name].delivered++;
+      }
+      products = Object.entries(productMap)
+        .map(([name, d]) => ({
+          name,
+          ...d,
+          confirmRate: d.total > 0 ? Math.round((d.confirmed / d.total) * 100) : 0,
+          deliveryRate: d.total > 0 ? Math.round((d.delivered / d.total) * 100) : 0,
+        }))
+        .sort((a, b) => b.total - a.total);
+    }
+
+    return { total, confirmed, inProgress, delivered, cancelled, revenue, confirmRate, deliveryRate, platforms, daily, products, cities };
   }
 
   async getMediaBuyersSummary(storeId: number): Promise<any[]> {
