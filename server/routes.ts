@@ -32,7 +32,37 @@ function formatWhatsAppMessage(order: any, template: string): { message: string;
   return { message, link };
 }
 
+function extractUtmParams(payload: any): { utmSource: string | null; utmCampaign: string | null } {
+  const noteAttributes = payload.note_attributes || payload.note_attribute || [];
+  if (Array.isArray(noteAttributes) && noteAttributes.length > 0) {
+    const src = noteAttributes.find((a: any) => a.name === 'utm_source')?.value || null;
+    const cmp = noteAttributes.find((a: any) => a.name === 'utm_campaign')?.value || null;
+    if (src || cmp) return { utmSource: src, utmCampaign: cmp };
+  }
+  const metaData = payload.meta_data || [];
+  if (Array.isArray(metaData) && metaData.length > 0) {
+    const srcMeta = metaData.find((m: any) => m.key === '_utm_source' || m.key === 'utm_source');
+    const cmpMeta = metaData.find((m: any) => m.key === '_utm_campaign' || m.key === 'utm_campaign');
+    if (srcMeta || cmpMeta) return { utmSource: srcMeta?.value || null, utmCampaign: cmpMeta?.value || null };
+  }
+  if (payload.utm_source || payload.utm_campaign) {
+    return { utmSource: payload.utm_source || null, utmCampaign: payload.utm_campaign || null };
+  }
+  const landingSite = payload.landing_site || payload.landing_site_ref || '';
+  if (landingSite) {
+    try {
+      const url = new URL(landingSite.startsWith('http') ? landingSite : `https://x.com${landingSite}`);
+      const src = url.searchParams.get('utm_source');
+      const cmp = url.searchParams.get('utm_campaign');
+      if (src || cmp) return { utmSource: src, utmCampaign: cmp };
+    } catch {}
+  }
+  return { utmSource: null, utmCampaign: null };
+}
+
 function parseWebhookOrder(provider: string, payload: any) {
+  const { utmSource, utmCampaign } = extractUtmParams(payload);
+
   if (provider === 'shopify') {
     const customerName = payload.customer
       ? `${payload.customer.first_name || ''} ${payload.customer.last_name || ''}`.trim()
@@ -54,7 +84,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign };
   }
 
   if (provider === 'youcan') {
@@ -71,7 +101,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.note || null, utmSource, utmCampaign };
   }
 
   if (provider === 'woocommerce') {
@@ -90,7 +120,7 @@ function parseWebhookOrder(provider: string, payload: any) {
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
-    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.customer_note || null };
+    return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.customer_note || null, utmSource, utmCampaign };
   }
 
   throw new Error(`Unknown provider: ${provider}`);
@@ -184,11 +214,15 @@ export async function registerRoutes(
     const cities = [...new Set(allOrders.map(o => o.customerCity).filter(Boolean))].sort();
     const sources = [...new Set(allOrders.map(o => o.source).filter(Boolean))].sort();
     const shippingProviders = [...new Set(allOrders.map(o => o.shippingProvider).filter(Boolean))].sort();
+    const utmSources = [...new Set(allOrders.map(o => (o as any).utmSource).filter(Boolean))].sort();
+    const utmCampaigns = [...new Set(allOrders.map(o => (o as any).utmCampaign).filter(Boolean))].sort();
 
     res.json({
       cities,
       sources,
       shippingProviders,
+      utmSources,
+      utmCampaigns,
       products: storeProducts.map(p => ({ id: p.id, name: p.name })),
       agents: storeAgents.map(a => ({ id: a.id, username: a.username })),
     });
@@ -198,7 +232,7 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     const currentUser = req.user!;
     const isAgent = currentUser.role === 'agent';
-    const { city, productId, source, dateFrom, dateTo, shippingProvider } = req.query as Record<string, string>;
+    const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign } = req.query as Record<string, string>;
     let { agentId } = req.query as Record<string, string>;
 
     let agentPermissions: Record<string, boolean> = {};
@@ -226,6 +260,12 @@ export async function registerRoutes(
     }
     if (shippingProvider && shippingProvider !== 'all') {
       allOrders = allOrders.filter(o => o.shippingProvider === shippingProvider);
+    }
+    if (utmSource && utmSource !== 'all') {
+      allOrders = allOrders.filter(o => (o as any).utmSource === utmSource);
+    }
+    if (utmCampaign && utmCampaign !== 'all') {
+      allOrders = allOrders.filter(o => (o as any).utmCampaign === utmCampaign);
     }
     if (dateFrom) {
       const from = new Date(dateFrom);
@@ -869,6 +909,8 @@ export async function registerRoutes(
         rawProductName,
         variantDetails,
         rawQuantity,
+        utmSource: parsed.utmSource || null,
+        utmCampaign: parsed.utmCampaign || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
       const firstProductId = orderItemsToCreate.find(i => i.productId)?.productId ?? undefined;
@@ -945,6 +987,7 @@ export async function registerRoutes(
         customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: provider, comment: parsed.comment,
         rawProductName, variantDetails, rawQuantity,
+        utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
@@ -1060,7 +1103,8 @@ export async function registerRoutes(
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
         customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: 'shopify', comment: parsed.comment,
-      }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+        utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
+      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       res.json({ success: true, orderId: order.id });
     } catch (err) {

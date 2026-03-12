@@ -52,6 +52,8 @@ export default function Dashboard() {
     agentId: 'all',
     source: 'all',
     shippingProvider: 'all',
+    utmSource: 'all',
+    utmCampaign: 'all',
     datePreset: 'all',
     dateFrom: '',
     dateTo: '',
@@ -64,6 +66,8 @@ export default function Dashboard() {
     if (filters.agentId !== 'all') f.agentId = filters.agentId;
     if (filters.source !== 'all') f.source = filters.source;
     if (filters.shippingProvider !== 'all') f.shippingProvider = filters.shippingProvider;
+    if (filters.utmSource !== 'all') f.utmSource = filters.utmSource;
+    if (filters.utmCampaign !== 'all') f.utmCampaign = filters.utmCampaign;
     if (filters.dateFrom) f.dateFrom = filters.dateFrom;
     if (filters.dateTo) f.dateTo = filters.dateTo;
     return f;
@@ -114,7 +118,8 @@ export default function Dashboard() {
   const resetFilters = () => {
     setFilters({
       city: 'all', productId: 'all', agentId: 'all', source: 'all',
-      shippingProvider: 'all', datePreset: 'all', dateFrom: '', dateTo: '',
+      shippingProvider: 'all', utmSource: 'all', utmCampaign: 'all',
+      datePreset: 'all', dateFrom: '', dateTo: '',
     });
   };
 
@@ -263,6 +268,30 @@ export default function Dashboard() {
                 <SelectItem value="all">Toutes les Sources</SelectItem>
                 {filterOptions?.sources?.map((s: string) => (
                   <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={filters.utmSource} onValueChange={(v) => updateFilter('utmSource', v)}>
+              <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-source">
+                <SelectValue placeholder="UTM Source" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tous les UTM Source</SelectItem>
+                {filterOptions?.utmSources?.map((s: string) => (
+                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={filters.utmCampaign} onValueChange={(v) => updateFilter('utmCampaign', v)}>
+              <SelectTrigger className="w-full md:w-auto md:min-w-[150px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-campaign">
+                <SelectValue placeholder="UTM Campaign" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Toutes les Campagnes</SelectItem>
+                {filterOptions?.utmCampaigns?.map((c: string) => (
+                  <SelectItem key={c} value={c}>{c}</SelectItem>
                 ))}
               </SelectContent>
             </Select>

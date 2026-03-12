@@ -90,6 +90,8 @@ export const orders = pgTable("orders", {
   canOpen: integer("can_open").default(1),
   replace: integer("replace").default(0),
   source: text("source").default("manual"),
+  utmSource: text("utm_source"),
+  utmCampaign: text("utm_campaign"),
   rawProductName: text("raw_product_name"),
   variantDetails: text("variant_details"),
   rawQuantity: integer("raw_quantity"),
