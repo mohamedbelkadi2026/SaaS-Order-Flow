@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions } from "@/hooks/use-store-data";
+import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
@@ -163,6 +164,8 @@ export default function Orders() {
   const urlStatus = STATUS_MAP[filterKey] || (filterKey ? filterKey : "nouveau");
   const { data: storeData } = useStore();
   const whatsappLink = (phone: string, order: any) => buildWhatsappLink(phone, order, storeData?.whatsappTemplate);
+  const { user } = useAuth();
+  const isMediaBuyer = user?.role === 'media_buyer';
 
   const [filters, setFilters] = useState({
     status: urlStatus,
@@ -181,7 +184,8 @@ export default function Orders() {
   const actualFilters = useMemo(() => ({
     ...filters,
     status: urlStatus,
-  }), [filters, urlStatus]);
+    ...(isMediaBuyer && user?.buyerCode ? { utmSource: user.buyerCode } : {}),
+  }), [filters, urlStatus, isMediaBuyer, user?.buyerCode]);
 
   const { data, isLoading } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();
@@ -494,28 +498,37 @@ export default function Orders() {
               <SelectItem value="woocommerce">WooCommerce</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={filters.utmSource || 'all'} onValueChange={(v) => updateFilter('utmSource', v === 'all' ? '' : v)}>
-            <SelectTrigger className="w-full md:w-auto md:min-w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-source">
-              <SelectValue placeholder="UTM Source" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">UTM Source</SelectItem>
-              {filterOptions?.utmSources?.map((s: string) => (
-                <SelectItem key={s} value={s}>{s}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={filters.utmCampaign || 'all'} onValueChange={(v) => updateFilter('utmCampaign', v === 'all' ? '' : v)}>
-            <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-campaign">
-              <SelectValue placeholder="UTM Campagne" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">UTM Campagne</SelectItem>
-              {filterOptions?.utmCampaigns?.map((c: string) => (
-                <SelectItem key={c} value={c}>{c}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {isMediaBuyer ? (
+            <div className="flex items-center gap-1.5 px-2 py-1 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 rounded-lg h-8">
+              <span className="text-[11px] text-violet-600 font-medium">Filtré par code:</span>
+              <Badge className="bg-violet-100 text-violet-700 border-violet-200 font-mono text-[11px] h-5">{user?.buyerCode}</Badge>
+            </div>
+          ) : (
+            <>
+              <Select value={filters.utmSource || 'all'} onValueChange={(v) => updateFilter('utmSource', v === 'all' ? '' : v)}>
+                <SelectTrigger className="w-full md:w-auto md:min-w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-source">
+                  <SelectValue placeholder="UTM Source" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">UTM Source</SelectItem>
+                  {filterOptions?.utmSources?.map((s: string) => (
+                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={filters.utmCampaign || 'all'} onValueChange={(v) => updateFilter('utmCampaign', v === 'all' ? '' : v)}>
+                <SelectTrigger className="w-full md:w-auto md:min-w-[140px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-utm-campaign">
+                  <SelectValue placeholder="UTM Campagne" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">UTM Campagne</SelectItem>
+                  {filterOptions?.utmCampaigns?.map((c: string) => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </>
+          )}
           <Input type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-from" />
           <Input type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} className="w-full md:w-[130px] h-8 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-to" />
         </div>

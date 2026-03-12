@@ -29,6 +29,7 @@ import IntegrationLogs from "@/pages/integration-logs";
 import Invoices from "@/pages/invoices";
 import Magasins from "@/pages/magasins";
 import AllOrders from "@/pages/all-orders";
+import MediaBuyersPage from "@/pages/media-buyers";
 
 const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
@@ -42,6 +43,7 @@ const MEDIA_BUYER_BLOCKED_PATHS = [
   "/invoices", "/billing", "/profitability",
   "/integrations", "/integrations/shipping", "/integrations/logs",
   "/orders/all", "/admin", "/orders/add", "/orders/import", "/orders/new",
+  "/media-buyers",
 ];
 
 function AgentGuard({ children }: { children: React.ReactNode }) {
@@ -102,6 +104,7 @@ function ProtectedRoutes() {
             <Route path="/integrations/shipping" component={ShippingIntegrations} />
             <Route path="/integrations/logs" component={IntegrationLogs} />
             <Route path="/admin" component={Admin} />
+            <Route path="/media-buyers" component={MediaBuyersPage} />
             <Route component={NotFound} />
           </Switch>
         </AgentGuard>

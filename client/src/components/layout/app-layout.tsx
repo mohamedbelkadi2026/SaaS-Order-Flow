@@ -23,7 +23,8 @@ import {
   Shield,
   PlusCircle,
   Contact,
-  ListOrdered
+  ListOrdered,
+  Target
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -43,10 +44,16 @@ const ADMIN_NAV = [
   { name: "Magasins", href: "/magasins", icon: Store },
   { name: "Liste Clients", href: "/clients", icon: Contact },
   { name: "Gestion de l'\u00c9quipe", href: "/team", icon: Users },
+  { name: "Gestion Media Buyers", href: "/media-buyers", icon: Target },
   { name: "Factures", href: "/invoices", icon: FileText },
   { name: "Facturation", href: "/billing", icon: CreditCard },
   { name: "Rentabilit\u00e9", href: "/profitability", icon: Calculator },
   { name: "Int\u00e9gration", href: "/integrations", icon: Plug, hasSubmenu: true },
+];
+
+const MEDIA_BUYER_NAV = [
+  { name: "Dashboard", href: "/", icon: LayoutDashboard },
+  { name: "Mes Commandes", href: "/orders", icon: ShoppingCart, hasSubmenu: true },
 ];
 
 const ORDER_SUB_ITEMS = [
@@ -84,6 +91,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, [isDark]);
 
   const isAgent = user?.role === 'agent';
+  const isMediaBuyer = user?.role === 'media_buyer';
   const agentPerms = (user?.dashboardPermissions || {}) as Record<string, boolean>;
 
   const { data: agentSettingsData } = useQuery<any[]>({
@@ -100,13 +108,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add'];
 
   const navItems = useMemo(() => {
+    if (isMediaBuyer) return MEDIA_BUYER_NAV;
     if (!isAgent) return baseNav;
     return baseNav.filter((item) => {
       if (!AGENT_ALLOWED_HREFS.includes(item.href)) return false;
       if (agentSpecialty === 'suivi' && item.name === 'Nouvelle commande') return false;
       return true;
     });
-  }, [isAgent, baseNav, agentSpecialty]);
+  }, [isMediaBuyer, isAgent, baseNav, agentSpecialty]);
 
   const visibleOrderSubItems = useMemo(() => {
     if (!isAgent || agentSpecialty === 'both') return ORDER_SUB_ITEMS;
@@ -283,7 +292,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               </Avatar>
               <div className="hidden sm:block">
                 <p className="text-sm font-semibold leading-none" data-testid="text-username">{user?.username || 'User'}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">{user?.role === 'owner' ? 'Admin' : 'Agent'}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{user?.role === 'owner' ? 'Admin' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}</p>
               </div>
               <ChevronDown className="w-4 h-4 text-muted-foreground hidden sm:block" />
             </div>
