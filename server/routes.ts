@@ -405,29 +405,32 @@ export async function registerRoutes(
 
     let adSpendTotal = 0;
     const productAdCostMap: Record<number, number> = {};
+    const activeProductId = (productId && productId !== 'all') ? Number(productId) : null;
     // Legacy adSpendTracking
     const adSpendEntries = await storage.getAdSpend(storeId);
     adSpendEntries.forEach((e: any) => {
-      if (productId && productId !== 'all') {
-        if (e.productId !== Number(productId) && e.productId !== null) return;
+      // Product isolation: when a product is selected, ONLY include spend tagged for that product.
+      // Untagged (null) entries are global marketing costs — excluded from single-product view.
+      if (activeProductId !== null) {
+        if (e.productId !== activeProductId) return;
       }
       if (adSourceFilter && e.source && e.source !== adSourceFilter) return;
       if (dateFrom && e.date < dateFrom) return;
       if (dateTo && e.date > dateTo) return;
-      adSpendTotal += e.amount;
-      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + e.amount;
+      adSpendTotal += Number(e.amount);
+      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + Number(e.amount);
     });
     // New adSpend table (Publicités module) — all users for global stats
     const newAdSpendEntries = await storage.getAdSpendEntries(storeId, {
       source: adSourceFilter || undefined,
       dateFrom: dateFrom ? dateFrom.substring(0, 10) : undefined,
       dateTo: dateTo ? dateTo.substring(0, 10) : undefined,
-      productId: (productId && productId !== 'all') ? Number(productId) : undefined,
+      productId: activeProductId ?? undefined,
       allUsers: true,
     });
     newAdSpendEntries.forEach((e: any) => {
-      adSpendTotal += e.amount;
-      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + e.amount;
+      adSpendTotal += Number(e.amount);
+      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + Number(e.amount);
     });
 
     // Build a name→productId map from store products

@@ -1233,7 +1233,7 @@ export class DatabaseStorage implements IStorage {
 
   async getAgentWallet(agentId: number, storeId: number): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }> {
     const setting = await this.getAgentStoreSetting(agentId, storeId);
-    const rate = setting?.commissionRate ?? 0;
+    const rate = Number(setting?.commissionRate ?? 0);
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const [totalRow] = await db.select({ count: sql<number>`count(*)` })
@@ -1244,7 +1244,7 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(orders.assignedToId, agentId), eq(orders.storeId, storeId), eq(orders.status, 'delivered'), gte(orders.createdAt, startOfMonth)));
     const deliveredTotal = Number(totalRow?.count ?? 0);
     const deliveredThisMonth = Number(monthRow?.count ?? 0);
-    return { totalEarned: deliveredTotal * rate, deliveredThisMonth, deliveredTotal, commissionRate: rate };
+    return { totalEarned: Number(deliveredTotal) * Number(rate), deliveredThisMonth, deliveredTotal, commissionRate: rate };
   }
 
   async getCommissionsSummary(storeId: number): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {
@@ -1252,12 +1252,12 @@ export class DatabaseStorage implements IStorage {
     const result = [];
     for (const agent of agents) {
       const setting = await this.getAgentStoreSetting(agent.id, storeId);
-      const rate = setting?.commissionRate ?? 0;
+      const rate = Number(setting?.commissionRate ?? 0);
       const [row] = await db.select({ count: sql<number>`count(*)` })
         .from(orders)
         .where(and(eq(orders.assignedToId, agent.id), eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
       const deliveredTotal = Number(row?.count ?? 0);
-      result.push({ agentId: agent.id, agentName: agent.username, commissionRate: rate, deliveredTotal, totalOwed: deliveredTotal * rate });
+      result.push({ agentId: agent.id, agentName: agent.username, commissionRate: rate, deliveredTotal, totalOwed: Number(deliveredTotal) * Number(rate) });
     }
     return result;
   }
@@ -1472,34 +1472,38 @@ export class DatabaseStorage implements IStorage {
     const agentMap = new Map<number, { commissionRate: number; name: string }>();
     for (const s of agentSettingsAll) {
       const u = agentUsersAll.find(u => u.id === s.agentId);
-      agentMap.set(s.agentId, { commissionRate: s.commissionRate ?? 0, name: u?.username ?? `Agent ${s.agentId}` });
+      agentMap.set(s.agentId, { commissionRate: Number(s.commissionRate ?? 0), name: u?.username ?? `Agent ${s.agentId}` });
     }
     let agentCommissions = 0;
     const agentCounts = new Map<number, number>();
     for (const o of deliveredOrders) {
       if (o.assignedToId) {
-        const rate = agentMap.get(o.assignedToId)?.commissionRate ?? 0;
+        const rate = Number(agentMap.get(o.assignedToId)?.commissionRate ?? 0);
         agentCommissions += rate * 100; // DH → cents
         agentCounts.set(o.assignedToId, (agentCounts.get(o.assignedToId) ?? 0) + 1);
       }
     }
 
-    // --- Ad Spend (exception: ALL spend in date range, not just delivered) ---
+    // --- Ad Spend: filter by productId when a product filter is active (product-specific ad spend isolation) ---
     // Legacy adSpendTracking table
     const legacyConds: any[] = [eq(adSpendTracking.storeId, storeId)];
     if (dateFrom) legacyConds.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) legacyConds.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
     if (mediaBuyerIdFilter) legacyConds.push(eq(adSpendTracking.mediaBuyerId, mediaBuyerIdFilter));
-    const legacyAdSpend = await db.select({ amount: adSpendTracking.amount }).from(adSpendTracking).where(and(...legacyConds));
-    const legacyTotal = legacyAdSpend.reduce((s, e) => s + (e.amount ?? 0), 0);
+    // When a product is selected, only include legacy ad spend explicitly tagged for that product
+    if (productId) legacyConds.push(eq(adSpendTracking.productId, productId));
+    const legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId }).from(adSpendTracking).where(and(...legacyConds));
+    const legacyTotal = legacyAdSpend.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
     // New adSpend (Publicités) table
     const newAdConds: any[] = [eq(adSpend.storeId, storeId)];
     if (dateFrom) newAdConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) newAdConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
     if (mediaBuyerIdFilter) newAdConds.push(eq((adSpend as any).userId, mediaBuyerIdFilter));
+    // When a product is selected, only include ad spend entries for that product
+    if (productId) newAdConds.push(eq(adSpend.productId, productId));
     const newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId }).from(adSpend).where(and(...newAdConds));
-    const newAdTotal = newAdEntries.reduce((s, e) => s + (e.amount ?? 0), 0);
+    const newAdTotal = newAdEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
     const totalAdSpend = legacyTotal + newAdTotal;
 
@@ -1538,7 +1542,8 @@ export class DatabaseStorage implements IStorage {
 
     const byAgent = Array.from(agentCounts.entries()).map(([agentId, count]) => {
       const info = agentMap.get(agentId);
-      return { agentId, agentName: info?.name ?? `Agent ${agentId}`, commissionRate: info?.commissionRate ?? 0, deliveredCount: count, totalCommission: count * (info?.commissionRate ?? 0) };
+      const rate = Number(info?.commissionRate ?? 0);
+      return { agentId, agentName: info?.name ?? `Agent ${agentId}`, commissionRate: rate, deliveredCount: count, totalCommission: Number(count) * rate };
     });
 
     return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, agentCommissions, adSpend: totalAdSpend, netProfit, byBuyer, byAgent, ordersCount: deliveredOrders.length };
@@ -1632,12 +1637,12 @@ export class DatabaseStorage implements IStorage {
       const deliveredOrders = userOrders.filter(o => o.status === 'delivered');
       let revenue = 0, productCost = 0, shippingCost = 0, agentCommissions = 0;
       for (const o of deliveredOrders) {
-        revenue += o.totalPrice;
+        revenue += Number(o.totalPrice);
         productCost += teamCogsMap.get(o.id) ?? 0;
-        shippingCost += o.shippingCost;
+        shippingCost += Number(o.shippingCost);
         if (o.assignedToId) {
           const s = agentSettingsAll.find(s => s.agentId === o.assignedToId);
-          agentCommissions += (s?.commissionRate ?? 0) * 100;
+          agentCommissions += Number(s?.commissionRate ?? 0) * 100;
         }
       }
       const packagingCost = deliveredOrders.length * storePackaging;

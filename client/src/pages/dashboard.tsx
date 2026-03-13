@@ -151,7 +151,7 @@ export default function Dashboard() {
     queryKey: ['/api/stats/commissions-summary'],
     enabled: !isAgent,
   });
-  const totalCommissionsOwed = commissionsSummary?.reduce((sum, a) => sum + a.totalOwed, 0) ?? 0;
+  const totalCommissionsOwed = commissionsSummary?.reduce((sum, a) => sum + Number(a.totalOwed), 0) ?? 0;
 
   const { data: stats, isLoading } = useFilteredStats(activeFilters);
   const { data: filterOptions } = useFilterOptions();
@@ -813,7 +813,7 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Mon Portefeuille</p>
-                  <p className="text-white text-3xl font-bold">{walletData.totalEarned.toFixed(2)} <span className="text-white/70 text-lg font-normal">DH</span></p>
+                  <p className="text-white text-3xl font-bold">{Number(walletData.totalEarned).toFixed(2)} <span className="text-white/70 text-lg font-normal">DH</span></p>
                   <p className="text-white/70 text-xs mt-0.5">Total commissions gagnées ({walletData.deliveredTotal} livraisons)</p>
                 </div>
               </div>
@@ -850,7 +850,7 @@ export default function Dashboard() {
               {commissionsSummary?.filter(a => a.totalOwed > 0).map(a => (
                 <div key={a.agentId} className="text-center">
                   <p className="text-white/70 text-xs">{a.agentName}</p>
-                  <p className="text-white font-semibold text-sm">{a.totalOwed} DH</p>
+                  <p className="text-white font-semibold text-sm">{Number(a.totalOwed).toFixed(2)} DH</p>
                   <p className="text-white/60 text-xs">{a.deliveredTotal} livrées</p>
                 </div>
               ))}

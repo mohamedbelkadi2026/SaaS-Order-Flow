@@ -541,7 +541,7 @@ export default function Profitability() {
                     <TableCell className="font-medium text-sm">{a.agentName}</TableCell>
                     <TableCell className="text-right text-sm">{a.commissionRate} DH</TableCell>
                     <TableCell className="text-right text-sm font-semibold">{a.deliveredCount}</TableCell>
-                    <TableCell className="text-right text-destructive font-bold text-sm">-{formatCurrency(a.totalCommission * 100)}</TableCell>
+                    <TableCell className="text-right text-destructive font-bold text-sm">-{formatCurrency(Number(a.totalCommission) * 100)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
