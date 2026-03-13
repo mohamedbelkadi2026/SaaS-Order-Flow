@@ -1,0 +1,29 @@
+"I need a PERMANENT logic overhaul of the entire financial and attribution system. The current stats are incorrect and inconsistent. Please rewrite the analytics logic following these strict rules to fix all bugs forever:
+1. Data Integrity & Type Casting (Fixes the '88 DH' Bug):
+Strict Numbers: Ensure every financial field (total_price, buying_price, commission_rate, shipping_fee, ad_spend) is treated as a Float/Decimal in the database and a Number in JavaScript.
+Action: Use Number() or parseFloat() before any addition to prevent string concatenation (e.g., 8+8 must be 16, not 88).
+2. Master Attribution Logic (Fixes the '0 Livrées' Bug):
+Order Ownership: Every order must be attributed to a user for the 'Rentabilité par Utilisateur' table to work.
+Priority Rules:
+If an order has a media_buyer_id, attribute it to that user.
+If media_buyer_id is null but utm_source matches a buyer_code, attribute it to that user.
+If none of the above, attribute the order to the Admin (Owner) by default.
+Status Matching: Standardize the status check to be case-insensitive and trim spaces (e.g., 'livré', 'Livré', 'livree' must all be treated as the same 'Delivered' status).
+3. The 'Final' Net Profit Engine (COD Model):
+Delivered Revenue (A): Sum of total_price where status is 'livré'.
+Cost of Goods (B): Sum of (buying_price * quantity) where status is 'livré'.
+Operational Costs (C): Sum of (shipping_fee + packaging_cost) where status is 'livré'.
+Agent Commissions (D): Sum of (commission_rate) where status is 'livré'.
+Ad Spend (E): Total amount from AdSpend table (filtered by date/product/user).
+The Formula: Net Profit = A - (B + C + D) - E.
+Constraint: Use COALESCE(sum_column, 0) in SQL to ensure that if there are no orders, the result is 0.00 DH, never a negative or null value (unless Ad Spend exceeds revenue).
+4. Advanced Profitability UI Fix:
+Rentabilité par Utilisateur: This table MUST show every user (Admin + Media Buyers). If a user generated an order that was delivered, it must show here.
+Compte de Résultat:
+'Coût d'achat produits' must correctly pull the buying_price from the linked product.
+'Total Spend' must be a positive number in the 'Expenses' column but subtracted from the total.
+5. Product-Specific Isolation:
+When a Product Filter is active, the 'Ad Spend' subtracted MUST only be the spend linked to that specific product_id. Do not subtract global spend from a single product's report.
+6. Database Trigger/Function:
+Create a database view or a robust backend service for 'Financials' that aggregates this data server-side. Do not calculate these complex sums on the frontend.
+Goal: I want a rock-solid financial dashboard where 1+1=2, where every 'Livré' order is accounted for under the right person, and where every expense is deducted automatically. Ensure the currency is always DH."

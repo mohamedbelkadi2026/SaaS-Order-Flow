@@ -1457,13 +1457,13 @@ export class DatabaseStorage implements IStorage {
     // --- COGS: use order_items × products.cost_price (ground truth), fallback to orders.product_cost ---
     const cogsMap = await this.computeOrdersCOGS(deliveredOrders.map(o => ({ id: o.id, productCost: o.productCost })));
 
-    // --- Revenue & order costs (delivered only) ---
+    // --- Revenue & order costs (delivered only) --- strict Number() to prevent concatenation ---
     let revenue = 0, productCost = 0, shippingCost = 0, packagingCostTotal = 0;
     for (const o of deliveredOrders) {
-      revenue += (o.totalPrice ?? 0);
-      productCost += cogsMap.get(o.id) ?? 0;
-      shippingCost += (o.shippingCost ?? 0);
-      packagingCostTotal += storePackaging;
+      revenue += Number(o.totalPrice ?? 0);
+      productCost += Number(cogsMap.get(o.id) ?? 0);
+      shippingCost += Number(o.shippingCost ?? 0);
+      packagingCostTotal += Number(storePackaging);
     }
 
     // --- Agent commissions (delivered orders only) ---
@@ -1510,34 +1510,38 @@ export class DatabaseStorage implements IStorage {
     // --- Final net profit (COD formula) ---
     const netProfit = revenue - productCost - shippingCost - packagingCostTotal - agentCommissions - totalAdSpend;
 
-    // --- byBuyer breakdown (using real COGS from items) ---
+    // --- byBuyer breakdown — 3-tier attribution so admin fallback orders appear ---
+    // Build attribution map for delivered orders only
+    const ownerForByBuyer = agentUsersAll.find(u => u.role === 'owner') ?? agentUsersAll.find(u => u.role === 'admin') ?? null;
+    const byBuyerAttrMap = this.buildAttributionMap(deliveredOrders, agentUsersAll, ownerForByBuyer?.id ?? null);
+
     const buyerOrderMap = new Map<number, { revenue: number; orderProfit: number; name: string }>();
     for (const o of deliveredOrders) {
-      if (o.mediaBuyerId) {
-        const u = agentUsersAll.find(u => u.id === o.mediaBuyerId);
-        const existing = buyerOrderMap.get(o.mediaBuyerId) ?? { revenue: 0, orderProfit: 0, name: u?.username ?? `Buyer ${o.mediaBuyerId}` };
-        const agentComm = o.assignedToId ? (agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0;
-        const realCogs = cogsMap.get(o.id) ?? 0;
-        existing.revenue += (o.totalPrice ?? 0);
-        existing.orderProfit += (o.totalPrice ?? 0) - realCogs - (o.shippingCost ?? 0) - storePackaging - agentComm;
-        buyerOrderMap.set(o.mediaBuyerId, existing);
-      }
+      const attributedId = byBuyerAttrMap.get(o.id);
+      if (attributedId === undefined) continue;
+      const u = agentUsersAll.find(u => u.id === attributedId);
+      const existing = buyerOrderMap.get(attributedId) ?? { revenue: 0, orderProfit: 0, name: u?.username ?? `User ${attributedId}` };
+      const agentComm = o.assignedToId ? Number(agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0;
+      const realCogs = Number(cogsMap.get(o.id) ?? 0);
+      existing.revenue += Number(o.totalPrice ?? 0);
+      existing.orderProfit += Number(o.totalPrice ?? 0) - realCogs - Number(o.shippingCost ?? 0) - Number(storePackaging) - agentComm;
+      buyerOrderMap.set(attributedId, existing);
     }
     const buyerAdSpendMap = new Map<number, number>();
     for (const e of legacyAdSpend as any[]) {
-      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, (buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + (e.amount ?? 0));
+      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, Number(buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + Number(e.amount ?? 0));
     }
     for (const e of newAdEntries) {
-      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, (buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + (e.amount ?? 0));
+      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, Number(buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + Number(e.amount ?? 0));
     }
     const allBuyerIds = new Set(Array.from(buyerOrderMap.keys()).concat(Array.from(buyerAdSpendMap.keys())));
     const byBuyer = Array.from(allBuyerIds).map(bid => {
       const bo = buyerOrderMap.get(bid);
-      const bSpend = buyerAdSpendMap.get(bid) ?? 0;
-      const bRevenue = bo?.revenue ?? 0;
-      const bOrderProfit = bo?.orderProfit ?? 0;
+      const bSpend = Number(buyerAdSpendMap.get(bid) ?? 0);
+      const bRevenue = Number(bo?.revenue ?? 0);
+      const bOrderProfit = Number(bo?.orderProfit ?? 0);
       const u = agentUsersAll.find(u => u.id === bid);
-      return { buyerId: bid, buyerName: u?.username ?? bo?.name ?? `Buyer ${bid}`, adSpend: bSpend, revenue: bRevenue, netProfit: bOrderProfit - bSpend };
+      return { buyerId: bid, buyerName: u?.username ?? bo?.name ?? `User ${bid}`, adSpend: bSpend, revenue: bRevenue, netProfit: bOrderProfit - bSpend };
     });
 
     const byAgent = Array.from(agentCounts.entries()).map(([agentId, count]) => {
@@ -1599,6 +1603,50 @@ export class DatabaseStorage implements IStorage {
     return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, adSpend: totalAdSpend, netProfit, roi, deliveredCount: buyerOrders.length, totalLeads: allLeads.length };
   }
 
+  // ─── 3-Tier Attribution Engine ────────────────────────────────────────
+  // Priority: mediaBuyerId → UTM buyerCode match → owner/admin fallback
+  private buildAttributionMap(
+    allOrders: any[],
+    allUsers: any[],
+    fallbackUserId: number | null,
+  ): Map<number, number> {
+    // Build buyerCode → userId lookup (media buyers only)
+    const codeToUser = new Map<string, number>();
+    for (const u of allUsers) {
+      if (u.buyerCode) codeToUser.set(u.buyerCode.toLowerCase().trim(), u.id);
+    }
+
+    const map = new Map<number, number>();
+    for (const o of allOrders) {
+      // Tier 1: explicit media_buyer_id
+      if (o.mediaBuyerId) { map.set(o.id, o.mediaBuyerId); continue; }
+
+      // Tier 2: UTM source starts with a buyer code (format: "CODE*Platform" or "CODE")
+      if (o.utmSource) {
+        const utmLower = (o.utmSource as string).toLowerCase().trim();
+        let matched = false;
+        for (const [code, uid] of codeToUser) {
+          if (utmLower === code || utmLower.startsWith(code + '*') || utmLower.startsWith(code + '-')) {
+            map.set(o.id, uid);
+            matched = true;
+            break;
+          }
+        }
+        if (matched) continue;
+      }
+
+      // Tier 3: fallback to owner/admin
+      if (fallbackUserId !== null) map.set(o.id, fallbackUserId);
+    }
+    return map;
+  }
+
+  // Normalize status: treat 'delivered' (and French variants) all as delivered
+  private isDeliveredStatus(status: string): boolean {
+    const s = (status ?? '').toLowerCase().trim();
+    return s === 'delivered' || s === 'livré' || s === 'livre' || s === 'livrée' || s === 'livree';
+  }
+
   async getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
     rows: {
       userId: number; userName: string; role: string;
@@ -1608,7 +1656,7 @@ export class DatabaseStorage implements IStorage {
     }[];
   }> {
     const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
-    const storePackaging = store[0]?.packagingCost ?? 0;
+    const storePackaging = Number(store[0]?.packagingCost ?? 0);
 
     const allUsers = await db.select().from(users).where(and(eq(users.storeId, storeId), sql`${users.role} IN ('owner','admin','media_buyer')`));
     const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
@@ -1618,10 +1666,11 @@ export class DatabaseStorage implements IStorage {
     if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
     const allOrders = await db.select().from(orders).where(and(...orderConditions));
 
-    // Compute real COGS for all delivered orders in one shot
-    const allDelivered = allOrders.filter(o => o.status === 'delivered');
-    const teamCogsMap = await this.computeOrdersCOGS(allDelivered.map(o => ({ id: o.id, productCost: o.productCost })));
+    // Real COGS: order_items × products.cost_price (fallback: orders.product_cost)
+    const allDelivered = allOrders.filter(o => this.isDeliveredStatus(o.status));
+    const teamCogsMap = await this.computeOrdersCOGS(allDelivered.map(o => ({ id: o.id, productCost: Number(o.productCost) })));
 
+    // Ad spend tables
     const adDateConds: any[] = [eq(adSpend.storeId, storeId)];
     if (dateFrom) adDateConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adDateConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
@@ -1632,29 +1681,38 @@ export class DatabaseStorage implements IStorage {
     if (dateTo) legDateConds.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
     const allLegacyAdSpend = await db.select().from(adSpendTracking).where(and(...legDateConds));
 
+    // Determine fallback user (owner first, then first admin)
+    const ownerUser = allUsers.find(u => u.role === 'owner') ?? allUsers.find(u => u.role === 'admin') ?? null;
+    const fallbackUserId = ownerUser?.id ?? null;
+
+    // Build 3-tier attribution map: orderId → responsible userId
+    const attributionMap = this.buildAttributionMap(allOrders, allUsers, fallbackUserId);
+
     const rows = allUsers.map(u => {
-      const userOrders = allOrders.filter(o => o.mediaBuyerId === u.id);
-      const deliveredOrders = userOrders.filter(o => o.status === 'delivered');
+      const userOrders = allOrders.filter(o => attributionMap.get(o.id) === u.id);
+      const deliveredOrders = userOrders.filter(o => this.isDeliveredStatus(o.status));
+
       let revenue = 0, productCost = 0, shippingCost = 0, agentCommissions = 0;
       for (const o of deliveredOrders) {
-        revenue += Number(o.totalPrice);
-        productCost += teamCogsMap.get(o.id) ?? 0;
-        shippingCost += Number(o.shippingCost);
+        revenue += Number(o.totalPrice ?? 0);
+        productCost += Number(teamCogsMap.get(o.id) ?? 0);
+        shippingCost += Number(o.shippingCost ?? 0);
         if (o.assignedToId) {
           const s = agentSettingsAll.find(s => s.agentId === o.assignedToId);
           agentCommissions += Number(s?.commissionRate ?? 0) * 100;
         }
       }
       const packagingCost = deliveredOrders.length * storePackaging;
-      const newAdSpendTotal = allNewAdSpend.filter(e => e.userId === u.id).reduce((s, e) => s + e.amount, 0);
-      const legacyAdSpendTotal = allLegacyAdSpend.filter(e => e.mediaBuyerId === u.id).reduce((s, e) => s + e.amount, 0);
+      const newAdSpendTotal = allNewAdSpend.filter(e => e.userId === u.id).reduce((s, e) => s + Number(e.amount ?? 0), 0);
+      const legacyAdSpendTotal = allLegacyAdSpend.filter(e => e.mediaBuyerId === u.id).reduce((s, e) => s + Number(e.amount ?? 0), 0);
       const totalAdSpend = newAdSpendTotal + legacyAdSpendTotal;
       const totalCosts = productCost + shippingCost + packagingCost + agentCommissions + totalAdSpend;
       const netProfit = revenue - totalCosts;
       return { userId: u.id, userName: u.username, role: u.role, totalLeads: userOrders.length, deliveredCount: deliveredOrders.length, revenue, productCost, shippingCost, packagingCost, agentCommissions, adSpend: totalAdSpend, totalCosts, netProfit };
     });
 
-    return { rows: rows.filter(r => r.totalLeads > 0 || r.adSpend > 0) };
+    // Show rows where the user has any activity (orders or ad spend)
+    return { rows: rows.filter(r => r.totalLeads > 0 || r.adSpend > 0 || r.deliveredCount > 0) };
   }
 }
 
