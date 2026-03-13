@@ -410,6 +410,21 @@ export type InsertStoreAgentSetting = z.infer<typeof insertStoreAgentSettingsSch
 export type OrderFollowUpLog = typeof orderFollowUpLogs.$inferSelect;
 export type InsertOrderFollowUpLog = z.infer<typeof insertOrderFollowUpLogSchema>;
 
+// ─── Stock Logs (Audit Trail) ──────────────────────────────────────────────
+export const stockLogs = pgTable("stock_logs", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  productId: integer("product_id").references(() => products.id).notNull(),
+  orderId: integer("order_id").references(() => orders.id),
+  changeAmount: integer("change_amount").notNull(),
+  reason: text("reason").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertStockLogSchema = createInsertSchema(stockLogs).omit({ id: true, createdAt: true });
+export type StockLog = typeof stockLogs.$inferSelect;
+export type InsertStockLog = z.infer<typeof insertStockLogSchema>;
+
 export type ProductWithVariants = Product & {
   variants: ProductVariant[];
 };

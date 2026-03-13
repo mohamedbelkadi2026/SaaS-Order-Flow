@@ -1793,6 +1793,19 @@ export async function registerRoutes(
     res.json(stats);
   });
 
+  app.get("/api/stock-logs", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const logs = await storage.getStockLogs(storeId);
+    res.json(logs);
+  });
+
+  app.get("/api/stock-logs/:productId", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const productId = Number(req.params.productId);
+    const logs = await storage.getStockLogs(storeId, isNaN(productId) ? undefined : productId);
+    res.json(logs);
+  });
+
   app.patch("/api/products/:id", requireAuth, async (req, res) => {
     try {
       const productId = Number(req.params.id);

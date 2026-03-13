@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useProducts, useCreateProduct, useUpdateProduct, useDeleteProduct, useInventoryStats } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
@@ -11,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X } from "lucide-react";
+import { Plus, Package, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface VariantForm {
@@ -28,6 +29,13 @@ export default function Inventory() {
   const updateProduct = useUpdateProduct();
   const deleteProduct = useDeleteProduct();
   const { toast } = useToast();
+  const [logsProductId, setLogsProductId] = useState<number | null>(null);
+  const [logsProductName, setLogsProductName] = useState<string>("");
+
+  const { data: stockLogsData, isLoading: logsLoading } = useQuery<any[]>({
+    queryKey: ["/api/stock-logs", logsProductId],
+    enabled: logsProductId !== null,
+  });
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
@@ -285,6 +293,9 @@ export default function Inventory() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon" className="w-8 h-8 text-blue-500 hover:text-blue-700" data-testid={`button-logs-product-${product.id}`} title="Historique stock" onClick={() => { setLogsProductId(product.id); setLogsProductName(product.name); }}>
+                        <History className="w-4 h-4" />
+                      </Button>
                       <Button variant="ghost" size="icon" className="w-8 h-8" data-testid={`button-edit-product-${product.id}`} onClick={() => openEdit(product)}>
                         <Pencil className="w-4 h-4" />
                       </Button>
@@ -470,6 +481,52 @@ export default function Inventory() {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Stock Logs Audit Trail Dialog */}
+      <Dialog open={logsProductId !== null} onOpenChange={(v) => { if (!v) setLogsProductId(null); }}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="w-5 h-5 text-blue-500" />
+              Historique Stock — {logsProductName}
+            </DialogTitle>
+          </DialogHeader>
+          {logsLoading ? (
+            <div className="py-8 text-center text-muted-foreground text-sm">Chargement...</div>
+          ) : !stockLogsData || stockLogsData.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground text-sm">Aucun mouvement enregistré pour ce produit.</div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Commande</TableHead>
+                  <TableHead className="text-center">Mouvement</TableHead>
+                  <TableHead>Raison</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {stockLogsData.map((log: any) => (
+                  <TableRow key={log.id} data-testid={`row-stock-log-${log.id}`}>
+                    <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                      {new Date(log.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {log.orderId ? `#${log.orderId}` : '—'}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge variant="outline" className={log.changeAmount < 0 ? "text-red-600 border-red-200 bg-red-50 dark:bg-red-950 dark:text-red-400" : "text-green-600 border-green-200 bg-green-50 dark:bg-green-950 dark:text-green-400"}>
+                        {log.changeAmount > 0 ? `+${log.changeAmount}` : log.changeAmount}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-sm">{log.reason}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </DialogContent>
       </Dialog>
     </div>

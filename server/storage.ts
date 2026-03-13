@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
-  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs,
+  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -10,6 +10,7 @@ import {
   type AgentProduct,
   type StoreAgentSetting, type InsertStoreAgentSetting,
   type OrderFollowUpLog, type InsertOrderFollowUpLog,
+  type StockLog,
 } from "@shared/schema";
 import { eq, desc, and, sql, count, ne, like, gte, lte, inArray, or } from "drizzle-orm";
 
@@ -439,30 +440,69 @@ export class DatabaseStorage implements IStorage {
     return newOrder;
   }
 
+  // Return statuses that restore stock when transitioning FROM delivered
+  private readonly RETURN_STATUSES = new Set(['retourné', 'refused', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)', 'Annulé']);
+
   async updateOrderStatus(id: number, status: string): Promise<Order | undefined> {
-    const [currentOrder] = await db.select().from(orders).where(eq(orders.id, id));
-    if (!currentOrder) return undefined;
+    return await db.transaction(async (tx) => {
+      const [currentOrder] = await tx.select().from(orders).where(eq(orders.id, id));
+      if (!currentOrder) return undefined;
 
-    const [updated] = await db.update(orders)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(orders.id, id))
-      .returning();
-      
-    if (status === 'confirme' && currentOrder.status !== 'confirme') {
-      const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
-      for (const item of items) {
-        if (item.productId) await this.updateProductStock(item.productId, -item.quantity);
-      }
-    }
+      const prevStatus = currentOrder.status;
 
-    if (currentOrder.status === 'confirme' && status !== 'confirme') {
-      const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
-      for (const item of items) {
-        if (item.productId) await this.updateProductStock(item.productId, item.quantity);
+      const [updated] = await tx.update(orders)
+        .set({ status, updatedAt: new Date() })
+        .where(eq(orders.id, id))
+        .returning();
+
+      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, id));
+
+      // ── RULE 1: First-time delivery → subtract stock ────────────────────
+      // Only triggers when transitioning INTO delivered from a non-delivered status
+      if (status === 'delivered' && prevStatus !== 'delivered') {
+        for (const item of items) {
+          if (!item.productId) continue;
+          const qty = Number(item.quantity);
+          await tx.update(products)
+            .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
+            .where(eq(products.id, item.productId));
+          await tx.insert(stockLogs).values({
+            storeId: currentOrder.storeId!,
+            productId: item.productId,
+            orderId: id,
+            changeAmount: -qty,
+            reason: `Commande #${id} livrée`,
+          });
+        }
       }
-    }
-      
-    return updated;
+
+      // ── RULE 2: Return/cancel from delivered → restore stock ────────────
+      // Only triggers when was delivered AND now switching to a return status
+      if (prevStatus === 'delivered' && this.RETURN_STATUSES.has(status)) {
+        for (const item of items) {
+          if (!item.productId) continue;
+          const qty = Number(item.quantity);
+          await tx.update(products)
+            .set({ stock: sql`${products.stock} + ${qty}` })
+            .where(eq(products.id, item.productId));
+          await tx.insert(stockLogs).values({
+            storeId: currentOrder.storeId!,
+            productId: item.productId,
+            orderId: id,
+            changeAmount: qty,
+            reason: `Retour commande #${id} → ${status}`,
+          });
+        }
+      }
+
+      return updated;
+    });
+  }
+
+  async getStockLogs(storeId: number, productId?: number): Promise<StockLog[]> {
+    const conds: any[] = [eq(stockLogs.storeId, storeId)];
+    if (productId) conds.push(eq(stockLogs.productId, productId));
+    return await db.select().from(stockLogs).where(and(...conds)).orderBy(desc(stockLogs.createdAt));
   }
 
   async assignOrder(id: number, agentId: number | null): Promise<Order | undefined> {
@@ -667,9 +707,10 @@ export class DatabaseStorage implements IStorage {
           eq(orders.storeId, storeId)
         ));
 
-      const sortie = Number(confirmedItems[0]?.qty || 0) + Number(deliveredItems[0]?.qty || 0);
+      // sortie = only delivered quantities (stock deducted on delivery, not on confirme)
+      const sortie = Number(deliveredItems[0]?.qty || 0);
       const totalOrdered = Number(totalOrderItems[0]?.qty || 0);
-      const available = totalStock;
+      const available = totalStock; // live stock = initial minus all deliveries plus all returns
       const initialStock = available + sortie;
       const confirmRate = totalOrdered > 0 ? Math.round(Number(confirmedItems[0]?.qty || 0) / totalOrdered * 100) : 0;
       const deliverRate = totalOrdered > 0 ? Math.round(Number(deliveredItems[0]?.qty || 0) / totalOrdered * 100) : 0;
