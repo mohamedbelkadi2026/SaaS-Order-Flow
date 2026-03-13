@@ -387,6 +387,7 @@ export async function registerRoutes(
 
     let adSpendTotal = 0;
     const productAdCostMap: Record<number, number> = {};
+    // Legacy adSpendTracking
     const adSpendEntries = await storage.getAdSpend(storeId);
     adSpendEntries.forEach((e: any) => {
       if (productId && productId !== 'all') {
@@ -395,6 +396,17 @@ export async function registerRoutes(
       if (adSourceFilter && e.source && e.source !== adSourceFilter) return;
       if (dateFrom && e.date < dateFrom) return;
       if (dateTo && e.date > dateTo) return;
+      adSpendTotal += e.amount;
+      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + e.amount;
+    });
+    // New adSpend table (Publicités module)
+    const newAdSpendEntries = await storage.getAdSpendEntries(storeId, {
+      source: adSourceFilter || undefined,
+      dateFrom: dateFrom ? dateFrom.substring(0, 10) : undefined,
+      dateTo: dateTo ? dateTo.substring(0, 10) : undefined,
+      productId: (productId && productId !== 'all') ? Number(productId) : undefined,
+    });
+    newAdSpendEntries.forEach((e: any) => {
       adSpendTotal += e.amount;
       if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + e.amount;
     });
@@ -770,6 +782,42 @@ export async function registerRoutes(
       byProduct[key].entries++;
     }
     res.json({ entries, byProduct: Object.values(byProduct) });
+  });
+
+  // ============================================================
+  // AD SPEND (new Publicités module)
+  // ============================================================
+  app.get("/api/publicites", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { productId, source, dateFrom, dateTo, tab } = req.query as Record<string, string>;
+    const opts: any = { source, dateFrom, dateTo };
+    if (tab === 'source') opts.productId = null;
+    else if (productId && productId !== 'all') opts.productId = Number(productId);
+    const entries = await storage.getAdSpendEntries(storeId, opts);
+    res.json(entries);
+  });
+
+  app.post("/api/publicites", requireAdmin, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { source, date, amount, productId, productSellingPrice } = req.body;
+    if (!source || !date || amount === undefined) return res.status(400).json({ message: "Champs requis manquants" });
+    const amountCents = Math.round(Number(amount) * 100);
+    const pspCents = productSellingPrice ? Math.round(Number(productSellingPrice) * 100) : null;
+    const entry = await storage.createAdSpendEntry({
+      storeId,
+      source,
+      date,
+      amount: amountCents,
+      productId: productId ? Number(productId) : null,
+      productSellingPrice: pspCents,
+    });
+    res.json(entry);
+  });
+
+  app.delete("/api/publicites/:id", requireAdmin, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    await storage.deleteAdSpendNew(Number(req.params.id), storeId);
+    res.json({ ok: true });
   });
 
   // ============================================================

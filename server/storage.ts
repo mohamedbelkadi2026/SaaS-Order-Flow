@@ -1,10 +1,10 @@
 import { db } from "./db";
 import { 
-  users, stores, products, productVariants, orders, orderItems, adSpendTracking, storeIntegrations, integrationLogs,
+  users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
-  type AdSpendEntry, type InsertAdSpend,
+  type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
   type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog,
   type Subscription, type InsertSubscription, type Customer, type InsertCustomer,
   type AgentProduct,
@@ -112,6 +112,11 @@ export interface IStorage {
   getStoresByOwner(userId: number): Promise<Store[]>;
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
   deleteStore(id: number): Promise<void>;
+
+  createAdSpendEntry(data: InsertAdSpendNew): Promise<AdSpendNewEntry>;
+  getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string }): Promise<(AdSpendNewEntry & { productName?: string })[]>;
+  deleteAdSpendNew(id: number, storeId: number): Promise<void>;
+  getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number>;
 
   getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]>;
   upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry>;
@@ -1252,6 +1257,45 @@ export class DatabaseStorage implements IStorage {
     await db.delete(subscriptions).where(eq(subscriptions.storeId, id));
     await db.delete(users).where(eq(users.storeId, id));
     await db.delete(stores).where(eq(stores.id, id));
+  }
+
+  async createAdSpendEntry(data: InsertAdSpendNew): Promise<AdSpendNewEntry> {
+    const [created] = await db.insert(adSpend).values(data).returning();
+    return created;
+  }
+
+  async getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string }): Promise<(AdSpendNewEntry & { productName?: string })[]> {
+    const conditions: any[] = [eq(adSpend.storeId, storeId)];
+    if (opts?.source && opts.source !== 'all') conditions.push(eq(adSpend.source, opts.source));
+    if (opts?.dateFrom) conditions.push(sql`${adSpend.date} >= ${opts.dateFrom}`);
+    if (opts?.dateTo) conditions.push(sql`${adSpend.date} <= ${opts.dateTo}`);
+    if (opts?.productId !== undefined) {
+      if (opts.productId === null) conditions.push(sql`${adSpend.productId} IS NULL`);
+      else conditions.push(eq(adSpend.productId, opts.productId));
+    }
+    const rows = await db.select({
+      id: adSpend.id, storeId: adSpend.storeId, productId: adSpend.productId,
+      source: adSpend.source, date: adSpend.date, amount: adSpend.amount,
+      productSellingPrice: adSpend.productSellingPrice, createdAt: adSpend.createdAt,
+      productName: products.name,
+    }).from(adSpend)
+      .leftJoin(products, eq(adSpend.productId, products.id))
+      .where(and(...conditions))
+      .orderBy(desc(adSpend.date));
+    return rows as any[];
+  }
+
+  async deleteAdSpendNew(id: number, storeId: number): Promise<void> {
+    await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId)));
+  }
+
+  async getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number> {
+    const conditions: any[] = [eq(adSpend.storeId, storeId)];
+    if (dateFrom) conditions.push(sql`${adSpend.date} >= ${dateFrom}`);
+    if (dateTo) conditions.push(sql`${adSpend.date} <= ${dateTo}`);
+    const rows = await db.select({ total: sql<number>`COALESCE(SUM(${adSpend.amount}), 0)` })
+      .from(adSpend).where(and(...conditions));
+    return Number(rows[0]?.total ?? 0);
   }
 
   async getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]> {

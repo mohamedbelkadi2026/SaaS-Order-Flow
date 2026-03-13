@@ -129,6 +129,17 @@ export const adSpendTracking = pgTable("ad_spend_tracking", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+export const adSpend = pgTable("ad_spend", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  productId: integer("product_id").references(() => products.id),
+  source: text("source").notNull(),
+  date: text("date").notNull(),
+  amount: integer("amount").notNull().default(0),
+  productSellingPrice: integer("product_selling_price"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
@@ -358,6 +369,7 @@ export const insertProductVariantSchema = createInsertSchema(productVariants).om
 export const insertOrderSchema = createInsertSchema(orders).omit({ id: true, createdAt: true });
 export const insertOrderItemSchema = createInsertSchema(orderItems).omit({ id: true });
 export const insertAdSpendSchema = createInsertSchema(adSpendTracking).omit({ id: true, createdAt: true });
+export const insertAdSpendNewSchema = createInsertSchema(adSpend).omit({ id: true, createdAt: true });
 export const insertIntegrationSchema = createInsertSchema(storeIntegrations).omit({ id: true, createdAt: true });
 export const insertIntegrationLogSchema = createInsertSchema(integrationLogs).omit({ id: true, createdAt: true });
 export const insertAgentProductSchema = createInsertSchema(agentProducts).omit({ id: true });
@@ -378,6 +390,8 @@ export type OrderItem = typeof orderItems.$inferSelect;
 export type InsertOrderItem = z.infer<typeof insertOrderItemSchema>;
 export type AdSpendEntry = typeof adSpendTracking.$inferSelect;
 export type InsertAdSpend = z.infer<typeof insertAdSpendSchema>;
+export type AdSpendNewEntry = typeof adSpend.$inferSelect;
+export type InsertAdSpendNew = z.infer<typeof insertAdSpendNewSchema>;
 export type StoreIntegration = typeof storeIntegrations.$inferSelect;
 export type InsertIntegration = z.infer<typeof insertIntegrationSchema>;
 export type IntegrationLog = typeof integrationLogs.$inferSelect;

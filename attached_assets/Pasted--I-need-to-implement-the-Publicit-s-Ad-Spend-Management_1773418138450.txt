@@ -1,0 +1,25 @@
+"I need to implement the 'Publicités' (Ad Spend Management) module for TajerGrow, making it 100% functional and integrated with the profit engine, exactly as shown in the 4 provided screenshots.
+1. Page UI Structure (Refer to Screenshot 1 & 3):
+Create a new page in the sidebar called 'Publicités'.
+Top Navigation: Two functional tabs: 'Par Source' and 'Par Produit'.
+Global Filters: Add dropdowns for 'Tous les Sites', 'Source de traffic', 'Tous les Produits' (for product tab), and a 'Date Range Picker'.
+Action Button: Add a 'Nouvelle +' button to trigger the data entry modal.
+2. Data Entry Modals (Refer to Screenshot 2 & 4):
+Modal 'Par Source':
+Fields: Date (Date picker), Source de traffic (Facebook Ads, Google Ads, TikTok Ads, Snapchat Ads), Site (Dropdown), and Cout ($) (Input).
+Modal 'Par Produit':
+Fields: Date, Produits (Searchable dropdown), Source de traffic, Site, Cout ($), and Prix de vente (DH) (Input).
+Functionality: Clicking 'Valider' must save the record to the PostgreSQL AdSpend table linked to the Admin's store_id.
+3. Backend & Database Integration:
+Create an AdSpend table with fields for: id, store_id, product_id (null if source-only), source, site_id, amount, date, and product_selling_price.
+Validation: Prevent duplicate entries for the same Date/Product/Source combination.
+4. Net Profit Engine Sync (The Analytics):
+Update the Dashboard and Profitability logic to use this Ad Spend data.
+Formula:
+Real Net Profit = (Revenue from 'Livré' orders) - (Buying Price of 'Livré' orders) - (Shipping/Packaging fees) - (TOTAL AD SPEND for the filtered range).
+Individual Product ROI: In the 'Par Produit' tab (Screenshot 3), show a table where each row displays the specific ad spend for that product compared to its sales.
+5. UI Styling (Exact Match):
+Use the Crescent Red/Burgundy color (#800040 or similar) for the 'Filtrer' and 'Valider' buttons as seen in the screenshots.
+Use clean borders for the tables and bold the 'Total' sum at the bottom of the table (Screenshot 1).
+Ensure currency symbols ($ or DH) are correctly displayed as per the screenshots.
+Instruction: Rewrite the existing analytics logic to ensure that whenever I add a daily spend of 200 DH for 'Facebook Ads', my global 'Net Profit' decreases by exactly that amount in the main Dashboard."
