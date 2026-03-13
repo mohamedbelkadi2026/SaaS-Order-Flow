@@ -374,16 +374,33 @@ export async function registerRoutes(
     const topProducts = productPerformance.slice(0, 10);
     const maxRevenue = 1;
 
+    // Derive ad source filter from UTM source (e.g. "BB*Facebook-Ads" → "Facebook Ads")
+    const AD_SOURCE_MAP: Record<string, string> = {
+      'Facebook-Ads': 'Facebook Ads', 'TikTok-Ads': 'TikTok Ads',
+      'Google-Ads': 'Google Ads', 'Snapchat-Ads': 'Snapchat Ads',
+    };
+    let adSourceFilter: string | null = null;
+    if (utmSource && utmSource !== 'all') {
+      const platformPart = utmSource.includes('*') ? utmSource.split('*')[1] : utmSource;
+      adSourceFilter = AD_SOURCE_MAP[platformPart] || null;
+    }
+
     let adSpendTotal = 0;
+    const productAdCostMap: Record<number, number> = {};
     const adSpendEntries = await storage.getAdSpend(storeId);
-    adSpendEntries.forEach(e => {
+    adSpendEntries.forEach((e: any) => {
       if (productId && productId !== 'all') {
         if (e.productId !== Number(productId) && e.productId !== null) return;
       }
+      if (adSourceFilter && e.source && e.source !== adSourceFilter) return;
       if (dateFrom && e.date < dateFrom) return;
       if (dateTo && e.date > dateTo) return;
       adSpendTotal += e.amount;
+      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + e.amount;
     });
+
+    // Build a name→productId map from store products
+    const productNameToId = new Map(storeProducts.map((p: any) => [p.name.toLowerCase().trim(), p.id]));
 
     const netProfit = revenue - totalProductCost - totalShipping - adSpendTotal;
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
@@ -408,11 +425,16 @@ export async function registerRoutes(
       daily: canCharts ? daily : [],
       topProducts: canProducts ? topProducts.map(p => ({ ...p, share: 100 })) : [],
       productPerformance: canProducts
-        ? productPerformance.map(p => ({
-            ...p,
-            confirmationRate: p.total > 0 ? Math.round((p.confirme / p.total) * 100) : 0,
-            deliveryRate: p.confirme > 0 ? Math.round((p.delivered / p.confirme) * 100) : 0,
-          }))
+        ? productPerformance.map(p => {
+            const pid = productNameToId.get(p.name.toLowerCase().trim());
+            const adCost = pid ? (productAdCostMap[pid] || 0) : 0;
+            return {
+              ...p,
+              confirmationRate: p.total > 0 ? Math.round((p.confirme / p.total) * 100) : 0,
+              deliveryRate: p.confirme > 0 ? Math.round((p.delivered / p.confirme) * 100) : 0,
+              adCost,
+            };
+          })
         : [],
     });
   });
@@ -711,14 +733,17 @@ export async function registerRoutes(
     try {
       const user = req.user!;
       const storeId = user.storeId!;
-      const { date, amount, productId, notes } = req.body;
+      const { date, amount, productId, source, notes } = req.body;
       if (!date || !amount) return res.status(400).json({ message: "Date et montant requis" });
+      if (!source) return res.status(400).json({ message: "Source publicitaire requise" });
       const amountCents = Math.round(parseFloat(amount) * 100);
       if (isNaN(amountCents) || amountCents <= 0) return res.status(400).json({ message: "Montant invalide" });
+      const VALID_SOURCES = ['Facebook Ads', 'TikTok Ads', 'Google Ads', 'Snapchat Ads'];
+      if (!VALID_SOURCES.includes(source)) return res.status(400).json({ message: "Source invalide" });
       const entry = await storage.upsertMediaBuyerAdSpend({
         storeId, mediaBuyerId: user.id, date,
         productId: productId ? Number(productId) : null,
-        amount: amountCents, notes: notes || null,
+        amount: amountCents, source, notes: notes || null,
       });
       res.json(entry);
     } catch (err) {
@@ -730,6 +755,21 @@ export async function registerRoutes(
     const user = req.user!;
     await storage.deleteAdSpendEntry(Number(req.params.id), user.storeId!);
     res.json({ ok: true });
+  });
+
+  app.get("/api/marketing-spend/admin", requireAdmin, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const dateFrom = req.query.dateFrom as string | undefined;
+    const dateTo = req.query.dateTo as string | undefined;
+    const entries = await storage.getAdminAdSpendList(storeId, dateFrom, dateTo);
+    const byProduct: Record<string, { productName: string; total: number; entries: number }> = {};
+    for (const e of entries) {
+      const key = e.productId ? `product_${e.productId}` : 'all';
+      if (!byProduct[key]) byProduct[key] = { productName: e.productName || 'Tous les produits', total: 0, entries: 0 };
+      byProduct[key].total += e.amount;
+      byProduct[key].entries++;
+    }
+    res.json({ entries, byProduct: Object.values(byProduct) });
   });
 
   // ============================================================

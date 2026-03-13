@@ -124,6 +124,7 @@ export const adSpendTracking = pgTable("ad_spend_tracking", {
   productId: integer("product_id").references(() => products.id),
   date: text("date").notNull(),
   amount: integer("amount").notNull().default(0),
+  source: text("source"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow(),
 });

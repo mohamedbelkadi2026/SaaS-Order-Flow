@@ -43,7 +43,7 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 - `order_items` - Order line items linked to products
 - `customers` - Auto-populated CRM from orders (name, phone, orderCount, totalSpent)
 - `subscriptions` - Plan management (starter/pro, monthlyLimit, currentMonthOrders)
-- `ad_spend_tracking` - Ad spend per product per day
+- `ad_spend_tracking` - Ad spend per product per day per source (fields: storeId, mediaBuyerId, productId, date, amount, source, notes)
 - `store_integrations` - Integration credentials (provider, type, JSON credentials, isActive)
 - `integration_logs` - Log entries for all integration activities
 - `agent_products` - Agent-product assignment for targeted order routing
@@ -73,7 +73,8 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 21. **Commandes (Toutes)**: Central hub page showing ALL orders regardless of status. Full feature parity with Mes Commandes: same advanced table, column visibility, inline filters, bulk actions, mobile card view. Status filter dropdown, agent filter, source filter, date range. Bulk ship warns when non-confirmed orders selected. Route: `/orders/all`, API: `GET /api/orders/all`.
 22. **Order Details Modal** (`client/src/components/order-details-modal.tsx`): Full redesign matching exact SaaS screenshot. Header with store name + track number. 4 pill-toggle switches (replace/canOpen/upSell/isStock). Two-column form: left (replacement track, name, phone, address, Ville dropdown with 40+ Moroccan cities + carrier logo, statut select, commentStatus), right (rawProductName auto-filled from webhook, prix, reference, commentOrder, détails textarea showing quantity/order_number/variant). Order Items section with +/delete, each item row shows rawProductName, SKU badge, price DH input, variant info, qty input. Save calls PATCH /api/orders/:id with all new fields.
 23. **Raw Product Name**: New `raw_product_name` column on orders and order_items tables. Webhook handlers capture `line_items[0].title` as rawProductName on order creation. Order items also store `raw_product_name`, `variant_info`, `sku` individually. Display priority: raw name from store beats internal SKU name. New API: POST /api/orders/:id/items, PATCH /api/order-items/:id, DELETE /api/order-items/:id.
-24. **Nouvelle Commande (New Order Flow)**: Two-page order creation flow under sidebar submenu "Nouvelle commande" → Ajouter / Importer. `new-order-add.tsx` (`/orders/add`): full manual form with Moroccan city dropdown, toggles (canOpen/isStock/replace), agent assignment, product line items with rawProductName, auto-total calculation; posts to `POST /api/orders/manual`. `new-order-import.tsx` (`/orders/import`): 3-step drag-and-drop Excel/CSV import (upload → column mapping → results); posts to `POST /api/orders/import` with multer + xlsx parsing. Nav sidebar updated with `isNouvelleMenu` submenu rendering matching the Intégrations pattern.
+25. **Ad Spend Management (Publicités)**: Role-based ad spend module at `/publicites`. Media buyers: form to submit daily ad spend (date, source, product, amount in DH) + history table. Admins/owners: master view of all ad spend across all media buyers, per-buyer badges, per-source breakdown cards (Facebook/TikTok/Google/Snapchat with distinct colors), per-product totals. Sources: `Facebook Ads`, `TikTok Ads`, `Google Ads`, `Snapchat Ads`. Uniqueness constraint: storeId+mediaBuyerId+date+productId+source (upsert). Gold `#C5A059` accent for save button and dashboard Total Dépenses Pub card.
+26. **Nouvelle Commande (New Order Flow)**: Two-page order creation flow under sidebar submenu "Nouvelle commande" → Ajouter / Importer. `new-order-add.tsx` (`/orders/add`): full manual form with Moroccan city dropdown, toggles (canOpen/isStock/replace), agent assignment, product line items with rawProductName, auto-total calculation; posts to `POST /api/orders/manual`. `new-order-import.tsx` (`/orders/import`): 3-step drag-and-drop Excel/CSV import (upload → column mapping → results); posts to `POST /api/orders/import` with multer + xlsx parsing. Nav sidebar updated with `isNouvelleMenu` submenu rendering matching the Intégrations pattern.
 
 ## API Routes
 ### Auth
@@ -160,6 +161,9 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 - `/integrations/shipping` - Shipping carriers
 - `/integrations/logs` - Integration logs
 - `/admin` - Super admin panel (conditional)
+- `/media-buyers` - Media buyer management (admin)
+- `/publicites` - Ad spend management (role-based: media buyers submit, admins view all)
+- `/mes-depenses` - Legacy ad spend route (backward compat)
 
 ## Environment
 - `DATABASE_URL` - PostgreSQL connection string

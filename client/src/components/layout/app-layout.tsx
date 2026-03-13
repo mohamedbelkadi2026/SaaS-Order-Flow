@@ -50,13 +50,14 @@ const ADMIN_NAV = [
   { name: "Factures",               href: "/invoices",      icon: FileText        },
   { name: "Facturation",            href: "/billing",       icon: CreditCard      },
   { name: "Advanced Profitability", href: "/profitability", icon: Calculator      },
+  { name: "Publicités",             href: "/publicites",    icon: Receipt         },
   { name: "Integration",            href: "/integrations",  icon: Plug,           hasSubmenu: true  },
 ] as const;
 
 const MEDIA_BUYER_NAV = [
-  { name: "Dashboard",       href: "/",              icon: LayoutDashboard },
-  { name: "Mes Commandes",   href: "/orders",        icon: ShoppingCart, hasSubmenu: true },
-  { name: "Mes Dépenses",    href: "/mes-depenses",  icon: Receipt },
+  { name: "Dashboard",       href: "/",            icon: LayoutDashboard },
+  { name: "Mes Commandes",   href: "/orders",      icon: ShoppingCart, hasSubmenu: true },
+  { name: "Publicités",      href: "/publicites",  icon: Receipt },
 ] as const;
 
 const ORDER_SUB_ITEMS = [

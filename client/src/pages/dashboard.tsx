@@ -849,6 +849,39 @@ export default function Dashboard() {
         )}
       </div>
 
+      {canSeeRevenue && (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 lg:gap-4">
+        <Card className="rounded-xl border-0 shadow-md overflow-hidden" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #8a6930 100%)' }} data-testid="card-total-ad-spend">
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+              <TrendingUp className="w-6 h-6 text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Total Dépenses Pub</p>
+              <p className="text-white text-2xl font-bold">{formatCurrency(stats?.adSpendTotal || 0)}</p>
+              <p className="text-white/70 text-xs mt-0.5">Toutes sources confondues</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-roas">
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center shrink-0">
+              <DollarSign className="w-6 h-6 text-amber-600" />
+            </div>
+            <div className="flex-1">
+              <p className="text-muted-foreground text-xs font-semibold uppercase tracking-widest mb-0.5">ROAS (Retour Pub)</p>
+              <p className="text-foreground text-2xl font-bold">
+                {stats?.adSpendTotal > 0 ? `${stats.roas?.toFixed(2)}x` : '∞'}
+              </p>
+              <p className="text-muted-foreground text-xs mt-0.5">
+                {stats?.adSpendTotal > 0 ? `ROI: ${stats.roi?.toFixed(1)}%` : 'Aucune dépense pub'}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+      )}
+
       {filters.productId !== 'all' && (
         <Card className="rounded-xl border-primary/30 bg-primary/5 shadow-sm" data-testid="card-product-drilldown">
           <CardContent className="p-5">
@@ -1045,6 +1078,7 @@ export default function Dashboard() {
                   <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">En Cours</TableHead>
                   <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">Livrées</TableHead>
                   <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-center">% Livraison</TableHead>
+                  <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground text-right">Coût Pub</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1093,11 +1127,20 @@ export default function Dashboard() {
                           </div>
                         </div>
                       </TableCell>
+                      <TableCell className="text-right">
+                        {p.adCost > 0 ? (
+                          <span className="text-xs font-bold text-amber-700 dark:text-amber-400" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                            -{formatCurrency(p.adCost)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
                     </TableRow>
                   );
                 }) : (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
                       <div className="flex flex-col items-center gap-2">
                         <Package className="w-8 h-8 text-muted-foreground/40" />
                         <span className="text-sm">Aucune donnée disponible</span>

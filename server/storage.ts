@@ -116,6 +116,7 @@ export interface IStorage {
   getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]>;
   upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry>;
   deleteAdSpendEntry(id: number, storeId: number): Promise<void>;
+  getAdminAdSpendList(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]>;
   getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
@@ -1271,11 +1272,12 @@ export class DatabaseStorage implements IStorage {
         eq(adSpendTracking.storeId, entry.storeId),
         eq(adSpendTracking.mediaBuyerId, entry.mediaBuyerId),
         eq(adSpendTracking.date, entry.date),
-        entry.productId ? eq(adSpendTracking.productId, entry.productId) : sql`${adSpendTracking.productId} IS NULL`
+        entry.productId ? eq(adSpendTracking.productId, entry.productId) : sql`${adSpendTracking.productId} IS NULL`,
+        entry.source ? eq(adSpendTracking.source, entry.source) : sql`${adSpendTracking.source} IS NULL`
       ));
     if (existing.length > 0) {
       const [updated] = await db.update(adSpendTracking)
-        .set({ amount: entry.amount, notes: entry.notes ?? null })
+        .set({ amount: entry.amount, notes: entry.notes ?? null, source: entry.source ?? null })
         .where(eq(adSpendTracking.id, existing[0].id))
         .returning();
       return updated;
@@ -1287,6 +1289,24 @@ export class DatabaseStorage implements IStorage {
   async deleteAdSpendEntry(id: number, storeId: number): Promise<void> {
     await db.delete(adSpendTracking)
       .where(and(eq(adSpendTracking.id, id), eq(adSpendTracking.storeId, storeId)));
+  }
+
+  async getAdminAdSpendList(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]> {
+    const conditions: any[] = [eq(adSpendTracking.storeId, storeId)];
+    if (dateFrom) conditions.push(sql`${adSpendTracking.date} >= ${dateFrom}`);
+    if (dateTo) conditions.push(sql`${adSpendTracking.date} <= ${dateTo}`);
+    const entries = await db.select().from(adSpendTracking)
+      .where(and(...conditions))
+      .orderBy(desc(adSpendTracking.date));
+    const allUsers = await db.select({ id: users.id, username: users.username }).from(users).where(eq(users.storeId, storeId));
+    const userMap = new Map(allUsers.map(u => [u.id, u.username]));
+    const allProducts = await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.storeId, storeId));
+    const productMap = new Map(allProducts.map(p => [p.id, p.name]));
+    return entries.map(e => ({
+      ...e,
+      buyerName: e.mediaBuyerId ? (userMap.get(e.mediaBuyerId) ?? `User ${e.mediaBuyerId}`) : 'Inconnu',
+      productName: e.productId ? (productMap.get(e.productId) ?? `Produit ${e.productId}`) : null,
+    }));
   }
 
   async getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
