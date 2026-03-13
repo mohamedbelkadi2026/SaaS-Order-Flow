@@ -1,0 +1,33 @@
+"I need to implement a professional 'Net Profit Engine' for TajerGrow. The system must calculate real-time profitability based on Moroccan COD business rules. Please update the database and UI as follows:
+1. Advanced Cost Configuration (Admin Settings):
+Packaging Cost: Add a global setting field for 'Prix d'emballage par pièce (DH)'.
+Shipping Fees: Ensure each order captures the 'Frais de livraison' (e.g., 35-45 DH) based on the city/carrier.
+Agent Commission: Link with our existing system where each Agent has a 'Commission par Livré'.
+2. Ad Spend & Media Buyer Wallet:
+Ad Spend Table: Create a table Marketing_Spend with: user_id, product_id, date, amount_spent.
+Media Buyer Input:
+Create a page for Media Buyers called 'Mes Dépenses' (My Ad Spend).
+They must be able to enter how much they spent on ads per day per product.
+Profit attribution: When calculating profit for a Media Buyer, the system must subtract ONLY the Ad Spend entered by that specific buyer from the revenue they generated.
+3. The 'Livré' Profit Logic (Crucial):
+Trigger: Profit calculations must ONLY start when an order status is updated to 'Livré' (Delivered).
+The Formula:
+For each 'Livré' order: Order Profit = (Selling Price) - (Buying Price) - (Packaging Cost) - (Shipping Fee) - (Agent Commission).
+Net Profit (Admin/Buyer): (Sum of all Order Profits) - (Total Ad Spend).
+4. Media Buyer Dashboard Update:
+Show a 'Net Profit' card to the Media Buyer (if permitted by Admin).
+Individual ROI: Display (Net Profit / Ad Spend) * 100 to show their efficiency.
+Wallet View: Show their 'Earnings' (if they work on a percentage of profit) or just their performance metrics.
+5. Admin Analytics Table (Advanced Profitability):
+Create a summary table for the Admin showing:
+Total Revenue (from Livré only)
+Total Product Costs
+Total Shipping & Packaging Costs
+Total Commissions Paid to Agents
+Total Ad Spend (Split by Media Buyer)
+Final Net Profit (The bottom line)
+6. Technical Specs:
+Use PostgreSQL for all financial records.
+Ensure all numbers are formatted in DH.
+Add a 'History' log for any changes made to 'Ad Spend' to prevent errors.
+Goal: I want to see exactly how much money is in my pocket after every single expense is deducted, and I want my Media Buyers to see their own profitability based on what they spent on ads."

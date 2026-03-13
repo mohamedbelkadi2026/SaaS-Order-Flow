@@ -25,6 +25,7 @@ import {
   ListOrdered,
   Target,
   X,
+  Receipt,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -53,8 +54,9 @@ const ADMIN_NAV = [
 ] as const;
 
 const MEDIA_BUYER_NAV = [
-  { name: "Dashboard",     href: "/",       icon: LayoutDashboard },
-  { name: "Mes Commandes", href: "/orders", icon: ShoppingCart, hasSubmenu: true },
+  { name: "Dashboard",       href: "/",              icon: LayoutDashboard },
+  { name: "Mes Commandes",   href: "/orders",        icon: ShoppingCart, hasSubmenu: true },
+  { name: "Mes Dépenses",    href: "/mes-depenses",  icon: Receipt },
 ] as const;
 
 const ORDER_SUB_ITEMS = [

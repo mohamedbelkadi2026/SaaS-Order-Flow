@@ -696,6 +696,62 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // MARKETING SPEND (Media Buyer per-buyer ad spend)
+  // ============================================================
+  app.get("/api/marketing-spend", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const dateFrom = req.query.dateFrom as string | undefined;
+    const dateTo = req.query.dateTo as string | undefined;
+    const mediaBuyerId = user.role === 'media_buyer' ? user.id : (req.query.buyerId ? Number(req.query.buyerId) : user.id);
+    res.json(await storage.getMediaBuyerAdSpend(storeId, mediaBuyerId, dateFrom, dateTo));
+  });
+
+  app.post("/api/marketing-spend", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const storeId = user.storeId!;
+      const { date, amount, productId, notes } = req.body;
+      if (!date || !amount) return res.status(400).json({ message: "Date et montant requis" });
+      const amountCents = Math.round(parseFloat(amount) * 100);
+      if (isNaN(amountCents) || amountCents <= 0) return res.status(400).json({ message: "Montant invalide" });
+      const entry = await storage.upsertMediaBuyerAdSpend({
+        storeId, mediaBuyerId: user.id, date,
+        productId: productId ? Number(productId) : null,
+        amount: amountCents, notes: notes || null,
+      });
+      res.json(entry);
+    } catch (err) {
+      res.status(500).json({ message: "Erreur serveur" });
+    }
+  });
+
+  app.delete("/api/marketing-spend/:id", requireAuth, async (req, res) => {
+    const user = req.user!;
+    await storage.deleteAdSpendEntry(Number(req.params.id), user.storeId!);
+    res.json({ ok: true });
+  });
+
+  // ============================================================
+  // NET PROFIT ENGINE
+  // ============================================================
+  app.get("/api/profit/admin-summary", requireAdmin, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const dateFrom = req.query.dateFrom as string | undefined;
+    const dateTo = req.query.dateTo as string | undefined;
+    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo));
+  });
+
+  app.get("/api/media-buyer/profit", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const dateFrom = req.query.dateFrom as string | undefined;
+    const dateTo = req.query.dateTo as string | undefined;
+    const mediaBuyerId = user.role === 'media_buyer' ? user.id : (req.query.buyerId ? Number(req.query.buyerId) : user.id);
+    res.json(await storage.getMediaBuyerProfit(storeId, mediaBuyerId, dateFrom, dateTo));
+  });
+
+  // ============================================================
   // INTEGRATION CRUD
   // ============================================================
   app.get("/api/integrations", requireAuth, async (req, res) => {
@@ -1992,7 +2048,7 @@ export async function registerRoutes(
     if (store.ownerId !== req.user!.id && storeId !== req.user!.storeId) {
       return res.status(403).json({ message: "Accès refusé" });
     }
-    const allowedFields = ['name', 'phone', 'website', 'facebook', 'instagram', 'logoUrl', 'canOpen', 'isStock', 'isRamassage', 'whatsappTemplate'];
+    const allowedFields = ['name', 'phone', 'website', 'facebook', 'instagram', 'logoUrl', 'canOpen', 'isStock', 'isRamassage', 'whatsappTemplate', 'packagingCost'];
     const updateData: any = {};
     for (const key of allowedFields) {
       if (req.body[key] !== undefined) updateData[key] = req.body[key];

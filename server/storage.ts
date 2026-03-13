@@ -113,6 +113,21 @@ export interface IStorage {
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
   deleteStore(id: number): Promise<void>;
 
+  getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]>;
+  upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry>;
+  deleteAdSpendEntry(id: number, storeId: number): Promise<void>;
+  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+    revenue: number; productCost: number; shippingCost: number; packagingCost: number;
+    agentCommissions: number; adSpend: number; netProfit: number;
+    byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
+    byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
+    ordersCount: number;
+  }>;
+  getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
+    revenue: number; productCost: number; shippingCost: number; packagingCost: number;
+    adSpend: number; netProfit: number; roi: number; deliveredCount: number;
+  }>;
+
   getAllStores(): Promise<(Store & { ownerEmail?: string | null; subscription?: Subscription | null })[]>;
   getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number }>;
   toggleStoreActive(storeId: number, isActive: number): Promise<void>;
@@ -1236,6 +1251,163 @@ export class DatabaseStorage implements IStorage {
     await db.delete(subscriptions).where(eq(subscriptions.storeId, id));
     await db.delete(users).where(eq(users.storeId, id));
     await db.delete(stores).where(eq(stores.id, id));
+  }
+
+  async getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]> {
+    const conditions = [
+      eq(adSpendTracking.storeId, storeId),
+      eq(adSpendTracking.mediaBuyerId, mediaBuyerId),
+    ];
+    if (dateFrom) conditions.push(sql`${adSpendTracking.date} >= ${dateFrom}`);
+    if (dateTo) conditions.push(sql`${adSpendTracking.date} <= ${dateTo}`);
+    return await db.select().from(adSpendTracking)
+      .where(and(...conditions))
+      .orderBy(desc(adSpendTracking.date));
+  }
+
+  async upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry> {
+    const existing = await db.select().from(adSpendTracking)
+      .where(and(
+        eq(adSpendTracking.storeId, entry.storeId),
+        eq(adSpendTracking.mediaBuyerId, entry.mediaBuyerId),
+        eq(adSpendTracking.date, entry.date),
+        entry.productId ? eq(adSpendTracking.productId, entry.productId) : sql`${adSpendTracking.productId} IS NULL`
+      ));
+    if (existing.length > 0) {
+      const [updated] = await db.update(adSpendTracking)
+        .set({ amount: entry.amount, notes: entry.notes ?? null })
+        .where(eq(adSpendTracking.id, existing[0].id))
+        .returning();
+      return updated;
+    }
+    const [created] = await db.insert(adSpendTracking).values(entry).returning();
+    return created;
+  }
+
+  async deleteAdSpendEntry(id: number, storeId: number): Promise<void> {
+    await db.delete(adSpendTracking)
+      .where(and(eq(adSpendTracking.id, id), eq(adSpendTracking.storeId, storeId)));
+  }
+
+  async getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+    revenue: number; productCost: number; shippingCost: number; packagingCost: number;
+    agentCommissions: number; adSpend: number; netProfit: number;
+    byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
+    byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
+    ordersCount: number;
+  }> {
+    const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
+    const storePackaging = store[0]?.packagingCost ?? 0;
+
+    let orderConditions = [eq(orders.storeId, storeId), eq(orders.status, 'delivered')];
+    if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
+    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+
+    const deliveredOrders = await db.select().from(orders).where(and(...orderConditions));
+
+    let revenue = 0, productCost = 0, shippingCost = 0, packagingCostTotal = 0;
+    for (const o of deliveredOrders) {
+      revenue += o.totalPrice;
+      productCost += o.productCost;
+      shippingCost += o.shippingCost;
+      packagingCostTotal += storePackaging;
+    }
+
+    const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
+    const agentUsersAll = await db.select().from(users).where(eq(users.storeId, storeId));
+    const agentMap = new Map<number, { commissionRate: number; name: string }>();
+    for (const s of agentSettingsAll) {
+      const u = agentUsersAll.find(u => u.id === s.agentId);
+      agentMap.set(s.agentId, { commissionRate: s.commissionRate, name: u?.username ?? `Agent ${s.agentId}` });
+    }
+
+    let agentCommissions = 0;
+    const agentCounts = new Map<number, number>();
+    for (const o of deliveredOrders) {
+      if (o.assignedToId) {
+        const rate = agentMap.get(o.assignedToId)?.commissionRate ?? 0;
+        agentCommissions += rate * 100; // commissionRate is in DH, convert to cents
+        agentCounts.set(o.assignedToId, (agentCounts.get(o.assignedToId) ?? 0) + 1);
+      }
+    }
+
+    let adSpendConditions = [eq(adSpendTracking.storeId, storeId)];
+    if (dateFrom) adSpendConditions.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
+    if (dateTo) adSpendConditions.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
+    const allAdSpend = await db.select().from(adSpendTracking).where(and(...adSpendConditions));
+    const totalAdSpend = allAdSpend.reduce((s, e) => s + e.amount, 0);
+
+    const netProfit = revenue - productCost - shippingCost - packagingCostTotal - agentCommissions - totalAdSpend;
+
+    const buyerOrders = new Map<number, { revenue: number; orderProfit: number; name: string }>();
+    for (const o of deliveredOrders) {
+      if (o.mediaBuyerId) {
+        const u = agentUsersAll.find(u => u.id === o.mediaBuyerId);
+        const existing = buyerOrders.get(o.mediaBuyerId) ?? { revenue: 0, orderProfit: 0, name: u?.username ?? `Buyer ${o.mediaBuyerId}` };
+        const agentCommission = o.assignedToId ? (agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0; // convert DH→cents
+        existing.revenue += o.totalPrice;
+        existing.orderProfit += o.totalPrice - o.productCost - o.shippingCost - storePackaging - agentCommission;
+        buyerOrders.set(o.mediaBuyerId, existing);
+      }
+    }
+    const buyerAdSpend = new Map<number, number>();
+    for (const e of allAdSpend) {
+      if (e.mediaBuyerId) buyerAdSpend.set(e.mediaBuyerId, (buyerAdSpend.get(e.mediaBuyerId) ?? 0) + e.amount);
+    }
+    const allBuyerIds = new Set([...buyerOrders.keys(), ...buyerAdSpend.keys()]);
+    const byBuyer = Array.from(allBuyerIds).map(bid => {
+      const bo = buyerOrders.get(bid);
+      const bSpend = buyerAdSpend.get(bid) ?? 0;
+      const bRevenue = bo?.revenue ?? 0;
+      const bOrderProfit = bo?.orderProfit ?? 0;
+      const u = agentUsersAll.find(u => u.id === bid);
+      return { buyerId: bid, buyerName: u?.username ?? bo?.name ?? `Buyer ${bid}`, adSpend: bSpend, revenue: bRevenue, netProfit: bOrderProfit - bSpend };
+    });
+
+    const byAgent = Array.from(agentCounts.entries()).map(([agentId, count]) => {
+      const info = agentMap.get(agentId);
+      return { agentId, agentName: info?.name ?? `Agent ${agentId}`, commissionRate: info?.commissionRate ?? 0, deliveredCount: count, totalCommission: count * (info?.commissionRate ?? 0) };
+    });
+
+    return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, agentCommissions, adSpend: totalAdSpend, netProfit, byBuyer, byAgent, ordersCount: deliveredOrders.length };
+  }
+
+  async getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
+    revenue: number; productCost: number; shippingCost: number; packagingCost: number;
+    adSpend: number; netProfit: number; roi: number; deliveredCount: number;
+  }> {
+    const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
+    const storePackaging = store[0]?.packagingCost ?? 0;
+
+    let orderConditions = [
+      eq(orders.storeId, storeId),
+      eq(orders.status, 'delivered'),
+      eq(orders.mediaBuyerId, mediaBuyerId),
+    ];
+    if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
+    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+
+    const buyerOrders = await db.select().from(orders).where(and(...orderConditions));
+
+    let revenue = 0, productCost = 0, shippingCost = 0;
+    for (const o of buyerOrders) {
+      revenue += o.totalPrice;
+      productCost += o.productCost;
+      shippingCost += o.shippingCost;
+    }
+    const packagingCostTotal = buyerOrders.length * storePackaging;
+
+    let adSpendConditions = [eq(adSpendTracking.storeId, storeId), eq(adSpendTracking.mediaBuyerId, mediaBuyerId)];
+    if (dateFrom) adSpendConditions.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
+    if (dateTo) adSpendConditions.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
+    const adSpendEntries = await db.select().from(adSpendTracking).where(and(...adSpendConditions));
+    const adSpend = adSpendEntries.reduce((s, e) => s + e.amount, 0);
+
+    const orderProfit = revenue - productCost - shippingCost - packagingCostTotal;
+    const netProfit = orderProfit - adSpend;
+    const roi = adSpend > 0 ? (netProfit / adSpend) * 100 : 0;
+
+    return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, adSpend, netProfit, roi, deliveredCount: buyerOrders.length };
   }
 }
 

@@ -1,6 +1,6 @@
 import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance, useAgentStoreSettings } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,8 +14,10 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet } from "lucide-react";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 
 const PIE_COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#64748b'];
 
@@ -89,6 +91,8 @@ export default function Dashboard() {
     enabled: isAgent,
   });
 
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [platformFilter, setPlatformFilter] = useState('all');
   const [mbDateRange, setMbDateRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
   const [mbCityFilter, setMbCityFilter] = useState('all');
@@ -117,6 +121,20 @@ export default function Dashboard() {
     },
     enabled: isMediaBuyer,
   });
+  const { data: mbProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number }>({
+    queryKey: ['/api/media-buyer/profit', mbDateRange.from, mbDateRange.to],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (mbDateRange.from) params.set('dateFrom', mbDateRange.from);
+      if (mbDateRange.to) params.set('dateTo', mbDateRange.to);
+      const qs = params.toString();
+      const res = await fetch(`/api/media-buyer/profit${qs ? `?${qs}` : ''}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch profit');
+      return res.json();
+    },
+    enabled: isMediaBuyer,
+  });
+
   const { data: commissionsSummary } = useQuery<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>({
     queryKey: ['/api/stats/commissions-summary'],
     enabled: !isAgent,
@@ -405,6 +423,38 @@ export default function Dashboard() {
             <CheckCircle className="w-12 h-12 opacity-30" />
           </div>
         </div>
+
+        {/* Net Profit Engine — Media Buyer */}
+        {mbProfit && (
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <div className="sm:col-span-4 flex items-center gap-2 pb-0.5">
+              <Wallet className="w-4 h-4 text-primary" />
+              <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Net Profit Engine</span>
+            </div>
+            <div className="rounded-xl p-4 text-white sm:col-span-2" style={{ background: 'linear-gradient(135deg, hsl(220 72% 38%), hsl(220 72% 28%))' }} data-testid="card-mb-net-profit">
+              <p className="text-xs font-semibold opacity-80 uppercase tracking-wide mb-1">Profit Net (Livrées)</p>
+              <p className="text-3xl font-extrabold leading-none">{formatCurrency(mbProfit.netProfit)}</p>
+              <div className="flex gap-4 mt-2 text-xs opacity-80">
+                <span>Revenu: {formatCurrency(mbProfit.revenue)}</span>
+                <span>{mbProfit.deliveredCount} livrées</span>
+              </div>
+            </div>
+            <div className="rounded-xl p-4 text-white" style={{ background: mbProfit.roi >= 0 ? '#16a34a' : '#dc2626' }} data-testid="card-mb-roi">
+              <p className="text-xs font-semibold opacity-80 uppercase tracking-wide mb-1">ROI</p>
+              <p className="text-3xl font-extrabold leading-none">{mbProfit.adSpend > 0 ? `${mbProfit.roi.toFixed(1)}%` : '∞'}</p>
+              <p className="text-xs opacity-80 mt-2">Pub: {formatCurrency(mbProfit.adSpend)}</p>
+            </div>
+            <div className="rounded-xl p-4 bg-muted/60 border border-border/50" data-testid="card-mb-costs">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Déductions</p>
+              <div className="space-y-0.5 text-xs">
+                <div className="flex justify-between"><span className="text-muted-foreground">Coût produit</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.productCost)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Livraison</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.shippingCost)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Emballage</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.packagingCost)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Dépenses pub</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.adSpend)}</span></div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Line Chart */}
         {(mb?.daily?.length ?? 0) > 0 && (

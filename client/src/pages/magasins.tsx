@@ -50,12 +50,13 @@ interface StoreForm {
   isStock: boolean;
   isRamassage: boolean;
   whatsappTemplate: string;
+  packagingCost: number;
 }
 
 const defaultForm: StoreForm = {
   name: "", phone: "0600000000", website: "https://example.com",
   facebook: "", instagram: "", canOpen: true, isStock: false, isRamassage: true,
-  whatsappTemplate: "",
+  whatsappTemplate: "", packagingCost: 0,
 };
 
 // ---- Reusable inline multi-select dropdown ----
@@ -288,6 +289,20 @@ function StoreModal({
             </div>
 
             <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Prix emballage (DH/pièce)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Ex: 3.00"
+                  value={form.packagingCost}
+                  onChange={e => setForm(f => ({ ...f, packagingCost: parseFloat(e.target.value) || 0 }))}
+                  className="w-full h-8 text-sm px-3 border border-border rounded-md bg-background"
+                  data-testid="input-packaging-cost"
+                />
+                <p className="text-[10px] text-muted-foreground">Coût d'emballage par commande, déduit du profit net.</p>
+              </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm">Peut ouvrir</span>
                 <Switch checked={form.canOpen} onCheckedChange={v => setForm(f => ({ ...f, canOpen: v }))} data-testid="switch-can-open" />
@@ -503,6 +518,7 @@ export default function Magasins() {
     isStock: store.isStock === 1,
     isRamassage: store.isRamassage === 1,
     whatsappTemplate: store.whatsappTemplate || "",
+    packagingCost: Math.round((store.packagingCost || 0) / 100),
   });
 
   const formToPayload = (f: StoreForm) => ({
@@ -515,6 +531,7 @@ export default function Magasins() {
     isStock: f.isStock ? 1 : 0,
     isRamassage: f.isRamassage ? 1 : 0,
     whatsappTemplate: f.whatsappTemplate || null,
+    packagingCost: Math.round((f.packagingCost || 0) * 100),
   });
 
   const handleLogoUpload = async (storeId: number, base64: string) => {

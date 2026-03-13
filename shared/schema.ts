@@ -18,6 +18,7 @@ export const stores = pgTable("stores", {
   isRamassage: integer("is_ramassage").default(0),
   whatsappTemplate: text("whatsapp_template"),
   webhookKey: text("webhook_key"),
+  packagingCost: integer("packaging_cost").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -119,9 +120,11 @@ export const orderItems = pgTable("order_items", {
 export const adSpendTracking = pgTable("ad_spend_tracking", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
+  mediaBuyerId: integer("media_buyer_id").references(() => users.id),
   productId: integer("product_id").references(() => products.id),
   date: text("date").notNull(),
   amount: integer("amount").notNull().default(0),
+  notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

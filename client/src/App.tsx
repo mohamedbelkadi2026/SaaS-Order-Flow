@@ -30,6 +30,7 @@ import Invoices from "@/pages/invoices";
 import Magasins from "@/pages/magasins";
 import AllOrders from "@/pages/all-orders";
 import MediaBuyersPage from "@/pages/media-buyers";
+import MesDepenses from "@/pages/mes-depenses";
 
 const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
@@ -105,6 +106,7 @@ function ProtectedRoutes() {
             <Route path="/integrations/logs" component={IntegrationLogs} />
             <Route path="/admin" component={Admin} />
             <Route path="/media-buyers" component={MediaBuyersPage} />
+            <Route path="/mes-depenses" component={MesDepenses} />
             <Route component={NotFound} />
           </Switch>
         </AgentGuard>
