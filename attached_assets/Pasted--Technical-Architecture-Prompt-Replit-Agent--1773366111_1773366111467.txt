@@ -1,0 +1,37 @@
+
+هذا هو "البرومبت الهندسي" (Technical Architecture Prompt) الذي سيجعل Replit Agent يبني لك نظام الفلترة المتقدم (Advanced Filter Bar) ونظام اختيار التاريخ (Date Range Picker) في حساب الميديا باير، تماماً كما في الصور التي أرفقتها.
+البرومبت النهائي لنظام إحصائيات الميديا باير (TajerGrow)
+انسخ النص التالي وضعه في Replit Agent:
+"I need to implement a professional Statistics Filter Bar in the Media Buyer Dashboard, matching the exact UI and logic shown in the provided screenshots (Images 1 & 2).
+1. UI Implementation: The Filter Bar (Refer to Image 2)
+Create a horizontal filter bar at the top of the Media Buyer Dashboard labeled 'STATISTICS'.
+Drop-down Menus (Select components): Implement these specific filters:
+Toutes les Villes (Filter by city).
+Tous les Produits (Filter by specific product).
+Toutes les Sources (Filter by Traffic Source e.g. Facebook, TikTok).
+Campaign Source (Filter by utm_campaign).
+Date Picker (Custom range display).
+Styling: Use a clean white background for selects, thin grey borders, and professional typography. Ensure it is responsive (vertical stack on mobile).
+2. Advanced Date Picker Logic (Refer to Image 1):
+Implement a Date Range Picker with a sidebar for presets:
+Aujourd'hui (Today).
+Hier (Yesterday).
+Dernier 7 Jours (Last 7 days).
+Dernier 30 Jours (Last 30 days).
+Ce Mois (Current month).
+Dernier Mois (Previous month).
+Calendar View: Show two side-by-side calendars (as seen in image 1) for manual range selection.
+Apply Action: Clicking 'Apply' must immediately refresh all dashboard cards and charts.
+3. Data Attribution & Security (Crucial):
+Deep Tracking Sync: Ensure that even with these filters, the Media Buyer can ONLY see data attributed to their unique code (from the CODE*PLATFORM logic).
+Logic: Every filtered query must include the mandatory condition: WHERE utm_source LIKE 'BUYER_CODE*%'.
+4. Functional Integration:
+When any filter (City, Product, or Date) is changed, the following components must update in real-time:
+Stats Cards: (Total Leads, Confirmation Rate, Livré Count).
+Charts: (Sales Comparison line chart).
+Analytics Tables: (Produits Commandés & Commandes par Ville).
+5. Technical Specifications:
+Use Date-fns or Day.js for handling date logic.
+Use React-Date-Range or a similar library to match the calendar UI in the screenshot.
+Ensure the backend analytics API supports multiple query parameters (city, product, startDate, endDate).
+Goal: Provide the Media Buyer with a powerful analytical tool that looks exactly like the high-end 'Garean' style shown in the images, while keeping their data strictly private."

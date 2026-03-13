@@ -663,7 +663,7 @@ export class DatabaseStorage implements IStorage {
     return buyer;
   }
 
-  async getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string, dateFrom?: string, dateTo?: string, city?: string): Promise<any> {
+  async getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string, dateFrom?: string, dateTo?: string, city?: string, product?: string, campaign?: string): Promise<any> {
     // Get buyer's code for UTM fallback matching
     const [buyer] = await db.select({ buyerCode: users.buyerCode }).from(users).where(eq(users.id, mediaBuyerId));
     const buyerCode = buyer?.buyerCode;
@@ -691,11 +691,40 @@ export class DatabaseStorage implements IStorage {
     if (city && city !== 'all') {
       allOrders = allOrders.filter(o => (o.customerCity || '').toLowerCase() === city.toLowerCase());
     }
-    // Correct status strings matching the actual DB values
+    if (campaign && campaign !== 'all') {
+      allOrders = allOrders.filter(o => (o.utmCampaign || '').toLowerCase() === campaign.toLowerCase());
+    }
+    // Collect all unique campaigns before product filter (for dropdown population)
+    const campaigns = [...new Set(allOrders.map(o => o.utmCampaign).filter(Boolean))].sort() as string[];
     const CONFIRMED_STATUSES = ['confirme', 'in_progress', 'expédié', 'retourné', 'delivered'];
     const DELIVERED_STATUS = 'delivered';
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
+    const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
 
+    // Fetch all order items for the current order set
+    const orderIds = allOrders.map(o => o.id);
+    let allItems: any[] = [];
+    if (orderIds.length > 0) {
+      allItems = await db.select({
+        orderId: orderItems.orderId,
+        rawProductName: orderItems.rawProductName,
+        orderStatus: orders.status,
+      }).from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(inArray(orderItems.orderId, orderIds));
+    }
+
+    // Apply product filter — narrow orders to those containing the selected product
+    if (product && product !== 'all' && allItems.length > 0) {
+      const matchingOrderIds = new Set(
+        allItems
+          .filter(i => (i.rawProductName || '').toLowerCase() === product.toLowerCase())
+          .map(i => i.orderId)
+      );
+      allOrders = allOrders.filter(o => matchingOrderIds.has(o.id));
+    }
+
+    // Compute stats over the fully-filtered order set
     const total = allOrders.length;
     const confirmed = allOrders.filter(o => CONFIRMED_STATUSES.includes(o.status)).length;
     const inProgress = allOrders.filter(o => o.status === 'in_progress').length;
@@ -704,7 +733,6 @@ export class DatabaseStorage implements IStorage {
     const revenue = allOrders.filter(o => o.status === DELIVERED_STATUS).reduce((s, o) => s + o.totalPrice, 0);
     const confirmRate = total > 0 ? Math.round((confirmed / total) * 100) : 0;
     const deliveryRate = total > 0 ? Math.round((delivered / total) * 100) : 0;
-    const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
 
     const dailyMap: Record<string, { total: number; confirmed: number; delivered: number }> = {};
     for (const o of allOrders) {
@@ -741,36 +769,27 @@ export class DatabaseStorage implements IStorage {
       }))
       .sort((a, b) => b.total - a.total);
 
-    const orderIds = allOrders.map(o => o.id);
-    let products: any[] = [];
-    if (orderIds.length > 0) {
-      const items = await db.select({
-        orderId: orderItems.orderId,
-        rawProductName: orderItems.rawProductName,
-        orderStatus: orders.status,
-      }).from(orderItems)
-        .innerJoin(orders, eq(orderItems.orderId, orders.id))
-        .where(inArray(orderItems.orderId, orderIds));
-      const productMap: Record<string, { total: number; confirmed: number; inProgress: number; delivered: number }> = {};
-      for (const item of items) {
-        const name = item.rawProductName || 'Inconnu';
-        if (!productMap[name]) productMap[name] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
-        productMap[name].total++;
-        if (['confirme', 'in_progress', 'expédié', 'retourné', 'delivered'].includes(item.orderStatus)) productMap[name].confirmed++;
-        if (item.orderStatus === 'in_progress') productMap[name].inProgress++;
-        if (item.orderStatus === 'delivered') productMap[name].delivered++;
-      }
-      products = Object.entries(productMap)
-        .map(([name, d]) => ({
-          name,
-          ...d,
-          confirmRate: d.total > 0 ? Math.round((d.confirmed / d.total) * 100) : 0,
-          deliveryRate: d.total > 0 ? Math.round((d.delivered / d.total) * 100) : 0,
-        }))
-        .sort((a, b) => b.total - a.total);
+    const filteredOrderIds = new Set(allOrders.map(o => o.id));
+    const filteredItems = allItems.filter(i => filteredOrderIds.has(i.orderId));
+    const productMap: Record<string, { total: number; confirmed: number; inProgress: number; delivered: number }> = {};
+    for (const item of filteredItems) {
+      const name = item.rawProductName || 'Inconnu';
+      if (!productMap[name]) productMap[name] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
+      productMap[name].total++;
+      if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[name].confirmed++;
+      if (item.orderStatus === 'in_progress') productMap[name].inProgress++;
+      if (item.orderStatus === DELIVERED_STATUS) productMap[name].delivered++;
     }
+    const products = Object.entries(productMap)
+      .map(([name, d]) => ({
+        name,
+        ...d,
+        confirmRate: d.total > 0 ? Math.round((d.confirmed / d.total) * 100) : 0,
+        deliveryRate: d.total > 0 ? Math.round((d.delivered / d.total) * 100) : 0,
+      }))
+      .sort((a, b) => b.total - a.total);
 
-    return { total, confirmed, inProgress, delivered, cancelled, revenue, confirmRate, deliveryRate, platforms, daily, products, cities };
+    return { total, confirmed, inProgress, delivered, cancelled, revenue, confirmRate, deliveryRate, platforms, daily, products, cities, campaigns };
   }
 
   async getMediaBuyersSummary(storeId: number): Promise<any[]> {

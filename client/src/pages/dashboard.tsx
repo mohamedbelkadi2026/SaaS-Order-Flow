@@ -15,6 +15,7 @@ import {
   PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown } from "lucide-react";
+import { DateRangePicker } from "@/components/date-range-picker";
 
 const PIE_COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#64748b'];
 
@@ -89,22 +90,25 @@ export default function Dashboard() {
   });
 
   const [platformFilter, setPlatformFilter] = useState('all');
-  const [mbDateFrom, setMbDateFrom] = useState('');
-  const [mbDateTo, setMbDateTo] = useState('');
+  const [mbDateRange, setMbDateRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
   const [mbCityFilter, setMbCityFilter] = useState('all');
+  const [mbProductFilter, setMbProductFilter] = useState('all');
+  const [mbCampaignFilter, setMbCampaignFilter] = useState('all');
   const [linkPlatform, setLinkPlatform] = useState('');
   const [linkCampaign, setLinkCampaign] = useState('');
   const [linkBaseUrl, setLinkBaseUrl] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
 
-  const { data: mediaBuyerStats } = useQuery<{ total: number; confirmed: number; inProgress: number; delivered: number; cancelled: number; revenue: number; confirmRate: number; deliveryRate: number; platforms: string[]; daily: any[]; products: any[]; cities: any[] }>({
-    queryKey: ['/api/media-buyer/stats', platformFilter, mbDateFrom, mbDateTo, mbCityFilter],
+  const { data: mediaBuyerStats } = useQuery<{ total: number; confirmed: number; inProgress: number; delivered: number; cancelled: number; revenue: number; confirmRate: number; deliveryRate: number; platforms: string[]; daily: any[]; products: any[]; cities: any[]; campaigns: string[] }>({
+    queryKey: ['/api/media-buyer/stats', platformFilter, mbDateRange.from, mbDateRange.to, mbCityFilter, mbProductFilter, mbCampaignFilter],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (platformFilter && platformFilter !== 'all') params.set('platform', platformFilter);
-      if (mbDateFrom) params.set('dateFrom', mbDateFrom);
-      if (mbDateTo) params.set('dateTo', mbDateTo);
+      if (mbDateRange.from) params.set('dateFrom', mbDateRange.from);
+      if (mbDateRange.to) params.set('dateTo', mbDateRange.to);
       if (mbCityFilter && mbCityFilter !== 'all') params.set('city', mbCityFilter);
+      if (mbProductFilter && mbProductFilter !== 'all') params.set('product', mbProductFilter);
+      if (mbCampaignFilter && mbCampaignFilter !== 'all') params.set('campaign', mbCampaignFilter);
       const qs = params.toString();
       const url = `/api/media-buyer/stats${qs ? `?${qs}` : ''}`;
       const res = await fetch(url, { credentials: 'include' });
@@ -217,6 +221,9 @@ export default function Dashboard() {
     const PLATFORMS = ['Facebook-Ads', 'TikTok-Ads', 'Google-Ads', 'Snapchat-Ads'];
     const allPlatforms = [...new Set([...PLATFORMS, ...(mediaBuyerStats?.platforms || [])])];
     const allCities = [...new Set((mediaBuyerStats?.cities || []).map((c: any) => c.name))];
+    const allProducts = [...new Set((mediaBuyerStats?.products || []).map((p: any) => p.name as string).filter(Boolean))];
+    const allCampaigns = [...new Set((mediaBuyerStats?.campaigns || []))];
+    const hasActiveFilters = platformFilter !== 'all' || mbCityFilter !== 'all' || mbProductFilter !== 'all' || mbCampaignFilter !== 'all' || mbDateRange.from || mbDateRange.to;
 
     const generatedLink = (() => {
       if (!linkBaseUrl) return '';
@@ -256,53 +263,97 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Filter bar */}
-        <div className="flex flex-wrap gap-2 items-center p-3 bg-muted/30 rounded-xl border border-border/50">
-          <Select value={platformFilter} onValueChange={setPlatformFilter}>
-            <SelectTrigger className="h-8 text-xs w-40" data-testid="select-platform-filter">
-              <SelectValue placeholder="Toutes les Sources" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Toutes les Sources</SelectItem>
-              {allPlatforms.map(p => (
-                <SelectItem key={p} value={p}>{p}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={mbCityFilter} onValueChange={setMbCityFilter}>
-            <SelectTrigger className="h-8 text-xs w-36" data-testid="select-mb-city">
-              <SelectValue placeholder="Toutes les Villes" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Toutes les Villes</SelectItem>
-              {allCities.map(c => (
-                <SelectItem key={c} value={c}>{c}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="flex items-center gap-1.5">
-            <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
-            <input
-              type="date"
-              value={mbDateFrom}
-              onChange={e => setMbDateFrom(e.target.value)}
-              className="h-8 px-2 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-              data-testid="input-mb-date-from"
-            />
-            <span className="text-muted-foreground text-xs">→</span>
-            <input
-              type="date"
-              value={mbDateTo}
-              onChange={e => setMbDateTo(e.target.value)}
-              className="h-8 px-2 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-              data-testid="input-mb-date-to"
-            />
+        {/* Professional Filter Bar */}
+        <div className="bg-white dark:bg-card border border-border/60 rounded-xl shadow-sm">
+          <div className="px-4 pt-3 pb-1 border-b border-border/40">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Statistiques — Filtres</span>
           </div>
-          {(platformFilter !== 'all' || mbCityFilter !== 'all' || mbDateFrom || mbDateTo) && (
-            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => { setPlatformFilter('all'); setMbCityFilter('all'); setMbDateFrom(''); setMbDateTo(''); }} data-testid="button-mb-reset-filters">
-              Réinitialiser
-            </Button>
-          )}
+          <div className="flex flex-wrap items-center gap-0 divide-x divide-border/40">
+            {/* City */}
+            <div className="px-3 py-2.5">
+              <Select value={mbCityFilter} onValueChange={setMbCityFilter}>
+                <SelectTrigger className="h-8 text-sm border-0 shadow-none focus:ring-0 w-auto min-w-[130px] bg-transparent" data-testid="select-mb-city">
+                  <SelectValue placeholder="Toutes les Villes" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les Villes</SelectItem>
+                  {allCities.map(c => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {/* Product */}
+            <div className="px-3 py-2.5">
+              <Select value={mbProductFilter} onValueChange={setMbProductFilter}>
+                <SelectTrigger className="h-8 text-sm border-0 shadow-none focus:ring-0 w-auto min-w-[140px] bg-transparent" data-testid="select-mb-product">
+                  <SelectValue placeholder="Tous les Produits" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les Produits</SelectItem>
+                  {allProducts.map(p => (
+                    <SelectItem key={p} value={p}>{p}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {/* Platform / Source */}
+            <div className="px-3 py-2.5">
+              <Select value={platformFilter} onValueChange={setPlatformFilter}>
+                <SelectTrigger className="h-8 text-sm border-0 shadow-none focus:ring-0 w-auto min-w-[150px] bg-transparent" data-testid="select-platform-filter">
+                  <SelectValue placeholder="Toutes les Sources" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les Sources</SelectItem>
+                  {allPlatforms.map(p => (
+                    <SelectItem key={p} value={p}>{p}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {/* Campaign */}
+            <div className="px-3 py-2.5">
+              <Select value={mbCampaignFilter} onValueChange={setMbCampaignFilter}>
+                <SelectTrigger className="h-8 text-sm border-0 shadow-none focus:ring-0 w-auto min-w-[150px] bg-transparent" data-testid="select-mb-campaign">
+                  <SelectValue placeholder="Toutes les Campagnes" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les Campagnes</SelectItem>
+                  {allCampaigns.map(c => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {/* Date Range Picker */}
+            <div className="px-3 py-2 ml-auto">
+              <DateRangePicker
+                value={mbDateRange}
+                onChange={setMbDateRange}
+                placeholder="Toutes les Dates"
+              />
+            </div>
+            {/* Reset button */}
+            {hasActiveFilters && (
+              <div className="px-3 py-2 border-l border-border/40">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setPlatformFilter('all');
+                    setMbCityFilter('all');
+                    setMbProductFilter('all');
+                    setMbCampaignFilter('all');
+                    setMbDateRange({ from: '', to: '' });
+                  }}
+                  data-testid="button-mb-reset-filters"
+                >
+                  Réinitialiser
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* 6 Stats Cards — row 1 */}

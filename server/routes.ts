@@ -1663,7 +1663,9 @@ export async function registerRoutes(
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
     const city = req.query.city as string | undefined;
-    const stats = await storage.getMediaBuyerStats(storeId, user.id, platform, dateFrom, dateTo, city);
+    const product = req.query.product as string | undefined;
+    const campaign = req.query.campaign as string | undefined;
+    const stats = await storage.getMediaBuyerStats(storeId, user.id, platform, dateFrom, dateTo, city, product, campaign);
     res.json(stats);
   });
 
