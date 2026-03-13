@@ -893,7 +893,9 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
-    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo));
+    const productId = req.query.productId && req.query.productId !== 'all' ? Number(req.query.productId) : undefined;
+    const mediaBuyerIdFilter = req.query.mediaBuyerId && req.query.mediaBuyerId !== 'all' ? Number(req.query.mediaBuyerId) : undefined;
+    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter));
   });
 
   app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {

@@ -1397,7 +1397,13 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
-  async getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+  async getAdminProfitSummary(
+    storeId: number,
+    dateFrom?: string,
+    dateTo?: string,
+    productId?: number,
+    mediaBuyerIdFilter?: number,
+  ): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
     byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
@@ -1407,65 +1413,95 @@ export class DatabaseStorage implements IStorage {
     const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
     const storePackaging = store[0]?.packagingCost ?? 0;
 
-    let orderConditions = [eq(orders.storeId, storeId), eq(orders.status, 'delivered')];
-    if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
-    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+    // --- Delivered orders (COD: only status='delivered' counts) ---
+    const orderConds: any[] = [eq(orders.storeId, storeId), eq(orders.status, 'delivered')];
+    if (dateFrom) orderConds.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
+    if (dateTo) orderConds.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+    if (mediaBuyerIdFilter) orderConds.push(eq(orders.mediaBuyerId, mediaBuyerIdFilter));
+    let deliveredOrders = await db.select().from(orders).where(and(...orderConds));
 
-    const deliveredOrders = await db.select().from(orders).where(and(...orderConditions));
+    // Product filter: keep only orders that have an item for the given product
+    if (productId) {
+      const matchingItems = await db
+        .select({ orderId: orderItems.orderId })
+        .from(orderItems)
+        .where(eq(orderItems.productId, productId));
+      const matchingOrderIds = new Set(matchingItems.map(i => i.orderId));
+      deliveredOrders = deliveredOrders.filter(o => matchingOrderIds.has(o.id));
+    }
 
+    // --- Revenue & order costs (delivered only) ---
     let revenue = 0, productCost = 0, shippingCost = 0, packagingCostTotal = 0;
     for (const o of deliveredOrders) {
-      revenue += o.totalPrice;
-      productCost += o.productCost;
-      shippingCost += o.shippingCost;
+      revenue += (o.totalPrice ?? 0);
+      productCost += (o.productCost ?? 0);
+      shippingCost += (o.shippingCost ?? 0);
       packagingCostTotal += storePackaging;
     }
 
+    // --- Agent commissions (delivered orders only) ---
     const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
     const agentUsersAll = await db.select().from(users).where(eq(users.storeId, storeId));
     const agentMap = new Map<number, { commissionRate: number; name: string }>();
     for (const s of agentSettingsAll) {
       const u = agentUsersAll.find(u => u.id === s.agentId);
-      agentMap.set(s.agentId, { commissionRate: s.commissionRate, name: u?.username ?? `Agent ${s.agentId}` });
+      agentMap.set(s.agentId, { commissionRate: s.commissionRate ?? 0, name: u?.username ?? `Agent ${s.agentId}` });
     }
-
     let agentCommissions = 0;
     const agentCounts = new Map<number, number>();
     for (const o of deliveredOrders) {
       if (o.assignedToId) {
         const rate = agentMap.get(o.assignedToId)?.commissionRate ?? 0;
-        agentCommissions += rate * 100; // commissionRate is in DH, convert to cents
+        agentCommissions += rate * 100; // DH → cents
         agentCounts.set(o.assignedToId, (agentCounts.get(o.assignedToId) ?? 0) + 1);
       }
     }
 
-    let adSpendConditions = [eq(adSpendTracking.storeId, storeId)];
-    if (dateFrom) adSpendConditions.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
-    if (dateTo) adSpendConditions.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
-    const allAdSpend = await db.select().from(adSpendTracking).where(and(...adSpendConditions));
-    const totalAdSpend = allAdSpend.reduce((s, e) => s + e.amount, 0);
+    // --- Ad Spend (exception: ALL spend in date range, not just delivered) ---
+    // Legacy adSpendTracking table
+    const legacyConds: any[] = [eq(adSpendTracking.storeId, storeId)];
+    if (dateFrom) legacyConds.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
+    if (dateTo) legacyConds.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
+    if (mediaBuyerIdFilter) legacyConds.push(eq(adSpendTracking.mediaBuyerId, mediaBuyerIdFilter));
+    const legacyAdSpend = await db.select({ amount: adSpendTracking.amount }).from(adSpendTracking).where(and(...legacyConds));
+    const legacyTotal = legacyAdSpend.reduce((s, e) => s + (e.amount ?? 0), 0);
 
+    // New adSpend (Publicités) table
+    const newAdConds: any[] = [eq(adSpend.storeId, storeId)];
+    if (dateFrom) newAdConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
+    if (dateTo) newAdConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
+    if (mediaBuyerIdFilter) newAdConds.push(eq((adSpend as any).userId, mediaBuyerIdFilter));
+    const newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId }).from(adSpend).where(and(...newAdConds));
+    const newAdTotal = newAdEntries.reduce((s, e) => s + (e.amount ?? 0), 0);
+
+    const totalAdSpend = legacyTotal + newAdTotal;
+
+    // --- Final net profit (COD formula) ---
     const netProfit = revenue - productCost - shippingCost - packagingCostTotal - agentCommissions - totalAdSpend;
 
-    const buyerOrders = new Map<number, { revenue: number; orderProfit: number; name: string }>();
+    // --- byBuyer breakdown ---
+    const buyerOrderMap = new Map<number, { revenue: number; orderProfit: number; name: string }>();
     for (const o of deliveredOrders) {
       if (o.mediaBuyerId) {
         const u = agentUsersAll.find(u => u.id === o.mediaBuyerId);
-        const existing = buyerOrders.get(o.mediaBuyerId) ?? { revenue: 0, orderProfit: 0, name: u?.username ?? `Buyer ${o.mediaBuyerId}` };
-        const agentCommission = o.assignedToId ? (agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0; // convert DH→cents
-        existing.revenue += o.totalPrice;
-        existing.orderProfit += o.totalPrice - o.productCost - o.shippingCost - storePackaging - agentCommission;
-        buyerOrders.set(o.mediaBuyerId, existing);
+        const existing = buyerOrderMap.get(o.mediaBuyerId) ?? { revenue: 0, orderProfit: 0, name: u?.username ?? `Buyer ${o.mediaBuyerId}` };
+        const agentComm = o.assignedToId ? (agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0;
+        existing.revenue += (o.totalPrice ?? 0);
+        existing.orderProfit += (o.totalPrice ?? 0) - (o.productCost ?? 0) - (o.shippingCost ?? 0) - storePackaging - agentComm;
+        buyerOrderMap.set(o.mediaBuyerId, existing);
       }
     }
-    const buyerAdSpend = new Map<number, number>();
-    for (const e of allAdSpend) {
-      if (e.mediaBuyerId) buyerAdSpend.set(e.mediaBuyerId, (buyerAdSpend.get(e.mediaBuyerId) ?? 0) + e.amount);
+    const buyerAdSpendMap = new Map<number, number>();
+    for (const e of legacyAdSpend as any[]) {
+      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, (buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + (e.amount ?? 0));
     }
-    const allBuyerIds = new Set([...buyerOrders.keys(), ...buyerAdSpend.keys()]);
+    for (const e of newAdEntries) {
+      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, (buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + (e.amount ?? 0));
+    }
+    const allBuyerIds = new Set(Array.from(buyerOrderMap.keys()).concat(Array.from(buyerAdSpendMap.keys())));
     const byBuyer = Array.from(allBuyerIds).map(bid => {
-      const bo = buyerOrders.get(bid);
-      const bSpend = buyerAdSpend.get(bid) ?? 0;
+      const bo = buyerOrderMap.get(bid);
+      const bSpend = buyerAdSpendMap.get(bid) ?? 0;
       const bRevenue = bo?.revenue ?? 0;
       const bOrderProfit = bo?.orderProfit ?? 0;
       const u = agentUsersAll.find(u => u.id === bid);

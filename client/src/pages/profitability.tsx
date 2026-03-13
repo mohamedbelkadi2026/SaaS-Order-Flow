@@ -40,17 +40,27 @@ export default function Profitability() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("all");
+  const [selectedBuyer, setSelectedBuyer] = useState("all");
 
   const isAdmin = user?.role === "owner" || user?.role === "admin";
   const isMediaBuyer = user?.role === "media_buyer";
 
-  // Admin summary
+  // Fetch all store users to populate media buyer dropdown
+  const { data: storeUsers } = useQuery<any[]>({
+    queryKey: ["/api/agents"],
+    enabled: isAdmin,
+  });
+  const mediaBuyers = (storeUsers ?? []).filter((u: any) => u.role === "media_buyer" || u.role === "owner" || u.role === "admin");
+
+  // Admin summary — respects product + buyer + date filters
   const { data: summary, isLoading } = useQuery<AdminSummary>({
-    queryKey: ["/api/profit/admin-summary", dateFrom, dateTo],
+    queryKey: ["/api/profit/admin-summary", dateFrom, dateTo, selectedProduct, selectedBuyer],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dateFrom) p.set("dateFrom", dateFrom);
       if (dateTo) p.set("dateTo", dateTo);
+      if (selectedProduct && selectedProduct !== "all") p.set("productId", selectedProduct);
+      if (selectedBuyer && selectedBuyer !== "all") p.set("mediaBuyerId", selectedBuyer);
       const res = await fetch(`/api/profit/admin-summary${p.toString() ? `?${p}` : ""}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed");
       return res.json();
@@ -86,20 +96,23 @@ export default function Profitability() {
     enabled: isMediaBuyer,
   });
 
-  const totalCosts = (summary?.productCost ?? 0) + (summary?.shippingCost ?? 0) + (summary?.packagingCost ?? 0) + (summary?.agentCommissions ?? 0) + (summary?.adSpend ?? 0);
-  const profitMargin = summary?.revenue ? (summary.netProfit / summary.revenue) * 100 : 0;
-  const roas = (summary?.adSpend ?? 0) > 0 ? (summary!.revenue / summary!.adSpend) : 0;
-  const roi = (summary?.adSpend ?? 0) > 0 ? (summary!.netProfit / summary!.adSpend) * 100 : 0;
+  // Derived P&L figures
+  const orderCosts = (summary?.productCost ?? 0) + (summary?.shippingCost ?? 0) + (summary?.packagingCost ?? 0) + (summary?.agentCommissions ?? 0);
+  const totalCosts = orderCosts + (summary?.adSpend ?? 0);
+  const profitMargin = (summary?.revenue ?? 0) > 0 ? ((summary!.netProfit / summary!.revenue) * 100) : 0;
+  const roas = (summary?.adSpend ?? 0) > 0 ? ((summary!.revenue) / summary!.adSpend) : 0;
+  const roi = (summary?.adSpend ?? 0) > 0 ? ((summary!.netProfit / summary!.adSpend) * 100) : 0;
 
   const mbDeliveryRate = mbProfit?.totalLeads ? Math.round((mbProfit.deliveredCount / mbProfit.totalLeads) * 100) : 0;
 
-  const CostRow = ({ label, value, icon: Icon, color = "text-destructive" }: { label: string; value: number; icon?: any; color?: string }) => (
-    <div className="flex items-center justify-between py-2 border-b border-border/40 last:border-0">
+  // Shared cost row component
+  const CostRow = ({ label, value, icon: Icon, indent = false }: { label: string; value: number; icon?: any; indent?: boolean }) => (
+    <div className={`flex items-center justify-between py-2 border-b border-border/40 last:border-0 ${indent ? "pl-4" : ""}`}>
       <span className="text-sm text-muted-foreground flex items-center gap-2">
         {Icon && <Icon className="w-3.5 h-3.5 opacity-70" />}
         {label}
       </span>
-      <span className={`font-semibold text-sm ${color}`}>{value >= 0 ? "-" : "+"}{formatCurrency(Math.abs(value))}</span>
+      <span className="font-semibold text-sm text-destructive">-{formatCurrency(Math.abs(value))}</span>
     </div>
   );
 
@@ -131,7 +144,6 @@ export default function Profitability() {
 
         {/* Personal KPI Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Net Profit — Gold highlight */}
           <Card className="border-none shadow-xl" style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #a8853f 60%, #8a6930 100%)` }}>
             <CardContent className="p-5">
               <div className="flex items-center gap-2 mb-3 opacity-90">
@@ -185,23 +197,29 @@ export default function Profitability() {
         {/* Personal P&L breakdown */}
         <Card className="rounded-2xl border-border/50 shadow-sm max-w-md">
           <CardHeader className="bg-muted/20 border-b border-border/50 py-3 px-5">
-            <CardTitle className="text-sm font-bold">Mon Compte de Résultat</CardTitle>
+            <CardTitle className="text-sm font-bold">Mon Compte de Résultat (Livrées)</CardTitle>
           </CardHeader>
           <CardContent className="p-5">
             {loading ? (
               <div className="space-y-3">{[...Array(5)].map((_, i) => <Skeleton key={i} className="h-5 w-full rounded" />)}</div>
             ) : (
               <div>
-                <div className="flex items-center justify-between py-2 border-b border-border/40 mb-2">
+                <div className="flex items-center justify-between py-2 border-b border-border/40 mb-1">
                   <span className="text-sm font-semibold flex items-center gap-2">
-                    <DollarSign className="w-3.5 h-3.5 text-green-600" />Revenu brut
+                    <DollarSign className="w-3.5 h-3.5 text-green-600" />Revenu Total (Livrées)
                   </span>
                   <span className="font-bold text-green-600 text-sm">+{formatCurrency(p?.revenue ?? 0)}</span>
                 </div>
-                <CostRow label="Coût produits" value={p?.productCost ?? 0} icon={Box} />
-                <CostRow label="Frais de livraison" value={p?.shippingCost ?? 0} icon={Truck} />
-                <CostRow label="Coût emballage" value={p?.packagingCost ?? 0} icon={PackageOpen} />
-                <CostRow label="Mes dépenses pub" value={p?.adSpend ?? 0} icon={Megaphone} />
+                <p className="text-xs text-muted-foreground mb-2 ml-1">Dépenses des commandes livrées :</p>
+                <CostRow label="Coût produits" value={p?.productCost ?? 0} icon={Box} indent />
+                <CostRow label="Frais de livraison" value={p?.shippingCost ?? 0} icon={Truck} indent />
+                <CostRow label="Coût emballage" value={p?.packagingCost ?? 0} icon={PackageOpen} indent />
+                <div className="flex items-center justify-between py-2 border-b border-border/40">
+                  <span className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
+                    <Megaphone className="w-3.5 h-3.5 opacity-70" />Dépenses pub (marketing)
+                  </span>
+                  <span className="font-semibold text-sm text-amber-600">-{formatCurrency(p?.adSpend ?? 0)}</span>
+                </div>
                 <div className="flex items-center justify-between pt-3 mt-2 border-t-2 border-border/60">
                   <span className="font-bold text-sm">Mon Profit Net Final</span>
                   <span className="font-bold text-lg" style={{ color: GOLD }}>
@@ -219,20 +237,34 @@ export default function Profitability() {
   // ─── ADMIN VIEW ──────────────────────────────────────────────────────────────
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
+      {/* Header + Filters */}
       <div className="flex flex-wrap justify-between items-start gap-4">
         <div>
           <h1 className="text-2xl font-display font-bold" data-testid="text-profitability-title">Rentabilité Avancée</h1>
-          <p className="text-muted-foreground text-sm mt-1">Analyse complète — commandes livrées uniquement.</p>
+          <p className="text-muted-foreground text-sm mt-1">Modèle COD — seules les commandes <strong>Livrées</strong> comptent dans le profit.</p>
         </div>
         <div className="flex flex-wrap gap-2 items-center">
           <DateFilters />
           <Select value={selectedProduct} onValueChange={setSelectedProduct}>
-            <SelectTrigger className="w-[180px] h-9 text-sm" data-testid="select-profit-product">
+            <SelectTrigger className="w-[160px] h-9 text-sm" data-testid="select-profit-product">
               <SelectValue placeholder="Tous les produits" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Tous les produits</SelectItem>
-              {products?.map((p: any) => <SelectItem key={p.id} value={p.id.toString()}>{p.name}</SelectItem>)}
+              {(products ?? []).map((p: any) => (
+                <SelectItem key={p.id} value={p.id.toString()}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={selectedBuyer} onValueChange={setSelectedBuyer}>
+            <SelectTrigger className="w-[160px] h-9 text-sm" data-testid="select-profit-buyer">
+              <SelectValue placeholder="Tous les buyers" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tous les buyers</SelectItem>
+              {mediaBuyers.map((u: any) => (
+                <SelectItem key={u.id} value={u.id.toString()}>{u.username}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -240,40 +272,47 @@ export default function Profitability() {
 
       {/* Global KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="bg-primary text-primary-foreground border-none shadow-xl shadow-primary/20">
+        {/* Profit Net — Gold gradient */}
+        <Card className="border-none shadow-xl" style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #a8853f 60%, #8a6930 100%)` }}>
           <CardContent className="p-5">
             <div className="flex items-center gap-2 mb-3 opacity-90">
-              <Calculator className="w-4 h-4" /><h3 className="text-sm font-medium">Profit Net Global</h3>
+              <Calculator className="w-4 h-4 text-white" /><h3 className="text-sm font-medium text-white">Profit Net Global</h3>
             </div>
             {isLoading ? <Skeleton className="h-8 w-28 bg-white/20 rounded" /> : (
-              <p className="text-3xl font-display font-bold" data-testid="text-net-profit">{formatCurrency(summary?.netProfit ?? 0)}</p>
+              <p className="text-3xl font-display font-bold text-white" data-testid="text-net-profit">
+                {formatCurrency(summary?.netProfit ?? 0)}
+              </p>
             )}
-            <p className="mt-1 text-primary-foreground/80 text-xs">
+            <p className="mt-1 text-white/80 text-xs">
               Marge: {profitMargin.toFixed(1)}% | {summary?.ordersCount ?? 0} livrées
             </p>
           </CardContent>
         </Card>
+
         <Card className="rounded-2xl border-border/50">
           <CardContent className="p-5">
-            <div className="flex items-center gap-2 mb-3 text-muted-foreground">
+            <div className="flex items-center gap-2 mb-3 text-green-600">
               <DollarSign className="w-4 h-4" /><h3 className="text-sm font-medium">Revenu (Livrées)</h3>
             </div>
             {isLoading ? <Skeleton className="h-8 w-28 rounded" /> : (
-              <p className="text-3xl font-display font-bold">{formatCurrency(summary?.revenue ?? 0)}</p>
+              <p className="text-3xl font-display font-bold text-green-600">{formatCurrency(summary?.revenue ?? 0)}</p>
             )}
+            <p className="text-xs text-muted-foreground mt-1">{summary?.ordersCount ?? 0} commandes livrées</p>
           </CardContent>
         </Card>
+
         <Card className="rounded-2xl border-border/50">
           <CardContent className="p-5">
             <div className="flex items-center gap-2 mb-3 text-destructive">
               <ArrowDownRight className="w-4 h-4" /><h3 className="text-sm font-medium">Total Coûts</h3>
             </div>
             {isLoading ? <Skeleton className="h-8 w-28 rounded" /> : (
-              <p className="text-3xl font-display font-bold">{formatCurrency(totalCosts)}</p>
+              <p className="text-3xl font-display font-bold text-destructive">{formatCurrency(totalCosts)}</p>
             )}
-            <p className="mt-1 text-muted-foreground text-xs">Produit + Livraison + Emballage + Commissions + Pub</p>
+            <p className="mt-1 text-muted-foreground text-xs">Produits + Livraison + Pub</p>
           </CardContent>
         </Card>
+
         <Card className="rounded-2xl border-border/50 bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20">
           <CardContent className="p-5">
             <div className="flex items-center gap-2 mb-3 text-amber-600">
@@ -291,33 +330,65 @@ export default function Profitability() {
 
       {/* P&L Breakdown + Buyer Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* ── Compte de Résultat ── */}
         <Card className="rounded-2xl border-border/50 shadow-sm">
           <CardHeader className="bg-muted/20 border-b border-border/50 py-3 px-5">
-            <CardTitle className="text-sm font-bold">Compte de Résultat</CardTitle>
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <Calculator className="w-3.5 h-3.5 text-primary" />Compte de Résultat (COD)
+            </CardTitle>
           </CardHeader>
           <CardContent className="p-5">
             {isLoading ? (
-              <div className="space-y-3">{[...Array(6)].map((_, i) => <Skeleton key={i} className="h-5 w-full rounded" />)}</div>
+              <div className="space-y-3">{[...Array(8)].map((_, i) => <Skeleton key={i} className="h-5 w-full rounded" />)}</div>
             ) : (
               <div>
-                <div className="flex items-center justify-between py-2 border-b border-border/40 mb-2">
-                  <span className="text-sm font-semibold flex items-center gap-2"><DollarSign className="w-3.5 h-3.5 text-green-600" />Revenu brut</span>
-                  <span className="font-bold text-green-600 text-sm">+{formatCurrency(summary?.revenue ?? 0)}</span>
+                {/* Revenue row */}
+                <div className="flex items-center justify-between py-2.5 border-b border-border/40 mb-2">
+                  <span className="text-sm font-bold flex items-center gap-2">
+                    <DollarSign className="w-3.5 h-3.5 text-green-600" />
+                    Revenu Total (Livrées)
+                  </span>
+                  <span className="font-bold text-green-600">+{formatCurrency(summary?.revenue ?? 0)}</span>
                 </div>
-                <CostRow label="Coût produits" value={summary?.productCost ?? 0} icon={Box} />
-                <CostRow label="Frais de livraison" value={summary?.shippingCost ?? 0} icon={Truck} />
-                <CostRow label="Coût emballage" value={summary?.packagingCost ?? 0} icon={PackageOpen} />
-                <CostRow label="Commissions agents" value={summary?.agentCommissions ?? 0} icon={Users} />
-                <CostRow label="Dépenses publicitaires" value={summary?.adSpend ?? 0} icon={Megaphone} />
-                <div className="flex items-center justify-between pt-3 mt-2 border-t-2 border-border/60">
-                  <span className="font-bold text-sm">Profit Net Final</span>
-                  <span className="font-bold text-lg" style={{ color: GOLD }}>{formatCurrency(summary?.netProfit ?? 0)}</span>
+
+                {/* Order costs group */}
+                <p className="text-[11px] uppercase font-bold text-muted-foreground/60 tracking-wider mb-1">Dépenses — commandes livrées</p>
+                <CostRow label="Coût d'achat produits" value={summary?.productCost ?? 0} icon={Box} indent />
+                <CostRow label="Frais de livraison" value={summary?.shippingCost ?? 0} icon={Truck} indent />
+                <CostRow label="Coût emballage" value={summary?.packagingCost ?? 0} icon={PackageOpen} indent />
+                <CostRow label="Commissions agents" value={summary?.agentCommissions ?? 0} icon={Users} indent />
+
+                {/* Order costs subtotal */}
+                <div className="flex items-center justify-between py-2 my-1 bg-muted/20 rounded px-2">
+                  <span className="text-sm font-semibold text-muted-foreground">Sous-total coûts livrées</span>
+                  <span className="font-bold text-sm text-destructive">-{formatCurrency(orderCosts)}</span>
                 </div>
+
+                {/* Ad Spend — separate section */}
+                <p className="text-[11px] uppercase font-bold text-muted-foreground/60 tracking-wider mt-3 mb-1">Marketing (indépendant des livraisons)</p>
+                <div className="flex items-center justify-between py-2 border-b border-border/40">
+                  <span className="text-sm text-amber-700 dark:text-amber-400 flex items-center gap-2 font-medium">
+                    <Megaphone className="w-3.5 h-3.5" />Dépenses publicitaires (Pub)
+                  </span>
+                  <span className="font-bold text-sm text-amber-700 dark:text-amber-400">-{formatCurrency(summary?.adSpend ?? 0)}</span>
+                </div>
+
+                {/* Net Profit */}
+                <div className="flex items-center justify-between pt-3 mt-3 border-t-2 border-border/60">
+                  <span className="font-bold">Profit Net Final</span>
+                  <span className="font-bold text-xl" style={{ color: (summary?.netProfit ?? 0) >= 0 ? GOLD : "#ef4444" }}>
+                    {formatCurrency(summary?.netProfit ?? 0)}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1 text-right">
+                  = Revenu − Coûts livrées − Pub
+                </p>
               </div>
             )}
           </CardContent>
         </Card>
 
+        {/* ── Pub par Media Buyer ── */}
         <Card className="rounded-2xl border-border/50 shadow-sm">
           <CardHeader className="bg-muted/20 border-b border-border/50 py-3 px-5">
             <div className="flex items-center justify-between">
@@ -332,7 +403,7 @@ export default function Profitability() {
               <TableHeader>
                 <TableRow className="bg-muted/10">
                   <TableHead className="text-[11px] font-bold uppercase">Media Buyer</TableHead>
-                  <TableHead className="text-[11px] font-bold uppercase text-right">Revenu</TableHead>
+                  <TableHead className="text-[11px] font-bold uppercase text-right text-green-700">Revenu</TableHead>
                   <TableHead className="text-[11px] font-bold uppercase text-right text-destructive/80">Pub</TableHead>
                   <TableHead className="text-[11px] font-bold uppercase text-right" style={{ color: GOLD }}>Net</TableHead>
                 </TableRow>
@@ -345,7 +416,7 @@ export default function Profitability() {
                 ) : summary!.byBuyer.map(b => (
                   <TableRow key={b.buyerId} data-testid={`row-buyer-${b.buyerId}`}>
                     <TableCell className="font-medium text-sm">{b.buyerName}</TableCell>
-                    <TableCell className="text-right text-sm">{formatCurrency(b.revenue)}</TableCell>
+                    <TableCell className="text-right text-sm text-green-600 font-medium">{formatCurrency(b.revenue)}</TableCell>
                     <TableCell className="text-right text-destructive text-sm font-semibold">-{formatCurrency(b.adSpend)}</TableCell>
                     <TableCell className="text-right font-bold text-sm" style={{ color: b.netProfit >= 0 ? GOLD : "#ef4444" }}>
                       {formatCurrency(b.netProfit)}
@@ -383,7 +454,7 @@ export default function Profitability() {
                 </TableHead>
                 <TableHead className="text-[11px] font-bold uppercase text-right text-destructive/80">Pub (DH)</TableHead>
                 <TableHead className="text-[11px] font-bold uppercase text-right text-destructive/80">Total Coûts</TableHead>
-                <TableHead className="text-[11px] font-bold uppercase text-right">Revenu</TableHead>
+                <TableHead className="text-[11px] font-bold uppercase text-right text-green-700">Revenu</TableHead>
                 <TableHead className="text-[11px] font-bold uppercase text-right" style={{ color: GOLD }}>Profit Net</TableHead>
               </TableRow>
             </TableHeader>
@@ -400,9 +471,7 @@ export default function Profitability() {
                 <TableRow key={r.userId} className="hover:bg-muted/20 transition-colors" data-testid={`row-team-${r.userId}`}>
                   <TableCell className="font-semibold text-sm">{r.userName}</TableCell>
                   <TableCell>
-                    <Badge variant="outline" className="text-xs">
-                      {ROLE_LABELS[r.role] || r.role}
-                    </Badge>
+                    <Badge variant="outline" className="text-xs">{ROLE_LABELS[r.role] || r.role}</Badge>
                   </TableCell>
                   <TableCell className="text-right text-sm font-medium">{r.totalLeads}</TableCell>
                   <TableCell className="text-right text-sm">
@@ -411,13 +480,13 @@ export default function Profitability() {
                       <span className="text-muted-foreground text-xs ml-1">({Math.round(r.deliveredCount / r.totalLeads * 100)}%)</span>
                     )}
                   </TableCell>
-                  <TableCell className="text-right text-sm text-destructive font-medium">
+                  <TableCell className="text-right text-sm text-amber-700 dark:text-amber-400 font-medium">
                     {r.adSpend > 0 ? `-${formatCurrency(r.adSpend)}` : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-right text-sm text-destructive">
                     {r.totalCosts > 0 ? `-${formatCurrency(r.totalCosts)}` : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell className="text-right text-sm font-medium">
+                  <TableCell className="text-right text-sm font-medium text-green-600">
                     {r.revenue > 0 ? formatCurrency(r.revenue) : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="text-right font-bold text-sm" style={{ color: r.netProfit >= 0 ? GOLD : "#ef4444" }}>
@@ -428,10 +497,10 @@ export default function Profitability() {
             </TableBody>
           </Table>
         </div>
-        {/* Team total footer */}
+        {/* Team totals footer */}
         {(teamSummary?.rows?.length ?? 0) > 0 && (() => {
           const totalRevenue = teamSummary!.rows.reduce((s, r) => s + r.revenue, 0);
-          const totalAdSpend = teamSummary!.rows.reduce((s, r) => s + r.adSpend, 0);
+          const totalAdSpendTeam = teamSummary!.rows.reduce((s, r) => s + r.adSpend, 0);
           const totalCostsTeam = teamSummary!.rows.reduce((s, r) => s + r.totalCosts, 0);
           const totalNetProfit = teamSummary!.rows.reduce((s, r) => s + r.netProfit, 0);
           return (
@@ -439,9 +508,9 @@ export default function Profitability() {
               <div className="col-span-2 font-bold text-foreground">Totaux Équipe</div>
               <div className="text-right font-semibold">{teamSummary!.rows.reduce((s, r) => s + r.totalLeads, 0)}</div>
               <div className="text-right font-semibold text-green-600">{teamSummary!.rows.reduce((s, r) => s + r.deliveredCount, 0)}</div>
-              <div className="text-right font-semibold text-destructive">{totalAdSpend > 0 ? `-${formatCurrency(totalAdSpend)}` : "—"}</div>
+              <div className="text-right font-semibold text-amber-700 dark:text-amber-400">{totalAdSpendTeam > 0 ? `-${formatCurrency(totalAdSpendTeam)}` : "—"}</div>
               <div className="text-right font-semibold text-destructive">{totalCostsTeam > 0 ? `-${formatCurrency(totalCostsTeam)}` : "—"}</div>
-              <div className="text-right font-semibold">{formatCurrency(totalRevenue)}</div>
+              <div className="text-right font-semibold text-green-600">{formatCurrency(totalRevenue)}</div>
               <div className="text-right font-bold" style={{ color: totalNetProfit >= 0 ? GOLD : "#ef4444" }}>{formatCurrency(totalNetProfit)}</div>
             </div>
           );
@@ -453,7 +522,7 @@ export default function Profitability() {
         <Card className="rounded-2xl border-border/50 shadow-sm overflow-hidden">
           <CardHeader className="bg-muted/20 border-b border-border/50 py-3 px-5">
             <CardTitle className="text-sm font-bold flex items-center gap-2">
-              <Users className="w-3.5 h-3.5 text-primary" />Commissions par Agent
+              <Users className="w-3.5 h-3.5 text-primary" />Commissions par Agent (Livrées)
             </CardTitle>
           </CardHeader>
           <div className="overflow-x-auto">
