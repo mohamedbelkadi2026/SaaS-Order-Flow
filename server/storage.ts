@@ -113,9 +113,9 @@ export interface IStorage {
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
   deleteStore(id: number): Promise<void>;
 
-  createAdSpendEntry(data: InsertAdSpendNew): Promise<AdSpendNewEntry>;
-  getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string }): Promise<(AdSpendNewEntry & { productName?: string })[]>;
-  deleteAdSpendNew(id: number, storeId: number): Promise<void>;
+  createAdSpendEntry(data: InsertAdSpendNew & { userId?: number | null }): Promise<AdSpendNewEntry>;
+  getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string })[]>;
+  deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void>;
   getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number>;
 
   getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]>;
@@ -131,7 +131,10 @@ export interface IStorage {
   }>;
   getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
-    adSpend: number; netProfit: number; roi: number; deliveredCount: number;
+    adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
+  }>;
+  getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+    rows: { userId: number; userName: string; role: string; totalLeads: number; deliveredCount: number; revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; totalCosts: number; netProfit: number; }[];
   }>;
 
   getAllStores(): Promise<(Store & { ownerEmail?: string | null; subscription?: Subscription | null })[]>;
@@ -1259,12 +1262,12 @@ export class DatabaseStorage implements IStorage {
     await db.delete(stores).where(eq(stores.id, id));
   }
 
-  async createAdSpendEntry(data: InsertAdSpendNew): Promise<AdSpendNewEntry> {
-    const [created] = await db.insert(adSpend).values(data).returning();
+  async createAdSpendEntry(data: InsertAdSpendNew & { userId?: number | null }): Promise<AdSpendNewEntry> {
+    const [created] = await db.insert(adSpend).values(data as any).returning();
     return created;
   }
 
-  async getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string }): Promise<(AdSpendNewEntry & { productName?: string })[]> {
+  async getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string })[]> {
     const conditions: any[] = [eq(adSpend.storeId, storeId)];
     if (opts?.source && opts.source !== 'all') conditions.push(eq(adSpend.source, opts.source));
     if (opts?.dateFrom) conditions.push(sql`${adSpend.date} >= ${opts.dateFrom}`);
@@ -1273,20 +1276,32 @@ export class DatabaseStorage implements IStorage {
       if (opts.productId === null) conditions.push(sql`${adSpend.productId} IS NULL`);
       else conditions.push(eq(adSpend.productId, opts.productId));
     }
+    // userId filter: if provided (non-null non-zero), restrict to that user's entries
+    if (opts?.userId !== undefined && opts?.userId !== null && !opts?.allUsers) {
+      conditions.push(eq(adSpend.userId as any, opts.userId));
+    }
     const rows = await db.select({
-      id: adSpend.id, storeId: adSpend.storeId, productId: adSpend.productId,
+      id: adSpend.id, storeId: adSpend.storeId, userId: (adSpend as any).userId,
+      productId: adSpend.productId,
       source: adSpend.source, date: adSpend.date, amount: adSpend.amount,
       productSellingPrice: adSpend.productSellingPrice, createdAt: adSpend.createdAt,
       productName: products.name,
+      userName: users.username,
     }).from(adSpend)
       .leftJoin(products, eq(adSpend.productId, products.id))
+      .leftJoin(users, eq((adSpend as any).userId, users.id))
       .where(and(...conditions))
       .orderBy(desc(adSpend.date));
     return rows as any[];
   }
 
-  async deleteAdSpendNew(id: number, storeId: number): Promise<void> {
-    await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId)));
+  async deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void> {
+    // If userId is provided, only delete if ownership matches (for media buyers)
+    if (userId !== undefined) {
+      await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId), eq((adSpend as any).userId, userId)));
+    } else {
+      await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId)));
+    }
   }
 
   async getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number> {
@@ -1438,19 +1453,21 @@ export class DatabaseStorage implements IStorage {
 
   async getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
-    adSpend: number; netProfit: number; roi: number; deliveredCount: number;
+    adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }> {
     const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
     const storePackaging = store[0]?.packagingCost ?? 0;
 
-    let orderConditions = [
-      eq(orders.storeId, storeId),
-      eq(orders.status, 'delivered'),
-      eq(orders.mediaBuyerId, mediaBuyerId),
-    ];
+    // All leads (total orders attributed to this buyer)
+    const allLeadConditions: any[] = [eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)];
+    if (dateFrom) allLeadConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
+    if (dateTo) allLeadConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+    const allLeads = await db.select({ id: orders.id }).from(orders).where(and(...allLeadConditions));
+
+    // Delivered orders only
+    let orderConditions: any[] = [eq(orders.storeId, storeId), eq(orders.status, 'delivered'), eq(orders.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
     if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
-
     const buyerOrders = await db.select().from(orders).where(and(...orderConditions));
 
     let revenue = 0, productCost = 0, shippingCost = 0;
@@ -1461,17 +1478,80 @@ export class DatabaseStorage implements IStorage {
     }
     const packagingCostTotal = buyerOrders.length * storePackaging;
 
-    let adSpendConditions = [eq(adSpendTracking.storeId, storeId), eq(adSpendTracking.mediaBuyerId, mediaBuyerId)];
+    // Legacy adSpendTracking (by mediaBuyerId)
+    let adSpendConditions: any[] = [eq(adSpendTracking.storeId, storeId), eq(adSpendTracking.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) adSpendConditions.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adSpendConditions.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
-    const adSpendEntries = await db.select().from(adSpendTracking).where(and(...adSpendConditions));
-    const adSpend = adSpendEntries.reduce((s, e) => s + e.amount, 0);
+    const legacyEntries = await db.select().from(adSpendTracking).where(and(...adSpendConditions));
+    const legacyAdSpend = legacyEntries.reduce((s, e) => s + e.amount, 0);
 
+    // New adSpend table (by userId = mediaBuyerId)
+    let newAdSpendConditions: any[] = [eq(adSpend.storeId, storeId), eq((adSpend as any).userId, mediaBuyerId)];
+    if (dateFrom) newAdSpendConditions.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
+    if (dateTo) newAdSpendConditions.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
+    const newEntries = await db.select({ amount: adSpend.amount }).from(adSpend).where(and(...newAdSpendConditions));
+    const newAdSpend = newEntries.reduce((s, e) => s + e.amount, 0);
+
+    const totalAdSpend = legacyAdSpend + newAdSpend;
     const orderProfit = revenue - productCost - shippingCost - packagingCostTotal;
-    const netProfit = orderProfit - adSpend;
-    const roi = adSpend > 0 ? (netProfit / adSpend) * 100 : 0;
+    const netProfit = orderProfit - totalAdSpend;
+    const roi = totalAdSpend > 0 ? (netProfit / totalAdSpend) * 100 : 0;
 
-    return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, adSpend, netProfit, roi, deliveredCount: buyerOrders.length };
+    return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, adSpend: totalAdSpend, netProfit, roi, deliveredCount: buyerOrders.length, totalLeads: allLeads.length };
+  }
+
+  async getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+    rows: {
+      userId: number; userName: string; role: string;
+      totalLeads: number; deliveredCount: number;
+      revenue: number; productCost: number; shippingCost: number; packagingCost: number;
+      agentCommissions: number; adSpend: number; totalCosts: number; netProfit: number;
+    }[];
+  }> {
+    const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
+    const storePackaging = store[0]?.packagingCost ?? 0;
+
+    const allUsers = await db.select().from(users).where(and(eq(users.storeId, storeId), sql`${users.role} IN ('owner','admin','media_buyer')`));
+    const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
+
+    const orderConditions: any[] = [eq(orders.storeId, storeId)];
+    if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
+    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+    const allOrders = await db.select().from(orders).where(and(...orderConditions));
+
+    const adDateConds: any[] = [eq(adSpend.storeId, storeId)];
+    if (dateFrom) adDateConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
+    if (dateTo) adDateConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
+    const allNewAdSpend = await db.select({ userId: (adSpend as any).userId, amount: adSpend.amount }).from(adSpend).where(and(...adDateConds));
+
+    const legDateConds: any[] = [eq(adSpendTracking.storeId, storeId)];
+    if (dateFrom) legDateConds.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
+    if (dateTo) legDateConds.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
+    const allLegacyAdSpend = await db.select().from(adSpendTracking).where(and(...legDateConds));
+
+    const rows = allUsers.map(u => {
+      const userOrders = allOrders.filter(o => o.mediaBuyerId === u.id);
+      const deliveredOrders = userOrders.filter(o => o.status === 'delivered');
+      let revenue = 0, productCost = 0, shippingCost = 0, agentCommissions = 0;
+      for (const o of deliveredOrders) {
+        revenue += o.totalPrice;
+        productCost += o.productCost;
+        shippingCost += o.shippingCost;
+        if (o.assignedToId) {
+          const s = agentSettingsAll.find(s => s.agentId === o.assignedToId);
+          agentCommissions += (s?.commissionRate ?? 0) * 100;
+        }
+      }
+      const packagingCost = deliveredOrders.length * storePackaging;
+      const newAdSpendTotal = allNewAdSpend.filter(e => e.userId === u.id).reduce((s, e) => s + e.amount, 0);
+      const legacyAdSpendTotal = allLegacyAdSpend.filter(e => e.mediaBuyerId === u.id).reduce((s, e) => s + e.amount, 0);
+      const totalAdSpend = newAdSpendTotal + legacyAdSpendTotal;
+      const totalCosts = productCost + shippingCost + packagingCost + agentCommissions + totalAdSpend;
+      const netProfit = revenue - totalCosts;
+      return { userId: u.id, userName: u.username, role: u.role, totalLeads: userOrders.length, deliveredCount: deliveredOrders.length, revenue, productCost, shippingCost, packagingCost, agentCommissions, adSpend: totalAdSpend, totalCosts, netProfit };
+    });
+
+    return { rows: rows.filter(r => r.totalLeads > 0 || r.adSpend > 0) };
   }
 }
 

@@ -399,12 +399,13 @@ export async function registerRoutes(
       adSpendTotal += e.amount;
       if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + e.amount;
     });
-    // New adSpend table (Publicités module)
+    // New adSpend table (Publicités module) — all users for global stats
     const newAdSpendEntries = await storage.getAdSpendEntries(storeId, {
       source: adSourceFilter || undefined,
       dateFrom: dateFrom ? dateFrom.substring(0, 10) : undefined,
       dateTo: dateTo ? dateTo.substring(0, 10) : undefined,
       productId: (productId && productId !== 'all') ? Number(productId) : undefined,
+      allUsers: true,
     });
     newAdSpendEntries.forEach((e: any) => {
       adSpendTotal += e.amount;
@@ -785,26 +786,38 @@ export async function registerRoutes(
   });
 
   // ============================================================
-  // AD SPEND (new Publicités module)
+  // AD SPEND — Publicités module (all authenticated users)
   // ============================================================
   app.get("/api/publicites", requireAuth, async (req, res) => {
-    const storeId = req.user!.storeId!;
-    const { productId, source, dateFrom, dateTo, tab } = req.query as Record<string, string>;
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const isAdmin = user.role === 'owner' || user.role === 'admin';
+    const { productId, source, dateFrom, dateTo, tab, userId } = req.query as Record<string, string>;
     const opts: any = { source, dateFrom, dateTo };
     if (tab === 'source') opts.productId = null;
     else if (productId && productId !== 'all') opts.productId = Number(productId);
+    if (isAdmin) {
+      // Admin can filter by a specific user or see all
+      if (userId && userId !== 'all') opts.userId = Number(userId);
+      else opts.allUsers = true;
+    } else {
+      // Non-admin (media buyer etc.) sees only their own entries
+      opts.userId = user.id;
+    }
     const entries = await storage.getAdSpendEntries(storeId, opts);
     res.json(entries);
   });
 
-  app.post("/api/publicites", requireAdmin, async (req, res) => {
-    const storeId = req.user!.storeId!;
+  app.post("/api/publicites", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
     const { source, date, amount, productId, productSellingPrice } = req.body;
     if (!source || !date || amount === undefined) return res.status(400).json({ message: "Champs requis manquants" });
     const amountCents = Math.round(Number(amount) * 100);
     const pspCents = productSellingPrice ? Math.round(Number(productSellingPrice) * 100) : null;
     const entry = await storage.createAdSpendEntry({
       storeId,
+      userId: user.id,
       source,
       date,
       amount: amountCents,
@@ -814,9 +827,13 @@ export async function registerRoutes(
     res.json(entry);
   });
 
-  app.delete("/api/publicites/:id", requireAdmin, async (req, res) => {
-    const storeId = req.user!.storeId!;
-    await storage.deleteAdSpendNew(Number(req.params.id), storeId);
+  app.delete("/api/publicites/:id", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const isAdmin = user.role === 'owner' || user.role === 'admin';
+    // Admin can delete any; others can only delete their own
+    const userIdForDelete = isAdmin ? undefined : user.id;
+    await storage.deleteAdSpendNew(Number(req.params.id), storeId, userIdForDelete);
     res.json({ ok: true });
   });
 
@@ -828,6 +845,13 @@ export async function registerRoutes(
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
     res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo));
+  });
+
+  app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const dateFrom = req.query.dateFrom as string | undefined;
+    const dateTo = req.query.dateTo as string | undefined;
+    res.json(await storage.getTeamProfitSummary(storeId, dateFrom, dateTo));
   });
 
   app.get("/api/media-buyer/profit", requireAuth, async (req, res) => {

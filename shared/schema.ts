@@ -132,6 +132,7 @@ export const adSpendTracking = pgTable("ad_spend_tracking", {
 export const adSpend = pgTable("ad_spend", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
+  userId: integer("user_id").references(() => users.id),
   productId: integer("product_id").references(() => products.id),
   source: text("source").notNull(),
   date: text("date").notNull(),

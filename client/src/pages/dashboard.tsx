@@ -79,6 +79,8 @@ export default function Dashboard() {
   const { user } = useAuth();
   const isAgent = user?.role === 'agent';
   const isMediaBuyer = user?.role === 'media_buyer';
+  const isAdminUser = user?.role === 'owner' || user?.role === 'admin';
+  const [adminView, setAdminView] = useState<'global' | 'personal'>('global');
   const perms = (user?.dashboardPermissions || {}) as Record<string, boolean>;
 
   const canSeeRevenue = !isAgent || !!perms.show_revenue;
@@ -121,7 +123,7 @@ export default function Dashboard() {
     },
     enabled: isMediaBuyer,
   });
-  const { data: mbProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number }>({
+  const { data: mbProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
     queryKey: ['/api/media-buyer/profit', mbDateRange.from, mbDateRange.to],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -133,6 +135,16 @@ export default function Dashboard() {
       return res.json();
     },
     enabled: isMediaBuyer,
+  });
+
+  const { data: adminPersonalProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
+    queryKey: ['/api/media-buyer/profit-admin-personal'],
+    queryFn: async () => {
+      const res = await fetch('/api/media-buyer/profit', { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed');
+      return res.json();
+    },
+    enabled: isAdminUser && adminView === 'personal',
   });
 
   const { data: commissionsSummary } = useQuery<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>({
@@ -626,7 +638,27 @@ export default function Dashboard() {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex justify-between items-center flex-wrap gap-2">
-        <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Dashboard</h1>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Dashboard</h1>
+          {isAdminUser && (
+            <div className="flex rounded-lg border border-border/60 overflow-hidden text-xs" data-testid="admin-view-toggle">
+              <button
+                onClick={() => setAdminView('global')}
+                className={`px-3 py-1.5 font-semibold transition-colors ${adminView === 'global' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:bg-muted'}`}
+                data-testid="toggle-global"
+              >
+                Stats Globales
+              </button>
+              <button
+                onClick={() => setAdminView('personal')}
+                className={`px-3 py-1.5 font-semibold transition-colors ${adminView === 'personal' ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:bg-muted'}`}
+                data-testid="toggle-personal"
+              >
+                Mes Stats Personnelles
+              </button>
+            </div>
+          )}
+        </div>
         {!isAgent && hasActiveFilters && (
           <Button variant="outline" size="sm" onClick={resetFilters} className="gap-1.5 text-xs" data-testid="button-reset-filters">
             <Filter className="w-3.5 h-3.5" /> Réinitialiser les filtres
@@ -825,6 +857,41 @@ export default function Dashboard() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Admin Personal Stats Banner */}
+      {isAdminUser && adminView === 'personal' && (
+        <div className="rounded-2xl border-2 border-primary/30 bg-primary/5 p-4 space-y-3 animate-in fade-in duration-300" data-testid="admin-personal-stats">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-primary" />
+            <h3 className="text-sm font-bold text-primary">Mes Stats Personnelles ({user?.username})</h3>
+          </div>
+          {adminPersonalProfit ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="rounded-xl bg-white dark:bg-card border border-border/50 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Mon Revenu</p>
+                <p className="text-lg font-bold">{formatCurrency(adminPersonalProfit.revenue)}</p>
+              </div>
+              <div className="rounded-xl bg-white dark:bg-card border border-border/50 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Mes Livrées</p>
+                <p className="text-lg font-bold">{adminPersonalProfit.deliveredCount}</p>
+              </div>
+              <div className="rounded-xl bg-white dark:bg-card border border-border/50 p-3">
+                <p className="text-xs text-muted-foreground mb-1">Ma Pub</p>
+                <p className="text-lg font-bold text-destructive">{formatCurrency(adminPersonalProfit.adSpend)}</p>
+              </div>
+              <div className="rounded-xl border border-border/50 p-3" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #8a6930 100%)' }}>
+                <p className="text-xs text-white/80 mb-1">Mon Profit Net</p>
+                <p className="text-lg font-bold text-white">{formatCurrency(adminPersonalProfit.netProfit)}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[...Array(4)].map((_, i) => <div key={i} className="rounded-xl border border-border/50 p-3 h-16 bg-white dark:bg-card"><div className="h-4 w-16 bg-muted rounded animate-pulse" /></div>)}
+            </div>
+          )}
+          <p className="text-xs text-muted-foreground">Les stats globales du magasin restent affichées ci-dessous.</p>
+        </div>
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">

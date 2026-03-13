@@ -1,0 +1,22 @@
+"I need to implement an Advanced Financial Attribution and Isolation system for Media Buyers and Admins. The goal is to make every user see their own profit based ONLY on the orders they generated and the ad spend they entered.
+1. Ad Spend Ownership (Publicités Fix):
+Media Buyer View: In the 'Publicités' page, Media Buyers must only be able to add and see their own ad spend records.
+Admin View: The Admin sees a dropdown to filter ad spend by 'Admin Direct' or by a specific 'Media Buyer Name'.
+Database: Ensure every AdSpend record is strictly linked to the user_id who created it.
+2. Personalized Profitability (Dashboard & Analytics):
+Media Buyer Dashboard: When a Media Buyer logs in, the entire Dashboard (Revenue, Confirmation Rate, Delivered Count, Net Profit) must be calculated using ONLY the orders attributed to their buyer_code.
+Logic: Net Profit (Buyer) = (Revenue from their 'Livré' orders) - (Buying Price of those items) - (Shipping/Pkg fees) - (Their specific Ad Spend).
+Admin Dashboard (Split View): The Admin Dashboard should have a toggle: 'My Personal Stats' (Direct traffic/Organic) vs 'Global Stats' (Entire team).
+3. Advanced Profitability Page (Rentabilité Avancée):
+Media Buyer View: They only see a summary of their own profitability.
+Admin View (Master Table): Create a detailed 'Team Profitability' table for the Admin:
+Columns: User (Admin/Agent Name) | Total Leads | Livré Count | Ad Spend | Total Costs | Net Profit.
+This table allows the Admin to see exactly how much profit each Media Buyer is generating for the store.
+4. Cost Logic (Packaging & Shipping):
+Ensure that the 'Packaging Cost' and 'Shipping Fee' are subtracted from everyone's profit calculation to get the real 'Net' amount.
+Commission Sync: Subtract the Agent's confirmation commission from the profit as well.
+5. UI & Privacy:
+Strict Isolation: A Media Buyer must NEVER see the Ad Spend or Profit of another Media Buyer or the Admin.
+Formatting: Use DH globally. Use Bold Gold (#C5A059) for the final Net Profit numbers to highlight success.
+Mobile optimization: Ensure the 'Add Spend' form is fast and easy for buyers to use on mobile.
+Technical Goal: Create a system where the Admin acts as the 'Owner' seeing all data, and each Media Buyer acts as a 'Partner' who only sees and manages their own pocket/performance."
