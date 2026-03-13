@@ -470,6 +470,7 @@ export async function registerRoutes(
       utmCampaign: req.query.utmCampaign as string | undefined,
       dateFrom: req.query.dateFrom as string | undefined,
       dateTo: req.query.dateTo as string | undefined,
+      dateType: req.query.dateType as string | undefined,
       search: req.query.search as string | undefined,
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 25,

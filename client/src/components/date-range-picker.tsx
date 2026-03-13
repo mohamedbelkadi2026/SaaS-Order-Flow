@@ -73,6 +73,8 @@ function applyPreset(preset: string): DateRange {
       const last = new Date(now.getFullYear(), now.getMonth(), 0);
       return { from: toDateStr(first), to: toDateStr(last) };
     }
+    case "allTime": return { from: "", to: "" };
+    case "custom": return { from: "", to: "" };
     default: return { from: "", to: "" };
   }
 }
@@ -80,10 +82,12 @@ function applyPreset(preset: string): DateRange {
 const PRESETS = [
   { key: "today", label: "Aujourd'hui" },
   { key: "yesterday", label: "Hier" },
-  { key: "last7", label: "Dernier 7 Jours" },
-  { key: "last30", label: "Dernier 30 Jours" },
-  { key: "thisMonth", label: "Ce Mois" },
-  { key: "lastMonth", label: "Dernier Mois" },
+  { key: "last7", label: "7 derniers jours" },
+  { key: "last30", label: "30 derniers jours" },
+  { key: "thisMonth", label: "Ce mois" },
+  { key: "lastMonth", label: "Mois dernier" },
+  { key: "allTime", label: "Toute la vie" },
+  { key: "custom", label: "Custom Range" },
 ];
 
 function CalendarMonth({

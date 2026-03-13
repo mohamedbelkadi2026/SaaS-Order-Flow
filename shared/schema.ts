@@ -101,6 +101,8 @@ export const orders = pgTable("orders", {
   commentStatus: text("comment_status"),
   commentOrder: text("comment_order"),
   createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  pickupDate: timestamp("pickup_date"),
 });
 
 export const orderItems = pgTable("order_items", {

@@ -1,0 +1,25 @@
+"I need to upgrade the 'Mes Commandes' filter bar and table to include advanced date logic and product variant details, matching the provided screenshots.
+1. Advanced Date Range Picker (Refer to Image 1):
+Implement a professional Date Range Picker component.
+Sidebar Presets: Add a left sidebar in the picker with: 'Aujourd'hui', 'Hier', '7 derniers jours', '30 derniers jours', 'Ce mois', 'Mois dernier', 'Toute la vie', and 'Custom Range'.
+Double Calendar: Show two calendars (e.g., Feb 2026 and Mar 2026) for manual range selection.
+Footer: Show the selected range (e.g., 02/13/2026 - 03/13/2026) with 'Cancel' and 'Apply' buttons.
+2. 'Type Date' Filter Logic (Refer to Image 2):
+Add a dropdown next to the Date Picker called 'Type date'.
+Options:
+Dernière action: Filters orders based on the updated_at timestamp.
+Date de création: Filters orders based on the created_at timestamp.
+Ramassage: Filters based on a specific pickup_date field (add this column to the database if missing).
+Backend Sync: Ensure the SQL query changes the WHERE clause dynamically based on the selected 'Type date'.
+3. 'Infos supplémentaires' Column (The Variant Info):
+Add a column to the table called 'Infos supplémentaires'.
+Logic: This column must display the Product Variant details (Size/Pointure or Color/Couleur).
+Webhook Mapping: Update the Shopify/YouCan webhook handler to capture the variant_title or options from the line items and save it into a database field called additional_info.
+UI Display: Show this info clearly (e.g., 'Pointure: 42 | Couleur: Marron'). If empty, show '-'.
+4. State Management & API:
+Ensure that clicking 'Apply' in the date picker triggers an immediate API call: GET /api/orders?startDate=...&endDate=...&dateType=....
+The table must refresh smoothly with a loading spinner.
+5. UI/UX & Design:
+Use Tailwind CSS to match the white/blue/gold luxury theme.
+Ensure the 'Type date' dropdown matches the style of the other filters.
+Use a bold font weight for the customer name and price to ensure readability on mobile as previously discussed."

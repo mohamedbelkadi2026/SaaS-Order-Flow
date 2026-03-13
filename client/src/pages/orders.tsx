@@ -17,6 +17,7 @@ import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
+import { DateRangePicker } from "@/components/date-range-picker";
 
 const STATUS_MAP: Record<string, string> = {
   nouvelles: "nouveau",
@@ -59,6 +60,7 @@ const ALL_COLUMNS = [
   { key: 'source', label: 'Source', locked: false },
   { key: 'utmSource', label: 'UTM Source', locked: false },
   { key: 'utmCampaign', label: 'UTM Campagne', locked: false },
+  { key: 'infosSupp', label: 'Infos supplémentaires', locked: false },
   { key: 'action', label: 'Action', locked: true },
 ] as const;
 
@@ -177,17 +179,21 @@ export default function Orders() {
     utmCampaign: '',
     dateFrom: '',
     dateTo: '',
+    dateType: 'createdAt',
     search: '',
     page: 1,
     limit: 25,
   });
+  const [dateRange, setDateRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
 
   const actualFilters = useMemo(() => ({
     ...filters,
     status: urlStatus,
+    dateFrom: dateRange.from,
+    dateTo: dateRange.to,
     // For media buyers, the backend scopes orders to their ID + UTM pattern automatically
     // Do NOT override utmSource here — it breaks deep tracking (CODE*PLATFORM) matching
-  }), [filters, urlStatus]);
+  }), [filters, urlStatus, dateRange]);
 
   const { data, isLoading } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();
@@ -535,8 +541,23 @@ export default function Orders() {
               </Select>
             </>
           )}
-          <Input type="date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} className="w-full sm:w-[130px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-from" />
-          <Input type="date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} className="w-full sm:w-[130px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-to" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <DateRangePicker
+              value={dateRange}
+              onChange={setDateRange}
+              placeholder="Toutes les Dates"
+            />
+            <Select value={filters.dateType} onValueChange={(v) => updateFilter('dateType', v)}>
+              <SelectTrigger className="h-9 text-sm w-auto min-w-[160px] bg-white dark:bg-card border-border/60" data-testid="filter-date-type">
+                <SelectValue placeholder="Type date" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="createdAt">Date de création</SelectItem>
+                <SelectItem value="updatedAt">Dernière action</SelectItem>
+                <SelectItem value="pickupDate">Ramassage</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </Card>
 
@@ -564,6 +585,7 @@ export default function Orders() {
                 {isColVisible('source') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Source</TableHead>}
                 {isColVisible('utmSource') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">UTM Source</TableHead>}
                 {isColVisible('utmCampaign') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">UTM Campagne</TableHead>}
+                {isColVisible('infosSupp') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Infos supplémentaires</TableHead>}
                 {!isMediaBuyer && isColVisible('action') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Action</TableHead>}
               </TableRow>
               {!showInlineFilters && (
@@ -693,6 +715,13 @@ export default function Orders() {
                         <TableCell className="max-w-[120px] truncate text-[11px]">
                           {order.utmCampaign ? (
                             <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-[10px] font-medium max-w-[110px] truncate block">{order.utmCampaign}</Badge>
+                          ) : <span className="text-muted-foreground">-</span>}
+                        </TableCell>
+                      )}
+                      {isColVisible('infosSupp') && (
+                        <TableCell className="max-w-[160px] text-[11px]" data-testid={`cell-infos-supp-${order.id}`}>
+                          {order.variantDetails ? (
+                            <span className="text-foreground font-medium">{order.variantDetails}</span>
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}

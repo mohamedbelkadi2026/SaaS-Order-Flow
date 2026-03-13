@@ -37,7 +37,7 @@ export interface IStorage {
   getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
     utmSource?: string; utmCampaign?: string;
-    dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
+    dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
   bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]>;
@@ -269,7 +269,7 @@ export class DatabaseStorage implements IStorage {
   async getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
     utmSource?: string; utmCampaign?: string;
-    dateFrom?: string; dateTo?: string; search?: string; page?: number; limit?: number;
+    dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
     const conditions: any[] = [eq(orders.storeId, storeId)];
 
@@ -316,11 +316,18 @@ export class DatabaseStorage implements IStorage {
     if (filters.utmCampaign) {
       conditions.push(eq(orders.utmCampaign, filters.utmCampaign));
     }
-    if (filters.dateFrom) {
-      conditions.push(gte(orders.createdAt, new Date(filters.dateFrom + 'T00:00:00')));
-    }
-    if (filters.dateTo) {
-      conditions.push(lte(orders.createdAt, new Date(filters.dateTo + 'T23:59:59')));
+    if (filters.dateFrom || filters.dateTo) {
+      const dateCol = filters.dateType === 'updatedAt'
+        ? orders.updatedAt
+        : filters.dateType === 'pickupDate'
+          ? orders.pickupDate
+          : orders.createdAt;
+      if (filters.dateFrom) {
+        conditions.push(gte(dateCol, new Date(filters.dateFrom + 'T00:00:00')));
+      }
+      if (filters.dateTo) {
+        conditions.push(lte(dateCol, new Date(filters.dateTo + 'T23:59:59')));
+      }
     }
     if (filters.search) {
       const term = `%${filters.search}%`;
@@ -384,7 +391,7 @@ export class DatabaseStorage implements IStorage {
     if (!currentOrder) return undefined;
 
     const [updated] = await db.update(orders)
-      .set({ status })
+      .set({ status, updatedAt: new Date() })
       .where(eq(orders.id, id))
       .returning();
       
@@ -517,7 +524,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined> {
-    const [updated] = await db.update(orders).set(data).where(eq(orders.id, id)).returning();
+    const [updated] = await db.update(orders).set({ ...data, updatedAt: new Date() }).where(eq(orders.id, id)).returning();
     return updated;
   }
 
