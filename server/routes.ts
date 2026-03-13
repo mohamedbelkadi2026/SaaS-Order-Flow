@@ -298,7 +298,15 @@ export async function registerRoutes(
     let totalOrders = allOrders.length;
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
-    let revenue = 0, profit = 0, totalProductCost = 0, totalShipping = 0;
+    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
+
+    // Fetch store packaging cost and agent commission rates for accurate profit calc
+    const storeData = await storage.getStore(storeId);
+    const storePackagingCost = (storeData as any)?.packagingCost ?? 0;
+    const agentSettingsList = await storage.getStoreAgentSettings(storeId);
+    const agentCommissionMap = new Map<number, number>(
+      agentSettingsList.map((s: any) => [s.agentId, s.commissionRate ?? 0])
+    );
 
     allOrders.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
@@ -312,13 +320,17 @@ export async function registerRoutes(
       else if (o.status === 'Annulé (double)') annuleDouble++;
       else if (o.status === 'boite vocale') boiteVocale++;
 
-      if (['confirme', 'delivered'].includes(o.status)) {
-        revenue += o.totalPrice;
-      }
+      // Revenue only from delivered orders (livré)
       if (o.status === 'delivered') {
-        totalProductCost += o.productCost;
-        totalShipping += 4000;
-        profit += (o.totalPrice - o.productCost - 4000 - o.adSpend);
+        revenue += (o.totalPrice ?? 0);
+        totalProductCost += (o.productCost ?? 0);
+        totalShipping += (o.shippingCost ?? 0);
+        totalPackaging += storePackagingCost;
+        // Agent commission: stored in DH, convert to cents
+        if (o.assignedToId) {
+          const rate = agentCommissionMap.get(o.assignedToId) ?? 0;
+          totalAgentCommissions += rate * 100;
+        }
       }
     });
 
@@ -415,7 +427,8 @@ export async function registerRoutes(
     // Build a name→productId map from store products
     const productNameToId = new Map(storeProducts.map((p: any) => [p.name.toLowerCase().trim(), p.id]));
 
-    const netProfit = revenue - totalProductCost - totalShipping - adSpendTotal;
+    // Full net profit formula: Revenue(delivered) - ProductCost - Shipping - Packaging - AgentCommissions - AdSpend
+    const netProfit = revenue - totalProductCost - totalShipping - totalPackaging - totalAgentCommissions - adSpendTotal;
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
@@ -435,6 +448,8 @@ export async function registerRoutes(
       profit: canProfit ? netProfit : undefined,
       totalProductCost: canProfit ? totalProductCost : undefined,
       totalShipping: canProfit ? totalShipping : undefined,
+      totalPackaging: canProfit ? totalPackaging : undefined,
+      totalAgentCommissions: canProfit ? totalAgentCommissions : undefined,
       daily: canCharts ? daily : [],
       topProducts: canProducts ? topProducts.map(p => ({ ...p, share: 100 })) : [],
       productPerformance: canProducts
