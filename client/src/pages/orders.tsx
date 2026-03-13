@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
@@ -18,6 +19,7 @@ import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { apiRequest } from "@/lib/queryClient";
 
 const STATUS_MAP: Record<string, string> = {
   nouvelles: "nouveau",
@@ -206,6 +208,7 @@ export default function Orders() {
   const bulkAssign = useBulkAssign();
   const bulkShip = useBulkShip();
   const { toast } = useToast();
+  const qc = useQueryClient();
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -223,6 +226,52 @@ export default function Orders() {
 
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [showInlineFilters, setShowInlineFilters] = useState(false);
+
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteSingleId, setDeleteSingleId] = useState<number | null>(null);
+
+  const deleteSingleMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/orders/${id}`),
+    onSuccess: (_, id) => {
+      setHiddenOrderIds((prev: Set<number>) => new Set(Array.from(prev).concat(id)));
+      setSelectedIds((prev: Set<number>) => { const n = new Set(Array.from(prev)); n.delete(id); return n; });
+      qc.invalidateQueries({ queryKey: ['/api/orders'] });
+      toast({ title: "Commande supprimée", description: "La commande a été supprimée définitivement." });
+    },
+    onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: number[]) => apiRequest("POST", "/api/orders/bulk-delete", { orderIds: ids }),
+    onSuccess: (_, ids) => {
+      setHiddenOrderIds((prev: Set<number>) => new Set(Array.from(prev).concat(ids)));
+      setSelectedIds(new Set<number>());
+      qc.invalidateQueries({ queryKey: ['/api/orders'] });
+      toast({ title: `${ids.length} commande(s) supprimée(s)`, description: "Les commandes ont été supprimées définitivement." });
+    },
+    onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
+  });
+
+  function handleDeleteSingle(id: number) {
+    setDeleteSingleId(id);
+    setShowDeleteModal(true);
+  }
+
+  function handleBulkDelete() {
+    if (selectedIds.size === 0) { toast({ title: "Sélectionnez des commandes à supprimer" }); return; }
+    setDeleteSingleId(null);
+    setShowDeleteModal(true);
+  }
+
+  function confirmDelete() {
+    if (deleteSingleId !== null) {
+      deleteSingleMutation.mutate(deleteSingleId);
+    } else {
+      bulkDeleteMutation.mutate(Array.from(selectedIds));
+    }
+    setShowDeleteModal(false);
+    setDeleteSingleId(null);
+  }
 
   useEffect(() => {
     localStorage.setItem('tajergrow_columns', JSON.stringify(visibleCols));
@@ -422,8 +471,16 @@ export default function Orders() {
               <Button variant="outline" size="icon" className="h-9 w-9 border-blue-200 text-blue-500 hover:bg-blue-50" title="Assigner" onClick={() => { if (selectedIds.size > 0) setShowAssignModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-assign">
                 <Headphones className="w-4 h-4" />
               </Button>
-              <Button variant="outline" size="icon" className="h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 opacity-50 cursor-not-allowed" title="Supprimer (bientôt)" disabled data-testid="button-bulk-delete">
-                <Trash2 className="w-4 h-4" />
+              <Button
+                variant="outline"
+                size="icon"
+                className={`h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 active:scale-95 transition-all ${selectedIds.size === 0 ? 'opacity-40' : 'opacity-100 hover:border-red-400'}`}
+                title={selectedIds.size > 0 ? `Supprimer ${selectedIds.size} commande(s)` : "Sélectionnez des commandes"}
+                onClick={handleBulkDelete}
+                disabled={bulkDeleteMutation.isPending}
+                data-testid="button-bulk-delete"
+              >
+                {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
               </Button>
               <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
                 <Truck className="w-4 h-4" />
@@ -737,6 +794,14 @@ export default function Orders() {
                             <button className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`action-history-${order.id}`}>
                               <Clock className="w-3.5 h-3.5 text-gray-400" />
                             </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeleteSingle(order.id); }}
+                              className="p-1.5 rounded hover:bg-red-50 transition-colors"
+                              title="Supprimer"
+                              data-testid={`action-delete-${order.id}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-red-400 hover:text-red-600" />
+                            </button>
                           </div>
                         </TableCell>
                       )}
@@ -917,6 +982,16 @@ export default function Orders() {
                     >
                       <Eye className="w-3.5 h-3.5" />
                     </button>
+                    {!isMediaBuyer && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteSingle(order.id); }}
+                        className="w-8 h-8 rounded-lg border border-red-100 bg-red-50 flex items-center justify-center text-red-400 hover:text-red-600 transition-colors active:scale-95"
+                        data-testid={`delete-mobile-card-${order.id}`}
+                        title="Supprimer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     {order.utmSource && (
                       <Badge className="text-[9px] font-mono bg-violet-50 text-violet-700 border-violet-200 ml-1">{order.utmSource}</Badge>
                     )}
@@ -989,12 +1064,13 @@ export default function Orders() {
                 <Headphones className="w-4 h-4" />
               </button>
               <button
-                className="w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center text-red-500 border border-red-100 active:scale-95 opacity-50"
-                title="Supprimer (bientôt)"
+                className={`w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center text-red-500 border border-red-100 active:scale-95 transition-all ${selectedIds.size === 0 ? 'opacity-40' : 'opacity-100'}`}
+                title={selectedIds.size > 0 ? `Supprimer ${selectedIds.size} commande(s)` : "Sélectionnez des commandes"}
                 data-testid="button-mobile-delete"
-                disabled
+                onClick={handleBulkDelete}
+                disabled={bulkDeleteMutation.isPending}
               >
-                <Trash2 className="w-4 h-4" />
+                {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
               </button>
               <button
                 className="w-9 h-9 rounded-xl flex items-center justify-center text-white active:scale-95"
@@ -1009,6 +1085,50 @@ export default function Orders() {
           </div>
         </div>
       )}
+
+      {/* ── DELETE CONFIRMATION MODAL ─────────────────────────────── */}
+      <Dialog open={showDeleteModal} onOpenChange={(open) => { if (!open) { setShowDeleteModal(false); setDeleteSingleId(null); } }}>
+        <DialogContent className="sm:max-w-sm rounded-2xl border-none shadow-2xl p-0 overflow-hidden" data-testid="dialog-delete-confirm">
+          <div className="bg-red-50 dark:bg-red-950/30 px-6 pt-6 pb-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/40 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-red-600" />
+              </div>
+              <DialogTitle className="text-base font-bold text-red-700 dark:text-red-400">
+                Confirmer la suppression
+              </DialogTitle>
+            </div>
+            <DialogDescription className="text-sm text-red-600/80 dark:text-red-400/80 ml-13">
+              {deleteSingleId !== null
+                ? "Voulez-vous vraiment supprimer cette commande ? Cette action est irréversible."
+                : `Voulez-vous vraiment supprimer ${selectedIds.size} commande${selectedIds.size > 1 ? 's' : ''} ? Cette action est irréversible et définitive.`}
+            </DialogDescription>
+          </div>
+          <div className="px-6 py-4 flex justify-end gap-2 bg-background">
+            <Button
+              variant="outline"
+              onClick={() => { setShowDeleteModal(false); setDeleteSingleId(null); }}
+              className="rounded-lg"
+              data-testid="btn-delete-cancel"
+            >
+              Annuler
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmDelete}
+              disabled={deleteSingleMutation.isPending || bulkDeleteMutation.isPending}
+              className="rounded-lg gap-2"
+              data-testid="btn-delete-confirm"
+            >
+              {(deleteSingleMutation.isPending || bulkDeleteMutation.isPending) ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Suppression...</>
+              ) : (
+                <><Trash2 className="w-4 h-4" /> Supprimer définitivement</>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
         <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-bulk-assign">
@@ -1092,7 +1212,7 @@ export default function Orders() {
         order={selectedOrder}
         storeName={storeData?.name}
         onClose={() => setSelectedOrder(null)}
-        onUpdated={(updated) => setSelectedOrder(prev => prev ? { ...prev, ...updated } : prev)}
+        onUpdated={(updated: any) => setSelectedOrder((prev: any) => prev ? { ...prev, ...updated } : prev)}
       />
     </div>
   );

@@ -118,7 +118,7 @@ export default function Publicites() {
     }
   }
 
-  const uniqueSources = [...new Set(entries.map((e: any) => e.source))].filter(Boolean).length;
+  const uniqueSources = Array.from(new Set(entries.map((e: any) => e.source))).filter(Boolean).length;
   const summaryCards = [
     {
       label: "Total Dépenses",

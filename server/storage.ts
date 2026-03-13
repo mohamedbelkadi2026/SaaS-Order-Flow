@@ -41,6 +41,8 @@ export interface IStorage {
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
   bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]>;
+  deleteOrder(id: number, storeId: number): Promise<void>;
+  bulkDeleteOrders(ids: number[], storeId: number): Promise<number>;
   createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order>;
   updateOrderStatus(id: number, status: string): Promise<Order | undefined>;
   assignOrder(id: number, agentId: number | null): Promise<Order | undefined>;
@@ -398,6 +400,33 @@ export class DatabaseStorage implements IStorage {
         eq(orders.status, 'confirme')
       ));
     return eligible;
+  }
+
+  async deleteOrder(id: number, storeId: number): Promise<void> {
+    // Verify the order belongs to this store for security
+    const [order] = await db.select({ id: orders.id }).from(orders)
+      .where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
+    if (!order) throw new Error('Order not found or access denied');
+    // Delete order items first (cascade)
+    await db.delete(orderItems).where(eq(orderItems.orderId, id));
+    // Delete the order
+    await db.delete(orders).where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
+  }
+
+  async bulkDeleteOrders(ids: number[], storeId: number): Promise<number> {
+    if (ids.length === 0) return 0;
+    // Verify all orders belong to this store
+    const owned = await db.select({ id: orders.id }).from(orders)
+      .where(and(inArray(orders.id, ids), eq(orders.storeId, storeId)));
+    const ownedIds = owned.map(o => o.id);
+    if (ownedIds.length === 0) return 0;
+    // Delete order items for all these orders
+    await db.delete(orderItems).where(inArray(orderItems.orderId, ownedIds));
+    // Delete the orders
+    const deleted = await db.delete(orders)
+      .where(and(inArray(orders.id, ownedIds), eq(orders.storeId, storeId)))
+      .returning({ id: orders.id });
+    return deleted.length;
   }
 
   async createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order> {

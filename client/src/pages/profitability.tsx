@@ -106,10 +106,10 @@ export default function Profitability() {
   const DateFilters = () => (
     <div className="flex flex-wrap gap-2 items-center">
       <DateRangePicker
-        value={{ from: dateFrom ? new Date(dateFrom) : undefined, to: dateTo ? new Date(dateTo) : undefined }}
+        value={{ from: dateFrom, to: dateTo }}
         onChange={(range) => {
-          setDateFrom(range?.from ? range.from.toISOString().split("T")[0] : "");
-          setDateTo(range?.to ? range.to.toISOString().split("T")[0] : "");
+          setDateFrom(range?.from ?? "");
+          setDateTo(range?.to ?? "");
         }}
       />
     </div>

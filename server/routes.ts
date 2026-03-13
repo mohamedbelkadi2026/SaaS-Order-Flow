@@ -591,6 +591,40 @@ export async function registerRoutes(
     }
   });
 
+  // ── Single order delete ──────────────────────────────────────────────────────
+  app.delete("/api/orders/:id", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent' || user.role === 'media_buyer') {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const orderId = Number(req.params.id);
+      if (isNaN(orderId)) return res.status(400).json({ message: "ID invalide" });
+      await storage.deleteOrder(orderId, user.storeId!);
+      res.json({ ok: true, deleted: orderId });
+    } catch (err: any) {
+      res.status(err.message?.includes('not found') ? 404 : 500).json({ message: err.message || "Suppression échouée" });
+    }
+  });
+
+  // ── Bulk order delete ────────────────────────────────────────────────────────
+  app.post("/api/orders/bulk-delete", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent' || user.role === 'media_buyer') {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const { orderIds } = req.body;
+      if (!Array.isArray(orderIds) || orderIds.length === 0) {
+        return res.status(400).json({ message: "orderIds (array) requis" });
+      }
+      const deleted = await storage.bulkDeleteOrders(orderIds.map(Number), user.storeId!);
+      res.json({ ok: true, deleted });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Suppression en masse échouée" });
+    }
+  });
+
   app.get("/api/orders/:id", requireAuth, async (req, res) => {
     const orderId = Number(req.params.id);
     const order = await storage.getOrder(orderId);
