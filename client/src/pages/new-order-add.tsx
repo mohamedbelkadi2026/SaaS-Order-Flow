@@ -36,6 +36,7 @@ const ORDER_STATUSES = [
 
 interface LineItem {
   id: string;
+  productId: number | null;
   rawProductName: string;
   sku: string;
   variantInfo: string;
@@ -44,7 +45,7 @@ interface LineItem {
 }
 
 function newItem(): LineItem {
-  return { id: `item-${Date.now()}-${Math.random()}`, rawProductName: "", sku: "", variantInfo: "", price: 0, quantity: 1 };
+  return { id: `item-${Date.now()}-${Math.random()}`, productId: null, rawProductName: "", sku: "", variantInfo: "", price: 0, quantity: 1 };
 }
 
 export default function NewOrderAdd() {
@@ -89,7 +90,7 @@ export default function NewOrderAdd() {
     const p = (products as any[]).find(p => p.id === parseInt(productId));
     if (p) {
       setItems(prev => prev.map(it => it.id === id
-        ? { ...it, rawProductName: p.name, sku: p.sku || "", price: (p.sellingPrice || p.costPrice || 0) / 100 }
+        ? { ...it, productId: p.id, rawProductName: p.name, sku: p.sku || "", price: (p.sellingPrice || p.costPrice || 0) / 100 }
         : it));
     }
   };
@@ -124,6 +125,7 @@ export default function NewOrderAdd() {
         items: items
           .filter(it => it.rawProductName.trim())
           .map(it => ({
+            productId: it.productId ?? null,
             rawProductName: it.rawProductName,
             sku: it.sku || null,
             variantInfo: it.variantInfo || null,

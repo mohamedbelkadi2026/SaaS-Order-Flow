@@ -308,6 +308,12 @@ export async function registerRoutes(
       agentSettingsList.map((s: any) => [s.agentId, s.commissionRate ?? 0])
     );
 
+    // Real COGS: use order_items × products.cost_price, fallback to orders.product_cost
+    const deliveredInFilter = allOrders.filter(o => o.status === 'delivered');
+    const statsCogsMap = await storage.computeOrdersCOGS(
+      deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
+    );
+
     allOrders.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
       else if (o.status === 'confirme') confirme++;
@@ -323,7 +329,7 @@ export async function registerRoutes(
       // Revenue only from delivered orders (livré)
       if (o.status === 'delivered') {
         revenue += (o.totalPrice ?? 0);
-        totalProductCost += (o.productCost ?? 0);
+        totalProductCost += statsCogsMap.get(o.id) ?? 0;
         totalShipping += (o.shippingCost ?? 0);
         totalPackaging += storePackagingCost;
         // Agent commission: stored in DH, convert to cents
@@ -1394,6 +1400,7 @@ export async function registerRoutes(
         comment: z.string().nullable().optional(),
         totalPrice: z.number().optional().default(0),
         items: z.array(z.object({
+          productId: z.number().nullable().optional(),
           rawProductName: z.string().optional().default(''),
           sku: z.string().nullable().optional(),
           variantInfo: z.string().nullable().optional(),
@@ -1413,6 +1420,22 @@ export async function registerRoutes(
       const rawProductName = data.items.map(i => i.rawProductName).filter(Boolean).join(' + ') || null;
       const orderNumber = `MAN-${Date.now()}`;
 
+      // Compute real COGS from linked products
+      let computedProductCost = 0;
+      const storeProducts = await storage.getProductsByStore(storeId);
+      for (const item of data.items.filter(i => i.rawProductName)) {
+        if (item.productId) {
+          const prod = (storeProducts as any[]).find((p: any) => p.id === item.productId);
+          if (prod) computedProductCost += (prod.costPrice ?? 0) * item.quantity;
+        } else {
+          // Fallback: match by name
+          const prod = (storeProducts as any[]).find((p: any) =>
+            p.name.toLowerCase().trim() === (item.rawProductName || '').toLowerCase().trim()
+          );
+          if (prod) computedProductCost += (prod.costPrice ?? 0) * item.quantity;
+        }
+      }
+
       const order = await storage.createOrder({
         storeId,
         orderNumber,
@@ -1422,7 +1445,7 @@ export async function registerRoutes(
         customerCity: data.customerCity,
         status: data.status,
         totalPrice: totalPriceCents,
-        productCost: 0,
+        productCost: computedProductCost,
         shippingCost: 0,
         adSpend: 0,
         source: 'manual',
@@ -1433,7 +1456,7 @@ export async function registerRoutes(
         replace: data.replace,
       } as any, data.items.filter(i => i.rawProductName).map(i => ({
         orderId: 0,
-        productId: null,
+        productId: i.productId ?? null,
         rawProductName: i.rawProductName,
         sku: i.sku || null,
         variantInfo: i.variantInfo || null,

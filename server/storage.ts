@@ -1397,6 +1397,30 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
+  // COGS helper: computes buying cost from order_items × products.cost_price.
+  // Falls back to orders.product_cost when no items are linked to a product.
+  async computeOrdersCOGS(orderList: { id: number; productCost: number }[]): Promise<Map<number, number>> {
+    if (orderList.length === 0) return new Map();
+    const orderIds = orderList.map(o => o.id);
+    const rows = await db
+      .select({
+        orderId: orderItems.orderId,
+        cogs: sql<number>`COALESCE(SUM(${products.costPrice} * ${orderItems.quantity}), 0)`,
+      })
+      .from(orderItems)
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(inArray(orderItems.orderId, orderIds))
+      .groupBy(orderItems.orderId);
+    const fromItems = new Map(rows.map(r => [r.orderId!, Number(r.cogs)]));
+    // For orders with no items linked to a product, fall back to the cached product_cost
+    const result = new Map<number, number>();
+    for (const o of orderList) {
+      const itemCogs = fromItems.get(o.id) ?? 0;
+      result.set(o.id, itemCogs > 0 ? itemCogs : (o.productCost ?? 0));
+    }
+    return result;
+  }
+
   async getAdminProfitSummary(
     storeId: number,
     dateFrom?: string,
@@ -1430,11 +1454,14 @@ export class DatabaseStorage implements IStorage {
       deliveredOrders = deliveredOrders.filter(o => matchingOrderIds.has(o.id));
     }
 
+    // --- COGS: use order_items × products.cost_price (ground truth), fallback to orders.product_cost ---
+    const cogsMap = await this.computeOrdersCOGS(deliveredOrders.map(o => ({ id: o.id, productCost: o.productCost })));
+
     // --- Revenue & order costs (delivered only) ---
     let revenue = 0, productCost = 0, shippingCost = 0, packagingCostTotal = 0;
     for (const o of deliveredOrders) {
       revenue += (o.totalPrice ?? 0);
-      productCost += (o.productCost ?? 0);
+      productCost += cogsMap.get(o.id) ?? 0;
       shippingCost += (o.shippingCost ?? 0);
       packagingCostTotal += storePackaging;
     }
@@ -1479,15 +1506,16 @@ export class DatabaseStorage implements IStorage {
     // --- Final net profit (COD formula) ---
     const netProfit = revenue - productCost - shippingCost - packagingCostTotal - agentCommissions - totalAdSpend;
 
-    // --- byBuyer breakdown ---
+    // --- byBuyer breakdown (using real COGS from items) ---
     const buyerOrderMap = new Map<number, { revenue: number; orderProfit: number; name: string }>();
     for (const o of deliveredOrders) {
       if (o.mediaBuyerId) {
         const u = agentUsersAll.find(u => u.id === o.mediaBuyerId);
         const existing = buyerOrderMap.get(o.mediaBuyerId) ?? { revenue: 0, orderProfit: 0, name: u?.username ?? `Buyer ${o.mediaBuyerId}` };
         const agentComm = o.assignedToId ? (agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0;
+        const realCogs = cogsMap.get(o.id) ?? 0;
         existing.revenue += (o.totalPrice ?? 0);
-        existing.orderProfit += (o.totalPrice ?? 0) - (o.productCost ?? 0) - (o.shippingCost ?? 0) - storePackaging - agentComm;
+        existing.orderProfit += (o.totalPrice ?? 0) - realCogs - (o.shippingCost ?? 0) - storePackaging - agentComm;
         buyerOrderMap.set(o.mediaBuyerId, existing);
       }
     }
@@ -1535,10 +1563,11 @@ export class DatabaseStorage implements IStorage {
     if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
     const buyerOrders = await db.select().from(orders).where(and(...orderConditions));
 
+    const buyerCogsMap = await this.computeOrdersCOGS(buyerOrders.map(o => ({ id: o.id, productCost: o.productCost })));
     let revenue = 0, productCost = 0, shippingCost = 0;
     for (const o of buyerOrders) {
       revenue += o.totalPrice;
-      productCost += o.productCost;
+      productCost += buyerCogsMap.get(o.id) ?? 0;
       shippingCost += o.shippingCost;
     }
     const packagingCostTotal = buyerOrders.length * storePackaging;
@@ -1584,6 +1613,10 @@ export class DatabaseStorage implements IStorage {
     if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
     const allOrders = await db.select().from(orders).where(and(...orderConditions));
 
+    // Compute real COGS for all delivered orders in one shot
+    const allDelivered = allOrders.filter(o => o.status === 'delivered');
+    const teamCogsMap = await this.computeOrdersCOGS(allDelivered.map(o => ({ id: o.id, productCost: o.productCost })));
+
     const adDateConds: any[] = [eq(adSpend.storeId, storeId)];
     if (dateFrom) adDateConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adDateConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
@@ -1600,7 +1633,7 @@ export class DatabaseStorage implements IStorage {
       let revenue = 0, productCost = 0, shippingCost = 0, agentCommissions = 0;
       for (const o of deliveredOrders) {
         revenue += o.totalPrice;
-        productCost += o.productCost;
+        productCost += teamCogsMap.get(o.id) ?? 0;
         shippingCost += o.shippingCost;
         if (o.assignedToId) {
           const s = agentSettingsAll.find(s => s.agentId === o.assignedToId);

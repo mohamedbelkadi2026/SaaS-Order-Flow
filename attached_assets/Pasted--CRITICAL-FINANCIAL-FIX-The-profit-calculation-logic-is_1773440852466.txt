@@ -1,0 +1,19 @@
+"CRITICAL FINANCIAL FIX: The profit calculation logic is broken in 'Rentabilité par Utilisateur' and 'Compte de Résultat'. It is not subtracting costs correctly even for 'Livrée' orders. Fix this immediately using these rules:
+1. Fix 'Rentabilité par Utilisateur' (Team Profit):
+Attribution: Ensure that an order marked as 'Livrée' is correctly counted toward the Media Buyer (via media_buyer_id) and the Agent (via assigned_agent_id).
+The Math: For each user, the Profit must be:
+User Profit = (Revenue from their 'Livrée' orders) - (Buying Price of those items) - (Shipping Fees) - (Packaging Costs) - (Their Ad Spend).
+Issue: If it's showing 0 or incorrect, check if the SQL query correctly JOINS the Orders table with the Products table to get the buying_price.
+2. Fix 'Compte de Résultat' (P&L Statement):
+Coût d'achat produits (COGS): This MUST NOT be 0. It must calculate: SUM(buying_price) for all orders with status 'livrée'.
+Frais de Livraison: Subtract the shipping fee for every 'livrée' order.
+Net Profit Global: Update the total to be: Total Revenue - Total COGS - Total Shipping - Total Packaging - Total Ad Spend - Total Commissions.
+3. Stock & Cost Sync:
+Ensure the system pulls the 'Prix Achat' (Buying Price) from the product/variant table at the moment the order is created or updated to 'livrée'.
+If an order has multiple items (e.g., x2), multiply the buying price by the quantity.
+4. SQL Query Optimization (The Solution):
+Use COALESCE for all sums to avoid null errors.
+Logic: SELECT SUM(o.total_price) as revenue, SUM(p.buying_price * o.quantity) as cogs... FROM orders o JOIN products p ON o.product_id = p.id WHERE o.status = 'livrée'.
+5. Frontend UI Sync:
+Update the tables in the 'Advanced Profitability' page to show these columns clearly: CA (Revenue) | Coût Sourcing | Frais Livr | Ad Spend | Profit Net.
+Technical Goal: I want my P&L (Compte de Résultat) to show a real, honest profit. If I haven't delivered anything, my profit should be 0 or negative (if there is ad spend). If I deliver a 400DH shoe that cost me 150DH + 40DH shipping, it should show 210DH profit."
