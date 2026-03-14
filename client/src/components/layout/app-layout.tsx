@@ -614,6 +614,29 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
+        {/* Impersonation banner */}
+        {(user as any)?.isImpersonating && (
+          <div className="flex items-center justify-between px-4 py-2 text-white text-sm font-semibold z-30" style={{ background: "#c53030" }}>
+            <div className="flex items-center gap-2">
+              <span className="text-lg">⚠️</span>
+              <span>MODE IMPERSONATION — Vous visualisez en tant que <strong>{user?.username}</strong></span>
+            </div>
+            <button
+              className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 text-white px-3 py-1 rounded-lg text-xs font-bold transition-colors"
+              data-testid="button-stop-impersonation"
+              onClick={async () => {
+                try {
+                  await fetch("/api/admin/stop-impersonation", { method: "POST", credentials: "include" });
+                  window.location.href = "/admin";
+                } catch {}
+              }}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Retour Super Admin
+            </button>
+          </div>
+        )}
+
         {/* Page content */}
         <main className="flex-1 p-3 sm:p-4 lg:p-6 overflow-x-hidden overflow-y-auto">
           <div className="w-full">

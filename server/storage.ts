@@ -140,9 +140,11 @@ export interface IStorage {
     rows: { userId: number; userName: string; role: string; totalLeads: number; deliveredCount: number; revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; totalCosts: number; netProfit: number; }[];
   }>;
 
-  getAllStores(): Promise<(Store & { ownerEmail?: string | null; subscription?: Subscription | null })[]>;
-  getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number }>;
+  getAllStores(): Promise<any[]>;
+  getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number }>;
   toggleStoreActive(storeId: number, isActive: number): Promise<void>;
+  changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number): Promise<void>;
+  resetMonthlyOrders(storeId: number): Promise<void>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -1066,7 +1068,7 @@ export class DatabaseStorage implements IStorage {
     }));
   }
 
-  async getAllStores(): Promise<(Store & { ownerEmail?: string | null; subscription?: Subscription | null })[]> {
+  async getAllStores(): Promise<any[]> {
     const allStores = await db.select().from(stores).orderBy(desc(stores.createdAt));
     const result = [];
     for (const store of allStores) {
@@ -1074,28 +1076,57 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(users.storeId, store.id), eq(users.role, 'owner')));
       const [sub] = await db.select().from(subscriptions)
         .where(eq(subscriptions.storeId, store.id));
+      const [teamCountRow] = await db.select({ count: count() }).from(users)
+        .where(eq(users.storeId, store.id));
+      const [orderCountRow] = await db.select({ count: count() }).from(orders)
+        .where(eq(orders.storeId, store.id));
       result.push({
         ...store,
         ownerEmail: owner?.email || null,
+        ownerPhone: owner?.phone || null,
+        ownerCreatedAt: owner?.createdAt || null,
+        ownerId: owner?.id || null,
+        teamCount: Number(teamCountRow?.count ?? 0),
+        totalOrders: Number(orderCountRow?.count ?? 0),
         subscription: sub || null,
       });
     }
     return result;
   }
 
-  async getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number }> {
+  async getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number }> {
     const [storeCount] = await db.select({ count: count() }).from(stores);
     const allSubs = await db.select().from(subscriptions).where(eq(subscriptions.isActive, 1));
-    const totalRevenue = allSubs.reduce((sum, s) => sum + s.pricePerMonth, 0);
+    const mrr = allSubs.reduce((sum, s) => sum + s.pricePerMonth, 0);
+    const [orderCount] = await db.select({ count: count() }).from(orders);
     return {
       totalStores: Number(storeCount.count),
       activeStores: allSubs.length,
-      totalRevenue,
+      totalRevenue: mrr,
+      mrr,
+      totalOrders: Number(orderCount?.count ?? 0),
     };
   }
 
   async toggleStoreActive(storeId: number, isActive: number): Promise<void> {
     await db.update(users).set({ isActive }).where(eq(users.storeId, storeId));
+    const sub = await this.getSubscription(storeId);
+    if (sub) {
+      await db.update(subscriptions).set({ isActive }).where(eq(subscriptions.storeId, storeId));
+    }
+  }
+
+  async changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number): Promise<void> {
+    const sub = await this.getSubscription(storeId);
+    if (sub) {
+      await db.update(subscriptions).set({ plan, monthlyLimit, pricePerMonth }).where(eq(subscriptions.storeId, storeId));
+    } else {
+      await db.insert(subscriptions).values({ storeId, plan, monthlyLimit, pricePerMonth, isActive: 1, currentMonthOrders: 0 });
+    }
+  }
+
+  async resetMonthlyOrders(storeId: number): Promise<void> {
+    await db.update(subscriptions).set({ currentMonthOrders: 0, billingCycleStart: new Date() }).where(eq(subscriptions.storeId, storeId));
   }
 
   async getAgentProducts(agentId: number): Promise<AgentProduct[]> {

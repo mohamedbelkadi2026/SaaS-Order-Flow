@@ -159,7 +159,12 @@ export function setupAuth(app: Express) {
       return res.status(401).json({ message: "Non authentifié" });
     }
     const { password: _, ...safeUser } = req.user!;
-    res.json(safeUser);
+    const originalSuperAdminId = (req.session as any).originalSuperAdminId;
+    res.json({
+      ...safeUser,
+      isImpersonating: !!originalSuperAdminId,
+      originalSuperAdminId: originalSuperAdminId || null,
+    });
   });
 }
 

@@ -1,0 +1,29 @@
+"I am launching TajerGrow as a public SaaS platform. I need a 'Super Admin' environment to manage all users, stores, and subscriptions. Please implement the following 'God Mode' features:
+1. Super Admin Role & Access:
+Define a master account role: 'Super_Admin' (assigned only to my email: mehamadchalabi100@gmail.com).
+Create a protected route /super-admin that is invisible and inaccessible to any other user role (Admin or Agent).
+2. User & Store Management Dashboard:
+Build a master table for the Super Admin showing:
+User Info: Name, Email, Phone, Registration Date.
+Store Info: Store Name, Website, WhatsApp Number.
+Usage Stats: Total Orders created, Total Active Agents.
+Status: (Active / Suspended).
+3. Plan & Subscription Control:
+Add a 'Plan Manager' in the Super Admin view.
+For each store, I must be able to:
+Activate/Deactivate their account with one click.
+Change Plan: Manually switch them between (Starter 200DH / Pro 400DH / Custom).
+Reset Order Counter: Reset their monthly order count if they pay for a new month.
+4. Login-as-User (Impersonation Mode):
+Feature: Next to each user in the master table, add a button: 'Se connecter en tant que' (Login as User).
+Logic: When clicked, it should generate a temporary secure token that allows me to enter their specific dashboard exactly as they see it (without needing their password). This is for support and verification.
+Add a prominent top bar saying 'YOU ARE VIEWING AS [USER NAME]' with a 'Return to Super Admin' button.
+5. Platform Analytics (The Big Picture):
+Show global stats for the whole platform:
+Total number of registered stores.
+Total monthly recurring revenue (MRR) based on active plans.
+Total orders processed by the entire platform.
+6. Technical Requirements:
+Use PostgreSQL to track all tenant (Store) data accurately.
+Implement Row Level Security (RLS) to ensure no store owner can ever access another store's data, while I (Super Admin) can see everything.
+Maintain the high-end luxury design (#C5A059 Gold and Navy Blue) for the Super Admin panel as well."

@@ -2408,6 +2408,64 @@ export async function registerRoutes(
     res.json({ message: "Mis à jour" });
   });
 
+  app.patch("/api/admin/stores/:id/plan", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.id);
+      const { plan, monthlyLimit, pricePerMonth } = z.object({
+        plan: z.string().min(1),
+        monthlyLimit: z.number().int().min(0),
+        pricePerMonth: z.number().int().min(0),
+      }).parse(req.body);
+      await storage.changePlan(storeId, plan, monthlyLimit, pricePerMonth);
+      res.json({ message: "Plan mis à jour" });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.post("/api/admin/stores/:id/reset-orders", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.id);
+      await storage.resetMonthlyOrders(storeId);
+      res.json({ message: "Compteur réinitialisé" });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.post("/api/admin/impersonate/:userId", requireSuperAdmin, async (req, res) => {
+    try {
+      const targetId = Number(req.params.userId);
+      const targetUser = await storage.getUser(targetId);
+      if (!targetUser) return res.status(404).json({ message: "Utilisateur introuvable" });
+      if (targetUser.isSuperAdmin) return res.status(400).json({ message: "Impossible d'impersonner un Super Admin" });
+      const originalId = req.user!.id;
+      (req.session as any).originalSuperAdminId = originalId;
+      req.logIn(targetUser, (err) => {
+        if (err) return res.status(500).json({ message: "Erreur d'impersonation" });
+        res.json({ message: `Connecté en tant que ${targetUser.username}`, username: targetUser.username });
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.post("/api/admin/stop-impersonation", requireAuth, async (req, res) => {
+    try {
+      const originalId = (req.session as any).originalSuperAdminId;
+      if (!originalId) return res.status(400).json({ message: "Pas en mode impersonation" });
+      const superAdmin = await storage.getUser(originalId);
+      if (!superAdmin) return res.status(404).json({ message: "Super Admin introuvable" });
+      (req.session as any).originalSuperAdminId = undefined;
+      req.logIn(superAdmin, (err) => {
+        if (err) return res.status(500).json({ message: "Erreur de retour" });
+        res.json({ message: "Retour au compte Super Admin" });
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
   // ============================================================
   // SEND TO DELIVERY (SHIPPING)
   // ============================================================
