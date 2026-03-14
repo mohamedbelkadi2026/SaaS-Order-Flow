@@ -4,7 +4,10 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { createHmac } from "crypto";
-import { requireAuth, requireAdmin, hashPassword } from "./auth";
+import { requireAuth, requireAdmin, hashPassword, comparePasswords } from "./auth";
+import { db } from "./db";
+import { users, orders } from "@shared/schema";
+import { eq, and, gte, lt, count } from "drizzle-orm";
 
 /**
  * Replaces WhatsApp template variables with actual order data.
@@ -486,6 +489,118 @@ export async function registerRoutes(
     try {
       const key = await storage.getOrGenerateWebhookKey(req.user!.storeId!);
       res.json({ webhookKey: key });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ─── Profile System Routes ─────────────────────────────────────────────────
+
+  app.put("/api/user/profile", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        username: z.string().min(1),
+        email: z.string().email().nullable().optional(),
+        phone: z.string().nullable().optional(),
+      });
+      const data = schema.parse(req.body);
+      const updated = await storage.updateUser(req.user!.id, {
+        username: data.username,
+        email: data.email ?? undefined,
+        phone: data.phone ?? undefined,
+      });
+      if (!updated) return res.status(404).json({ message: "Utilisateur introuvable" });
+      const { password: _, ...safe } = updated as any;
+      res.json(safe);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.put("/api/user/password", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        currentPassword: z.string().min(1),
+        newPassword: z.string().min(6),
+      });
+      const { currentPassword, newPassword } = schema.parse(req.body);
+      const [user] = await db.select().from(users).where(eq(users.id, req.user!.id));
+      if (!user) return res.status(404).json({ message: "Utilisateur introuvable" });
+      const valid = await comparePasswords(currentPassword, user.password);
+      if (!valid) return res.status(400).json({ message: "Mot de passe actuel incorrect" });
+      const hashed = await hashPassword(newPassword);
+      await storage.updateUser(req.user!.id, { password: hashed });
+      res.json({ message: "Mot de passe mis à jour" });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.put("/api/store/social", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        website: z.string().nullable().optional(),
+        facebook: z.string().nullable().optional(),
+        instagram: z.string().nullable().optional(),
+        otherSocial: z.string().nullable().optional(),
+      });
+      const data = schema.parse(req.body);
+      const updated = await storage.updateStore(req.user!.storeId!, data);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.put("/api/store/whatsapp-templates", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        whatsappTemplate: z.string().nullable().optional(),
+        whatsappTemplateCustom: z.string().nullable().optional(),
+        whatsappTemplateShipping: z.string().nullable().optional(),
+        whatsappDefaultEnabled: z.number().optional(),
+        whatsappCustomEnabled: z.number().optional(),
+        whatsappShippingEnabled: z.number().optional(),
+      });
+      const data = schema.parse(req.body);
+      const updated = await storage.updateStore(req.user!.storeId!, data);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.post("/api/store/logo", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({ logoUrl: z.string() });
+      const { logoUrl } = schema.parse(req.body);
+      const updated = await storage.updateStore(req.user!.storeId!, { logoUrl });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.get("/api/user/subscription-detail", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const sub = await storage.getSubscription(storeId);
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      const [monthlyCount] = await db.select({ count: count() }).from(orders)
+        .where(and(eq(orders.storeId, storeId), gte(orders.createdAt, monthStart), lt(orders.createdAt, monthEnd)));
+      const teamMembers = await db.select().from(users).where(eq(users.storeId, storeId));
+      res.json({
+        plan: sub?.plan ?? 'starter',
+        monthlyLimit: sub?.monthlyLimit ?? 1500,
+        billingCycleStart: sub?.billingCycleStart,
+        isActive: sub?.isActive ?? 1,
+        currentMonthOrders: Number(monthlyCount?.count ?? 0),
+        teamCount: teamMembers.length,
+        storeCount: 1,
+        month: `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`,
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Erreur" });
     }

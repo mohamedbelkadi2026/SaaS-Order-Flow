@@ -74,7 +74,7 @@ export interface IStorage {
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
   getInventoryStats(storeId: number): Promise<any>;
-  updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null }): Promise<User | undefined>;
+  updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null; password?: string }): Promise<User | undefined>;
   deleteUser(id: number): Promise<void>;
 
   getCustomersByStore(storeId: number): Promise<Customer[]>;
@@ -753,7 +753,7 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null }): Promise<User | undefined> {
+  async updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null; password?: string }): Promise<User | undefined> {
     const [updated] = await db.update(users).set(data).where(eq(users.id, id)).returning();
     return updated;
   }

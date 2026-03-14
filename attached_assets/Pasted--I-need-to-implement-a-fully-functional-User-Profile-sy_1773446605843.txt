@@ -1,0 +1,27 @@
+"I need to implement a fully functional User Profile system for TajerGrow, matching the 5 screenshots provided. This must be a real backend-connected module, not just a UI placeholder.
+1. Navigation & Tabs Layout:
+Create a /profile route with a multi-tab interface: Profil, Réseaux, WhatsApp, Abonnement, and Sécurité.
+The sidebar summary (on the left of Screenshot 1) must be visible across all tabs, showing: User Logo, Name, Plan Type, Active Status, and a real-time progress bar for 'Utilisation du plan (commandes)' based on the 1500/unlimited limit.
+2. Tab 1: Profil (Refer to Image 2):
+Logic: Allow users to update their Full Name, Email, and Phone number.
+Action: Clicking 'Enregistrer' must trigger a PUT /api/user/profile to update the PostgreSQL Users table.
+3. Tab 2: Réseaux (Refer to Image 3):
+Logic: Fields for Website URL, Facebook Link, Instagram Link, and Other.
+Action: Save these links to a store_social_links table or a JSONB column in the Stores table.
+4. Tab 3: WhatsApp Templates (Refer to Image 1):
+Template Manager: Implement the 3 sub-tabs: 'Défaut', 'Personnalisé', and 'Après Expédition'.
+Dynamic Editor: A textarea to edit the message.
+Variable Injection: Clicking the labels (e.g., *{Nom_Client}*, *{Nom_Produit}*) must insert them into the text.
+Live Preview: The 'WhatsApp bubble' on the left must update instantly to show how the real message will look.
+Persistence: Save these templates per store_id so they can be used in the 'Mes Commandes' page.
+5. Tab 4: Abonnement (Refer to Image 4):
+Real-time Tracking: This page must fetch the total number of orders created by the store in the current month.
+Display: Show a table of usage: Month | Orders Count | Boutiques Count | Team Count.
+Upgrade Button: Link this to a simulated payment or a contact-admin action.
+6. Tab 5: Sécurité (Refer to Image 5):
+Password Logic: Fields for 'Mot de Passe Actuel', 'Nouveau Mot de Passe', and 'Confirmer'.
+Backend: Implement secure password hashing (bcrypt) for the update. Show an error if the 'current password' is wrong.
+Technical Instructions:
+PostgreSQL Sync: Ensure all data is persistent and isolated by user_id/store_id.
+UI: Match the clean white/navy theme with the brand's Gold (#C5A059) for buttons and the Green (#22c55e) for active status badges.
+Deployment: Ensure the profile picture (Logo) can be uploaded and saved (use a file path or base64)."

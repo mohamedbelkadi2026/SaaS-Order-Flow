@@ -26,6 +26,7 @@ import {
   Target,
   X,
   Receipt,
+  User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -303,9 +304,17 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             </p>
           </div>
         </div>
+        <Link
+          href="/profile"
+          className="flex items-center gap-2.5 px-3 py-2 w-full rounded-xl text-xs font-semibold text-white/50 hover:text-white hover:bg-white/10 transition-colors mt-1"
+          data-testid="link-profile"
+        >
+          <User className="w-4 h-4" />
+          Mon Profil
+        </Link>
         <button
           onClick={logout}
-          className="flex items-center gap-2.5 px-3 py-2 w-full rounded-xl text-xs font-semibold text-white/50 hover:text-white hover:bg-white/10 transition-colors mt-1"
+          className="flex items-center gap-2.5 px-3 py-2 w-full rounded-xl text-xs font-semibold text-white/50 hover:text-white hover:bg-white/10 transition-colors"
           data-testid="button-logout"
         >
           <LogOut className="w-4 h-4" />
