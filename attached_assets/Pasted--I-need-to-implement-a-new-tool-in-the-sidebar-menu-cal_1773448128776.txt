@@ -1,0 +1,32 @@
+"I need to implement a new tool in the sidebar menu called 'Calculateur de Marge' (Product Margin Calculator), exactly as shown in the provided screenshot. This tool is a simulator for estimating profitability before scaling.
+1. Access Control (Permissions):
+RESTRICTION: This page must ONLY be accessible to users with the role 'Admin' and 'Media Buyer'.
+HIDE this menu item and block the route for accounts with the role 'Agent'.
+2. UI Structure & Inputs (Refer to Screenshot):
+Section 1: Coûts fixes & variables
+Prix d'achat du produit (MAD): (Buying price from supplier).
+Commission Confirmation par Livré (MAD): (Replace 'Centre d’appels' with this).
+Emballage (MAD): (Packaging cost).
+Frais de livraison (MAD): (Shipping fee).
+Risque / Divers (MAD): (Buffer for returns/broken items).
+Section 2: Performance publicitaire
+Nombre de Leads: (Total leads target).
+Coût par lead (CPL): (Target CPA).
+Taux de confirmation (%): (Estimated confirmation rate).
+Taux de livraison (%): (Estimated delivery rate).
+Section 3: Prix de Vente
+Prix de vente (MAD): (The final price the customer pays).
+3. Dynamic Calculation Engine (Real-time Math):
+Implement the logic to update the results automatically as I type:
+Leads Confirmés = Leads * (Taux de confirmation / 100)
+Leads Livrés = Leads Confirmés * (Taux de livraison / 100)
+Coût Publicitaire Total = Leads * Coût par lead
+Coût Total par Vente Livrée = (Product Price + Commission + Emballage + Livraison + Risque)
+Bénéfice Final (Net Profit) = (Leads Livrés * Prix de Vente) - (Leads Livrés * Coût Total par Vente) - (Coût Publicitaire Total)
+CPA Réel (Break-even): Show the maximum CPA allowed to stay profitable.
+4. Styling & Vibe:
+Use the exact same professional clean layout from the screenshot.
+Background: Soft Zinc/Grey.
+Buttons: Brand Gold (#C5A059) for 'Calculer' or 'Reset'.
+Use bold fonts for the 'Bénéfice Final' output.
+Instruction: Add this to the /calculator route. Ensure the math handles decimals correctly and shows '0.00' if inputs are empty."

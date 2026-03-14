@@ -34,6 +34,7 @@ import {
   CheckCircle2,
   Package2,
   PlayCircle,
+  PieChart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -60,13 +61,15 @@ const ADMIN_NAV = [
   { name: "Facturation",            href: "/billing",       icon: CreditCard      },
   { name: "Advanced Profitability", href: "/profitability", icon: Calculator      },
   { name: "Publicités",             href: "/publicites",    icon: Receipt         },
+  { name: "Calculateur de Marge",   href: "/calculator",    icon: PieChart        },
   { name: "Integration",            href: "/integrations",  icon: Plug,           hasSubmenu: true  },
 ] as const;
 
 const MEDIA_BUYER_NAV = [
-  { name: "Dashboard",       href: "/",            icon: LayoutDashboard },
-  { name: "Mes Commandes",   href: "/orders",      icon: ShoppingCart, hasSubmenu: true },
-  { name: "Publicités",      href: "/publicites",  icon: Receipt },
+  { name: "Dashboard",              href: "/",            icon: LayoutDashboard },
+  { name: "Mes Commandes",          href: "/orders",      icon: ShoppingCart, hasSubmenu: true },
+  { name: "Publicités",             href: "/publicites",  icon: Receipt },
+  { name: "Calculateur de Marge",   href: "/calculator",  icon: PieChart },
 ] as const;
 
 const ORDER_SUB_ITEMS = [

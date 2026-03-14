@@ -33,12 +33,13 @@ import MediaBuyersPage from "@/pages/media-buyers";
 import MesDepenses from "@/pages/mes-depenses";
 import Publicites from "@/pages/publicites";
 import Profile from "@/pages/profile";
+import Calculator from "@/pages/calculator";
 
 const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
   "/invoices", "/billing", "/profitability",
   "/integrations", "/integrations/shipping", "/integrations/logs",
-  "/orders/all", "/admin",
+  "/orders/all", "/admin", "/calculator",
 ];
 
 const MEDIA_BUYER_BLOCKED_PATHS = [
@@ -111,6 +112,7 @@ function ProtectedRoutes() {
             <Route path="/mes-depenses" component={MesDepenses} />
             <Route path="/publicites" component={Publicites} />
             <Route path="/profile" component={Profile} />
+            <Route path="/calculator" component={Calculator} />
             <Route component={NotFound} />
           </Switch>
         </AgentGuard>
