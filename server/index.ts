@@ -4,6 +4,23 @@ import { setupAuth } from "./auth";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWooCommerceSync } from "./jobs/woocommerce-sync";
+import { db } from "./db";
+import { users } from "@shared/schema";
+import { eq } from "drizzle-orm";
+
+const SUPER_ADMIN_EMAIL = "mehamadchalabi100@gmail.com";
+
+async function ensureSuperAdmin() {
+  try {
+    const [user] = await db.select().from(users).where(eq(users.email, SUPER_ADMIN_EMAIL));
+    if (user && !user.isSuperAdmin) {
+      await db.update(users).set({ isSuperAdmin: 1 }).where(eq(users.email, SUPER_ADMIN_EMAIL));
+      console.log("[SuperAdmin] isSuperAdmin flag set for", SUPER_ADMIN_EMAIL);
+    }
+  } catch (e) {
+    console.warn("[SuperAdmin] Could not seed super admin:", e);
+  }
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -85,6 +102,8 @@ app.use((req, res, next) => {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
+
+  await ensureSuperAdmin();
 
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen(

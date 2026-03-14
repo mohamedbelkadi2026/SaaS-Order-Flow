@@ -627,7 +627,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               onClick={async () => {
                 try {
                   await fetch("/api/admin/stop-impersonation", { method: "POST", credentials: "include" });
-                  window.location.href = "/admin";
+                  window.location.href = "/super-admin";
                 } catch {}
               }}
             >

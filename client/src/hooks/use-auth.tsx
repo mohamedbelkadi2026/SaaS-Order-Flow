@@ -14,9 +14,12 @@ type User = {
   paymentAmount: number | null;
   distributionMethod: string | null;
   isActive: number | null;
+  isSuperAdmin: number | null;
   createdAt: string | null;
   dashboardPermissions: Record<string, boolean> | null;
   buyerCode: string | null;
+  isImpersonating?: boolean;
+  originalSuperAdminId?: number | null;
 };
 
 type AuthContextType = {

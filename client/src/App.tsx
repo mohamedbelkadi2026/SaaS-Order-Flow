@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useEffect } from "react";
 
 import AuthPage from "@/pages/auth-page";
+import SuperAdminPage from "@/pages/super-admin";
 import Dashboard from "@/pages/dashboard";
 import Orders from "@/pages/orders";
 import NewOrder from "@/pages/new-order";
@@ -121,13 +122,32 @@ function ProtectedRoutes() {
   );
 }
 
+function AppRouter() {
+  const { user, isLoading } = useAuth();
+  const [location] = useLocation();
+
+  if (location === "/super-admin") {
+    if (isLoading) {
+      return (
+        <div className="min-h-screen flex items-center justify-center" style={{ background: "#0f1e38" }}>
+          <Loader2 className="w-8 h-8 animate-spin" style={{ color: "#C5A059" }} />
+        </div>
+      );
+    }
+    if (!user) return <AuthPage />;
+    return <SuperAdminPage />;
+  }
+
+  return <ProtectedRoutes />;
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <TooltipProvider>
           <Toaster />
-          <ProtectedRoutes />
+          <AppRouter />
         </TooltipProvider>
       </AuthProvider>
     </QueryClientProvider>
