@@ -35,6 +35,9 @@ import {
   Package2,
   PlayCircle,
   PieChart,
+  AlertTriangle,
+  Zap,
+  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -45,6 +48,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAuth } from "@/hooks/use-auth";
 import { useActiveStore } from "@/hooks/use-active-store";
 import { useToast } from "@/hooks/use-toast";
+import { useSubscription } from "@/hooks/use-store-data";
 
 /* ─── Nav definitions ─────────────────────────────────────────── */
 const ADMIN_NAV = [
@@ -137,6 +141,25 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   const isAgent = user?.role === 'agent';
+  const isOwner = user?.role === 'owner';
+
+  const { data: subscription } = useSubscription();
+  const isTrial = subscription?.plan === 'trial';
+  const isBlocked = subscription?.isBlocked === 1 || subscription?.isBlocked === true;
+  const trialCurrent = subscription?.current ?? subscription?.currentMonthOrders ?? 0;
+  const trialLimit = isTrial ? 60 : (subscription?.limit ?? subscription?.monthlyLimit ?? 1500);
+  const trialPercent = Math.min(100, Math.round((trialCurrent / trialLimit) * 100));
+  const trialRemaining = Math.max(0, trialLimit - trialCurrent);
+
+  useEffect(() => {
+    if (isTrial && !isBlocked && trialRemaining <= 10 && trialRemaining > 0 && trialCurrent > 0) {
+      toast({
+        title: "⚠️ Limite d'essai proche",
+        description: `بقي لك ${trialRemaining} طلبية فقط في النسخة التجريبية — Il vous reste seulement ${trialRemaining} commandes gratuites.`,
+        variant: "destructive",
+      });
+    }
+  }, [trialRemaining, isTrial]);
   const isMediaBuyer = user?.role === 'media_buyer';
 
   const { data: agentSettingsData } = useQuery<any[]>({
@@ -342,6 +365,40 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           );
         })}
       </nav>
+
+      {/* Trial progress bar */}
+      {isTrial && isOwner && (
+        <div className="shrink-0 mx-3 mb-2 rounded-xl p-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(255,255,255,0.12)' }}>
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="flex items-center gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5 text-amber-300" />
+              <span className="text-[11px] font-bold text-white/80">Version d'essai</span>
+            </div>
+            <span
+              className={cn("text-[11px] font-bold tabular-nums", isBlocked ? "text-red-400" : trialRemaining <= 10 ? "text-amber-300" : "text-white/70")}
+              data-testid="text-trial-usage"
+            >
+              {trialCurrent}/{trialLimit}
+            </span>
+          </div>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.15)' }}>
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{
+                width: `${trialPercent}%`,
+                background: isBlocked ? '#ef4444' : trialRemaining <= 10 ? '#f59e0b' : '#C5A059',
+              }}
+            />
+          </div>
+          {isBlocked ? (
+            <p className="text-[10px] text-red-400 font-semibold mt-1.5 text-center">🛑 Compte bloqué — Passez au plan payant</p>
+          ) : trialRemaining <= 10 ? (
+            <p className="text-[10px] text-amber-300 mt-1.5">⚠️ بقي لك {trialRemaining} طلبية — plus que {trialRemaining}</p>
+          ) : (
+            <p className="text-[10px] text-white/40 mt-1.5">{trialRemaining} commandes restantes</p>
+          )}
+        </div>
+      )}
 
       {/* Footer / user info */}
       <div className="shrink-0 px-4 py-3" style={{ borderTop: '1px solid rgba(255,255,255,0.12)' }}>
@@ -644,6 +701,97 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </main>
       </div>
+
+      {/* ── Paywall Overlay ─────────────────────────────────────── */}
+      {isBlocked && !user?.isSuperAdmin && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)' }}
+          data-testid="paywall-overlay"
+        >
+          <div className="bg-white dark:bg-[#0f1e38] rounded-3xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+            {/* Header gradient */}
+            <div
+              className="px-6 pt-8 pb-6 text-center"
+              style={{ background: 'linear-gradient(135deg, #0f1e38 0%, #1a3a8f 100%)' }}
+            >
+              <div className="w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
+                <AlertTriangle className="w-8 h-8" style={{ color: '#C5A059' }} />
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-1">Essai Terminé</h2>
+              <p className="text-white/60 text-sm">انتهت الفترة التجريبية</p>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 py-6 space-y-4">
+              {/* Usage bar */}
+              <div className="rounded-xl p-4" style={{ background: '#f8f9fa', border: '1px solid #e9ecef' }}>
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm font-semibold text-gray-700">Commandes utilisées</span>
+                  <span className="text-sm font-bold" style={{ color: '#ef4444' }}>{trialCurrent}/{trialLimit}</span>
+                </div>
+                <div className="h-3 rounded-full overflow-hidden bg-gray-200">
+                  <div className="h-full rounded-full bg-red-500" style={{ width: '100%' }} />
+                </div>
+                <p className="text-xs text-gray-500 mt-2 text-center">Vous avez atteint la limite de 60 commandes gratuites</p>
+              </div>
+
+              <p className="text-sm text-gray-600 dark:text-gray-300 text-center leading-relaxed">
+                Pour continuer à utiliser <strong>TajerGrow</strong> et traiter de nouvelles commandes, veuillez passer à un plan payant.
+              </p>
+
+              {/* Plans */}
+              <div className="space-y-2.5">
+                {[
+                  { name: "Starter", price: "200 DH", limit: "1 500 commandes/mois", popular: false },
+                  { name: "Pro", price: "400 DH", limit: "5 000 commandes/mois", popular: true },
+                  { name: "Elite", price: "700 DH", limit: "Illimité", popular: false },
+                ].map((plan) => (
+                  <Link
+                    key={plan.name}
+                    href="/billing"
+                    className="flex items-center justify-between p-3.5 rounded-xl border-2 transition-all cursor-pointer"
+                    style={plan.popular
+                      ? { borderColor: '#C5A059', background: 'rgba(197,160,89,0.06)' }
+                      : { borderColor: '#e9ecef', background: '#fafafa' }
+                    }
+                    data-testid={`paywall-plan-${plan.name.toLowerCase()}`}
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-gray-800">{plan.name}</span>
+                        {plan.popular && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white" style={{ background: '#C5A059' }}>Populaire</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">{plan.limit}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold" style={{ color: '#0f1e38' }}>{plan.price}</p>
+                      <p className="text-[10px] text-gray-400">par mois</p>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+
+              <Link
+                href="/billing"
+                className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm transition-all hover:opacity-90"
+                style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
+                data-testid="paywall-cta-button"
+              >
+                <Zap className="w-4 h-4" />
+                Passer à un plan payant
+              </Link>
+
+              <p className="text-[11px] text-gray-400 text-center">
+                Contactez-nous sur WhatsApp pour toute question ·{" "}
+                <a href="https://wa.me/212600000000" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-600">Support</a>
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Help / Tutorial Modal ───────────────────────────────── */}
       {helpModalOpen && (

@@ -173,12 +173,13 @@ export const integrationLogs = pgTable("integration_logs", {
 export const subscriptions = pgTable("subscriptions", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
-  plan: text("plan").notNull().default('starter'),
-  monthlyLimit: integer("monthly_limit").notNull().default(1500),
-  pricePerMonth: integer("price_per_month").notNull().default(20000),
+  plan: text("plan").notNull().default('trial'),
+  monthlyLimit: integer("monthly_limit").notNull().default(60),
+  pricePerMonth: integer("price_per_month").notNull().default(0),
   currentMonthOrders: integer("current_month_orders").notNull().default(0),
   billingCycleStart: timestamp("billing_cycle_start").defaultNow(),
   isActive: integer("is_active").default(1),
+  isBlocked: integer("is_blocked").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

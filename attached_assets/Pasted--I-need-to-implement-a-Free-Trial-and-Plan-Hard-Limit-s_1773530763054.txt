@@ -1,0 +1,26 @@
+"I need to implement a 'Free Trial' and 'Plan Hard-Limit' system for all new Admin accounts in TajerGrow. Please follow these rules strictly:
+1. Database Update (PostgreSQL):
+In the Stores or Users table, add the following fields:
+plan_type: (Default: 'TRIAL').
+orders_count_current_month: (Integer, default: 0).
+is_blocked: (Boolean, default: false).
+2. The 60 Orders Logic (Backend):
+Create a middleware or function that runs every time a new order is created (via Shopify Webhook or Manual Entry).
+Logic:
+If plan_type == 'TRIAL' AND orders_count_current_month >= 60:
+Set is_blocked = true.
+Reject the new order creation and return a specific error code.
+If the user is on a paid plan (Starter/Pro), apply their respective limits (1500 or Unlimited).
+3. The 'Paywall' UI (Frontend Guard):
+If a user is blocked (is_blocked == true), implement a Full-Screen Modal/Overlay that appears immediately after login and remains on the Dashboard.
+Message (Arabic/French):
+Title: 🛑 'لقد انتهيت 60 طلبية تجريبية' (Vous avez atteint votre limite de 60 commandes gratuites).
+Description: 'يجب ترقية حسابك لإتمام استخدام المنصة والاستفادة من كافة المميزات الاحترافية.' (Veuillez mettre à niveau votre plan pour continuer à utiliser la plateforme).
+Action Button: A large Gold (#C5A059) button called 'Upgrade Now / ترقية الحساب' that redirects to the 'Abonnement' page.
+Restriction: Disable all other buttons (Add Order, Confirm, Ship) while the account is blocked.
+4. Progress Tracking:
+On the Dashboard sidebar, show a progress bar for trial users: 'Usage: [X]/60 orders'.
+As they get closer to 60 (e.g., at 50 orders), show a small warning notification: 'بقي لك 10 طلبيات فقط في النسخة التجريبية'.
+5. Admin Manual Override (Super Admin):
+Ensure that in my Super Admin Panel, I can manually reset the orders_count_current_month or change the plan_type to 'Starter' or 'Pro' once I receive the payment from the user.
+Instruction: Ensure the logic is robust and cannot be bypassed by refreshing the page. Use the brand's professional styling for the block screen."

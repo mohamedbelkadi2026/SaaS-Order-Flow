@@ -1982,9 +1982,9 @@ export async function registerRoutes(
     if (!sub) {
       sub = await storage.createSubscription({
         storeId,
-        plan: 'starter',
-        monthlyLimit: 1500,
-        pricePerMonth: 20000,
+        plan: 'trial',
+        monthlyLimit: 60,
+        pricePerMonth: 0,
         currentMonthOrders: 0,
         isActive: 1,
       });

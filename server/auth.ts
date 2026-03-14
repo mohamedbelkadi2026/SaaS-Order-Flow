@@ -116,9 +116,9 @@ export function setupAuth(app: Express) {
 
       await storage.createSubscription({
         storeId: store.id,
-        plan: 'starter',
-        monthlyLimit: 1500,
-        pricePerMonth: 20000,
+        plan: 'trial',
+        monthlyLimit: 60,
+        pricePerMonth: 0,
         currentMonthOrders: 0,
         isActive: 1,
       });

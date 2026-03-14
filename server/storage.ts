@@ -89,7 +89,7 @@ export interface IStorage {
   updateSubscription(id: number, data: Partial<InsertSubscription>): Promise<Subscription | undefined>;
   incrementMonthlyOrders(storeId: number): Promise<void>;
   resetMonthlyOrders(storeId: number): Promise<void>;
-  checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string }>;
+  checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }>;
 
   getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
 
@@ -1028,29 +1028,46 @@ export class DatabaseStorage implements IStorage {
     await db.update(subscriptions).set({
       currentMonthOrders: sql`${subscriptions.currentMonthOrders} + 1`,
     }).where(eq(subscriptions.storeId, storeId));
+    const sub = await this.getSubscription(storeId);
+    if (sub && sub.plan === 'trial' && sub.currentMonthOrders >= 60) {
+      await db.update(subscriptions).set({ isBlocked: 1 }).where(eq(subscriptions.storeId, storeId));
+    }
   }
 
   async resetMonthlyOrders(storeId: number): Promise<void> {
     await db.update(subscriptions).set({
       currentMonthOrders: 0,
       billingCycleStart: new Date(),
+      isBlocked: 0,
     }).where(eq(subscriptions.storeId, storeId));
   }
 
-  async checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string }> {
+  async checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }> {
     const sub = await this.getSubscription(storeId);
     if (!sub) {
-      return { allowed: true, current: 0, limit: 1500, plan: 'starter' };
+      return { allowed: true, current: 0, limit: 60, plan: 'trial', isBlocked: false };
     }
+
+    const isTrial = sub.plan === 'trial';
+    const trialLimit = 60;
+    const effectiveLimit = isTrial ? trialLimit : sub.monthlyLimit;
+
     const now = new Date();
     const cycleStart = sub.billingCycleStart || sub.createdAt || now;
     const monthsSinceCycle = (now.getFullYear() - cycleStart.getFullYear()) * 12 + (now.getMonth() - cycleStart.getMonth());
-    if (monthsSinceCycle >= 1) {
+
+    if (!isTrial && monthsSinceCycle >= 1) {
       await this.resetMonthlyOrders(storeId);
-      return { allowed: true, current: 0, limit: sub.monthlyLimit, plan: sub.plan };
+      return { allowed: true, current: 0, limit: effectiveLimit, plan: sub.plan, isBlocked: false };
     }
-    const allowed = sub.plan === 'pro' || sub.currentMonthOrders < sub.monthlyLimit;
-    return { allowed, current: sub.currentMonthOrders, limit: sub.monthlyLimit, plan: sub.plan };
+
+    const isBlocked = sub.isBlocked === 1;
+    if (isBlocked) {
+      return { allowed: false, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan, isBlocked: true };
+    }
+
+    const allowed = sub.plan === 'pro' || sub.currentMonthOrders < effectiveLimit;
+    return { allowed, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan, isBlocked: false };
   }
 
   async getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
@@ -1124,14 +1141,14 @@ export class DatabaseStorage implements IStorage {
   async changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number): Promise<void> {
     const sub = await this.getSubscription(storeId);
     if (sub) {
-      await db.update(subscriptions).set({ plan, monthlyLimit, pricePerMonth }).where(eq(subscriptions.storeId, storeId));
+      await db.update(subscriptions).set({ plan, monthlyLimit, pricePerMonth, isBlocked: 0 }).where(eq(subscriptions.storeId, storeId));
     } else {
-      await db.insert(subscriptions).values({ storeId, plan, monthlyLimit, pricePerMonth, isActive: 1, currentMonthOrders: 0 });
+      await db.insert(subscriptions).values({ storeId, plan, monthlyLimit, pricePerMonth, isActive: 1, currentMonthOrders: 0, isBlocked: 0 });
     }
   }
 
   async resetMonthlyOrders(storeId: number): Promise<void> {
-    await db.update(subscriptions).set({ currentMonthOrders: 0, billingCycleStart: new Date() }).where(eq(subscriptions.storeId, storeId));
+    await db.update(subscriptions).set({ currentMonthOrders: 0, billingCycleStart: new Date(), isBlocked: 0 }).where(eq(subscriptions.storeId, storeId));
   }
 
   async getAgentProducts(agentId: number): Promise<AgentProduct[]> {
