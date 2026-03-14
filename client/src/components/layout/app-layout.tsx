@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
@@ -27,6 +27,13 @@ import {
   X,
   Receipt,
   User,
+  Power,
+  Youtube,
+  HelpCircle,
+  Clock,
+  CheckCircle2,
+  Package2,
+  PlayCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -36,6 +43,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/hooks/use-auth";
 import { useActiveStore } from "@/hooks/use-active-store";
+import { useToast } from "@/hooks/use-toast";
 
 /* ─── Nav definitions ─────────────────────────────────────────── */
 const ADMIN_NAV = [
@@ -86,11 +94,17 @@ const NOUVELLE_SUB_ITEMS = [
 
 /* ─── Main layout ──────────────────────────────────────────────── */
 export function AppLayout({ children }: { children: React.ReactNode }) {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const [isDark, setIsDark] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const [helpModalOpen, setHelpModalOpen] = useState(false);
   const { user, logout } = useAuth();
+  const { toast } = useToast();
   const { activeStoreId, setActiveStoreId, stores } = useActiveStore();
+  const userDropdownRef = useRef<HTMLDivElement>(null);
+  const notifPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -98,6 +112,26 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   /* Close mobile drawer on route change */
   useEffect(() => { setMobileOpen(false); }, [location]);
+
+  /* Close dropdowns when route changes */
+  useEffect(() => {
+    setUserDropdownOpen(false);
+    setNotifPanelOpen(false);
+  }, [location]);
+
+  /* Click-outside to close dropdowns */
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (userDropdownRef.current && !userDropdownRef.current.contains(e.target as Node)) {
+        setUserDropdownOpen(false);
+      }
+      if (notifPanelRef.current && !notifPanelRef.current.contains(e.target as Node)) {
+        setNotifPanelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const isAgent = user?.role === 'agent';
   const isMediaBuyer = user?.role === 'media_buyer';
@@ -115,6 +149,22 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     enabled: !isMediaBuyer,
   });
   const newOrdersCount: number = ordersStats?.nouveau ?? 0;
+
+  /* Recent orders for notifications panel */
+  const { data: recentOrders } = useQuery<any[]>({
+    queryKey: ['/api/orders'],
+    enabled: !isMediaBuyer,
+    select: (data: any) => {
+      const list = Array.isArray(data) ? data : (data?.orders ?? []);
+      return list.slice(0, 8);
+    },
+  });
+
+  const handleLogout = () => {
+    setUserDropdownOpen(false);
+    logout();
+    toast({ title: "Déconnexion réussie", description: "À bientôt !" });
+  };
 
   const baseNav = user?.isSuperAdmin
     ? [...ADMIN_NAV, { name: "Super Admin", href: "/admin", icon: Shield }]
@@ -313,7 +363,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           Mon Profil
         </Link>
         <button
-          onClick={logout}
+          onClick={handleLogout}
           className="flex items-center gap-2.5 px-3 py-2 w-full rounded-xl text-xs font-semibold text-white/50 hover:text-white hover:bg-white/10 transition-colors"
           data-testid="button-logout"
         >
@@ -392,26 +442,171 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </Button>
 
-            <Button variant="ghost" size="icon" className="relative rounded-full h-8 w-8" data-testid="button-notifications">
-              <Bell className="w-4 h-4" />
-              {newOrdersCount > 0 && (
-                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border-2 border-background" />
-              )}
+            {/* Help / Tutorial icon */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full h-8 w-8"
+              data-testid="button-help"
+              onClick={() => setHelpModalOpen(true)}
+            >
+              <Youtube className="w-4 h-4" />
             </Button>
+
+            {/* Notifications bell */}
+            <div ref={notifPanelRef} className="relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative rounded-full h-8 w-8"
+                data-testid="button-notifications"
+                onClick={() => { setNotifPanelOpen(v => !v); setUserDropdownOpen(false); }}
+              >
+                <Bell className="w-4 h-4" />
+                {newOrdersCount > 0 && (
+                  <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border-2 border-background" />
+                )}
+              </Button>
+
+              {/* Notifications panel */}
+              {notifPanelOpen && (
+                <div className="absolute right-0 top-10 w-80 bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                    <span className="font-semibold text-sm">Activité récente</span>
+                    {newOrdersCount > 0 && (
+                      <span className="text-xs bg-red-500 text-white px-1.5 py-0.5 rounded-full font-medium">{newOrdersCount} nouveau{newOrdersCount > 1 ? 'x' : ''}</span>
+                    )}
+                  </div>
+                  <div className="max-h-72 overflow-y-auto">
+                    {(!recentOrders || recentOrders.length === 0) ? (
+                      <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+                        <Bell className="w-8 h-8 mb-2 opacity-30" />
+                        <p className="text-xs">Aucune commande récente</p>
+                      </div>
+                    ) : recentOrders.map((order: any) => {
+                      const statusColor: Record<string, string> = {
+                        delivered: "text-green-600",
+                        nouveau: "text-blue-600",
+                        confirme: "text-indigo-600",
+                        retourné: "text-orange-500",
+                        refused: "text-red-500",
+                        expédié: "text-purple-600",
+                      };
+                      const statusIcon: Record<string, any> = {
+                        delivered: CheckCircle2,
+                        nouveau: Package2,
+                        confirme: CheckCircle2,
+                        expédié: Package2,
+                      };
+                      const StatusIcon = statusIcon[order.status] ?? Clock;
+                      const color = statusColor[order.status] ?? "text-muted-foreground";
+                      return (
+                        <div
+                          key={order.id}
+                          className="flex items-start gap-3 px-4 py-2.5 hover:bg-muted/50 cursor-pointer border-b border-border/50 last:border-0"
+                          onClick={() => { setNotifPanelOpen(false); navigate("/orders"); }}
+                          data-testid={`notif-order-${order.id}`}
+                        >
+                          <StatusIcon className={`w-4 h-4 mt-0.5 shrink-0 ${color}`} />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold truncate">
+                              Commande #{order.id} — {order.customerName ?? "Client"}
+                            </p>
+                            <p className={`text-[10px] font-medium ${color}`}>{order.status}</p>
+                          </div>
+                          <span className="text-[10px] text-muted-foreground shrink-0">
+                            {order.createdAt ? new Date(order.createdAt).toLocaleDateString('fr-MA', { day: '2-digit', month: '2-digit' }) : ""}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="px-4 py-2.5 border-t border-border">
+                    <button
+                      className="text-xs text-primary font-medium hover:underline w-full text-center"
+                      onClick={() => { setNotifPanelOpen(false); navigate("/orders"); }}
+                      data-testid="link-all-orders-notif"
+                    >
+                      Voir toutes les commandes →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="h-6 w-px bg-border mx-0.5" />
 
-            <div className="flex items-center gap-2 px-1">
-              <Avatar className="w-8 h-8 border-2 border-primary/20">
-                <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.username || 'U'}`} />
-                <AvatarFallback className="text-xs font-bold">{user?.username?.[0]?.toUpperCase() || 'U'}</AvatarFallback>
-              </Avatar>
-              <div className="hidden sm:block">
-                <p className="text-xs font-bold leading-none" data-testid="text-username">{user?.username || 'User'}</p>
-                <p className="text-[10px] text-muted-foreground mt-0.5">
-                  {user?.role === 'owner' ? 'Admin' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}
-                </p>
-              </div>
+            {/* User dropdown */}
+            <div ref={userDropdownRef} className="relative">
+              <button
+                className="flex items-center gap-2 px-2 py-1.5 rounded-xl hover:bg-muted transition-colors cursor-pointer"
+                onClick={() => { setUserDropdownOpen(v => !v); setNotifPanelOpen(false); }}
+                data-testid="button-user-menu"
+              >
+                <Avatar className="w-8 h-8 border-2 border-primary/20">
+                  {stores?.[0]?.logoUrl ? (
+                    <AvatarImage src={stores[0].logoUrl} />
+                  ) : (
+                    <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.username || 'U'}&backgroundColor=1a3a8f&textColor=ffffff`} />
+                  )}
+                  <AvatarFallback className="text-xs font-bold text-white" style={{ background: "hsl(220 72% 38%)" }}>
+                    {user?.username?.[0]?.toUpperCase() || 'U'}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="hidden sm:block text-left">
+                  <p className="text-xs font-bold leading-none" data-testid="text-username">{user?.username || 'User'}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {user?.role === 'owner' ? 'Admin' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}
+                  </p>
+                </div>
+                <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 ${userDropdownOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {/* Dropdown menu */}
+              {userDropdownOpen && (
+                <div className="absolute right-0 top-12 w-52 bg-white dark:bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden py-1">
+                  {/* User info header */}
+                  <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/60">
+                    <Avatar className="w-9 h-9 border-2 border-primary/20">
+                      {stores?.[0]?.logoUrl ? (
+                        <AvatarImage src={stores[0].logoUrl} />
+                      ) : (
+                        <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.username || 'U'}&backgroundColor=1a3a8f&textColor=ffffff`} />
+                      )}
+                      <AvatarFallback className="text-xs font-bold text-white" style={{ background: "hsl(220 72% 38%)" }}>
+                        {user?.username?.[0]?.toUpperCase() || 'U'}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold leading-tight truncate">{user?.username}</p>
+                      <p className="text-[10px] text-muted-foreground">{user?.role === 'owner' ? 'Administrateur' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}</p>
+                    </div>
+                  </div>
+
+                  {/* Profile link */}
+                  <Link
+                    href="/profile"
+                    onClick={() => setUserDropdownOpen(false)}
+                    data-testid="dropdown-link-profile"
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-muted transition-colors w-full"
+                  >
+                    <User className="w-4 h-4 text-muted-foreground" />
+                    <span className="font-medium">Mon Profil</span>
+                  </Link>
+
+                  <div className="h-px bg-border/60 mx-3 my-1" />
+
+                  {/* Logout */}
+                  <button
+                    onClick={handleLogout}
+                    data-testid="dropdown-button-logout"
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors w-full"
+                  >
+                    <Power className="w-4 h-4" />
+                    <span className="font-semibold">Déconnexion</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
@@ -423,6 +618,60 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </main>
       </div>
+
+      {/* ── Help / Tutorial Modal ───────────────────────────────── */}
+      {helpModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setHelpModalOpen(false)}>
+          <div className="bg-card rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-red-100 dark:bg-red-950 flex items-center justify-center">
+                  <Youtube className="w-4 h-4 text-red-500" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Centre d'aide & Tutoriels</h3>
+                  <p className="text-[10px] text-muted-foreground">Guides vidéo TajerGrow</p>
+                </div>
+              </div>
+              <button onClick={() => setHelpModalOpen(false)} className="p-1.5 rounded-lg hover:bg-muted transition-colors" data-testid="button-close-help">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              {[
+                { title: "Démarrage rapide — Créer votre première commande", duration: "3:42", tag: "Débutant" },
+                { title: "Gestion des stocks & variantes produits", duration: "5:18", tag: "Stock" },
+                { title: "Configurer les intégrations Shopify & WooCommerce", duration: "7:05", tag: "Intégrations" },
+                { title: "Attribution Media Buyer & suivi des performances", duration: "4:55", tag: "Analytics" },
+                { title: "Gestion de l'équipe — Rôles Agent et Admin", duration: "3:22", tag: "Équipe" },
+              ].map((video, i) => (
+                <div key={i} className="flex items-center gap-3 p-3 rounded-xl hover:bg-muted/60 transition-colors cursor-pointer group" data-testid={`help-video-${i}`}>
+                  <div className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-950/50 flex items-center justify-center shrink-0 group-hover:bg-red-200 dark:group-hover:bg-red-900 transition-colors">
+                    <PlayCircle className="w-5 h-5 text-red-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold leading-tight truncate">{video.title}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">{video.duration}</p>
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium shrink-0">{video.tag}</span>
+                </div>
+              ))}
+            </div>
+            <div className="px-5 pb-4">
+              <a
+                href="https://youtube.com/@TajerGrow"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors"
+                data-testid="link-youtube-channel"
+              >
+                <Youtube className="w-4 h-4" />
+                Voir la chaîne YouTube
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
