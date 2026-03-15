@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -49,6 +49,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useActiveStore } from "@/hooks/use-active-store";
 import { useToast } from "@/hooks/use-toast";
 import { useSubscription } from "@/hooks/use-store-data";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 
 /* ─── Nav definitions ─────────────────────────────────────────── */
 const ADMIN_NAV = [
@@ -152,6 +153,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const trialRemaining = Math.max(0, trialLimit - trialCurrent);
   const daysUntilExpiry = (subscription as any)?.daysUntilExpiry ?? null;
   const isExpiringSoon = !isTrial && daysUntilExpiry !== null && daysUntilExpiry >= 0 && daysUntilExpiry <= 5;
+
+  const stopImpersonationMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/admin/stop-impersonation", {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/user"] });
+      queryClient.clear();
+      window.location.href = "/super-admin";
+    },
+    onError: () => toast({ title: "Erreur", description: "Impossible de revenir au compte Super Admin", variant: "destructive" }),
+  });
 
   useEffect(() => {
     if (isTrial && !isBlocked && trialRemaining <= 10 && trialRemaining > 0 && trialCurrent > 0) {
@@ -462,6 +473,29 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+        {/* ── Impersonation Return Banner ───────────────────────── */}
+        {user?.isImpersonating && (
+          <div
+            className="flex items-center gap-3 px-4 py-2.5 shrink-0"
+            style={{ background: 'linear-gradient(90deg, #C5A059, #a07840)', zIndex: 30 }}
+            data-testid="banner-impersonation"
+          >
+            <Shield className="w-4 h-4 text-white shrink-0" />
+            <p className="text-white text-xs font-semibold flex-1">
+              Mode Super Admin — Vous consultez le compte de cet utilisateur.
+            </p>
+            <button
+              onClick={() => stopImpersonationMutation.mutate()}
+              disabled={stopImpersonationMutation.isPending}
+              className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-bold transition-all disabled:opacity-60"
+              data-testid="button-stop-impersonation"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              {stopImpersonationMutation.isPending ? "Retour..." : "Retour Super Admin"}
+            </button>
+          </div>
+        )}
 
         {/* Top header */}
         <header className="h-14 bg-card/95 backdrop-blur-md border-b border-border sticky top-0 z-20 flex items-center justify-between px-3 lg:px-5 gap-2">

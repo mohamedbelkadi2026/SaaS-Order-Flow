@@ -34,6 +34,7 @@ type StoreRow = {
   phone: string | null;
   ownerId: number | null;
   ownerEmail: string | null;
+  ownerName: string | null;
   ownerPhone: string | null;
   ownerCreatedAt: string | null;
   teamCount: number;
@@ -433,6 +434,7 @@ export default function SuperAdminPage() {
     return (
       s.name.toLowerCase().includes(q) ||
       (s.ownerEmail?.toLowerCase().includes(q) ?? false) ||
+      (s.ownerName?.toLowerCase().includes(q) ?? false) ||
       (s.website?.toLowerCase().includes(q) ?? false) ||
       (s.ownerPhone?.includes(q) ?? false)
     );
@@ -520,7 +522,7 @@ export default function SuperAdminPage() {
             </div>
             <input
               type="text"
-              placeholder="Rechercher par nom, email, téléphone..."
+              placeholder="Nom admin, email, boutique, téléphone..."
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full sm:w-72 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white text-sm placeholder-white/30 focus:outline-none focus:border-[#C5A059] transition-colors"
@@ -583,8 +585,11 @@ export default function SuperAdminPage() {
                               </span>
                               {sub?.planExpiryDate && <ExpiryTag planExpiryDate={sub.planExpiryDate} />}
                             </div>
+                            {store.ownerName && (
+                              <p className="text-white/70 text-xs font-medium truncate" data-testid={`text-owner-name-${store.id}`}>{store.ownerName}</p>
+                            )}
                             {store.ownerEmail && (
-                              <p className="text-white/50 text-xs truncate" data-testid={`text-owner-email-${store.id}`}>{store.ownerEmail}</p>
+                              <p className="text-white/40 text-xs truncate" data-testid={`text-owner-email-${store.id}`}>{store.ownerEmail}</p>
                             )}
                             <div className="flex flex-wrap gap-3 mt-1">
                               {store.ownerPhone && (
@@ -607,8 +612,14 @@ export default function SuperAdminPage() {
                         {/* ── Performance metrics ───────────────────── */}
                         <div className="flex items-center gap-4 sm:gap-5 shrink-0">
                           <div className="text-center">
-                            <p className="text-white/40 text-[10px] uppercase tracking-wide">Commandes</p>
-                            <p className="text-white font-bold text-base" data-testid={`text-orders-${store.id}`}>{store.totalOrders.toLocaleString()}</p>
+                            <p className="text-white/40 text-[10px] uppercase tracking-wide">Ce mois</p>
+                            <p className="text-white font-bold text-base" data-testid={`text-month-orders-${store.id}`}>
+                              {sub ? sub.currentMonthOrders.toLocaleString() : "—"}
+                            </p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-white/40 text-[10px] uppercase tracking-wide">Total Cmds</p>
+                            <p className="text-white/70 font-semibold text-sm" data-testid={`text-orders-${store.id}`}>{store.totalOrders.toLocaleString()}</p>
                           </div>
                           <div className="text-center">
                             <p className="text-white/40 text-[10px] uppercase tracking-wide">Profit Net</p>

@@ -1100,7 +1100,7 @@ export class DatabaseStorage implements IStorage {
     // 1. All owners (role='owner') for these stores
     const allOwners = await db.select({
       storeId: users.storeId, id: users.id, email: users.email,
-      phone: users.phone, createdAt: users.createdAt,
+      phone: users.phone, createdAt: users.createdAt, username: users.username,
     }).from(users).where(and(
       sql`${users.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
       eq(users.role, 'owner'),
@@ -1151,6 +1151,7 @@ export class DatabaseStorage implements IStorage {
       return {
         ...store,
         ownerEmail: owner?.email ?? null,
+        ownerName: owner?.username ?? null,
         ownerPhone: owner?.phone ?? null,
         ownerCreatedAt: owner?.createdAt ?? null,
         ownerId: owner?.id ?? null,
