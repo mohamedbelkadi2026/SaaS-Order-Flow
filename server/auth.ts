@@ -70,7 +70,7 @@ export function setupAuth(app: Express) {
           if (!user.password) return done(null, false, { message: "Mot de passe non configuré" });
           const valid = await comparePasswords(password, user.password);
           if (!valid) return done(null, false, { message: "Mot de passe incorrect" });
-          if (user.isActive === 0) return done(null, false, { message: "Votre compte est suspendu. Veuillez contacter l'administration." });
+          if (user.isActive === 0 && !user.isSuperAdmin) return done(null, false, { message: "Votre compte est suspendu. Veuillez contacter l'administration." });
           return done(null, user);
         } catch (err) {
           return done(err);
@@ -171,7 +171,7 @@ export function setupAuth(app: Express) {
 
 export function requireAuth(req: any, res: any, next: any) {
   if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
-  if (req.user.isActive === 0) return res.status(403).json({ suspended: true, message: "Votre compte est suspendu. Veuillez contacter l'administration." });
+  if (req.user.isActive === 0 && !req.user.isSuperAdmin) return res.status(403).json({ suspended: true, message: "Votre compte est suspendu. Veuillez contacter l'administration." });
   return next();
 }
 

@@ -1242,7 +1242,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async toggleStoreActive(storeId: number, isActive: number): Promise<void> {
-    await db.update(users).set({ isActive }).where(eq(users.storeId, storeId));
+    await db.update(users).set({ isActive }).where(and(eq(users.storeId, storeId), eq(users.isSuperAdmin, 0)));
     const sub = await this.getSubscription(storeId);
     if (sub) {
       await db.update(subscriptions).set({ isActive }).where(eq(subscriptions.storeId, storeId));
