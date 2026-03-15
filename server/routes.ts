@@ -409,7 +409,7 @@ export async function registerRoutes(
     let adSpendTotal = 0;
     const productAdCostMap: Record<number, number> = {};
     const activeProductId = (productId && productId !== 'all') ? Number(productId) : null;
-    // Legacy adSpendTracking
+    // Legacy adSpendTracking — amounts stored in DH → multiply by 100 to convert to centimes
     const adSpendEntries = await storage.getAdSpend(storeId);
     adSpendEntries.forEach((e: any) => {
       // Product isolation: when a product is selected, ONLY include spend tagged for that product.
@@ -420,10 +420,11 @@ export async function registerRoutes(
       if (adSourceFilter && e.source && e.source !== adSourceFilter) return;
       if (dateFrom && e.date < dateFrom) return;
       if (dateTo && e.date > dateTo) return;
-      adSpendTotal += Number(e.amount);
-      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + Number(e.amount);
+      const amountCents = Math.round(Number(e.amount ?? 0) * 100);
+      adSpendTotal += amountCents;
+      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + amountCents;
     });
-    // New adSpend table (Publicités module) — all users for global stats
+    // New adSpend table (Publicités module) — amounts already in centimes
     const newAdSpendEntries = await storage.getAdSpendEntries(storeId, {
       source: adSourceFilter || undefined,
       dateFrom: dateFrom ? dateFrom.substring(0, 10) : undefined,
@@ -432,8 +433,9 @@ export async function registerRoutes(
       allUsers: true,
     });
     newAdSpendEntries.forEach((e: any) => {
-      adSpendTotal += Number(e.amount);
-      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + Number(e.amount);
+      const amountCents = Number(e.amount ?? 0);
+      adSpendTotal += amountCents;
+      if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + amountCents;
     });
 
     // Build a name→productId map from store products

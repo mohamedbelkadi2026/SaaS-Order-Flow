@@ -1,0 +1,23 @@
+"I need a complete 'Root-Level' overhaul of the financial engine to ensure TajerGrow is production-ready. The math must be 100% accurate, and the Admin must see all costs, including Agent Commissions. Follow these strict architectural rules:
+1. Centralized Profit Logic (Backend Service):
+Create a master analytical function in the backend that calculates profit based on these COD Standard Rules:
+Revenue (Gross): Sum of total_price for orders where status = 'livré'.
+Sourcing Cost: Sum of (buying_price * quantity) for orders where status = 'livré'.
+Shipping/Pkg Cost: Sum of (shipping_fee + packaging_cost) for orders where status = 'livré'.
+Agent Commissions: Sum of the specific commission_rate assigned to the agent for every order where status = 'livré'.
+Ad Spend: Sum of all entries in the AdSpend table (regardless of delivery, as marketing is a sunk cost).
+The Final Net Profit Formula:
+Net Profit = (Gross Revenue) - (Sourcing Cost + Shipping/Pkg + Agent Commissions + Ad Spend).
+2. Admin Dashboard Update (Missing Metrics):
+New Summary Card: Add a card called 'Commissions Agents' (Total commissions currently owed to agents for delivered orders).
+Corrected Cards: Ensure the 'Net Profit' card uses the formula above and matches exactly with the 'Advanced Profitability' page.
+Visuals: Use Bold Gold (#C5A059) for Net Profit and Bold Red for Total Costs.
+3. Data Integrity & Portability (SQL Fix):
+Rewrite all analytical queries using SQL JOINs between Orders, Products, and Users to ensure the system pulls the most recent buying_price and commission_rate.
+Use COALESCE(..., 0) in every mathematical operation to prevent NaN or negative ghost numbers (like the -50 DH bug).
+Use CAST or Number() to ensure the database treats financial fields as decimals, not strings (to fix the 8+8=88 bug forever).
+4. Media Buyer & Product Filter Sync:
+When filtering by a Product or Media Buyer, the system must apply the costs (Sourcing, Shipping, Commission, and specific Ad Spend) ONLY to the filtered results.
+5. Migration for Portability:
+Ensure all these rules are defined in the database schema or the main server controller so that if the project is cloned to a new Replit, the logic stays identical.
+Instruction: Refactor the entire analyticsController and the Dashboard components. I want to log in and see a professional, accurate P&L (Profit and Loss) statement where every dirham is accounted for."

@@ -14,7 +14,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users } from "lucide-react";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -123,7 +123,7 @@ export default function Dashboard() {
     },
     enabled: isMediaBuyer,
   });
-  const { data: mbProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
+  const { data: mbProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
     queryKey: ['/api/media-buyer/profit', mbDateRange.from, mbDateRange.to],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -137,7 +137,7 @@ export default function Dashboard() {
     enabled: isMediaBuyer,
   });
 
-  const { data: adminPersonalProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
+  const { data: adminPersonalProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
     queryKey: ['/api/media-buyer/profit-admin-personal'],
     queryFn: async () => {
       const res = await fetch('/api/media-buyer/profit', { credentials: 'include' });
@@ -462,6 +462,7 @@ export default function Dashboard() {
                 <div className="flex justify-between"><span className="text-muted-foreground">Coût produit</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.productCost)}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Livraison</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.shippingCost)}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Emballage</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.packagingCost)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Commissions agents</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.agentCommissions ?? 0)}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Dépenses pub</span><span className="font-semibold text-destructive">-{formatCurrency(mbProfit.adSpend)}</span></div>
               </div>
             </div>
@@ -903,9 +904,20 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
         <StatCard title="Livrées" value={delivered} icon={Truck} iconBg="bg-emerald-500" subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}% voir plus`} />
-        {canSeeProfit && (
-          <StatCard title="Profit Net" value={stats?.profit || 0} icon={DollarSign} iconBg="bg-primary" isCurrency subtitle={`Livraison: ${stats?.deliveryRate || 0}%`} />
-        )}
+        {canSeeProfit ? (
+          <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-net-profit" style={{ background: (stats?.profit || 0) >= 0 ? 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #7a6025 100%)' : 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                <DollarSign className="w-5 h-5 text-white" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-white/80 text-[10px] font-bold uppercase tracking-widest">Profit Net</p>
+                <p className="text-white text-xl font-extrabold leading-none truncate">{formatCurrency(stats?.profit || 0)}</p>
+                <p className="text-white/70 text-[10px] mt-0.5">Livraison: {stats?.deliveryRate || 0}%</p>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
         <StatCard title="Refusées" value={stats?.refused || 0} icon={XCircle} iconBg="bg-orange-400" subtitle={`${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`} />
         {canSeeRevenue && (
           <StatCard title="ROI / ROAS" value={null} icon={TrendingUp} iconBg="bg-amber-500" subtitle={
@@ -916,32 +928,47 @@ export default function Dashboard() {
         )}
       </div>
 
-      {canSeeRevenue && (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 lg:gap-4">
-        <Card className="rounded-xl border-0 shadow-md overflow-hidden" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #8a6930 100%)' }} data-testid="card-total-ad-spend">
+      {canSeeProfit && (
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:gap-4">
+        {/* Total Costs — Red */}
+        <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-total-costs" style={{ background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}>
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+              <Receipt className="w-6 h-6 text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Total Coûts</p>
+              <p className="text-white text-2xl font-bold">
+                {formatCurrency((stats?.totalProductCost || 0) + (stats?.totalShipping || 0) + (stats?.totalPackaging || 0) + (stats?.totalAgentCommissions || 0) + (stats?.adSpendTotal || 0))}
+              </p>
+              <p className="text-white/70 text-xs mt-0.5">Produit + Livraison + Pub + Commissions</p>
+            </div>
+          </CardContent>
+        </Card>
+        {/* Commissions Agents — Gold */}
+        <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-agent-commissions" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #8a6930 100%)' }}>
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+              <Users className="w-6 h-6 text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Commissions Agents</p>
+              <p className="text-white text-2xl font-bold">{formatCurrency(stats?.totalAgentCommissions || 0)}</p>
+              <p className="text-white/70 text-xs mt-0.5">{delivered} livrées × taux/agent</p>
+            </div>
+          </CardContent>
+        </Card>
+        {/* Ad Spend — Gold-dark */}
+        <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-total-ad-spend" style={{ background: 'linear-gradient(135deg, #92400e 0%, #78350f 100%)' }}>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
               <TrendingUp className="w-6 h-6 text-white" />
             </div>
             <div className="flex-1">
-              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Total Dépenses Pub</p>
+              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Dépenses Pub</p>
               <p className="text-white text-2xl font-bold">{formatCurrency(stats?.adSpendTotal || 0)}</p>
-              <p className="text-white/70 text-xs mt-0.5">Toutes sources confondues</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-roas">
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center shrink-0">
-              <DollarSign className="w-6 h-6 text-amber-600" />
-            </div>
-            <div className="flex-1">
-              <p className="text-muted-foreground text-xs font-semibold uppercase tracking-widest mb-0.5">ROAS (Retour Pub)</p>
-              <p className="text-foreground text-2xl font-bold">
-                {stats?.adSpendTotal > 0 ? `${stats.roas?.toFixed(2)}x` : '∞'}
-              </p>
-              <p className="text-muted-foreground text-xs mt-0.5">
-                {stats?.adSpendTotal > 0 ? `ROI: ${stats.roi?.toFixed(1)}%` : 'Aucune dépense pub'}
+              <p className="text-white/70 text-xs mt-0.5">
+                {stats?.adSpendTotal > 0 ? `ROAS: ${stats.roas?.toFixed(2)}x | ROI: ${stats.roi?.toFixed(1)}%` : 'Aucune dépense publicitaire'}
               </p>
             </div>
           </CardContent>

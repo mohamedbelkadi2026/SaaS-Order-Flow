@@ -29,10 +29,18 @@ TajerGrow (formerly Garean) is a SaaS Order Management System (OMS) for the Moro
 
 Stock auto-decrements when status changes to `confirme`, restores when changed away from it.
 
-## Profitability Formula
-`Profit = Selling Price - Cost Price - 40 MAD (4000 cents fixed shipping) - Ad Spend`
+## Profitability Formula (COD Net Profit)
+`Net Profit = Revenue - Sourcing Cost - Shipping Cost - Packaging Cost - Agent Commissions - Ad Spend`
 Only calculated for `delivered` orders (COD logic — profit counted only when money is collected).
 ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
+
+### Currency Unit Conventions (CRITICAL)
+- `revenue`, `productCost`, `shippingCost`, `packagingCost` → **centimes** (DB integers, divide by 100 to display)
+- `commissionRate` (store_agent_settings) → **DH** (e.g., 5 = 5 DH/order); formula uses `rate * 100` to convert to centimes
+- `adSpendTracking.amount` (legacy table) → **DH** (multiply by 100 when reading for P&L calculations)
+- `adSpend.amount` (new marketing-spend table) → **centimes** (route converts DH input → centimes on write)
+- `formatCurrency()` always expects centimes input → displays as MAD
+- All profit functions: `getAdminProfitSummary`, `getMediaBuyerProfit`, `getTeamProfitSummary` centrally apply `* 100` to legacy adSpend
 
 ## Database Tables
 - `stores` - Multi-tenant stores with ownerId, phone, website, facebook, instagram, logoUrl, canOpen, isStock, isRamassage, whatsappTemplate

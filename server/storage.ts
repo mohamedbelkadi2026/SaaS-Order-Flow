@@ -135,7 +135,7 @@ export interface IStorage {
   }>;
   getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
-    adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
+    agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }>;
   getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
     rows: { userId: number; userName: string; role: string; totalLeads: number; deliveredCount: number; revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; totalCosts: number; netProfit: number; }[];
@@ -1587,7 +1587,8 @@ export class DatabaseStorage implements IStorage {
     // When a product is selected, only include legacy ad spend explicitly tagged for that product
     if (productId) legacyConds.push(eq(adSpendTracking.productId, productId));
     const legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId }).from(adSpendTracking).where(and(...legacyConds));
-    const legacyTotal = legacyAdSpend.reduce((s, e) => s + Number(e.amount ?? 0), 0);
+    // Legacy adSpendTracking amounts are stored in DH → multiply by 100 to convert to centimes
+    const legacyTotal = legacyAdSpend.reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
 
     // New adSpend (Publicités) table
     const newAdConds: any[] = [eq(adSpend.storeId, storeId)];
@@ -1623,9 +1624,11 @@ export class DatabaseStorage implements IStorage {
     }
     const buyerAdSpendMap = new Map<number, number>();
     for (const e of legacyAdSpend as any[]) {
-      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, Number(buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + Number(e.amount ?? 0));
+      // Legacy amounts in DH → centimes
+      if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, Number(buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + Math.round(Number(e.amount ?? 0) * 100));
     }
     for (const e of newAdEntries) {
+      // New table amounts already in centimes
       if (e.mediaBuyerId) buyerAdSpendMap.set(e.mediaBuyerId, Number(buyerAdSpendMap.get(e.mediaBuyerId) ?? 0) + Number(e.amount ?? 0));
     }
     const allBuyerIds = new Set(Array.from(buyerOrderMap.keys()).concat(Array.from(buyerAdSpendMap.keys())));
@@ -1649,52 +1652,63 @@ export class DatabaseStorage implements IStorage {
 
   async getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
-    adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
+    agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }> {
     const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
-    const storePackaging = store[0]?.packagingCost ?? 0;
+    const storePackaging = Number(store[0]?.packagingCost ?? 0);
 
     // All leads (total orders attributed to this buyer)
     const allLeadConditions: any[] = [eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) allLeadConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
-    if (dateTo) allLeadConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+    if (dateTo) allLeadConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp + interval '1 day' - interval '1 second'`);
     const allLeads = await db.select({ id: orders.id }).from(orders).where(and(...allLeadConditions));
 
-    // Delivered orders only
-    let orderConditions: any[] = [eq(orders.storeId, storeId), eq(orders.status, 'delivered'), eq(orders.mediaBuyerId, mediaBuyerId)];
+    // Delivered orders only — strict filter
+    const orderConditions: any[] = [eq(orders.storeId, storeId), eq(orders.status, 'delivered'), eq(orders.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
-    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
+    if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp + interval '1 day' - interval '1 second'`);
     const buyerOrders = await db.select().from(orders).where(and(...orderConditions));
 
-    const buyerCogsMap = await this.computeOrdersCOGS(buyerOrders.map(o => ({ id: o.id, productCost: o.productCost })));
-    let revenue = 0, productCost = 0, shippingCost = 0;
+    // Agent commission rates lookup
+    const agentSettingsAll = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, storeId));
+    const agentRateMap = new Map(agentSettingsAll.map(s => [s.agentId, Number(s.commissionRate ?? 0)]));
+
+    // COGS via SQL JOIN (order_items × products.cost_price, fallback to orders.product_cost)
+    const buyerCogsMap = await this.computeOrdersCOGS(buyerOrders.map(o => ({ id: o.id, productCost: Number(o.productCost ?? 0) })));
+
+    // All financial aggregations use Number() and COALESCE to prevent string concat
+    let revenue = 0, productCost = 0, shippingCost = 0, agentCommissions = 0;
     for (const o of buyerOrders) {
-      revenue += o.totalPrice;
-      productCost += buyerCogsMap.get(o.id) ?? 0;
-      shippingCost += o.shippingCost;
+      revenue       += Number(o.totalPrice ?? 0);
+      productCost   += Number(buyerCogsMap.get(o.id) ?? 0);
+      shippingCost  += Number(o.shippingCost ?? 0);
+      if (o.assignedToId) {
+        // commissionRate stored in DH → multiply by 100 to get centimes
+        agentCommissions += Math.round(Number(agentRateMap.get(o.assignedToId) ?? 0) * 100);
+      }
     }
     const packagingCostTotal = buyerOrders.length * storePackaging;
 
-    // Legacy adSpendTracking (by mediaBuyerId)
-    let adSpendConditions: any[] = [eq(adSpendTracking.storeId, storeId), eq(adSpendTracking.mediaBuyerId, mediaBuyerId)];
+    // Legacy adSpendTracking (by mediaBuyerId) — amounts stored in DH → multiply by 100
+    const adSpendConditions: any[] = [eq(adSpendTracking.storeId, storeId), eq(adSpendTracking.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) adSpendConditions.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adSpendConditions.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
-    const legacyEntries = await db.select().from(adSpendTracking).where(and(...adSpendConditions));
-    const legacyAdSpend = legacyEntries.reduce((s, e) => s + e.amount, 0);
+    const legacyEntries = await db.select({ amount: adSpendTracking.amount }).from(adSpendTracking).where(and(...adSpendConditions));
+    const legacyAdSpend = legacyEntries.reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
 
-    // New adSpend table (by userId = mediaBuyerId)
-    let newAdSpendConditions: any[] = [eq(adSpend.storeId, storeId), eq((adSpend as any).userId, mediaBuyerId)];
+    // New adSpend table (by userId = mediaBuyerId) — amounts already in centimes
+    const newAdSpendConditions: any[] = [eq(adSpend.storeId, storeId), eq((adSpend as any).userId, mediaBuyerId)];
     if (dateFrom) newAdSpendConditions.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) newAdSpendConditions.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
     const newEntries = await db.select({ amount: adSpend.amount }).from(adSpend).where(and(...newAdSpendConditions));
-    const newAdSpend = newEntries.reduce((s, e) => s + e.amount, 0);
+    const newAdSpendTotal = newEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
-    const totalAdSpend = legacyAdSpend + newAdSpend;
-    const orderProfit = revenue - productCost - shippingCost - packagingCostTotal;
-    const netProfit = orderProfit - totalAdSpend;
+    const totalAdSpend = legacyAdSpend + newAdSpendTotal;
+    // COD Net Profit Formula: Revenue - Sourcing - Shipping - Packaging - AgentCommissions - AdSpend
+    const netProfit = revenue - productCost - shippingCost - packagingCostTotal - agentCommissions - totalAdSpend;
     const roi = totalAdSpend > 0 ? (netProfit / totalAdSpend) * 100 : 0;
 
-    return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, adSpend: totalAdSpend, netProfit, roi, deliveredCount: buyerOrders.length, totalLeads: allLeads.length };
+    return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, agentCommissions, adSpend: totalAdSpend, netProfit, roi, deliveredCount: buyerOrders.length, totalLeads: allLeads.length };
   }
 
   // ─── 3-Tier Attribution Engine ────────────────────────────────────────
@@ -1798,7 +1812,8 @@ export class DatabaseStorage implements IStorage {
       }
       const packagingCost = deliveredOrders.length * storePackaging;
       const newAdSpendTotal = allNewAdSpend.filter(e => e.userId === u.id).reduce((s, e) => s + Number(e.amount ?? 0), 0);
-      const legacyAdSpendTotal = allLegacyAdSpend.filter(e => e.mediaBuyerId === u.id).reduce((s, e) => s + Number(e.amount ?? 0), 0);
+      // Legacy adSpend amounts in DH → multiply by 100 to convert to centimes
+      const legacyAdSpendTotal = allLegacyAdSpend.filter(e => e.mediaBuyerId === u.id).reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
       const totalAdSpend = newAdSpendTotal + legacyAdSpendTotal;
       const totalCosts = productCost + shippingCost + packagingCost + agentCommissions + totalAdSpend;
       const netProfit = revenue - totalCosts;
