@@ -2449,6 +2449,7 @@ export async function registerRoutes(
         .map(s => ({
           storeId: s.id,
           storeName: s.name,
+          ownerName: s.ownerName,
           ownerEmail: s.ownerEmail,
           ownerPhone: s.ownerPhone,
           plan: s.subscription?.plan,

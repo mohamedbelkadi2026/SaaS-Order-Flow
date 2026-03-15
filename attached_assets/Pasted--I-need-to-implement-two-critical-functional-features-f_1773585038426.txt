@@ -1,0 +1,21 @@
+"I need to implement two critical functional features for platform management and security. This must be a backend-enforced logic (3amali), not just UI changes.
+1. Account Deactivation & Login Guard (The Kill Switch):
+Logic: In the Super Admin panel, the 'Statut' (Actif/Inactif) toggle must be functional.
+Backend Enforcement: Update the Authentication Middleware and the Login API.
+When an Admin (or their Agents) tries to log in, the system must check the status of their store in the database.
+If status == 'Inactif', the login must fail with the message: 'Votre compte est suspendu. Veuillez contacter l'administration.'
+Active Session Termination: If an Admin is already logged in and I (Super Admin) switch them to 'Inactif', any further API request they make (refreshing, adding an order, etc.) must return a 403 Forbidden error and force them to the logout screen.
+2. Automated Expiry Notification System:
+Logic: Create a helper function to calculate the days remaining until plan_expiry_date.
+Admin Dashboard Banner: If an Admin's plan has 5 days or less remaining, display a persistent high-visibility banner at the top of their dashboard.
+Text (Arabic/French): ⚠️ 'تنبيه: اشتراكك ينتهي خلال [X] أيام. يرجى التجديد لتجنب توقف الخدمة.' (Votre abonnement expire dans [X] jours. Veuillez renouveler pour éviter l'interruption du service.)
+Super Admin Notification: In the Super Admin table, highlight the rows of stores that are in the 'Expiring Soon' or 'Expired' state with specific colors (Orange/Red).
+3. WhatsApp Notification Link for Super Admin:
+In the Super Admin table, add a WhatsApp icon next to the Admin's phone number.
+Function: When clicked, it should open a WhatsApp message with a pre-filled text:
+'Bonjour [Nom], c'est l'administration de TajerGrow. Votre abonnement arrive à échéance le [Date]. Merci de procéder au paiement pour garder votre accès actif.'
+4. Technical Instructions:
+Ensure the Users and Stores tables in PostgreSQL are updated to handle the is_active boolean and expiry_date.
+Use COALESCE to handle cases where dates might be missing.
+Ensure the logic is applied to the Mobile View as well.
+Goal: I want full authority as Super Admin. If I deactivate a store, they are kicked out immediately. If their time is up, they are notified automatically."

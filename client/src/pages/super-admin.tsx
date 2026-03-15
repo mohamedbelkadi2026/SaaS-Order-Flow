@@ -9,7 +9,7 @@ import {
   Shield, Store, Users, ShoppingCart, TrendingUp, Crown,
   Power, RotateCcw, LogIn, LogOut, X, Check,
   BarChart3, DollarSign, Activity, Eye, Package, Calendar,
-  AlertCircle, Bell, Phone, ChevronDown, ChevronUp,
+  AlertCircle, Bell, MessageCircle, Phone, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +57,7 @@ type GlobalStats = {
 type ExpiryNotification = {
   storeId: number;
   storeName: string;
+  ownerName: string | null;
   ownerEmail: string | null;
   ownerPhone: string | null;
   plan: string;
@@ -324,9 +325,13 @@ function NotificationPanel({ onClose }: { onClose: () => void }) {
                   <p className="text-white font-semibold text-sm truncate">{n.storeName}</p>
                   {n.ownerEmail && <p className="text-white/50 text-xs truncate">{n.ownerEmail}</p>}
                   {n.ownerPhone && (
-                    <a href={`https://wa.me/${n.ownerPhone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer"
+                    <a
+                      href={`https://wa.me/${n.ownerPhone.replace(/\D/g, '')}?text=${encodeURIComponent(
+                        `Bonjour ${n.ownerName || n.storeName}, c'est l'administration de TajerGrow. Votre abonnement arrive à échéance le ${new Date(n.planExpiryDate).toLocaleDateString('fr-MA')}. Merci de procéder au paiement pour garder votre accès actif.`
+                      )}`}
+                      target="_blank" rel="noopener noreferrer"
                       className="text-green-400 text-xs flex items-center gap-1 hover:text-green-300 transition-colors mt-0.5">
-                      <Phone className="w-3 h-3" />
+                      <MessageCircle className="w-3 h-3" />
                       {n.ownerPhone}
                     </a>
                   )}
@@ -594,9 +599,16 @@ export default function SuperAdminPage() {
                             )}
                             <div className="flex flex-wrap gap-3 mt-1">
                               {store.ownerPhone && (
-                                <a href={`https://wa.me/${store.ownerPhone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer"
-                                  className="text-green-400/70 hover:text-green-400 text-xs flex items-center gap-1 transition-colors">
-                                  <Phone className="w-3 h-3" />
+                                <a
+                                  href={`https://wa.me/${store.ownerPhone.replace(/\D/g, '')}?text=${encodeURIComponent(
+                                    `Bonjour ${store.ownerName || store.name}, c'est l'administration de TajerGrow. Votre abonnement arrive à échéance le ${store.subscription?.planExpiryDate ? new Date(store.subscription.planExpiryDate).toLocaleDateString('fr-MA') : 'bientôt'}. Merci de procéder au paiement pour garder votre accès actif.`
+                                  )}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-green-400/70 hover:text-green-400 text-xs flex items-center gap-1 transition-colors"
+                                  title="Envoyer un message WhatsApp"
+                                >
+                                  <MessageCircle className="w-3 h-3" />
                                   {store.ownerPhone}
                                 </a>
                               )}

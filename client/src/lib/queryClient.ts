@@ -3,7 +3,18 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    let message = text;
+    try {
+      const json = JSON.parse(text);
+      if (json.message) message = json.message;
+      if (res.status === 403 && json.suspended) {
+        localStorage.setItem("suspended_message", json.message);
+        await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+        window.location.href = "/";
+        return;
+      }
+    } catch {}
+    throw new Error(`${res.status}: ${message}`);
   }
 }
 
