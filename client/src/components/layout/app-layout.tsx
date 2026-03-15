@@ -206,7 +206,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   };
 
   const baseNav = user?.isSuperAdmin
-    ? [...ADMIN_NAV, { name: "Super Admin", href: "/admin", icon: Shield }]
+    ? [...ADMIN_NAV, { name: "Super Admin", href: "/super-admin", icon: Shield }]
     : [...ADMIN_NAV];
 
   const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add'];

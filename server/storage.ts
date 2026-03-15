@@ -1144,14 +1144,13 @@ export class DatabaseStorage implements IStorage {
     ).groupBy(orders.storeId);
     const monthOrderMap = new Map(monthOrderCounts.map(r => [r.storeId, Number(r.cnt)]));
 
-    // 5a. Core profit components per store (delivered orders): revenue - productCost - shippingCost - packagingCost - orderAdSpend
+    // 5a. Core profit components per store (delivered orders): revenue - productCost - shippingCost - orderAdSpend
     const profitRows = await db.select({
       storeId: orders.storeId,
-      revenue:     sql<number>`COALESCE(SUM(${orders.totalPrice}), 0)`,
-      productCost: sql<number>`COALESCE(SUM(${orders.productCost}), 0)`,
-      shipping:    sql<number>`COALESCE(SUM(${orders.shippingCost}), 0)`,
-      packaging:   sql<number>`COALESCE(SUM(${orders.packagingCost}), 0)`,
-      orderAdSpend:sql<number>`COALESCE(SUM(${orders.adSpend}), 0)`,
+      revenue:     sql<number>`COALESCE(SUM(${orders.totalPrice}::bigint), 0)`,
+      productCost: sql<number>`COALESCE(SUM(${orders.productCost}::bigint), 0)`,
+      shipping:    sql<number>`COALESCE(SUM(${orders.shippingCost}::bigint), 0)`,
+      orderAdSpend:sql<number>`COALESCE(SUM(${orders.adSpend}::bigint), 0)`,
     }).from(orders).where(
       and(
         sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
@@ -1162,7 +1161,7 @@ export class DatabaseStorage implements IStorage {
     // 5b. Agent commissions per store (commissionRate in DH × 100 = centimes, per delivered order with assigned agent)
     const commissionRows = await db.select({
       storeId: orders.storeId,
-      totalCommissions: sql<number>`COALESCE(SUM(${storeAgentSettings.commissionRate} * 100), 0)`,
+      totalCommissions: sql<number>`COALESCE(SUM(${storeAgentSettings.commissionRate}::bigint * 100), 0)`,
     }).from(orders)
       .innerJoin(storeAgentSettings, and(
         eq(storeAgentSettings.storeId, orders.storeId),
@@ -1178,7 +1177,7 @@ export class DatabaseStorage implements IStorage {
     // 5c. Legacy ad spend per store (amount stored in DH → × 100 to get centimes)
     const legacyAdRows = await db.select({
       storeId: adSpendTracking.storeId,
-      total: sql<number>`COALESCE(SUM(${adSpendTracking.amount} * 100), 0)`,
+      total: sql<number>`COALESCE(SUM(${adSpendTracking.amount}::bigint * 100), 0)`,
     }).from(adSpendTracking).where(
       sql`${adSpendTracking.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
     ).groupBy(adSpendTracking.storeId);

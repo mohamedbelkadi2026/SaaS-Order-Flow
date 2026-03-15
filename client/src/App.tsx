@@ -126,7 +126,7 @@ function AppRouter() {
   const { user, isLoading } = useAuth();
   const [location] = useLocation();
 
-  if (location === "/super-admin") {
+  if (location === "/super-admin" || location === "/admin") {
     if (isLoading) {
       return (
         <div className="min-h-screen flex items-center justify-center" style={{ background: "#0f1e38" }}>
