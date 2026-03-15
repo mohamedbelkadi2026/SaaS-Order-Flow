@@ -159,6 +159,9 @@ export function setupAuth(app: Express) {
     if (!req.isAuthenticated()) {
       return res.status(401).json({ message: "Non authentifié" });
     }
+    if (req.user!.isActive === 0 && !req.user!.isSuperAdmin) {
+      return res.status(403).json({ suspended: true, message: "Votre compte est suspendu. Veuillez contacter l'administration." });
+    }
     const { password: _, ...safeUser } = req.user!;
     const originalSuperAdminId = (req.session as any).originalSuperAdminId;
     res.json({

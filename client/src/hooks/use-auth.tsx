@@ -42,10 +42,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryFn: async () => {
       const res = await fetch("/api/user", { credentials: "include" });
       if (res.status === 401) return null;
+      if (res.status === 403) {
+        const json = await res.json().catch(() => ({}));
+        if (json.suspended) {
+          localStorage.setItem("suspended_message", json.message || "Votre compte est suspendu.");
+          fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+          window.location.replace("/");
+        }
+        return null;
+      }
       if (!res.ok) throw new Error("Failed to fetch user");
       return res.json();
     },
-    staleTime: Infinity,
+    staleTime: 30000,
     retry: false,
   });
 
