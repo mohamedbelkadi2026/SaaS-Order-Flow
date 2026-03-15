@@ -1121,7 +1121,7 @@ export class DatabaseStorage implements IStorage {
     ).groupBy(users.storeId);
     const teamCountMap = new Map(teamCounts.map(r => [r.storeId!, Number(r.cnt)]));
 
-    // 4. Order counts per store
+    // 4. Order counts per store (all-time)
     const orderCounts = await db.select({
       storeId: orders.storeId, cnt: count(),
     }).from(orders).where(
@@ -1129,21 +1129,77 @@ export class DatabaseStorage implements IStorage {
     ).groupBy(orders.storeId);
     const orderCountMap = new Map(orderCounts.map(r => [r.storeId, Number(r.cnt)]));
 
-    // 5. Net profit per store (delivered orders only, simplified formula)
+    // 4b. Current calendar-month orders per store
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const monthOrderCounts = await db.select({
+      storeId: orders.storeId, cnt: count(),
+    }).from(orders).where(
+      and(
+        sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+        sql`${orders.createdAt} >= ${monthStart}`,
+        sql`${orders.createdAt} < ${monthEnd}`,
+      )
+    ).groupBy(orders.storeId);
+    const monthOrderMap = new Map(monthOrderCounts.map(r => [r.storeId, Number(r.cnt)]));
+
+    // 5a. Core profit components per store (delivered orders): revenue - productCost - shippingCost - packagingCost - orderAdSpend
     const profitRows = await db.select({
       storeId: orders.storeId,
-      revenue: sql<number>`COALESCE(SUM(${orders.totalPrice}), 0)`,
-      costs: sql<number>`COALESCE(SUM(${orders.productCost}), 0) + COALESCE(SUM(${orders.shippingCost}), 0)`,
+      revenue:     sql<number>`COALESCE(SUM(${orders.totalPrice}), 0)`,
+      productCost: sql<number>`COALESCE(SUM(${orders.productCost}), 0)`,
+      shipping:    sql<number>`COALESCE(SUM(${orders.shippingCost}), 0)`,
+      packaging:   sql<number>`COALESCE(SUM(${orders.packagingCost}), 0)`,
+      orderAdSpend:sql<number>`COALESCE(SUM(${orders.adSpend}), 0)`,
     }).from(orders).where(
       and(
         sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
         eq(orders.status, 'delivered'),
       )
     ).groupBy(orders.storeId);
-    const profitMap = new Map(profitRows.map(r => [
-      r.storeId,
-      Number(r.revenue) - Number(r.costs),
-    ]));
+
+    // 5b. Agent commissions per store (commissionRate in DH × 100 = centimes, per delivered order with assigned agent)
+    const commissionRows = await db.select({
+      storeId: orders.storeId,
+      totalCommissions: sql<number>`COALESCE(SUM(${storeAgentSettings.commissionRate} * 100), 0)`,
+    }).from(orders)
+      .innerJoin(storeAgentSettings, and(
+        eq(storeAgentSettings.storeId, orders.storeId),
+        eq(storeAgentSettings.agentId, orders.assignedToId),
+      ))
+      .where(and(
+        sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+        eq(orders.status, 'delivered'),
+      ))
+      .groupBy(orders.storeId);
+    const commissionMap = new Map(commissionRows.map(r => [r.storeId, Number(r.totalCommissions)]));
+
+    // 5c. Legacy ad spend per store (amount stored in DH → × 100 to get centimes)
+    const legacyAdRows = await db.select({
+      storeId: adSpendTracking.storeId,
+      total: sql<number>`COALESCE(SUM(${adSpendTracking.amount} * 100), 0)`,
+    }).from(adSpendTracking).where(
+      sql`${adSpendTracking.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+    ).groupBy(adSpendTracking.storeId);
+    const legacyAdMap = new Map(legacyAdRows.map(r => [r.storeId, Number(r.total)]));
+
+    // 5d. New ad_spend table per store (amount already in centimes)
+    const newAdRows = await db.select({
+      storeId: adSpend.storeId,
+      total: sql<number>`COALESCE(SUM(${adSpend.amount}), 0)`,
+    }).from(adSpend).where(
+      sql`${adSpend.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+    ).groupBy(adSpend.storeId);
+    const newAdMap = new Map(newAdRows.map(r => [r.storeId, Number(r.total)]));
+
+    const profitMap = new Map(profitRows.map(r => {
+      const base = Number(r.revenue) - Number(r.productCost) - Number(r.shipping) - Number(r.packaging) - Number(r.orderAdSpend);
+      const agentComm = commissionMap.get(r.storeId!) ?? 0;
+      const legacyAd  = legacyAdMap.get(r.storeId!)  ?? 0;
+      const newAd     = newAdMap.get(r.storeId!)      ?? 0;
+      return [r.storeId, base - agentComm - legacyAd - newAd];
+    }));
 
     return allStores.map(store => {
       const owner = ownerMap.get(store.id);
@@ -1157,6 +1213,7 @@ export class DatabaseStorage implements IStorage {
         ownerId: owner?.id ?? null,
         teamCount: teamCountMap.get(store.id) ?? 0,
         totalOrders: orderCountMap.get(store.id) ?? 0,
+        monthlyOrders: monthOrderMap.get(store.id) ?? 0,
         totalNetProfit: profitMap.get(store.id) ?? 0,
         subscription: sub,
       };

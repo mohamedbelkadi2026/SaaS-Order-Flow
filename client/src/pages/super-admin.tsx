@@ -39,6 +39,7 @@ type StoreRow = {
   ownerCreatedAt: string | null;
   teamCount: number;
   totalOrders: number;
+  monthlyOrders: number;
   totalNetProfit: number;
   canOpen: number;
   createdAt: string | null;
@@ -544,7 +545,7 @@ export default function SuperAdminPage() {
               {filtered.map(store => {
                 const isActive = (store.subscription?.isActive ?? 1) === 1;
                 const sub = store.subscription;
-                const usagePercent = sub ? Math.min(100, Math.round((sub.currentMonthOrders / (sub.monthlyLimit >= 99999 ? sub.currentMonthOrders + 1 : sub.monthlyLimit)) * 100)) : 0;
+                const usagePercent = sub ? Math.min(100, Math.round((store.monthlyOrders / (sub.monthlyLimit >= 99999 ? Math.max(store.monthlyOrders, 1) : sub.monthlyLimit)) * 100)) : 0;
                 const days = daysUntilExpiry(sub?.planExpiryDate);
                 const isExpired = days !== null && days < 0;
                 const isExpiringSoon = days !== null && days >= 0 && days <= 5;
@@ -614,7 +615,8 @@ export default function SuperAdminPage() {
                           <div className="text-center">
                             <p className="text-white/40 text-[10px] uppercase tracking-wide">Ce mois</p>
                             <p className="text-white font-bold text-base" data-testid={`text-month-orders-${store.id}`}>
-                              {sub ? sub.currentMonthOrders.toLocaleString() : "—"}
+                              {store.monthlyOrders.toLocaleString()}
+                              {sub && <span className="text-white/30 text-xs font-normal"> /{sub.monthlyLimit >= 99999 ? "∞" : sub.monthlyLimit}</span>}
                             </p>
                           </div>
                           <div className="text-center">
