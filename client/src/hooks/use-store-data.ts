@@ -369,6 +369,8 @@ export function useSubscription() {
       if (!res.ok) throw new Error("Failed to fetch subscription");
       return res.json();
     },
+    staleTime: 30000,
+    refetchInterval: 30000,
   });
 }
 

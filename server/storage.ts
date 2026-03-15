@@ -90,6 +90,7 @@ export interface IStorage {
   incrementMonthlyOrders(storeId: number): Promise<void>;
   resetMonthlyOrders(storeId: number): Promise<void>;
   checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }>;
+  checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }>;
 
   getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
 
@@ -1068,6 +1069,24 @@ export class DatabaseStorage implements IStorage {
 
     const allowed = sub.plan === 'pro' || sub.currentMonthOrders < effectiveLimit;
     return { allowed, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan, isBlocked: false };
+  }
+
+  async checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }> {
+    const sub = await this.getSubscription(storeId);
+    if (!sub) {
+      return { isExpired: false, isLimitReached: false, isBlocked: false, reason: null, current: 0, limit: 60, plan: 'trial' };
+    }
+    const isTrial = sub.plan === 'trial';
+    const effectiveLimit = isTrial ? 60 : sub.monthlyLimit;
+    const now = new Date();
+
+    const isExpired = !!sub.planExpiryDate && new Date(sub.planExpiryDate) < now;
+
+    const isLimitReached = sub.isBlocked === 1 || (effectiveLimit > 0 && sub.currentMonthOrders >= effectiveLimit);
+
+    const isBlocked = isExpired || isLimitReached;
+    const reason: 'expired' | 'limit' | null = isExpired ? 'expired' : isLimitReached ? 'limit' : null;
+    return { isExpired, isLimitReached, isBlocked, reason, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan };
   }
 
   async getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {

@@ -183,3 +183,20 @@ export function requireAdmin(req: any, res: any, next: any) {
   if (req.user.role !== "owner") return res.status(403).json({ message: "Accès refusé" });
   return next();
 }
+
+export async function requireActiveSubscription(req: any, res: any, next: any) {
+  if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+  if (req.user.isSuperAdmin) return next();
+  if (!req.user.storeId) return next();
+  const paywall = await storage.checkPaywall(req.user.storeId);
+  if (paywall.isBlocked) {
+    return res.status(402).json({
+      paywall: true,
+      reason: paywall.reason,
+      message: paywall.reason === 'expired'
+        ? "Votre abonnement a expiré. Veuillez renouveler votre paiement pour continuer."
+        : `Limite de commandes atteinte (${paywall.current}/${paywall.limit}). Veuillez passer au plan supérieur.`,
+    });
+  }
+  return next();
+}

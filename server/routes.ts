@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
 import { createHmac } from "crypto";
-import { requireAuth, requireAdmin, hashPassword, comparePasswords } from "./auth";
+import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
 import { users, orders } from "@shared/schema";
 import { eq, and, gte, lt, count } from "drizzle-orm";
@@ -700,7 +700,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/orders/bulk-ship", requireAuth, async (req, res) => {
+  app.post("/api/orders/bulk-ship", requireAuth, requireActiveSubscription, async (req, res) => {
     try {
       const user = req.user!;
       if (user.role === 'agent') {
@@ -1250,14 +1250,16 @@ export async function registerRoutes(
         if (matchedProduct) productCost += matchedProduct.costPrice * item.quantity;
       }
 
-      const limitCheck = await storage.checkOrderLimit(storeId);
-      if (!limitCheck.allowed) {
+      const paywallCheck = await storage.checkPaywall(storeId);
+      if (paywallCheck.isBlocked) {
         await storage.createIntegrationLog({
           storeId, integrationId: integration?.id || null, provider,
           action: 'order_synced', status: 'fail',
-          message: `Limite de commandes atteinte (${limitCheck.current}/${limitCheck.limit}). Commande ${parsed.orderNumber} refusée.`,
+          message: paywallCheck.reason === 'expired'
+            ? `Abonnement expiré. Commande ${parsed.orderNumber} refusée.`
+            : `Limite de commandes atteinte (${paywallCheck.current}/${paywallCheck.limit}). Commande ${parsed.orderNumber} refusée.`,
         });
-        return res.status(403).json({ message: "Order limit reached" });
+        return res.status(402).json({ message: paywallCheck.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       }
 
       const rawProductName = parsed.lineItems.length > 0
@@ -1340,8 +1342,8 @@ export async function registerRoutes(
         return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       }
 
-      const limitCheck = await storage.checkOrderLimit(storeId);
-      if (!limitCheck.allowed) return res.status(403).json({ message: "Order limit reached" });
+      const webhookPaywall = await storage.checkPaywall(storeId);
+      if (webhookPaywall.isBlocked) return res.status(402).json({ message: webhookPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
 
       const storeProducts = await storage.getProductsByStore(storeId);
       let productCost = 0;
@@ -1408,8 +1410,8 @@ export async function registerRoutes(
       if (!customerName && !customerPhone) return res.status(400).json({ message: "Missing customer data" });
       const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
-      const limitCheck = await storage.checkOrderLimit(storeId);
-      if (!limitCheck.allowed) return res.status(403).json({ message: "Order limit reached" });
+      const gsheetsPaywall = await storage.checkPaywall(storeId);
+      if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
       const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
       const orderItems = matched ? [{ productId: matched.id, quantity: 1, price: totalPrice, orderId: 0 }] : [];
@@ -1505,7 +1507,7 @@ export async function registerRoutes(
   // ============================================================
   // ENHANCED MANUAL ORDER CREATION (from new-order-add.tsx)
   // ============================================================
-  app.post("/api/orders/manual", requireAuth, async (req, res) => {
+  app.post("/api/orders/manual", requireAuth, requireActiveSubscription, async (req, res) => {
     try {
       const schema = z.object({
         customerName: z.string().min(1),
@@ -1603,7 +1605,7 @@ export async function registerRoutes(
   // ============================================================
   // BULK IMPORT ORDERS FROM EXCEL/CSV
   // ============================================================
-  app.post("/api/orders/import", requireAuth, async (req, res) => {
+  app.post("/api/orders/import", requireAuth, requireActiveSubscription, async (req, res) => {
     const multer = (await import("multer")).default;
     const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
     upload.single("file")(req as any, res as any, async (err) => {
@@ -1689,7 +1691,7 @@ export async function registerRoutes(
   // ============================================================
   // MANUAL ORDER CREATION
   // ============================================================
-  app.post("/api/orders", requireAuth, async (req, res) => {
+  app.post("/api/orders", requireAuth, requireActiveSubscription, async (req, res) => {
     try {
       const schema = z.object({
         customerName: z.string().min(1),
@@ -1992,11 +1994,12 @@ export async function registerRoutes(
       });
     }
     const limitCheck = await storage.checkOrderLimit(storeId);
+    const paywallCheck = await storage.checkPaywall(storeId);
     const now = new Date();
     const daysUntilExpiry = sub.planExpiryDate
       ? Math.ceil((new Date(sub.planExpiryDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
       : null;
-    res.json({ ...sub, ...limitCheck, daysUntilExpiry });
+    res.json({ ...sub, ...limitCheck, daysUntilExpiry, isExpired: paywallCheck.isExpired, reason: paywallCheck.reason });
   });
 
   app.post("/api/subscription", requireAuth, async (req, res) => {
@@ -2508,7 +2511,7 @@ export async function registerRoutes(
   // ============================================================
   // SEND TO DELIVERY (SHIPPING)
   // ============================================================
-  app.post("/api/orders/:id/ship", requireAuth, async (req, res) => {
+  app.post("/api/orders/:id/ship", requireAuth, requireActiveSubscription, async (req, res) => {
     try {
       const orderId = Number(req.params.id);
       const { provider } = z.object({ provider: z.string().min(1) }).parse(req.body);

@@ -10,12 +10,23 @@ TajerGrow (formerly Garean) is a SaaS Order Management System (OMS) for the Moro
 - **Currency**: MAD (Moroccan Dirham), all prices stored in cents
 - **Language**: French UI throughout
 
-## Authentication
+## Authentication & Security
 - Session-based auth using `express-session` + `connect-pg-simple`
 - Passport.js with local strategy (email/password)
 - Password hashing: Node.js `scrypt`
 - Three roles: `owner` (admin/store owner), `agent` (confirmation staff), `superadmin` (isSuperAdmin flag)
 - Multi-tenancy: each signup creates a new store + starter subscription. All data filtered by `storeId`
+- **Account suspension**: `requireAuth` returns 403 `{suspended:true}` for inactive (`isActive=0`) non-super-admins; frontend auto-logs out and shows banner
+- **Paywall system**: `requireActiveSubscription` middleware returns 402 `{paywall:true,reason}` for blocked stores; frontend shows full-screen overlay
+
+## Paywall / Subscription Enforcement
+- `storage.checkPaywall(storeId)` checks: (1) `planExpiryDate < now` → `isExpired`, (2) `currentMonthOrders >= effectiveLimit` (where limit=0 means unlimited) → `isLimitReached`
+- `requireActiveSubscription` middleware in `auth.ts` — applied to all order write routes
+- Two overlay scenarios in `app-layout.tsx`: **Expired** (CalendarX icon, red message) vs **Limit** (Rocket icon, gold with plan selector)
+- Super admins (`isSuperAdmin=1`) bypass both suspension and paywall checks always
+- `useSubscription` polls every 30s so paywall lifts within 30s of super admin plan update
+- Protected write routes: `POST /api/orders`, `/api/orders/manual`, `/api/orders/import`, `/api/orders/bulk-ship`, `/api/orders/:id/ship`
+- Webhook handlers also check paywall before accepting orders
 
 ## Order Status System (7 COD Statuses)
 - `nouveau` (default) — New order

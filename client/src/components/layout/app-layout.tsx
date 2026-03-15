@@ -38,6 +38,9 @@ import {
   AlertTriangle,
   Zap,
   TrendingUp,
+  MessageCircle,
+  Rocket,
+  CalendarX,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -147,6 +150,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const { data: subscription } = useSubscription();
   const isTrial = subscription?.plan === 'trial';
   const isBlocked = subscription?.isBlocked === 1 || subscription?.isBlocked === true;
+  const isExpired = (subscription as any)?.isExpired === true;
+  const paywallReason = ((subscription as any)?.reason ?? (isExpired ? 'expired' : isBlocked ? 'limit' : null)) as 'expired' | 'limit' | null;
+  const showPaywall = (isBlocked || isExpired) && !user?.isSuperAdmin;
   const trialCurrent = subscription?.current ?? subscription?.currentMonthOrders ?? 0;
   const trialLimit = isTrial ? 60 : (subscription?.limit ?? subscription?.monthlyLimit ?? 1500);
   const trialPercent = Math.min(100, Math.round((trialCurrent / trialLimit) * 100));
@@ -762,91 +768,126 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* ── Paywall Overlay ─────────────────────────────────────── */}
-      {isBlocked && !user?.isSuperAdmin && (
+      {showPaywall && (
         <div
           className="fixed inset-0 z-[80] flex items-center justify-center"
-          style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)' }}
+          style={{ background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(10px)' }}
           data-testid="paywall-overlay"
         >
-          <div className="bg-white dark:bg-[#0f1e38] rounded-3xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
-            {/* Header gradient */}
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+
+            {/* ── Header ── */}
             <div
               className="px-6 pt-8 pb-6 text-center"
               style={{ background: 'linear-gradient(135deg, #0f1e38 0%, #1a3a8f 100%)' }}
             >
-              <div className="w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
-                <AlertTriangle className="w-8 h-8" style={{ color: '#C5A059' }} />
-              </div>
-              <h2 className="text-2xl font-bold text-white mb-1">Essai Terminé</h2>
-              <p className="text-white/60 text-sm">انتهت الفترة التجريبية</p>
+              {paywallReason === 'expired' ? (
+                <>
+                  <div className="w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.15)', border: '2px solid #ef4444' }}>
+                    <CalendarX className="w-8 h-8 text-red-400" />
+                  </div>
+                  <h2 className="text-xl font-bold text-white mb-1">لقد انتهت صلاحية اشتراكك</h2>
+                  <p className="text-white/70 text-sm font-medium">Votre abonnement a expiré</p>
+                </>
+              ) : (
+                <>
+                  <div className="w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
+                    <Rocket className="w-8 h-8" style={{ color: '#C5A059' }} />
+                  </div>
+                  <h2 className="text-xl font-bold text-white mb-1">لقد تجاوزت الحد المسموح به</h2>
+                  <p className="text-white/70 text-sm font-medium">Limite de commandes atteinte</p>
+                </>
+              )}
             </div>
 
-            {/* Body */}
+            {/* ── Body ── */}
             <div className="px-6 py-6 space-y-4">
-              {/* Usage bar */}
-              <div className="rounded-xl p-4" style={{ background: '#f8f9fa', border: '1px solid #e9ecef' }}>
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-semibold text-gray-700">Commandes utilisées</span>
-                  <span className="text-sm font-bold" style={{ color: '#ef4444' }}>{trialCurrent}/{trialLimit}</span>
-                </div>
-                <div className="h-3 rounded-full overflow-hidden bg-gray-200">
-                  <div className="h-full rounded-full bg-red-500" style={{ width: '100%' }} />
-                </div>
-                <p className="text-xs text-gray-500 mt-2 text-center">Vous avez atteint la limite de 60 commandes gratuites</p>
-              </div>
 
-              <p className="text-sm text-gray-600 dark:text-gray-300 text-center leading-relaxed">
-                Pour continuer à utiliser <strong>TajerGrow</strong> et traiter de nouvelles commandes, veuillez passer à un plan payant.
-              </p>
+              {paywallReason === 'expired' ? (
+                <>
+                  <div className="rounded-xl p-4 text-center" style={{ background: '#fef2f2', border: '1px solid #fecaca' }}>
+                    <p className="text-sm font-semibold text-red-700 mb-1">يرجى تجديد الدفع لاستعادة الوصول إلى بياناتك وخدماتك.</p>
+                    <p className="text-xs text-red-500">Veuillez renouveler votre paiement pour accéder à vos données et services.</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded-xl p-4" style={{ background: '#f8f9fa', border: '1px solid #e9ecef' }}>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-semibold text-gray-700">Commandes utilisées</span>
+                      <span className="text-sm font-bold text-red-500">{trialCurrent}/{trialLimit}</span>
+                    </div>
+                    <div className="h-3 rounded-full overflow-hidden bg-gray-200">
+                      <div className="h-full rounded-full bg-red-500" style={{ width: '100%' }} />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2 text-center">
+                      لقد استهلكت جميع الطلبيات المخصصة لخطة عملك الحالية.
+                    </p>
+                  </div>
+                  <p className="text-xs text-gray-500 text-center">
+                    Vous avez dépassé votre quota de commandes. Veuillez passer au plan supérieur.
+                  </p>
 
-              {/* Plans */}
+                  {/* Plans */}
+                  <div className="space-y-2">
+                    {[
+                      { name: "Starter", price: "200 DH", limit: "1 500 commandes/mois", popular: false },
+                      { name: "Pro", price: "400 DH", limit: "5 000 commandes/mois", popular: true },
+                      { name: "Elite", price: "700 DH", limit: "Illimité", popular: false },
+                    ].map((plan) => (
+                      <Link
+                        key={plan.name}
+                        href="/billing"
+                        className="flex items-center justify-between p-3 rounded-xl border-2 transition-all cursor-pointer block"
+                        style={plan.popular
+                          ? { borderColor: '#C5A059', background: 'rgba(197,160,89,0.06)' }
+                          : { borderColor: '#e9ecef', background: '#fafafa' }
+                        }
+                        data-testid={`paywall-plan-${plan.name.toLowerCase()}`}
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-bold text-gray-800">{plan.name}</span>
+                            {plan.popular && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white" style={{ background: '#C5A059' }}>Populaire</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-gray-500">{plan.limit}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm font-bold" style={{ color: '#0f1e38' }}>{plan.price}</p>
+                          <p className="text-[10px] text-gray-400">/ mois</p>
+                        </div>
+                      </Link>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* CTA Buttons */}
               <div className="space-y-2.5">
-                {[
-                  { name: "Starter", price: "200 DH", limit: "1 500 commandes/mois", popular: false },
-                  { name: "Pro", price: "400 DH", limit: "5 000 commandes/mois", popular: true },
-                  { name: "Elite", price: "700 DH", limit: "Illimité", popular: false },
-                ].map((plan) => (
-                  <Link
-                    key={plan.name}
-                    href="/billing"
-                    className="flex items-center justify-between p-3.5 rounded-xl border-2 transition-all cursor-pointer"
-                    style={plan.popular
-                      ? { borderColor: '#C5A059', background: 'rgba(197,160,89,0.06)' }
-                      : { borderColor: '#e9ecef', background: '#fafafa' }
-                    }
-                    data-testid={`paywall-plan-${plan.name.toLowerCase()}`}
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-gray-800">{plan.name}</span>
-                        {plan.popular && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white" style={{ background: '#C5A059' }}>Populaire</span>
-                        )}
-                      </div>
-                      <p className="text-xs text-gray-500 mt-0.5">{plan.limit}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-bold" style={{ color: '#0f1e38' }}>{plan.price}</p>
-                      <p className="text-[10px] text-gray-400">par mois</p>
-                    </div>
-                  </Link>
-                ))}
+                <Link
+                  href="/billing"
+                  className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm transition-all hover:opacity-90"
+                  style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
+                  data-testid="paywall-cta-button"
+                >
+                  <Zap className="w-4 h-4" />
+                  {paywallReason === 'expired' ? 'Renouveler l\'abonnement' : 'Passer au plan supérieur (Upgrade)'}
+                </Link>
+                <a
+                  href="https://wa.me/212600000000?text=Bonjour%2C%20j%27ai%20besoin%20d%27aide%20pour%20mon%20abonnement%20TajerGrow."
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-semibold text-sm transition-all hover:opacity-90"
+                  style={{ background: '#25D366', color: '#fff' }}
+                  data-testid="paywall-whatsapp-button"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Contacter l'Administration / WhatsApp
+                </a>
               </div>
 
-              <Link
-                href="/billing"
-                className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm transition-all hover:opacity-90"
-                style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
-                data-testid="paywall-cta-button"
-              >
-                <Zap className="w-4 h-4" />
-                Passer à un plan payant
-              </Link>
-
-              <p className="text-[11px] text-gray-400 text-center">
-                Contactez-nous sur WhatsApp pour toute question ·{" "}
-                <a href="https://wa.me/212600000000" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-600">Support</a>
-              </p>
             </div>
           </div>
         </div>
