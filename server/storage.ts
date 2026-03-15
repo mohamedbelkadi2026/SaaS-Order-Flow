@@ -142,9 +142,9 @@ export interface IStorage {
   }>;
 
   getAllStores(): Promise<any[]>;
-  getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number }>;
+  getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number; expiringCount: number }>;
   toggleStoreActive(storeId: number, isActive: number): Promise<void>;
-  changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number): Promise<void>;
+  changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number, planStartDate?: Date | null, planExpiryDate?: Date | null): Promise<void>;
   resetMonthlyOrders(storeId: number): Promise<void>;
 }
 
@@ -1091,42 +1091,96 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAllStores(): Promise<any[]> {
+    // Optimized: 5 bulk queries instead of N×4 (safe at 1000+ stores)
     const allStores = await db.select().from(stores).orderBy(desc(stores.createdAt));
-    const result = [];
-    for (const store of allStores) {
-      const [owner] = await db.select().from(users)
-        .where(and(eq(users.storeId, store.id), eq(users.role, 'owner')));
-      const [sub] = await db.select().from(subscriptions)
-        .where(eq(subscriptions.storeId, store.id));
-      const [teamCountRow] = await db.select({ count: count() }).from(users)
-        .where(eq(users.storeId, store.id));
-      const [orderCountRow] = await db.select({ count: count() }).from(orders)
-        .where(eq(orders.storeId, store.id));
-      result.push({
+    if (allStores.length === 0) return [];
+
+    const storeIds = allStores.map(s => s.id);
+
+    // 1. All owners (role='owner') for these stores
+    const allOwners = await db.select({
+      storeId: users.storeId, id: users.id, email: users.email,
+      phone: users.phone, createdAt: users.createdAt,
+    }).from(users).where(and(
+      sql`${users.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+      eq(users.role, 'owner'),
+    ));
+    const ownerMap = new Map(allOwners.map(u => [u.storeId!, u]));
+
+    // 2. All subscriptions
+    const allSubs = await db.select().from(subscriptions).where(
+      sql`${subscriptions.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+    );
+    const subMap = new Map(allSubs.map(s => [s.storeId, s]));
+
+    // 3. Team counts per store
+    const teamCounts = await db.select({
+      storeId: users.storeId, cnt: count(),
+    }).from(users).where(
+      sql`${users.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+    ).groupBy(users.storeId);
+    const teamCountMap = new Map(teamCounts.map(r => [r.storeId!, Number(r.cnt)]));
+
+    // 4. Order counts per store
+    const orderCounts = await db.select({
+      storeId: orders.storeId, cnt: count(),
+    }).from(orders).where(
+      sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+    ).groupBy(orders.storeId);
+    const orderCountMap = new Map(orderCounts.map(r => [r.storeId, Number(r.cnt)]));
+
+    // 5. Net profit per store (delivered orders only, simplified formula)
+    const profitRows = await db.select({
+      storeId: orders.storeId,
+      revenue: sql<number>`COALESCE(SUM(${orders.totalPrice}), 0)`,
+      costs: sql<number>`COALESCE(SUM(${orders.productCost}), 0) + COALESCE(SUM(${orders.shippingCost}), 0)`,
+    }).from(orders).where(
+      and(
+        sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
+        eq(orders.status, 'delivered'),
+      )
+    ).groupBy(orders.storeId);
+    const profitMap = new Map(profitRows.map(r => [
+      r.storeId,
+      Number(r.revenue) - Number(r.costs),
+    ]));
+
+    return allStores.map(store => {
+      const owner = ownerMap.get(store.id);
+      const sub = subMap.get(store.id) ?? null;
+      return {
         ...store,
-        ownerEmail: owner?.email || null,
-        ownerPhone: owner?.phone || null,
-        ownerCreatedAt: owner?.createdAt || null,
-        ownerId: owner?.id || null,
-        teamCount: Number(teamCountRow?.count ?? 0),
-        totalOrders: Number(orderCountRow?.count ?? 0),
-        subscription: sub || null,
-      });
-    }
-    return result;
+        ownerEmail: owner?.email ?? null,
+        ownerPhone: owner?.phone ?? null,
+        ownerCreatedAt: owner?.createdAt ?? null,
+        ownerId: owner?.id ?? null,
+        teamCount: teamCountMap.get(store.id) ?? 0,
+        totalOrders: orderCountMap.get(store.id) ?? 0,
+        totalNetProfit: profitMap.get(store.id) ?? 0,
+        subscription: sub,
+      };
+    });
   }
 
-  async getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number }> {
+  async getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number; expiringCount: number }> {
     const [storeCount] = await db.select({ count: count() }).from(stores);
     const allSubs = await db.select().from(subscriptions).where(eq(subscriptions.isActive, 1));
     const mrr = allSubs.reduce((sum, s) => sum + s.pricePerMonth, 0);
     const [orderCount] = await db.select({ count: count() }).from(orders);
+    const now = new Date();
+    const in5Days = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000);
+    const expiringCount = allSubs.filter(s => {
+      if (!s.planExpiryDate) return false;
+      const exp = new Date(s.planExpiryDate);
+      return exp >= now && exp <= in5Days;
+    }).length;
     return {
       totalStores: Number(storeCount.count),
       activeStores: allSubs.length,
       totalRevenue: mrr,
       mrr,
       totalOrders: Number(orderCount?.count ?? 0),
+      expiringCount,
     };
   }
 
@@ -1138,12 +1192,15 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number): Promise<void> {
+  async changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number, planStartDate?: Date | null, planExpiryDate?: Date | null): Promise<void> {
     const sub = await this.getSubscription(storeId);
+    const updateData: Record<string, any> = { plan, monthlyLimit, pricePerMonth, isBlocked: 0 };
+    if (planStartDate !== undefined) updateData.planStartDate = planStartDate;
+    if (planExpiryDate !== undefined) updateData.planExpiryDate = planExpiryDate;
     if (sub) {
-      await db.update(subscriptions).set({ plan, monthlyLimit, pricePerMonth, isBlocked: 0 }).where(eq(subscriptions.storeId, storeId));
+      await db.update(subscriptions).set(updateData).where(eq(subscriptions.storeId, storeId));
     } else {
-      await db.insert(subscriptions).values({ storeId, plan, monthlyLimit, pricePerMonth, isActive: 1, currentMonthOrders: 0, isBlocked: 0 });
+      await db.insert(subscriptions).values({ storeId, plan, monthlyLimit, pricePerMonth, isActive: 1, currentMonthOrders: 0, isBlocked: 0, planStartDate: planStartDate ?? null, planExpiryDate: planExpiryDate ?? null });
     }
   }
 

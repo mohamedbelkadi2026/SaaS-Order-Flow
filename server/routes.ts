@@ -1992,7 +1992,11 @@ export async function registerRoutes(
       });
     }
     const limitCheck = await storage.checkOrderLimit(storeId);
-    res.json({ ...sub, ...limitCheck });
+    const now = new Date();
+    const daysUntilExpiry = sub.planExpiryDate
+      ? Math.ceil((new Date(sub.planExpiryDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+      : null;
+    res.json({ ...sub, ...limitCheck, daysUntilExpiry });
   });
 
   app.post("/api/subscription", requireAuth, async (req, res) => {
@@ -2413,15 +2417,47 @@ export async function registerRoutes(
   app.patch("/api/admin/stores/:id/plan", requireSuperAdmin, async (req, res) => {
     try {
       const storeId = Number(req.params.id);
-      const { plan, monthlyLimit, pricePerMonth } = z.object({
+      const { plan, monthlyLimit, pricePerMonth, planStartDate, planExpiryDate } = z.object({
         plan: z.string().min(1),
         monthlyLimit: z.number().int().min(0),
         pricePerMonth: z.number().int().min(0),
+        planStartDate: z.string().optional().nullable(),
+        planExpiryDate: z.string().optional().nullable(),
       }).parse(req.body);
-      await storage.changePlan(storeId, plan, monthlyLimit, pricePerMonth);
+      const startDate = planStartDate ? new Date(planStartDate) : null;
+      const expiryDate = planExpiryDate ? new Date(planExpiryDate) : null;
+      await storage.changePlan(storeId, plan, monthlyLimit, pricePerMonth, startDate, expiryDate);
       res.json({ message: "Plan mis à jour" });
     } catch (err: any) {
       res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // Notification center — stores with expiring plans (≤5 days)
+  app.get("/api/admin/notifications", requireSuperAdmin, async (_req, res) => {
+    try {
+      const allStores = await storage.getAllStores();
+      const now = new Date();
+      const in5Days = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000);
+      const expiring = allStores
+        .filter(s => {
+          const expiry = s.subscription?.planExpiryDate;
+          if (!expiry) return false;
+          const exp = new Date(expiry);
+          return exp >= now && exp <= in5Days;
+        })
+        .map(s => ({
+          storeId: s.id,
+          storeName: s.name,
+          ownerEmail: s.ownerEmail,
+          ownerPhone: s.ownerPhone,
+          plan: s.subscription?.plan,
+          planExpiryDate: s.subscription?.planExpiryDate,
+          daysLeft: Math.ceil((new Date(s.subscription!.planExpiryDate!).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)),
+        }));
+      res.json(expiring);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
     }
   });
 

@@ -50,7 +50,7 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 - `orders` - Orders with status workflow, costs, source tracking, shipping info
 - `order_items` - Order line items linked to products
 - `customers` - Auto-populated CRM from orders (name, phone, orderCount, totalSpent)
-- `subscriptions` - Plan management (starter/pro, monthlyLimit, currentMonthOrders)
+- `subscriptions` - Plan management (starter/pro/trial, monthlyLimit, currentMonthOrders, isBlocked, planStartDate, planExpiryDate)
 - `ad_spend_tracking` - Ad spend per product per day per source (fields: storeId, mediaBuyerId, productId, date, amount, source, notes)
 - `store_integrations` - Integration credentials (provider, type, JSON credentials, isActive)
 - `integration_logs` - Log entries for all integration activities

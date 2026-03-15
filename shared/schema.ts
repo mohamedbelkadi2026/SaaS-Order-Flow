@@ -178,6 +178,8 @@ export const subscriptions = pgTable("subscriptions", {
   pricePerMonth: integer("price_per_month").notNull().default(0),
   currentMonthOrders: integer("current_month_orders").notNull().default(0),
   billingCycleStart: timestamp("billing_cycle_start").defaultNow(),
+  planStartDate: timestamp("plan_start_date"),
+  planExpiryDate: timestamp("plan_expiry_date"),
   isActive: integer("is_active").default(1),
   isBlocked: integer("is_blocked").default(0),
   createdAt: timestamp("created_at").defaultNow(),

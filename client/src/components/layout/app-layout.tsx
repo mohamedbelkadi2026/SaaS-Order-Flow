@@ -150,6 +150,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const trialLimit = isTrial ? 60 : (subscription?.limit ?? subscription?.monthlyLimit ?? 1500);
   const trialPercent = Math.min(100, Math.round((trialCurrent / trialLimit) * 100));
   const trialRemaining = Math.max(0, trialLimit - trialCurrent);
+  const daysUntilExpiry = (subscription as any)?.daysUntilExpiry ?? null;
+  const isExpiringSoon = !isTrial && daysUntilExpiry !== null && daysUntilExpiry >= 0 && daysUntilExpiry <= 5;
 
   useEffect(() => {
     if (isTrial && !isBlocked && trialRemaining <= 10 && trialRemaining > 0 && trialCurrent > 0) {
@@ -691,6 +693,29 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               <LogOut className="w-3.5 h-3.5" />
               Retour Super Admin
             </button>
+          </div>
+        )}
+
+        {/* ── Expiry Warning Banner ────────────────────────────── */}
+        {isExpiringSoon && !user?.isSuperAdmin && (
+          <div
+            className="flex items-center gap-3 px-4 py-3 border-b"
+            style={{ background: daysUntilExpiry === 0 ? '#7c2d12' : '#431407', borderColor: '#f97316' }}
+            data-testid="banner-expiry-warning"
+          >
+            <span className="text-lg shrink-0">⚠️</span>
+            <p className="text-orange-100 text-sm font-medium flex-1">
+              <span className="font-bold text-orange-300">تنبيه:</span> اشتراكك سينتهي في{' '}
+              <span className="font-bold text-white">{daysUntilExpiry === 0 ? 'اليوم' : `${daysUntilExpiry} أيام`}</span>.
+              يرجى التجديد لضمان استمرارية الخدمة.
+            </p>
+            <a
+              href="/billing"
+              className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold text-white transition-all hover:opacity-90"
+              style={{ background: '#f97316' }}
+            >
+              تجديد
+            </a>
           </div>
         )}
 
