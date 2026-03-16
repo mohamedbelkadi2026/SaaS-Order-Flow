@@ -13,6 +13,7 @@ import { useEffect } from "react";
 
 import AuthPage from "@/pages/auth-page";
 import SuperAdminPage from "@/pages/super-admin";
+import LandingPage from "@/pages/landing";
 import Dashboard from "@/pages/dashboard";
 import Orders from "@/pages/orders";
 import NewOrder from "@/pages/new-order";
@@ -73,6 +74,7 @@ function AgentGuard({ children }: { children: React.ReactNode }) {
 
 function ProtectedRoutes() {
   const { user, isLoading } = useAuth();
+  const [location, navigate] = useLocation();
 
   if (isLoading) {
     return (
@@ -83,7 +85,13 @@ function ProtectedRoutes() {
   }
 
   if (!user) {
-    return <AuthPage />;
+    if (location === "/auth") return <AuthPage />;
+    return <LandingPage />;
+  }
+
+  if (location === "/auth") {
+    navigate("/");
+    return null;
   }
 
   return (

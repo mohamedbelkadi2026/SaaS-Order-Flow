@@ -1,0 +1,774 @@
+import { useState, useEffect, useRef } from "react";
+import { Link } from "wouter";
+import {
+  BarChart3, Package, Smartphone, Truck, Target, TrendingUp,
+  Check, ChevronRight, Star, Zap, Shield, Crown,
+  ShoppingCart, Users, Activity, ArrowRight, Menu, X,
+} from "lucide-react";
+import { SiShopify, SiWoocommerce, SiGooglesheets } from "react-icons/si";
+
+/* ── Scroll Animation Hook ─────────────────────────────────────── */
+function useInView(threshold = 0.15) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) { setInView(true); obs.disconnect(); }
+    }, { threshold });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [threshold]);
+  return { ref, inView };
+}
+
+/* ── Animated Section Wrapper ──────────────────────────────────── */
+function FadeIn({ children, delay = 0, className = "" }: { children: React.ReactNode; delay?: number; className?: string }) {
+  const { ref, inView } = useInView();
+  return (
+    <div
+      ref={ref}
+      className={className}
+      style={{
+        opacity: inView ? 1 : 0,
+        transform: inView ? "translateY(0)" : "translateY(32px)",
+        transition: `opacity 0.7s ease ${delay}ms, transform 0.7s ease ${delay}ms`,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* ── Constants ─────────────────────────────────────────────────── */
+const NAVY = "#1e1b4b";
+const GOLD = "#C5A059";
+const GOLD_LIGHT = "#d4b06a";
+
+const FEATURES = [
+  {
+    icon: <BarChart3 className="w-6 h-6" />,
+    title: "Analytics Temps Réel",
+    titleAr: "لوحة تحكم ذكية",
+    desc: "Suivez vos revenus, marges et taux de confirmation en direct. Export Excel en un clic.",
+  },
+  {
+    icon: <Smartphone className="w-6 h-6" />,
+    title: "Vue Agent Mobile",
+    titleAr: "تأكيد سريع للطلبات",
+    desc: "Vos agents confirment les commandes directement depuis leur téléphone. Appel & WhatsApp intégrés.",
+  },
+  {
+    icon: <Package className="w-6 h-6" />,
+    title: "Inventaire Automatique",
+    titleAr: "مزامنة المخزون",
+    desc: "Le stock se décrémente automatiquement à chaque commande confirmée. Zéro saisie manuelle.",
+  },
+  {
+    icon: <Target className="w-6 h-6" />,
+    title: "Espace Media Buyer",
+    titleAr: "مساحة المسوّق",
+    desc: "Tracking isolé par campagne et acheteur. ROI, ROAS et bénéfice net par publicité.",
+  },
+  {
+    icon: <Truck className="w-6 h-6" />,
+    title: "Livraison en Un Clic",
+    titleAr: "الشحن بنقرة واحدة",
+    desc: "Envoi direct vers Digylog et tous les transporteurs marocains. Étiquettes générées automatiquement.",
+  },
+  {
+    icon: <TrendingUp className="w-6 h-6" />,
+    title: "Rentabilité Précise",
+    titleAr: "حساب الربحية",
+    desc: "Calcul automatique du coût produit, frais de livraison, pub et emballage. Votre vrai bénéfice net.",
+  },
+];
+
+const PLANS = [
+  {
+    name: "Trial",
+    nameAr: "تجريبي",
+    price: "0",
+    period: "",
+    desc: "Parfait pour démarrer",
+    limit: "60 commandes",
+    popular: false,
+    features: ["60 commandes offertes", "Dashboard complet", "1 agent inclus", "Support communauté"],
+    cta: "Commencer Gratuitement",
+    href: "/auth",
+  },
+  {
+    name: "Starter",
+    nameAr: "المبتدئ",
+    price: "200",
+    period: "/mois",
+    desc: "Pour les boutiques actives",
+    limit: "1 500 commandes/mois",
+    popular: true,
+    features: ["1 500 commandes/mois", "Agents illimités", "Intégration Shopify & YouCan", "Export Excel avancé", "Support prioritaire"],
+    cta: "Choisir Starter",
+    href: "/auth",
+  },
+  {
+    name: "Pro",
+    nameAr: "الاحترافي",
+    price: "400",
+    period: "/mois",
+    desc: "Pour les grandes opérations",
+    limit: "Illimité",
+    popular: false,
+    features: ["Commandes illimitées", "Tout de Starter", "Media Buyer Workspace", "Analytics avancées", "Support VIP 24/7", "Personnalisation"],
+    cta: "Choisir Pro",
+    href: "/auth",
+  },
+];
+
+/* ── Dashboard Mockup ──────────────────────────────────────────── */
+function DashboardMockup() {
+  return (
+    <div
+      className="relative w-full rounded-2xl overflow-hidden shadow-2xl border"
+      style={{ borderColor: "rgba(197,160,89,0.3)", background: "#0f172a" }}
+    >
+      {/* Top bar */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: "rgba(255,255,255,0.08)", background: "#1e293b" }}>
+        <div className="w-3 h-3 rounded-full bg-red-500 opacity-80" />
+        <div className="w-3 h-3 rounded-full bg-yellow-500 opacity-80" />
+        <div className="w-3 h-3 rounded-full bg-green-500 opacity-80" />
+        <span className="ml-3 text-xs font-mono" style={{ color: "rgba(255,255,255,0.4)" }}>tajergrow.ma — Dashboard</span>
+      </div>
+      {/* Content */}
+      <div className="p-4 space-y-3">
+        {/* Stat cards row */}
+        <div className="grid grid-cols-4 gap-2">
+          {[
+            { label: "Commandes", val: "1,247", change: "+12%", color: "#C5A059" },
+            { label: "Confirmées", val: "68.4%", change: "+3.2%", color: "#22c55e" },
+            { label: "Revenu Net", val: "34,800 DH", change: "+8%", color: "#60a5fa" },
+            { label: "Bénéfice", val: "11,230 DH", change: "+15%", color: "#a78bfa" },
+          ].map((s) => (
+            <div key={s.label} className="rounded-lg p-2.5" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}>
+              <p className="text-[9px] opacity-50 text-white">{s.label}</p>
+              <p className="text-sm font-bold mt-0.5" style={{ color: s.color }}>{s.val}</p>
+              <p className="text-[8px] text-green-400">{s.change}</p>
+            </div>
+          ))}
+        </div>
+        {/* Chart placeholder */}
+        <div className="rounded-lg p-3" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
+          <div className="flex items-end gap-1 h-16">
+            {[40, 65, 45, 80, 55, 90, 70, 85, 60, 95, 75, 88].map((h, i) => (
+              <div
+                key={i}
+                className="flex-1 rounded-sm"
+                style={{
+                  height: `${h}%`,
+                  background: i === 10 || i === 11 ? GOLD : "rgba(197,160,89,0.35)",
+                }}
+              />
+            ))}
+          </div>
+          <p className="text-[8px] opacity-40 text-white mt-1">Commandes — 12 derniers jours</p>
+        </div>
+        {/* Order list */}
+        <div className="space-y-1.5">
+          {[
+            { name: "Fatima Zahra", city: "Casablanca", status: "confirme", amount: "320 DH" },
+            { name: "Ahmed Benali", city: "Marrakech", status: "nouveau", amount: "185 DH" },
+            { name: "Sara Idrissi", city: "Rabat", status: "delivered", amount: "450 DH" },
+          ].map((o) => (
+            <div key={o.name} className="flex items-center justify-between px-2.5 py-1.5 rounded-lg" style={{ background: "rgba(255,255,255,0.04)" }}>
+              <div className="flex items-center gap-2">
+                <div className="w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold text-white" style={{ background: NAVY }}>{o.name[0]}</div>
+                <div>
+                  <p className="text-[9px] text-white font-medium">{o.name}</p>
+                  <p className="text-[8px] opacity-40 text-white">{o.city}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className="text-[8px] px-1.5 py-0.5 rounded-full font-medium"
+                  style={{
+                    background: o.status === "confirme" ? "rgba(34,197,94,0.15)" : o.status === "nouveau" ? "rgba(197,160,89,0.15)" : "rgba(96,165,250,0.15)",
+                    color: o.status === "confirme" ? "#22c55e" : o.status === "nouveau" ? GOLD : "#60a5fa",
+                  }}
+                >
+                  {o.status === "confirme" ? "Confirmé" : o.status === "nouveau" ? "Nouveau" : "Livré"}
+                </span>
+                <span className="text-[9px] font-bold" style={{ color: GOLD }}>{o.amount}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main Component ────────────────────────────────────────────── */
+export default function LandingPage() {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 20);
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const scrollTo = (id: string) => {
+    setMobileMenuOpen(false);
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  return (
+    <div className="min-h-screen bg-white" style={{ fontFamily: "'Inter', sans-serif" }}>
+
+      {/* ── HEADER ─────────────────────────────────────────────── */}
+      <header
+        className="fixed top-0 left-0 right-0 z-50 transition-all duration-300"
+        style={{
+          background: scrolled ? "rgba(30,27,75,0.97)" : "transparent",
+          backdropFilter: scrolled ? "blur(16px)" : "none",
+          borderBottom: scrolled ? "1px solid rgba(197,160,89,0.15)" : "none",
+          boxShadow: scrolled ? "0 4px 24px rgba(0,0,0,0.25)" : "none",
+        }}
+      >
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            {/* Logo */}
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: GOLD }}>
+                <Crown className="w-4 h-4 text-white" />
+              </div>
+              <span className="text-xl font-bold text-white" style={{ fontFamily: "'Playfair Display', serif", letterSpacing: "-0.02em" }}>
+                TajerGrow
+              </span>
+            </div>
+
+            {/* Desktop Nav */}
+            <nav className="hidden md:flex items-center gap-8">
+              {[["Fonctionnalités", "features"], ["Tarifs", "pricing"], ["Intégrations", "trust"]].map(([label, id]) => (
+                <button
+                  key={id}
+                  onClick={() => scrollTo(id)}
+                  className="text-sm font-medium transition-colors hover:text-amber-300"
+                  style={{ color: "rgba(255,255,255,0.75)" }}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+
+            {/* Desktop CTAs */}
+            <div className="hidden md:flex items-center gap-3">
+              <Link href="/auth">
+                <button
+                  className="text-sm font-medium px-4 py-2 rounded-lg transition-all hover:bg-white/10"
+                  style={{ color: "rgba(255,255,255,0.85)" }}
+                  data-testid="header-login-button"
+                >
+                  Connexion
+                </button>
+              </Link>
+              <Link href="/auth">
+                <button
+                  className="text-sm font-bold px-5 py-2.5 rounded-lg transition-all hover:brightness-110 shadow-lg"
+                  style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, color: "#fff" }}
+                  data-testid="header-trial-button"
+                >
+                  Essai Gratuit
+                </button>
+              </Link>
+            </div>
+
+            {/* Mobile menu toggle */}
+            <button
+              className="md:hidden p-2 rounded-lg text-white"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              data-testid="button-mobile-menu"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile menu */}
+        {mobileMenuOpen && (
+          <div className="md:hidden border-t px-4 py-4 space-y-3" style={{ borderColor: "rgba(197,160,89,0.2)", background: "rgba(30,27,75,0.98)" }}>
+            {[["Fonctionnalités", "features"], ["Tarifs", "pricing"], ["Intégrations", "trust"]].map(([label, id]) => (
+              <button key={id} onClick={() => scrollTo(id)} className="block w-full text-left text-sm text-white/80 py-2">
+                {label}
+              </button>
+            ))}
+            <div className="pt-2 flex flex-col gap-2">
+              <Link href="/auth"><button className="w-full py-2.5 rounded-lg text-sm font-medium border border-white/20 text-white">Connexion</button></Link>
+              <Link href="/auth">
+                <button className="w-full py-2.5 rounded-lg text-sm font-bold text-white" style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }}>
+                  Essai Gratuit
+                </button>
+              </Link>
+            </div>
+          </div>
+        )}
+      </header>
+
+      {/* ── HERO ───────────────────────────────────────────────── */}
+      <section
+        className="relative min-h-screen flex items-center overflow-hidden"
+        style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d1b69 50%, #1a1040 100%)` }}
+      >
+        {/* Background grid */}
+        <div
+          className="absolute inset-0 opacity-[0.06]"
+          style={{
+            backgroundImage: "linear-gradient(rgba(197,160,89,1) 1px, transparent 1px), linear-gradient(90deg, rgba(197,160,89,1) 1px, transparent 1px)",
+            backgroundSize: "60px 60px",
+          }}
+        />
+        {/* Radial glow */}
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full blur-3xl opacity-20" style={{ background: GOLD }} />
+        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 rounded-full blur-3xl opacity-10" style={{ background: "#a78bfa" }} />
+
+        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-24 pb-16">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+
+            {/* Left — Text */}
+            <div className="space-y-8">
+              {/* Badge */}
+              <div
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold"
+                style={{ background: "rgba(197,160,89,0.15)", border: `1px solid ${GOLD}`, color: GOLD }}
+              >
+                <Zap className="w-3.5 h-3.5" />
+                60 Premières Commandes GRATUITES
+              </div>
+
+              {/* Headline Arabic */}
+              <div dir="rtl" className="space-y-2">
+                <h1
+                  className="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-tight"
+                  style={{ fontFamily: "'Playfair Display', serif", textShadow: "0 2px 20px rgba(0,0,0,0.3)" }}
+                >
+                  نظّم تجارتك،
+                </h1>
+                <h1
+                  className="text-4xl sm:text-5xl lg:text-6xl font-black leading-tight"
+                  style={{ fontFamily: "'Playfair Display', serif", color: GOLD, textShadow: `0 2px 20px rgba(197,160,89,0.4)` }}
+                >
+                  ضاعف أرباحك
+                </h1>
+                <h1
+                  className="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-tight"
+                  style={{ fontFamily: "'Playfair Display', serif" }}
+                >
+                  مع TajerGrow
+                </h1>
+              </div>
+
+              {/* Subheadline */}
+              <p className="text-lg text-white/70 leading-relaxed max-w-md">
+                La plateforme SaaS de gestion de commandes conçue pour les e-commerçants marocains. Confirmez plus vite, livrez mieux, et voyez vos vrais bénéfices en temps réel.
+              </p>
+
+              {/* CTA Buttons */}
+              <div className="flex flex-col sm:flex-row gap-4">
+                <Link href="/auth">
+                  <button
+                    className="flex items-center justify-center gap-2 px-8 py-4 rounded-xl text-white font-bold text-base transition-all hover:brightness-110 hover:scale-105 shadow-xl"
+                    style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, boxShadow: `0 8px 32px rgba(197,160,89,0.4)` }}
+                    data-testid="hero-cta-primary"
+                  >
+                    Commencer Gratuitement
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </Link>
+                <button
+                  onClick={() => scrollTo("features")}
+                  className="flex items-center justify-center gap-2 px-8 py-4 rounded-xl font-semibold text-base transition-all hover:bg-white/10"
+                  style={{ border: "1px solid rgba(255,255,255,0.2)", color: "rgba(255,255,255,0.85)" }}
+                  data-testid="hero-cta-secondary"
+                >
+                  Voir les fonctionnalités
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Social proof */}
+              <div className="flex items-center gap-6">
+                <div className="flex -space-x-2">
+                  {["F", "A", "S", "Y", "M"].map((l, i) => (
+                    <div key={i} className="w-8 h-8 rounded-full border-2 border-white/20 flex items-center justify-center text-xs font-bold text-white" style={{ background: [NAVY, "#2d1b69", "#4338ca", "#6d28d9", "#7c3aed"][i] }}>{l}</div>
+                  ))}
+                </div>
+                <div>
+                  <div className="flex items-center gap-1">
+                    {[...Array(5)].map((_, i) => <Star key={i} className="w-3.5 h-3.5 fill-current" style={{ color: GOLD }} />)}
+                  </div>
+                  <p className="text-xs text-white/50 mt-0.5">Utilisé par +200 e-commerçants marocains</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Right — Dashboard Screenshot */}
+            <div className="relative">
+              <div
+                className="absolute -inset-4 rounded-3xl blur-2xl opacity-20"
+                style={{ background: `linear-gradient(135deg, ${GOLD}, #a78bfa)` }}
+              />
+              <div className="relative">
+                <DashboardMockup />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Scroll indicator */}
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 animate-bounce">
+          <div className="w-px h-8 bg-white/20" />
+          <div className="w-1.5 h-1.5 rounded-full bg-white/40" />
+        </div>
+      </section>
+
+      {/* ── STATS BAR ───────────────────────────────────────────── */}
+      <section className="py-10 border-b" style={{ background: NAVY, borderColor: "rgba(197,160,89,0.2)" }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+            {[
+              { val: "+200", label: "Marchands actifs" },
+              { val: "68%", label: "Taux de confirmation moyen" },
+              { val: "1M+", label: "Commandes traitées" },
+              { val: "24/7", label: "Support dédié" },
+            ].map((s) => (
+              <FadeIn key={s.label}>
+                <div>
+                  <p className="text-3xl font-black" style={{ fontFamily: "'Playfair Display', serif", color: GOLD }}>{s.val}</p>
+                  <p className="text-sm mt-1" style={{ color: "rgba(255,255,255,0.55)" }}>{s.label}</p>
+                </div>
+              </FadeIn>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── FEATURES ───────────────────────────────────────────── */}
+      <section id="features" className="py-24" style={{ background: "#f8f7ff" }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <FadeIn className="text-center mb-16">
+            <p className="text-sm font-bold uppercase tracking-widest mb-4" style={{ color: GOLD }}>Fonctionnalités</p>
+            <h2 className="text-3xl sm:text-4xl font-black mb-4" style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}>
+              Tout ce dont vous avez besoin,
+              <span style={{ color: GOLD }}> en un seul endroit</span>
+            </h2>
+            <p className="text-lg max-w-2xl mx-auto" style={{ color: "#64748b" }}>
+              De la première commande à la livraison finale, TajerGrow gère tout votre flux opérationnel avec une précision chirurgicale.
+            </p>
+          </FadeIn>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {FEATURES.map((f, i) => (
+              <FadeIn key={f.title} delay={i * 80}>
+                <div
+                  className="group relative p-7 rounded-2xl bg-white border transition-all duration-300 hover:-translate-y-1"
+                  style={{
+                    borderColor: "rgba(30,27,75,0.08)",
+                    boxShadow: "0 2px 16px rgba(0,0,0,0.04)",
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.boxShadow = `0 8px 32px rgba(197,160,89,0.18)`; (e.currentTarget as HTMLDivElement).style.borderColor = `rgba(197,160,89,0.4)`; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.boxShadow = "0 2px 16px rgba(0,0,0,0.04)"; (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(30,27,75,0.08)"; }}
+                >
+                  <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-5" style={{ background: `rgba(197,160,89,0.1)`, color: GOLD }}>
+                    {f.icon}
+                  </div>
+                  <p className="text-xs font-medium mb-1" style={{ color: "rgba(30,27,75,0.4)" }} dir="rtl">{f.titleAr}</p>
+                  <h3 className="text-lg font-bold mb-2" style={{ color: NAVY, fontFamily: "'Playfair Display', serif" }}>{f.title}</h3>
+                  <p className="text-sm leading-relaxed" style={{ color: "#64748b" }}>{f.desc}</p>
+                </div>
+              </FadeIn>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── PROBLEM / SOLUTION ─────────────────────────────────── */}
+      <section className="py-24" style={{ background: NAVY }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid lg:grid-cols-2 gap-16 items-center">
+            <FadeIn>
+              <div className="space-y-6">
+                <p className="text-sm font-bold uppercase tracking-widest" style={{ color: GOLD }}>Le problème réel</p>
+                <h2 className="text-3xl sm:text-4xl font-black text-white" style={{ fontFamily: "'Playfair Display', serif" }}>
+                  Vous perdez des commandes sans<br />
+                  <span style={{ color: GOLD }}>le savoir.</span>
+                </h2>
+                <div className="space-y-4">
+                  {[
+                    "Vos agents confirment par appel sans outil structuré",
+                    "Vous ne savez pas si votre publicité est rentable",
+                    "Votre stock se désynchronise après chaque livraison",
+                    "Vous calculez votre bénéfice manuellement sur Excel",
+                  ].map((pain) => (
+                    <div key={pain} className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "rgba(239,68,68,0.2)", border: "1px solid rgba(239,68,68,0.4)" }}>
+                        <X className="w-3 h-3 text-red-400" />
+                      </div>
+                      <p className="text-sm" style={{ color: "rgba(255,255,255,0.65)" }}>{pain}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </FadeIn>
+            <FadeIn delay={150}>
+              <div className="space-y-6">
+                <p className="text-sm font-bold uppercase tracking-widest" style={{ color: GOLD }}>La solution TajerGrow</p>
+                <h2 className="text-3xl sm:text-4xl font-black text-white" style={{ fontFamily: "'Playfair Display', serif" }}>
+                  Tout sous contrôle,
+                  <br /><span style={{ color: GOLD }}>en temps réel.</span>
+                </h2>
+                <div className="space-y-4">
+                  {[
+                    "Interface agent mobile pour confirmer 3x plus vite",
+                    "ROAS et bénéfice net par campagne publicitaire",
+                    "Inventaire synchronisé automatiquement à chaque confirmation",
+                    "P&L automatique : coût produit, pub, livraison, emballage",
+                  ].map((sol) => (
+                    <div key={sol} className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5" style={{ background: "rgba(34,197,94,0.2)", border: "1px solid rgba(34,197,94,0.4)" }}>
+                        <Check className="w-3 h-3 text-green-400" />
+                      </div>
+                      <p className="text-sm" style={{ color: "rgba(255,255,255,0.65)" }}>{sol}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </FadeIn>
+          </div>
+        </div>
+      </section>
+
+      {/* ── PRICING ───────────────────────────────────────────── */}
+      <section id="pricing" className="py-24 bg-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <FadeIn className="text-center mb-16">
+            <p className="text-sm font-bold uppercase tracking-widest mb-4" style={{ color: GOLD }}>Tarification</p>
+            <h2 className="text-3xl sm:text-4xl font-black mb-4" style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}>
+              Des prix simples,{" "}
+              <span style={{ color: GOLD }}>sans surprise</span>
+            </h2>
+            <p className="text-lg max-w-xl mx-auto" style={{ color: "#64748b" }}>
+              Commencez gratuitement avec 60 commandes. Upgradez quand vous êtes prêt.
+            </p>
+          </FadeIn>
+
+          <div className="grid md:grid-cols-3 gap-6 max-w-5xl mx-auto">
+            {PLANS.map((plan, i) => (
+              <FadeIn key={plan.name} delay={i * 100}>
+                <div
+                  className="relative rounded-2xl p-7 h-full flex flex-col"
+                  style={{
+                    background: plan.popular ? `linear-gradient(135deg, ${NAVY}, #2d1b69)` : "#fff",
+                    border: plan.popular ? `2px solid ${GOLD}` : "1px solid rgba(30,27,75,0.1)",
+                    boxShadow: plan.popular ? `0 16px 48px rgba(30,27,75,0.25)` : "0 2px 16px rgba(0,0,0,0.04)",
+                  }}
+                >
+                  {plan.popular && (
+                    <div
+                      className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-xs font-black text-white"
+                      style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }}
+                    >
+                      ⭐ Populaire
+                    </div>
+                  )}
+
+                  <div className="mb-6">
+                    <p className="text-xs font-medium mb-1" style={{ color: plan.popular ? "rgba(255,255,255,0.45)" : "rgba(30,27,75,0.4)" }} dir="rtl">{plan.nameAr}</p>
+                    <h3 className="text-xl font-black mb-1" style={{ fontFamily: "'Playfair Display', serif", color: plan.popular ? "#fff" : NAVY }}>{plan.name}</h3>
+                    <p className="text-sm mb-4" style={{ color: plan.popular ? "rgba(255,255,255,0.55)" : "#64748b" }}>{plan.desc}</p>
+                    <div className="flex items-end gap-1">
+                      <span className="text-4xl font-black" style={{ fontFamily: "'Playfair Display', serif", color: plan.popular ? GOLD : NAVY }}>
+                        {plan.price}
+                      </span>
+                      {plan.price !== "0" && <span className="text-base font-medium mb-1" style={{ color: plan.popular ? "rgba(255,255,255,0.5)" : "#94a3b8" }}>DH{plan.period}</span>}
+                      {plan.price === "0" && <span className="text-base font-medium mb-1" style={{ color: plan.popular ? "rgba(255,255,255,0.5)" : "#94a3b8" }}>DH</span>}
+                    </div>
+                    <div
+                      className="inline-block mt-2 px-3 py-1 rounded-full text-xs font-medium"
+                      style={{
+                        background: plan.popular ? "rgba(197,160,89,0.15)" : "rgba(30,27,75,0.06)",
+                        color: plan.popular ? GOLD : NAVY,
+                      }}
+                    >
+                      {plan.limit}
+                    </div>
+                  </div>
+
+                  <ul className="space-y-3 flex-1 mb-7">
+                    {plan.features.map((f) => (
+                      <li key={f} className="flex items-center gap-2.5 text-sm" style={{ color: plan.popular ? "rgba(255,255,255,0.75)" : "#475569" }}>
+                        <Check className="w-4 h-4 flex-shrink-0" style={{ color: plan.popular ? GOLD : "#22c55e" }} />
+                        {f}
+                      </li>
+                    ))}
+                  </ul>
+
+                  <Link href={plan.href}>
+                    <button
+                      className="w-full py-3.5 rounded-xl font-bold text-sm transition-all hover:brightness-110"
+                      style={plan.popular
+                        ? { background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, color: "#fff", boxShadow: `0 4px 16px rgba(197,160,89,0.4)` }
+                        : { background: "transparent", color: NAVY, border: `2px solid ${NAVY}` }
+                      }
+                      data-testid={`pricing-cta-${plan.name.toLowerCase()}`}
+                    >
+                      {plan.cta}
+                    </button>
+                  </Link>
+                </div>
+              </FadeIn>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── TRUST / INTEGRATIONS ──────────────────────────────── */}
+      <section id="trust" className="py-20 border-t" style={{ background: "#f8f7ff", borderColor: "rgba(30,27,75,0.08)" }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <FadeIn className="text-center mb-12">
+            <p className="text-sm font-bold uppercase tracking-widest mb-3" style={{ color: GOLD }}>Intégrations</p>
+            <h2 className="text-2xl sm:text-3xl font-black" style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}>
+              Compatible avec vos outils favoris
+            </h2>
+          </FadeIn>
+
+          <FadeIn delay={100}>
+            <div className="flex flex-wrap items-center justify-center gap-8 lg:gap-16">
+              {/* Shopify */}
+              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
+                  <SiShopify className="w-8 h-8" style={{ color: "#95BF47" }} />
+                </div>
+                <span className="text-sm font-semibold" style={{ color: NAVY }}>Shopify</span>
+              </div>
+              {/* YouCan */}
+              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
+                  <span className="text-xl font-black" style={{ color: "#FF6B35" }}>Y</span>
+                </div>
+                <span className="text-sm font-semibold" style={{ color: NAVY }}>YouCan</span>
+              </div>
+              {/* WooCommerce */}
+              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
+                  <SiWoocommerce className="w-8 h-8" style={{ color: "#7F54B3" }} />
+                </div>
+                <span className="text-sm font-semibold" style={{ color: NAVY }}>WooCommerce</span>
+              </div>
+              {/* Google Sheets */}
+              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
+                  <SiGooglesheets className="w-8 h-8" style={{ color: "#0F9D58" }} />
+                </div>
+                <span className="text-sm font-semibold" style={{ color: NAVY }}>Google Sheets</span>
+              </div>
+              {/* Digylog */}
+              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
+                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
+                  <Truck className="w-7 h-7" style={{ color: "#2563eb" }} />
+                </div>
+                <span className="text-sm font-semibold" style={{ color: NAVY }}>Digylog</span>
+              </div>
+            </div>
+          </FadeIn>
+        </div>
+      </section>
+
+      {/* ── FINAL CTA ─────────────────────────────────────────── */}
+      <section className="py-24" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d1b69 100%)` }}>
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+          <FadeIn>
+            <div
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold mb-8"
+              style={{ background: "rgba(197,160,89,0.15)", border: `1px solid ${GOLD}`, color: GOLD }}
+            >
+              <Shield className="w-3.5 h-3.5" />
+              Sans carte bancaire · Aucun engagement
+            </div>
+            <h2
+              className="text-3xl sm:text-5xl font-black text-white mb-6"
+              style={{ fontFamily: "'Playfair Display', serif" }}
+            >
+              Prêt à faire passer<br />
+              <span style={{ color: GOLD }}>votre business au niveau supérieur ?</span>
+            </h2>
+            <p className="text-lg mb-10" style={{ color: "rgba(255,255,255,0.6)" }}>
+              Rejoignez +200 marchands marocains qui gèrent leurs commandes avec TajerGrow. Commencez avec 60 commandes gratuites.
+            </p>
+            <Link href="/auth">
+              <button
+                className="inline-flex items-center gap-3 px-10 py-5 rounded-2xl text-white font-black text-lg transition-all hover:brightness-110 hover:scale-105"
+                style={{
+                  background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`,
+                  boxShadow: `0 16px 48px rgba(197,160,89,0.4)`,
+                }}
+                data-testid="final-cta-button"
+              >
+                Démarrer l'Essai Gratuit
+                <ArrowRight className="w-5 h-5" />
+              </button>
+            </Link>
+            <p className="mt-5 text-xs" style={{ color: "rgba(255,255,255,0.35)" }}>
+              Installation en 2 minutes · Support en français et arabe
+            </p>
+          </FadeIn>
+        </div>
+      </section>
+
+      {/* ── FOOTER ────────────────────────────────────────────── */}
+      <footer className="py-12 border-t" style={{ background: "#0f0d2a", borderColor: "rgba(197,160,89,0.1)" }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-10 mb-10">
+            {/* Brand */}
+            <div className="lg:col-span-2">
+              <div className="flex items-center gap-2.5 mb-4">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: GOLD }}>
+                  <Crown className="w-4 h-4 text-white" />
+                </div>
+                <span className="text-xl font-bold text-white" style={{ fontFamily: "'Playfair Display', serif" }}>TajerGrow</span>
+              </div>
+              <p className="text-sm leading-relaxed max-w-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
+                La plateforme SaaS de gestion de commandes pour les e-commerçants marocains. Confirmez plus, livrez mieux, profitez davantage.
+              </p>
+            </div>
+            {/* Links */}
+            <div>
+              <h4 className="text-sm font-bold text-white mb-4">Produit</h4>
+              <ul className="space-y-2">
+                {["Fonctionnalités", "Tarification", "Intégrations", "API"].map((l) => (
+                  <li key={l}><a href="#" className="text-sm hover:text-white transition-colors" style={{ color: "rgba(255,255,255,0.4)" }}>{l}</a></li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-white mb-4">Compte</h4>
+              <ul className="space-y-2">
+                {[["Connexion", "/auth"], ["S'inscrire", "/auth"], ["Support", "#"]].map(([l, href]) => (
+                  <li key={l}><Link href={href} className="text-sm hover:text-white transition-colors" style={{ color: "rgba(255,255,255,0.4)" }}>{l}</Link></li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <div className="border-t pt-6 flex flex-col sm:flex-row items-center justify-between gap-4" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
+            <p className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>
+              © 2026 TajerGrow. Tous droits réservés. Conçu au Maroc 🇲🇦
+            </p>
+            <p className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>
+              Politique de confidentialité · Conditions d'utilisation
+            </p>
+          </div>
+        </div>
+      </footer>
+
+    </div>
+  );
+}
