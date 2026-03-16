@@ -411,7 +411,7 @@ function MarqueeCarriers() {
         {carrierCards}
       </MarqueeTrack>
 
-      {/* CTA */}
+      {/* Primary CTA */}
       <div className="text-center mt-10 px-4">
         <a href="/auth">
           <button
@@ -429,6 +429,40 @@ function MarqueeCarriers() {
         <p className="mt-2.5 text-xs" style={{ color: "#94a3b8" }}>
           Configuration en 2 minutes · Aucun frais supplémentaire
         </p>
+      </div>
+
+      {/* Custom integration request box */}
+      <div className="max-w-2xl mx-auto mt-8 mb-2 px-4">
+        <div
+          className="flex flex-col sm:flex-row items-start sm:items-center gap-4 rounded-2xl px-6 py-5"
+          style={{
+            background: "linear-gradient(135deg, #eff6ff 0%, #f0f9ff 100%)",
+            border: "1.5px solid #bfdbfe",
+          }}
+        >
+          <div className="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-lg" style={{ background: "#dbeafe" }}>
+            🔗
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-black mb-0.5" style={{ color: NAVY }}>
+              Votre transporteur manque لـ القائمة ؟
+            </p>
+            <p className="text-xs leading-relaxed" style={{ color: "#475569" }}>
+              Nous ajoutons de nouvelles intégrations chaque semaine. Demandez l'ajout de votre société de livraison — notre équipe technique l'intègre gratuitement en moins de 24h.
+            </p>
+          </div>
+          <a
+            href="https://wa.me/212688959768"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-shrink-0 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-black text-white text-xs whitespace-nowrap transition-all hover:brightness-110 hover:scale-105"
+            style={{ background: "#1d4ed8", boxShadow: "0 4px 14px rgba(29,78,216,0.3)" }}
+            data-testid="custom-carrier-request-button"
+          >
+            Demander une intégration
+            <ArrowRight className="w-3.5 h-3.5" />
+          </a>
+        </div>
       </div>
     </section>
   );

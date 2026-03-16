@@ -15,8 +15,12 @@ const faqs = [
     a: "Absolument. Chaque boutique bénéficie d'une base de données isolée et cryptée. Vos données clients (leads, commandes, contacts) sont votre propriété exclusive — TajerGrow ne les partage jamais avec des tiers, des concurrents ou des partenaires publicitaires. Nous sommes conformes à la loi marocaine 09-08 sur la protection des données personnelles.",
   },
   {
-    q: "Puis-je connecter mon compte Digylog ?",
-    a: "Oui, TajerGrow est partenaire officiel de Digylog. La connexion est directe depuis l'onglet Intégrations de votre dashboard. Une fois connecté, vos expéditions sont créées automatiquement, les étiquettes sont générées en moins d'une seconde et le suivi est mis à jour en temps réel.",
+    q: "Quels transporteurs puis-je connecter à TajerGrow ?",
+    a: "TajerGrow est nativement intégré à toutes les grandes sociétés de livraison au Maroc : Cathedis, Digylog, Ozone Express, Ozone Livraison, Speedex, Kargo Express, Onessta, Ameex, Sendit, Quick Livraison, ForceLog, et bien d'autres. Notre système est universel et conçu pour s'adapter à l'écosystème logistique marocain dans son intégralité.",
+  },
+  {
+    q: "Que faire si mon transporteur n'est pas dans la liste ?",
+    a: "Pas de soucis ! Si vous travaillez avec une société locale أو شركة شحن مكيناش فـ القائمة، تواصلوا معنا و الفريق التقني ديالنا غادي يربطها ليك فـ أقل من 24 ساعة مجاناً. Contactez notre équipe sur WhatsApp et nous ajouterons l'intégration gratuitement.",
   },
   {
     q: "Comment payer mon abonnement ?",
