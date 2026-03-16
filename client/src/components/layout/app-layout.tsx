@@ -42,6 +42,8 @@ import {
   Rocket,
   CalendarX,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { setLanguage } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -103,6 +105,53 @@ const NOUVELLE_SUB_ITEMS = [
   { name: "Importer",  href: "/orders/import" },
 ];
 
+/* ─── i18n key maps ───────────────────────────────────────────── */
+const NAV_KEYS: Record<string, string> = {
+  "Dashboard":              "nav.dashboard",
+  "Mes Commandes":          "nav.orders",
+  "Commandes (Toutes)":     "nav.allOrders",
+  "Nouvelle commande":      "nav.newOrder",
+  "Stock":                  "nav.inventory",
+  "Magasins":               "nav.stores",
+  "List Client":            "nav.clients",
+  "Gestion de l'Équipe":    "nav.team",
+  "Gestion Media Buyers":   "nav.mediaBuyers",
+  "Factures":               "nav.invoices",
+  "Facturation":            "nav.billing",
+  "Advanced Profitability": "nav.profitability",
+  "Publicités":             "nav.ads",
+  "Calculateur de Marge":   "nav.calculator",
+  "Integration":            "nav.integrations",
+  "Super Admin":            "nav.superAdmin",
+  "Mes Dépenses":           "nav.expenses",
+};
+const ORDER_SUB_KEYS: Record<string, string> = {
+  "Nouveaux":       "orderSub.new",
+  "Confirmés":      "orderSub.confirmed",
+  "Injoignables":   "orderSub.unreachable",
+  "Annulés":        "orderSub.cancelled",
+  "Boite vocale":   "orderSub.voicemail",
+  "En cours":       "orderSub.inProgress",
+  "Suivi des Colis":"orderSub.tracking",
+  "Livrées":        "orderSub.delivered",
+  "Refusées":       "orderSub.refused",
+};
+const INTEGRATION_SUB_KEYS: Record<string, string> = {
+  "Boutiques":             "integrationSub.stores",
+  "Sociétés de Livraison": "integrationSub.shipping",
+  "Journal":               "integrationSub.logs",
+};
+const NOUVELLE_SUB_KEYS: Record<string, string> = {
+  "Ajouter":  "newOrderSub.add",
+  "Importer": "newOrderSub.import",
+};
+
+const LANG_OPTIONS = [
+  { code: "fr" as const, label: "FR", flag: "🇫🇷", full: "Français" },
+  { code: "ar" as const, label: "AR", flag: "🇲🇦", full: "العربية" },
+  { code: "en" as const, label: "EN", flag: "🇬🇧", full: "English" },
+];
+
 /* ─── Main layout ──────────────────────────────────────────────── */
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const [location, navigate] = useLocation();
@@ -111,6 +160,17 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const [langMenuOpen, setLangMenuOpen] = useState(false);
+  const langMenuRef = useRef<HTMLDivElement>(null);
+  const { t, i18n } = useTranslation();
+
+  /* RTL support — auto-flip layout when Arabic is selected */
+  useEffect(() => {
+    const isRtl = i18n.language === "ar";
+    document.documentElement.dir = isRtl ? "rtl" : "ltr";
+    document.documentElement.lang = i18n.language;
+    document.documentElement.classList.toggle("rtl", isRtl);
+  }, [i18n.language]);
   const { user, logout } = useAuth();
   const { toast } = useToast();
   const { activeStoreId, setActiveStoreId, stores } = useActiveStore();
@@ -138,6 +198,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       }
       if (notifPanelRef.current && !notifPanelRef.current.contains(e.target as Node)) {
         setNotifPanelOpen(false);
+      }
+      if (langMenuRef.current && !langMenuRef.current.contains(e.target as Node)) {
+        setLangMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -262,7 +325,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
       {/* MENU label */}
       <div className="px-5 pt-4 pb-1 shrink-0">
-        <span className="text-[10px] font-bold tracking-[0.15em] uppercase" style={{ color: 'rgba(255,255,255,0.45)' }}>MENU</span>
+        <span className="text-[10px] font-bold tracking-[0.15em] uppercase" style={{ color: 'rgba(255,255,255,0.45)' }}>{t('nav.menu')}</span>
       </div>
 
       {/* Nav */}
@@ -297,7 +360,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 <item.icon
                   className="w-[18px] h-[18px] shrink-0 opacity-90"
                 />
-                <span className="flex-1 leading-tight">{item.name}</span>
+                <span className="flex-1 leading-tight">{t(NAV_KEYS[item.name] || item.name)}</span>
                 {hasSubmenu && (
                   isActive
                     ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
@@ -322,7 +385,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                         )}
                         style={subActive ? { background: 'rgba(255,255,255,0.15)' } : {}}
                       >
-                        <span>{sub.name}</span>
+                        <span>{t(ORDER_SUB_KEYS[sub.name] || sub.name)}</span>
                         {sub.name === "Nouveaux" && newOrdersCount > 0 && (
                           <span
                             className="ml-2 shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold leading-none px-1.5 py-0.5 min-w-[20px]"
@@ -352,7 +415,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                         )}
                         style={subActive ? { background: 'rgba(255,255,255,0.15)' } : {}}
                       >
-                        {sub.name}
+                        {t(INTEGRATION_SUB_KEYS[sub.name] || sub.name)}
                       </Link>
                     );
                   })}
@@ -374,7 +437,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                         )}
                         style={subActive ? { background: 'rgba(255,255,255,0.15)' } : {}}
                       >
-                        {sub.name}
+                        {t(NOUVELLE_SUB_KEYS[sub.name] || sub.name)}
                       </Link>
                     );
                   })}
@@ -391,7 +454,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
               <TrendingUp className="w-3.5 h-3.5 text-amber-300" />
-              <span className="text-[11px] font-bold text-white/80">Version d'essai</span>
+              <span className="text-[11px] font-bold text-white/80">{t('trial.version')}</span>
             </div>
             <span
               className={cn("text-[11px] font-bold tabular-nums", isBlocked ? "text-red-400" : trialRemaining <= 10 ? "text-amber-300" : "text-white/70")}
@@ -414,7 +477,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           ) : trialRemaining <= 10 ? (
             <p className="text-[10px] text-amber-300 mt-1.5">⚠️ بقي لك {trialRemaining} طلبية — plus que {trialRemaining}</p>
           ) : (
-            <p className="text-[10px] text-white/40 mt-1.5">{trialRemaining} commandes restantes</p>
+            <p className="text-[10px] text-white/40 mt-1.5">{trialRemaining} {t('trial.remaining')}</p>
           )}
         </div>
       )}
@@ -429,7 +492,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="min-w-0">
             <p className="text-xs font-bold text-white truncate leading-tight">{user?.username}</p>
             <p className="text-[10px] text-white/50">
-              {user?.role === 'owner' ? 'Administrateur' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}
+              {user?.role === 'owner' ? t('roles.owner') : user?.role === 'media_buyer' ? t('roles.media_buyer') : t('roles.agent')}
             </p>
           </div>
         </div>
@@ -439,7 +502,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           data-testid="link-profile"
         >
           <User className="w-4 h-4" />
-          Mon Profil
+          {t('nav.profile')}
         </Link>
         <button
           onClick={handleLogout}
@@ -447,7 +510,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           data-testid="button-logout"
         >
           <LogOut className="w-4 h-4" />
-          Déconnexion
+          {t('nav.logout')}
         </button>
       </div>
     </div>
@@ -543,6 +606,37 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             <Button variant="ghost" size="icon" onClick={() => setIsDark(!isDark)} className="rounded-full h-8 w-8" data-testid="button-theme">
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </Button>
+
+            {/* Language Switcher */}
+            <div ref={langMenuRef} className="relative">
+              <button
+                onClick={() => setLangMenuOpen(v => !v)}
+                className="h-8 px-2.5 rounded-xl text-xs font-bold border border-border/50 hover:bg-muted transition-colors flex items-center gap-1.5 text-foreground"
+                data-testid="button-lang-switcher"
+              >
+                {LANG_OPTIONS.find(l => l.code === i18n.language)?.flag ?? "🌐"}
+                <span className="hidden sm:inline">{LANG_OPTIONS.find(l => l.code === i18n.language)?.label ?? "FR"}</span>
+              </button>
+              {langMenuOpen && (
+                <div className="absolute right-0 top-10 w-40 bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden py-1">
+                  {LANG_OPTIONS.map((lang) => (
+                    <button
+                      key={lang.code}
+                      onClick={() => { setLanguage(lang.code); setLangMenuOpen(false); }}
+                      className={cn(
+                        "w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors hover:bg-muted",
+                        i18n.language === lang.code ? "text-primary font-bold bg-primary/5" : "text-foreground"
+                      )}
+                      data-testid={`lang-option-${lang.code}`}
+                    >
+                      <span className="text-base">{lang.flag}</span>
+                      <span>{lang.full}</span>
+                      {i18n.language === lang.code && <span className="ml-auto text-primary text-xs">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {/* Help / Tutorial icon */}
             <Button
@@ -658,7 +752,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 <div className="hidden sm:block text-left">
                   <p className="text-xs font-bold leading-none" data-testid="text-username">{user?.username || 'User'}</p>
                   <p className="text-[10px] text-muted-foreground mt-0.5">
-                    {user?.role === 'owner' ? 'Admin' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}
+                    {user?.role === 'owner' ? t('roles.owner') : user?.role === 'media_buyer' ? t('roles.media_buyer') : t('roles.agent')}
                   </p>
                 </div>
                 <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 ${userDropdownOpen ? "rotate-180" : ""}`} />
@@ -681,7 +775,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                     </Avatar>
                     <div className="min-w-0">
                       <p className="text-xs font-bold leading-tight truncate">{user?.username}</p>
-                      <p className="text-[10px] text-muted-foreground">{user?.role === 'owner' ? 'Administrateur' : user?.role === 'media_buyer' ? 'Media Buyer' : 'Agent'}</p>
+                      <p className="text-[10px] text-muted-foreground">{user?.role === 'owner' ? t('roles.owner') : user?.role === 'media_buyer' ? t('roles.media_buyer') : t('roles.agent')}</p>
                     </div>
                   </div>
 
@@ -693,7 +787,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                     className="flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-muted transition-colors w-full"
                   >
                     <User className="w-4 h-4 text-muted-foreground" />
-                    <span className="font-medium">Mon Profil</span>
+                    <span className="font-medium">{t('nav.profile')}</span>
                   </Link>
 
                   <div className="h-px bg-border/60 mx-3 my-1" />
@@ -705,7 +799,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                     className="flex items-center gap-3 px-4 py-2.5 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors w-full"
                   >
                     <Power className="w-4 h-4" />
-                    <span className="font-semibold">Déconnexion</span>
+                    <span className="font-semibold">{t('nav.logout')}</span>
                   </button>
                 </div>
               )}
