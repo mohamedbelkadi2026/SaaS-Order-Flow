@@ -1,0 +1,30 @@
+"I need to update the 'Partenaires de Livraison' section with real Moroccan logistics logos. Please implement an infinite horizontal scrolling marquee using the specific image URLs provided below.
+1. Logo Data Source (URLs):
+Please use these exact URLs for the src of the images:
+Onessta: https://garean.com/assets/images/company/onessta.svg
+Ozone Express: https://garean.com/assets/images/company/ozon.svg
+Sendit: https://garean.com/assets/images/company/sendit.svg
+Ameex: https://garean.com/assets/images/company/ameex.svg
+Cathedis: https://garean.com/assets/images/company/cathidis.svg
+Digylog: https://garean.com/assets/images/company/digylog.svg
+Quick Livraison: https://garean.com/assets/images/company/ql.svg
+Kargo Express: https://garean.com/assets/images/company/cargo.svg
+Ozone Livraison: https://garean.com/assets/images/company/ol.svg
+ForceLog: https://garean.com/assets/images/company/forcelog.png
+Speedex: https://garean.com/assets/images/company/speedx.png
+2. Visual & Interaction Design:
+Infinite Scroll: Create a smooth, seamless horizontal loop (marquee).
+Default State: All logos must be in Grayscale (grayscale(100%)) with an opacity of 0.6 to look premium.
+Hover State: When I hover over a logo:
+It must turn into its Original Full Color (grayscale(0%)).
+It should scale up slightly (scale-110) with a smooth transition.
+The scrolling animation should Pause.
+Card Styling: Place each logo inside a clean white container with subtle rounded corners and a soft shadow.
+3. Layout & Responsiveness:
+Height: All logos should have a uniform maximum height (e.g., 45px).
+Background: Use a very light grey/zinc background (#f8fafc) for the entire section.
+Mobile: On small screens, ensure the scroll speed is comfortable and the logos scale down slightly to fit the screen height.
+4. Technical Instruction:
+Use Tailwind CSS for the layout.
+Use Framer Motion or CSS Keyframes for the infinite loop animation.
+Ensure the section is full-width and has enough padding to look airy and high-end."

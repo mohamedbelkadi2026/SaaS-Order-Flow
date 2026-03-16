@@ -216,15 +216,17 @@ const TOOLS = [
 ];
 
 const CARRIERS_MARQUEE = [
-  { name: "Digylog",       short: "DG", color: "#1d4ed8", bg: "#dbeafe", premium: true },
-  { name: "Cathedis",      short: "CA", color: "#ea580c", bg: "#ffedd5" },
-  { name: "Onessta",       short: "ON", color: "#16a34a", bg: "#dcfce7" },
-  { name: "Speedex",       short: "SX", color: "#dc2626", bg: "#fee2e2" },
-  { name: "KargoExpress",  short: "KE", color: "#7c3aed", bg: "#ede9fe" },
-  { name: "Ozone Express", short: "OZ", color: "#0891b2", bg: "#cffafe" },
-  { name: "ForceLog",      short: "FL", color: "#0f172a", bg: "#e2e8f0" },
-  { name: "Livo",          short: "LV", color: "#db2777", bg: "#fce7f3" },
-  { name: "Ameex",         short: "AM", color: "#b45309", bg: "#fef3c7" },
+  { name: "Digylog",          logo: "https://garean.com/assets/images/company/digylog.svg",   premium: true },
+  { name: "Cathedis",         logo: "https://garean.com/assets/images/company/cathidis.svg",  premium: false },
+  { name: "Onessta",          logo: "https://garean.com/assets/images/company/onessta.svg",   premium: false },
+  { name: "Speedex",          logo: "https://garean.com/assets/images/company/speedx.png",    premium: false },
+  { name: "Kargo Express",    logo: "https://garean.com/assets/images/company/cargo.svg",     premium: false },
+  { name: "Ozone Express",    logo: "https://garean.com/assets/images/company/ozon.svg",      premium: false },
+  { name: "ForceLog",         logo: "https://garean.com/assets/images/company/forcelog.png",  premium: false },
+  { name: "Ameex",            logo: "https://garean.com/assets/images/company/ameex.svg",     premium: false },
+  { name: "Sendit",           logo: "https://garean.com/assets/images/company/sendit.svg",    premium: false },
+  { name: "Quick Livraison",  logo: "https://garean.com/assets/images/company/ql.svg",        premium: false },
+  { name: "Ozone Livraison",  logo: "https://garean.com/assets/images/company/ol.svg",        premium: false },
 ];
 
 /* ── Marquee Track (generic) ───────────────────────────────────── */
@@ -304,42 +306,62 @@ function MarqueeTools() {
   );
 }
 
-/* ── Carrier Logo Card (for marquee) ───────────────────────────── */
+/* ── Carrier Logo Card (real images) ──────────────────────────── */
 function CarrierMarqueeCard({ c }: { c: typeof CARRIERS_MARQUEE[0] }) {
   const [hovered, setHovered] = useState(false);
+  const [imgError, setImgError] = useState(false);
+
   return (
     <div
-      className="flex flex-col items-center gap-2 sm:gap-3 px-1"
+      className="relative flex-shrink-0 mx-3 sm:mx-4 cursor-default"
+      style={{
+        filter: hovered ? "grayscale(0%)" : "grayscale(100%)",
+        opacity: hovered ? 1 : 0.6,
+        transform: hovered ? "scale(1.1)" : "scale(1)",
+        transition: "filter 0.35s ease, opacity 0.35s ease, transform 0.35s ease",
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
+      {/* Premium badge */}
+      {c.premium && (
+        <span
+          className="absolute -top-2 -right-2 z-10 text-[8px] font-black px-1.5 py-0.5 rounded-full text-white"
+          style={{ background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`, boxShadow: "0 2px 6px rgba(197,160,89,0.5)" }}
+        >
+          ★
+        </span>
+      )}
+
+      {/* White card */}
       <div
-        className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center font-black text-sm sm:text-base transition-all duration-300"
+        className="flex items-center justify-center px-5 sm:px-7 rounded-xl"
         style={{
-          background: hovered ? c.bg : "#f1f5f9",
-          color: hovered ? c.color : "#94a3b8",
-          filter: hovered ? "none" : "grayscale(100%)",
-          boxShadow: hovered ? `0 8px 24px ${c.color}25` : "0 4px 16px rgba(0,0,0,0.06)",
-          border: hovered ? `1.5px solid ${c.color}30` : "1px solid rgba(30,27,75,0.06)",
-          transform: hovered ? "translateY(-2px) scale(1.05)" : "translateY(0) scale(1)",
+          background: "#fff",
+          height: "64px",
+          minWidth: "120px",
+          boxShadow: hovered
+            ? "0 8px 28px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)"
+            : "0 2px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04)",
+          border: `1px solid ${hovered ? "rgba(30,27,75,0.15)" : "rgba(30,27,75,0.07)"}`,
+          transition: "box-shadow 0.35s ease, border-color 0.35s ease",
         }}
       >
-        {c.short}
-        {c.premium && (
-          <span
-            className="absolute -top-1.5 -right-1.5 text-[7px] font-black px-1 rounded-full text-white"
-            style={{ background: GOLD, lineHeight: "14px" }}
-          >
-            ★
+        {imgError ? (
+          <span className="text-xs font-black whitespace-nowrap" style={{ color: "#64748b" }}>
+            {c.name}
           </span>
+        ) : (
+          <img
+            src={c.logo}
+            alt={c.name}
+            className="object-contain w-auto"
+            style={{ maxHeight: "38px", maxWidth: "110px" }}
+            onError={() => setImgError(true)}
+            loading="lazy"
+          />
         )}
       </div>
-      <span
-        className="text-xs sm:text-sm font-semibold whitespace-nowrap transition-colors duration-300"
-        style={{ color: hovered ? NAVY : "#94a3b8" }}
-      >
-        {c.name}
-      </span>
     </div>
   );
 }
@@ -351,7 +373,7 @@ function MarqueeCarriers() {
   ));
 
   return (
-    <section id="shipping-partners" className="py-16 sm:py-20 border-t" style={{ background: "#fff", borderColor: "rgba(30,27,75,0.06)" }}>
+    <section id="shipping-partners" className="py-16 sm:py-20 border-t" style={{ background: "#f8fafc", borderColor: "rgba(30,27,75,0.06)" }}>
       <div className="text-center mb-10 px-4">
         <p className="text-xs font-black uppercase tracking-[0.25em] mb-3" style={{ color: GOLD }}>
           Partenaires de Livraison
@@ -372,7 +394,7 @@ function MarqueeCarriers() {
         {/* Stats row */}
         <div className="flex flex-wrap items-center justify-center gap-8 mt-8">
           {[
-            { val: "9+",    label: "Transporteurs" },
+            { val: "11+",   label: "Transporteurs" },
             { val: "100%",  label: "Sync automatique" },
             { val: "< 1s",  label: "Délai étiquette" },
           ].map((s) => (
