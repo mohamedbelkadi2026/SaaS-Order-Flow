@@ -4,8 +4,9 @@ import {
   BarChart3, Package, Smartphone, Truck, Target, TrendingUp,
   Check, ChevronRight, Star, Zap, Shield, Crown,
   ShoppingCart, Users, Activity, ArrowRight, Menu, X,
+  Mail, MapPin,
 } from "lucide-react";
-import { SiShopify, SiWoocommerce, SiGooglesheets } from "react-icons/si";
+import { SiShopify, SiWoocommerce, SiGooglesheets, SiFacebook, SiInstagram, SiWhatsapp } from "react-icons/si";
 
 /* ── Scroll Animation Hook ─────────────────────────────────────── */
 function useInView(threshold = 0.15) {
@@ -910,47 +911,204 @@ export default function LandingPage() {
       </section>
 
       {/* ── FOOTER ────────────────────────────────────────────── */}
-      <footer className="py-12 border-t" style={{ background: "#0f0d2a", borderColor: "rgba(197,160,89,0.1)" }}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-10 mb-10">
-            {/* Brand */}
-            <div className="lg:col-span-2">
-              <div className="flex items-center gap-2.5 mb-4">
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: GOLD }}>
+      <footer style={{ background: NAVY, borderTop: "1px solid rgba(197,160,89,0.15)" }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-14 pb-8">
+
+          {/* ── Main grid ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-10 mb-12">
+
+            {/* Brand column (spans 2 on lg) */}
+            <div className="lg:col-span-2 text-center sm:text-left">
+              <div className="flex items-center gap-2.5 mb-4 justify-center sm:justify-start">
+                <div
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`, boxShadow: "0 4px 12px rgba(197,160,89,0.4)" }}
+                >
                   <Crown className="w-4 h-4 text-white" />
                 </div>
-                <span className="text-xl font-bold text-white" style={{ fontFamily: "'Playfair Display', serif" }}>TajerGrow</span>
+                <span
+                  className="text-2xl font-bold text-white"
+                  style={{ fontFamily: "'Playfair Display', serif" }}
+                >
+                  TajerGrow
+                </span>
               </div>
-              <p className="text-sm leading-relaxed max-w-xs" style={{ color: "rgba(255,255,255,0.4)" }}>
-                La plateforme SaaS de gestion de commandes pour les e-commerçants marocains. Confirmez plus, livrez mieux, profitez davantage.
+              <p className="text-sm leading-relaxed max-w-xs mx-auto sm:mx-0" style={{ color: "rgba(255,255,255,0.5)" }}>
+                TajerGrow : La solution n°1 pour la gestion des commandes COD au Maroc. Optimisez votre confirmation, suivez vos colis et maîtrisez votre rentabilité.
               </p>
+
+              {/* Contact info */}
+              <div className="mt-6 space-y-3">
+                {[
+                  {
+                    icon: <Mail className="w-4 h-4 flex-shrink-0" style={{ color: GOLD }} />,
+                    label: "contact@tajergrow.com",
+                    href: "mailto:contact@tajergrow.com",
+                  },
+                  {
+                    icon: <SiWhatsapp className="w-4 h-4 flex-shrink-0" style={{ color: "#25D366" }} />,
+                    label: "06 88 95 97 68",
+                    href: "https://wa.me/212688959768",
+                  },
+                  {
+                    icon: <MapPin className="w-4 h-4 flex-shrink-0" style={{ color: GOLD }} />,
+                    label: "Agadir, Maroc",
+                    href: null,
+                  },
+                ].map(({ icon, label, href }) => (
+                  <div key={label} className="flex items-center gap-2.5 justify-center sm:justify-start">
+                    {icon}
+                    {href ? (
+                      <a
+                        href={href}
+                        target={href.startsWith("http") ? "_blank" : undefined}
+                        rel={href.startsWith("http") ? "noopener noreferrer" : undefined}
+                        className="text-sm transition-colors duration-200"
+                        style={{ color: "rgba(255,255,255,0.55)" }}
+                        onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
+                        onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.55)")}
+                      >
+                        {label}
+                      </a>
+                    ) : (
+                      <span className="text-sm" style={{ color: "rgba(255,255,255,0.55)" }}>{label}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
-            {/* Links */}
-            <div>
-              <h4 className="text-sm font-bold text-white mb-4">Produit</h4>
-              <ul className="space-y-2">
-                {["Fonctionnalités", "Tarification", "Intégrations", "API"].map((l) => (
-                  <li key={l}><a href="#" className="text-sm hover:text-white transition-colors" style={{ color: "rgba(255,255,255,0.4)" }}>{l}</a></li>
+
+            {/* Plateforme */}
+            <div className="text-center sm:text-left">
+              <h4 className="text-xs font-black uppercase tracking-[0.2em] mb-5" style={{ color: GOLD }}>
+                Plateforme
+              </h4>
+              <ul className="space-y-2.5">
+                {[
+                  ["Dashboard", "/auth"],
+                  ["Mes Commandes", "/auth"],
+                  ["Stock", "/auth"],
+                  ["Intégrations", "#trust"],
+                ].map(([label, href]) => (
+                  <li key={label}>
+                    <a
+                      href={href}
+                      className="text-sm transition-colors duration-200"
+                      style={{ color: "rgba(255,255,255,0.5)" }}
+                      onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
+                      onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
+                    >
+                      {label}
+                    </a>
+                  </li>
                 ))}
               </ul>
             </div>
-            <div>
-              <h4 className="text-sm font-bold text-white mb-4">Compte</h4>
-              <ul className="space-y-2">
-                {[["Connexion", "/auth"], ["S'inscrire", "/auth"], ["Support", "#"]].map(([l, href]) => (
-                  <li key={l}><Link href={href} className="text-sm hover:text-white transition-colors" style={{ color: "rgba(255,255,255,0.4)" }}>{l}</Link></li>
+
+            {/* Liens Utiles */}
+            <div className="text-center sm:text-left">
+              <h4 className="text-xs font-black uppercase tracking-[0.2em] mb-5" style={{ color: GOLD }}>
+                Liens Utiles
+              </h4>
+              <ul className="space-y-2.5">
+                {[
+                  ["Tarifs", "#pricing"],
+                  ["FAQ", "#"],
+                  ["Blog", "#"],
+                  ["Témoignages", "#"],
+                ].map(([label, href]) => (
+                  <li key={label}>
+                    <a
+                      href={href}
+                      className="text-sm transition-colors duration-200"
+                      style={{ color: "rgba(255,255,255,0.5)" }}
+                      onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
+                      onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
+                    >
+                      {label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Légal */}
+            <div className="text-center sm:text-left">
+              <h4 className="text-xs font-black uppercase tracking-[0.2em] mb-5" style={{ color: GOLD }}>
+                Légal
+              </h4>
+              <ul className="space-y-2.5">
+                {[
+                  ["Conditions d'utilisation", "#"],
+                  ["Politique de confidentialité", "#"],
+                ].map(([label, href]) => (
+                  <li key={label}>
+                    <a
+                      href={href}
+                      className="text-sm transition-colors duration-200"
+                      style={{ color: "rgba(255,255,255,0.5)" }}
+                      onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
+                      onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
+                    >
+                      {label}
+                    </a>
+                  </li>
                 ))}
               </ul>
             </div>
           </div>
-          <div className="border-t pt-6 flex flex-col sm:flex-row items-center justify-between gap-4" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
-            <p className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>
-              © 2026 TajerGrow.com — Tous droits réservés. Conçu au Maroc 🇲🇦
+
+          {/* ── Bottom bar ── */}
+          <div
+            className="flex flex-col sm:flex-row items-center justify-between gap-5 pt-7"
+            style={{ borderTop: "1px solid rgba(255,255,255,0.07)" }}
+          >
+            <p className="text-xs order-2 sm:order-1" style={{ color: "rgba(255,255,255,0.3)" }}>
+              © 2026 TajerGrow.com. Tous droits réservés.
             </p>
-            <p className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>
-              Politique de confidentialité · Conditions d'utilisation
-            </p>
+
+            {/* Social icons */}
+            <div className="flex items-center gap-4 order-1 sm:order-2">
+              {[
+                {
+                  icon: <SiFacebook className="w-4 h-4" />,
+                  href: "https://facebook.com/tajergrow",
+                  label: "Facebook",
+                },
+                {
+                  icon: <SiInstagram className="w-4 h-4" />,
+                  href: "https://instagram.com/tajergrow",
+                  label: "Instagram",
+                },
+                {
+                  icon: <SiWhatsapp className="w-4 h-4" />,
+                  href: "https://wa.me/212688959768",
+                  label: "WhatsApp",
+                },
+              ].map(({ icon, href, label }) => (
+                <a
+                  key={label}
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={label}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center transition-all duration-200"
+                  style={{ background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.45)" }}
+                  onMouseEnter={e => {
+                    (e.currentTarget as HTMLElement).style.background = `rgba(197,160,89,0.18)`;
+                    (e.currentTarget as HTMLElement).style.color = GOLD;
+                  }}
+                  onMouseLeave={e => {
+                    (e.currentTarget as HTMLElement).style.background = "rgba(255,255,255,0.07)";
+                    (e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.45)";
+                  }}
+                >
+                  {icon}
+                </a>
+              ))}
+            </div>
           </div>
+
         </div>
       </footer>
 
