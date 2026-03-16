@@ -1012,10 +1012,10 @@ export default function LandingPage() {
               </h4>
               <ul className="space-y-2.5">
                 {[
-                  ["Tarifs", "#pricing"],
-                  ["FAQ", "#"],
-                  ["Blog", "#"],
-                  ["Témoignages", "#"],
+                  ["Tarifs", "/tarifs"],
+                  ["FAQ", "/faq"],
+                  ["Blog", "/blog"],
+                  ["Témoignages", "/temoignages"],
                 ].map(([label, href]) => (
                   <li key={label}>
                     <a
@@ -1039,8 +1039,8 @@ export default function LandingPage() {
               </h4>
               <ul className="space-y-2.5">
                 {[
-                  ["Conditions d'utilisation", "#"],
-                  ["Politique de confidentialité", "#"],
+                  ["Conditions d'utilisation", "/terms"],
+                  ["Politique de confidentialité", "/privacy"],
                 ].map(([label, href]) => (
                   <li key={label}>
                     <a

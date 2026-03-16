@@ -1,0 +1,28 @@
+"I need to create functional pages for all footer links on TajerGrow.com. These pages must be SEO-optimized for the Moroccan e-commerce market and provide real value. Please implement the following:
+1. Page: Tarifs (Pricing)
+Content: Display 3 clear cards:
+Essai Gratuit: 0 DH (60 premières commandes).
+Starter: 200 DH/mois (Jusqu'à 1500 commandes).
+Pro: 400 DH/mois (Commandes illimitées + Support VIP).
+SEO Keywords: 'Prix gestion COD Maroc', 'Meilleur logiciel e-commerce Maroc'.
+2. Page: FAQ (Questions Fréquentes)
+Content: Create an accordion style for these questions:
+Q: Est-ce que TajerGrow est compatible avec YouCan et Shopify? (R: Oui, intégration en 1 clic).
+Q: Mes données de leads sont-elles sécurisées? (R: Oui, base de données isolée et cryptée, vos données sont votre propriété exclusive).
+Q: Puis-je connecter mon compte Digylog? (R: Oui, nous sommes partenaires officiels).
+Q: Comment payer mon abonnement? (R: Via Virement bancaire, CIH, ou Wafacash).
+3. Page: Conditions d'utilisation (TOS)
+Content: Professional legal text covering:
+Respect de la vie privée des clients finaux.
+Responsabilité de l'utilisateur sur ses ventes.
+Politique d'annulation d'abonnement.
+Compliance: Mention compliance with Moroccan Law 09-08 (Protection of personal data).
+4. Page: Politique de confidentialité
+Content: Explain clearly that TajerGrow DOES NOT share leads or customer data with third parties. This is the #1 concern for Moroccan merchants.
+5. Page: Blog & Témoignages (Placeholders):
+Create a clean grid layout for future success stories and e-commerce tips for the Moroccan market.
+6. Technical Requirements:
+Routes: Create /tarifs, /faq, /terms, /privacy.
+SEO: Add Meta Titles and Descriptions for each page (e.g., 'TajerGrow FAQ - Tout savoir sur la gestion COD au Maroc').
+Design: Use the Navy Blue (#1e1b4b) and Gold (#C5A059) theme. Ensure all pages are mobile-responsive and load fast.
+Instruction: Make sure the links in the Footer now correctly navigate to these new pages. Use a professional 'Legal' font for the text-heavy pages."

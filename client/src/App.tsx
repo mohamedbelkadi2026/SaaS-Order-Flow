@@ -15,6 +15,12 @@ import AuthPage from "@/pages/auth-page";
 import SuperAdminPage from "@/pages/super-admin";
 import LandingPage from "@/pages/landing";
 import ShippingPartnersPublicPage from "@/pages/shipping-partners-public";
+import TarifsPage from "@/pages/tarifs";
+import FaqPage from "@/pages/faq";
+import TermsPage from "@/pages/terms";
+import PrivacyPage from "@/pages/privacy";
+import BlogPage from "@/pages/blog";
+import TemoignagesPage from "@/pages/temoignages";
 import Dashboard from "@/pages/dashboard";
 import Orders from "@/pages/orders";
 import NewOrder from "@/pages/new-order";
@@ -135,9 +141,13 @@ function AppRouter() {
   const { user, isLoading } = useAuth();
   const [location] = useLocation();
 
-  if (location === "/partenaires-livraison") {
-    return <ShippingPartnersPublicPage />;
-  }
+  if (location === "/partenaires-livraison") return <ShippingPartnersPublicPage />;
+  if (location === "/tarifs") return <TarifsPage />;
+  if (location === "/faq") return <FaqPage />;
+  if (location === "/terms") return <TermsPage />;
+  if (location === "/privacy") return <PrivacyPage />;
+  if (location === "/blog") return <BlogPage />;
+  if (location === "/temoignages") return <TemoignagesPage />;
 
   if (location === "/super-admin" || location === "/admin") {
     if (isLoading) {
