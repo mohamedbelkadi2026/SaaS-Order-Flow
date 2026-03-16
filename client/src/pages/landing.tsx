@@ -49,39 +49,39 @@ const GOLD_LIGHT = "#d4b06a";
 const FEATURES = [
   {
     icon: <BarChart3 className="w-6 h-6" />,
-    title: "Analytics Temps Réel",
-    titleAr: "لوحة تحكم ذكية",
-    desc: "Suivez vos revenus, marges et taux de confirmation en direct. Export Excel en un clic.",
+    title: "Dashboard Bénéfice Net",
+    titleAr: "ربح صافٍ مباشر",
+    desc: "Chaque commande affiche son bénéfice net en temps réel : produit, pub, livraison, emballage — tout calculé automatiquement.",
   },
   {
     icon: <Smartphone className="w-6 h-6" />,
-    title: "Vue Agent Mobile",
-    titleAr: "تأكيد سريع للطلبات",
-    desc: "Vos agents confirment les commandes directement depuis leur téléphone. Appel & WhatsApp intégrés.",
-  },
-  {
-    icon: <Package className="w-6 h-6" />,
-    title: "Inventaire Automatique",
-    titleAr: "مزامنة المخزون",
-    desc: "Le stock se décrémente automatiquement à chaque commande confirmée. Zéro saisie manuelle.",
+    title: "Interface de Confirmation",
+    titleAr: "تأكيد بـ WhatsApp أو مكالمة",
+    desc: "Boutons WhatsApp et Appel directement dans la fiche commande. Vos agents confirment 3× plus vite depuis leur mobile.",
   },
   {
     icon: <Target className="w-6 h-6" />,
-    title: "Espace Media Buyer",
-    titleAr: "مساحة المسوّق",
-    desc: "Tracking isolé par campagne et acheteur. ROI, ROAS et bénéfice net par publicité.",
+    title: "Tracking UTM Complet",
+    titleAr: "تتبع UTM لكل مسوّق",
+    desc: "Première plateforme marocaine avec tracking UTM profond. ROI, ROAS et bénéfice par campagne et par media buyer.",
   },
   {
     icon: <Truck className="w-6 h-6" />,
-    title: "Livraison en Un Clic",
-    titleAr: "الشحن بنقرة واحدة",
-    desc: "Envoi direct vers Digylog et tous les transporteurs marocains. Étiquettes générées automatiquement.",
+    title: "Expédition Automatisée",
+    titleAr: "شحن تلقائي مع Digylog",
+    desc: "Intégration directe avec Digylog et les transporteurs marocains. Créez vos bons d'expédition en un clic.",
+  },
+  {
+    icon: <Package className="w-6 h-6" />,
+    title: "Inventaire Synchronisé",
+    titleAr: "مزامنة المخزون",
+    desc: "Le stock se décrémente automatiquement à chaque confirmation. Alertes de rupture en temps réel. Zéro saisie manuelle.",
   },
   {
     icon: <TrendingUp className="w-6 h-6" />,
-    title: "Rentabilité Précise",
-    titleAr: "حساب الربحية",
-    desc: "Calcul automatique du coût produit, frais de livraison, pub et emballage. Votre vrai bénéfice net.",
+    title: "Rentabilité Multi-Boutiques",
+    titleAr: "ربحية متعددة المتاجر",
+    desc: "Gérez plusieurs boutiques depuis un tableau de bord unifié. P&L par boutique, par produit, et par période.",
   },
 ];
 
@@ -136,7 +136,7 @@ function DashboardMockup() {
         <div className="w-3 h-3 rounded-full bg-red-500 opacity-80" />
         <div className="w-3 h-3 rounded-full bg-yellow-500 opacity-80" />
         <div className="w-3 h-3 rounded-full bg-green-500 opacity-80" />
-        <span className="ml-3 text-xs font-mono" style={{ color: "rgba(255,255,255,0.4)" }}>tajergrow.ma — Dashboard</span>
+        <span className="ml-3 text-xs font-mono" style={{ color: "rgba(255,255,255,0.4)" }}>tajergrow.com — Dashboard</span>
       </div>
       {/* Content */}
       <div className="p-4 space-y-3">
@@ -345,31 +345,33 @@ export default function LandingPage() {
                 60 Premières Commandes GRATUITES
               </div>
 
-              {/* Headline Arabic */}
-              <div dir="rtl" className="space-y-2">
+              {/* Headline */}
+              <div className="space-y-1">
                 <h1
-                  className="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-tight"
-                  style={{ fontFamily: "'Playfair Display', serif", textShadow: "0 2px 20px rgba(0,0,0,0.3)" }}
+                  className="text-4xl sm:text-5xl lg:text-6xl font-black leading-none"
+                  style={{ fontFamily: "'Playfair Display', serif", color: GOLD }}
                 >
-                  نظّم تجارتك،
+                  TajerGrow
                 </h1>
-                <h1
-                  className="text-4xl sm:text-5xl lg:text-6xl font-black leading-tight"
-                  style={{ fontFamily: "'Playfair Display', serif", color: GOLD, textShadow: `0 2px 20px rgba(197,160,89,0.4)` }}
-                >
-                  ضاعف أرباحك
-                </h1>
-                <h1
-                  className="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-tight"
-                  style={{ fontFamily: "'Playfair Display', serif" }}
-                >
-                  مع TajerGrow
-                </h1>
+                <div dir="rtl" className="space-y-0">
+                  <h2
+                    className="text-3xl sm:text-4xl lg:text-5xl font-black text-white leading-snug"
+                    style={{ fontFamily: "'Playfair Display', serif", textShadow: "0 2px 20px rgba(0,0,0,0.3)" }}
+                  >
+                    نظّم تجارتك،
+                  </h2>
+                  <h2
+                    className="text-3xl sm:text-4xl lg:text-5xl font-black leading-snug"
+                    style={{ fontFamily: "'Playfair Display', serif", color: GOLD_LIGHT }}
+                  >
+                    ضاعف أرباحك
+                  </h2>
+                </div>
               </div>
 
               {/* Subheadline */}
               <p className="text-lg text-white/70 leading-relaxed max-w-md">
-                La plateforme SaaS de gestion de commandes conçue pour les e-commerçants marocains. Confirmez plus vite, livrez mieux, et voyez vos vrais bénéfices en temps réel.
+                La première et seule plateforme au Maroc avec un tracking UTM avancé et une expédition automatisée pour le COD. Confirmez plus vite, livrez mieux, connaissez votre vrai bénéfice.
               </p>
 
               {/* CTA Buttons */}
@@ -380,7 +382,7 @@ export default function LandingPage() {
                     style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, boxShadow: `0 8px 32px rgba(197,160,89,0.4)` }}
                     data-testid="hero-cta-primary"
                   >
-                    Commencer Gratuitement
+                    Commencer mon essai gratuit (60 commandes)
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 </Link>
@@ -505,7 +507,8 @@ export default function LandingPage() {
                 <div className="space-y-4">
                   {[
                     "Vos agents confirment par appel sans outil structuré",
-                    "Vous ne savez pas si votre publicité est rentable",
+                    "Aucun tracking UTM : vous ne savez pas quelle pub est rentable",
+                    "L'expédition est manuelle : copier-coller vers Digylog chaque jour",
                     "Votre stock se désynchronise après chaque livraison",
                     "Vous calculez votre bénéfice manuellement sur Excel",
                   ].map((pain) => (
@@ -528,8 +531,9 @@ export default function LandingPage() {
                 </h2>
                 <div className="space-y-4">
                   {[
-                    "Interface agent mobile pour confirmer 3x plus vite",
-                    "ROAS et bénéfice net par campagne publicitaire",
+                    "Interface agent mobile pour confirmer 3× plus vite (WhatsApp & Appel)",
+                    "Tracking UTM profond : ROAS, ROI et bénéfice net par campagne",
+                    "Expédition automatisée vers Digylog et tous les transporteurs",
                     "Inventaire synchronisé automatiquement à chaque confirmation",
                     "P&L automatique : coût produit, pub, livraison, emballage",
                   ].map((sol) => (
@@ -760,7 +764,7 @@ export default function LandingPage() {
           </div>
           <div className="border-t pt-6 flex flex-col sm:flex-row items-center justify-between gap-4" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
             <p className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>
-              © 2026 TajerGrow. Tous droits réservés. Conçu au Maroc 🇲🇦
+              © 2026 TajerGrow.com — Tous droits réservés. Conçu au Maroc 🇲🇦
             </p>
             <p className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>
               Politique de confidentialité · Conditions d'utilisation

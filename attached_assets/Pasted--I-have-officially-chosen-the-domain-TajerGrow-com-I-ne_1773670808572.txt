@@ -1,0 +1,34 @@
+"I have officially chosen the domain TajerGrow.com. I need a complete visual and functional overhaul of the Login page and the Landing Page to match a luxury professional SaaS aesthetic. Use the following brand guidelines:
+1. Global Brand Identity:
+Primary Color: Deep Navy Blue (#1e1b4b) for the sidebar and hero backgrounds.
+Accent Color: Brand Gold (#C5A059) for all Primary Buttons, hover states, and important icons.
+Secondary Color: Soft Zinc/Grey (#f8fafc) for page backgrounds to ensure eye comfort.
+Typography: Use a Bold Sans-serif (like Montserrat or Inter) for a modern, clean look.
+2. Redesign the Login/Sign-up Page (Refer to the Vibe of my last screenshot):
+Background: Use a sophisticated radial gradient starting from #1e1b4b at the center to #0f172a at the edges.
+Login Card: A clean, centered white card with rounded corners (rounded-2xl) and a soft shadow.
+Content:
+Left side (on desktop): A high-impact slogan: 'Gérez vos commandes comme un pro'.
+Right side: The Login form with email and password fields.
+Action Button: A large Gold button (#C5A059) with bold white text: 'Se connecter'.
+Link: Change any mention of .ma to TajerGrow.com.
+3. Professional Landing Page (Full Build):
+Domain Update: Use TajerGrow.com everywhere.
+Hero Section:
+Headline (Arabic/French mix): 'TajerGrow: نظّم تجارتك، ضاعف أرباحك'.
+Sub-headline: The first and only platform in Morocco with deep UTM tracking and automated shipping for COD.
+CTA: 'Commencer mon essai gratuit (60 commandes)' in Gold.
+Features Grid: Show screenshots of:
+Dashboard: Live net profit calculation.
+Confirmation Interface: Direct WhatsApp/Call buttons for agents.
+UTM Tracking: Full performance stats per media buyer.
+Shipping Integration: Direct link with Digylog.
+Pricing Section:
+Trial (0 DH - 60 orders).
+Starter (200 DH - 1500 orders).
+Pro (400 DH - Unlimited).
+4. Mobile Optimization:
+Ensure the login page and landing page are 100% responsive.
+On mobile, hide the left-side illustration and keep the focus on the login card.
+Use a vertical layout for the landing page features.
+Technical Goal: I want a unified, high-end 'Maison de Software' look. Ensure all buttons, links, and forms are fully functional and connected to the PostgreSQL backend."
