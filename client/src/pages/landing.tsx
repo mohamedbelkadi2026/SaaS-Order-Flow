@@ -6,7 +6,6 @@ import {
   ShoppingCart, Users, Activity, ArrowRight, Menu, X,
 } from "lucide-react";
 import { SiShopify, SiWoocommerce, SiGooglesheets } from "react-icons/si";
-import ShippingPartnersSection from "@/components/shipping-partners-section";
 
 /* ── Scroll Animation Hook ─────────────────────────────────────── */
 function useInView(threshold = 0.15) {
@@ -207,6 +206,211 @@ function DashboardMockup() {
   );
 }
 
+/* ── Tool logos data ───────────────────────────────────────────── */
+const TOOLS = [
+  { name: "Shopify",       icon: <SiShopify className="w-8 h-8 sm:w-10 sm:h-10" style={{ color: "#95BF47" }} /> },
+  { name: "YouCan",        icon: <span className="font-black text-lg sm:text-xl" style={{ color: "#FF6B35", fontFamily: "'Playfair Display', serif" }}>YouCan</span> },
+  { name: "WooCommerce",   icon: <SiWoocommerce className="w-8 h-8 sm:w-10 sm:h-10" style={{ color: "#7F54B3" }} /> },
+  { name: "Google Sheets", icon: <SiGooglesheets className="w-8 h-8 sm:w-10 sm:h-10" style={{ color: "#0F9D58" }} /> },
+  { name: "Digylog",       icon: <Truck className="w-7 h-7 sm:w-9 sm:h-9" style={{ color: "#1d4ed8" }} /> },
+];
+
+const CARRIERS_MARQUEE = [
+  { name: "Digylog",       short: "DG", color: "#1d4ed8", bg: "#dbeafe", premium: true },
+  { name: "Cathedis",      short: "CA", color: "#ea580c", bg: "#ffedd5" },
+  { name: "Onessta",       short: "ON", color: "#16a34a", bg: "#dcfce7" },
+  { name: "Speedex",       short: "SX", color: "#dc2626", bg: "#fee2e2" },
+  { name: "KargoExpress",  short: "KE", color: "#7c3aed", bg: "#ede9fe" },
+  { name: "Ozone Express", short: "OZ", color: "#0891b2", bg: "#cffafe" },
+  { name: "ForceLog",      short: "FL", color: "#0f172a", bg: "#e2e8f0" },
+  { name: "Livo",          short: "LV", color: "#db2777", bg: "#fce7f3" },
+  { name: "Ameex",         short: "AM", color: "#b45309", bg: "#fef3c7" },
+];
+
+/* ── Marquee Track (generic) ───────────────────────────────────── */
+function MarqueeTrack({ children, direction = "left", speed = 30 }: {
+  children: React.ReactNode[];
+  direction?: "left" | "right";
+  speed?: number;
+}) {
+  const [paused, setPaused] = useState(false);
+  const items = [...children, ...children]; // duplicate for seamless loop
+
+  return (
+    <div
+      className="relative overflow-hidden"
+      style={{ maskImage: "linear-gradient(to right, transparent 0%, black 8%, black 92%, transparent 100%)" }}
+    >
+      <div
+        className="flex items-center gap-4 sm:gap-6"
+        style={{
+          width: "max-content",
+          animation: `${direction === "left" ? "marquee-left" : "marquee-right"} ${speed}s linear infinite`,
+          animationPlayState: paused ? "paused" : "running",
+        }}
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
+      >
+        {items.map((child, i) => (
+          <div key={i} className="flex-shrink-0">
+            {child}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Marquee 1: Outils Favoris ─────────────────────────────────── */
+function MarqueeTools() {
+  const toolCards = TOOLS.map((t) => (
+    <div
+      key={t.name}
+      className="flex flex-col items-center gap-2 sm:gap-3 px-1"
+    >
+      <div
+        className="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center transition-all duration-300 hover:scale-105"
+        style={{
+          background: "#fff",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)",
+          border: "1px solid rgba(30,27,75,0.06)",
+        }}
+      >
+        {t.icon}
+      </div>
+      <span className="text-xs sm:text-sm font-semibold whitespace-nowrap" style={{ color: NAVY }}>
+        {t.name}
+      </span>
+    </div>
+  ));
+
+  return (
+    <section id="trust" className="py-16 sm:py-20" style={{ background: "#f8fafc" }}>
+      <div className="text-center mb-10 px-4">
+        <p className="text-xs font-black uppercase tracking-[0.25em] mb-3" style={{ color: GOLD }}>
+          Intégrations
+        </p>
+        <h2
+          className="text-2xl sm:text-3xl font-black"
+          style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}
+        >
+          Compatible avec vos outils favoris
+        </h2>
+      </div>
+      <MarqueeTrack speed={22} direction="left">
+        {toolCards}
+      </MarqueeTrack>
+    </section>
+  );
+}
+
+/* ── Carrier Logo Card (for marquee) ───────────────────────────── */
+function CarrierMarqueeCard({ c }: { c: typeof CARRIERS_MARQUEE[0] }) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      className="flex flex-col items-center gap-2 sm:gap-3 px-1"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div
+        className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-2xl flex items-center justify-center font-black text-sm sm:text-base transition-all duration-300"
+        style={{
+          background: hovered ? c.bg : "#f1f5f9",
+          color: hovered ? c.color : "#94a3b8",
+          filter: hovered ? "none" : "grayscale(100%)",
+          boxShadow: hovered ? `0 8px 24px ${c.color}25` : "0 4px 16px rgba(0,0,0,0.06)",
+          border: hovered ? `1.5px solid ${c.color}30` : "1px solid rgba(30,27,75,0.06)",
+          transform: hovered ? "translateY(-2px) scale(1.05)" : "translateY(0) scale(1)",
+        }}
+      >
+        {c.short}
+        {c.premium && (
+          <span
+            className="absolute -top-1.5 -right-1.5 text-[7px] font-black px-1 rounded-full text-white"
+            style={{ background: GOLD, lineHeight: "14px" }}
+          >
+            ★
+          </span>
+        )}
+      </div>
+      <span
+        className="text-xs sm:text-sm font-semibold whitespace-nowrap transition-colors duration-300"
+        style={{ color: hovered ? NAVY : "#94a3b8" }}
+      >
+        {c.name}
+      </span>
+    </div>
+  );
+}
+
+/* ── Marquee 2: Partenaires de Livraison ───────────────────────── */
+function MarqueeCarriers() {
+  const carrierCards = CARRIERS_MARQUEE.map((c) => (
+    <CarrierMarqueeCard key={c.name} c={c} />
+  ));
+
+  return (
+    <section id="shipping-partners" className="py-16 sm:py-20 border-t" style={{ background: "#fff", borderColor: "rgba(30,27,75,0.06)" }}>
+      <div className="text-center mb-10 px-4">
+        <p className="text-xs font-black uppercase tracking-[0.25em] mb-3" style={{ color: GOLD }}>
+          Partenaires de Livraison
+        </p>
+        <h2
+          className="text-2xl sm:text-3xl font-black mb-3"
+          style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}
+        >
+          Intégré à la plupart des sociétés
+          <br className="hidden sm:block" />
+          {" "}de livraison marocaines
+        </h2>
+        <p className="text-sm sm:text-base max-w-xl mx-auto leading-relaxed" style={{ color: "#64748b" }}>
+          Expédiez vos colis en un clic. TajerGrow est compatible avec les leaders
+          de la logistique au Maroc — sans configuration manuelle.
+        </p>
+
+        {/* Stats row */}
+        <div className="flex flex-wrap items-center justify-center gap-8 mt-8">
+          {[
+            { val: "9+",    label: "Transporteurs" },
+            { val: "100%",  label: "Sync automatique" },
+            { val: "< 1s",  label: "Délai étiquette" },
+          ].map((s) => (
+            <div key={s.label}>
+              <p className="text-2xl font-black" style={{ color: GOLD, fontFamily: "'Playfair Display', serif" }}>{s.val}</p>
+              <p className="text-xs mt-0.5" style={{ color: "#94a3b8" }}>{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <MarqueeTrack speed={30} direction="right">
+        {carrierCards}
+      </MarqueeTrack>
+
+      {/* CTA */}
+      <div className="text-center mt-10 px-4">
+        <a href="/auth">
+          <button
+            className="inline-flex items-center gap-2 px-8 py-3.5 rounded-xl font-black text-white text-sm transition-all hover:brightness-110 hover:scale-105"
+            style={{
+              background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`,
+              boxShadow: "0 8px 24px rgba(197,160,89,0.35)",
+            }}
+            data-testid="carriers-cta-button"
+          >
+            Connecter mon transporteur
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </a>
+        <p className="mt-2.5 text-xs" style={{ color: "#94a3b8" }}>
+          Configuration en 2 minutes · Aucun frais supplémentaire
+        </p>
+      </div>
+    </section>
+  );
+}
+
 /* ── Main Component ────────────────────────────────────────────── */
 export default function LandingPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -254,7 +458,7 @@ export default function LandingPage() {
                 <button
                   key={id}
                   onClick={() => scrollTo(id)}
-                  className="text-sm font-medium transition-colors hover:text-amber-300"
+                  className="text-sm font-medium transition-colors hover:text-amber-300 whitespace-nowrap"
                   style={{ color: "rgba(255,255,255,0.75)" }}
                 >
                   {label}
@@ -636,60 +840,11 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── TRUST / INTEGRATIONS ──────────────────────────────── */}
-      <section id="trust" className="py-20 border-t" style={{ background: "#f8f7ff", borderColor: "rgba(30,27,75,0.08)" }}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <FadeIn className="text-center mb-12">
-            <p className="text-sm font-bold uppercase tracking-widest mb-3" style={{ color: GOLD }}>Intégrations</p>
-            <h2 className="text-2xl sm:text-3xl font-black" style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}>
-              Compatible avec vos outils favoris
-            </h2>
-          </FadeIn>
+      {/* ── MARQUEE 1: Outils Favoris ──────────────────────────── */}
+      <MarqueeTools />
 
-          <FadeIn delay={100}>
-            <div className="flex flex-wrap items-center justify-center gap-8 lg:gap-16">
-              {/* Shopify */}
-              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
-                  <SiShopify className="w-8 h-8" style={{ color: "#95BF47" }} />
-                </div>
-                <span className="text-sm font-semibold" style={{ color: NAVY }}>Shopify</span>
-              </div>
-              {/* YouCan */}
-              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
-                  <span className="text-xl font-black" style={{ color: "#FF6B35" }}>Y</span>
-                </div>
-                <span className="text-sm font-semibold" style={{ color: NAVY }}>YouCan</span>
-              </div>
-              {/* WooCommerce */}
-              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
-                  <SiWoocommerce className="w-8 h-8" style={{ color: "#7F54B3" }} />
-                </div>
-                <span className="text-sm font-semibold" style={{ color: NAVY }}>WooCommerce</span>
-              </div>
-              {/* Google Sheets */}
-              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
-                  <SiGooglesheets className="w-8 h-8" style={{ color: "#0F9D58" }} />
-                </div>
-                <span className="text-sm font-semibold" style={{ color: NAVY }}>Google Sheets</span>
-              </div>
-              {/* Digylog */}
-              <div className="flex flex-col items-center gap-3 opacity-70 hover:opacity-100 transition-opacity">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: "#fff", boxShadow: "0 4px 16px rgba(0,0,0,0.08)" }}>
-                  <Truck className="w-7 h-7" style={{ color: "#2563eb" }} />
-                </div>
-                <span className="text-sm font-semibold" style={{ color: NAVY }}>Digylog</span>
-              </div>
-            </div>
-          </FadeIn>
-        </div>
-      </section>
-
-      {/* ── SHIPPING PARTNERS ─────────────────────────────────── */}
-      <ShippingPartnersSection dark={false} />
+      {/* ── MARQUEE 2: Partenaires de Livraison ────────────────── */}
+      <MarqueeCarriers />
 
       {/* ── FINAL CTA ─────────────────────────────────────────── */}
       <section className="py-24" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d1b69 100%)` }}>
