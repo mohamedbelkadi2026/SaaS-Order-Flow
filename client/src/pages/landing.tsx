@@ -6,6 +6,7 @@ import {
   ShoppingCart, Users, Activity, ArrowRight, Menu, X,
 } from "lucide-react";
 import { SiShopify, SiWoocommerce, SiGooglesheets } from "react-icons/si";
+import ShippingPartnersSection from "@/components/shipping-partners-section";
 
 /* ── Scroll Animation Hook ─────────────────────────────────────── */
 function useInView(threshold = 0.15) {
@@ -249,7 +250,7 @@ export default function LandingPage() {
 
             {/* Desktop Nav */}
             <nav className="hidden md:flex items-center gap-8">
-              {[["Fonctionnalités", "features"], ["Tarifs", "pricing"], ["Intégrations", "trust"]].map(([label, id]) => (
+              {[["Fonctionnalités", "features"], ["Tarifs", "pricing"], ["Transporteurs", "shipping-partners"], ["Intégrations", "trust"]].map(([label, id]) => (
                 <button
                   key={id}
                   onClick={() => scrollTo(id)}
@@ -297,7 +298,7 @@ export default function LandingPage() {
         {/* Mobile menu */}
         {mobileMenuOpen && (
           <div className="md:hidden border-t px-4 py-4 space-y-3" style={{ borderColor: "rgba(197,160,89,0.2)", background: "rgba(30,27,75,0.98)" }}>
-            {[["Fonctionnalités", "features"], ["Tarifs", "pricing"], ["Intégrations", "trust"]].map(([label, id]) => (
+            {[["Fonctionnalités", "features"], ["Tarifs", "pricing"], ["Transporteurs", "shipping-partners"], ["Intégrations", "trust"]].map(([label, id]) => (
               <button key={id} onClick={() => scrollTo(id)} className="block w-full text-left text-sm text-white/80 py-2">
                 {label}
               </button>
@@ -686,6 +687,9 @@ export default function LandingPage() {
           </FadeIn>
         </div>
       </section>
+
+      {/* ── SHIPPING PARTNERS ─────────────────────────────────── */}
+      <ShippingPartnersSection dark={false} />
 
       {/* ── FINAL CTA ─────────────────────────────────────────── */}
       <section className="py-24" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d1b69 100%)` }}>

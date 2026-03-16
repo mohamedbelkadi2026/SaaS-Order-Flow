@@ -14,6 +14,7 @@ import { useEffect } from "react";
 import AuthPage from "@/pages/auth-page";
 import SuperAdminPage from "@/pages/super-admin";
 import LandingPage from "@/pages/landing";
+import ShippingPartnersPublicPage from "@/pages/shipping-partners-public";
 import Dashboard from "@/pages/dashboard";
 import Orders from "@/pages/orders";
 import NewOrder from "@/pages/new-order";
@@ -133,6 +134,10 @@ function ProtectedRoutes() {
 function AppRouter() {
   const { user, isLoading } = useAuth();
   const [location] = useLocation();
+
+  if (location === "/partenaires-livraison") {
+    return <ShippingPartnersPublicPage />;
+  }
 
   if (location === "/super-admin" || location === "/admin") {
     if (isLoading) {
