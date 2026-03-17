@@ -22,14 +22,14 @@ const PLANS: Record<string, { name: string; priceDh: number; priceUsd: number; l
     name: "Pro",
     priceDh: 400,
     priceUsd: 39.99,
-    limit: "5 000 commandes/mois",
-    features: ["Tout Starter inclus", "5 000 commandes/mois", "Support prioritaire 24h/7j", "Intégrations avancées", "Rapports de rentabilité"],
+    limit: "Commandes illimitées",
+    features: ["Tout Starter inclus", "Commandes illimitées", "Support prioritaire 24h/7j", "Intégrations avancées", "Rapports de rentabilité avancés"],
   },
 };
 
 const BANK_DETAILS = [
   { label: "Nom de la banque", value: "CIH BANK" },
-  { label: "Identité du compte", value: "Mohamed Belkadi / TajerGrow" },
+  { label: "Identité du compte", value: "TajerGrow" },
   { label: "RIB", value: "230 780 4253848211001400 38" },
 ];
 
