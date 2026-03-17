@@ -823,6 +823,19 @@ export class DatabaseStorage implements IStorage {
         .where(inArray(orderItems.orderId, orderIds));
     }
 
+    // For orders that have NO rows in order_items, create a synthetic item
+    // from the order-level rawProductName (captured directly from Shopify / manual entry)
+    const ordersWithItems = new Set(allItems.map((i: any) => i.orderId));
+    for (const o of allOrders) {
+      if (!ordersWithItems.has(o.id)) {
+        allItems.push({
+          orderId: o.id,
+          rawProductName: (o as any).rawProductName || null,
+          orderStatus: o.status,
+        });
+      }
+    }
+
     // Apply product filter — narrow orders to those containing the selected product
     if (product && product !== 'all' && allItems.length > 0) {
       const matchingOrderIds = new Set(
@@ -882,7 +895,7 @@ export class DatabaseStorage implements IStorage {
     const filteredItems = allItems.filter(i => filteredOrderIds.has(i.orderId));
     const productMap: Record<string, { total: number; confirmed: number; inProgress: number; delivered: number }> = {};
     for (const item of filteredItems) {
-      const name = item.rawProductName || 'Inconnu';
+      const name = item.rawProductName || 'Produit Sans Nom';
       if (!productMap[name]) productMap[name] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
       productMap[name].total++;
       if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[name].confirmed++;
