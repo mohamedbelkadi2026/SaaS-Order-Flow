@@ -14,7 +14,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3 } from "lucide-react";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -186,27 +186,27 @@ export default function Dashboard() {
 
   const hasActiveFilters = Object.values(activeFilters).some(v => v && v !== 'all');
 
-  const StatCard = ({ title, value, icon: Icon, subtitle, iconBg, isCurrency = false }: any) => (
-    <Card className="rounded-xl border-border/50 shadow-sm" data-testid={`card-stat-${title.replace(/\s+/g, '-').toLowerCase()}`}>
-      <CardContent className="p-4 sm:p-5">
-        <div className="flex justify-between items-start">
-          <div className="space-y-1">
-            <p className="text-xs font-medium text-muted-foreground">{title}</p>
-            {isLoading ? (
-              <Skeleton className="h-7 w-20 rounded-lg" />
-            ) : (
-              <p className="text-2xl font-bold text-foreground">
-                {isCurrency ? formatCurrency(value || 0) : (value?.toLocaleString('fr-FR') || '0')}
-              </p>
-            )}
-            {subtitle && <p className="text-[10px] text-muted-foreground">{subtitle}</p>}
-          </div>
-          <div className={`p-2.5 rounded-xl ${iconBg || 'bg-primary/10'}`}>
-            <Icon className="w-5 h-5 text-white" />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+  const StatCard = ({ title, value, icon: Icon, subtitle, color = '#1e1b4b', isCurrency = false }: any) => (
+    <div
+      className="rounded-xl p-4 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
+      style={{ background: `linear-gradient(135deg, ${color} 0%, ${color}dd 100%)` }}
+      data-testid={`card-stat-${title.replace(/\s+/g, '-').toLowerCase()}`}
+    >
+      <div className="min-w-0">
+        <p className="text-[10px] font-bold uppercase tracking-widest opacity-70 leading-none">{title}</p>
+        {isLoading ? (
+          <div className="h-7 w-20 rounded-lg bg-white/20 animate-pulse mt-2" />
+        ) : (
+          <p className="text-2xl font-extrabold mt-1.5 leading-none tabular-nums">
+            {isCurrency ? formatCurrency(value || 0) : (value?.toLocaleString('fr-FR') ?? '—')}
+          </p>
+        )}
+        {subtitle && <p className="text-[10px] opacity-60 mt-1 leading-none">{subtitle}</p>}
+      </div>
+      <div className="w-11 h-11 rounded-2xl bg-white/15 flex items-center justify-center shrink-0 ml-3">
+        <Icon className="w-5 h-5 text-white" />
+      </div>
+    </div>
   );
 
   const confirme = stats?.confirme || 0;
@@ -388,51 +388,106 @@ export default function Dashboard() {
 
         {/* 6 Stats Cards — row 1 */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#22c55e' }} data-testid="card-mb-total">
+          {/* Commandes Totales — Navy */}
+          <div
+            className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
+            style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #2d2a6e 100%)' }}
+            data-testid="card-mb-total"
+          >
             <div>
-              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Commandes Totales</p>
-              <p className="text-4xl font-extrabold mt-1 leading-none">{mb?.total ?? '—'}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest opacity-60">Commandes Totales</p>
+              <p className="text-4xl font-extrabold mt-2 leading-none tabular-nums">{mb?.total ?? '—'}</p>
+              <p className="text-[10px] opacity-50 mt-1">Toutes périodes filtrées</p>
             </div>
-            <ShoppingCart className="w-12 h-12 opacity-30" />
+            <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+              <PackageSearch className="w-7 h-7 text-white/80" />
+            </div>
           </div>
-          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#0ea5e9' }} data-testid="card-mb-confirmed">
+
+          {/* Confirmées — Teal */}
+          <div
+            className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
+            style={{ background: 'linear-gradient(135deg, #0891b2 0%, #0e7490 100%)' }}
+            data-testid="card-mb-confirmed"
+          >
             <div>
-              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Confirmées</p>
-              <p className="text-4xl font-extrabold mt-1 leading-none">{mb?.confirmed ?? '—'}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest opacity-60">Confirmées</p>
+              <p className="text-4xl font-extrabold mt-2 leading-none tabular-nums">{mb?.confirmed ?? '—'}</p>
+              <p className="text-[10px] opacity-50 mt-1">Commandes confirmées</p>
             </div>
-            <CheckCircle className="w-12 h-12 opacity-30" />
+            <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+              <PhoneCall className="w-7 h-7 text-white/80" />
+            </div>
           </div>
-          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#0ea5e9' }} data-testid="card-mb-confirm-rate">
+
+          {/* Taux de Confirmation — Brand Gold */}
+          <div
+            className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
+            style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 100%)' }}
+            data-testid="card-mb-confirm-rate"
+          >
             <div>
-              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Taux de Confirmation</p>
-              <p className="text-4xl font-extrabold mt-1 leading-none">{mb ? `${mb.confirmRate}%` : '—'}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest opacity-70">Taux de Confirmation</p>
+              <p className="text-4xl font-extrabold mt-2 leading-none tabular-nums">{mb ? `${mb.confirmRate}%` : '—'}</p>
+              <p className="text-[10px] opacity-60 mt-1">Confirmées / Total</p>
             </div>
-            <TrendingUp className="w-12 h-12 opacity-30" />
+            <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+              <TrendingUp className="w-7 h-7 text-white/80" />
+            </div>
           </div>
         </div>
 
         {/* 6 Stats Cards — row 2 */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#a3a320' }} data-testid="card-mb-inprogress">
+          {/* En Cours — Slate */}
+          <div
+            className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
+            style={{ background: 'linear-gradient(135deg, #64748b 0%, #475569 100%)' }}
+            data-testid="card-mb-inprogress"
+          >
             <div>
-              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">En Cours de livraison</p>
-              <p className="text-4xl font-extrabold mt-1 leading-none">{inProgressCount} <span className="text-lg font-bold">({inProgressPct}%)</span></p>
+              <p className="text-[10px] font-bold uppercase tracking-widest opacity-60">En Cours de Livraison</p>
+              <p className="text-4xl font-extrabold mt-2 leading-none tabular-nums">
+                {inProgressCount}
+                <span className="text-lg font-bold opacity-70 ml-2">({inProgressPct}%)</span>
+              </p>
+              <p className="text-[10px] opacity-50 mt-1">En transit chez le livreur</p>
             </div>
-            <Truck className="w-12 h-12 opacity-30" />
+            <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+              <Truck className="w-7 h-7 text-white/80" />
+            </div>
           </div>
-          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#f97316' }} data-testid="card-mb-delivered">
+
+          {/* Livrées — Emerald */}
+          <div
+            className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
+            style={{ background: 'linear-gradient(135deg, #059669 0%, #047857 100%)' }}
+            data-testid="card-mb-delivered"
+          >
             <div>
-              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Livrées</p>
-              <p className="text-4xl font-extrabold mt-1 leading-none">{mb?.delivered ?? '—'}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest opacity-60">Livrées</p>
+              <p className="text-4xl font-extrabold mt-2 leading-none tabular-nums">{mb?.delivered ?? '—'}</p>
+              <p className="text-[10px] opacity-50 mt-1">Livraisons réussies</p>
             </div>
-            <Package className="w-12 h-12 opacity-30" />
+            <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+              <PackageCheck className="w-7 h-7 text-white/80" />
+            </div>
           </div>
-          <div className="rounded-xl p-4 flex items-center justify-between text-white" style={{ background: '#f97316' }} data-testid="card-mb-delivery-rate">
+
+          {/* Taux de Livraison — Brand Gold */}
+          <div
+            className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
+            style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 100%)' }}
+            data-testid="card-mb-delivery-rate"
+          >
             <div>
-              <p className="text-xs font-semibold opacity-90 uppercase tracking-wide">Taux de Livraison</p>
-              <p className="text-4xl font-extrabold mt-1 leading-none">{mb ? `${mb.deliveryRate}%` : '—'}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest opacity-70">Taux de Livraison</p>
+              <p className="text-4xl font-extrabold mt-2 leading-none tabular-nums">{mb ? `${mb.deliveryRate}%` : '—'}</p>
+              <p className="text-[10px] opacity-60 mt-1">Livrées / Confirmées</p>
             </div>
-            <CheckCircle className="w-12 h-12 opacity-30" />
+            <div className="w-14 h-14 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
+              <BarChart3 className="w-7 h-7 text-white/80" />
+            </div>
           </div>
         </div>
 
@@ -896,14 +951,14 @@ export default function Dashboard() {
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
-        <StatCard title="Commandes" value={totalOrders} icon={ShoppingCart} iconBg="bg-slate-400" subtitle="100% voir plus" />
-        <StatCard title="Confirmées" value={confirme} icon={CheckCircle} iconBg="bg-green-400" subtitle={`${confirmPct}% voir plus`} />
-        <StatCard title="En cours" value={inProgress} icon={Clock} iconBg="bg-blue-400" subtitle={`${inProgressPct}%`} />
-        <StatCard title="Annulées" value={cancelled} icon={Ban} iconBg="bg-red-400" subtitle={`${cancelPct}%`} />
+        <StatCard title="Commandes" value={totalOrders} icon={PackageSearch} color="#1e1b4b" subtitle="Total des commandes" />
+        <StatCard title="Confirmées" value={confirme} icon={PhoneCall} color="#0891b2" subtitle={`${confirmPct}% du total`} />
+        <StatCard title="En cours" value={inProgress} icon={Truck} color="#64748b" subtitle={`${inProgressPct}%`} />
+        <StatCard title="Annulées" value={cancelled} icon={Ban} color="#dc2626" subtitle={`${cancelPct}%`} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
-        <StatCard title="Livrées" value={delivered} icon={Truck} iconBg="bg-emerald-500" subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}% voir plus`} />
+        <StatCard title="Livrées" value={delivered} icon={PackageCheck} color="#059669" subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`} />
         {canSeeProfit ? (
           <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-net-profit" style={{ background: (stats?.profit || 0) >= 0 ? 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #7a6025 100%)' : 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}>
             <CardContent className="p-4 flex items-center gap-3">
@@ -918,9 +973,9 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         ) : null}
-        <StatCard title="Refusées" value={stats?.refused || 0} icon={XCircle} iconBg="bg-orange-400" subtitle={`${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`} />
+        <StatCard title="Refusées" value={stats?.refused || 0} icon={XCircle} color="#ea580c" subtitle={`${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`} />
         {canSeeRevenue && (
-          <StatCard title="ROI / ROAS" value={null} icon={TrendingUp} iconBg="bg-amber-500" subtitle={
+          <StatCard title="ROI / ROAS" value={null} icon={BarChart3} color="#C5A059" subtitle={
             stats?.adSpendTotal > 0
               ? `ROI: ${stats.roi?.toFixed(1)}% | ROAS: ${stats.roas?.toFixed(2)}x`
               : 'Aucune dépense pub'
