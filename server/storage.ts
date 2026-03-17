@@ -25,7 +25,7 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   getMediaBuyerByCode(storeId: number, code: string): Promise<User | undefined>;
   getMediaBuyerStats(storeId: number, mediaBuyerId: number, platform?: string): Promise<any>;
-  getMediaBuyersSummary(storeId: number): Promise<any[]>;
+  getMediaBuyersSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]>;
   getOrdersByMediaBuyer(storeId: number, mediaBuyerId: number): Promise<any[]>;
   
   getProductsByStore(storeId: number): Promise<Product[]>;
@@ -927,21 +927,25 @@ export class DatabaseStorage implements IStorage {
     return { total, confirmed, inProgress, delivered, cancelled, revenue, confirmRate, deliveryRate, platforms, daily, products, cities, campaigns };
   }
 
-  async getMediaBuyersSummary(storeId: number): Promise<any[]> {
+  async getMediaBuyersSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]> {
     const buyers = await db.select().from(users)
       .where(and(eq(users.storeId, storeId), eq(users.role, 'media_buyer')));
     const result = await Promise.all(buyers.map(async (buyer) => {
-      const stats = await this.getMediaBuyerStats(storeId, buyer.id);
-      // Use UTM fallback so orders attributed only by UTM string are included
+      const stats = await this.getMediaBuyerStats(storeId, buyer.id, undefined, dateFrom, dateTo);
+      const profit = await this.getMediaBuyerProfit(storeId, buyer.id, dateFrom, dateTo);
       const buyerCode = buyer.buyerCode;
+      const dateConditions: any[] = [];
+      if (dateFrom) dateConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
+      if (dateTo) dateConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp + interval '1 day' - interval '1 second'`);
       const buyerOrders = await db.select().from(orders)
         .where(and(
           eq(orders.storeId, storeId),
           buyerCode
             ? or(eq(orders.mediaBuyerId, buyer.id), sql`${orders.utmSource} ILIKE ${buyerCode + '*%'}`)
-            : eq(orders.mediaBuyerId, buyer.id)
+            : eq(orders.mediaBuyerId, buyer.id),
+          ...dateConditions,
         ));
-      const CONF_STATUSES = ['confirme', 'in_progress', 'expédié', 'retourné', 'delivered'];
+      const CONF_STATUSES = ['confirme', 'expédié', 'delivered'];
       const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
       for (const o of buyerOrders) {
         const plt = (o as any).trafficPlatform || 'Organique';
@@ -951,11 +955,18 @@ export class DatabaseStorage implements IStorage {
         if (o.status === 'delivered') { platformMap[plt].delivered++; platformMap[plt].revenue += o.totalPrice; }
       }
       const platformBreakdown = Object.entries(platformMap).map(([platform, s]) => ({
-        platform,
-        ...s,
+        platform, ...s,
         confirmRate: s.total > 0 ? Math.round((s.confirmed / s.total) * 100) : 0,
       }));
-      return { id: buyer.id, username: buyer.username, email: buyer.email, buyerCode: buyer.buyerCode, ...stats, platformBreakdown };
+      return {
+        id: buyer.id, username: buyer.username, email: buyer.email, buyerCode: buyer.buyerCode,
+        ...stats, platformBreakdown,
+        adSpendTotal: profit.adSpend,
+        netProfit: profit.netProfit,
+        productCost: profit.productCost,
+        shippingCost: profit.shippingCost,
+        agentCommissions: profit.agentCommissions,
+      };
     }));
     return result;
   }

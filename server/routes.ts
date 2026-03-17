@@ -2072,7 +2072,9 @@ export async function registerRoutes(
     const user = req.user!;
     if (!['owner', 'admin'].includes(user.role) && !user.isSuperAdmin) return res.status(403).json({ message: "Accès admin requis" });
     const storeId = user.storeId!;
-    res.json(await storage.getMediaBuyersSummary(storeId));
+    const dateFrom = req.query.dateFrom as string | undefined;
+    const dateTo = req.query.dateTo as string | undefined;
+    res.json(await storage.getMediaBuyersSummary(storeId, dateFrom, dateTo));
   });
 
   // ============================================================
