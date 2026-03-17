@@ -9,6 +9,8 @@ import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import path from "path";
+import fs from "fs";
 
 const SUPER_ADMIN_EMAIL = "mehamadchalabi100@gmail.com";
 
@@ -62,6 +64,11 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Serve uploaded receipts statically
+const uploadsDir = path.resolve("uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+app.use("/uploads", express.static(uploadsDir));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

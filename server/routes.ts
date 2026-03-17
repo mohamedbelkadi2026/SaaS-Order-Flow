@@ -8,6 +8,24 @@ import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, com
 import { db } from "./db";
 import { users, orders, orderItems } from "@shared/schema";
 import { eq, and, gte, lt, count } from "drizzle-orm";
+import multer from "multer";
+import path from "path";
+
+const receiptUpload = multer({
+  storage: multer.diskStorage({
+    destination: "uploads/",
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname);
+      cb(null, `receipt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Seuls les fichiers PDF, JPG et PNG sont acceptés."));
+  },
+});
 
 /**
  * Replaces WhatsApp template variables with actual order data.
@@ -2593,6 +2611,78 @@ export async function registerRoutes(
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
     }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // PAYMENTS
+  // ══════════════════════════════════════════════════════════════════
+
+  // Upload receipt file
+  app.post("/api/payments/receipt", requireAuth, receiptUpload.single("file"), (req: any, res: any) => {
+    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
+    res.json({ url: `/uploads/${req.file.filename}` });
+  });
+
+  // Create a payment record (pending)
+  app.post("/api/payments", requireAuth, async (req: any, res: any) => {
+    try {
+      const { plan, currency, method, receiptUrl } = req.body;
+      if (!plan || !method) return res.status(400).json({ message: "Plan et méthode requis" });
+      const storeId = req.user!.storeId;
+      if (!storeId) return res.status(400).json({ message: "Aucun magasin associé" });
+
+      const PLAN_PRICES: Record<string, { dh: number; usd: number }> = {
+        starter: { dh: 20000, usd: 1999 },
+        pro:     { dh: 40000, usd: 3999 },
+        elite:   { dh: 70000, usd: 6999 },
+      };
+      const prices = PLAN_PRICES[plan] ?? PLAN_PRICES.starter;
+
+      const [user] = await db.select().from(users).where(eq(users.id, req.user!.id));
+      const payment = await storage.createPayment({
+        storeId,
+        plan,
+        amountDh: prices.dh,
+        amountUsd: prices.usd,
+        currency: currency ?? "dh",
+        method,
+        receiptUrl: receiptUrl ?? null,
+        status: "pending",
+        ownerName: user?.username ?? null,
+        ownerEmail: user?.email ?? null,
+      });
+      res.status(201).json(payment);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Get own payments (store owner)
+  app.get("/api/payments", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId;
+    if (!storeId) return res.json([]);
+    res.json(await storage.getPaymentsByStore(storeId));
+  });
+
+  // Super admin: list all payments
+  app.get("/api/admin/payments", requireAuth, async (req: any, res: any) => {
+    if (!req.user?.isSuperAdmin) return res.status(403).json({ message: "Accès refusé" });
+    res.json(await storage.getPayments());
+  });
+
+  // Super admin: approve payment
+  app.patch("/api/admin/payments/:id/approve", requireAuth, async (req: any, res: any) => {
+    if (!req.user?.isSuperAdmin) return res.status(403).json({ message: "Accès refusé" });
+    await storage.approvePayment(Number(req.params.id));
+    res.json({ success: true });
+  });
+
+  // Super admin: reject payment
+  app.patch("/api/admin/payments/:id/reject", requireAuth, async (req: any, res: any) => {
+    if (!req.user?.isSuperAdmin) return res.status(403).json({ message: "Accès refusé" });
+    const { notes } = req.body;
+    await storage.rejectPayment(Number(req.params.id), notes);
+    res.json({ success: true });
   });
 
   return httpServer;

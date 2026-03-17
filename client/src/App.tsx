@@ -43,6 +43,7 @@ import MesDepenses from "@/pages/mes-depenses";
 import Publicites from "@/pages/publicites";
 import Profile from "@/pages/profile";
 import Calculator from "@/pages/calculator";
+import CheckoutPage from "@/pages/checkout";
 
 const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
@@ -129,6 +130,7 @@ function ProtectedRoutes() {
             <Route path="/publicites" component={Publicites} />
             <Route path="/profile" component={Profile} />
             <Route path="/calculator" component={Calculator} />
+            <Route path="/checkout" component={CheckoutPage} />
             <Route component={NotFound} />
           </Switch>
         </AgentGuard>

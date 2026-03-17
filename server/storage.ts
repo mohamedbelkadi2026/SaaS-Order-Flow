@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
-  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs,
+  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, payments,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -11,6 +11,7 @@ import {
   type StoreAgentSetting, type InsertStoreAgentSetting,
   type OrderFollowUpLog, type InsertOrderFollowUpLog,
   type StockLog,
+  type Payment, type InsertPayment,
 } from "@shared/schema";
 import { eq, desc, and, sql, count, ne, like, gte, lte, inArray, or } from "drizzle-orm";
 
@@ -147,6 +148,12 @@ export interface IStorage {
   toggleStoreActive(storeId: number, isActive: number): Promise<void>;
   changePlan(storeId: number, plan: string, monthlyLimit: number, pricePerMonth: number, planStartDate?: Date | null, planExpiryDate?: Date | null): Promise<void>;
   resetMonthlyOrders(storeId: number): Promise<void>;
+
+  createPayment(data: InsertPayment): Promise<Payment>;
+  getPayments(): Promise<Payment[]>;
+  getPaymentsByStore(storeId: number): Promise<Payment[]>;
+  approvePayment(id: number): Promise<void>;
+  rejectPayment(id: number, notes?: string): Promise<void>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -1998,6 +2005,75 @@ export class DatabaseStorage implements IStorage {
 
     // Show rows where the user has any activity (orders or ad spend)
     return { rows: rows.filter(r => r.totalLeads > 0 || r.adSpend > 0 || r.deliveredCount > 0) };
+  }
+
+  // ── Payments ─────────────────────────────────────────────────────────────
+
+  async createPayment(data: InsertPayment): Promise<Payment> {
+    const [p] = await db.insert(payments).values(data).returning();
+    return p;
+  }
+
+  async getPayments(): Promise<Payment[]> {
+    return db.select().from(payments).orderBy(desc(payments.createdAt));
+  }
+
+  async getPaymentsByStore(storeId: number): Promise<Payment[]> {
+    return db.select().from(payments).where(eq(payments.storeId, storeId)).orderBy(desc(payments.createdAt));
+  }
+
+  async approvePayment(id: number): Promise<void> {
+    const [payment] = await db.select().from(payments).where(eq(payments.id, id));
+    if (!payment) return;
+
+    // Mark payment as approved
+    await db.update(payments).set({ status: "approved" }).where(eq(payments.id, id));
+
+    // Determine plan limits
+    const planLimitMap: Record<string, number> = { starter: 1500, pro: 5000, elite: 0 };
+    const planPriceMap: Record<string, number> = { starter: 20000, pro: 40000, elite: 70000 };
+    const monthlyLimit = planLimitMap[payment.plan] ?? 1500;
+    const pricePerMonth = planPriceMap[payment.plan] ?? 20000;
+
+    // Extend/set plan expiry by 30 days from today (or from current expiry if not yet expired)
+    const [sub] = await db.select().from(subscriptions).where(eq(subscriptions.storeId, payment.storeId));
+    const now = new Date();
+    let baseDate = now;
+    if (sub?.planExpiryDate) {
+      const exp = new Date(sub.planExpiryDate);
+      if (exp > now) baseDate = exp; // extend from current expiry
+    }
+    const newExpiry = new Date(baseDate);
+    newExpiry.setDate(newExpiry.getDate() + 30);
+
+    if (sub) {
+      await db.update(subscriptions).set({
+        plan: payment.plan,
+        monthlyLimit,
+        pricePerMonth,
+        isActive: 1,
+        isBlocked: 0,
+        planStartDate: now.toISOString(),
+        planExpiryDate: newExpiry.toISOString(),
+      }).where(eq(subscriptions.storeId, payment.storeId));
+    } else {
+      await db.insert(subscriptions).values({
+        storeId: payment.storeId,
+        plan: payment.plan,
+        monthlyLimit,
+        pricePerMonth,
+        isActive: 1,
+        isBlocked: 0,
+        billingCycleStart: now.toISOString(),
+        planStartDate: now.toISOString(),
+        planExpiryDate: newExpiry.toISOString(),
+        currentMonthOrders: 0,
+      });
+    }
+  }
+
+  async rejectPayment(id: number, notes?: string): Promise<void> {
+    await db.update(payments).set({ status: "rejected", notes: notes ?? null }).where(eq(payments.id, id));
   }
 }
 

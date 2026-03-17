@@ -239,6 +239,22 @@ export const sessions = pgTable("sessions", {
   expire: timestamp("expire").notNull(),
 });
 
+export const payments = pgTable("payments", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  plan: text("plan").notNull(),
+  amountDh: integer("amount_dh").notNull(),
+  amountUsd: integer("amount_usd").notNull(),
+  currency: text("currency").notNull().default("dh"),
+  method: text("method").notNull(),
+  receiptUrl: text("receipt_url"),
+  status: text("status").notNull().default("pending"),
+  notes: text("notes"),
+  ownerName: text("owner_name"),
+  ownerEmail: text("owner_email"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
   store: one(stores, {
     fields: [subscriptions.storeId],
@@ -419,6 +435,10 @@ export type StoreAgentSetting = typeof storeAgentSettings.$inferSelect;
 export type InsertStoreAgentSetting = z.infer<typeof insertStoreAgentSettingsSchema>;
 export type OrderFollowUpLog = typeof orderFollowUpLogs.$inferSelect;
 export type InsertOrderFollowUpLog = z.infer<typeof insertOrderFollowUpLogSchema>;
+
+export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true, createdAt: true });
+export type Payment = typeof payments.$inferSelect;
+export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 
 // ─── Stock Logs (Audit Trail) ──────────────────────────────────────────────
 export const stockLogs = pgTable("stock_logs", {

@@ -1,0 +1,30 @@
+"I need to implement a professional Checkout/Payment page for TajerGrow.com. It must support 3 payment methods and dual currency (DH and USD) as shown in the provided screenshot.
+1. Pricing & Currency Logic:
+Starter Plan: 19.99 $ / 200.00 DH.
+Pro Plan: 39.99 $ / 400.00 DH.
+Display both currencies clearly in the 'Résumé de la commande' sidebar.
+2. Payment Methods (Accordion Style):
+Implement 3 functional sections:
+Method 1: PayPal:
+Integration with PayPal SDK or a simple 'Pay with PayPal' button.
+Method 2: Polar.sh:
+Add a button linking to my Polar.sh store/checkout link.
+Method 3: Virement Bancaire (Refer to Image):
+Display Bank Details:
+Nom de la banque: CIH BANK
+Identité du compte: [Mohamed Belkadi / TajerGrow]
+RIB: 230 780 4253848211001400 38
+Proof of Payment (Critical):
+Implement a File Upload zone exactly like the screenshot: 'Cliquez pour télécharger votre preuve (PDF, JPG, PNG)'.
+Action: When 'Valider le paiement' is clicked, save the user info, the chosen plan, and the uploaded receipt image to a new Payments table in PostgreSQL.
+3. Backend & Super Admin Notification:
+Database: Create a Payments table: id, store_id, plan_type, amount, currency, method, receipt_url, status (Pending, Approved, Rejected).
+Super Admin Update: In the Super Admin panel, add a 'Paiements à valider' section.
+I must be able to view the uploaded receipt, check the info, and click 'Approuver'.
+Auto-Activation: Once I click 'Approuver', the user's plan_type must update automatically, and their plan_expiry_date should extend by 30 days.
+4. UI/UX Design:
+Use the exact layout from the screenshot: A left panel for payment methods and a right-side 'Résumé de la commande'.
+Background: Soft Zinc/Grey.
+Icons: Use the official PayPal logo and a Bank icon for virement.
+Add the 'Garantie satisfait ou remboursé 14 jours' badge below the summary.
+Technical Goal: Create a production-ready billing flow where I can track exactly who paid, how they paid, and verify their bank transfer receipts before giving them access."

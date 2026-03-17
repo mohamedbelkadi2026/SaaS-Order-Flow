@@ -10,6 +10,7 @@ import {
   Power, RotateCcw, LogIn, LogOut, X, Check,
   BarChart3, DollarSign, Activity, Eye, Package, Calendar,
   AlertCircle, Bell, MessageCircle, Phone, ChevronDown, ChevronUp,
+  CreditCard, FileText, ExternalLink, Clock, Ban,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -362,6 +363,8 @@ export default function SuperAdminPage() {
   const [search, setSearch] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
   const [expandedStoreId, setExpandedStoreId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<"stores" | "payments">("stores");
+  const [rejectNotes, setRejectNotes] = useState<Record<number, string>>({});
 
   /* ── Guard ──────────────────────────────────────────────────────── */
   if (!user?.isSuperAdmin) {
@@ -431,6 +434,33 @@ export default function SuperAdminPage() {
       setTimeout(() => { window.location.href = "/"; }, 600);
     },
     onError: () => toast({ title: "Erreur d'impersonation", description: "Impossible de se connecter en tant que cet utilisateur", variant: "destructive" }),
+  });
+
+  /* ── Payments ───────────────────────────────────────────────────── */
+  const { data: allPayments = [], isLoading: paymentsLoading } = useQuery<any[]>({
+    queryKey: ["/api/admin/payments"],
+  });
+
+  const pendingCount = allPayments.filter((p: any) => p.status === "pending").length;
+
+  const approveMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("PATCH", `/api/admin/payments/${id}/approve`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
+      toast({ title: "✓ Paiement approuvé", description: "L'abonnement a été activé automatiquement." });
+    },
+    onError: () => toast({ title: "Erreur", description: "Impossible d'approuver.", variant: "destructive" }),
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: ({ id, notes }: { id: number; notes?: string }) =>
+      apiRequest("PATCH", `/api/admin/payments/${id}/reject`, { notes }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/payments"] });
+      toast({ title: "Paiement refusé" });
+    },
+    onError: () => toast({ title: "Erreur", description: "Impossible de refuser.", variant: "destructive" }),
   });
 
   /* ── Filtering ──────────────────────────────────────────────────── */
@@ -516,8 +546,40 @@ export default function SuperAdminPage() {
           </div>
         </section>
 
+        {/* ── Tab Nav ──────────────────────────────────────────────── */}
+        <div className="flex items-center gap-2 border-b pb-4" style={{ borderColor: "rgba(197,160,89,0.15)" }}>
+          {[
+            { id: "stores" as const,   label: "Boutiques",          icon: Store,      count: filtered.length },
+            { id: "payments" as const, label: "Paiements à valider", icon: CreditCard, count: pendingCount, alert: pendingCount > 0 },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all",
+                activeTab === tab.id
+                  ? "text-white shadow-md"
+                  : "text-white/50 hover:text-white/80 hover:bg-white/5"
+              )}
+              style={activeTab === tab.id ? { background: "rgba(197,160,89,0.2)", border: "1px solid rgba(197,160,89,0.4)" } : { border: "1px solid transparent" }}
+              data-testid={`tab-${tab.id}`}
+            >
+              <tab.icon className="w-4 h-4" style={{ color: activeTab === tab.id ? GOLD : undefined }} />
+              {tab.label}
+              {tab.count > 0 && (
+                <span
+                  className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center")}
+                  style={{ background: tab.alert ? "rgba(239,68,68,0.8)" : "rgba(255,255,255,0.15)", color: "#fff" }}
+                >
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
         {/* ── Stores Master Table ──────────────────────────────────── */}
-        <section>
+        {activeTab === "stores" && <section>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-2">
               <Users className="w-4 h-4" style={{ color: GOLD }} />
@@ -749,7 +811,151 @@ export default function SuperAdminPage() {
               })}
             </div>
           )}
-        </section>
+        </section>}
+
+        {/* ── Payments Tab ─────────────────────────────────────────── */}
+        {activeTab === "payments" && <section>
+          <div className="flex items-center gap-2 mb-4">
+            <CreditCard className="w-4 h-4" style={{ color: GOLD }} />
+            <h2 className="text-white/80 text-sm font-semibold uppercase tracking-wider">Paiements à valider</h2>
+            {pendingCount > 0 && (
+              <span className="text-xs px-2 py-0.5 rounded-full font-bold text-white" style={{ background: "rgba(239,68,68,0.7)" }}>
+                {pendingCount} en attente
+              </span>
+            )}
+          </div>
+
+          {paymentsLoading ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="w-8 h-8 border-2 border-[#C5A059] border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : allPayments.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 rounded-2xl border" style={{ background: NAVY2, borderColor: "rgba(197,160,89,0.1)" }}>
+              <CreditCard className="w-10 h-10 text-white/20 mb-3" />
+              <p className="text-white/40 text-sm">Aucun paiement enregistré</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {allPayments.map((payment: any) => {
+                const statusColors: Record<string, string> = {
+                  pending: "bg-amber-900/40 text-amber-300 border-amber-600",
+                  approved: "bg-green-900/40 text-green-400 border-green-700",
+                  rejected: "bg-red-900/40 text-red-400 border-red-700",
+                };
+                const statusLabels: Record<string, string> = {
+                  pending: "En attente",
+                  approved: "Approuvé",
+                  rejected: "Refusé",
+                };
+                const methodLabels: Record<string, string> = {
+                  bank: "Virement Bancaire",
+                  paypal: "PayPal",
+                  polar: "Polar.sh",
+                };
+                const isPending = payment.status === "pending";
+                return (
+                  <div
+                    key={payment.id}
+                    className="rounded-2xl border p-5"
+                    style={{ background: NAVY2, borderColor: isPending ? "rgba(197,160,89,0.3)" : "rgba(255,255,255,0.08)" }}
+                    data-testid={`payment-row-${payment.id}`}
+                  >
+                    <div className="flex flex-col lg:flex-row lg:items-start gap-4">
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="text-white font-bold text-sm">{payment.ownerName ?? "—"}</span>
+                          <span className={cn("text-[10px] px-2 py-0.5 rounded-full border font-semibold uppercase", statusColors[payment.status] ?? "bg-white/10 text-white border-white/20")}>
+                            {statusLabels[payment.status] ?? payment.status}
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/10 text-white/60 border border-white/15 uppercase font-semibold">
+                            {payment.plan}
+                          </span>
+                        </div>
+                        {payment.ownerEmail && (
+                          <p className="text-white/40 text-xs mb-1">{payment.ownerEmail}</p>
+                        )}
+                        <div className="flex flex-wrap gap-4 mt-2">
+                          <div>
+                            <p className="text-white/40 text-[10px] uppercase mb-0.5">Méthode</p>
+                            <p className="text-white/80 text-xs font-medium">{methodLabels[payment.method] ?? payment.method}</p>
+                          </div>
+                          <div>
+                            <p className="text-white/40 text-[10px] uppercase mb-0.5">Montant DH</p>
+                            <p className="font-bold text-sm" style={{ color: GOLD }}>{(payment.amountDh / 100).toFixed(0)} DH</p>
+                          </div>
+                          <div>
+                            <p className="text-white/40 text-[10px] uppercase mb-0.5">Montant USD</p>
+                            <p className="text-white/70 text-xs font-medium">${(payment.amountUsd / 100).toFixed(2)}</p>
+                          </div>
+                          <div>
+                            <p className="text-white/40 text-[10px] uppercase mb-0.5">Date</p>
+                            <p className="text-white/60 text-xs">{payment.createdAt ? new Date(payment.createdAt).toLocaleDateString("fr-MA") : "—"}</p>
+                          </div>
+                          {payment.receiptUrl && (
+                            <div>
+                              <p className="text-white/40 text-[10px] uppercase mb-0.5">Reçu</p>
+                              <a
+                                href={payment.receiptUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[#C5A059] text-xs flex items-center gap-1 hover:opacity-80 transition-opacity"
+                                data-testid={`link-receipt-${payment.id}`}
+                              >
+                                <FileText className="w-3 h-3" />
+                                Voir le reçu
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                        {payment.notes && (
+                          <p className="text-white/40 text-xs mt-2 italic">Note: {payment.notes}</p>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      {isPending && (
+                        <div className="flex flex-col gap-2 shrink-0 min-w-[160px]">
+                          <button
+                            onClick={() => approveMutation.mutate(payment.id)}
+                            disabled={approveMutation.isPending}
+                            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm text-white transition-all hover:opacity-90 disabled:opacity-50"
+                            style={{ background: "linear-gradient(135deg, #16a34a, #15803d)" }}
+                            data-testid={`button-approve-${payment.id}`}
+                          >
+                            {approveMutation.isPending ? (
+                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            ) : <Check className="w-4 h-4" />}
+                            Approuver
+                          </button>
+                          <div className="space-y-1.5">
+                            <input
+                              type="text"
+                              placeholder="Motif de refus (optionnel)"
+                              value={rejectNotes[payment.id] ?? ""}
+                              onChange={(e) => setRejectNotes(prev => ({ ...prev, [payment.id]: e.target.value }))}
+                              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-white text-xs placeholder-white/30 focus:outline-none focus:border-white/30"
+                              data-testid={`input-reject-notes-${payment.id}`}
+                            />
+                            <button
+                              onClick={() => rejectMutation.mutate({ id: payment.id, notes: rejectNotes[payment.id] })}
+                              disabled={rejectMutation.isPending}
+                              className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-semibold text-sm text-white/70 border border-white/15 transition-all hover:border-red-500/50 hover:text-red-400 disabled:opacity-50"
+                              data-testid={`button-reject-${payment.id}`}
+                            >
+                              <Ban className="w-3.5 h-3.5" />
+                              Refuser
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>}
       </div>
 
       {/* ── Change Plan Modal ────────────────────────────────────────── */}

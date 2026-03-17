@@ -1,5 +1,6 @@
 import { useSubscription, useUpdateSubscription } from "@/hooks/use-store-data";
 import { useToast } from "@/hooks/use-toast";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -65,6 +66,7 @@ export default function BillingPage() {
   const { data: subscription, isLoading } = useSubscription();
   const updateSubscription = useUpdateSubscription();
   const { toast } = useToast();
+  const [, navigate] = useLocation();
 
   const currentPlan = subscription?.plan || "trial";
   const isTrial = currentPlan === "trial";
@@ -77,25 +79,7 @@ export default function BillingPage() {
 
   const handleChangePlan = (planId: string) => {
     if (planId === currentPlan) return;
-    const plan = PAID_PLANS.find(p => p.id === planId);
-    updateSubscription.mutate(
-      { plan: planId },
-      {
-        onSuccess: () => {
-          toast({
-            title: "Plan mis à jour",
-            description: `Vous êtes maintenant sur le plan ${plan?.name || planId}.`,
-          });
-        },
-        onError: () => {
-          toast({
-            title: "Erreur",
-            description: "Impossible de changer de plan. Veuillez réessayer.",
-            variant: "destructive",
-          });
-        },
-      }
-    );
+    navigate(`/checkout?plan=${planId}`);
   };
 
   if (isLoading) {
@@ -225,15 +209,12 @@ export default function BillingPage() {
                 <Button
                   className="w-full font-semibold"
                   variant={isCurrent ? "outline" : "default"}
-                  disabled={isCurrent || updateSubscription.isPending}
+                  disabled={isCurrent}
                   onClick={() => handleChangePlan(plan.id)}
                   style={!isCurrent ? { background: plan.color, borderColor: plan.color } : {}}
                   data-testid={`button-select-plan-${plan.id}`}
                 >
-                  {updateSubscription.isPending && updateSubscription.variables?.plan === plan.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  ) : null}
-                  {isCurrent ? "✓ Plan actuel" : "Choisir ce plan"}
+                  {isCurrent ? "✓ Plan actuel" : "Payer maintenant →"}
                 </Button>
               </CardFooter>
             </Card>
