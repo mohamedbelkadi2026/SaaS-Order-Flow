@@ -19,7 +19,23 @@ import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
-const PIE_COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6', '#64748b'];
+// Brand-aligned status colors
+const STATUS_COLORS = {
+  delivered:  '#10b981', // Emerald Green  — Success/Money
+  confirme:   '#0ea5e9', // Sky Blue       — Progress/Action
+  nouveau:    '#f59e0b', // Amber          — Attention/New
+  transit:    '#64748b', // Slate Grey     — Neutral/En route
+  cancelled:  '#e11d48', // Rose           — Loss/Cancelled
+  unreachable:'#6366f1', // Indigo         — Injoignable/BV
+};
+const PIE_COLORS = [
+  STATUS_COLORS.confirme,   // Confirmé
+  STATUS_COLORS.cancelled,  // Annulé
+  STATUS_COLORS.transit,    // En cours
+  STATUS_COLORS.nouveau,    // Nouveau
+  STATUS_COLORS.unreachable,// Injoignable
+  '#94a3b8',                // other
+];
 
 function getDatePreset(preset: string): { dateFrom: string; dateTo: string } {
   const now = new Date();
@@ -244,7 +260,7 @@ export default function Dashboard() {
     const role = s?.roleInStore || 'confirmation';
     if (role === 'suivi') return <Badge className="text-[10px] h-4 px-1.5 bg-sky-100 text-sky-700 border-sky-200">Suivi</Badge>;
     if (role === 'both') return <Badge className="text-[10px] h-4 px-1.5 bg-purple-100 text-purple-700 border-purple-200">Les deux</Badge>;
-    return <Badge className="text-[10px] h-4 px-1.5 bg-green-100 text-green-700 border-green-200">Confirmation</Badge>;
+    return <Badge className="text-[10px] h-4 px-1.5 bg-sky-100 text-sky-700 border-sky-200">Confirmation</Badge>;
   };
 
   if (isMediaBuyer) {
@@ -404,10 +420,10 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Confirmées — Teal */}
+          {/* Confirmées — Sky Blue */}
           <div
             className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
-            style={{ background: 'linear-gradient(135deg, #0891b2 0%, #0e7490 100%)' }}
+            style={{ background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)' }}
             data-testid="card-mb-confirmed"
           >
             <div>
@@ -461,7 +477,7 @@ export default function Dashboard() {
           {/* Livrées — Emerald */}
           <div
             className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
-            style={{ background: 'linear-gradient(135deg, #059669 0%, #047857 100%)' }}
+            style={{ background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)' }}
             data-testid="card-mb-delivered"
           >
             <div>
@@ -535,9 +551,9 @@ export default function Dashboard() {
                   <YAxis tick={{ fontSize: 10 }} />
                   <RechartsTooltip contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line type="monotone" dataKey="total" name="Commandes" stroke="#22c55e" strokeWidth={2} dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="confirmed" name="Confirmées" stroke="#0ea5e9" strokeWidth={2} dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="delivered" name="Livrées" stroke="#f97316" strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="total" name="Commandes" stroke={STATUS_COLORS.nouveau} strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="confirmed" name="Confirmées" stroke={STATUS_COLORS.confirme} strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="delivered" name="Livrées" stroke={STATUS_COLORS.delivered} strokeWidth={2} dot={{ r: 3 }} />
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
@@ -952,13 +968,13 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
         <StatCard title="Commandes" value={totalOrders} icon={PackageSearch} color="#1e1b4b" subtitle="Total des commandes" />
-        <StatCard title="Confirmées" value={confirme} icon={PhoneCall} color="#0891b2" subtitle={`${confirmPct}% du total`} />
-        <StatCard title="En cours" value={inProgress} icon={Truck} color="#64748b" subtitle={`${inProgressPct}%`} />
-        <StatCard title="Annulées" value={cancelled} icon={Ban} color="#dc2626" subtitle={`${cancelPct}%`} />
+        <StatCard title="Confirmées" value={confirme} icon={PhoneCall} color={STATUS_COLORS.confirme} subtitle={`${confirmPct}% du total`} />
+        <StatCard title="En cours" value={inProgress} icon={Truck} color={STATUS_COLORS.transit} subtitle={`${inProgressPct}%`} />
+        <StatCard title="Annulées" value={cancelled} icon={Ban} color={STATUS_COLORS.cancelled} subtitle={`${cancelPct}%`} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
-        <StatCard title="Livrées" value={delivered} icon={PackageCheck} color="#059669" subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`} />
+        <StatCard title="Livrées" value={delivered} icon={PackageCheck} color={STATUS_COLORS.delivered} subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`} />
         {canSeeProfit ? (
           <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-net-profit" style={{ background: (stats?.profit || 0) >= 0 ? 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #7a6025 100%)' : 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}>
             <CardContent className="p-4 flex items-center gap-3">
@@ -973,7 +989,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         ) : null}
-        <StatCard title="Refusées" value={stats?.refused || 0} icon={XCircle} color="#ea580c" subtitle={`${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`} />
+        <StatCard title="Refusées" value={stats?.refused || 0} icon={XCircle} color={STATUS_COLORS.cancelled} subtitle={`${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`} />
         {canSeeRevenue && (
           <StatCard title="ROI / ROAS" value={null} icon={BarChart3} color="#C5A059" subtitle={
             stats?.adSpendTotal > 0
@@ -1152,18 +1168,18 @@ export default function Dashboard() {
                             <div className="flex items-center gap-2 text-xs">
                               <span className="font-semibold w-5">{perf.confirmed}</span>
                               <div className="flex-1 bg-muted rounded-full h-1.5 max-w-[80px]">
-                                <div className="bg-green-500 h-1.5 rounded-full" style={{ width: `${confirmRate}%` }} />
+                                <div className="h-1.5 rounded-full" style={{ width: `${confirmRate}%`, background: STATUS_COLORS.confirme }} />
                               </div>
                               <span className="text-muted-foreground">confirme</span>
-                              <span className="font-bold text-green-600">{confirmRate}%</span>
+                              <span className="font-bold" style={{ color: STATUS_COLORS.confirme }}>{confirmRate}%</span>
                             </div>
                             <div className="flex items-center gap-2 text-xs">
                               <span className="font-semibold w-5">{perf.delivered}</span>
                               <div className="flex-1 bg-muted rounded-full h-1.5 max-w-[80px]">
-                                <div className="bg-blue-500 h-1.5 rounded-full" style={{ width: `${deliverRate}%` }} />
+                                <div className="h-1.5 rounded-full" style={{ width: `${deliverRate}%`, background: STATUS_COLORS.delivered }} />
                               </div>
                               <span className="text-muted-foreground">livré</span>
-                              <span className="font-bold text-blue-600">{deliverRate}%</span>
+                              <span className="font-bold" style={{ color: STATUS_COLORS.delivered }}>{deliverRate}%</span>
                             </div>
                           </div>
                         </TableCell>
@@ -1194,7 +1210,7 @@ export default function Dashboard() {
                 <PieChart>
                   <Pie data={deliveryPieData} cx="50%" cy="45%" outerRadius={90} dataKey="value" stroke="none">
                     {deliveryPieData.map((_, index) => (
-                      <Cell key={`dcell-${index}`} fill={['#ef4444', '#3b82f6', '#10b981'][index % 3]} />
+                      <Cell key={`dcell-${index}`} fill={[STATUS_COLORS.cancelled, STATUS_COLORS.transit, STATUS_COLORS.delivered][index % 3]} />
                     ))}
                   </Pie>
                   <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgb(0 0 0 / 0.1)', fontSize: 12 }} />
@@ -1252,7 +1268,7 @@ export default function Dashboard() {
                         <span className="font-bold text-sm">{p.total}</span>
                       </TableCell>
                       <TableCell className="text-center">
-                        <Badge variant="outline" className="text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30">{p.confirme}</Badge>
+                        <Badge variant="outline" className="text-sky-600 border-sky-200 bg-sky-50 dark:bg-sky-950/30">{p.confirme}</Badge>
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex flex-col items-center gap-1">
@@ -1263,10 +1279,10 @@ export default function Dashboard() {
                         </div>
                       </TableCell>
                       <TableCell className="text-center">
-                        <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30">{p.inProgress}</Badge>
+                        <Badge variant="outline" className="text-slate-600 border-slate-200 bg-slate-50 dark:bg-slate-800/50">{p.inProgress}</Badge>
                       </TableCell>
                       <TableCell className="text-center">
-                        <Badge variant="outline" className="text-primary border-primary/20 bg-primary/5">{p.delivered}</Badge>
+                        <Badge variant="outline" className="text-emerald-600 border-emerald-200 bg-emerald-50 dark:bg-emerald-950/30">{p.delivered}</Badge>
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex flex-col items-center gap-1">
