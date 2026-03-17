@@ -550,7 +550,8 @@ export default function SuperAdminPage() {
               {filtered.map(store => {
                 const isActive = (store.subscription?.isActive ?? 1) === 1;
                 const sub = store.subscription;
-                const usagePercent = sub ? Math.min(100, Math.round((store.monthlyOrders / (sub.monthlyLimit >= 99999 ? Math.max(store.monthlyOrders, 1) : sub.monthlyLimit)) * 100)) : 0;
+                const effectiveLimit = sub ? (sub.monthlyLimit <= 0 || sub.monthlyLimit >= 99999 ? Math.max(store.monthlyOrders, 1) : sub.monthlyLimit) : 1;
+                const usagePercent = sub ? Math.min(100, Math.round((store.monthlyOrders / effectiveLimit) * 100)) : 0;
                 const days = daysUntilExpiry(sub?.planExpiryDate);
                 const isExpired = days !== null && days < 0;
                 const isExpiringSoon = days !== null && days >= 0 && days <= 5;
@@ -637,7 +638,11 @@ export default function SuperAdminPage() {
                           </div>
                           <div className="text-center">
                             <p className="text-white/40 text-[10px] uppercase tracking-wide">Profit Net</p>
-                            <p className={cn("font-bold text-base", (store.totalNetProfit ?? 0) >= 0 ? "text-green-400" : "text-red-400")} data-testid={`text-profit-${store.id}`}>
+                            <p
+                              className={cn("font-bold text-base", (store.totalNetProfit ?? 0) < 0 && "text-red-400")}
+                              style={(store.totalNetProfit ?? 0) >= 0 ? { color: GOLD } : undefined}
+                              data-testid={`text-profit-${store.id}`}
+                            >
                               {formatCurrency(store.totalNetProfit ?? 0)}
                             </p>
                           </div>

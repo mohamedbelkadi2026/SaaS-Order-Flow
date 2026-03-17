@@ -1189,13 +1189,14 @@ export class DatabaseStorage implements IStorage {
     ).groupBy(orders.storeId);
     const monthOrderMap = new Map(monthOrderCounts.map(r => [r.storeId, Number(r.cnt)]));
 
-    // 5a. Core profit components per store (delivered orders): revenue - productCost - shippingCost - orderAdSpend
+    // 5a. Core profit components per store (delivered orders): revenue - productCost - shippingCost
+    // packagingCost is a store-level setting (stores.packagingCost × deliveredCount), computed below
     const profitRows = await db.select({
-      storeId: orders.storeId,
-      revenue:     sql<number>`COALESCE(SUM(${orders.totalPrice}::bigint), 0)`,
-      productCost: sql<number>`COALESCE(SUM(${orders.productCost}::bigint), 0)`,
-      shipping:    sql<number>`COALESCE(SUM(${orders.shippingCost}::bigint), 0)`,
-      orderAdSpend:sql<number>`COALESCE(SUM(${orders.adSpend}::bigint), 0)`,
+      storeId:      orders.storeId,
+      revenue:      sql<number>`COALESCE(SUM(${orders.totalPrice}::bigint), 0)`,
+      productCost:  sql<number>`COALESCE(SUM(${orders.productCost}::bigint), 0)`,
+      shipping:     sql<number>`COALESCE(SUM(${orders.shippingCost}::bigint), 0)`,
+      deliveredCount: sql<number>`COALESCE(COUNT(*), 0)`,
     }).from(orders).where(
       and(
         sql`${orders.storeId} = ANY(ARRAY[${sql.raw(storeIds.join(','))}]::int[])`,
@@ -1237,11 +1238,16 @@ export class DatabaseStorage implements IStorage {
     ).groupBy(adSpend.storeId);
     const newAdMap = new Map(newAdRows.map(r => [r.storeId, Number(r.total)]));
 
+    // Build a quick lookup: storeId → packagingCost (centimes per delivered order)
+    const storePackagingMap = new Map(allStores.map(s => [s.id, Number(s.packagingCost ?? 0)]));
+
     const profitMap = new Map(profitRows.map(r => {
-      const base = Number(r.revenue) - Number(r.productCost) - Number(r.shipping) - Number(r.packaging) - Number(r.orderAdSpend);
-      const agentComm = commissionMap.get(r.storeId!) ?? 0;
-      const legacyAd  = legacyAdMap.get(r.storeId!)  ?? 0;
-      const newAd     = newAdMap.get(r.storeId!)      ?? 0;
+      const deliveredCnt = Number(r.deliveredCount ?? 0);
+      const packaging    = deliveredCnt * (storePackagingMap.get(r.storeId!) ?? 0);
+      const base         = Number(r.revenue) - Number(r.productCost) - Number(r.shipping) - packaging;
+      const agentComm    = commissionMap.get(r.storeId!) ?? 0;
+      const legacyAd     = legacyAdMap.get(r.storeId!)  ?? 0;
+      const newAd        = newAdMap.get(r.storeId!)      ?? 0;
       return [r.storeId, base - agentComm - legacyAd - newAd];
     }));
 
