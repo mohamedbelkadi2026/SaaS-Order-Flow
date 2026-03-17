@@ -37,9 +37,10 @@ type Method = "paypal" | "polar" | "bank";
 
 export default function CheckoutPage() {
   const { user } = useAuth();
-  const [location, navigate] = useLocation();
+  const [, navigate] = useLocation();
   const { toast } = useToast();
-  const params = new URLSearchParams(location.split("?")[1] ?? "");
+  // wouter's useLocation() strips query strings — read them from window directly
+  const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const planId = (params.get("plan") ?? "starter") as keyof typeof PLANS;
   const plan = PLANS[planId] ?? PLANS.starter;
 
