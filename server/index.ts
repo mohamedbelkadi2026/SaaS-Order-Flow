@@ -1,4 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { registerRoutes } from "./routes";
 import { setupAuth } from "./auth";
 import { serveStatic } from "./static";
@@ -30,6 +32,25 @@ declare module "http" {
     rawBody: unknown;
   }
 }
+
+const isProduction = process.env.NODE_ENV === "production";
+
+// ── Security headers via Helmet ───────────────────────────────────────────────
+app.use(helmet({
+  contentSecurityPolicy: isProduction,
+  crossOriginEmbedderPolicy: false,
+}));
+
+// ── Brute-force protection on auth endpoints ─────────────────────────────────
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,                   // max 20 attempts per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Trop de tentatives. Veuillez réessayer dans 15 minutes." },
+});
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/signup", authLimiter);
 
 app.use(
   express.json({
@@ -85,13 +106,17 @@ app.use((req, res, next) => {
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+    const isProd = process.env.NODE_ENV === "production";
 
-    console.error("Internal Server Error:", err);
-
-    if (res.headersSent) {
-      return next(err);
+    if (!isProd || status >= 500) {
+      console.error("Server error:", isProd ? err.message : err);
     }
+
+    if (res.headersSent) return next(err);
+
+    const message = isProd && status === 500
+      ? "Une erreur s'est produite. Veuillez réessayer."
+      : (err.message || "Internal Server Error");
 
     return res.status(status).json({ message });
   });

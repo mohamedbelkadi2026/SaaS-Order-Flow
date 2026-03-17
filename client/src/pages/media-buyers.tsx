@@ -67,11 +67,6 @@ export default function MediaBuyersPage() {
   const [form, setForm] = useState({ username: '', email: '', password: '', buyerCode: '' });
   const [editForm, setEditForm] = useState({ username: '', email: '', buyerCode: '' });
 
-  if (user?.role !== 'owner' && user?.role !== 'admin' && !user?.isSuperAdmin) {
-    navigate('/');
-    return null;
-  }
-
   const queryParams = new URLSearchParams();
   if (dateFrom) queryParams.set('dateFrom', dateFrom);
   if (dateTo) queryParams.set('dateTo', dateTo);
@@ -85,12 +80,6 @@ export default function MediaBuyersPage() {
       if (!res.ok) throw new Error('Failed to fetch');
       return res.json();
     },
-  });
-
-  const filteredBuyers = buyers.filter((b: any) => {
-    if (!search.trim()) return true;
-    const s = search.toLowerCase();
-    return (b.username || '').toLowerCase().includes(s) || (b.email || '').toLowerCase().includes(s) || (b.buyerCode || '').toLowerCase().includes(s);
   });
 
   const createMutation = useMutation({
@@ -112,6 +101,18 @@ export default function MediaBuyersPage() {
       setEditBuyer(null);
     },
     onError: () => toast({ title: "Erreur", description: "Impossible de modifier.", variant: "destructive" }),
+  });
+
+  // Role guard — placed AFTER all hook declarations (Rules of Hooks)
+  if (user && user.role !== 'owner' && user.role !== 'admin' && !user.isSuperAdmin) {
+    navigate('/');
+    return null;
+  }
+
+  const filteredBuyers = buyers.filter((b: any) => {
+    if (!search.trim()) return true;
+    const s = search.toLowerCase();
+    return (b.username || '').toLowerCase().includes(s) || (b.email || '').toLowerCase().includes(s) || (b.buyerCode || '').toLowerCase().includes(s);
   });
 
   const handleCreate = () => {

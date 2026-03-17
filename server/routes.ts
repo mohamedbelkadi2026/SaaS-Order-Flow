@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
-import { users, orders } from "@shared/schema";
+import { users, orders, orderItems } from "@shared/schema";
 import { eq, and, gte, lt, count } from "drizzle-orm";
 
 /**
@@ -778,8 +778,9 @@ export async function registerRoutes(
     const orderId = Number(req.params.id);
     const order = await storage.getOrder(orderId);
     if (!order) return res.status(404).json({ message: "Order not found" });
-    if (order.storeId !== req.user!.storeId && req.user!.role !== 'owner') {
-      return res.status(403).json({ message: "Access denied" });
+    // Super admins may access any store; all other users are strictly scoped to their store
+    if (order.storeId !== req.user!.storeId && !req.user!.isSuperAdmin) {
+      return res.status(403).json({ message: "Accès refusé" });
     }
     if (req.user!.role === 'agent' && order.assignedToId !== req.user!.id) {
       return res.status(403).json({ message: "Accès refusé" });
@@ -827,6 +828,11 @@ export async function registerRoutes(
   app.patch("/api/orders/:id/assign", requireAuth, async (req, res) => {
     try {
       const orderId = Number(req.params.id);
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+      if (order.storeId !== req.user!.storeId && !req.user!.isSuperAdmin) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
       const { agentId } = api.orders.assign.input.parse(req.body);
       const updated = await storage.assignOrder(orderId, agentId);
       if (!updated) return res.status(404).json({ message: "Order not found" });
@@ -1834,6 +1840,12 @@ export async function registerRoutes(
   app.post("/api/orders/:id/items", requireAuth, async (req, res) => {
     const orderId = parseInt(req.params.id);
     try {
+      // Verify the parent order belongs to the user's store
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Commande non trouvée" });
+      if (order.storeId !== req.user!.storeId && !req.user!.isSuperAdmin) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
       const item = await storage.addOrderItem({
         orderId,
         productId: req.body.productId || null,
@@ -1852,6 +1864,13 @@ export async function registerRoutes(
   app.patch("/api/order-items/:id", requireAuth, async (req, res) => {
     const id = parseInt(req.params.id);
     try {
+      // Verify the item's parent order belongs to the user's store
+      const [itemRow] = await db.select({ orderId: orderItems.orderId }).from(orderItems).where(eq(orderItems.id, id));
+      if (!itemRow) return res.status(404).json({ message: "Item non trouvé" });
+      const order = await storage.getOrder(itemRow.orderId);
+      if (!order || (order.storeId !== req.user!.storeId && !req.user!.isSuperAdmin)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
       const item = await storage.updateOrderItem(id, req.body);
       res.json(item);
     } catch (err: any) {
@@ -1862,6 +1881,13 @@ export async function registerRoutes(
   app.delete("/api/order-items/:id", requireAuth, async (req, res) => {
     const id = parseInt(req.params.id);
     try {
+      // Verify the item's parent order belongs to the user's store
+      const [itemRow] = await db.select({ orderId: orderItems.orderId }).from(orderItems).where(eq(orderItems.id, id));
+      if (!itemRow) return res.status(404).json({ message: "Item non trouvé" });
+      const order = await storage.getOrder(itemRow.orderId);
+      if (!order || (order.storeId !== req.user!.storeId && !req.user!.isSuperAdmin)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
       await storage.deleteOrderItem(id);
       res.json({ success: true });
     } catch (err: any) {
