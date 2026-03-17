@@ -299,6 +299,8 @@ export async function registerRoutes(
     }
 
     let totalOrders = allOrders.length;
+    // CONFIRMED = confirme + expédié + delivered (all successfully-confirmed COD orders)
+    const ADMIN_CONFIRMED = new Set(['confirme', 'expédié', 'delivered']);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
@@ -319,9 +321,7 @@ export async function registerRoutes(
 
     allOrders.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
-      else if (o.status === 'confirme') confirme++;
       else if (o.status === 'in_progress') inProgress++;
-      else if (o.status === 'delivered') delivered++;
       else if (o.status === 'refused') refused++;
       else if (o.status === 'Injoignable') injoignable++;
       else if (o.status === 'Annulé (fake)') annuleFake++;
@@ -329,7 +329,12 @@ export async function registerRoutes(
       else if (o.status === 'Annulé (double)') annuleDouble++;
       else if (o.status === 'boite vocale') boiteVocale++;
 
-      // Revenue only from delivered orders (livré)
+      // confirme = ALL confirmed statuses: 'confirme' + 'expédié' + 'delivered'
+      if (ADMIN_CONFIRMED.has(o.status)) confirme++;
+      // delivered = only truly delivered
+      if (o.status === 'delivered') delivered++;
+
+      // Revenue & costs: only from delivered orders
       if (o.status === 'delivered') {
         revenue += (o.totalPrice ?? 0);
         totalProductCost += statsCogsMap.get(o.id) ?? 0;
@@ -344,8 +349,10 @@ export async function registerRoutes(
     });
 
     const cancelled = annuleFake + annuleFauxNumero + annuleDouble;
-    const confirmationRate = totalOrders > 0 ? Math.round((confirme + delivered) / totalOrders * 100) : 0;
-    const deliveryRate = (confirme + delivered) > 0 ? Math.round(delivered / (confirme + delivered) * 100) : 0;
+    // confirmationRate = (confirme + expédié + delivered) / total
+    const confirmationRate = totalOrders > 0 ? Math.round(confirme / totalOrders * 100) : 0;
+    // deliveryRate = delivered / confirmed (not divided by total)
+    const deliveryRate = confirme > 0 ? Math.round(delivered / confirme * 100) : 0;
 
     const dailyMap: Record<string, number> = {};
     const now = new Date();
@@ -387,7 +394,8 @@ export async function registerRoutes(
         };
       }
       rawProductMap[key].total++;
-      if (o.status === 'confirme') rawProductMap[key].confirme++;
+      // confirme column = ALL confirmed: 'confirme' + 'expédié' + 'delivered'
+      if (ADMIN_CONFIRMED.has(o.status)) rawProductMap[key].confirme++;
       if (o.status === 'in_progress') rawProductMap[key].inProgress++;
       if (o.status === 'delivered') rawProductMap[key].delivered++;
     });

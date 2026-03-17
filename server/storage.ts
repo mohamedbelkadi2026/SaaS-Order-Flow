@@ -805,7 +805,8 @@ export class DatabaseStorage implements IStorage {
     }
     // Collect all unique campaigns before product filter (for dropdown population)
     const campaigns = [...new Set(allOrders.map(o => o.utmCampaign).filter(Boolean))].sort() as string[];
-    const CONFIRMED_STATUSES = ['confirme', 'in_progress', 'expédié', 'retourné', 'delivered'];
+    // CONFIRMED = confirme + expédié + delivered (Moroccan COD logic: all orders past the phone confirmation)
+    const CONFIRMED_STATUSES = ['confirme', 'expédié', 'delivered'];
     const DELIVERED_STATUS = 'delivered';
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
@@ -864,7 +865,8 @@ export class DatabaseStorage implements IStorage {
     const cancelled = allOrders.filter(o => CANCELLED_STATUSES.includes(o.status) || o.status.startsWith('Annulé')).length;
     const revenue = allOrders.filter(o => o.status === DELIVERED_STATUS).reduce((s, o) => s + o.totalPrice, 0);
     const confirmRate = total > 0 ? Math.round((confirmed / total) * 100) : 0;
-    const deliveryRate = total > 0 ? Math.round((delivered / total) * 100) : 0;
+    // deliveryRate = delivered / confirmed (not divided by total)
+    const deliveryRate = confirmed > 0 ? Math.round((delivered / confirmed) * 100) : 0;
 
     const dailyMap: Record<string, { total: number; confirmed: number; delivered: number }> = {};
     for (const o of allOrders) {
@@ -897,7 +899,7 @@ export class DatabaseStorage implements IStorage {
         name,
         ...d,
         confirmRate: d.total > 0 ? Math.round((d.confirmed / d.total) * 100) : 0,
-        deliveryRate: d.total > 0 ? Math.round((d.delivered / d.total) * 100) : 0,
+        deliveryRate: d.confirmed > 0 ? Math.round((d.delivered / d.confirmed) * 100) : 0,
       }))
       .sort((a, b) => b.total - a.total);
 
@@ -918,7 +920,7 @@ export class DatabaseStorage implements IStorage {
         name,
         ...d,
         confirmRate: d.total > 0 ? Math.round((d.confirmed / d.total) * 100) : 0,
-        deliveryRate: d.total > 0 ? Math.round((d.delivered / d.total) * 100) : 0,
+        deliveryRate: d.confirmed > 0 ? Math.round((d.delivered / d.confirmed) * 100) : 0,
       }))
       .sort((a, b) => b.total - a.total);
 
@@ -1117,7 +1119,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select({
       agentId: orders.assignedToId,
       total: count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} = 'confirme')`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered'))`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
     }).from(orders)

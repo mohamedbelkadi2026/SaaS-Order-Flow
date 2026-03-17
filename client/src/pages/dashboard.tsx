@@ -1279,7 +1279,7 @@ export default function Dashboard() {
                       <TableCell className="text-right">
                         {p.adCost > 0 ? (
                           <span className="text-xs font-bold text-amber-700 dark:text-amber-400" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            -{formatCurrency(p.adCost)}
+                            {formatCurrency(p.adCost)}
                           </span>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
