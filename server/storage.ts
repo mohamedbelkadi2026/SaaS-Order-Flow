@@ -810,37 +810,47 @@ export class DatabaseStorage implements IStorage {
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
 
-    // Fetch all order items for the current order set
+    // Fetch all order items for the current order set.
+    // We also select orders.rawProductName as a fallback because order_items.raw_product_name
+    // is sometimes NULL (e.g. legacy Shopify webhook orders where the name was only stored at
+    // the order level). COALESCE(item name, order name) ensures we always get a real string.
     const orderIds = allOrders.map(o => o.id);
     let allItems: any[] = [];
     if (orderIds.length > 0) {
       allItems = await db.select({
         orderId: orderItems.orderId,
         rawProductName: orderItems.rawProductName,
+        orderRawProductName: orders.rawProductName,
         orderStatus: orders.status,
       }).from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(inArray(orderItems.orderId, orderIds));
     }
 
-    // For orders that have NO rows in order_items, create a synthetic item
-    // from the order-level rawProductName (captured directly from Shopify / manual entry)
+    // Build an order-level name lookup for the orders that have NO items at all
+    // (defensive: covers orders created before the order_items table was populated)
     const ordersWithItems = new Set(allItems.map((i: any) => i.orderId));
+    const orderNameMap = new Map(allOrders.map(o => [o.id, (o as any).rawProductName as string | null]));
     for (const o of allOrders) {
       if (!ordersWithItems.has(o.id)) {
         allItems.push({
           orderId: o.id,
-          rawProductName: (o as any).rawProductName || null,
+          rawProductName: null,
+          orderRawProductName: orderNameMap.get(o.id) ?? null,
           orderStatus: o.status,
         });
       }
     }
 
-    // Apply product filter — narrow orders to those containing the selected product
+    // Apply product filter — narrow orders to those containing the selected product.
+    // Use COALESCE: item-level name first, then order-level name as fallback.
     if (product && product !== 'all' && allItems.length > 0) {
       const matchingOrderIds = new Set(
         allItems
-          .filter(i => (i.rawProductName || '').toLowerCase() === product.toLowerCase())
+          .filter(i => {
+            const name = i.rawProductName || i.orderRawProductName || '';
+            return name.toLowerCase() === product.toLowerCase();
+          })
           .map(i => i.orderId)
       );
       allOrders = allOrders.filter(o => matchingOrderIds.has(o.id));
@@ -895,7 +905,8 @@ export class DatabaseStorage implements IStorage {
     const filteredItems = allItems.filter(i => filteredOrderIds.has(i.orderId));
     const productMap: Record<string, { total: number; confirmed: number; inProgress: number; delivered: number }> = {};
     for (const item of filteredItems) {
-      const name = item.rawProductName || 'Produit Sans Nom';
+      // COALESCE: item-level name → order-level name → fallback label
+      const name = item.rawProductName || item.orderRawProductName || 'Produit Sans Nom';
       if (!productMap[name]) productMap[name] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
       productMap[name].total++;
       if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[name].confirmed++;
