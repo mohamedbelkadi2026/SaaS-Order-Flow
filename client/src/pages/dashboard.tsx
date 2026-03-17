@@ -236,15 +236,15 @@ export default function Dashboard() {
   const inProgressPct = totalOrders > 0 ? ((inProgress / totalOrders) * 100).toFixed(2) : '0';
 
   const pieData = [
-    { name: `Confirmé ${confirmPct}%`, value: confirme },
-    { name: `Annulé ${cancelPct}%`, value: cancelled },
-    { name: `En Cours ${inProgressPct}%`, value: inProgress },
+    { name: `Confirmé ${confirmPct}%`,   value: confirme,           color: STATUS_COLORS.confirme },
+    { name: `Annulé ${cancelPct}%`,      value: cancelled,          color: STATUS_COLORS.cancelled },
+    { name: `En Cours ${inProgressPct}%`,value: inProgress,         color: STATUS_COLORS.transit },
   ].filter(d => d.value > 0);
 
   const deliveryPieData = [
-    { name: `Refusé ${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`, value: stats?.refused || 0 },
-    { name: `Livraison en cours ${inProgressPct}%`, value: inProgress },
-    { name: `Livraison livrée ${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`, value: delivered },
+    { name: `Refusé ${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`,        value: stats?.refused || 0, color: STATUS_COLORS.cancelled },
+    { name: `Livraison en cours ${inProgressPct}%`,                                                              value: inProgress,          color: STATUS_COLORS.transit },
+    { name: `Livraison livrée ${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`,           value: delivered,           color: STATUS_COLORS.delivered },
   ].filter(d => d.value > 0);
 
   const dailyChartData = stats?.daily?.map((d: any) => ({
@@ -1114,8 +1114,8 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={pieData} cx="50%" cy="45%" outerRadius={90} dataKey="value" stroke="none">
-                    {pieData.map((_, index) => (
-                      <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                    {pieData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
                   <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgb(0 0 0 / 0.1)', fontSize: 12 }} />
@@ -1209,8 +1209,8 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={deliveryPieData} cx="50%" cy="45%" outerRadius={90} dataKey="value" stroke="none">
-                    {deliveryPieData.map((_, index) => (
-                      <Cell key={`dcell-${index}`} fill={[STATUS_COLORS.cancelled, STATUS_COLORS.transit, STATUS_COLORS.delivered][index % 3]} />
+                    {deliveryPieData.map((entry, index) => (
+                      <Cell key={`dcell-${index}`} fill={entry.color} />
                     ))}
                   </Pie>
                   <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgb(0 0 0 / 0.1)', fontSize: 12 }} />
