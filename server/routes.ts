@@ -2617,6 +2617,134 @@ export async function registerRoutes(
   // PAYMENTS
   // ══════════════════════════════════════════════════════════════════
 
+  /* ── PayPal helpers ───────────────────────────────────────────────── */
+  const PAYPAL_BASE = process.env.PAYPAL_SANDBOX === "true"
+    ? "https://api-m.sandbox.paypal.com"
+    : "https://api-m.paypal.com";
+
+  async function getPaypalToken(): Promise<string> {
+    const creds = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`).toString("base64");
+    const res = await fetch(`${PAYPAL_BASE}/v1/oauth2/token`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: "grant_type=client_credentials",
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error(`PayPal auth failed: ${txt}`);
+    }
+    const data: any = await res.json();
+    return data.access_token;
+  }
+
+  const PLAN_USD_STR: Record<string, string> = { starter: "19.99", pro: "39.99" };
+  const PLAN_DH: Record<string, number>  = { starter: 20000, pro: 40000 };
+  const PLAN_USD_CENT: Record<string, number> = { starter: 1999, pro: 3999 };
+  const PLAN_LIMITS: Record<string, number>  = { starter: 1500, pro: 0 };
+
+  // Create PayPal order
+  app.post("/api/payments/paypal/create-order", requireAuth, async (req: any, res: any) => {
+    try {
+      if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_SECRET) {
+        return res.status(503).json({ message: "PayPal non configuré — ajoutez PAYPAL_CLIENT_ID et PAYPAL_SECRET dans les secrets." });
+      }
+      const { planId } = req.body;
+      const amount = PLAN_USD_STR[planId] ?? "19.99";
+      const token = await getPaypalToken();
+      const order: any = await fetch(`${PAYPAL_BASE}/v2/checkout/orders`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          intent: "CAPTURE",
+          purchase_units: [{ amount: { currency_code: "USD", value: amount }, description: `TajerGrow Plan ${planId}` }],
+        }),
+      }).then(r => r.json());
+      if (!order.id) throw new Error(JSON.stringify(order));
+      res.json({ orderID: order.id });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Capture PayPal order → instantly activate plan
+  app.post("/api/payments/paypal/capture", requireAuth, async (req: any, res: any) => {
+    try {
+      const { orderID, planId } = req.body;
+      if (!orderID || !planId) return res.status(400).json({ message: "orderID et planId requis" });
+
+      const token = await getPaypalToken();
+      const capture: any = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${orderID}/capture`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      }).then(r => r.json());
+
+      if (capture.status !== "COMPLETED") {
+        return res.status(400).json({ message: `Paiement non complété: ${capture.status}` });
+      }
+
+      const storeId = req.user!.storeId!;
+      const limit    = PLAN_LIMITS[planId]  ?? 1500;
+      const priceDh  = PLAN_DH[planId]      ?? 20000;
+      const priceUsd = PLAN_USD_CENT[planId] ?? 1999;
+      const now = new Date();
+      const expiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+      await storage.changePlan(storeId, planId, limit, priceDh, now, expiry);
+
+      const [user] = await db.select().from(users).where(eq(users.id, req.user!.id));
+      await storage.createPayment({
+        storeId, plan: planId, amountDh: priceDh, amountUsd: priceUsd,
+        currency: "usd", method: "paypal", receiptUrl: null, status: "approved",
+        ownerName: user?.username ?? null, ownerEmail: user?.email ?? null,
+      });
+
+      res.json({ success: true, plan: planId });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* ── Polar.sh webhook ─────────────────────────────────────────────── */
+  app.post("/api/webhooks/polar", async (req: any, res: any) => {
+    try {
+      const event = req.body ?? {};
+      const eventType: string = event.type ?? "";
+      if (!["subscription.created", "order.created", "subscription.active"].includes(eventType)) {
+        return res.json({ received: true });
+      }
+
+      const customerEmail: string | undefined =
+        event.data?.customer?.email ??
+        event.data?.user?.email ??
+        event.data?.billing_details?.email;
+
+      if (!customerEmail) return res.json({ received: true });
+
+      const [user] = await db.select().from(users).where(eq(users.email, customerEmail));
+      if (!user?.storeId) return res.json({ received: true });
+
+      const polarPlan: string = event.data?.product?.metadata?.plan ?? "starter";
+      const planId = ["pro", "starter"].includes(polarPlan) ? polarPlan : "starter";
+      const limit    = PLAN_LIMITS[planId]  ?? 1500;
+      const priceDh  = PLAN_DH[planId]      ?? 20000;
+      const priceUsd = PLAN_USD_CENT[planId] ?? 1999;
+      const now = new Date();
+      const expiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+      await storage.changePlan(user.storeId, planId, limit, priceDh, now, expiry);
+      await storage.createPayment({
+        storeId: user.storeId, plan: planId, amountDh: priceDh, amountUsd: priceUsd,
+        currency: "usd", method: "polar", receiptUrl: null, status: "approved",
+        ownerName: user.username ?? null, ownerEmail: user.email ?? null,
+      });
+
+      res.json({ received: true });
+    } catch (err: any) {
+      console.error("[Polar webhook]", err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // Upload receipt file
   app.post("/api/payments/receipt", requireAuth, receiptUpload.single("file"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });

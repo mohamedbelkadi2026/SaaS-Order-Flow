@@ -1,14 +1,21 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
-import { Check, ChevronDown, Upload, X, Building2, CreditCard, Loader2, Shield, Clock, ExternalLink, Copy } from "lucide-react";
+import { PayPalScriptProvider, PayPalButtons, usePayPalScriptReducer } from "@paypal/react-paypal-js";
+import confetti from "canvas-confetti";
+import { Check, ChevronDown, Upload, X, Building2, Loader2, Shield, Clock, ExternalLink, Copy, Zap, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
+
+const PAYPAL_CLIENT_ID = import.meta.env.VITE_PAYPAL_CLIENT_ID ?? "";
+const POLAR_URLS: Record<string, string> = {
+  starter: import.meta.env.VITE_POLAR_CHECKOUT_URL_STARTER ?? "",
+  pro:     import.meta.env.VITE_POLAR_CHECKOUT_URL_PRO ?? "",
+};
 
 const PLANS: Record<string, { name: string; priceDh: number; priceUsd: number; limit: string; features: string[] }> = {
   starter: {
@@ -34,29 +41,101 @@ const BANK_DETAILS = [
 ];
 
 type Method = "paypal" | "polar" | "bank";
+type SuccessType = false | "pending" | "approved";
 
+/* ── Confetti burst ───────────────────────────────────────────── */
+function launchConfetti() {
+  const colors = [GOLD, NAVY, "#ffffff", "#22c55e", "#f97316"];
+  const end = Date.now() + 3000;
+  const frame = () => {
+    confetti({ particleCount: 3, angle: 60, spread: 55, origin: { x: 0 }, colors });
+    confetti({ particleCount: 3, angle: 120, spread: 55, origin: { x: 1 }, colors });
+    if (Date.now() < end) requestAnimationFrame(frame);
+  };
+  frame();
+}
+
+/* ── PayPal buttons inner component ──────────────────────────── */
+function PayPalCheckoutButtons({
+  planId,
+  onSuccess,
+  onError,
+}: {
+  planId: string;
+  onSuccess: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [{ isPending }] = usePayPalScriptReducer();
+
+  const createOrder = async () => {
+    const res = await fetch("/api/payments/paypal/create-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ planId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message ?? "Erreur PayPal");
+    return data.orderID as string;
+  };
+
+  const onApprove = async (data: { orderID: string }) => {
+    const res = await fetch("/api/payments/paypal/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ orderID: data.orderID, planId }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.message ?? "Capture échouée");
+    queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
+    onSuccess();
+  };
+
+  if (isPending) {
+    return (
+      <div className="flex items-center justify-center py-6 gap-2 text-zinc-400 text-sm">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        Chargement PayPal...
+      </div>
+    );
+  }
+
+  return (
+    <PayPalButtons
+      style={{ layout: "vertical", color: "gold", shape: "rect", label: "pay", height: 45 }}
+      createOrder={createOrder}
+      onApprove={onApprove}
+      onError={(err) => onError(String(err))}
+      forceReRender={[planId]}
+    />
+  );
+}
+
+/* ── Main Checkout Page ───────────────────────────────────────── */
 export default function CheckoutPage() {
-  const { user } = useAuth();
   const [, navigate] = useLocation();
   const { toast } = useToast();
-  // wouter's useLocation() strips query strings — read them from window directly
+
   const params = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
   const planId = (params.get("plan") ?? "starter") as keyof typeof PLANS;
   const plan = PLANS[planId] ?? PLANS.starter;
 
-  const [openMethod, setOpenMethod] = useState<Method>("bank");
+  const [openMethod, setOpenMethod] = useState<Method>("paypal");
   const [currency, setCurrency] = useState<"dh" | "usd">("dh");
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreview, setReceiptPreview] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [success, setSuccess] = useState(false);
+  const [success, setSuccess] = useState<SuccessType>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: existingPayments = [] } = useQuery<any[]>({ queryKey: ["/api/payments"] });
+  const hasPendingPayment = existingPayments.some((p: any) => p.plan === planId && p.status === "pending");
 
-  const hasPendingPayment = existingPayments.some(
-    (p: any) => p.plan === planId && p.status === "pending"
-  );
+  useEffect(() => {
+    if (success === "approved") launchConfetti();
+  }, [success]);
 
   const submitMutation = useMutation({
     mutationFn: async ({ method, receiptUrl }: { method: Method; receiptUrl?: string }) => {
@@ -74,7 +153,7 @@ export default function CheckoutPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-      setSuccess(true);
+      setSuccess("pending");
     },
     onError: (err: any) => toast({ title: "Erreur", description: err.message, variant: "destructive" }),
   });
@@ -84,17 +163,13 @@ export default function CheckoutPage() {
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch("/api/payments/receipt", { method: "POST", body: fd, credentials: "include" });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.message || "Erreur upload");
-      }
+      if (!res.ok) throw new Error((await res.json()).message || "Erreur upload");
       return res.json() as Promise<{ url: string }>;
     },
   });
 
   const handleFile = useCallback((file: File) => {
-    const allowed = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
-    if (!allowed.includes(file.type)) {
+    if (!["image/jpeg", "image/jpg", "image/png", "application/pdf"].includes(file.type)) {
       toast({ title: "Type non autorisé", description: "PDF, JPG ou PNG uniquement.", variant: "destructive" });
       return;
     }
@@ -121,7 +196,7 @@ export default function CheckoutPage() {
 
   const handleBankSubmit = async () => {
     if (!receiptFile) {
-      toast({ title: "Preuve requise", description: "Veuillez télécharger votre reçu de virement.", variant: "destructive" });
+      toast({ title: "Preuve requise", description: "Veuillez télécharger votre reçu.", variant: "destructive" });
       return;
     }
     try {
@@ -132,27 +207,86 @@ export default function CheckoutPage() {
     }
   };
 
-  const handlePaypalSubmit = () => submitMutation.mutate({ method: "paypal" });
-  const handlePolarSubmit = () => submitMutation.mutate({ method: "polar" });
+  const handlePolarClick = async () => {
+    const url = POLAR_URLS[planId as string] ?? "";
+    if (!url) {
+      toast({ title: "Polar non configuré", description: "L'URL Polar.sh n'est pas configurée.", variant: "destructive" });
+      return;
+    }
+    window.open(url, "_blank", "noopener");
+    submitMutation.mutate({ method: "polar" });
+  };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     toast({ title: "Copié !", description: text });
   };
 
-  if (success) {
+  /* ── Success: Approved (instant activation) ─────────────────── */
+  if (success === "approved") {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" style={{ background: "linear-gradient(135deg, #0f1e38 0%, #1e1b4b 100%)" }}>
+        <div className="bg-white rounded-3xl shadow-2xl p-10 max-w-md w-full text-center">
+          <div
+            className="w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-5"
+            style={{ background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`, boxShadow: `0 8px 32px rgba(197,160,89,0.4)` }}
+          >
+            <Check className="w-12 h-12 text-white" strokeWidth={3} />
+          </div>
+          <h2 className="text-3xl font-bold mb-2" style={{ color: NAVY }}>Plan Activé !</h2>
+          <p className="text-zinc-500 text-sm mb-2">
+            Votre plan <strong className="text-zinc-700">{plan.name}</strong> est maintenant actif.
+          </p>
+          <p className="text-zinc-400 text-xs mb-6">
+            {plan.limit === "Commandes illimitées" ? "Commandes illimitées activées." : `${plan.limit} activées.`}
+          </p>
+
+          <div className="rounded-2xl p-4 mb-6 flex items-center gap-3 text-left" style={{ background: "rgba(22,163,74,0.06)", border: "1px solid rgba(22,163,74,0.2)" }}>
+            <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+              <Check className="w-4 h-4 text-green-600" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-green-700">Activation instantanée</p>
+              <p className="text-xs text-zinc-500 mt-0.5">Votre abonnement a été activé. Valable 30 jours.</p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => {
+              queryClient.invalidateQueries({ queryKey: ["/api/subscription"] });
+              navigate("/dashboard");
+            }}
+            className="w-full py-4 rounded-xl font-bold text-white text-sm transition-all hover:opacity-90 active:scale-[0.98]"
+            style={{ background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`, boxShadow: `0 4px 20px rgba(197,160,89,0.4)` }}
+            data-testid="button-go-dashboard"
+          >
+            🚀 Accéder à mon Dashboard
+          </button>
+          <button
+            onClick={() => navigate("/billing")}
+            className="mt-3 w-full py-2.5 rounded-xl font-medium text-zinc-400 text-sm hover:text-zinc-600 transition-colors"
+          >
+            Voir mon abonnement
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Success: Pending (bank/polar waiting) ──────────────────── */
+  if (success === "pending") {
     return (
       <div className="min-h-screen flex items-center justify-center p-6" style={{ background: "#f4f4f5" }}>
         <div className="bg-white rounded-3xl shadow-xl p-10 max-w-md w-full text-center">
           <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5" style={{ background: "rgba(197,160,89,0.12)", border: `3px solid ${GOLD}` }}>
-            <Check className="w-10 h-10" style={{ color: GOLD }} />
+            <Clock className="w-10 h-10" style={{ color: GOLD }} />
           </div>
-          <h2 className="text-2xl font-bold mb-2" style={{ color: NAVY }}>Paiement envoyé !</h2>
+          <h2 className="text-2xl font-bold mb-2" style={{ color: NAVY }}>Demande envoyée !</h2>
           <p className="text-zinc-500 text-sm mb-6 leading-relaxed">
             Votre demande d'activation du plan <strong className="text-zinc-700">{plan.name}</strong> est en cours de vérification.
-            Vous recevrez une confirmation dès que l'administrateur aura validé votre paiement.
+            Vous serez notifié dès validation.
           </p>
-          <div className="rounded-2xl p-4 mb-6 flex items-center gap-3 text-left" style={{ background: "rgba(30,27,75,0.05)", border: `1px solid rgba(30,27,75,0.1)` }}>
+          <div className="rounded-2xl p-4 mb-6 flex items-center gap-3 text-left" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.08)" }}>
             <Clock className="w-5 h-5 shrink-0" style={{ color: GOLD }} />
             <p className="text-xs text-zinc-500">Délai de traitement : <strong className="text-zinc-700">24 à 48 heures ouvrées</strong></p>
           </div>
@@ -169,293 +303,298 @@ export default function CheckoutPage() {
     );
   }
 
-  const toggle = (m: Method) => setOpenMethod(prev => prev === m ? m : m);
-
   const amountDh = plan.priceDh;
   const amountUsd = plan.priceUsd;
   const displayAmount = currency === "dh" ? `${amountDh} DH` : `$${amountUsd}`;
 
   return (
-    <div className="min-h-screen p-4 sm:p-8" style={{ background: "#f4f4f5" }}>
-      <div className="max-w-5xl mx-auto">
+    <PayPalScriptProvider
+      options={{
+        clientId: PAYPAL_CLIENT_ID || "test",
+        currency: "USD",
+        intent: "capture",
+        components: "buttons",
+      }}
+    >
+      <div className="min-h-screen p-4 sm:p-8" style={{ background: "#f4f4f5" }}>
+        <div className="max-w-5xl mx-auto">
 
-        {/* Header */}
-        <div className="mb-6">
-          <button onClick={() => navigate("/billing")} className="text-sm text-zinc-400 hover:text-zinc-600 flex items-center gap-1.5 mb-4">
-            ← Retour
-          </button>
-          <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Finaliser votre abonnement</h1>
-          <p className="text-zinc-500 text-sm mt-1">Plan <strong>{plan.name}</strong> · {plan.limit}</p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
-
-          {/* ── Left: Payment Methods ─────────────────── */}
-          <div className="space-y-3">
-
-            {/* Currency Switcher */}
-            <div className="bg-white rounded-2xl p-4 border border-zinc-100 flex items-center gap-3">
-              <span className="text-sm text-zinc-500 font-medium">Devise :</span>
-              <div className="flex rounded-xl overflow-hidden border border-zinc-200">
-                {(["dh", "usd"] as const).map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => setCurrency(c)}
-                    className={cn(
-                      "px-4 py-1.5 text-sm font-semibold transition-colors",
-                      currency === c ? "text-white" : "text-zinc-500 bg-white hover:bg-zinc-50"
-                    )}
-                    style={currency === c ? { background: NAVY } : {}}
-                    data-testid={`button-currency-${c}`}
-                  >
-                    {c === "dh" ? "🇲🇦 DH" : "🇺🇸 USD"}
-                  </button>
-                ))}
-              </div>
-              <span className="ml-auto text-lg font-bold" style={{ color: NAVY }}>{displayAmount}/mois</span>
-            </div>
-
-            {hasPendingPayment && (
-              <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
-                <Clock className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-                <p className="text-sm text-amber-700">
-                  Vous avez déjà un paiement en attente de validation pour ce plan. L'administrateur vous contactera sous 24h.
-                </p>
-              </div>
-            )}
-
-            {/* ─── PayPal ─────────────────────────────── */}
-            <AccordionItem
-              id="paypal"
-              isOpen={openMethod === "paypal"}
-              onToggle={() => setOpenMethod("paypal")}
-              title="PayPal"
-              icon={
-                <svg className="h-5" viewBox="0 0 101 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12.237 2.872H6.24a.84.84 0 0 0-.83.71L3 20.116a.504.504 0 0 0 .497.582h2.857a.84.84 0 0 0 .83-.71l.546-3.46a.84.84 0 0 1 .83-.71h1.9c3.955 0 6.237-1.913 6.832-5.705.269-1.659.011-2.961-.77-3.873-.856-.998-2.375-1.368-4.285-1.368zM12.823 8.597c-.327 2.147-1.966 2.147-3.553 2.147h-.903l.633-4.004a.504.504 0 0 1 .497-.426h.414c1.08 0 2.098 0 2.624.615.314.369.41.916.288 1.668zM29.454 8.527h-2.866a.504.504 0 0 0-.497.426l-.128.81-.202-.293c-.626-.909-2.023-1.213-3.417-1.213-3.197 0-5.929 2.422-6.46 5.82-.277 1.695.116 3.315 1.073 4.443.88 1.038 2.136 1.47 3.63 1.47 2.577 0 4.007-1.655 4.007-1.655l-.129.805a.504.504 0 0 0 .497.583h2.581a.84.84 0 0 0 .83-.71l1.548-9.802a.504.504 0 0 0-.497-.684h-.001zm-3.997 5.626c-.279 1.65-1.59 2.758-3.26 2.758-.84 0-1.511-.27-1.942-.781-.43-.508-.59-1.232-.453-2.036.261-1.636 1.589-2.78 3.234-2.78.822 0 1.49.273 1.928.788.44.52.613 1.247.493 2.051zM43.796 8.527h-2.88a.84.84 0 0 0-.695.37l-4.01 5.902-1.7-5.674a.84.84 0 0 0-.804-.598H30.85a.504.504 0 0 0-.478.67l3.202 9.4-3.01 4.25a.504.504 0 0 0 .413.796h2.876a.84.84 0 0 0 .692-.367l9.667-13.953a.504.504 0 0 0-.417-.796z" fill="#003087"/>
-                  <path d="M53.354 2.872h-5.997a.84.84 0 0 0-.83.71L44.117 20.116a.504.504 0 0 0 .497.582h3.073a.588.588 0 0 0 .581-.497l.572-3.673a.84.84 0 0 1 .83-.71h1.9c3.955 0 6.237-1.913 6.832-5.705.269-1.659.01-2.961-.77-3.873-.857-.998-2.375-1.368-4.278-1.368zM53.94 8.597c-.327 2.147-1.966 2.147-3.553 2.147h-.903l.633-4.004a.504.504 0 0 1 .497-.426h.414c1.08 0 2.098 0 2.624.615.314.369.41.916.288 1.668zM70.57 8.527h-2.865a.504.504 0 0 0-.497.426l-.128.81-.202-.293c-.626-.909-2.022-1.213-3.417-1.213-3.197 0-5.929 2.422-6.46 5.82-.277 1.695.116 3.315 1.073 4.443.879 1.038 2.135 1.47 3.63 1.47 2.577 0 4.006-1.655 4.006-1.655l-.128.805a.504.504 0 0 0 .497.583H68.6a.84.84 0 0 0 .83-.71l1.548-9.802a.504.504 0 0 0-.497-.684h-.001zm-3.997 5.626c-.278 1.65-1.59 2.758-3.26 2.758-.838 0-1.51-.27-1.941-.781-.43-.508-.59-1.232-.453-2.036.261-1.636 1.589-2.78 3.234-2.78.822 0 1.49.273 1.928.788.44.52.613 1.247.493 2.051zM74.014 3.226l-2.46 15.648a.504.504 0 0 0 .497.583h2.468a.84.84 0 0 0 .83-.71L77.763 1.21a.504.504 0 0 0-.497-.583h-2.76a.504.504 0 0 0-.493.599z" fill="#009cde"/>
-                </svg>
-              }
-            >
-              <div className="space-y-4">
-                <p className="text-sm text-zinc-500">
-                  Payez directement via votre compte PayPal. Sécurisé et rapide.
-                </p>
-                <a
-                  href={`https://www.paypal.com/paypalme/tajergrow/${currency === "usd" ? amountUsd : amountDh}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={handlePaypalSubmit}
-                  className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-bold text-white text-sm transition-opacity hover:opacity-90"
-                  style={{ background: "#003087" }}
-                  data-testid="button-pay-paypal"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  Payer {displayAmount} avec PayPal
-                </a>
-                <p className="text-xs text-zinc-400 text-center">
-                  Après paiement, votre abonnement sera activé sous 24h.
-                </p>
-              </div>
-            </AccordionItem>
-
-            {/* ─── Polar.sh ────────────────────────────── */}
-            <AccordionItem
-              id="polar"
-              isOpen={openMethod === "polar"}
-              onToggle={() => setOpenMethod("polar")}
-              title="Polar.sh"
-              icon={
-                <div className="w-6 h-6 rounded-full flex items-center justify-center text-white font-bold text-xs" style={{ background: "#000" }}>P</div>
-              }
-            >
-              <div className="space-y-4">
-                <p className="text-sm text-zinc-500">
-                  Paiement sécurisé via Polar.sh — plateforme internationale de paiement pour les développeurs.
-                </p>
-                <a
-                  href={`https://polar.sh/tajergrow/checkout?plan=${planId}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={handlePolarSubmit}
-                  className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-bold text-white text-sm transition-opacity hover:opacity-90"
-                  style={{ background: "#000" }}
-                  data-testid="button-pay-polar"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  Payer {displayAmount} via Polar
-                </a>
-                <p className="text-xs text-zinc-400 text-center">
-                  Après paiement, votre abonnement sera activé sous 24h.
-                </p>
-              </div>
-            </AccordionItem>
-
-            {/* ─── Virement Bancaire ────────────────────── */}
-            <AccordionItem
-              id="bank"
-              isOpen={openMethod === "bank"}
-              onToggle={() => setOpenMethod("bank")}
-              title="Virement Bancaire"
-              icon={<Building2 className="w-5 h-5 text-emerald-600" />}
-            >
-              <div className="space-y-5">
-                {/* Bank Details */}
-                <div className="rounded-xl border border-zinc-200 overflow-hidden">
-                  {BANK_DETAILS.map(({ label, value }, i) => (
-                    <div key={i} className={cn("flex items-center justify-between px-4 py-3 gap-3", i < BANK_DETAILS.length - 1 && "border-b border-zinc-100")}>
-                      <div>
-                        <p className="text-xs text-zinc-400 mb-0.5">{label}</p>
-                        <p className="text-sm font-semibold text-zinc-800 font-mono">{value}</p>
-                      </div>
-                      <button
-                        onClick={() => copyToClipboard(value)}
-                        className="shrink-0 p-1.5 rounded-lg hover:bg-zinc-100 transition-colors"
-                        title="Copier"
-                        data-testid={`button-copy-${label.toLowerCase().replace(/\s/g, '-')}`}
-                      >
-                        <Copy className="w-3.5 h-3.5 text-zinc-400" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                {/* File Upload */}
-                <div>
-                  <p className="text-sm font-semibold text-zinc-700 mb-2">Preuve de paiement <span className="text-red-500">*</span></p>
-                  {!receiptFile ? (
-                    <div
-                      className={cn(
-                        "border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors",
-                        isDragging ? "border-[#C5A059] bg-amber-50" : "border-zinc-200 bg-zinc-50 hover:border-zinc-300"
-                      )}
-                      onClick={() => fileInputRef.current?.click()}
-                      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                      onDragLeave={() => setIsDragging(false)}
-                      onDrop={handleDrop}
-                      data-testid="dropzone-receipt"
-                    >
-                      <Upload className="w-8 h-8 text-zinc-300 mx-auto mb-3" />
-                      <p className="text-sm font-medium text-zinc-500">Cliquez pour télécharger votre preuve</p>
-                      <p className="text-xs text-zinc-400 mt-1">(PDF, JPG, PNG · Max 5 Mo)</p>
-                    </div>
-                  ) : (
-                    <div className="border border-zinc-200 rounded-2xl p-4 flex items-center gap-3 bg-white">
-                      {receiptPreview ? (
-                        <img src={receiptPreview} alt="Aperçu" className="w-14 h-14 object-cover rounded-lg border border-zinc-200 shrink-0" />
-                      ) : (
-                        <div className="w-14 h-14 rounded-lg bg-red-50 border border-red-100 flex items-center justify-center shrink-0">
-                          <span className="text-xs font-bold text-red-500">PDF</span>
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-zinc-700 truncate">{receiptFile.name}</p>
-                        <p className="text-xs text-zinc-400">{(receiptFile.size / 1024).toFixed(0)} Ko</p>
-                      </div>
-                      <button
-                        onClick={() => { setReceiptFile(null); setReceiptPreview(null); }}
-                        className="p-1.5 rounded-lg hover:bg-zinc-100 transition-colors"
-                        data-testid="button-remove-receipt"
-                      >
-                        <X className="w-4 h-4 text-zinc-400" />
-                      </button>
-                    </div>
-                  )}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    className="hidden"
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
-                    data-testid="input-receipt-file"
-                  />
-                </div>
-
-                <button
-                  onClick={handleBankSubmit}
-                  disabled={submitMutation.isPending || uploadMutation.isPending || !receiptFile}
-                  className="w-full py-3.5 rounded-xl font-bold text-white text-sm transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}
-                  data-testid="button-submit-bank-transfer"
-                >
-                  {(submitMutation.isPending || uploadMutation.isPending) ? (
-                    <><Loader2 className="w-4 h-4 animate-spin" /> Envoi en cours...</>
-                  ) : (
-                    <><Check className="w-4 h-4" /> Valider le paiement</>
-                  )}
-                </button>
-              </div>
-            </AccordionItem>
+          {/* Header */}
+          <div className="mb-6">
+            <button onClick={() => navigate("/billing")} className="text-sm text-zinc-400 hover:text-zinc-600 flex items-center gap-1.5 mb-4">
+              ← Retour
+            </button>
+            <h1 className="text-2xl font-bold" style={{ color: NAVY }}>Finaliser votre abonnement</h1>
+            <p className="text-zinc-500 text-sm mt-1">Plan <strong>{plan.name}</strong> · {plan.limit}</p>
           </div>
 
-          {/* ── Right: Order Summary ──────────────────── */}
-          <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden sticky top-6">
-              <div className="p-5 border-b border-zinc-100" style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}>
-                <h3 className="text-white font-bold text-sm mb-0.5">Résumé de la commande</h3>
-                <p className="text-white/60 text-xs">Plan {plan.name} — Mensuel</p>
-              </div>
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
 
-              <div className="p-5 space-y-4">
-                {/* Plan Details */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-zinc-500">Plan</span>
-                    <span className="text-sm font-semibold text-zinc-800">{plan.name}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-zinc-500">Limite mensuelle</span>
-                    <span className="text-sm font-medium text-zinc-700">{plan.limit}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-zinc-500">Durée</span>
-                    <span className="text-sm font-medium text-zinc-700">30 jours</span>
-                  </div>
-                </div>
+            {/* ── Left: Payment Methods ─────────────────── */}
+            <div className="space-y-3">
 
-                <hr className="border-zinc-100" />
-
-                {/* Amounts */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-zinc-500">Montant (DH)</span>
-                    <span className="text-sm font-semibold text-zinc-800">{plan.priceDh} DH</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-zinc-500">Montant (USD)</span>
-                    <span className="text-sm font-semibold text-zinc-800">${plan.priceUsd}</span>
-                  </div>
-                </div>
-
-                <hr className="border-zinc-100" />
-
-                {/* Total */}
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-zinc-800">Total</span>
-                  <div className="text-right">
-                    <p className="text-xl font-bold" style={{ color: NAVY }}>{displayAmount}</p>
-                    <p className="text-xs text-zinc-400">{currency === "dh" ? `≈ $${amountUsd}` : `≈ ${amountDh} DH`}/mois</p>
-                  </div>
-                </div>
-
-                {/* Features */}
-                <div className="rounded-xl bg-zinc-50 p-3 space-y-2">
-                  {plan.features.map((f) => (
-                    <div key={f} className="flex items-start gap-2">
-                      <Check className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: GOLD }} />
-                      <span className="text-xs text-zinc-500">{f}</span>
-                    </div>
+              {/* Currency Switcher */}
+              <div className="bg-white rounded-2xl p-4 border border-zinc-100 flex items-center gap-3">
+                <span className="text-sm text-zinc-500 font-medium">Devise :</span>
+                <div className="flex rounded-xl overflow-hidden border border-zinc-200">
+                  {(["dh", "usd"] as const).map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => setCurrency(c)}
+                      className={cn("px-4 py-1.5 text-sm font-semibold transition-colors", currency === c ? "text-white" : "text-zinc-500 bg-white hover:bg-zinc-50")}
+                      style={currency === c ? { background: NAVY } : {}}
+                      data-testid={`button-currency-${c}`}
+                    >
+                      {c === "dh" ? "🇲🇦 DH" : "🇺🇸 USD"}
+                    </button>
                   ))}
                 </div>
+                <span className="ml-auto text-lg font-bold" style={{ color: NAVY }}>{displayAmount}/mois</span>
               </div>
 
-              {/* Guarantee Badge */}
-              <div className="px-5 pb-5">
-                <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "rgba(30,27,75,0.04)", border: `1px solid rgba(30,27,75,0.08)` }}>
-                  <Shield className="w-5 h-5 shrink-0" style={{ color: GOLD }} />
+              {hasPendingPayment && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
+                  <Clock className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                  <p className="text-sm text-amber-700">Vous avez déjà un paiement en attente pour ce plan.</p>
+                </div>
+              )}
+
+              {/* ─── PayPal ──────────────────────────────── */}
+              <AccordionItem
+                id="paypal"
+                isOpen={openMethod === "paypal"}
+                onToggle={() => setOpenMethod("paypal")}
+                title="PayPal"
+                badge={`$${amountUsd}`}
+                icon={
+                  <svg className="h-5" viewBox="0 0 101 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12.237 2.872H6.24a.84.84 0 0 0-.83.71L3 20.116a.504.504 0 0 0 .497.582h2.857a.84.84 0 0 0 .83-.71l.546-3.46a.84.84 0 0 1 .83-.71h1.9c3.955 0 6.237-1.913 6.832-5.705.269-1.659.011-2.961-.77-3.873-.856-.998-2.375-1.368-4.285-1.368zM12.823 8.597c-.327 2.147-1.966 2.147-3.553 2.147h-.903l.633-4.004a.504.504 0 0 1 .497-.426h.414c1.08 0 2.098 0 2.624.615.314.369.41.916.288 1.668zM29.454 8.527h-2.866a.504.504 0 0 0-.497.426l-.128.81-.202-.293c-.626-.909-2.023-1.213-3.417-1.213-3.197 0-5.929 2.422-6.46 5.82-.277 1.695.116 3.315 1.073 4.443.88 1.038 2.136 1.47 3.63 1.47 2.577 0 4.007-1.655 4.007-1.655l-.129.805a.504.504 0 0 0 .497.583h2.581a.84.84 0 0 0 .83-.71l1.548-9.802a.504.504 0 0 0-.497-.684h-.001zm-3.997 5.626c-.279 1.65-1.59 2.758-3.26 2.758-.84 0-1.511-.27-1.942-.781-.43-.508-.59-1.232-.453-2.036.261-1.636 1.589-2.78 3.234-2.78.822 0 1.49.273 1.928.788.44.52.613 1.247.493 2.051zM43.796 8.527h-2.88a.84.84 0 0 0-.695.37l-4.01 5.902-1.7-5.674a.84.84 0 0 0-.804-.598H30.85a.504.504 0 0 0-.478.67l3.202 9.4-3.01 4.25a.504.504 0 0 0 .413.796h2.876a.84.84 0 0 0 .692-.367l9.667-13.953a.504.504 0 0 0-.417-.796z" fill="#003087"/>
+                    <path d="M53.354 2.872h-5.997a.84.84 0 0 0-.83.71L44.117 20.116a.504.504 0 0 0 .497.582h3.073a.588.588 0 0 0 .581-.497l.572-3.673a.84.84 0 0 1 .83-.71h1.9c3.955 0 6.237-1.913 6.832-5.705.269-1.659.01-2.961-.77-3.873-.857-.998-2.375-1.368-4.278-1.368zM53.94 8.597c-.327 2.147-1.966 2.147-3.553 2.147h-.903l.633-4.004a.504.504 0 0 1 .497-.426h.414c1.08 0 2.098 0 2.624.615.314.369.41.916.288 1.668zM70.57 8.527h-2.865a.504.504 0 0 0-.497.426l-.128.81-.202-.293c-.626-.909-2.022-1.213-3.417-1.213-3.197 0-5.929 2.422-6.46 5.82-.277 1.695.116 3.315 1.073 4.443.879 1.038 2.135 1.47 3.63 1.47 2.577 0 4.006-1.655 4.006-1.655l-.128.805a.504.504 0 0 0 .497.583H68.6a.84.84 0 0 0 .83-.71l1.548-9.802a.504.504 0 0 0-.497-.684h-.001zm-3.997 5.626c-.278 1.65-1.59 2.758-3.26 2.758-.838 0-1.51-.27-1.941-.781-.43-.508-.59-1.232-.453-2.036.261-1.636 1.589-2.78 3.234-2.78.822 0 1.49.273 1.928.788.44.52.613 1.247.493 2.051zM74.014 3.226l-2.46 15.648a.504.504 0 0 0 .497.583h2.468a.84.84 0 0 0 .83-.71L77.763 1.21a.504.504 0 0 0-.497-.583h-2.76a.504.504 0 0 0-.493.599z" fill="#009cde"/>
+                  </svg>
+                }
+              >
+                <div className="space-y-4">
+                  <p className="text-sm text-zinc-500">
+                    Payez <strong className="text-zinc-700">${amountUsd}</strong> via votre compte PayPal. Activation instantanée dès confirmation du paiement.
+                  </p>
+                  {!PAYPAL_CLIENT_ID ? (
+                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-700">PayPal non configuré</p>
+                        <p className="text-xs text-amber-600 mt-0.5">Ajoutez <code className="bg-amber-100 px-1 rounded">VITE_PAYPAL_CLIENT_ID</code> dans les secrets Replit pour activer PayPal.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <PayPalCheckoutButtons
+                      planId={planId as string}
+                      onSuccess={() => setSuccess("approved")}
+                      onError={(msg) => toast({ title: "Erreur PayPal", description: msg, variant: "destructive" })}
+                    />
+                  )}
+                  <p className="text-xs text-zinc-400 text-center">✓ Activation immédiate après paiement</p>
+                </div>
+              </AccordionItem>
+
+              {/* ─── Polar.sh ────────────────────────────── */}
+              <AccordionItem
+                id="polar"
+                isOpen={openMethod === "polar"}
+                onToggle={() => setOpenMethod("polar")}
+                title="Polar.sh"
+                badge={`$${amountUsd}`}
+                icon={
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-white font-bold text-xs" style={{ background: "#000" }}>P</div>
+                }
+              >
+                <div className="space-y-4">
+                  <p className="text-sm text-zinc-500">
+                    Paiement sécurisé via Polar.sh — plateforme internationale. Vous serez redirigé vers le checkout Polar.
+                  </p>
+                  {!POLAR_URLS[planId as string] ? (
+                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-700">Polar non configuré</p>
+                        <p className="text-xs text-amber-600 mt-0.5">Ajoutez <code className="bg-amber-100 px-1 rounded">VITE_POLAR_CHECKOUT_URL_{(planId as string).toUpperCase()}</code> dans les secrets.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handlePolarClick}
+                      disabled={submitMutation.isPending}
+                      className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl font-bold text-white text-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+                      style={{ background: "#000" }}
+                      data-testid="button-pay-polar"
+                    >
+                      {submitMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <ExternalLink className="w-4 h-4" />}
+                      Payer ${amountUsd} via Polar →
+                    </button>
+                  )}
+                  <div className="rounded-xl bg-zinc-50 border border-zinc-100 p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Zap className="w-3.5 h-3.5 text-zinc-400" />
+                      <p className="text-xs font-medium text-zinc-600">Activation automatique</p>
+                    </div>
+                    <p className="text-xs text-zinc-400">Votre plan sera activé automatiquement via webhook dès confirmation par Polar.</p>
+                  </div>
+                </div>
+              </AccordionItem>
+
+              {/* ─── Virement Bancaire ────────────────────── */}
+              <AccordionItem
+                id="bank"
+                isOpen={openMethod === "bank"}
+                onToggle={() => setOpenMethod("bank")}
+                title="Virement Bancaire"
+                badge={`${amountDh} DH`}
+                icon={<Building2 className="w-5 h-5 text-emerald-600" />}
+              >
+                <div className="space-y-5">
+                  {/* Bank Details */}
+                  <div className="rounded-xl border border-zinc-200 overflow-hidden">
+                    {BANK_DETAILS.map(({ label, value }, i) => (
+                      <div key={i} className={cn("flex items-center justify-between px-4 py-3 gap-3", i < BANK_DETAILS.length - 1 && "border-b border-zinc-100")}>
+                        <div>
+                          <p className="text-xs text-zinc-400 mb-0.5">{label}</p>
+                          <p className="text-sm font-semibold text-zinc-800 font-mono">{value}</p>
+                        </div>
+                        <button
+                          onClick={() => copyToClipboard(value)}
+                          className="shrink-0 p-1.5 rounded-lg hover:bg-zinc-100 transition-colors"
+                          title="Copier"
+                          data-testid={`button-copy-${label.toLowerCase().replace(/\s/g, '-')}`}
+                        >
+                          <Copy className="w-3.5 h-3.5 text-zinc-400" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Montant à virer */}
+                  <div className="rounded-xl p-3 flex items-center justify-between" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.08)" }}>
+                    <span className="text-sm text-zinc-600 font-medium">Montant à virer :</span>
+                    <span className="text-lg font-bold" style={{ color: NAVY }}>{amountDh} DH</span>
+                  </div>
+
+                  {/* File Upload */}
                   <div>
-                    <p className="text-xs font-semibold text-zinc-700">Garantie satisfait ou remboursé</p>
-                    <p className="text-xs text-zinc-400">14 jours sans engagement</p>
+                    <p className="text-sm font-semibold text-zinc-700 mb-2">Preuve de paiement <span className="text-red-500">*</span></p>
+                    {!receiptFile ? (
+                      <div
+                        className={cn("border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-colors", isDragging ? "border-[#C5A059] bg-amber-50" : "border-zinc-200 bg-zinc-50 hover:border-zinc-300")}
+                        onClick={() => fileInputRef.current?.click()}
+                        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                        onDragLeave={() => setIsDragging(false)}
+                        onDrop={handleDrop}
+                        data-testid="dropzone-receipt"
+                      >
+                        <Upload className="w-8 h-8 text-zinc-300 mx-auto mb-3" />
+                        <p className="text-sm font-medium text-zinc-500">Cliquez pour télécharger votre reçu</p>
+                        <p className="text-xs text-zinc-400 mt-1">(PDF, JPG, PNG · Max 5 Mo)</p>
+                      </div>
+                    ) : (
+                      <div className="border border-zinc-200 rounded-2xl p-4 flex items-center gap-3 bg-white">
+                        {receiptPreview ? (
+                          <img src={receiptPreview} alt="Aperçu" className="w-14 h-14 object-cover rounded-lg border border-zinc-200 shrink-0" />
+                        ) : (
+                          <div className="w-14 h-14 rounded-lg bg-red-50 border border-red-100 flex items-center justify-center shrink-0">
+                            <span className="text-xs font-bold text-red-500">PDF</span>
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-zinc-700 truncate">{receiptFile.name}</p>
+                          <p className="text-xs text-zinc-400">{(receiptFile.size / 1024).toFixed(0)} Ko</p>
+                        </div>
+                        <button onClick={() => { setReceiptFile(null); setReceiptPreview(null); }} className="p-1.5 rounded-lg hover:bg-zinc-100 transition-colors" data-testid="button-remove-receipt">
+                          <X className="w-4 h-4 text-zinc-400" />
+                        </button>
+                      </div>
+                    )}
+                    <input ref={fileInputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} data-testid="input-receipt-file" />
+                  </div>
+
+                  <button
+                    onClick={handleBankSubmit}
+                    disabled={submitMutation.isPending || uploadMutation.isPending || !receiptFile}
+                    className="w-full py-3.5 rounded-xl font-bold text-white text-sm transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}
+                    data-testid="button-submit-bank-transfer"
+                  >
+                    {(submitMutation.isPending || uploadMutation.isPending) ? (
+                      <><Loader2 className="w-4 h-4 animate-spin" /> Envoi en cours...</>
+                    ) : (
+                      <><Check className="w-4 h-4" /> Valider le paiement</>
+                    )}
+                  </button>
+                </div>
+              </AccordionItem>
+            </div>
+
+            {/* ── Right: Order Summary ──────────────────── */}
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden sticky top-6">
+                <div className="p-5 border-b border-zinc-100" style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}>
+                  <h3 className="text-white font-bold text-sm mb-0.5">Résumé de la commande</h3>
+                  <p className="text-white/60 text-xs">Plan {plan.name} — Mensuel</p>
+                </div>
+
+                <div className="p-5 space-y-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-zinc-500">Plan</span>
+                      <span className="text-sm font-semibold text-zinc-800">{plan.name}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-zinc-500">Limite mensuelle</span>
+                      <span className="text-sm font-medium text-zinc-700">{plan.limit}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-zinc-500">Durée</span>
+                      <span className="text-sm font-medium text-zinc-700">30 jours</span>
+                    </div>
+                  </div>
+
+                  <hr className="border-zinc-100" />
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-zinc-500">Montant (DH)</span>
+                      <span className="text-sm font-semibold text-zinc-800">{plan.priceDh} DH</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-zinc-500">Montant (USD)</span>
+                      <span className="text-sm font-semibold text-zinc-800">${plan.priceUsd}</span>
+                    </div>
+                  </div>
+
+                  <hr className="border-zinc-100" />
+
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-zinc-800">Total</span>
+                    <div className="text-right">
+                      <p className="text-xl font-bold" style={{ color: NAVY }}>{displayAmount}</p>
+                      <p className="text-xs text-zinc-400">{currency === "dh" ? `≈ $${amountUsd}` : `≈ ${amountDh} DH`}/mois</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-zinc-50 p-3 space-y-2">
+                    {plan.features.map((f) => (
+                      <div key={f} className="flex items-start gap-2">
+                        <Check className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: GOLD }} />
+                        <span className="text-xs text-zinc-500">{f}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="px-5 pb-5">
+                  <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.08)" }}>
+                    <Shield className="w-5 h-5 shrink-0" style={{ color: GOLD }} />
+                    <div>
+                      <p className="text-xs font-semibold text-zinc-700">Garantie satisfait ou remboursé</p>
+                      <p className="text-xs text-zinc-400">14 jours sans engagement</p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -463,57 +602,31 @@ export default function CheckoutPage() {
           </div>
         </div>
       </div>
-    </div>
+    </PayPalScriptProvider>
   );
 }
 
-/* ── Accordion Item ──────────────────────────────────────── */
+/* ── Accordion Item ───────────────────────────────────────────── */
 function AccordionItem({
-  id,
-  isOpen,
-  onToggle,
-  title,
-  icon,
-  children,
+  id, isOpen, onToggle, title, icon, badge, children,
 }: {
-  id: string;
-  isOpen: boolean;
-  onToggle: () => void;
-  title: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
+  id: string; isOpen: boolean; onToggle: () => void;
+  title: string; icon: React.ReactNode; badge?: string; children: React.ReactNode;
 }) {
   return (
-    <div
-      className={cn(
-        "bg-white rounded-2xl border transition-all overflow-hidden",
-        isOpen ? "border-[#1e1b4b] shadow-md" : "border-zinc-100 hover:border-zinc-200"
-      )}
-      data-testid={`accordion-${id}`}
-    >
-      <button
-        onClick={onToggle}
-        className="w-full flex items-center justify-between px-5 py-4 text-left"
-        data-testid={`button-accordion-${id}`}
-      >
+    <div className={cn("bg-white rounded-2xl border transition-all overflow-hidden", isOpen ? "border-[#1e1b4b] shadow-md" : "border-zinc-100 hover:border-zinc-200")} data-testid={`accordion-${id}`}>
+      <button onClick={onToggle} className="w-full flex items-center justify-between px-5 py-4 text-left" data-testid={`button-accordion-${id}`}>
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-zinc-50 border border-zinc-100 flex items-center justify-center shrink-0">
-            {icon}
-          </div>
+          <div className="w-9 h-9 rounded-xl bg-zinc-50 border border-zinc-100 flex items-center justify-center shrink-0">{icon}</div>
           <span className="font-semibold text-zinc-800 text-sm">{title}</span>
-          {isOpen && (
-            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white" style={{ background: "#1e1b4b" }}>
-              SÉLECTIONNÉ
-            </span>
-          )}
+          {isOpen && <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white" style={{ background: "#1e1b4b" }}>SÉLECTIONNÉ</span>}
         </div>
-        <ChevronDown className={cn("w-4 h-4 text-zinc-400 transition-transform", isOpen && "rotate-180")} />
+        <div className="flex items-center gap-2">
+          {badge && <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: "rgba(197,160,89,0.12)", color: "#C5A059" }}>{badge}</span>}
+          <ChevronDown className={cn("w-4 h-4 text-zinc-400 transition-transform", isOpen && "rotate-180")} />
+        </div>
       </button>
-      {isOpen && (
-        <div className="px-5 pb-5 border-t border-zinc-100 pt-4">
-          {children}
-        </div>
-      )}
+      {isOpen && <div className="px-5 pb-5 border-t border-zinc-100 pt-4">{children}</div>}
     </div>
   );
 }
