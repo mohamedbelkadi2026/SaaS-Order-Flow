@@ -496,11 +496,14 @@ function WhatsappTab() {
   const { toast } = useToast();
   const [phoneInput, setPhoneInput] = useState("");
 
-  const { data: session, isLoading, refetch } = useQuery<any>({
+  const whatsappQuery = useQuery<any>({
     queryKey: ["/api/automation/whatsapp"],
     queryFn: () => fetch("/api/automation/whatsapp", { credentials: "include" }).then(r => r.json()),
-    refetchInterval: session?.status === "pending" ? 5000 : false,
+    refetchInterval: (query) => query.state.data?.status === "pending" ? 5000 : false,
   });
+  const session = whatsappQuery.data;
+  const isLoading = whatsappQuery.isLoading;
+  const refetch = whatsappQuery.refetch;
 
   const connectMutation = useMutation({
     mutationFn: () => fetch("/api/automation/whatsapp/connect", { method: "POST", credentials: "include" }).then(r => r.json()),
