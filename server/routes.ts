@@ -2889,14 +2889,21 @@ export async function registerRoutes(
   app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     const settings = await storage.getAiSettings(req.user!.storeId!);
     const DEFAULT_PROMPT = "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب (المقاس، اللون، المدينة) مع الزبون على واتساب، والإجابة على أسئلتهم بشكل طبيعي. إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.";
-    res.json(settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [] });
+    const base = settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [] };
+    // Never expose the raw key — send only a boolean flag
+    res.json({ ...base, hasOpenAiKey: !!(settings?.openaiApiKey), openaiApiKey: undefined });
   });
 
   app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     try {
-      const { enabled, systemPrompt, enabledProductIds } = req.body;
-      const s = await storage.upsertAiSettings(req.user!.storeId!, { enabled, systemPrompt, enabledProductIds });
-      res.json(s);
+      const { enabled, systemPrompt, enabledProductIds, openaiApiKey } = req.body;
+      // Allow explicitly clearing the key by passing empty string
+      const keyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
+      const s = await storage.upsertAiSettings(req.user!.storeId!, {
+        enabled, systemPrompt, enabledProductIds,
+        ...(keyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: keyToSave } : {}),
+      });
+      res.json({ ...s, hasOpenAiKey: !!(s.openaiApiKey), openaiApiKey: undefined });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
@@ -2913,9 +2920,6 @@ export async function registerRoutes(
 
   /* ── AI generate confirmation message ────────────────────────── */
   app.post("/api/automation/ai-generate", requireAuth, async (req: any, res: any) => {
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(503).json({ message: "OPENAI_API_KEY non configuré dans les secrets Replit." });
-    }
     try {
       const { orderId } = req.body;
       const storeId = req.user!.storeId!;
@@ -2923,11 +2927,15 @@ export async function registerRoutes(
       if (!order) return res.status(404).json({ message: "Commande introuvable" });
 
       const settings = await storage.getAiSettings(storeId);
+      const openaiKey = settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY;
+      if (!openaiKey) {
+        return res.status(503).json({ message: "Veuillez configurer votre clé API OpenAI لـ تفعيل التأكيد الآلي" });
+      }
       const systemPrompt = settings?.systemPrompt ||
         "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب مع الزبون على واتساب.";
 
       const { default: OpenAI } = await import("openai");
-      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const client = new OpenAI({ apiKey: openaiKey });
 
       const userMessage = `الزبون اسمه ${order.customerName}، طلب ${order.orderNumber || order.id}، من مدينة ${order.customerCity || "غير معروفة"}. اكتب رسالة واتساب قصيرة بالدارجة المغربية لتأكيد الطلب.`;
 

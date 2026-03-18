@@ -531,6 +531,7 @@ export const aiSettings = pgTable("ai_settings", {
   enabled: integer("enabled").default(0),
   systemPrompt: text("system_prompt"),
   enabledProductIds: jsonb("enabled_product_ids").$type<number[]>().default([]),
+  openaiApiKey: text("openai_api_key"),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 export type AiSetting = typeof aiSettings.$inferSelect;

@@ -33,9 +33,18 @@ function detectIntent(msg: string): "confirm" | "cancel" | null {
   return null;
 }
 
-function getOpenAI(): OpenAI {
-  if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY non configuré");
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+/** Resolve the best API key for a store — store key takes priority over env var */
+async function resolveOpenAI(storeId: number): Promise<OpenAI> {
+  const settings = await storage.getAiSettings(storeId);
+  const key = settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("Veuillez configurer votre clé API OpenAI لـ تفعيل التأكيد الآلي");
+  return new OpenAI({ apiKey: key });
+}
+
+/** Quick check — does this store have a usable OpenAI key? */
+async function storeHasOpenAIKey(storeId: number): Promise<boolean> {
+  const settings = await storage.getAiSettings(storeId);
+  return !!(settings?.openaiApiKey?.trim()) || !!(process.env.OPENAI_API_KEY);
 }
 
 /** Look up the first product name for an order */
@@ -66,8 +75,8 @@ export async function triggerAIForNewOrder(
   customerName: string,
   productId?: number | null,
 ): Promise<void> {
-  if (!process.env.OPENAI_API_KEY) {
-    console.warn("[AI] OPENAI_API_KEY not set — skipping AI trigger");
+  if (!(await storeHasOpenAIKey(storeId))) {
+    console.warn("[AI] No OpenAI key configured for store", storeId, "— skipping AI trigger");
     return;
   }
 
@@ -134,7 +143,7 @@ export async function handleIncomingMessage(
   customerPhone: string,
   customerMessage: string,
 ): Promise<void> {
-  if (!process.env.OPENAI_API_KEY) return;
+  if (!(await storeHasOpenAIKey(storeId))) return;
 
   try {
     // Find active conversation for this phone in this store
@@ -226,7 +235,7 @@ export async function handleIncomingMessage(
         })),
       ];
 
-      const ai = getOpenAI();
+      const ai = await resolveOpenAI(storeId);
       const completion = await ai.chat.completions.create({
         model: "gpt-4o-mini",
         messages,
