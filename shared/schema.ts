@@ -463,3 +463,56 @@ export type OrderWithDetails = Order & {
   agent?: User | null;
   items: (OrderItem & { product: Product })[];
 };
+
+// ─── Marketing Campaigns ───────────────────────────────────────────────────
+export const marketingCampaigns = pgTable("marketing_campaigns", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  name: text("name").notNull(),
+  message: text("message").notNull(),
+  productLink: text("product_link"),
+  targetFilter: text("target_filter").default("delivered"),
+  status: text("status").default("draft"),
+  totalTargets: integer("total_targets").default(0),
+  totalSent: integer("total_sent").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertMarketingCampaignSchema = createInsertSchema(marketingCampaigns).omit({ id: true, createdAt: true });
+export type MarketingCampaign = typeof marketingCampaigns.$inferSelect;
+export type InsertMarketingCampaign = z.infer<typeof insertMarketingCampaignSchema>;
+
+// ─── AI Conversation Logs ──────────────────────────────────────────────────
+export const aiLogs = pgTable("ai_logs", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  orderId: integer("order_id").references(() => orders.id),
+  customerPhone: text("customer_phone"),
+  role: text("role").notNull(),
+  message: text("message").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertAiLogSchema = createInsertSchema(aiLogs).omit({ id: true, createdAt: true });
+export type AiLog = typeof aiLogs.$inferSelect;
+export type InsertAiLog = z.infer<typeof insertAiLogSchema>;
+
+// ─── WhatsApp Sessions ─────────────────────────────────────────────────────
+export const whatsappSessions = pgTable("whatsapp_sessions", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull().unique(),
+  status: text("status").default("disconnected"),
+  phone: text("phone"),
+  qrCode: text("qr_code"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+export type WhatsappSession = typeof whatsappSessions.$inferSelect;
+
+// ─── AI Settings per Store ─────────────────────────────────────────────────
+export const aiSettings = pgTable("ai_settings", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull().unique(),
+  enabled: integer("enabled").default(0),
+  systemPrompt: text("system_prompt"),
+  enabledProductIds: jsonb("enabled_product_ids").$type<number[]>().default([]),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+export type AiSetting = typeof aiSettings.$inferSelect;

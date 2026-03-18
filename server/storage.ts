@@ -154,6 +154,17 @@ export interface IStorage {
   getPaymentsByStore(storeId: number): Promise<Payment[]>;
   approvePayment(id: number): Promise<void>;
   rejectPayment(id: number, notes?: string): Promise<void>;
+
+  // Automation
+  getMarketingCampaigns(storeId: number): Promise<import("@shared/schema").MarketingCampaign[]>;
+  createMarketingCampaign(data: import("@shared/schema").InsertMarketingCampaign): Promise<import("@shared/schema").MarketingCampaign>;
+  updateCampaignSent(id: number, totalSent: number, status: string): Promise<void>;
+  getAiLogs(storeId: number, orderId?: number): Promise<import("@shared/schema").AiLog[]>;
+  createAiLog(data: import("@shared/schema").InsertAiLog): Promise<import("@shared/schema").AiLog>;
+  getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
+  upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
+  getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
+  upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[] }): Promise<import("@shared/schema").AiSetting>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -2074,6 +2085,71 @@ export class DatabaseStorage implements IStorage {
 
   async rejectPayment(id: number, notes?: string): Promise<void> {
     await db.update(payments).set({ status: "rejected", notes: notes ?? null }).where(eq(payments.id, id));
+  }
+
+  // ── Automation ────────────────────────────────────────────────────────────
+  async getMarketingCampaigns(storeId: number) {
+    const { marketingCampaigns } = await import("@shared/schema");
+    return db.select().from(marketingCampaigns).where(eq(marketingCampaigns.storeId, storeId)).orderBy(desc(marketingCampaigns.createdAt));
+  }
+
+  async createMarketingCampaign(data: import("@shared/schema").InsertMarketingCampaign) {
+    const { marketingCampaigns } = await import("@shared/schema");
+    const [row] = await db.insert(marketingCampaigns).values(data).returning();
+    return row;
+  }
+
+  async updateCampaignSent(id: number, totalSent: number, status: string) {
+    const { marketingCampaigns } = await import("@shared/schema");
+    await db.update(marketingCampaigns).set({ totalSent, status }).where(eq(marketingCampaigns.id, id));
+  }
+
+  async getAiLogs(storeId: number, orderId?: number) {
+    const { aiLogs } = await import("@shared/schema");
+    const conds = orderId !== undefined
+      ? and(eq(aiLogs.storeId, storeId), eq(aiLogs.orderId, orderId))
+      : eq(aiLogs.storeId, storeId);
+    return db.select().from(aiLogs).where(conds).orderBy(aiLogs.createdAt);
+  }
+
+  async createAiLog(data: import("@shared/schema").InsertAiLog) {
+    const { aiLogs } = await import("@shared/schema");
+    const [row] = await db.insert(aiLogs).values(data).returning();
+    return row;
+  }
+
+  async getWhatsappSession(storeId: number) {
+    const { whatsappSessions } = await import("@shared/schema");
+    const [row] = await db.select().from(whatsappSessions).where(eq(whatsappSessions.storeId, storeId));
+    return row;
+  }
+
+  async upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }) {
+    const { whatsappSessions } = await import("@shared/schema");
+    const existing = await this.getWhatsappSession(storeId);
+    if (existing) {
+      const [row] = await db.update(whatsappSessions).set({ ...data, updatedAt: new Date() }).where(eq(whatsappSessions.storeId, storeId)).returning();
+      return row;
+    }
+    const [row] = await db.insert(whatsappSessions).values({ storeId, ...data }).returning();
+    return row;
+  }
+
+  async getAiSettings(storeId: number) {
+    const { aiSettings } = await import("@shared/schema");
+    const [row] = await db.select().from(aiSettings).where(eq(aiSettings.storeId, storeId));
+    return row;
+  }
+
+  async upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[] }) {
+    const { aiSettings } = await import("@shared/schema");
+    const existing = await this.getAiSettings(storeId);
+    if (existing) {
+      const [row] = await db.update(aiSettings).set({ ...data, updatedAt: new Date() }).where(eq(aiSettings.storeId, storeId)).returning();
+      return row;
+    }
+    const [row] = await db.insert(aiSettings).values({ storeId, ...data }).returning();
+    return row;
   }
 }
 

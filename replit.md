@@ -1,4 +1,4 @@
-# TajerGrow OMS - Order Management System
+# TajerGrow OMS - Order Management System + Automation & AI
 
 ## Overview
 TajerGrow (formerly Garean) is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on Delivery) e-commerce market. Built with React+Vite frontend, Node.js/Express backend, and PostgreSQL database.

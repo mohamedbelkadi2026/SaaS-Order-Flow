@@ -41,6 +41,7 @@ import {
   MessageCircle,
   Rocket,
   CalendarX,
+  Bot,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { setLanguage } from "@/i18n";
@@ -72,6 +73,7 @@ const ADMIN_NAV = [
   { name: "Advanced Profitability", href: "/profitability", icon: Calculator      },
   { name: "Publicités",             href: "/publicites",    icon: Receipt         },
   { name: "Calculateur de Marge",   href: "/calculator",    icon: PieChart        },
+  { name: "Automation & AI",        href: "/automation",    icon: Bot             },
   { name: "Integration",            href: "/integrations",  icon: Plug,           hasSubmenu: true  },
 ] as const;
 

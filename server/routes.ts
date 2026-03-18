@@ -2813,5 +2813,147 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  // ══════════════════════════════════════════════════════════════════
+  // AUTOMATION & AI MODULE
+  // ══════════════════════════════════════════════════════════════════
+
+  /* ── Clients for retargeting ──────────────────────────────────── */
+  app.get("/api/automation/clients", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId;
+    if (!storeId) return res.json([]);
+    const status = (req.query.status as string) || "delivered";
+    const rows = await db.select({
+      id: orders.id,
+      orderNumber: orders.orderNumber,
+      customerName: orders.customerName,
+      customerPhone: orders.customerPhone,
+      customerCity: orders.customerCity,
+      status: orders.status,
+      createdAt: orders.createdAt,
+    }).from(orders).where(and(eq(orders.storeId, storeId), eq(orders.status, status))).orderBy(desc(orders.createdAt)).limit(500);
+    res.json(rows);
+  });
+
+  /* ── Marketing campaigns ──────────────────────────────────────── */
+  app.get("/api/automation/campaigns", requireAuth, async (req: any, res: any) => {
+    res.json(await storage.getMarketingCampaigns(req.user!.storeId!));
+  });
+
+  app.post("/api/automation/campaigns", requireAuth, async (req: any, res: any) => {
+    try {
+      const { name, message, productLink, targetFilter, totalTargets } = req.body;
+      const c = await storage.createMarketingCampaign({
+        storeId: req.user!.storeId!, name, message, productLink: productLink || null,
+        targetFilter: targetFilter || "delivered", status: "sent", totalTargets: totalTargets || 0, totalSent: totalTargets || 0,
+      });
+      res.status(201).json(c);
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ── WhatsApp session ─────────────────────────────────────────── */
+  app.get("/api/automation/whatsapp", requireAuth, async (req: any, res: any) => {
+    const session = await storage.getWhatsappSession(req.user!.storeId!);
+    res.json(session ?? { status: "disconnected", phone: null, qrCode: null });
+  });
+
+  app.post("/api/automation/whatsapp/connect", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const qr = `TajerGrow-WA-${storeId}-${Date.now()}`;
+    const session = await storage.upsertWhatsappSession(storeId, { status: "pending", phone: null, qrCode: qr });
+    res.json(session);
+  });
+
+  app.post("/api/automation/whatsapp/confirm", requireAuth, async (req: any, res: any) => {
+    const { phone } = req.body;
+    const session = await storage.upsertWhatsappSession(req.user!.storeId!, { status: "connected", phone: phone || "+212600000000", qrCode: null });
+    res.json(session);
+  });
+
+  app.post("/api/automation/whatsapp/disconnect", requireAuth, async (req: any, res: any) => {
+    const session = await storage.upsertWhatsappSession(req.user!.storeId!, { status: "disconnected", phone: null, qrCode: null });
+    res.json(session);
+  });
+
+  /* ── AI Settings ──────────────────────────────────────────────── */
+  app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
+    const settings = await storage.getAiSettings(req.user!.storeId!);
+    const DEFAULT_PROMPT = "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب (المقاس، اللون، المدينة) مع الزبون على واتساب، والإجابة على أسئلتهم بشكل طبيعي. إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.";
+    res.json(settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [] });
+  });
+
+  app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
+    try {
+      const { enabled, systemPrompt, enabledProductIds } = req.body;
+      const s = await storage.upsertAiSettings(req.user!.storeId!, { enabled, systemPrompt, enabledProductIds });
+      res.json(s);
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ── Nouveau orders for AI ──────────────────────────────────────── */
+  app.get("/api/automation/nouveau-orders", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select({
+      id: orders.id, orderNumber: orders.orderNumber,
+      customerName: orders.customerName, customerPhone: orders.customerPhone,
+      customerCity: orders.customerCity, status: orders.status, createdAt: orders.createdAt,
+    }).from(orders).where(and(eq(orders.storeId, storeId), eq(orders.status, "nouveau"))).orderBy(desc(orders.createdAt)).limit(100);
+    res.json(rows);
+  });
+
+  /* ── AI generate confirmation message ────────────────────────── */
+  app.post("/api/automation/ai-generate", requireAuth, async (req: any, res: any) => {
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(503).json({ message: "OPENAI_API_KEY non configuré dans les secrets Replit." });
+    }
+    try {
+      const { orderId } = req.body;
+      const storeId = req.user!.storeId!;
+      const [order] = await db.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
+      if (!order) return res.status(404).json({ message: "Commande introuvable" });
+
+      const settings = await storage.getAiSettings(storeId);
+      const systemPrompt = settings?.systemPrompt ||
+        "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب مع الزبون على واتساب.";
+
+      const { default: OpenAI } = await import("openai");
+      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+      const userMessage = `الزبون اسمه ${order.customerName}، طلب ${order.orderNumber || order.id}، من مدينة ${order.customerCity || "غير معروفة"}. اكتب رسالة واتساب قصيرة بالدارجة المغربية لتأكيد الطلب.`;
+
+      const completion = await client.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        max_tokens: 300,
+      });
+
+      const aiMessage = completion.choices[0]?.message?.content ?? "";
+
+      await storage.createAiLog({ storeId, orderId, customerPhone: order.customerPhone, role: "assistant", message: aiMessage });
+
+      res.json({ message: aiMessage, orderId });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* ── AI confirm order (update status) ────────────────────────── */
+  app.post("/api/automation/ai-confirm/:orderId", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const orderId = Number(req.params.orderId);
+    const updated = await storage.updateOrderStatus(orderId, "confirme");
+    if (!updated) return res.status(404).json({ message: "Commande introuvable" });
+    await storage.createAiLog({ storeId, orderId, customerPhone: null, role: "system", message: "Commande confirmée par l'agent IA" });
+    res.json({ success: true });
+  });
+
+  /* ── AI logs ──────────────────────────────────────────────────── */
+  app.get("/api/automation/ai-logs", requireAuth, async (req: any, res: any) => {
+    const orderId = req.query.orderId ? Number(req.query.orderId) : undefined;
+    res.json(await storage.getAiLogs(req.user!.storeId!, orderId));
+  });
+
   return httpServer;
 }

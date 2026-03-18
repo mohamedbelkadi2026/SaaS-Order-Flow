@@ -1,0 +1,26 @@
+"I need to implement a cutting-edge 'Marketing & AI Automation' module in TajerGrow. This module will handle bulk retargeting and AI-powered WhatsApp order confirmation. Please follow these instructions:
+1. UI Implementation: New Menu Section:
+Add a sidebar menu called 'Automation & AI' with a 'Robot' or 'Magic' icon.
+Tabs:
+Retargeting: To send offers to old customers.
+IA Confirmation: To set up the AI confirmation agent.
+Connexion: To scan QR Code and link WhatsApp.
+2. Retargeting Logic (Tab 1):
+Filter & Select: Allow Admin to select customers from the 'List Client' (only those who are 'Livré').
+Bulk Action: Admin enters a message and an optional product link.
+Execution: Create a queue system to send these messages one by one via the linked WhatsApp.
+No-Answer Follow-up: Add a button to 'Send Bulk Reminder' specifically to orders with status 'Injoignable'.
+3. AI Confirmation Agent (Tab 2 - The Brain):
+Configuration: Admin can toggle 'AI Confirmation' for specific products (e.g., 'حذاء ZOMAX').
+The Prompt Engine: Integrate OpenAI GPT-4o API.
+System Prompt: 'You are a professional Moroccan customer service agent. You speak only in Moroccan Darija. Your goal is to confirm the order details (Size, Color, City) with the customer on WhatsApp, answer their questions naturally, and if they confirm, tell them the order is on the way.'
+Database Sync: If the AI confirms the customer's intent, it must automatically update the order status in our database to 'confirme'.
+4. WhatsApp Connection (Tab 3 - QR Code):
+Implement a QR Code generator using a library like qrcode.react.
+Use a WhatsApp gateway logic (like whatsapp-web.js or a placeholder API) to authenticate the merchant's phone.
+Show 'Statut: Connecté' with the phone number once scanned.
+5. Technical Requirements:
+Create a Marketing_Campaigns table and an AI_Logs table.
+Ensure the AI Agent only responds to 'Nouveau' orders.
+Multi-tenancy: Each store uses its own WhatsApp and AI settings.
+Technical Goal: Create a system where I can wake up and find my orders confirmed by the AI, and send new offers to my old clients to double my sales. Use the Gold and Navy Blue theme for the AI dashboard."
