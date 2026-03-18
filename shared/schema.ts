@@ -474,6 +474,7 @@ export const aiConversations = pgTable("ai_conversations", {
   customerName: text("customer_name"),
   status: text("status").default("active"), // active | confirmed | cancelled | manual
   isManual: integer("is_manual").default(0),
+  needsAttention: integer("needs_attention").default(0), // 1 = admin attention required
   lastMessage: text("last_message"),
   lastMessageAt: timestamp("last_message_at").defaultNow(),
   createdAt: timestamp("created_at").defaultNow(),

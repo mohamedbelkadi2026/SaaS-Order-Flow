@@ -825,7 +825,39 @@ function LiveMonitoringTab() {
   const [manualMsg, setManualMsg] = useState("");
   const [messages, setMessages] = useState<any[]>([]);
   const [typingConvId, setTypingConvId] = useState<number | null>(null);
+  const [attentionIds, setAttentionIds] = useState<Set<number>>(new Set());
   const messagesEndRef = { current: null as HTMLDivElement | null };
+
+  /* ── Request browser notification permission ────────────────── */
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  /* ── Poll Green API status every 60s — browser notify on disconnect ── */
+  useEffect(() => {
+    let lastStatus: string | null = null;
+    const check = async () => {
+      try {
+        const r = await fetch("/api/automation/whatsapp/green-status", { credentials: "include" });
+        const { status } = await r.json();
+        if (lastStatus === "authorized" && status !== "authorized") {
+          toast({ title: "⚠️ WhatsApp Déconnecté", description: "La connexion WhatsApp a été perdue. Reconnectez depuis l'onglet WhatsApp.", variant: "destructive" });
+          if ("Notification" in window && Notification.permission === "granted") {
+            new Notification("TajerGrow — WhatsApp Déconnecté", {
+              body: "La connexion WhatsApp est perdue. Reconnectez-vous pour continuer.",
+              icon: "/favicon.ico",
+            });
+          }
+        }
+        lastStatus = status;
+      } catch {}
+    };
+    check();
+    const timer = setInterval(check, 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   /* ── Poll conversations list ────────────────────────────────── */
   const { data: conversations = [], refetch: refetchConvs } = useQuery<any[]>({
@@ -833,6 +865,14 @@ function LiveMonitoringTab() {
     queryFn: () => fetch("/api/automation/conversations", { credentials: "include" }).then(r => r.json()),
     refetchInterval: 8000,
   });
+
+  // Sync attention state from server data on load
+  useEffect(() => {
+    if (conversations.length > 0) {
+      const ids = new Set<number>(conversations.filter((c: any) => c.needsAttention).map((c: any) => c.id as number));
+      setAttentionIds(ids);
+    }
+  }, [conversations]);
 
   /* ── Load messages for selected conversation ────────────────── */
   const { data: historyMsgs = [] } = useQuery<any[]>({
@@ -902,6 +942,23 @@ function LiveMonitoringTab() {
       }
     });
 
+    es.addEventListener("needs_attention", (e) => {
+      const data = JSON.parse(e.data);
+      setAttentionIds(prev => new Set([...prev, data.conversationId]));
+      refetchConvs();
+      toast({
+        title: "🔴 Attention Requise",
+        description: "Un client demande à parler à un humain.",
+        variant: "destructive",
+      });
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("TajerGrow — Client demande assistance", {
+          body: "Un client a besoin d'un agent humain.",
+          icon: "/favicon.ico",
+        });
+      }
+    });
+
     return () => es.close();
   }, [selectedId]);
 
@@ -919,7 +976,11 @@ function LiveMonitoringTab() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isManual }),
     }).then(r => r.json()),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/automation/conversations"] }); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/automation/conversations"] });
+      // Clear attention flag when admin takes control
+      if (selectedId) setAttentionIds(prev => { const n = new Set(prev); n.delete(selectedId); return n; });
+    },
   });
 
   const sendMutation = useMutation({
@@ -943,14 +1004,16 @@ function LiveMonitoringTab() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
-  const statusColor = (s: string) => {
+  const statusColor = (s: string, needsAttn?: boolean) => {
+    if (needsAttn) return "#ef4444";
     if (s === "confirmed") return "#22c55e";
     if (s === "cancelled") return "#ef4444";
     if (s === "manual") return GOLD;
     return "#3b82f6";
   };
 
-  const statusLabel = (s: string) => {
+  const statusLabel = (s: string, needsAttn?: boolean) => {
+    if (needsAttn) return "Attention 🔴";
     if (s === "confirmed") return "Confirmé ✅";
     if (s === "cancelled") return "Annulé ❌";
     if (s === "manual") return "Manuel 👤";
@@ -972,6 +1035,11 @@ function LiveMonitoringTab() {
           <div className="flex items-center gap-2">
             <Radio className="w-4 h-4" style={{ color: GOLD }} />
             <span className="text-sm font-bold text-zinc-700">Conversations IA</span>
+            {attentionIds.size > 0 && (
+              <span className="text-[10px] font-black px-1.5 py-0.5 rounded-full bg-red-500 text-white animate-pulse">
+                {attentionIds.size}
+              </span>
+            )}
           </div>
           <button onClick={() => refetchConvs()} className="p-1 rounded-lg hover:bg-zinc-100 transition-colors">
             <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />
@@ -985,24 +1053,31 @@ function LiveMonitoringTab() {
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto divide-y divide-zinc-50">
-            {conversations.map((conv: any) => (
+            {[...conversations].sort((a: any, b: any) => (attentionIds.has(b.id) ? 1 : 0) - (attentionIds.has(a.id) ? 1 : 0)).map((conv: any) => {
+              const needsAttn = attentionIds.has(conv.id);
+              return (
               <button
                 key={conv.id}
                 onClick={() => { setSelectedId(conv.id); setMessages([]); }}
-                className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors", selectedId === conv.id && "bg-blue-50")}
+                className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors",
+                  selectedId === conv.id && "bg-blue-50",
+                  needsAttn && "bg-red-50 border-l-4 border-red-400"
+                )}
                 data-testid={`conv-item-${conv.id}`}
               >
                 <div className="flex items-center justify-between mb-1 gap-1">
                   <div className="flex items-center gap-1.5 min-w-0">
-                    {typingConvId === conv.id ? (
+                    {needsAttn ? (
+                      <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" title="Attention requise" />
+                    ) : typingConvId === conv.id ? (
                       <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 animate-pulse" title="IA en train d'écrire..." />
                     ) : conv.status === "active" ? (
                       <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
                     ) : null}
                     <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: statusColor(conv.status) }}>
-                    {statusLabel(conv.status)}
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: statusColor(conv.status, needsAttn) }}>
+                    {statusLabel(conv.status, needsAttn)}
                   </span>
                 </div>
                 {typingConvId === conv.id ? (
@@ -1015,11 +1090,14 @@ function LiveMonitoringTab() {
                     IA en train d'écrire...
                   </p>
                 ) : (
-                  <p className="text-xs text-zinc-400 truncate">{conv.lastMessage || "..."}</p>
+                  <p className={cn("text-xs truncate", needsAttn ? "text-red-500 font-medium" : "text-zinc-400")}>
+                    {needsAttn ? "⚠️ Client demande assistance humaine" : (conv.lastMessage || "...")}
+                  </p>
                 )}
                 <p className="text-[10px] text-zinc-300 mt-0.5">{conv.customerPhone}</p>
               </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -1068,7 +1146,15 @@ function LiveMonitoringTab() {
           </div>
 
           {/* Status banner */}
-          {selectedConv.isManual ? (
+          {selectedId && attentionIds.has(selectedId) ? (
+            <div className="px-4 py-2 text-xs font-semibold flex items-center justify-between gap-2" style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", borderBottom: "1px solid rgba(239,68,68,0.2)" }}>
+              <span className="flex items-center gap-2"><AlertCircle className="w-3.5 h-3.5" /> 🔴 Client demande assistance humaine — prenez la main dès que possible.</span>
+              <button
+                onClick={() => { takeoverMutation.mutate(true); }}
+                className="text-[10px] font-black px-2 py-1 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors whitespace-nowrap"
+              >Prendre la main</button>
+            </div>
+          ) : selectedConv.isManual ? (
             <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: `rgba(197,160,89,0.08)`, color: GOLD, borderBottom: `1px solid rgba(197,160,89,0.15)` }}>
               <UserX className="w-3.5 h-3.5" /> Mode manuel actif — l'IA ne répond plus. Vous contrôlez la conversation.
             </div>

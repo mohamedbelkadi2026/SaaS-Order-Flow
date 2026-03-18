@@ -2147,6 +2147,11 @@ export class DatabaseStorage implements IStorage {
     await db.update(aiConversations).set({ status }).where(eq(aiConversations.id, id));
   }
 
+  async updateConversationNeedsAttention(id: number, val: number) {
+    const { aiConversations } = await import("@shared/schema");
+    await db.update(aiConversations).set({ needsAttention: val }).where(eq(aiConversations.id, id));
+  }
+
   async updateAiConversationLastMessage(id: number, message: string) {
     const { aiConversations } = await import("@shared/schema");
     await db.update(aiConversations).set({ lastMessage: message, lastMessageAt: new Date() }).where(eq(aiConversations.id, id));
