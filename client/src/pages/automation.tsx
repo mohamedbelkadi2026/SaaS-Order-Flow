@@ -79,10 +79,11 @@ function RetargetingTab() {
   const [productLink, setProductLink] = useState("");
   const [campaignName, setCampaignName] = useState("");
 
-  const { data: clients = [], isLoading } = useQuery<any[]>({
+  const { data: clientsRaw, isLoading } = useQuery<any>({
     queryKey: ["/api/automation/clients", filter],
     queryFn: () => fetch(`/api/automation/clients?status=${filter}`, { credentials: "include" }).then(r => r.json()),
   });
+  const clients: any[] = Array.isArray(clientsRaw) ? clientsRaw : [];
 
   const { data: campaigns = [] } = useQuery<any[]>({ queryKey: ["/api/automation/campaigns"] });
 

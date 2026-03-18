@@ -7,7 +7,7 @@ import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
 import { users, orders, orderItems } from "@shared/schema";
-import { eq, and, gte, lt, count } from "drizzle-orm";
+import { eq, and, gte, lt, count, desc } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
 
