@@ -261,11 +261,18 @@ function AiConfirmationTab() {
   });
 
   const [localSettings, setLocalSettings] = useState<any>(null);
-  useEffect(() => { if (settings && !localSettings) setLocalSettings(settings); }, [settings]);
+  useEffect(() => {
+    if (settings && !localSettings) {
+      setLocalSettings(settings);
+      if (settings.aiModel) setSelectedModel(settings.aiModel);
+    }
+  }, [settings]);
 
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [clearingKey, setClearingKey] = useState(false);
+  const [orKeyInput, setOrKeyInput] = useState("");
+  const [showOrKey, setShowOrKey] = useState(false);
+  const [clearingOrKey, setClearingOrKey] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("openai/gpt-4o-mini");
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
 
   const saveSettingsMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -312,7 +319,14 @@ function AiConfirmationTab() {
 
   const s = localSettings ?? settings;
 
-  const hasKey = s?.hasOpenAiKey;
+  const hasOrKey = s?.hasOpenRouterKey;
+
+  const MODEL_OPTIONS = [
+    { value: "openai/gpt-4o-mini",          label: "GPT-4o Mini",       badge: "Rapide & économique" },
+    { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", badge: "Meilleure qualité" },
+    { value: "deepseek/deepseek-chat",      label: "DeepSeek Chat",     badge: "Excellent Darija" },
+  ];
+  const currentModel = MODEL_OPTIONS.find(m => m.value === selectedModel) ?? MODEL_OPTIONS[0];
 
   return (
     <div className="space-y-5">
@@ -320,19 +334,20 @@ function AiConfirmationTab() {
         {/* Config panel */}
         <div className="space-y-4">
 
-          {/* ── Paramètres AI — OpenAI API Key ───────────────── */}
-          <div className="bg-white rounded-2xl border-2 p-5 space-y-4" style={{ borderColor: hasKey ? "rgba(34,197,94,0.3)" : "rgba(197,160,89,0.35)" }}>
+          {/* ── Paramètres AI — OpenRouter ───────────────── */}
+          <div className="bg-white rounded-2xl border-2 p-5 space-y-4" style={{ borderColor: hasOrKey ? "rgba(34,197,94,0.3)" : "rgba(197,160,89,0.35)" }}>
+            {/* Header */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #10b981, #059669)" }}>
-                  <span className="text-white text-sm font-black">AI</span>
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg, #7c3aed, #5b21b6)" }}>
+                  <Zap className="w-5 h-5 text-white" />
                 </div>
                 <div>
-                  <p className="text-sm font-bold text-zinc-800">Paramètres AI</p>
-                  <p className="text-xs text-zinc-400">Clé API OpenAI pour votre magasin</p>
+                  <p className="text-sm font-bold text-zinc-800">Paramètres AI — OpenRouter</p>
+                  <p className="text-xs text-zinc-400">Clé API + modèle pour votre magasin</p>
                 </div>
               </div>
-              {hasKey ? (
+              {hasOrKey ? (
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-green-600 bg-green-50 px-2.5 py-1 rounded-full border border-green-200">
                   <Check className="w-3 h-3" /> Clé configurée
                 </div>
@@ -344,81 +359,124 @@ function AiConfirmationTab() {
             </div>
 
             {/* Warning banner when no key */}
-            {!hasKey && (
+            {!hasOrKey && (
               <div className="rounded-xl p-3 text-xs flex items-start gap-2" style={{ background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.2)" }}>
                 <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
                 <p className="text-red-600 font-medium">
-                  Veuillez configurer votre clé API OpenAI لـ تفعيل التأكيد الآلي
+                  Configurez votre clé API OpenRouter pour activer la confirmation automatique en Darija.
                 </p>
               </div>
             )}
 
-            {/* API Key input */}
+            {/* OpenRouter API Key input */}
             <div className="space-y-2">
               <label className="text-xs font-semibold text-zinc-600 block">
-                {hasKey ? "Remplacer la clé API" : "Entrer votre clé API OpenAI"}
+                {hasOrKey ? "Remplacer la clé OpenRouter" : "Clé API OpenRouter"}
               </label>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <input
-                    type={showApiKey ? "text" : "password"}
-                    placeholder={hasKey ? "sk-••••••••••••••••••••••••••" : "sk-proj-..."}
-                    value={apiKeyInput}
-                    onChange={e => setApiKeyInput(e.target.value)}
-                    className="w-full border border-zinc-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-zinc-400 font-mono pr-10"
-                    data-testid="input-openai-api-key"
+                    type={showOrKey ? "text" : "password"}
+                    placeholder={hasOrKey ? "sk-or-••••••••••••••••••••" : "sk-or-v1-..."}
+                    value={orKeyInput}
+                    onChange={e => setOrKeyInput(e.target.value)}
+                    className="w-full border border-zinc-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-violet-400 font-mono pr-10"
+                    data-testid="input-openrouter-api-key"
                   />
                   <button
                     type="button"
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
-                    onClick={() => setShowApiKey(!showApiKey)}
+                    onClick={() => setShowOrKey(!showOrKey)}
                   >
-                    {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showOrKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
                 <button
                   onClick={async () => {
-                    if (!apiKeyInput.trim()) {
-                      toast({ title: "Clé vide", description: "Entrez une clé API valide", variant: "destructive" });
+                    if (!orKeyInput.trim()) {
+                      toast({ title: "Clé vide", description: "Entrez une clé OpenRouter valide", variant: "destructive" });
                       return;
                     }
-                    if (!apiKeyInput.startsWith("sk-")) {
-                      toast({ title: "Format invalide", description: "La clé OpenAI doit commencer par sk-", variant: "destructive" });
+                    if (!orKeyInput.startsWith("sk-")) {
+                      toast({ title: "Format invalide", description: "La clé OpenRouter doit commencer par sk-", variant: "destructive" });
                       return;
                     }
-                    await saveSettingsMutation.mutateAsync({ ...s, openaiApiKey: apiKeyInput });
-                    setApiKeyInput("");
+                    await saveSettingsMutation.mutateAsync({ ...s, openrouterApiKey: orKeyInput, aiModel: selectedModel });
+                    setOrKeyInput("");
                   }}
-                  disabled={saveSettingsMutation.isPending || !apiKeyInput.trim()}
+                  disabled={saveSettingsMutation.isPending || !orKeyInput.trim()}
                   className="px-4 py-2 rounded-xl text-white text-sm font-bold transition-opacity hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
-                  style={{ background: `linear-gradient(135deg, ${GOLD}, #b8904a)` }}
-                  data-testid="button-save-openai-key"
+                  style={{ background: "linear-gradient(135deg, #7c3aed, #5b21b6)" }}
+                  data-testid="button-save-openrouter-key"
                 >
                   {saveSettingsMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : "Sauvegarder"}
                 </button>
               </div>
               <p className="text-[11px] text-zinc-400">
-                🔒 Stockée de façon sécurisée, isolée par magasin. Prioritaire sur la clé globale.
-                Générez votre clé sur{" "}
-                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="underline text-blue-500">platform.openai.com/api-keys</a>
+                🔒 Stockée de façon sécurisée, isolée par magasin. Obtenez votre clé sur{" "}
+                <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" className="underline text-violet-500">openrouter.ai/keys</a>
               </p>
             </div>
 
+            {/* Model selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-zinc-600 block">Choisir le Modèle</label>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowModelDropdown(!showModelDropdown)}
+                  className="w-full flex items-center justify-between border border-zinc-200 rounded-xl px-4 py-2.5 text-sm bg-white hover:border-violet-300 transition-colors"
+                  data-testid="select-ai-model"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-zinc-800">{currentModel.label}</span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-200">{currentModel.badge}</span>
+                  </div>
+                  <svg className={cn("w-4 h-4 text-zinc-400 transition-transform", showModelDropdown && "rotate-180")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                </button>
+                {showModelDropdown && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-zinc-200 rounded-xl shadow-lg z-10 overflow-hidden">
+                    {MODEL_OPTIONS.map(opt => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={async () => {
+                          setSelectedModel(opt.value);
+                          setShowModelDropdown(false);
+                          await saveSettingsMutation.mutateAsync({ ...s, aiModel: opt.value });
+                          toast({ title: `Modèle changé : ${opt.label}` });
+                        }}
+                        className={cn("w-full flex items-center justify-between px-4 py-3 text-sm hover:bg-violet-50 transition-colors text-left", selectedModel === opt.value && "bg-violet-50")}
+                        data-testid={`model-option-${opt.value}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          {selectedModel === opt.value && <Check className="w-3.5 h-3.5 text-violet-600" />}
+                          {selectedModel !== opt.value && <span className="w-3.5 h-3.5" />}
+                          <span className={cn("font-medium", selectedModel === opt.value ? "text-violet-700" : "text-zinc-700")}>{opt.label}</span>
+                        </div>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-500">{opt.badge}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Clear key */}
-            {hasKey && (
+            {hasOrKey && (
               <button
                 onClick={async () => {
-                  setClearingKey(true);
+                  setClearingOrKey(true);
                   try {
-                    await saveSettingsMutation.mutateAsync({ ...s, openaiApiKey: "" });
-                    toast({ title: "Clé supprimée", description: "La clé OpenAI a été retirée de votre magasin." });
-                  } finally { setClearingKey(false); }
+                    await saveSettingsMutation.mutateAsync({ ...s, openrouterApiKey: "" });
+                    toast({ title: "Clé supprimée", description: "La clé OpenRouter a été retirée de votre magasin." });
+                  } finally { setClearingOrKey(false); }
                 }}
-                disabled={clearingKey || saveSettingsMutation.isPending}
+                disabled={clearingOrKey || saveSettingsMutation.isPending}
                 className="text-xs text-red-500 hover:text-red-700 underline transition-colors"
-                data-testid="button-clear-openai-key"
+                data-testid="button-clear-openrouter-key"
               >
-                {clearingKey ? "Suppression..." : "Supprimer la clé API"}
+                {clearingOrKey ? "Suppression..." : "Supprimer la clé OpenRouter"}
               </button>
             )}
           </div>
@@ -431,7 +489,7 @@ function AiConfirmationTab() {
                   <Bot className="w-5 h-5 text-white" />
                 </div>
                 <div>
-                  <p className="text-sm font-bold text-zinc-800">Agent IA GPT-4o</p>
+                  <p className="text-sm font-bold text-zinc-800">Agent IA — {currentModel.label}</p>
                   <p className="text-xs text-zinc-400">Confirmation automatique en Darija</p>
                 </div>
               </div>
@@ -1037,10 +1095,15 @@ function LiveMonitoringTab() {
                 <div className="px-4 py-2.5 text-sm" style={bubbleStyle(msg.role)} dir={msg.role !== "user" ? "rtl" : "ltr"}>
                   {msg.content}
                 </div>
-                <span className="text-[10px] text-zinc-300 mt-0.5 px-1"
-                  style={{ textAlign: msg.role === "user" ? "left" : "right" }}
+                <span className="text-[10px] text-zinc-300 mt-0.5 px-1 flex items-center gap-1"
+                  style={{ justifyContent: msg.role === "user" ? "flex-start" : "flex-end" }}
                 >
                   {msg.role === "user" ? "Client" : msg.role === "admin" ? "Vous" : msg.role === "system" ? "Système" : "IA"}
+                  {msg.role === "assistant" && msg.model && (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-500 border border-violet-200">
+                      {msg.model === "deepseek/deepseek-chat" ? "DeepSeek" : msg.model === "anthropic/claude-3.5-sonnet" ? "Claude 3.5" : "GPT-4o Mini"}
+                    </span>
+                  )}
                   {" · "}{new Date(msg.ts || Date.now()).toLocaleTimeString("fr-MA", { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>

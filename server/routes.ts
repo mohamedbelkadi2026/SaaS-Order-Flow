@@ -2889,21 +2889,35 @@ export async function registerRoutes(
   app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     const settings = await storage.getAiSettings(req.user!.storeId!);
     const DEFAULT_PROMPT = "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب (المقاس، اللون، المدينة) مع الزبون على واتساب، والإجابة على أسئلتهم بشكل طبيعي. إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.";
-    const base = settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [] };
-    // Never expose the raw key — send only a boolean flag
-    res.json({ ...base, hasOpenAiKey: !!(settings?.openaiApiKey), openaiApiKey: undefined });
+    const base = settings ?? { enabled: 0, systemPrompt: DEFAULT_PROMPT, enabledProductIds: [], aiModel: "openai/gpt-4o-mini" };
+    res.json({
+      ...base,
+      hasOpenRouterKey: !!(settings?.openrouterApiKey),
+      hasOpenAiKey: !!(settings?.openaiApiKey),
+      openaiApiKey: undefined,
+      openrouterApiKey: undefined,
+    });
   });
 
   app.put("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     try {
-      const { enabled, systemPrompt, enabledProductIds, openaiApiKey } = req.body;
+      const { enabled, systemPrompt, enabledProductIds, openaiApiKey, openrouterApiKey, aiModel } = req.body;
       // Allow explicitly clearing the key by passing empty string
-      const keyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
+      const oaiKeyToSave = openaiApiKey === "" ? null : (openaiApiKey?.trim() || undefined);
+      const orKeyToSave  = openrouterApiKey === "" ? null : (openrouterApiKey?.trim() || undefined);
       const s = await storage.upsertAiSettings(req.user!.storeId!, {
         enabled, systemPrompt, enabledProductIds,
-        ...(keyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: keyToSave } : {}),
+        ...(oaiKeyToSave !== undefined || openaiApiKey === "" ? { openaiApiKey: oaiKeyToSave } : {}),
+        ...(orKeyToSave  !== undefined || openrouterApiKey === "" ? { openrouterApiKey: orKeyToSave } : {}),
+        ...(aiModel ? { aiModel } : {}),
       });
-      res.json({ ...s, hasOpenAiKey: !!(s.openaiApiKey), openaiApiKey: undefined });
+      res.json({
+        ...s,
+        hasOpenRouterKey: !!(s.openrouterApiKey),
+        hasOpenAiKey: !!(s.openaiApiKey),
+        openaiApiKey: undefined,
+        openrouterApiKey: undefined,
+      });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
@@ -2927,20 +2941,30 @@ export async function registerRoutes(
       if (!order) return res.status(404).json({ message: "Commande introuvable" });
 
       const settings = await storage.getAiSettings(storeId);
-      const openaiKey = settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY;
-      if (!openaiKey) {
-        return res.status(503).json({ message: "Veuillez configurer votre clé API OpenAI لـ تفعيل التأكيد الآلي" });
+      const orKey  = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
+      const oaiKey = settings?.openaiApiKey?.trim()     || process.env.OPENAI_API_KEY?.trim();
+      if (!orKey && !oaiKey) {
+        return res.status(503).json({ message: "Veuillez configurer votre clé API OpenRouter pour activer la confirmation automatique." });
       }
+
       const systemPrompt = settings?.systemPrompt ||
         "أنت وكيل خدمة عملاء محترف مغربي. تتحدث بالدارجة المغربية فقط. مهمتك هي تأكيد تفاصيل الطلب مع الزبون على واتساب.";
 
       const { default: OpenAI } = await import("openai");
-      const client = new OpenAI({ apiKey: openaiKey });
+      const useKey   = orKey || oaiKey!;
+      const useModel = (settings?.aiModel || "openai/gpt-4o-mini");
+      const client = new OpenAI({
+        apiKey: useKey,
+        ...(orKey ? {
+          baseURL: "https://openrouter.ai/api/v1",
+          defaultHeaders: { "HTTP-Referer": "https://tajergrow.com", "X-Title": "TajerGrow" },
+        } : {}),
+      });
 
       const userMessage = `الزبون اسمه ${order.customerName}، طلب ${order.orderNumber || order.id}، من مدينة ${order.customerCity || "غير معروفة"}. اكتب رسالة واتساب قصيرة بالدارجة المغربية لتأكيد الطلب.`;
 
       const completion = await client.chat.completions.create({
-        model: "gpt-4o",
+        model: orKey ? useModel : "gpt-4o-mini",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },

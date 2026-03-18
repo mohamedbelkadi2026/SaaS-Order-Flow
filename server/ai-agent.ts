@@ -33,18 +33,63 @@ function detectIntent(msg: string): "confirm" | "cancel" | null {
   return null;
 }
 
-/** Resolve the best API key for a store — store key takes priority over env var */
-async function resolveOpenAI(storeId: number): Promise<OpenAI> {
-  const settings = await storage.getAiSettings(storeId);
-  const key = settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY;
-  if (!key) throw new Error("Veuillez configurer votre clé API OpenAI لـ تفعيل التأكيد الآلي");
-  return new OpenAI({ apiKey: key });
+/* ────────────────────────────────────────────────────────────────
+   OPENROUTER RESOLVER — multi-tenant, store key has priority
+   Key chain: store openrouterApiKey → OPENROUTER_API_KEY env
+              → store openaiApiKey (legacy) → OPENAI_API_KEY env
+──────────────────────────────────────────────────────────────── */
+const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
+const OPENROUTER_HEADERS = {
+  "HTTP-Referer": "https://tajergrow.com",
+  "X-Title": "TajerGrow",
+};
+const DEFAULT_MODEL = "openai/gpt-4o-mini";
+
+export const AI_MODELS: Record<string, { label: string; provider: string }> = {
+  "openai/gpt-4o-mini":           { label: "GPT-4o Mini",       provider: "OpenRouter" },
+  "anthropic/claude-3.5-sonnet":  { label: "Claude 3.5 Sonnet", provider: "OpenRouter" },
+  "deepseek/deepseek-chat":       { label: "DeepSeek Chat",      provider: "OpenRouter" },
+};
+
+interface ResolvedClient {
+  client: OpenAI;
+  model: string;
+  provider: string;
 }
 
-/** Quick check — does this store have a usable OpenAI key? */
-async function storeHasOpenAIKey(storeId: number): Promise<boolean> {
+/** Resolve API client + model for a store. Strict store isolation — no cross-store leakage. */
+async function resolveAIClient(storeId: number): Promise<ResolvedClient> {
   const settings = await storage.getAiSettings(storeId);
-  return !!(settings?.openaiApiKey?.trim()) || !!(process.env.OPENAI_API_KEY);
+
+  // Priority: store OpenRouter key → env OpenRouter key → store OpenAI key (legacy) → env OpenAI key (legacy)
+  const orKey   = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
+  const oaiKey  = settings?.openaiApiKey?.trim()     || process.env.OPENAI_API_KEY?.trim();
+  const model   = settings?.aiModel?.trim() || DEFAULT_MODEL;
+
+  if (orKey) {
+    const client = new OpenAI({
+      apiKey: orKey,
+      baseURL: OPENROUTER_BASE,
+      defaultHeaders: OPENROUTER_HEADERS,
+    });
+    return { client, model, provider: "OpenRouter" };
+  }
+
+  if (oaiKey) {
+    const client = new OpenAI({ apiKey: oaiKey });
+    return { client, model: "gpt-4o-mini", provider: "OpenAI" };
+  }
+
+  throw new Error("Veuillez configurer votre clé API OpenRouter pour activer la confirmation automatique.");
+}
+
+/** Quick check — does this store have ANY usable AI key? */
+async function storeHasAIKey(storeId: number): Promise<boolean> {
+  const settings = await storage.getAiSettings(storeId);
+  return !!(settings?.openrouterApiKey?.trim())
+    || !!(process.env.OPENROUTER_API_KEY)
+    || !!(settings?.openaiApiKey?.trim())
+    || !!(process.env.OPENAI_API_KEY);
 }
 
 /** Look up the first product name for an order */
@@ -75,8 +120,8 @@ export async function triggerAIForNewOrder(
   customerName: string,
   productId?: number | null,
 ): Promise<void> {
-  if (!(await storeHasOpenAIKey(storeId))) {
-    console.warn("[AI] No OpenAI key configured for store", storeId, "— skipping AI trigger");
+  if (!(await storeHasAIKey(storeId))) {
+    console.warn("[AI] No AI key configured for store", storeId, "— skipping trigger");
     return;
   }
 
@@ -235,16 +280,17 @@ export async function handleIncomingMessage(
         })),
       ];
 
-      const ai = await resolveOpenAI(storeId);
+      const { client: ai, model, provider } = await resolveAIClient(storeId);
       const completion = await ai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model,
         messages,
         max_tokens: 200,
         temperature: 0.7,
       });
 
       const aiReply = completion.choices[0]?.message?.content?.trim() ?? "";
-      if (!aiReply) throw new Error("Empty GPT response");
+      if (!aiReply) throw new Error("Empty AI response");
+      console.log(`[AI] Reply via ${provider}/${model} for conv ${conv.id}`);
 
       await storage.createAiLog({
         storeId, orderId: conv.orderId, customerPhone,
@@ -256,6 +302,7 @@ export async function handleIncomingMessage(
       broadcastToStore(storeId, "message", {
         conversationId: conv.id, role: "assistant",
         content: aiReply, ts: Date.now(),
+        model, provider,
       });
 
       await sendWhatsAppMessage(customerPhone, aiReply);

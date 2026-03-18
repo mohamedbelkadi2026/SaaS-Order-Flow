@@ -173,7 +173,7 @@ export interface IStorage {
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
-  upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null }): Promise<import("@shared/schema").AiSetting>;
+  upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null }): Promise<import("@shared/schema").AiSetting>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -2211,7 +2211,7 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null }) {
+  async upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null }) {
     const { aiSettings } = await import("@shared/schema");
     const existing = await this.getAiSettings(storeId);
     if (existing) {
