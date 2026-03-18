@@ -656,6 +656,7 @@ function LiveMonitoringTab() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [manualMsg, setManualMsg] = useState("");
   const [messages, setMessages] = useState<any[]>([]);
+  const [typingConvId, setTypingConvId] = useState<number | null>(null);
   const messagesEndRef = { current: null as HTMLDivElement | null };
 
   /* ── Poll conversations list ────────────────────────────────── */
@@ -715,13 +716,31 @@ function LiveMonitoringTab() {
       if (data.conversationId === selectedId) refetchConvs();
     });
 
+    es.addEventListener("typing", (e) => {
+      const data = JSON.parse(e.data);
+      setTypingConvId(data.conversationId);
+    });
+
+    es.addEventListener("typing_stop", (e) => {
+      const data = JSON.parse(e.data);
+      setTypingConvId((prev) => (prev === data.conversationId ? null : prev));
+    });
+
+    es.addEventListener("ai_error", (e) => {
+      const data = JSON.parse(e.data);
+      setTypingConvId((prev) => (prev === data.conversationId ? null : prev));
+      if (data.conversationId === selectedId) {
+        toast({ title: "Erreur IA", description: data.error, variant: "destructive" });
+      }
+    });
+
     return () => es.close();
   }, [selectedId]);
 
-  /* ── Scroll to bottom when messages change ──────────────────── */
+  /* ── Scroll to bottom when messages or typing changes ──────── */
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, typingConvId]);
 
   const selectedConv = conversations.find((c: any) => c.id === selectedId);
 
@@ -805,13 +824,31 @@ function LiveMonitoringTab() {
                 className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors", selectedId === conv.id && "bg-blue-50")}
                 data-testid={`conv-item-${conv.id}`}
               >
-                <div className="flex items-center justify-between mb-1">
-                  <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
+                <div className="flex items-center justify-between mb-1 gap-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {typingConvId === conv.id ? (
+                      <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 animate-pulse" title="IA en train d'écrire..." />
+                    ) : conv.status === "active" ? (
+                      <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+                    ) : null}
+                    <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
+                  </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: statusColor(conv.status) }}>
                     {statusLabel(conv.status)}
                   </span>
                 </div>
-                <p className="text-xs text-zinc-400 truncate">{conv.lastMessage || "..."}</p>
+                {typingConvId === conv.id ? (
+                  <p className="text-xs text-green-500 font-medium flex items-center gap-1">
+                    <span className="inline-flex gap-0.5">
+                      <span className="w-1 h-1 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="w-1 h-1 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="w-1 h-1 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                    </span>
+                    IA en train d'écrire...
+                  </p>
+                ) : (
+                  <p className="text-xs text-zinc-400 truncate">{conv.lastMessage || "..."}</p>
+                )}
                 <p className="text-[10px] text-zinc-300 mt-0.5">{conv.customerPhone}</p>
               </button>
             ))}
@@ -867,9 +904,14 @@ function LiveMonitoringTab() {
             <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: `rgba(197,160,89,0.08)`, color: GOLD, borderBottom: `1px solid rgba(197,160,89,0.15)` }}>
               <UserX className="w-3.5 h-3.5" /> Mode manuel actif — l'IA ne répond plus. Vous contrôlez la conversation.
             </div>
+          ) : typingConvId === selectedConv.id ? (
+            <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: "rgba(34,197,94,0.06)", color: "#16a34a", borderBottom: "1px solid rgba(34,197,94,0.15)" }}>
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
+              IA en train de rédiger une réponse en Darija...
+            </div>
           ) : selectedConv.status === "active" ? (
             <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: "rgba(59,130,246,0.05)", color: "#3b82f6", borderBottom: "1px solid rgba(59,130,246,0.1)" }}>
-              <Bot className="w-3.5 h-3.5 animate-pulse" /> L'IA gère cette conversation automatiquement en Darija.
+              <Bot className="w-3.5 h-3.5" /> L'IA gère cette conversation automatiquement en Darija.
             </div>
           ) : null}
 
@@ -893,6 +935,21 @@ function LiveMonitoringTab() {
                 </span>
               </div>
             ))}
+
+            {/* ── AI Typing Bubble ─────────────────────────── */}
+            {typingConvId === selectedId && (
+              <div className="flex flex-col max-w-[60%]" style={{ alignSelf: "flex-end" }}>
+                <div className="px-4 py-3 flex items-center gap-1.5 rounded-2xl rounded-br-sm"
+                  style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)" }}>
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  <span className="text-xs text-green-600 font-medium ml-1">IA</span>
+                </div>
+                <span className="text-[10px] text-zinc-300 mt-0.5 px-1 text-right">en train d'écrire...</span>
+              </div>
+            )}
+
             <div ref={(el) => { messagesEndRef.current = el; }} />
           </div>
 

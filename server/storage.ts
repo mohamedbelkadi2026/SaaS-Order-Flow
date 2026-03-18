@@ -492,9 +492,29 @@ export class DatabaseStorage implements IStorage {
 
       const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, id));
 
+      // ── RULE 0: First-time confirm → subtract stock ─────────────────────
+      // Triggers when transitioning INTO 'confirme' from a non-confirme status
+      if (status === 'confirme' && prevStatus !== 'confirme') {
+        for (const item of items) {
+          if (!item.productId) continue;
+          const qty = Number(item.quantity);
+          await tx.update(products)
+            .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
+            .where(eq(products.id, item.productId));
+          await tx.insert(stockLogs).values({
+            storeId: currentOrder.storeId!,
+            productId: item.productId,
+            orderId: id,
+            changeAmount: -qty,
+            reason: `Commande #${id} confirmée`,
+          });
+        }
+      }
+
       // ── RULE 1: First-time delivery → subtract stock ────────────────────
-      // Only triggers when transitioning INTO delivered from a non-delivered status
-      if (status === 'delivered' && prevStatus !== 'delivered') {
+      // Only triggers when transitioning INTO delivered from a NON-confirme status
+      // (if coming from confirme, stock was already deducted in RULE 0)
+      if (status === 'delivered' && prevStatus !== 'delivered' && prevStatus !== 'confirme') {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
@@ -511,9 +531,9 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // ── RULE 2: Return/cancel from delivered → restore stock ────────────
-      // Only triggers when was delivered AND now switching to a return status
-      if (prevStatus === 'delivered' && this.RETURN_STATUSES.has(status)) {
+      // ── RULE 2: Return/cancel from delivered OR confirme → restore stock ─
+      // Triggers when was delivered or confirme AND now switching to a return status
+      if ((prevStatus === 'delivered' || prevStatus === 'confirme') && this.RETURN_STATUSES.has(status)) {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
