@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
-import { users, orders, orderItems } from "@shared/schema";
+import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations } from "@shared/schema";
 import { eq, and, gte, lt, count, desc } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -3025,7 +3025,6 @@ export async function registerRoutes(
       // Find which store has an active conversation with this phone
       // We search across all stores — in production each store has its own Green API instance
       // so we can identify via the instance ID in the request or use a simpler lookup
-      const { aiConversations } = await import("@shared/schema");
       const activeConvs = await db.select().from(aiConversations).where(
         and(eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active"))
       );
@@ -3062,6 +3061,136 @@ export async function registerRoutes(
       triggerAIForNewOrder(storeId, order.id, order.customerPhone, order.customerName, undefined).catch(console.error);
       res.json({ success: true, message: "Déclenchement IA en cours..." });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ════════════════════════════════════════════════════════════════
+     OPEN RETOUR — Returns Management Integration
+  ════════════════════════════════════════════════════════════════ */
+
+  /* ── Get Open Retour settings for this store ─────────────────── */
+  app.get("/api/open-retour/settings", requireAuth, async (req: any, res: any) => {
+    try {
+      const integration = await storage.getIntegrationByProvider(req.user!.storeId!, "open_retour");
+      if (!integration) return res.json({ connected: false });
+      let creds: any = {};
+      try { creds = JSON.parse(integration.credentials); } catch {}
+      res.json({ connected: true, clientId: creds.clientId || "", hasApiKey: !!(creds.apiKey) });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ── Save / update Open Retour credentials ───────────────────── */
+  app.post("/api/open-retour/settings", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { apiKey, clientId } = req.body;
+      if (!apiKey?.trim() || !clientId?.trim()) {
+        return res.status(400).json({ message: "API Key et Client ID sont requis" });
+      }
+      const { testOpenRetourConnection } = await import("./services/open-retour");
+      const test = await testOpenRetourConnection({ apiKey, clientId });
+
+      const existing = await storage.getIntegrationByProvider(storeId, "open_retour");
+      const credentials = JSON.stringify({ apiKey, clientId });
+      if (existing) {
+        await db.update(storeIntegrations)
+          .set({ credentials, isActive: 1 })
+          .where(eq(storeIntegrations.id, existing.id));
+      } else {
+        await storage.createIntegration({ storeId, provider: "open_retour", type: "returns", credentials });
+      }
+      res.json({ success: true, connected: test.ok, message: test.message });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ── Disconnect Open Retour ───────────────────────────────────── */
+  app.delete("/api/open-retour/settings", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const existing = await storage.getIntegrationByProvider(storeId, "open_retour");
+      if (existing) {
+        await db.update(storeIntegrations).set({ isActive: 0 }).where(eq(storeIntegrations.id, existing.id));
+      }
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ── Create a return ticket ──────────────────────────────────── */
+  app.post("/api/open-retour/create-return", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const orderId = Number(req.body.orderId);
+      if (!orderId) return res.status(400).json({ message: "orderId requis" });
+
+      // Load order
+      const [order] = await db.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
+      if (!order) return res.status(404).json({ message: "Commande introuvable" });
+
+      // Load items
+      const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+
+      // Load credentials
+      const integration = await storage.getIntegrationByProvider(storeId, "open_retour");
+      if (!integration || !integration.isActive) {
+        return res.status(400).json({ message: "Open Retour non connecté. Configurez l'intégration d'abord." });
+      }
+      let creds: any = {};
+      try { creds = JSON.parse(integration.credentials); } catch {}
+      if (!creds.apiKey || !creds.clientId) {
+        return res.status(400).json({ message: "Identifiants Open Retour manquants" });
+      }
+
+      const { createOpenRetourReturn } = await import("./services/open-retour");
+      const result = await createOpenRetourReturn(
+        { apiKey: creds.apiKey, clientId: creds.clientId },
+        {
+          orderReference: order.trackNumber || order.orderNumber || `#${orderId}`,
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerAddress: order.customerAddress || "",
+          customerCity: order.customerCity || "",
+          reason: req.body.reason || order.comment || order.commentStatus || "Retour client",
+          trackingNumber: order.trackNumber || undefined,
+          items: items.map(i => ({
+            name: i.rawProductName || `Produit #${i.productId}`,
+            quantity: i.quantity,
+            price: i.price,
+          })),
+        }
+      );
+
+      if (!result.success) {
+        return res.status(502).json({ message: result.message || "Échec Open Retour" });
+      }
+
+      // Save return tracking number to order
+      if (result.returnTrackingNumber) {
+        await db.update(orders)
+          .set({ returnTrackingNumber: result.returnTrackingNumber, updatedAt: new Date() })
+          .where(eq(orders.id, orderId));
+      }
+
+      // Optionally update status to retourné
+      if (req.body.updateStatus) {
+        await storage.updateOrderStatus(orderId, "retourné");
+      }
+
+      // Log the action
+      await db.insert(integrationLogs).values({
+        storeId, integrationId: integration.id, provider: "open_retour",
+        action: "create_return", status: "success",
+        message: `Retour créé: ${result.returnTrackingNumber}`,
+        payload: JSON.stringify({ orderId, returnTrackingNumber: result.returnTrackingNumber }),
+      });
+
+      res.json({
+        success: true,
+        returnTrackingNumber: result.returnTrackingNumber,
+        message: result.message || "Ticket de retour créé avec succès",
+      });
+    } catch (err: any) {
+      console.error("[OpenRetour] create-return error:", err.message);
+      res.status(500).json({ message: err.message });
+    }
   });
 
   return httpServer;

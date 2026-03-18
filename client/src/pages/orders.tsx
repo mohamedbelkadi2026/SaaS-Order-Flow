@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
@@ -207,8 +207,30 @@ export default function Orders() {
   const updateOrder = useUpdateOrder();
   const bulkAssign = useBulkAssign();
   const bulkShip = useBulkShip();
-  const { toast } = useToast();
-  const qc = useQueryClient();
+
+  /* ── Open Retour prompt ───────────────────────────────────────── */
+  const [orPrompt, setOrPrompt] = useState<{ orderId: number; orderRef: string; customerName: string } | null>(null);
+  const [orPromptReason, setOrPromptReason] = useState("");
+  const { data: orSettings } = useQuery<any>({
+    queryKey: ["/api/open-retour/settings"],
+    queryFn: () => fetch("/api/open-retour/settings", { credentials: "include" }).then(r => r.json()),
+  });
+  const createReturnMutation = useMutation({
+    mutationFn: (orderId: number) => fetch("/api/open-retour/create-return", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId, reason: orPromptReason, updateStatus: false }),
+    }).then(async r => {
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.message || "Erreur Open Retour");
+      return d;
+    }),
+    onSuccess: (data) => {
+      toast({ title: "Ticket de retour créé ✅", description: `N° de retour: ${data.returnTrackingNumber}` });
+      setOrPrompt(null);
+    },
+    onError: (e: any) => toast({ title: "Erreur Open Retour", description: e.message, variant: "destructive" }),
+  });
 
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -379,7 +401,8 @@ export default function Orders() {
     });
   };
 
-  const handleStatusChange = (id: number, status: string) => {
+  const handleStatusChange = (id: number, status: string, order?: any) => {
+    const isReturnStatus = status === "refused" || status.startsWith("annule") || status === "retourné";
     updateStatus.mutate({ id, status }, {
       onSuccess: () => {
         toast({ title: "Statut mis à jour", description: `Commande changée en ${status}` });
@@ -389,6 +412,16 @@ export default function Orders() {
         }
         if (status !== urlStatus) {
           setHiddenOrderIds(prev => new Set([...prev, id]));
+        }
+        // If OR is connected and this is a refused/annulé order, show prompt
+        if (isReturnStatus && orSettings?.connected) {
+          const ord = order || filteredOrders?.find((o: any) => o.id === id);
+          setOrPromptReason("");
+          setOrPrompt({
+            orderId: id,
+            orderRef: ord?.orderNumber || `#${id}`,
+            customerName: ord?.customerName || "",
+          });
         }
       }
     });
@@ -1214,6 +1247,48 @@ export default function Orders() {
         onClose={() => setSelectedOrder(null)}
         onUpdated={(updated: any) => setSelectedOrder((prev: any) => prev ? { ...prev, ...updated } : prev)}
       />
+
+      {/* ── Open Retour prompt dialog ─────────────────────────────── */}
+      <Dialog open={!!orPrompt} onOpenChange={(open) => { if (!open) setOrPrompt(null); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RotateCcw className="w-5 h-5 text-amber-600" />
+              Créer un ticket de retour ?
+            </DialogTitle>
+            <DialogDescription>
+              La commande <strong>{orPrompt?.orderRef}</strong> — {orPrompt?.customerName} a été marquée comme refusée/annulée.
+              Voulez-vous créer un ticket de retour Open Retour ?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <label className="text-sm font-semibold block mb-1.5">Raison du retour (optionnel)</label>
+            <input
+              className="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400/50"
+              placeholder="Ex: colis refusé, client absent..."
+              value={orPromptReason}
+              onChange={e => setOrPromptReason(e.target.value)}
+              data-testid="input-or-prompt-reason"
+            />
+          </div>
+          <DialogFooter className="gap-2 flex-row justify-end">
+            <Button variant="outline" onClick={() => setOrPrompt(null)} data-testid="button-or-prompt-ignore">
+              Ignorer
+            </Button>
+            <Button
+              onClick={() => orPrompt && createReturnMutation.mutate(orPrompt.orderId)}
+              disabled={createReturnMutation.isPending}
+              className="font-bold text-white"
+              style={{ background: "linear-gradient(135deg, #C5A059 0%, #b8904a 100%)" }}
+              data-testid="button-or-prompt-create"
+            >
+              {createReturnMutation.isPending
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Création...</>
+                : <><RotateCcw className="w-4 h-4 mr-2" /> Oui, créer un retour</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

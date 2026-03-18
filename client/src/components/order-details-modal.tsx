@@ -1,15 +1,17 @@
 import { useState, useEffect } from "react";
-import { Dialog, DialogContent, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogHeader, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, X, Trash2, Plus, Tag, Box } from "lucide-react";
+import { Loader2, X, Trash2, Plus, Tag, Box, RotateCcw, CheckCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+
+const GOLD = "#C5A059";
 
 // ── Moroccan cities ──────────────────────────────────────────────
 const MOROCCAN_CITIES = [
@@ -267,6 +269,37 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     },
   });
 
+  /* ── Open Retour ─────────────────────────────────────────────── */
+  const [orOpen, setOrOpen] = useState(false);
+  const [orReason, setOrReason] = useState("");
+  const [orDone, setOrDone] = useState<{ tracking: string } | null>(null);
+
+  const { data: orSettings } = useQuery<any>({
+    queryKey: ["/api/open-retour/settings"],
+    queryFn: () => fetch("/api/open-retour/settings", { credentials: "include" }).then(r => r.json()),
+    enabled: !!order,
+  });
+
+  const createReturn = useMutation({
+    mutationFn: () => fetch("/api/open-retour/create-return", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId: order!.id, reason: orReason, updateStatus: false }),
+    }).then(async r => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || "Erreur Open Retour");
+      return data;
+    }),
+    onSuccess: (data) => {
+      setOrDone({ tracking: data.returnTrackingNumber });
+      setOrOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      toast({ title: "Ticket de retour créé ✅", description: `N° de retour: ${data.returnTrackingNumber}` });
+    },
+    onError: (e: any) => toast({ title: "Erreur Open Retour", description: e.message, variant: "destructive" }),
+  });
+
   const set = (key: string, value: any) => setFields((f: any) => ({ ...f, [key]: value }));
 
   const handleItemChange = (id: string | number, field: string, value: any) => {
@@ -311,6 +344,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   if (!order) return null;
 
   return (
+    <>
     <Dialog open={!!order} onOpenChange={open => { if (!open) onClose(); }}>
       <DialogContent className="sm:max-w-2xl p-0 rounded-2xl overflow-hidden border shadow-2xl max-h-[95vh] flex flex-col">
         <DialogDescription className="sr-only">Détails et modification de la commande #{order?.orderNumber}</DialogDescription>
@@ -550,20 +584,92 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         </div>
 
         {/* ── Footer ── */}
-        <div className="flex justify-end gap-3 px-6 py-4 border-t bg-white">
-          <Button variant="outline" onClick={onClose} className="px-6">
-            Annuler
-          </Button>
-          <Button
-            onClick={() => saveOrder.mutate()}
-            disabled={saveOrder.isPending}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-6 font-semibold"
-          >
-            {saveOrder.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-            Enregistrer les modifications
-          </Button>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t bg-white">
+          {/* Left: Open Retour */}
+          <div className="flex items-center gap-2">
+            {orDone ? (
+              <div className="flex items-center gap-1.5 text-sm text-green-700 font-medium">
+                <CheckCircle className="w-4 h-4 text-green-500" />
+                Retour N° <code className="bg-green-50 px-1 rounded text-xs">{orDone.tracking}</code>
+              </div>
+            ) : orSettings?.connected ? (
+              <Button
+                variant="outline" size="sm"
+                onClick={() => { setOrReason(order?.comment || order?.commentStatus || ""); setOrOpen(true); }}
+                className="text-amber-700 border-amber-200 hover:bg-amber-50 font-semibold text-xs"
+                data-testid="button-create-return"
+              >
+                <RotateCcw className="w-3.5 h-3.5 mr-1" /> Créer un Retour
+              </Button>
+            ) : (
+              <span className="text-xs text-muted-foreground hidden sm:block">
+                Connectez Open Retour pour activer les retours
+              </span>
+            )}
+          </div>
+          {/* Right: Save / Cancel */}
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={onClose} className="px-6">Annuler</Button>
+            <Button
+              onClick={() => saveOrder.mutate()}
+              disabled={saveOrder.isPending}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-6 font-semibold"
+            >
+              {saveOrder.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Enregistrer les modifications
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
+
+    {/* ── Open Retour return dialog ──────────────────────────── */}
+    <Dialog open={orOpen} onOpenChange={setOrOpen}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <RotateCcw className="w-5 h-5" style={{ color: GOLD }} />
+            Créer un ticket de retour
+          </DialogTitle>
+          <DialogDescription>
+            Un ticket Open Retour sera créé pour la commande{" "}
+            <strong>{order?.orderNumber || `#${order?.id}`}</strong> — {order?.customerName}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <Label className="font-semibold text-sm">Raison du retour</Label>
+            <Input
+              data-testid="input-or-reason"
+              placeholder="Ex: produit endommagé, erreur de taille..."
+              value={orReason}
+              onChange={e => setOrReason(e.target.value)}
+            />
+          </div>
+          <div className="p-3 rounded-xl text-xs" style={{ background: "rgba(197,160,89,0.07)", border: "1px solid rgba(197,160,89,0.2)" }}>
+            <p className="font-semibold mb-1" style={{ color: GOLD }}>Ce qui sera transmis à Open Retour :</p>
+            <ul className="text-zinc-600 space-y-0.5">
+              <li>• Client : {order?.customerName} — {order?.customerPhone}</li>
+              <li>• Ville : {order?.customerCity || "N/A"}</li>
+              <li>• Référence : {order?.orderNumber || `#${order?.id}`}</li>
+            </ul>
+          </div>
+        </div>
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={() => setOrOpen(false)} data-testid="button-or-cancel-modal">Annuler</Button>
+          <Button
+            onClick={() => createReturn.mutate()}
+            disabled={createReturn.isPending}
+            className="font-bold text-white"
+            style={{ background: `linear-gradient(135deg, #C5A059 0%, #b8904a 100%)` }}
+            data-testid="button-or-confirm-return"
+          >
+            {createReturn.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RotateCcw className="w-4 h-4 mr-2" />}
+            {createReturn.isPending ? "Création..." : "Créer le retour"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -108,6 +108,7 @@ export const orders = pgTable("orders", {
   rawQuantity: integer("raw_quantity"),
   commentStatus: text("comment_status"),
   commentOrder: text("comment_order"),
+  returnTrackingNumber: text("return_tracking_number"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
   pickupDate: timestamp("pickup_date"),
