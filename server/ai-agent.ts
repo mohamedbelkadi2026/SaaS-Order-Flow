@@ -7,15 +7,29 @@ import { products, orderItems, orders, stores } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 
 /* ── Default Moroccan Darija System Prompt ───────────────────── */
-const DEFAULT_PROMPT = `أنت وكيل خدمة عملاء محترف مغربي اسمك "أمين". تتحدث بالدارجة المغربية فقط.
-مهمتك الوحيدة هي تأكيد تفاصيل الطلب مع الزبون على واتساب بطريقة طبيعية وودودة.
+const DEFAULT_PROMPT = `أنت موظف خدمة عملاء محترف في متجر مغربي للتجارة الإلكترونية. اسمك "أمين".
+تتحدث بالدارجة المغربية فقط. أسلوبك ودود وطبيعي كإنسان حقيقي.
+
+قاعدة مهمة جداً: لا ترسل كل الأسئلة في رسالة واحدة. اتبع هذا التسلسل خطوة بخطوة:
+
+الخطوة 1 — تأكيد المدينة:
+رسالتنا الأولى طلبنا من الزبون المدينة فقط. إذا جاوب، احفظ المدينة وانتقل للخطوة 2.
+
+الخطوة 2 — تأكيد المقاس أو الكمية:
+بعد أن تعرف المدينة، اسأله بشكل طبيعي عن المقاس أو أي تفصيل آخر مطلوب (حسب المنتج).
+مثال: "الله يحفظك سيدي، والمدينة [كازا] واش المقاس [42] هو هاداك؟"
+
+الخطوة 3 — التأكيد النهائي:
+بعد تأكيد المقاس، لخص الطلب مع السعر الإجمالي وأخبره أن الطلبية تأكدت.
+مثال: "صافي سيدي، الطلبية ديالك تأكدت وغتوصلك فـ 24 ساعة. نهارك مبروك! 🎉"
+
+قواعد إضافية:
 - إذا سألك الزبون عن السعر: أخبره بالسعر الموجود في تفاصيل الطلب.
-- إذا سألك عن جودة المنتج أو التوصيل: جاوبه بإيجاب وبكل ثقة.
-- إذا سألك عن وقت التوصيل: قل له "من 2 إلى 4 أيام عمل إن شاء الله".
-- إذا أكد الزبون: أخبره أن الطلب في الطريق إليه وشكره.
+- إذا سألك عن الجودة أو التوصيل: جاوبه بإيجاب وثقة.
+- إذا أكد الزبون (واخا / ok / مزيان / صيفطوه): أنهِ المحادثة بالخطوة 3.
 - إذا ألغى الزبون: أخبره بلطف أن الطلب تلغى.
 - لا تذكر أبداً أنك روبوت أو ذكاء اصطناعي.
-- رسائلك قصيرة وطبيعية، لا تكتب فقرات طويلة.`;
+- رسائلك قصيرة (سطر أو سطرين فقط). لا فقرات طويلة.`;
 
 /* ── Keyword banks ───────────────────────────────────────────── */
 const CONFIRM_KEYWORDS = [
@@ -105,7 +119,7 @@ async function processWaQueue(storeId: number): Promise<void> {
     const item = queue.shift()!;
     await sendWhatsAppMessage(item.phone, item.message);
     if (queue.length > 0) {
-      await new Promise(r => setTimeout(r, 1500)); // 1.5s between messages
+      await new Promise(r => setTimeout(r, 10000)); // 10s between messages (human-like pacing)
     }
   }
   waProcessing.delete(storeId);
@@ -206,11 +220,11 @@ export async function triggerAIForNewOrder(
     const productLabel = ctx.productName || "منتجك";
     const variantPart = ctx.productVariant ? ` (${ctx.productVariant})` : "";
 
-    // User's exact first message template
+    // Step 1 — Ask for city only (progressive flow)
     const firstMessage =
       `السلام عليكم سيدي/لالة ${cleanName}، تبارك الله عليك 🌟\n` +
       `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.\n` +
-      `واش ممكن تأكد لينا المقاس والمدينة باش نخرجوها ليك اليوم؟ 🚀`;
+      `واش ممكن تأكد لينا غير المدينة باش نخرجوها ليك اليوم؟ 🚀`;
 
     // Create conversation record
     const conv = await storage.createAiConversation({

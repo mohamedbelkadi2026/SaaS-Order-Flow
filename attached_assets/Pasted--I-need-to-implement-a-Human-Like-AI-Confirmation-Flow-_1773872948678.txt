@@ -1,0 +1,21 @@
+"I need to implement a 'Human-Like' AI Confirmation Flow via WhatsApp for TajerGrow. The goal is to make the AI interact naturally and progressively with the customer, not just ask for everything at once. Please follow these rules:
+1. The Progressive Conversation Flow (Logic):
+Trigger: When a new order arrives (status: 'nouveau'):
+Step 1 (The Hook): Send the first message: 'السلام عليكم سيدي/لالة {Nom_Client}، تبارك الله عليك. معاك فريق الدعم ديال {Nom_Boutique}، شلنا الطلب ديالك لـ {Nom_Produit}. واش ممكن تأكد لينا غير المدينة باش نخرجوها ليك اليوم؟'
+Step 2 (The Follow-up): Once the customer answers with the city, the AI should reply naturally (e.g., 'الله يحفظك سيدي، والمدينة [كازا] واش المقاس 42 هو هاداك؟').
+Step 3 (The Conclusion): Only after getting these details, the AI confirms the total price and says: 'صافي سيدي، الطلبية ديالك تأكدت وغتوصلك فـ 24 ساعة. نهارك مبروك!'.
+2. AI Natural Interaction (DeepSeek/GPT-4o):
+Use the OpenRouter API with the deepseek/deepseek-chat model for its excellent understanding of Moroccan Darija.
+System Prompt: 'You are a professional Moroccan customer service agent. Speak ONLY in Moroccan Darija. Do not send all questions in one message. Answer customer questions about product quality, delivery time, or price naturally. If the customer says "Ok" or "Confirm", update the status.'
+3. Database & Status Automation (3amali):
+If the AI detects a 'Confirmation Intent', it MUST automatically update the Orders table in the database: status = 'confirme'.
+If the customer wants to cancel, update to status = 'Annulé (fake)'.
+Ensure all messages are saved in a Chat_Logs table for live monitoring.
+4. Live Chat Monitoring (UI):
+Create a 'Live Monitoring' page for the Admin.
+I want to see the conversation history in real-time as the AI talks to the customer.
+Add a 'Take Over' (Prendre la main) button to manually type messages if I want to intervene.
+5. Technical Implementation:
+Ensure a 10-second delay between messages to appear human.
+Use a secure webhook to receive the customer's replies and send them back to the AI.
+Goal: I want a functional system where the AI starts a conversation, answers the customer's questions, and updates my dashboard automatically once they agree."
