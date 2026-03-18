@@ -174,6 +174,14 @@ export interface IStorage {
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
   upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null }): Promise<import("@shared/schema").AiSetting>;
+  updateConversationNeedsAttention(id: number, val: number): Promise<void>;
+
+  // Recovery
+  getRecoverySettings(storeId: number): Promise<import("@shared/schema").RecoverySetting | undefined>;
+  upsertRecoverySettings(storeId: number, data: { enabled?: number; waitMinutes?: number }): Promise<import("@shared/schema").RecoverySetting>;
+  getAbandonedLeadsForRecovery(storeId: number, waitMinutes: number): Promise<any[]>;
+  getRecoveryStats(storeId: number): Promise<{ total: number; recovered: number; revenueRecovered: number }>;
+  getAllStoresWithRecoveryEnabled(): Promise<import("@shared/schema").RecoverySetting[]>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -2225,6 +2233,60 @@ export class DatabaseStorage implements IStorage {
     }
     const [row] = await db.insert(aiSettings).values({ storeId, ...data }).returning();
     return row;
+  }
+
+  // ── Recovery Settings ──────────────────────────────────────────────────────
+  async getRecoverySettings(storeId: number) {
+    const { recoverySettings } = await import("@shared/schema");
+    const [row] = await db.select().from(recoverySettings).where(eq(recoverySettings.storeId, storeId));
+    return row;
+  }
+
+  async upsertRecoverySettings(storeId: number, data: { enabled?: number; waitMinutes?: number }) {
+    const { recoverySettings } = await import("@shared/schema");
+    const existing = await this.getRecoverySettings(storeId);
+    if (existing) {
+      const [row] = await db.update(recoverySettings).set({ ...data, updatedAt: new Date() }).where(eq(recoverySettings.storeId, storeId)).returning();
+      return row;
+    }
+    const [row] = await db.insert(recoverySettings).values({ storeId, ...data }).returning();
+    return row;
+  }
+
+  async getAbandonedLeadsForRecovery(storeId: number, waitMinutes: number) {
+    const { orders, aiConversations } = await import("@shared/schema");
+    const cutoff = new Date(Date.now() - waitMinutes * 60 * 1000);
+    // Get abandoned orders older than waitMinutes with no active AI conversation
+    const candidates = await db
+      .select({ id: orders.id, storeId: orders.storeId, customerPhone: orders.customerPhone, customerName: orders.customerName, rawProductName: orders.rawProductName, totalPrice: orders.totalPrice, createdAt: orders.createdAt })
+      .from(orders)
+      .where(and(eq(orders.storeId, storeId), eq(orders.status, "abandonné"), eq(orders.wasAbandoned, 1), lte(orders.createdAt, cutoff)));
+    
+    // Filter out those that already have an AI conversation
+    const result = [];
+    for (const o of candidates) {
+      const [conv] = await db.select({ id: aiConversations.id }).from(aiConversations)
+        .where(and(eq(aiConversations.storeId, storeId), eq(aiConversations.customerPhone, o.customerPhone)));
+      if (!conv) result.push(o);
+    }
+    return result;
+  }
+
+  async getRecoveryStats(storeId: number) {
+    const { orders } = await import("@shared/schema");
+    const allAbandoned = await db.select({ id: orders.id, status: orders.status, totalPrice: orders.totalPrice })
+      .from(orders)
+      .where(and(eq(orders.storeId, storeId), eq(orders.wasAbandoned, 1)));
+    
+    const total = allAbandoned.length;
+    const recovered = allAbandoned.filter(o => o.status === "confirme");
+    const revenueRecovered = recovered.reduce((sum, o) => sum + (o.totalPrice || 0), 0);
+    return { total, recovered: recovered.length, revenueRecovered };
+  }
+
+  async getAllStoresWithRecoveryEnabled() {
+    const { recoverySettings } = await import("@shared/schema");
+    return db.select().from(recoverySettings).where(eq(recoverySettings.enabled, 1));
   }
 }
 

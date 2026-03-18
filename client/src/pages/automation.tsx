@@ -6,7 +6,8 @@ import { QRCodeSVG } from "qrcode.react";
 import {
   Bot, Megaphone, Wifi, Check, X, Copy, Send, Loader2, RefreshCw, Phone,
   MessageCircle, Zap, Users, Clock, CheckCircle2, AlertCircle, Eye, EyeOff,
-  Radio, UserCheck, UserX, Play,
+  Radio, UserCheck, UserX, Play, TrendingUp, ShoppingCart, DollarSign, Timer,
+  Lock, ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -18,7 +19,7 @@ const DEFAULT_SYSTEM_PROMPT = `أنت وكيل خدمة عملاء محترف م
 والإجابة على أسئلتهم بشكل طبيعي.
 إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.`;
 
-type Tab = "retargeting" | "ai" | "whatsapp" | "monitoring";
+type Tab = "retargeting" | "ai" | "whatsapp" | "monitoring" | "recovery";
 
 /* ── Pill tabs ─────────────────────────────────────────────────── */
 function TabPill({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
@@ -57,6 +58,7 @@ export default function AutomationPage() {
             <TabPill active={tab === "ai"} onClick={() => setTab("ai")} icon={<Bot className="w-4 h-4" />} label="IA Confirmation" />
             <TabPill active={tab === "whatsapp"} onClick={() => setTab("whatsapp")} icon={<Wifi className="w-4 h-4" />} label="Connexion WhatsApp" />
             <TabPill active={tab === "monitoring"} onClick={() => setTab("monitoring")} icon={<Radio className="w-4 h-4" />} label="Live Monitoring" />
+            <TabPill active={tab === "recovery"} onClick={() => setTab("recovery")} icon={<TrendingUp className="w-4 h-4" />} label="Récupération IA" />
           </div>
         </div>
       </div>
@@ -66,6 +68,7 @@ export default function AutomationPage() {
         {tab === "ai" && <AiConfirmationTab />}
         {tab === "whatsapp" && <WhatsappTab />}
         {tab === "monitoring" && <LiveMonitoringTab />}
+        {tab === "recovery" && <RecoveryTab />}
       </div>
     </div>
   );
@@ -1243,6 +1246,243 @@ function LiveMonitoringTab() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════
+   TAB 5 — RÉCUPÉRATION IA (Pro Plan Only)
+════════════════════════════════════════════════════════════════ */
+function RecoveryTab() {
+  const { toast } = useToast();
+  const [enabled, setEnabled] = useState(false);
+  const [waitMinutes, setWaitMinutes] = useState(30);
+  const [isPro, setIsPro] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const { data: settings, isLoading: loadingSettings } = useQuery<any>({
+    queryKey: ["/api/automation/recovery-settings"],
+    queryFn: async () => {
+      const r = await fetch("/api/automation/recovery-settings", { credentials: "include" });
+      if (r.status === 403) { setIsPro(false); return null; }
+      setIsPro(true);
+      return r.json();
+    },
+    retry: false,
+  });
+
+  const { data: stats, isLoading: loadingStats } = useQuery<any>({
+    queryKey: ["/api/automation/recovery-stats"],
+    queryFn: async () => {
+      const r = await fetch("/api/automation/recovery-stats", { credentials: "include" });
+      if (!r.ok) return { total: 0, recovered: 0, revenueRecovered: 0 };
+      return r.json();
+    },
+    refetchInterval: 60000,
+    enabled: isPro,
+  });
+
+  const { data: sub } = useQuery<any>({ queryKey: ["/api/subscription"] });
+  const webhookKey = useQuery<any>({ queryKey: ["/api/store"] }).data?.webhookKey;
+
+  useEffect(() => {
+    if (settings) {
+      setEnabled(!!settings.enabled);
+      setWaitMinutes(settings.waitMinutes ?? 30);
+    }
+  }, [settings]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      const r = await fetch("/api/automation/recovery-settings", {
+        method: "PUT", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, waitMinutes }),
+      });
+      if (!r.ok) throw new Error((await r.json()).message);
+      queryClient.invalidateQueries({ queryKey: ["/api/automation/recovery-settings"] });
+      toast({ title: enabled ? "Récupération activée ✅" : "Récupération désactivée", description: `Délai d'attente: ${waitMinutes} minutes` });
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!isPro) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center">
+        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
+          <Lock className="w-8 h-8 text-white" />
+        </div>
+        <h2 className="text-2xl font-bold mb-2" style={{ color: NAVY }}>Fonctionnalité Pro</h2>
+        <p className="text-zinc-500 max-w-md mb-6">
+          Le système de Récupération IA est réservé aux abonnés du plan Pro. Passez au Pro pour récupérer automatiquement vos leads abandonnés et augmenter votre CA pendant que vous dormez.
+        </p>
+        <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100 max-w-sm w-full mb-6">
+          <div className="text-3xl font-bold mb-1" style={{ color: GOLD }}>400 DH<span className="text-sm font-normal text-zinc-400">/mois</span></div>
+          <div className="text-sm text-zinc-500 mb-4">Plan Pro — Commandes illimitées</div>
+          <ul className="text-left space-y-2 text-sm text-zinc-600">
+            <li className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />Récupération IA abandonnés</li>
+            <li className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />Commandes illimitées</li>
+            <li className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />Toutes les fonctionnalités IA</li>
+          </ul>
+        </div>
+        <p className="text-xs text-zinc-400">Contactez le Super Admin pour upgrader votre plan.</p>
+      </div>
+    );
+  }
+
+  const statCards = [
+    { label: "Leads Abandonnés", value: stats?.total ?? 0, icon: <ShoppingCart className="w-5 h-5" />, color: "#6366f1" },
+    { label: "Leads Récupérés", value: stats?.recovered ?? 0, icon: <TrendingUp className="w-5 h-5" />, color: "#22c55e" },
+    { label: "CA Récupéré", value: `${((stats?.revenueRecovered ?? 0) / 100).toFixed(0)} DH`, icon: <DollarSign className="w-5 h-5" />, color: GOLD },
+  ];
+
+  const recoveryRate = stats?.total > 0 ? Math.round((stats.recovered / stats.total) * 100) : 0;
+
+  const currentHost = window.location.origin;
+  const abandonedWebhookUrl = webhookKey ? `${currentHost}/api/webhooks/abandoned-checkout/${webhookKey}` : "...en chargement";
+
+  return (
+    <div className="space-y-6">
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {statCards.map((c) => (
+          <div key={c.label} className="bg-white rounded-2xl p-5 shadow-sm border border-zinc-100">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm text-zinc-500 font-medium">{c.label}</span>
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white" style={{ background: c.color }}>
+                {c.icon}
+              </div>
+            </div>
+            <div className="text-3xl font-bold" style={{ color: c.color }}>
+              {loadingStats ? <Loader2 className="w-6 h-6 animate-spin" /> : c.value}
+            </div>
+            {c.label === "Leads Récupérés" && (
+              <div className="mt-2">
+                <div className="h-1.5 bg-zinc-100 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${recoveryRate}%`, background: "#22c55e" }} />
+                </div>
+                <span className="text-xs text-zinc-400 mt-1">{recoveryRate}% taux de récupération</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Money Machine Card */}
+      {stats?.revenueRecovered > 0 && (
+        <div className="rounded-2xl p-5 text-white" style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
+              <DollarSign className="w-5 h-5 text-yellow-300" />
+            </div>
+            <div>
+              <div className="font-bold text-lg">TajerGrow a récupéré <span style={{ color: GOLD }}>{((stats.revenueRecovered) / 100).toFixed(0)} DH</span> pour vous 💰</div>
+              <div className="text-white/60 text-sm">pendant que vous dormiez — l'IA travaille 24h/24</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Configuration Card */}
+      <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100">
+        <h3 className="text-base font-bold mb-5" style={{ color: NAVY }}>Configuration de la Récupération Automatique</h3>
+
+        {/* Enable Toggle */}
+        <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: enabled ? "#22c55e" : "#e4e4e7" }}>
+              <TrendingUp className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <div className="font-semibold text-sm text-zinc-800">Activer la récupération automatique</div>
+              <div className="text-xs text-zinc-400">L'IA contacte les leads abandonnés par WhatsApp</div>
+            </div>
+          </div>
+          <button
+            onClick={() => setEnabled(!enabled)}
+            className={cn("relative w-12 h-6 rounded-full transition-all", enabled ? "bg-green-500" : "bg-zinc-300")}
+            data-testid="toggle-recovery-enabled"
+          >
+            <span className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all", enabled ? "left-6" : "left-0.5")} />
+          </button>
+        </div>
+
+        {/* Wait Time */}
+        <div className="p-4 rounded-xl bg-zinc-50 mb-6">
+          <div className="flex items-center gap-2 mb-3">
+            <Timer className="w-4 h-4 text-zinc-500" />
+            <span className="text-sm font-semibold text-zinc-700">Délai avant contact</span>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {[15, 30, 60, 120].map(m => (
+              <button
+                key={m}
+                onClick={() => setWaitMinutes(m)}
+                className={cn("py-2 rounded-xl text-sm font-bold border-2 transition-all", waitMinutes === m ? "text-white border-transparent" : "text-zinc-500 border-zinc-200 bg-white hover:border-zinc-300")}
+                style={waitMinutes === m ? { background: `linear-gradient(135deg, ${GOLD}, #d4aa60)`, borderColor: "transparent" } : {}}
+                data-testid={`btn-wait-${m}`}
+              >
+                {m < 60 ? `${m} min` : `${m / 60}h`}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-zinc-400 mt-2">L'IA attend {waitMinutes} minutes après l'abandon avant d'envoyer le premier message.</p>
+        </div>
+
+        <button
+          onClick={save}
+          disabled={saving}
+          className="w-full py-3 rounded-xl text-white font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-2"
+          style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}
+          data-testid="button-save-recovery"
+        >
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+          Enregistrer les paramètres
+        </button>
+      </div>
+
+      {/* Webhook Setup Card */}
+      <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100">
+        <h3 className="text-base font-bold mb-1" style={{ color: NAVY }}>Webhook d'Abandon (Shopify / YouCan)</h3>
+        <p className="text-sm text-zinc-500 mb-4">Configurez cette URL dans Shopify → Paramètres → Notifications → Webhooks → Paiements abandonnés</p>
+        <div className="flex items-center gap-2 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
+          <code className="text-xs text-zinc-700 flex-1 break-all">{abandonedWebhookUrl}</code>
+          <button
+            onClick={() => { navigator.clipboard.writeText(abandonedWebhookUrl); toast({ title: "URL copiée !" }); }}
+            className="shrink-0 p-2 rounded-lg hover:bg-zinc-200 transition-colors"
+            data-testid="button-copy-webhook"
+          >
+            <Copy className="w-4 h-4 text-zinc-500" />
+          </button>
+        </div>
+        <div className="mt-4 p-4 rounded-xl" style={{ background: "rgba(197, 160, 89, 0.08)", border: "1px solid rgba(197, 160, 89, 0.2)" }}>
+          <p className="text-xs font-semibold mb-2" style={{ color: GOLD }}>Comment ça marche:</p>
+          <ol className="text-xs text-zinc-600 space-y-1">
+            <li>1. Un client remplit son numéro mais ne finalise pas l'achat</li>
+            <li>2. Shopify envoie les données à TajerGrow via ce webhook</li>
+            <li>3. Après {waitMinutes} min, l'IA envoie un message WhatsApp en Darija</li>
+            <li>4. L'IA répond aux objections et guide le client vers la confirmation</li>
+            <li>5. Le statut passe à "Confirmé" et votre dashboard se met à jour ✅</li>
+          </ol>
+        </div>
+      </div>
+
+      {/* Recovery Message Preview */}
+      <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100">
+        <h3 className="text-base font-bold mb-4" style={{ color: NAVY }}>Aperçu du Message de Récupération</h3>
+        <div className="bg-[#ECE5DD] rounded-2xl p-4">
+          <div className="max-w-xs bg-white rounded-2xl rounded-tl-sm p-3 shadow-sm text-sm" dir="rtl" style={{ fontFamily: "sans-serif" }}>
+            السلام عليكم سيدي/لالة، شلنا باللي كنتي باغي تاخد "Nom_Produit" ولكن وقع شي مشكل؟
+            <br />واش عندك شي تساؤل نقدر نجاوبك عليه؟ راه بقى لينا غير 5 حبات فـ السطوك. 🛍️
+            <div className="text-[10px] text-zinc-400 mt-1 text-left">IA · TajerGrow</div>
+          </div>
+        </div>
+        <p className="text-xs text-zinc-400 mt-3">Le message est envoyé automatiquement. L'IA répond ensuite aux questions du client en Darija marocaine.</p>
+      </div>
     </div>
   );
 }

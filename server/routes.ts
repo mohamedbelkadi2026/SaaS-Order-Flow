@@ -3096,6 +3096,80 @@ export async function registerRoutes(
   });
 
   /* ════════════════════════════════════════════════════════════════
+     AI RECOVERY SYSTEM — Abandoned lead outreach (Pro Plan only)
+  ════════════════════════════════════════════════════════════════ */
+
+  function requireProPlan(req: any, res: any, next: any) {
+    storage.getSubscription(req.user!.storeId!).then(sub => {
+      if (sub?.plan === "pro" || req.user!.isSuperAdmin) return next();
+      res.status(403).json({ message: "pro_required", plan: sub?.plan || "starter" });
+    }).catch(() => res.status(500).json({ message: "Erreur serveur" }));
+  }
+
+  app.get("/api/automation/recovery-settings", requireAuth, requireProPlan, async (req: any, res: any) => {
+    const s = await storage.getRecoverySettings(req.user!.storeId!);
+    res.json(s || { enabled: 0, waitMinutes: 30 });
+  });
+
+  app.put("/api/automation/recovery-settings", requireAuth, requireProPlan, async (req: any, res: any) => {
+    const { enabled, waitMinutes } = req.body;
+    const s = await storage.upsertRecoverySettings(req.user!.storeId!, {
+      enabled: enabled ? 1 : 0,
+      waitMinutes: Math.max(5, Math.min(1440, Number(waitMinutes) || 30)),
+    });
+    res.json(s);
+  });
+
+  app.get("/api/automation/recovery-stats", requireAuth, requireProPlan, async (req: any, res: any) => {
+    res.json(await storage.getRecoveryStats(req.user!.storeId!));
+  });
+
+  /* ── Abandoned checkout webhook (generic + Shopify) ───────────── */
+  app.post("/api/webhooks/abandoned-checkout/:webhookKey", async (req: any, res: any) => {
+    try {
+      res.status(200).json({ ok: true });
+      const store = await storage.getStoreByWebhookKey(req.params.webhookKey);
+      if (!store) return;
+
+      const body = req.body;
+      // Support both Shopify abandoned checkout format and generic format
+      const customerName = body.customer?.first_name
+        ? `${body.customer.first_name} ${body.customer.last_name || ""}`.trim()
+        : (body.customer_name || body.name || "Client");
+      const customerPhone = body.customer?.phone || body.phone || body.customer_phone || "";
+      const productName = body.line_items?.[0]?.title || body.product_name || "Produit";
+      const totalPrice = body.total_price
+        ? Math.round(parseFloat(body.total_price) * 100)
+        : (body.total_price_cents || 0);
+
+      if (!customerPhone) return;
+
+      // Save as abandoned order
+      const orderNumber = `ABAND-${Date.now()}`;
+      const newOrder = await storage.createOrder({
+        storeId: store.id,
+        orderNumber,
+        customerName,
+        customerPhone,
+        customerAddress: body.shipping_address?.address1 || "",
+        customerCity: body.shipping_address?.city || body.city || "",
+        status: "abandonné",
+        totalPrice,
+        productCost: 0,
+        shippingCost: 0,
+        adSpend: 0,
+        source: "abandoned_checkout",
+        rawProductName: productName,
+        wasAbandoned: 1,
+      }, []);
+
+      console.log(`[Recovery] Captured abandoned checkout: store=${store.id} order=${newOrder.id} phone=${customerPhone}`);
+    } catch (err: any) {
+      console.error("[Recovery Webhook]", err.message);
+    }
+  });
+
+  /* ════════════════════════════════════════════════════════════════
      OPEN RETOUR — Returns Management Integration
   ════════════════════════════════════════════════════════════════ */
 

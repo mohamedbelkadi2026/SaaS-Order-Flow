@@ -109,6 +109,7 @@ export const orders = pgTable("orders", {
   commentStatus: text("comment_status"),
   commentOrder: text("comment_order"),
   returnTrackingNumber: text("return_tracking_number"),
+  wasAbandoned: integer("was_abandoned").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
   pickupDate: timestamp("pickup_date"),
@@ -538,3 +539,15 @@ export const aiSettings = pgTable("ai_settings", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 export type AiSetting = typeof aiSettings.$inferSelect;
+
+// ─── AI Recovery Settings per Store ────────────────────────────────────────
+export const recoverySettings = pgTable("recovery_settings", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull().unique(),
+  enabled: integer("enabled").default(0),
+  waitMinutes: integer("wait_minutes").default(30),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+export const insertRecoverySettingsSchema = createInsertSchema(recoverySettings).omit({ id: true, updatedAt: true });
+export type RecoverySetting = typeof recoverySettings.$inferSelect;
+export type InsertRecoverySetting = z.infer<typeof insertRecoverySettingsSchema>;

@@ -252,6 +252,64 @@ export async function triggerAIForNewOrder(
 }
 
 /* ════════════════════════════════════════════════════════════════
+   RECOVERY TRIGGER — Fire-and-forget for abandoned lead outreach
+════════════════════════════════════════════════════════════════ */
+const RECOVERY_SYSTEM_PROMPT = `أنت موظف مبيعات محترف مغربي اسمك "أمين". تتحدث بالدارجة المغربية فقط.
+مهمتك هي إرجاع الزبون الذي تخلى عن سلته واقناعه يكمل الشراء بطريقة طبيعية وودودة.
+
+قواعد المحادثة:
+- رسائلك قصيرة جداً (سطر أو سطرين). لا فقرات طويلة.
+- إذا اشتكى الزبون أن الثمن غالي: قل له "الله يحفظك، هادا أرخص ثمن كيف دايرين ودابا كاين تخفيض" ثم اذكر قيمة له.
+- إذا سأل عن الجودة: جاوبه بإيجاب وثقة كاملة.
+- إذا سأل عن التوصيل: "غيتوصل ليك من 24 لـ 48 ساعة مجانًا إن شاء الله".
+- إذا أكد الزبون (واخا / ok / مزيان / صيفطوه): أخبره أن الطلبية تأكدت وغتصل به في أقرب وقت.
+- إذا ألغى: رد بلطف وشكره.
+- لا تذكر أبداً أنك روبوت أو ذكاء اصطناعي.`;
+
+export async function triggerRecoveryMessage(
+  storeId: number,
+  orderId: number,
+  customerPhone: string,
+  customerName: string,
+  productName: string,
+  stockQty: number | null,
+): Promise<void> {
+  if (!(await storeHasAIKey(storeId))) {
+    console.warn("[Recovery] No AI key for store", storeId, "— skipping");
+    return;
+  }
+
+  try {
+    const cleanName = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي/لالة";
+    const stockPart = stockQty !== null && stockQty > 0 ? ` راه بقى لينا غير ${stockQty} حبات فـ السطوك.` : "";
+
+    const recoveryMessage =
+      `السلام عليكم ${cleanName}، شلنا باللي كنتي باغي تاخد "${productName}" ولكن وقع شي مشكل؟\n` +
+      `واش عندك شي تساؤل نقدر نجاوبك عليه؟${stockPart} 🛍️`;
+
+    // Create conversation record
+    const conv = await storage.createAiConversation({
+      storeId, orderId, customerPhone,
+      customerName: customerName || null,
+      status: "active", isManual: 0,
+    });
+
+    await storage.createAiLog({ storeId, orderId, customerPhone, role: "assistant", message: recoveryMessage });
+    await storage.updateAiConversationLastMessage(conv.id, recoveryMessage);
+
+    broadcastToStore(storeId, "new_conversation", {
+      conversation: { ...conv, lastMessage: recoveryMessage, status: "active", isRecovery: true },
+      message: { role: "assistant", content: recoveryMessage, ts: Date.now(), isRecovery: true },
+    });
+
+    await queueWhatsApp(storeId, customerPhone, recoveryMessage);
+    console.log(`[Recovery] Sent recovery message to ${customerPhone} for order ${orderId}`);
+  } catch (err: any) {
+    console.error(`[Recovery] triggerRecoveryMessage error (order ${orderId}):`, err.message);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
    HANDLE INCOMING — Called when customer replies via WhatsApp
 ════════════════════════════════════════════════════════════════ */
 export async function handleIncomingMessage(
@@ -322,7 +380,14 @@ export async function handleIncomingMessage(
       const recentLogs = await storage.getAiLogs(storeId, conv.orderId ?? undefined);
 
       // Build rich system prompt with order context
-      let systemPrompt = settings?.systemPrompt || DEFAULT_PROMPT;
+      // Check if this is a recovery conversation (order was abandoned)
+      let isRecovery = false;
+      if (conv.orderId) {
+        const { orders: ordersTable } = await import("@shared/schema");
+        const [orderRow] = await db.select({ wasAbandoned: ordersTable.wasAbandoned }).from(ordersTable).where(eq(ordersTable.id, conv.orderId));
+        isRecovery = (orderRow?.wasAbandoned ?? 0) === 1;
+      }
+      let systemPrompt = isRecovery ? RECOVERY_SYSTEM_PROMPT : (settings?.systemPrompt || DEFAULT_PROMPT);
       if (conv.orderId) {
         const ctx = await getOrderContext(conv.orderId);
         const priceDh = ctx.totalPrice ? `${(ctx.totalPrice / 100).toFixed(0)} درهم` : "كما اتفقنا";
