@@ -3074,6 +3074,14 @@ export async function registerRoutes(
     res.json({ status: state });
   });
 
+  /* ── Green API QR code fetch ───────────────────────────────────── */
+  app.get("/api/automation/whatsapp/green-qr", requireAuth, async (_req: any, res: any) => {
+    const { getGreenApiQR, isConfigured } = await import("./whatsapp-service");
+    if (!isConfigured()) return res.json({ qrCode: null, reason: "not_configured" });
+    const qrCode = await getGreenApiQR();
+    res.json({ qrCode });
+  });
+
   /* ── Send test WhatsApp message ───────────────────────────────── */
   app.post("/api/automation/whatsapp/send-test", requireAuth, async (req: any, res: any) => {
     const { phone, message } = req.body;
