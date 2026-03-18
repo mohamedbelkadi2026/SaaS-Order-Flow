@@ -464,6 +464,23 @@ export type OrderWithDetails = Order & {
   items: (OrderItem & { product: Product })[];
 };
 
+// ─── AI Conversations (live chat monitoring) ───────────────────────────────
+export const aiConversations = pgTable("ai_conversations", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  orderId: integer("order_id").references(() => orders.id),
+  customerPhone: text("customer_phone").notNull(),
+  customerName: text("customer_name"),
+  status: text("status").default("active"), // active | confirmed | cancelled | manual
+  isManual: integer("is_manual").default(0),
+  lastMessage: text("last_message"),
+  lastMessageAt: timestamp("last_message_at").defaultNow(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+export const insertAiConversationSchema = createInsertSchema(aiConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
+export type AiConversation = typeof aiConversations.$inferSelect;
+export type InsertAiConversation = z.infer<typeof insertAiConversationSchema>;
+
 // ─── Marketing Campaigns ───────────────────────────────────────────────────
 export const marketingCampaigns = pgTable("marketing_campaigns", {
   id: serial("id").primaryKey(),

@@ -155,6 +155,15 @@ export interface IStorage {
   approvePayment(id: number): Promise<void>;
   rejectPayment(id: number, notes?: string): Promise<void>;
 
+  // AI Conversations
+  getAiConversations(storeId: number): Promise<import("@shared/schema").AiConversation[]>;
+  getAiConversation(id: number): Promise<import("@shared/schema").AiConversation | undefined>;
+  getActiveAiConversationByPhone(storeId: number, phone: string): Promise<import("@shared/schema").AiConversation | undefined>;
+  createAiConversation(data: import("@shared/schema").InsertAiConversation): Promise<import("@shared/schema").AiConversation>;
+  updateAiConversationStatus(id: number, status: string): Promise<void>;
+  updateAiConversationLastMessage(id: number, message: string): Promise<void>;
+  setConversationManual(id: number, isManual: number): Promise<void>;
+
   // Automation
   getMarketingCampaigns(storeId: number): Promise<import("@shared/schema").MarketingCampaign[]>;
   createMarketingCampaign(data: import("@shared/schema").InsertMarketingCampaign): Promise<import("@shared/schema").MarketingCampaign>;
@@ -2085,6 +2094,47 @@ export class DatabaseStorage implements IStorage {
 
   async rejectPayment(id: number, notes?: string): Promise<void> {
     await db.update(payments).set({ status: "rejected", notes: notes ?? null }).where(eq(payments.id, id));
+  }
+
+  // ── AI Conversations ──────────────────────────────────────────────────────
+  async getAiConversations(storeId: number) {
+    const { aiConversations } = await import("@shared/schema");
+    return db.select().from(aiConversations).where(eq(aiConversations.storeId, storeId)).orderBy(desc(aiConversations.lastMessageAt));
+  }
+
+  async getAiConversation(id: number) {
+    const { aiConversations } = await import("@shared/schema");
+    const [row] = await db.select().from(aiConversations).where(eq(aiConversations.id, id));
+    return row;
+  }
+
+  async getActiveAiConversationByPhone(storeId: number, phone: string) {
+    const { aiConversations } = await import("@shared/schema");
+    const [row] = await db.select().from(aiConversations).where(
+      and(eq(aiConversations.storeId, storeId), eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active"))
+    );
+    return row;
+  }
+
+  async createAiConversation(data: import("@shared/schema").InsertAiConversation) {
+    const { aiConversations } = await import("@shared/schema");
+    const [row] = await db.insert(aiConversations).values(data).returning();
+    return row;
+  }
+
+  async updateAiConversationStatus(id: number, status: string) {
+    const { aiConversations } = await import("@shared/schema");
+    await db.update(aiConversations).set({ status }).where(eq(aiConversations.id, id));
+  }
+
+  async updateAiConversationLastMessage(id: number, message: string) {
+    const { aiConversations } = await import("@shared/schema");
+    await db.update(aiConversations).set({ lastMessage: message, lastMessageAt: new Date() }).where(eq(aiConversations.id, id));
+  }
+
+  async setConversationManual(id: number, isManual: number) {
+    const { aiConversations } = await import("@shared/schema");
+    await db.update(aiConversations).set({ isManual, status: isManual ? "manual" : "active" }).where(eq(aiConversations.id, id));
   }
 
   // ── Automation ────────────────────────────────────────────────────────────

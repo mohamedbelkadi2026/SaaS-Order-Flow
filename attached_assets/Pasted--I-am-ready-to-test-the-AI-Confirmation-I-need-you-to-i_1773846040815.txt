@@ -1,0 +1,22 @@
+"I am ready to test the AI Confirmation. I need you to implement the full 'End-to-End' practical logic and the 'Live Chat Monitoring' UI now. Please follow these strict instructions:
+1. The AI Confirmation Engine (Backend Logic):
+Trigger: When a new order arrives (status: 'nouveau') and 'AI Confirmation' is enabled for that product:
+Action 1: AI must immediately send the first WhatsApp message to the customer using the Moroccan Darija System Prompt we defined.
+Conversation Loop: Every reply from the customer must be sent to GPT-4o. The AI must respond naturally in Darija to confirm: Name, City, Product, and Size.
+Final Confirmation (The Goal):
+If the AI detects that the customer said 'Yes', 'Confirm', 'Oui', or 'صيفطوه', it must AUTOMATICALLY update the Orders table in the database: status = 'confirme'.
+If the customer cancels, update status = 'Annulé (fake)' or a custom cancel status.
+2. Live Chat Monitoring UI (Tab 4 in Automation):
+Create a new tab called 'Live Monitoring'.
+UI Structure:
+Left sidebar: List of active AI conversations (Customer name + last message).
+Center: Real-time chat window showing message bubbles (User vs. AI).
+Intervention Mode: Add a button 'Prendre la main' (Take Control). Clicking it stops the AI from responding to that specific customer so the Admin can type manually.
+Real-time updates: Use Server-Sent Events (SSE) or WebSockets so I can see the AI talking to the customer without refreshing the page.
+3. Error Handling & Practicality:
+Ensure the system handles 'No Answer' or 'Voice Messages' by notifying the Admin if the AI is confused.
+Add a 'History Log' to each order showing the full WhatsApp transcript for quality control.
+4. Technical Implementation:
+Connect the whatsapp-web.js (or current lib) events directly to the AI_Agent controller.
+Ensure the store_id isolation is respected so I only see my store's chats.
+Instruction: Make the system 'Production Ready'. I am about to place an order on my store and I expect the AI to text me on WhatsApp within seconds and update my dashboard to 'confirme' once I say yes."

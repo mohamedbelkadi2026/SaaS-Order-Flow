@@ -10,6 +10,8 @@ import { users, orders, orderItems } from "@shared/schema";
 import { eq, and, gte, lt, count, desc } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
+import { addSSEClient, broadcastToStore } from "./sse";
+import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 
 const receiptUpload = multer({
   storage: multer.diskStorage({
@@ -1628,6 +1630,12 @@ export async function registerRoutes(
       await storage.incrementMonthlyOrders(storeId);
 
       res.status(201).json(order);
+
+      // Fire-and-forget: AI confirmation trigger
+      if (data.status !== 'confirme') {
+        const firstProductId = data.items[0]?.productId ?? null;
+        triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, firstProductId).catch(console.error);
+      }
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -1789,6 +1797,9 @@ export async function registerRoutes(
 
       const finalOrder = await storage.getOrder(order.id);
       res.status(201).json(finalOrder || order);
+
+      // Fire-and-forget: AI confirmation trigger
+      triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, orderItemsToCreate[0]?.productId).catch(console.error);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -2953,6 +2964,104 @@ export async function registerRoutes(
   app.get("/api/automation/ai-logs", requireAuth, async (req: any, res: any) => {
     const orderId = req.query.orderId ? Number(req.query.orderId) : undefined;
     res.json(await storage.getAiLogs(req.user!.storeId!, orderId));
+  });
+
+  /* ── SSE — real-time events ───────────────────────────────────── */
+  app.get("/api/automation/events", requireAuth, (req: any, res: any) => {
+    addSSEClient(req.user!.storeId!, res);
+  });
+
+  /* ── AI Conversations (Live Monitoring) ───────────────────────── */
+  app.get("/api/automation/conversations", requireAuth, async (req: any, res: any) => {
+    res.json(await storage.getAiConversations(req.user!.storeId!));
+  });
+
+  app.get("/api/automation/conversations/:id/messages", requireAuth, async (req: any, res: any) => {
+    const conv = await storage.getAiConversation(Number(req.params.id));
+    if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
+    const logs = await storage.getAiLogs(conv.storeId, conv.orderId ?? undefined);
+    res.json(logs);
+  });
+
+  app.post("/api/automation/conversations/:id/takeover", requireAuth, async (req: any, res: any) => {
+    const conv = await storage.getAiConversation(Number(req.params.id));
+    if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
+    const { isManual } = req.body;
+    await storage.setConversationManual(conv.id, isManual ? 1 : 0);
+    broadcastToStore(conv.storeId, "takeover", { conversationId: conv.id, isManual: !!isManual });
+    res.json({ success: true });
+  });
+
+  app.post("/api/automation/conversations/:id/send", requireAuth, async (req: any, res: any) => {
+    try {
+      const conv = await storage.getAiConversation(Number(req.params.id));
+      if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
+      const { message } = req.body;
+      if (!message?.trim()) return res.status(400).json({ message: "Message vide" });
+      await storage.createAiLog({ storeId: conv.storeId, orderId: conv.orderId, customerPhone: conv.customerPhone, role: "admin", message });
+      await storage.updateAiConversationLastMessage(conv.id, message);
+      broadcastToStore(conv.storeId, "message", { conversationId: conv.id, role: "admin", content: message, ts: Date.now() });
+      const { sendWhatsAppMessage } = await import("./whatsapp-service");
+      await sendWhatsAppMessage(conv.customerPhone, message);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ── WhatsApp incoming webhook (Green API) ────────────────────── */
+  app.post("/api/webhooks/whatsapp-incoming", async (req: any, res: any) => {
+    try {
+      res.status(200).json({ ok: true }); // Acknowledge immediately
+      const body = req.body;
+      // Green API webhook format: body.typeWebhook = "incomingMessageReceived"
+      if (body?.typeWebhook !== "incomingMessageReceived") return;
+      const senderData = body.senderData;
+      const messageData = body.messageData;
+      if (!senderData || !messageData) return;
+
+      const phone = senderData.sender?.replace("@c.us", "").replace(/^212/, "0");
+      const text = messageData.textMessageData?.textMessage || messageData.extendedTextMessageData?.text || "";
+      if (!phone || !text) return;
+
+      // Find which store has an active conversation with this phone
+      // We search across all stores — in production each store has its own Green API instance
+      // so we can identify via the instance ID in the request or use a simpler lookup
+      const { aiConversations } = await import("@shared/schema");
+      const activeConvs = await db.select().from(aiConversations).where(
+        and(eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active"))
+      );
+      for (const conv of activeConvs) {
+        await handleIncomingMessage(conv.storeId, phone, text).catch(console.error);
+      }
+    } catch (err: any) { console.error("[WA Webhook]", err.message); }
+  });
+
+  /* ── Green API state check ────────────────────────────────────── */
+  app.get("/api/automation/whatsapp/green-status", requireAuth, async (_req: any, res: any) => {
+    const { getGreenApiState, isConfigured } = await import("./whatsapp-service");
+    if (!isConfigured()) return res.json({ status: "not_configured" });
+    const state = await getGreenApiState();
+    res.json({ status: state });
+  });
+
+  /* ── Send test WhatsApp message ───────────────────────────────── */
+  app.post("/api/automation/whatsapp/send-test", requireAuth, async (req: any, res: any) => {
+    const { phone, message } = req.body;
+    if (!phone || !message) return res.status(400).json({ message: "phone et message requis" });
+    const { sendWhatsAppMessage, isConfigured } = await import("./whatsapp-service");
+    if (!isConfigured()) return res.status(503).json({ message: "Green API non configuré (GREENAPI_INSTANCE_ID + GREENAPI_API_TOKEN requis)" });
+    const ok = await sendWhatsAppMessage(phone, message);
+    res.json({ success: ok });
+  });
+
+  /* ── Manually trigger AI for an order ────────────────────────── */
+  app.post("/api/automation/conversations/trigger/:orderId", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const [order] = await db.select().from(orders).where(and(eq(orders.id, Number(req.params.orderId)), eq(orders.storeId, storeId)));
+      if (!order) return res.status(404).json({ message: "Commande introuvable" });
+      triggerAIForNewOrder(storeId, order.id, order.customerPhone, order.customerName, undefined).catch(console.error);
+      res.json({ success: true, message: "Déclenchement IA en cours..." });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
   return httpServer;

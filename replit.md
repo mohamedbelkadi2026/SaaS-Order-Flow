@@ -184,6 +184,54 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 - `/publicites` - Ad spend management (role-based: media buyers submit, admins view all)
 - `/mes-depenses` - Legacy ad spend route (backward compat)
 
+## Marketing & AI Automation Module (`/automation`)
+Four tabs in `client/src/pages/automation.tsx`:
+1. **Retargeting** — Campaign management for inactive clients
+2. **IA Confirmation** — GPT-4o Darija AI settings, system prompt editor, product selection, enabled toggle
+3. **Connexion WhatsApp** — Green API connection setup + QR code flow (mock UI) + status check
+4. **Live Monitoring** — Real-time conversation dashboard with SSE; left panel = conversation list, right panel = live chat + takeover controls
+
+### AI Engine (`server/ai-agent.ts`)
+- `triggerAIForNewOrder(storeId, orderId, phone, name, productId)` — fire-and-forget, checks settings enabled + product filter
+- `handleIncomingMessage(storeId, phone, text)` — GPT-4o chat completion with Darija intent detection (CONFIRM/CANCEL keywords), auto-confirms/cancels orders
+- Hooked into `POST /api/orders` and `POST /api/orders/manual` after response sent
+
+### WhatsApp Service (`server/whatsapp-service.ts`)
+- Green API REST integration (no Chromium)
+- `sendWhatsAppMessage(phone, message)` — converts Moroccan 0XXXXXXXXX → 212XXXXXXXXX@c.us
+- Requires `GREENAPI_INSTANCE_ID` + `GREENAPI_API_TOKEN` secrets
+
+### SSE (`server/sse.ts`)
+- `addSSEClient(storeId, res)` — subscribe per store
+- `broadcastToStore(storeId, event, data)` — push events to all store clients
+- Events: `new_conversation`, `message`, `confirmed`, `cancelled`, `takeover`, `ai_error`
+
+### AI Conversations Table (`aiConversations`)
+- Tracks state: `active` | `confirmed` | `cancelled` | `manual`
+- `isManual` flag = admin takeover (AI stops responding)
+- 7 storage methods in storage.ts
+
+### Automation Routes
+- `GET /api/automation/events` — SSE stream
+- `GET /api/automation/conversations` — list active conversations
+- `GET /api/automation/conversations/:id/messages` — message history
+- `POST /api/automation/conversations/:id/takeover` — toggle manual/AI mode
+- `POST /api/automation/conversations/:id/send` — admin sends message
+- `POST /api/webhooks/whatsapp-incoming` — Green API incoming webhook
+- `GET /api/automation/whatsapp/green-status` — check Green API state
+- `POST /api/automation/whatsapp/send-test` — send test WhatsApp message
+- `POST /api/automation/conversations/trigger/:orderId` — manually trigger AI
+
+### Setup Required
+1. Create account at green-api.com → get Instance ID + API Token
+2. Set secrets: `GREENAPI_INSTANCE_ID`, `GREENAPI_API_TOKEN`, `OPENAI_API_KEY`
+3. Set webhook URL in Green API dashboard: `https://<your-domain>/api/webhooks/whatsapp-incoming`
+
 ## Environment
 - `DATABASE_URL` - PostgreSQL connection string
 - `SESSION_SECRET` - Session encryption secret
+- `OPENAI_API_KEY` - GPT-4o for AI confirmation agent
+- `GREENAPI_INSTANCE_ID` - Green API WhatsApp instance
+- `GREENAPI_API_TOKEN` - Green API authentication token
+- `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` / `VITE_PAYPAL_CLIENT_ID` - PayPal payments
+- `VITE_POLAR_CHECKOUT_URL_STARTER` / `VITE_POLAR_CHECKOUT_URL_PRO` - Polar.sh checkout URLs

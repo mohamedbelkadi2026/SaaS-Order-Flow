@@ -5,7 +5,8 @@ import { useToast } from "@/hooks/use-toast";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Bot, Megaphone, Wifi, Check, X, Copy, Send, Loader2, RefreshCw, Phone,
-  MessageCircle, Zap, ChevronRight, Users, Clock, CheckCircle2, AlertCircle,
+  MessageCircle, Zap, Users, Clock, CheckCircle2, AlertCircle, Eye, EyeOff,
+  Radio, UserCheck, UserX, Play,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -17,7 +18,7 @@ const DEFAULT_SYSTEM_PROMPT = `أنت وكيل خدمة عملاء محترف م
 والإجابة على أسئلتهم بشكل طبيعي.
 إذا أكد الزبون طلبه، أخبره أن الطلب في الطريق إليه.`;
 
-type Tab = "retargeting" | "ai" | "whatsapp";
+type Tab = "retargeting" | "ai" | "whatsapp" | "monitoring";
 
 /* ── Pill tabs ─────────────────────────────────────────────────── */
 function TabPill({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
@@ -55,6 +56,7 @@ export default function AutomationPage() {
             <TabPill active={tab === "retargeting"} onClick={() => setTab("retargeting")} icon={<Megaphone className="w-4 h-4" />} label="Retargeting" />
             <TabPill active={tab === "ai"} onClick={() => setTab("ai")} icon={<Bot className="w-4 h-4" />} label="IA Confirmation" />
             <TabPill active={tab === "whatsapp"} onClick={() => setTab("whatsapp")} icon={<Wifi className="w-4 h-4" />} label="Connexion WhatsApp" />
+            <TabPill active={tab === "monitoring"} onClick={() => setTab("monitoring")} icon={<Radio className="w-4 h-4" />} label="Live Monitoring" />
           </div>
         </div>
       </div>
@@ -63,6 +65,7 @@ export default function AutomationPage() {
         {tab === "retargeting" && <RetargetingTab />}
         {tab === "ai" && <AiConfirmationTab />}
         {tab === "whatsapp" && <WhatsappTab />}
+        {tab === "monitoring" && <LiveMonitoringTab />}
       </div>
     </div>
   );
@@ -637,10 +640,293 @@ function WhatsappTab() {
           ))}
         </div>
         <div className="mt-4 rounded-xl p-3 text-xs" style={{ background: "rgba(197,160,89,0.06)", border: `1px solid rgba(197,160,89,0.2)` }}>
-          <p className="font-semibold" style={{ color: GOLD }}>💡 Note technique</p>
-          <p className="text-zinc-500 mt-1">L'intégration WhatsApp Business API complète nécessite un compte Meta vérifié. Pour la version avancée avec envoi automatique, contactez le support TajerGrow.</p>
+          <p className="font-semibold" style={{ color: GOLD }}>💡 Note Green API</p>
+          <p className="text-zinc-500 mt-1">Pour l'envoi automatique, ajoutez <strong>GREENAPI_INSTANCE_ID</strong> et <strong>GREENAPI_API_TOKEN</strong> dans les Secrets Replit, puis configurez le webhook : <code>/api/webhooks/whatsapp-incoming</code></p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════
+   TAB 4 — LIVE MONITORING
+════════════════════════════════════════════════════════════════ */
+function LiveMonitoringTab() {
+  const { toast } = useToast();
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [manualMsg, setManualMsg] = useState("");
+  const [messages, setMessages] = useState<any[]>([]);
+  const messagesEndRef = { current: null as HTMLDivElement | null };
+
+  /* ── Poll conversations list ────────────────────────────────── */
+  const { data: conversations = [], refetch: refetchConvs } = useQuery<any[]>({
+    queryKey: ["/api/automation/conversations"],
+    queryFn: () => fetch("/api/automation/conversations", { credentials: "include" }).then(r => r.json()),
+    refetchInterval: 8000,
+  });
+
+  /* ── Load messages for selected conversation ────────────────── */
+  const { data: historyMsgs = [] } = useQuery<any[]>({
+    queryKey: ["/api/automation/conversations", selectedId, "messages"],
+    queryFn: () => fetch(`/api/automation/conversations/${selectedId}/messages`, { credentials: "include" }).then(r => r.json()),
+    enabled: !!selectedId,
+  });
+
+  useEffect(() => {
+    if (historyMsgs.length > 0) {
+      setMessages(historyMsgs.map((l: any) => ({ role: l.role, content: l.message, ts: new Date(l.createdAt).getTime() })));
+    }
+  }, [historyMsgs]);
+
+  /* ── SSE connection ─────────────────────────────────────────── */
+  useEffect(() => {
+    const es = new EventSource("/api/automation/events", { withCredentials: true });
+
+    es.addEventListener("new_conversation", () => {
+      refetchConvs();
+    });
+
+    es.addEventListener("message", (e) => {
+      const data = JSON.parse(e.data);
+      if (data.conversationId === selectedId || !selectedId) {
+        setMessages(prev => [...prev, { role: data.role, content: data.content, ts: data.ts }]);
+        if (data.conversationId !== selectedId) refetchConvs();
+      }
+    });
+
+    es.addEventListener("confirmed", (e) => {
+      const data = JSON.parse(e.data);
+      refetchConvs();
+      if (data.conversationId === selectedId) {
+        setMessages(prev => [...prev, { role: "system", content: "✅ Commande confirmée automatiquement", ts: data.ts }]);
+      }
+    });
+
+    es.addEventListener("cancelled", (e) => {
+      const data = JSON.parse(e.data);
+      refetchConvs();
+      if (data.conversationId === selectedId) {
+        setMessages(prev => [...prev, { role: "system", content: "❌ Commande annulée", ts: data.ts }]);
+      }
+    });
+
+    es.addEventListener("takeover", (e) => {
+      const data = JSON.parse(e.data);
+      if (data.conversationId === selectedId) refetchConvs();
+    });
+
+    return () => es.close();
+  }, [selectedId]);
+
+  /* ── Scroll to bottom when messages change ──────────────────── */
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const selectedConv = conversations.find((c: any) => c.id === selectedId);
+
+  /* ── Mutations ──────────────────────────────────────────────── */
+  const takeoverMutation = useMutation({
+    mutationFn: (isManual: boolean) => fetch(`/api/automation/conversations/${selectedId}/takeover`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isManual }),
+    }).then(r => r.json()),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/automation/conversations"] }); },
+  });
+
+  const sendMutation = useMutation({
+    mutationFn: (msg: string) => fetch(`/api/automation/conversations/${selectedId}/send`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg }),
+    }).then(r => r.json()),
+    onSuccess: () => {
+      setMessages(prev => [...prev, { role: "admin", content: manualMsg, ts: Date.now() }]);
+      setManualMsg("");
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const triggerMutation = useMutation({
+    mutationFn: (orderId: number) => fetch(`/api/automation/conversations/trigger/${orderId}`, {
+      method: "POST", credentials: "include",
+    }).then(r => r.json()),
+    onSuccess: (_, orderId) => toast({ title: `IA déclenchée pour commande #${orderId}` }),
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const statusColor = (s: string) => {
+    if (s === "confirmed") return "#22c55e";
+    if (s === "cancelled") return "#ef4444";
+    if (s === "manual") return GOLD;
+    return "#3b82f6";
+  };
+
+  const statusLabel = (s: string) => {
+    if (s === "confirmed") return "Confirmé ✅";
+    if (s === "cancelled") return "Annulé ❌";
+    if (s === "manual") return "Manuel 👤";
+    return "En cours 🤖";
+  };
+
+  const bubbleStyle = (role: string) => {
+    if (role === "user") return { background: "#f3f4f6", alignSelf: "flex-start", borderRadius: "16px 16px 16px 4px" };
+    if (role === "admin") return { background: `rgba(197,160,89,0.15)`, alignSelf: "flex-end", borderRadius: "16px 16px 4px 16px", border: `1px solid rgba(197,160,89,0.3)` };
+    if (role === "system") return { background: "rgba(59,130,246,0.06)", alignSelf: "center", borderRadius: "12px", border: "1px solid rgba(59,130,246,0.15)" };
+    return { background: `rgba(30,27,75,0.08)`, alignSelf: "flex-end", borderRadius: "16px 16px 4px 16px" };
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-5 h-[calc(100vh-220px)] min-h-[540px]">
+      {/* ── Left: Conversation list ───────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-zinc-100 flex flex-col overflow-hidden">
+        <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Radio className="w-4 h-4" style={{ color: GOLD }} />
+            <span className="text-sm font-bold text-zinc-700">Conversations IA</span>
+          </div>
+          <button onClick={() => refetchConvs()} className="p-1 rounded-lg hover:bg-zinc-100 transition-colors">
+            <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />
+          </button>
+        </div>
+
+        {conversations.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center gap-2 text-zinc-400 p-4">
+            <MessageCircle className="w-10 h-10 opacity-20" />
+            <p className="text-xs text-center">Aucune conversation IA.<br />Créez une commande avec l'IA activée.</p>
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto divide-y divide-zinc-50">
+            {conversations.map((conv: any) => (
+              <button
+                key={conv.id}
+                onClick={() => { setSelectedId(conv.id); setMessages([]); }}
+                className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors", selectedId === conv.id && "bg-blue-50")}
+                data-testid={`conv-item-${conv.id}`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: statusColor(conv.status) }}>
+                    {statusLabel(conv.status)}
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-400 truncate">{conv.lastMessage || "..."}</p>
+                <p className="text-[10px] text-zinc-300 mt-0.5">{conv.customerPhone}</p>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Right: Chat window ────────────────────────────────── */}
+      {!selectedConv ? (
+        <div className="bg-white rounded-2xl border border-zinc-100 flex flex-col items-center justify-center gap-3 text-zinc-400">
+          <Eye className="w-10 h-10 opacity-20" />
+          <p className="text-sm">Sélectionnez une conversation pour voir le chat en temps réel</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-zinc-100 flex flex-col overflow-hidden">
+          {/* Header */}
+          <div className="px-5 py-3 border-b border-zinc-100 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-bold text-zinc-800">{selectedConv.customerName || selectedConv.customerPhone}</p>
+              <p className="text-xs text-zinc-400">{selectedConv.customerPhone} · Cmd #{selectedConv.orderId}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {selectedConv.orderId && (
+                <button
+                  onClick={() => triggerMutation.mutate(selectedConv.orderId)}
+                  disabled={triggerMutation.isPending}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-white transition-opacity hover:opacity-90"
+                  style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}
+                  data-testid="button-trigger-ai"
+                >
+                  <Play className="w-3 h-3" /> Relancer IA
+                </button>
+              )}
+              {selectedConv.status === "active" || selectedConv.status === "manual" ? (
+                <button
+                  onClick={() => takeoverMutation.mutate(selectedConv.isManual ? false : true)}
+                  disabled={takeoverMutation.isPending}
+                  className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all")}
+                  style={selectedConv.isManual
+                    ? { background: "rgba(34,197,94,0.1)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)" }
+                    : { background: `rgba(197,160,89,0.1)`, color: GOLD, border: `1px solid rgba(197,160,89,0.3)` }
+                  }
+                  data-testid="button-takeover"
+                >
+                  {selectedConv.isManual ? <><UserCheck className="w-3 h-3" /> Rendre à l'IA</> : <><UserX className="w-3 h-3" /> Prendre la main</>}
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Status banner */}
+          {selectedConv.isManual ? (
+            <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: `rgba(197,160,89,0.08)`, color: GOLD, borderBottom: `1px solid rgba(197,160,89,0.15)` }}>
+              <UserX className="w-3.5 h-3.5" /> Mode manuel actif — l'IA ne répond plus. Vous contrôlez la conversation.
+            </div>
+          ) : selectedConv.status === "active" ? (
+            <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: "rgba(59,130,246,0.05)", color: "#3b82f6", borderBottom: "1px solid rgba(59,130,246,0.1)" }}>
+              <Bot className="w-3.5 h-3.5 animate-pulse" /> L'IA gère cette conversation automatiquement en Darija.
+            </div>
+          ) : null}
+
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+            {messages.length === 0 && (
+              <div className="flex-1 flex items-center justify-center text-zinc-300 text-xs">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" /> Chargement des messages...
+              </div>
+            )}
+            {messages.map((msg, i) => (
+              <div key={i} className="flex flex-col max-w-[78%]" style={{ alignSelf: msg.role === "user" ? "flex-start" : "flex-end" }}>
+                <div className="px-4 py-2.5 text-sm" style={bubbleStyle(msg.role)} dir={msg.role !== "user" ? "rtl" : "ltr"}>
+                  {msg.content}
+                </div>
+                <span className="text-[10px] text-zinc-300 mt-0.5 px-1"
+                  style={{ textAlign: msg.role === "user" ? "left" : "right" }}
+                >
+                  {msg.role === "user" ? "Client" : msg.role === "admin" ? "Vous" : msg.role === "system" ? "Système" : "IA"}
+                  {" · "}{new Date(msg.ts || Date.now()).toLocaleTimeString("fr-MA", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+            ))}
+            <div ref={(el) => { messagesEndRef.current = el; }} />
+          </div>
+
+          {/* Manual message input */}
+          {(selectedConv.isManual || selectedConv.status === "active") && selectedConv.status !== "confirmed" && selectedConv.status !== "cancelled" && (
+            <div className="px-4 py-3 border-t border-zinc-100">
+              <div className="flex gap-2">
+                <input
+                  value={manualMsg}
+                  onChange={e => setManualMsg(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && manualMsg.trim()) sendMutation.mutate(manualMsg); }}
+                  placeholder={selectedConv.isManual ? "Écrivez votre message (vous contrôlez)..." : "L'IA répond automatiquement..."}
+                  disabled={!selectedConv.isManual && selectedConv.status === "active"}
+                  className="flex-1 rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                  dir="rtl"
+                  data-testid="input-manual-msg"
+                />
+                <button
+                  onClick={() => { if (manualMsg.trim()) sendMutation.mutate(manualMsg); }}
+                  disabled={!manualMsg.trim() || sendMutation.isPending || (!selectedConv.isManual && selectedConv.status === "active")}
+                  className="px-4 py-2 rounded-xl text-white font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-40"
+                  style={{ background: "#25D366" }}
+                  data-testid="button-send-manual"
+                >
+                  {sendMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </button>
+              </div>
+              {!selectedConv.isManual && (
+                <p className="text-[11px] text-zinc-400 mt-1.5 text-center">Cliquez <strong>Prendre la main</strong> pour écrire manuellement.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
