@@ -166,7 +166,7 @@ function RetargetingTab() {
                     <p className="text-sm font-semibold text-zinc-800 truncate">{c.customerName}</p>
                     <p className="text-xs text-zinc-400">{c.customerPhone} · {c.customerCity}</p>
                   </div>
-                  <a href={buildWaLink(c)} target="_blank" rel="noopener noreferrer" className="shrink-0 p-1.5 rounded-lg hover:bg-green-50 text-green-500 transition-colors" onClick={e => e.stopPropagation()}>
+                  <a href={buildWaLink(c)} target="_blank" rel="noopener noreferrer" className="shrink-0 p-1.5 rounded-lg transition-colors hover:opacity-80" style={{ color: NAVY }} onClick={e => e.stopPropagation()}>
                     <MessageCircle className="w-4 h-4" />
                   </a>
                 </label>
@@ -198,8 +198,8 @@ function RetargetingTab() {
             </div>
 
             {/* Preview */}
-            <div className="rounded-xl p-3 text-xs" style={{ background: "rgba(37,211,102,0.06)", border: "1px solid rgba(37,211,102,0.2)" }}>
-              <p className="font-semibold text-green-700 mb-1">Aperçu WhatsApp :</p>
+            <div className="rounded-xl p-3 text-xs" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.12)" }}>
+              <p className="font-semibold mb-1" style={{ color: NAVY }}>Aperçu message :</p>
               <p className="text-zinc-600 whitespace-pre-wrap">{message.replace("{nom}", "Mohammed")}{productLink && `\n\n🔗 ${productLink}`}</p>
             </div>
 
@@ -207,7 +207,7 @@ function RetargetingTab() {
               onClick={sendAll}
               disabled={selected.size === 0 || saveCampaignMutation.isPending}
               className="w-full py-3.5 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50"
-              style={{ background: `linear-gradient(135deg, #25D366, #128C7E)` }}
+              style={{ background: NAVY }}
               data-testid="button-send-bulk"
             >
               {saveCampaignMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -226,7 +226,7 @@ function RetargetingTab() {
                       <p className="text-xs font-semibold text-zinc-700">{c.name}</p>
                       <p className="text-[11px] text-zinc-400">{c.totalSent} envois · {new Date(c.createdAt).toLocaleDateString("fr-MA")}</p>
                     </div>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white" style={{ background: "#25D366" }}>{c.status}</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white" style={{ background: NAVY }}>{c.status}</span>
                   </div>
                 ))}
               </div>
@@ -337,7 +337,7 @@ function AiConfirmationTab() {
         <div className="space-y-4">
 
           {/* ── Paramètres AI — OpenRouter ───────────────── */}
-          <div className="bg-white rounded-2xl border-2 p-5 space-y-4" style={{ borderColor: hasOrKey ? "rgba(34,197,94,0.3)" : "rgba(197,160,89,0.35)" }}>
+          <div className="bg-white rounded-2xl border-2 p-5 space-y-4" style={{ borderColor: hasOrKey ? "rgba(197,160,89,0.5)" : "rgba(197,160,89,0.25)" }}>
             {/* Header */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -350,7 +350,7 @@ function AiConfirmationTab() {
                 </div>
               </div>
               {hasOrKey ? (
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-green-600 bg-green-50 px-2.5 py-1 rounded-full border border-green-200">
+                <div className="flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full" style={{ color: GOLD, background: "rgba(197,160,89,0.1)", border: "1px solid rgba(197,160,89,0.3)" }}>
                   <Check className="w-3 h-3" /> Clé configurée
                 </div>
               ) : (
@@ -573,9 +573,9 @@ function AiConfirmationTab() {
           ) : (
             <div className="space-y-2 max-h-80 overflow-y-auto">
               {[...aiLogs].reverse().slice(0, 20).map((log: any) => (
-                <div key={log.id} className={cn("rounded-xl p-3 text-xs", log.role === "assistant" ? "bg-blue-50 border border-blue-100" : log.role === "system" ? "bg-green-50 border border-green-100" : "bg-zinc-50 border border-zinc-100")}>
+                <div key={log.id} className={cn("rounded-xl p-3 text-xs", log.role === "assistant" ? "border" : log.role === "system" ? "border" : "bg-zinc-50 border border-zinc-100")} style={log.role === "assistant" ? { background: "rgba(30,27,75,0.05)", borderColor: "rgba(30,27,75,0.15)" } : log.role === "system" ? { background: "rgba(197,160,89,0.06)", borderColor: "rgba(197,160,89,0.2)" } : {}}>
                   <div className="flex items-center justify-between mb-1">
-                    <span className={cn("font-bold capitalize", log.role === "assistant" ? "text-blue-600" : log.role === "system" ? "text-green-600" : "text-zinc-500")}>{log.role}</span>
+                    <span className="font-bold capitalize" style={{ color: log.role === "assistant" ? NAVY : log.role === "system" ? GOLD : "#71717a" }}>{log.role}</span>
                     {log.orderId && <span className="text-zinc-400">Cmd #{log.orderId}</span>}
                   </div>
                   <p className="text-zinc-600 whitespace-pre-wrap" dir={log.role === "assistant" ? "rtl" : "ltr"}>{log.message}</p>
@@ -617,14 +617,14 @@ function AiConfirmationTab() {
                       <span className="text-xs text-zinc-400">· {order.customerCity}</span>
                     </div>
                     {aiMsgMap[order.id] && (
-                      <div className="mt-2 rounded-xl p-3 text-xs" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.15)" }}>
-                        <p className="font-semibold text-blue-600 mb-1">Message IA généré :</p>
+                      <div className="mt-2 rounded-xl p-3 text-xs" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.12)" }}>
+                        <p className="font-semibold mb-1" style={{ color: NAVY }}>Message IA généré :</p>
                         <p className="text-zinc-600 whitespace-pre-wrap" dir="rtl">{aiMsgMap[order.id]}</p>
                         <div className="flex gap-2 mt-2">
-                          <button onClick={() => { navigator.clipboard.writeText(aiMsgMap[order.id]); }} className="flex items-center gap-1 text-blue-600 hover:text-blue-800 transition-colors">
+                          <button onClick={() => { navigator.clipboard.writeText(aiMsgMap[order.id]); }} className="flex items-center gap-1 transition-colors hover:opacity-80" style={{ color: NAVY }}>
                             <Copy className="w-3 h-3" /> Copier
                           </button>
-                          <a href={`https://wa.me/${order.customerPhone?.replace(/\D/g, "")}?text=${encodeURIComponent(aiMsgMap[order.id])}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-green-600 hover:text-green-800 transition-colors">
+                          <a href={`https://wa.me/${order.customerPhone?.replace(/\D/g, "")}?text=${encodeURIComponent(aiMsgMap[order.id])}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 transition-colors hover:opacity-80" style={{ color: GOLD }}>
                             <MessageCircle className="w-3 h-3" /> Envoyer WA
                           </a>
                         </div>
@@ -646,7 +646,7 @@ function AiConfirmationTab() {
                       onClick={() => confirmMutation.mutate(order.id)}
                       disabled={confirmMutation.isPending}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-                      style={{ background: "#22c55e" }}
+                      style={{ background: GOLD }}
                       data-testid={`button-confirm-order-${order.id}`}
                     >
                       <Check className="w-3 h-3" /> Confirmer
@@ -788,7 +788,7 @@ function WhatsappTab() {
                   {webhookUrl}
                 </code>
                 <button onClick={copyWebhook} className="shrink-0 p-2 rounded-xl border transition-colors hover:bg-zinc-50" style={{ borderColor: "rgba(30,27,75,0.15)" }} data-testid="button-copy-webhook-wa">
-                  {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-zinc-400" />}
+                  {copied ? <Check className="w-4 h-4" style={{ color: GOLD }} /> : <Copy className="w-4 h-4 text-zinc-400" />}
                 </button>
               </div>
             </div>
@@ -863,22 +863,23 @@ function WhatsappTab() {
   /* ── Render: CONNECTED ──────────────────────────────────────── */
   return (
     <div className="max-w-md mx-auto space-y-4">
-      <div className="bg-white rounded-2xl border border-zinc-100 p-6 text-center">
-        <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(34,197,94,0.1)", border: "3px solid #22c55e" }}>
-          <Wifi className="w-9 h-9 text-green-500" />
+      <div className="bg-white rounded-2xl p-6 text-center" style={{ border: `2px solid ${NAVY}` }}>
+        <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: `rgba(197,160,89,0.12)`, border: `3px solid ${GOLD}` }}>
+          <Wifi className="w-9 h-9" style={{ color: GOLD }} />
         </div>
-        <h2 className="text-lg font-bold text-zinc-800 mb-1">WhatsApp Connecté ✅</h2>
-        <p className="text-sm text-zinc-400 mb-4">Votre numéro WhatsApp est lié à Green API. L'envoi automatique est actif.</p>
+        <h2 className="text-lg font-bold text-zinc-800 mb-1">WhatsApp Connecté</h2>
+        <p className="text-sm text-zinc-400 mb-4">Votre numéro WhatsApp est lié à TajerGrow AI. L'envoi automatique est actif.</p>
 
-        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold text-green-700 mb-5" style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)" }} data-testid="status-wa-connected">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          Actif — Messages envoyés automatiquement
+        <div className="inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold mb-5" style={{ background: GOLD, color: "#fff" }} data-testid="status-wa-connected">
+          <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+          TajerGrow AI Active
         </div>
 
         <div className="flex justify-center">
           <button
             onClick={() => statusQuery.refetch()}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-zinc-500 border border-zinc-200 hover:bg-zinc-50 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
+            style={{ color: NAVY, border: `1px solid ${NAVY}`, background: "white" }}
             data-testid="button-refresh-status"
           >
             <RefreshCw className="w-3.5 h-3.5" /> Vérifier le statut
@@ -894,7 +895,7 @@ function WhatsappTab() {
             {webhookUrl}
           </code>
           <button onClick={copyWebhook} className="shrink-0 p-2 rounded-xl border transition-colors hover:bg-zinc-50" style={{ borderColor: "rgba(30,27,75,0.15)" }} data-testid="button-copy-webhook-connected">
-            {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-zinc-400" />}
+            {copied ? <Check className="w-4 h-4" style={{ color: GOLD }} /> : <Copy className="w-4 h-4 text-zinc-400" />}
           </button>
         </div>
         <p className="text-xs text-zinc-400 mt-2">Si vous recevez des messages entrants dans le Live Monitoring, ce webhook est bien actif.</p>
@@ -1104,7 +1105,7 @@ function LiveMonitoringTab() {
     if (s === "confirmed") return "#22c55e";
     if (s === "cancelled") return "#ef4444";
     if (s === "manual") return GOLD;
-    return "#3b82f6";
+    return NAVY;
   };
 
   const statusLabel = (s: string, needsAttn?: boolean) => {
@@ -1116,10 +1117,10 @@ function LiveMonitoringTab() {
   };
 
   const bubbleStyle = (role: string) => {
-    if (role === "user") return { background: "#f3f4f6", alignSelf: "flex-start", borderRadius: "16px 16px 16px 4px" };
-    if (role === "admin") return { background: `rgba(197,160,89,0.15)`, alignSelf: "flex-end", borderRadius: "16px 16px 4px 16px", border: `1px solid rgba(197,160,89,0.3)` };
-    if (role === "system") return { background: "rgba(59,130,246,0.06)", alignSelf: "center", borderRadius: "12px", border: "1px solid rgba(59,130,246,0.15)" };
-    return { background: `rgba(30,27,75,0.08)`, alignSelf: "flex-end", borderRadius: "16px 16px 4px 16px" };
+    if (role === "user") return { background: "#f0f0f5", alignSelf: "flex-start", borderRadius: "16px 16px 16px 4px", border: "1px solid rgba(30,27,75,0.08)" };
+    if (role === "admin") return { background: `rgba(197,160,89,0.12)`, alignSelf: "flex-end", borderRadius: "16px 16px 4px 16px", border: `1px solid rgba(197,160,89,0.35)` };
+    if (role === "system") return { background: "rgba(30,27,75,0.05)", alignSelf: "center", borderRadius: "12px", border: "1px solid rgba(30,27,75,0.12)" };
+    return { background: `rgba(30,27,75,0.09)`, alignSelf: "flex-end", borderRadius: "16px 16px 4px 16px" };
   };
 
   return (
@@ -1155,9 +1156,9 @@ function LiveMonitoringTab() {
                 key={conv.id}
                 onClick={() => { setSelectedId(conv.id); setMessages([]); }}
                 className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors",
-                  selectedId === conv.id && "bg-blue-50",
                   needsAttn && "bg-red-50 border-l-4 border-red-400"
                 )}
+                style={selectedId === conv.id && !needsAttn ? { background: "rgba(30,27,75,0.05)", borderLeft: `3px solid ${NAVY}` } : undefined}
                 data-testid={`conv-item-${conv.id}`}
               >
                 <div className="flex items-center justify-between mb-1 gap-1">
@@ -1165,9 +1166,9 @@ function LiveMonitoringTab() {
                     {needsAttn ? (
                       <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" title="Attention requise" />
                     ) : typingConvId === conv.id ? (
-                      <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 animate-pulse" title="IA en train d'écrire..." />
+                      <span className="w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ background: GOLD }} title="IA en train d'écrire..." />
                     ) : conv.status === "active" ? (
-                      <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: NAVY, opacity: 0.6 }} />
                     ) : null}
                     <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
                   </div>
@@ -1176,11 +1177,11 @@ function LiveMonitoringTab() {
                   </span>
                 </div>
                 {typingConvId === conv.id ? (
-                  <p className="text-xs text-green-500 font-medium flex items-center gap-1">
+                  <p className="text-xs font-medium flex items-center gap-1" style={{ color: GOLD }}>
                     <span className="inline-flex gap-0.5">
-                      <span className="w-1 h-1 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "0ms" }} />
-                      <span className="w-1 h-1 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "150ms" }} />
-                      <span className="w-1 h-1 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+                      <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: "0ms" }} />
+                      <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: "150ms" }} />
+                      <span className="w-1 h-1 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: "300ms" }} />
                     </span>
                     IA en train d'écrire...
                   </p>
@@ -1222,7 +1223,7 @@ function LiveMonitoringTab() {
                       ? { background: "rgba(239,68,68,0.1)", color: "#ef4444" }
                       : convCtx.stockQty <= 5
                       ? { background: "rgba(245,158,11,0.1)", color: "#d97706" }
-                      : { background: "rgba(34,197,94,0.1)", color: "#16a34a" }
+                      : { background: "rgba(30,27,75,0.07)", color: NAVY }
                     }
                   >
                     {convCtx.stockQty <= 0 ? "⚠️ Stock épuisé" : convCtx.stockQty <= 5 ? `⚡ ${convCtx.stockQty} restants` : `✓ Stock: ${convCtx.stockQty}`}
@@ -1249,7 +1250,7 @@ function LiveMonitoringTab() {
                   disabled={takeoverMutation.isPending}
                   className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all")}
                   style={selectedConv.isManual
-                    ? { background: "rgba(34,197,94,0.1)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.3)" }
+                    ? { background: "rgba(30,27,75,0.07)", color: NAVY, border: `1px solid rgba(30,27,75,0.2)` }
                     : { background: `rgba(197,160,89,0.1)`, color: GOLD, border: `1px solid rgba(197,160,89,0.3)` }
                   }
                   data-testid="button-takeover"
@@ -1274,13 +1275,13 @@ function LiveMonitoringTab() {
               <UserX className="w-3.5 h-3.5" /> Mode manuel actif — l'IA ne répond plus. Vous contrôlez la conversation.
             </div>
           ) : typingConvId === selectedConv.id ? (
-            <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: "rgba(34,197,94,0.06)", color: "#16a34a", borderBottom: "1px solid rgba(34,197,94,0.15)" }}>
-              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
-              IA en train de rédiger une réponse en Darija...
+            <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: "rgba(197,160,89,0.07)", color: GOLD, borderBottom: `1px solid rgba(197,160,89,0.18)` }}>
+              <span className="w-2 h-2 rounded-full animate-pulse shrink-0" style={{ background: GOLD }} />
+              TajerGrow AI — en train de rédiger une réponse en Darija...
             </div>
           ) : selectedConv.status === "active" ? (
-            <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: "rgba(59,130,246,0.05)", color: "#3b82f6", borderBottom: "1px solid rgba(59,130,246,0.1)" }}>
-              <Bot className="w-3.5 h-3.5" /> L'IA gère cette conversation automatiquement en Darija.
+            <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: "rgba(30,27,75,0.04)", color: NAVY, borderBottom: "1px solid rgba(30,27,75,0.1)" }}>
+              <Bot className="w-3.5 h-3.5" /> TajerGrow AI gère cette conversation automatiquement en Darija.
             </div>
           ) : null}
 
@@ -1314,11 +1315,11 @@ function LiveMonitoringTab() {
             {typingConvId === selectedId && (
               <div className="flex flex-col max-w-[60%]" style={{ alignSelf: "flex-end" }}>
                 <div className="px-4 py-3 flex items-center gap-1.5 rounded-2xl rounded-br-sm"
-                  style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.2)" }}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-bounce" style={{ animationDelay: "300ms" }} />
-                  <span className="text-xs text-green-600 font-medium ml-1">IA</span>
+                  style={{ background: "rgba(197,160,89,0.1)", border: `1px solid rgba(197,160,89,0.25)` }}>
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: "0ms" }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: "150ms" }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: "300ms" }} />
+                  <span className="text-xs font-bold ml-1" style={{ color: GOLD }}>AI</span>
                 </div>
                 <span className="text-[10px] text-zinc-300 mt-0.5 px-1 text-right">en train d'écrire...</span>
               </div>
@@ -1345,7 +1346,7 @@ function LiveMonitoringTab() {
                   onClick={() => { if (manualMsg.trim()) sendMutation.mutate(manualMsg); }}
                   disabled={!manualMsg.trim() || sendMutation.isPending || (!selectedConv.isManual && selectedConv.status === "active")}
                   className="px-4 py-2 rounded-xl text-white font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-40"
-                  style={{ background: "#25D366" }}
+                  style={{ background: NAVY }}
                   data-testid="button-send-manual"
                 >
                   {sendMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -1436,9 +1437,9 @@ function RecoveryTab() {
           <div className="text-3xl font-bold mb-1" style={{ color: GOLD }}>400 DH<span className="text-sm font-normal text-zinc-400">/mois</span></div>
           <div className="text-sm text-zinc-500 mb-4">Plan Pro — Commandes illimitées</div>
           <ul className="text-left space-y-2 text-sm text-zinc-600">
-            <li className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />Récupération IA abandonnés</li>
-            <li className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />Commandes illimitées</li>
-            <li className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />Toutes les fonctionnalités IA</li>
+            <li className="flex items-center gap-2"><Check className="w-4 h-4" style={{ color: GOLD }} />Récupération IA abandonnés</li>
+            <li className="flex items-center gap-2"><Check className="w-4 h-4" style={{ color: GOLD }} />Commandes illimitées</li>
+            <li className="flex items-center gap-2"><Check className="w-4 h-4" style={{ color: GOLD }} />Toutes les fonctionnalités IA</li>
           </ul>
         </div>
         <p className="text-xs text-zinc-400">Contactez le Super Admin pour upgrader votre plan.</p>
@@ -1448,7 +1449,7 @@ function RecoveryTab() {
 
   const statCards = [
     { label: "Leads Abandonnés", value: stats?.total ?? 0, icon: <ShoppingCart className="w-5 h-5" />, color: "#6366f1" },
-    { label: "Leads Récupérés", value: stats?.recovered ?? 0, icon: <TrendingUp className="w-5 h-5" />, color: "#22c55e" },
+    { label: "Leads Récupérés", value: stats?.recovered ?? 0, icon: <TrendingUp className="w-5 h-5" />, color: GOLD },
     { label: "CA Récupéré", value: `${((stats?.revenueRecovered ?? 0) / 100).toFixed(0)} DH`, icon: <DollarSign className="w-5 h-5" />, color: GOLD },
   ];
 
@@ -1475,7 +1476,7 @@ function RecoveryTab() {
             {c.label === "Leads Récupérés" && (
               <div className="mt-2">
                 <div className="h-1.5 bg-zinc-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${recoveryRate}%`, background: "#22c55e" }} />
+                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${recoveryRate}%`, background: GOLD }} />
                 </div>
                 <span className="text-xs text-zinc-400 mt-1">{recoveryRate}% taux de récupération</span>
               </div>
@@ -1506,7 +1507,7 @@ function RecoveryTab() {
         {/* Enable Toggle */}
         <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 mb-4">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: enabled ? "#22c55e" : "#e4e4e7" }}>
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: enabled ? GOLD : "#e4e4e7" }}>
               <TrendingUp className="w-4 h-4 text-white" />
             </div>
             <div>
@@ -1516,7 +1517,8 @@ function RecoveryTab() {
           </div>
           <button
             onClick={() => setEnabled(!enabled)}
-            className={cn("relative w-12 h-6 rounded-full transition-all", enabled ? "bg-green-500" : "bg-zinc-300")}
+            className={cn("relative w-12 h-6 rounded-full transition-all", enabled ? "" : "bg-zinc-300")}
+            style={enabled ? { background: NAVY } : undefined}
             data-testid="toggle-recovery-enabled"
           >
             <span className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all", enabled ? "left-6" : "left-0.5")} />
