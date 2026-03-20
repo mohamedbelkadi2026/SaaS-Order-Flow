@@ -1,0 +1,29 @@
+"I need to build a fully functional WhatsApp Automation App integrated into my TajerGrow SaaS. This app will act as an AI Agent that confirms orders and handles customer support in real-time. Follow these technical instructions:
+1. Core Tech Stack for the Module:
+WhatsApp Engine: Use whatsapp-web.js with Puppeteer (configured for Replit: --no-sandbox flags).
+AI Brain: Integrate OpenRouter API (specifically using deepseek/deepseek-chat or gpt-4o-mini) to handle conversations in Moroccan Darija.
+Real-time Sync: Use WebSockets (Socket.io) to stream live messages between the backend and the 'Live Chat Monitoring' UI.
+2. WhatsApp Connection Logic (The 'Connexion' Tab):
+Implement a QR code generator in the frontend.
+When the user scans the QR code, the session must be saved securely in the database/tmp folder to stay connected even if the Replit restarts.
+Show live status: 'En attente de scan', 'Initialisation', or 'Connecté (+212...)'.
+3. AI Confirmation Logic (The 'AI Agent' Tab):
+Trigger: When a new order (status: 'nouveau') arrives from Shopify/YouCan:
+The system must automatically send the First Outreach Message in Darija.
+Conversation Management:
+The AI must be fed with the Order Context (Customer name, Product, Price, City).
+Use the System Prompt: 'Professional Moroccan agent speaking only Darija. Goal: Confirm order and handle objections.'
+Function Calling (Crucial): If the AI detects a confirmation from the customer (e.g., 'Ok', 'Oui', 'صيفطوه'), it must trigger a backend function to update the order status in the Orders table to 'confirme' and log the success.
+4. Live Chat Monitoring UI:
+Build a 'Live Monitoring' interface similar to a WhatsApp Web clone:
+Left List: Active chats sorted by latest message.
+Middle Window: Real-time message bubbles (AI responses in one color, Customer in another).
+Intervention Button: 'Prendre la main' (Take Control). Clicking this pauses the AI for that specific chat so the Admin can reply manually.
+5. Inventory & Multi-tenancy:
+Ensure the AI Agent pulls stock availability from the Inventory table before promising the product to the customer.
+Data Isolation: Each merchant (Admin) uses their own WhatsApp session and OpenRouter API key.
+6. Technical Specs for Replit:
+Store the OPENROUTER_API_KEY in Replit Secrets.
+Add logging for every AI interaction for quality control.
+Ensure the UI is responsive for both Mobile and PC, following the Navy/Gold luxury theme.
+Goal: Turn the static 'Automation' page into a live, practical engine. I want to scan my QR code, place a test order, and watch the AI chat with the customer and update my dashboard automatically."

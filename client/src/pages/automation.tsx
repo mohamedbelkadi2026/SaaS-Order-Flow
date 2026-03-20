@@ -968,6 +968,14 @@ function LiveMonitoringTab() {
     enabled: !!selectedId,
   });
 
+  /* ── Load order context (product + stock) for selected conv ─── */
+  const { data: convCtx } = useQuery<any>({
+    queryKey: ["/api/automation/conversations", selectedId, "context"],
+    queryFn: () => fetch(`/api/automation/conversations/${selectedId}/context`, { credentials: "include" }).then(r => r.json()),
+    enabled: !!selectedId,
+    staleTime: 30000,
+  });
+
   useEffect(() => {
     if (historyMsgs.length > 0) {
       setMessages(historyMsgs.map((l: any) => ({ role: l.role, content: l.message, ts: new Date(l.createdAt).getTime() })));
@@ -1199,9 +1207,29 @@ function LiveMonitoringTab() {
         <div className="bg-white rounded-2xl border border-zinc-100 flex flex-col overflow-hidden">
           {/* Header */}
           <div className="px-5 py-3 border-b border-zinc-100 flex items-center justify-between">
-            <div>
-              <p className="text-sm font-bold text-zinc-800">{selectedConv.customerName || selectedConv.customerPhone}</p>
-              <p className="text-xs text-zinc-400">{selectedConv.customerPhone} · Cmd #{selectedConv.orderId}</p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-sm font-bold text-zinc-800">{selectedConv.customerName || selectedConv.customerPhone}</p>
+                {convCtx?.productName && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full font-medium" style={{ background: "rgba(30,27,75,0.07)", color: NAVY }}>
+                    {convCtx.productName}{convCtx.productVariant ? ` · ${convCtx.productVariant}` : ""}
+                  </span>
+                )}
+                {convCtx?.stockQty !== null && convCtx?.stockQty !== undefined && (
+                  <span
+                    className="text-[11px] px-2 py-0.5 rounded-full font-bold"
+                    style={convCtx.stockQty <= 0
+                      ? { background: "rgba(239,68,68,0.1)", color: "#ef4444" }
+                      : convCtx.stockQty <= 5
+                      ? { background: "rgba(245,158,11,0.1)", color: "#d97706" }
+                      : { background: "rgba(34,197,94,0.1)", color: "#16a34a" }
+                    }
+                  >
+                    {convCtx.stockQty <= 0 ? "⚠️ Stock épuisé" : convCtx.stockQty <= 5 ? `⚡ ${convCtx.stockQty} restants` : `✓ Stock: ${convCtx.stockQty}`}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-zinc-400 mt-0.5">{selectedConv.customerPhone} · Cmd #{selectedConv.orderId}{convCtx?.totalPrice ? ` · ${(convCtx.totalPrice / 100).toFixed(0)} DH` : ""}</p>
             </div>
             <div className="flex items-center gap-2">
               {selectedConv.orderId && (

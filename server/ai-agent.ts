@@ -131,6 +131,12 @@ interface OrderContext {
   productVariant: string | null;
   totalPrice: number | null;
   customerCity: string | null;
+  stockQty: number | null;
+  productId: number | null;
+}
+
+export async function getOrderContextForRoute(orderId: number): Promise<OrderContext> {
+  return getOrderContext(orderId);
 }
 
 async function getOrderContext(orderId: number): Promise<OrderContext> {
@@ -148,15 +154,24 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
 
     let productName: string | null = null;
     let productVariant: string | null = null;
+    let stockQty: number | null = null;
+    let resolvedProductId: number | null = null;
 
     if (items.length > 0) {
       const item = items[0];
       productVariant = item.variant ?? null;
+      resolvedProductId = item.productId ?? null;
       if (item.rawProductName) {
         productName = item.rawProductName;
+        // still try to get stock from product table if productId exists
+        if (item.productId) {
+          const [p] = await db.select({ stock: products.stock }).from(products).where(eq(products.id, item.productId));
+          stockQty = p?.stock ?? null;
+        }
       } else if (item.productId) {
-        const [p] = await db.select({ name: products.name }).from(products).where(eq(products.id, item.productId));
+        const [p] = await db.select({ name: products.name, stock: products.stock }).from(products).where(eq(products.id, item.productId));
         productName = p?.name ?? null;
+        stockQty = p?.stock ?? null;
       }
     }
 
@@ -165,9 +180,11 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       productVariant,
       totalPrice: order?.totalPrice ?? null,
       customerCity: order?.customerCity ?? null,
+      stockQty,
+      productId: resolvedProductId,
     };
   } catch {
-    return { productName: null, productVariant: null, totalPrice: null, customerCity: null };
+    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null };
   }
 }
 
@@ -220,10 +237,15 @@ export async function triggerAIForNewOrder(
     const productLabel = ctx.productName || "منتجك";
     const variantPart = ctx.productVariant ? ` (${ctx.productVariant})` : "";
 
+    // Stock urgency line (only shown when stock is critically low)
+    const stockUrgency = (ctx.stockQty !== null && ctx.stockQty > 0 && ctx.stockQty <= 3)
+      ? `\n⚠️ ماتأخروش — بقاو غير ${ctx.stockQty} قطع فـ السطوك!`
+      : "";
+
     // Step 1 — Ask for city only (progressive flow)
     const firstMessage =
       `السلام عليكم سيدي/لالة ${cleanName}، تبارك الله عليك 🌟\n` +
-      `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.\n` +
+      `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.${stockUrgency}\n` +
       `واش ممكن تأكد لينا غير المدينة باش نخرجوها ليك اليوم؟ 🚀`;
 
     // Create conversation record
@@ -395,6 +417,16 @@ export async function handleIncomingMessage(
         if (ctx.productName) details.push(`المنتج: ${ctx.productName}${ctx.productVariant ? ` (${ctx.productVariant})` : ""}`);
         details.push(`السعر: ${priceDh}`);
         if (ctx.customerCity) details.push(`المدينة: ${ctx.customerCity}`);
+        // Stock awareness — agent knows actual inventory
+        if (ctx.stockQty !== null) {
+          if (ctx.stockQty <= 0) {
+            details.push(`المخزون: نفد! لا تعد بالتسليم إلا بعد مراجعة الفريق`);
+          } else if (ctx.stockQty <= 5) {
+            details.push(`المخزون: ${ctx.stockQty} قطع فقط — استخدم هذا كحجة لإقناع الزبون بالتأكيد الآن`);
+          } else {
+            details.push(`المخزون: متوفر (${ctx.stockQty} قطعة)`);
+          }
+        }
         if (details.length) {
           systemPrompt = `${systemPrompt}\n\n[تفاصيل الطلب الحالي: ${details.join(" | ")}]`;
         }

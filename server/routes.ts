@@ -3015,6 +3015,17 @@ export async function registerRoutes(
     res.json(logs);
   });
 
+  app.get("/api/automation/conversations/:id/context", requireAuth, async (req: any, res: any) => {
+    try {
+      const conv = await storage.getAiConversation(Number(req.params.id));
+      if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
+      if (!conv.orderId) return res.json({ productName: null, stockQty: null, totalPrice: null, customerCity: null });
+      const { getOrderContextForRoute } = await import("./ai-agent");
+      const ctx = await getOrderContextForRoute(conv.orderId);
+      res.json(ctx);
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
   app.post("/api/automation/conversations/:id/takeover", requireAuth, async (req: any, res: any) => {
     const conv = await storage.getAiConversation(Number(req.params.id));
     if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
