@@ -2861,28 +2861,34 @@ export async function registerRoutes(
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  /* ── WhatsApp session ─────────────────────────────────────────── */
-  app.get("/api/automation/whatsapp", requireAuth, async (req: any, res: any) => {
-    const session = await storage.getWhatsappSession(req.user!.storeId!);
-    res.json(session ?? { status: "disconnected", phone: null, qrCode: null });
+  /* ── WhatsApp / Baileys session management ────────────────────── */
+
+  /* GET /api/automation/whatsapp/status → { state, phone, qr } */
+  app.get("/api/automation/whatsapp/status", requireAuth, async (_req: any, res: any) => {
+    const { baileysService } = await import("./baileys-service");
+    res.json(baileysService.getStatus());
   });
 
-  app.post("/api/automation/whatsapp/connect", requireAuth, async (req: any, res: any) => {
-    const storeId = req.user!.storeId!;
-    const qr = `TajerGrow-WA-${storeId}-${Date.now()}`;
-    const session = await storage.upsertWhatsappSession(storeId, { status: "pending", phone: null, qrCode: qr });
-    res.json(session);
+  /* POST /api/automation/whatsapp/connect → initiate Baileys connection */
+  app.post("/api/automation/whatsapp/connect", requireAuth, async (_req: any, res: any) => {
+    try {
+      const { baileysService } = await import("./baileys-service");
+      baileysService.start().catch(console.error); // non-blocking
+      res.json({ ok: true, message: "Connexion en cours..." });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
-  app.post("/api/automation/whatsapp/confirm", requireAuth, async (req: any, res: any) => {
-    const { phone } = req.body;
-    const session = await storage.upsertWhatsappSession(req.user!.storeId!, { status: "connected", phone: phone || "+212600000000", qrCode: null });
-    res.json(session);
-  });
-
-  app.post("/api/automation/whatsapp/disconnect", requireAuth, async (req: any, res: any) => {
-    const session = await storage.upsertWhatsappSession(req.user!.storeId!, { status: "disconnected", phone: null, qrCode: null });
-    res.json(session);
+  /* POST /api/automation/whatsapp/disconnect → logout + clear session */
+  app.post("/api/automation/whatsapp/disconnect", requireAuth, async (_req: any, res: any) => {
+    try {
+      const { baileysService } = await import("./baileys-service");
+      await baileysService.logout();
+      res.json({ ok: true, message: "Déconnecté. Session effacée." });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
   /* ── AI Settings ──────────────────────────────────────────────── */
@@ -3077,28 +3083,11 @@ export async function registerRoutes(
     } catch (err: any) { console.error("[WA Webhook]", err.message); }
   });
 
-  /* ── Green API state check ────────────────────────────────────── */
-  app.get("/api/automation/whatsapp/green-status", requireAuth, async (_req: any, res: any) => {
-    const { getGreenApiState, isConfigured } = await import("./whatsapp-service");
-    if (!isConfigured()) return res.json({ status: "not_configured" });
-    const state = await getGreenApiState();
-    res.json({ status: state });
-  });
-
-  /* ── Green API QR code fetch ───────────────────────────────────── */
-  app.get("/api/automation/whatsapp/green-qr", requireAuth, async (_req: any, res: any) => {
-    const { getGreenApiQR, isConfigured } = await import("./whatsapp-service");
-    if (!isConfigured()) return res.json({ qrCode: null, reason: "not_configured" });
-    const qrCode = await getGreenApiQR();
-    res.json({ qrCode });
-  });
-
   /* ── Send test WhatsApp message ───────────────────────────────── */
   app.post("/api/automation/whatsapp/send-test", requireAuth, async (req: any, res: any) => {
     const { phone, message } = req.body;
     if (!phone || !message) return res.status(400).json({ message: "phone et message requis" });
-    const { sendWhatsAppMessage, isConfigured } = await import("./whatsapp-service");
-    if (!isConfigured()) return res.status(503).json({ message: "Green API non configuré (GREENAPI_INSTANCE_ID + GREENAPI_API_TOKEN requis)" });
+    const { sendWhatsAppMessage } = await import("./whatsapp-service");
     const ok = await sendWhatsAppMessage(phone, message);
     res.json({ success: ok });
   });

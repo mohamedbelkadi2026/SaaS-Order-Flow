@@ -7,6 +7,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
+import { autoStartBaileys } from "./baileys-service";
 import { db } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
@@ -149,6 +150,7 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
       startWooCommerceSync();
       startRecoveryJob();
+      autoStartBaileys().catch(console.error);
     },
   );
 })();

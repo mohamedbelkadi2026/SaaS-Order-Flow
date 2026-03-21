@@ -188,7 +188,7 @@ ROI = (Net Profit / Ad Spend) × 100, ROAS = Revenue / Ad Spend
 Four tabs in `client/src/pages/automation.tsx`:
 1. **Retargeting** — Campaign management for inactive clients
 2. **IA Confirmation** — GPT-4o Darija AI settings, system prompt editor, product selection, enabled toggle
-3. **Connexion WhatsApp** — Green API connection setup + QR code flow (mock UI) + status check
+3. **Connexion WhatsApp** — Baileys (direct QR scan, no browser needed), 4 states: idle/connecting/qr/connected. Session persists in `auth_info_baileys/`
 4. **Live Monitoring** — Real-time conversation dashboard with SSE; left panel = conversation list, right panel = live chat + takeover controls
 
 ### AI Engine (`server/ai-agent.ts`)
@@ -196,10 +196,18 @@ Four tabs in `client/src/pages/automation.tsx`:
 - `handleIncomingMessage(storeId, phone, text)` — GPT-4o chat completion with Darija intent detection (CONFIRM/CANCEL keywords), auto-confirms/cancels orders
 - Hooked into `POST /api/orders` and `POST /api/orders/manual` after response sent
 
-### WhatsApp Service (`server/whatsapp-service.ts`)
-- Green API REST integration (no Chromium)
-- `sendWhatsAppMessage(phone, message)` — converts Moroccan 0XXXXXXXXX → 212XXXXXXXXX@c.us
-- Requires `GREENAPI_INSTANCE_ID` + `GREENAPI_API_TOKEN` secrets
+### WhatsApp Engine (`server/baileys-service.ts`)
+- `@whiskeysockets/baileys` — pure Node.js WebSocket, no Chromium required
+- 4 states: `idle` | `connecting` | `qr` | `connected`
+- QR generated as Navy/white base64 PNG via `qrcode` package
+- Session persisted in `./auth_info_baileys/` (survives Replit restarts)
+- Auto-reconnects on connection loss; logs out cleanly on `DisconnectReason.loggedOut`
+- `baileysService.sendMessage(phone, text)` routes AI replies to customers
+- `autoStartBaileys()` called on boot — restores existing session silently
+
+### WhatsApp Transport (`server/whatsapp-service.ts`)
+- `sendWhatsAppMessage(phone, message)` — primary: Baileys; fallback: Green API (if env vars set)
+- Moroccan 0XXXXXXXXX → 212XXXXXXXXX conversion handled in both paths
 
 ### SSE (`server/sse.ts`)
 - `addSSEClient(storeId, res)` — subscribe per store
@@ -217,15 +225,18 @@ Four tabs in `client/src/pages/automation.tsx`:
 - `GET /api/automation/conversations/:id/messages` — message history
 - `POST /api/automation/conversations/:id/takeover` — toggle manual/AI mode
 - `POST /api/automation/conversations/:id/send` — admin sends message
-- `POST /api/webhooks/whatsapp-incoming` — Green API incoming webhook
-- `GET /api/automation/whatsapp/green-status` — check Green API state
+- `POST /api/webhooks/whatsapp-incoming` — incoming webhook (Green API fallback)
+- `GET /api/automation/whatsapp/status` — Baileys state: { state, phone, qr }
+- `POST /api/automation/whatsapp/connect` — start Baileys connection
+- `POST /api/automation/whatsapp/disconnect` — logout + clear session files
 - `POST /api/automation/whatsapp/send-test` — send test WhatsApp message
 - `POST /api/automation/conversations/trigger/:orderId` — manually trigger AI
 
 ### Setup Required
-1. Create account at green-api.com → get Instance ID + API Token
-2. Set secrets: `GREENAPI_INSTANCE_ID`, `GREENAPI_API_TOKEN`, `OPENAI_API_KEY`
-3. Set webhook URL in Green API dashboard: `https://<your-domain>/api/webhooks/whatsapp-incoming`
+1. Set `OPENROUTER_API_KEY` secret (or `OPENAI_API_KEY`) for AI confirmation flow
+2. In the Automation → WhatsApp tab: click "Générer QR Code", scan with WhatsApp on your phone
+3. Session is saved automatically — no rescan needed after server restart
+4. (Optional) Set `GREENAPI_INSTANCE_ID` + `GREENAPI_API_TOKEN` as Green API fallback transport
 
 ## Environment
 - `DATABASE_URL` - PostgreSQL connection string

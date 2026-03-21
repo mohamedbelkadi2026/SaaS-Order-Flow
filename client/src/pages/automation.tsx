@@ -663,196 +663,115 @@ function AiConfirmationTab() {
 }
 
 /* ════════════════════════════════════════════════════════════════
-   TAB 3 — WHATSAPP CONNECTION (Green API — no Puppeteer)
+   TAB 3 — WHATSAPP CONNECTION (Baileys — direct QR, no browser)
 ════════════════════════════════════════════════════════════════ */
 function WhatsappTab() {
   const { toast } = useToast();
-  const [copied, setCopied] = useState(false);
 
-  const webhookUrl = `${window.location.origin}/api/webhooks/whatsapp-incoming`;
-
-  /* ── Poll Green API connection status every 5 s ─────────────── */
-  const statusQuery = useQuery<{ status: string }>({
-    queryKey: ["/api/automation/whatsapp/green-status"],
-    queryFn: () => fetch("/api/automation/whatsapp/green-status", { credentials: "include" }).then(r => r.json()),
-    refetchInterval: 5000,
+  /* Poll status every 3s — drives all state transitions */
+  const statusQuery = useQuery<{ state: string; phone: string | null; qr: string | null }>({
+    queryKey: ["/api/automation/whatsapp/status"],
+    queryFn: () => fetch("/api/automation/whatsapp/status", { credentials: "include" }).then(r => r.json()),
+    refetchInterval: 3000,
   });
 
-  /* ── Fetch QR from Green API — only when notAuthorized ─────── */
-  const qrQuery = useQuery<{ qrCode: string | null }>({
-    queryKey: ["/api/automation/whatsapp/green-qr"],
-    queryFn: () => fetch("/api/automation/whatsapp/green-qr", { credentials: "include" }).then(r => r.json()),
-    enabled: statusQuery.data?.status === "notAuthorized",
-    refetchInterval: 30000,
+  const connectMutation = useMutation({
+    mutationFn: () => fetch("/api/automation/whatsapp/connect", { method: "POST", credentials: "include" }).then(r => r.json()),
+    onSuccess: () => { statusQuery.refetch(); },
+    onError: () => toast({ title: "Erreur de connexion", variant: "destructive" }),
   });
 
-  const apiStatus = statusQuery.data?.status ?? "loading";
-  const qrBase64 = qrQuery.data?.qrCode ?? null;
+  const disconnectMutation = useMutation({
+    mutationFn: () => fetch("/api/automation/whatsapp/disconnect", { method: "POST", credentials: "include" }).then(r => r.json()),
+    onSuccess: () => { statusQuery.refetch(); toast({ title: "WhatsApp déconnecté. Session effacée." }); },
+  });
 
-  function copyWebhook() {
-    navigator.clipboard.writeText(webhookUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    toast({ title: "URL copiée !" });
-  }
+  const waState = statusQuery.data?.state ?? "idle";
+  const phone   = statusQuery.data?.phone ?? null;
+  const qrUrl   = statusQuery.data?.qr ?? null;
 
-  /* ── Render: NOT CONFIGURED ─────────────────────────────────── */
-  if (apiStatus === "not_configured" || apiStatus === "loading") {
+  /* ── IDLE — show connect button ────────────────────────────── */
+  if (waState === "idle") {
     return (
-      <div className="max-w-lg mx-auto space-y-4">
-        {/* Status banner */}
-        <div className="bg-white rounded-2xl border border-zinc-100 p-6 text-center">
-          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(239,68,68,0.08)", border: "3px solid #ef4444" }}>
-            {apiStatus === "loading" ? <Loader2 className="w-9 h-9 animate-spin text-zinc-400" /> : <Wifi className="w-9 h-9 text-red-400" />}
+      <div className="max-w-md mx-auto space-y-4">
+        <div className="bg-white rounded-2xl border border-zinc-100 p-8 text-center">
+          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5" style={{ background: "rgba(30,27,75,0.06)", border: `2px dashed rgba(30,27,75,0.2)` }}>
+            <Wifi className="w-9 h-9" style={{ color: NAVY, opacity: 0.4 }} />
           </div>
-          <h2 className="text-lg font-bold text-zinc-800 mb-1">
-            {apiStatus === "loading" ? "Vérification..." : "Green API non configuré"}
-          </h2>
-          <p className="text-sm text-zinc-400">
-            {apiStatus === "loading"
-              ? "Connexion à Green API en cours..."
-              : "Ajoutez vos identifiants Green API dans les Secrets Replit pour activer l'envoi WhatsApp automatique."}
+          <h2 className="text-lg font-bold text-zinc-800 mb-2">WhatsApp non connecté</h2>
+          <p className="text-sm text-zinc-400 mb-6">
+            Cliquez sur le bouton ci-dessous pour générer un QR Code.<br />
+            Scannez-le avec votre téléphone pour lier TajerGrow AI à WhatsApp.
           </p>
+          <button
+            onClick={() => connectMutation.mutate()}
+            disabled={connectMutation.isPending}
+            className="flex items-center gap-2 px-6 py-3 rounded-xl text-white font-bold text-sm mx-auto transition-opacity hover:opacity-90 disabled:opacity-50"
+            style={{ background: NAVY }}
+            data-testid="button-connect-whatsapp"
+          >
+            {connectMutation.isPending
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Initialisation...</>
+              : <><Wifi className="w-4 h-4" /> Générer QR Code</>}
+          </button>
         </div>
 
-        {apiStatus === "not_configured" && (
-          <>
-            {/* Setup Steps */}
-            <div className="bg-white rounded-2xl border border-zinc-100 p-5">
-              <p className="text-sm font-bold text-zinc-700 mb-4">Configuration Green API — 4 étapes</p>
-              <div className="space-y-4">
-                {[
-                  {
-                    step: "1",
-                    title: "Créer un compte Green API",
-                    desc: "Rendez-vous sur green-api.com et créez un compte gratuit (500 messages/mois inclus).",
-                    link: "https://green-api.com",
-                    linkLabel: "Ouvrir green-api.com →",
-                  },
-                  {
-                    step: "2",
-                    title: "Créer une instance WhatsApp",
-                    desc: "Dans le tableau de bord Green API, cliquez sur « Créer une instance ». Choisissez le plan gratuit ou payant.",
-                    link: null,
-                    linkLabel: null,
-                  },
-                  {
-                    step: "3",
-                    title: "Copier vos identifiants",
-                    desc: "Sur la page de votre instance, copiez le « idInstance » (ex: 7103123456) et le « apiTokenInstance ».",
-                    link: null,
-                    linkLabel: null,
-                  },
-                  {
-                    step: "4",
-                    title: "Ajouter dans les Secrets Replit",
-                    desc: "Dans Replit, allez dans Secrets (icône cadenas) et ajoutez : GREENAPI_INSTANCE_ID et GREENAPI_API_TOKEN, puis redémarrez l'application.",
-                    link: null,
-                    linkLabel: null,
-                  },
-                ].map(({ step, title, desc, link, linkLabel }) => (
-                  <div key={step} className="flex gap-3 items-start">
-                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 mt-0.5" style={{ background: NAVY }}>{step}</div>
-                    <div>
-                      <p className="text-xs font-bold text-zinc-700">{title}</p>
-                      <p className="text-xs text-zinc-400 mt-0.5">{desc}</p>
-                      {link && (
-                        <a href={link} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold mt-1 inline-block" style={{ color: GOLD }}>{linkLabel}</a>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Secrets to add */}
-              <div className="mt-5 rounded-xl p-4 space-y-2" style={{ background: "rgba(30,27,75,0.04)", border: `1px solid rgba(30,27,75,0.12)` }}>
-                <p className="text-xs font-bold text-zinc-700 mb-2">Secrets à ajouter dans Replit :</p>
-                {[
-                  { key: "GREENAPI_INSTANCE_ID", example: "ex: 7103123456" },
-                  { key: "GREENAPI_API_TOKEN", example: "ex: abc123xyz..." },
-                ].map(({ key, example }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <code className="text-xs font-mono px-2 py-1 rounded-lg font-bold" style={{ background: "rgba(30,27,75,0.08)", color: NAVY }}>{key}</code>
-                    <span className="text-xs text-zinc-400">{example}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Webhook URL */}
-            <div className="bg-white rounded-2xl border border-zinc-100 p-5">
-              <p className="text-xs font-bold text-zinc-700 mb-2">URL Webhook à configurer dans Green API</p>
-              <p className="text-xs text-zinc-400 mb-3">Dans votre tableau de bord Green API → Paramètres de l'instance → Webhook URL :</p>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 text-xs font-mono px-3 py-2 rounded-xl truncate" style={{ background: "rgba(30,27,75,0.05)", color: NAVY, border: "1px solid rgba(30,27,75,0.1)" }}>
-                  {webhookUrl}
-                </code>
-                <button onClick={copyWebhook} className="shrink-0 p-2 rounded-xl border transition-colors hover:bg-zinc-50" style={{ borderColor: "rgba(30,27,75,0.15)" }} data-testid="button-copy-webhook-wa">
-                  {copied ? <Check className="w-4 h-4" style={{ color: GOLD }} /> : <Copy className="w-4 h-4 text-zinc-400" />}
-                </button>
-              </div>
-            </div>
-          </>
-        )}
+        <div className="bg-white rounded-2xl border border-zinc-100 p-4 text-xs text-zinc-500" style={{ borderLeft: `3px solid ${NAVY}` }}>
+          <p className="font-semibold text-zinc-700 mb-1">Connexion directe WhatsApp</p>
+          <p>La connexion utilise le protocole WhatsApp Web. Aucune application tierce requise. La session est sauvegardée et se reconnecte automatiquement après un redémarrage.</p>
+        </div>
       </div>
     );
   }
 
-  /* ── Render: NEEDS QR SCAN ──────────────────────────────────── */
-  if (apiStatus === "notAuthorized") {
+  /* ── CONNECTING — loading spinner ──────────────────────────── */
+  if (waState === "connecting") {
+    return (
+      <div className="max-w-md mx-auto">
+        <div className="bg-white rounded-2xl border border-zinc-100 p-10 text-center">
+          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5" style={{ background: "rgba(30,27,75,0.06)", border: `2px solid ${NAVY}` }}>
+            <Loader2 className="w-9 h-9 animate-spin" style={{ color: NAVY }} />
+          </div>
+          <h2 className="text-lg font-bold text-zinc-800 mb-2">Connexion en cours...</h2>
+          <p className="text-sm text-zinc-400">Établissement de la connexion WhatsApp. Le QR Code apparaîtra dans quelques secondes.</p>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── QR READY — show scan screen ───────────────────────────── */
+  if (waState === "qr") {
     return (
       <div className="max-w-md mx-auto space-y-4">
         <div className="bg-white rounded-2xl border border-zinc-100 p-6 text-center">
-          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: "rgba(197,160,89,0.1)", border: `3px solid ${GOLD}` }}>
-            <Wifi className="w-9 h-9" style={{ color: GOLD }} />
-          </div>
-          <h2 className="text-lg font-bold text-zinc-800 mb-1">Scanner le QR Code</h2>
-          <p className="text-sm text-zinc-400 mb-5">Green API est configuré. Scannez ce QR avec WhatsApp pour connecter votre numéro.</p>
+          <h2 className="text-lg font-bold mb-1" style={{ color: NAVY }}>Scanner le QR Code</h2>
+          <p className="text-sm text-zinc-400 mb-5">Ouvrez WhatsApp → Paramètres → Appareils connectés → Ajouter un appareil</p>
 
-          {/* Real QR from Green API */}
-          <div className="flex flex-col items-center gap-4 my-4">
-            {qrQuery.isLoading ? (
-              <div className="w-[220px] h-[220px] flex items-center justify-center rounded-2xl border-2 border-zinc-100">
-                <Loader2 className="w-8 h-8 animate-spin text-zinc-300" />
-              </div>
-            ) : qrBase64 ? (
-              <div className="p-3 bg-white rounded-2xl shadow-lg border-2 border-zinc-100" data-testid="img-whatsapp-qr">
-                <img
-                  src={`data:image/png;base64,${qrBase64}`}
-                  alt="QR Code WhatsApp"
-                  width={220}
-                  height={220}
-                  className="rounded-xl"
-                />
+          <div className="flex justify-center my-4">
+            {qrUrl ? (
+              <div className="p-4 bg-white rounded-2xl shadow-sm" style={{ border: `3px solid ${GOLD}` }} data-testid="img-whatsapp-qr">
+                <img src={qrUrl} alt="QR Code WhatsApp" width={240} height={240} className="rounded-xl block" />
               </div>
             ) : (
-              <div className="w-[220px] h-[220px] flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-zinc-200">
-                <Wifi className="w-8 h-8 text-zinc-300" />
-                <p className="text-xs text-zinc-400 text-center px-4">QR non disponible.<br />Vérifiez que votre instance Green API est active.</p>
+              <div className="w-[240px] h-[240px] flex flex-col items-center justify-center gap-3 rounded-2xl" style={{ border: `3px dashed ${GOLD}` }}>
+                <Loader2 className="w-8 h-8 animate-spin" style={{ color: GOLD }} />
+                <p className="text-xs text-zinc-400">Génération du QR...</p>
               </div>
             )}
+          </div>
 
-            <div className="space-y-1 text-center">
-              <p className="text-xs font-semibold text-zinc-600">Ouvrez WhatsApp → Paramètres → Appareils connectés → Scanner</p>
-              <p className="text-xs text-zinc-400">Le QR expire toutes les 30 secondes — il se rafraîchit automatiquement.</p>
-            </div>
-
-            <button
-              onClick={() => { statusQuery.refetch(); qrQuery.refetch(); }}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-zinc-500 border border-zinc-200 hover:bg-zinc-50 transition-colors"
-              data-testid="button-refresh-qr"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Rafraîchir le QR
-            </button>
+          <div className="mt-3 space-y-1">
+            <p className="text-xs font-bold" style={{ color: NAVY }}>QR se rafraîchit automatiquement</p>
+            <p className="text-xs text-zinc-400">Les données de statut se mettent à jour toutes les 3 secondes</p>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl border border-zinc-100 p-4 text-xs text-zinc-500" style={{ borderLeft: `3px solid ${GOLD}` }}>
-          <p className="font-semibold text-zinc-700 mb-1">Comment scanner ?</p>
-          <ol className="space-y-1 list-decimal list-inside">
-            <li>Ouvrez WhatsApp sur votre téléphone</li>
+        <div className="bg-white rounded-2xl border border-zinc-100 p-4 text-xs" style={{ borderLeft: `3px solid ${GOLD}` }}>
+          <p className="font-bold text-zinc-700 mb-2">Instructions :</p>
+          <ol className="space-y-1.5 text-zinc-500 list-decimal list-inside">
+            <li>Ouvrez <strong>WhatsApp</strong> sur votre téléphone</li>
             <li>Allez dans <strong>Paramètres → Appareils connectés</strong></li>
-            <li>Appuyez sur <strong>Ajouter un appareil</strong></li>
+            <li>Appuyez sur <strong>"Ajouter un appareil"</strong></li>
             <li>Pointez l'appareil photo sur le QR ci-dessus</li>
           </ol>
         </div>
@@ -860,45 +779,53 @@ function WhatsappTab() {
     );
   }
 
-  /* ── Render: CONNECTED ──────────────────────────────────────── */
+  /* ── CONNECTED — success state ─────────────────────────────── */
   return (
     <div className="max-w-md mx-auto space-y-4">
       <div className="bg-white rounded-2xl p-6 text-center" style={{ border: `2px solid ${NAVY}` }}>
         <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: `rgba(197,160,89,0.12)`, border: `3px solid ${GOLD}` }}>
           <Wifi className="w-9 h-9" style={{ color: GOLD }} />
         </div>
-        <h2 className="text-lg font-bold text-zinc-800 mb-1">WhatsApp Connecté</h2>
-        <p className="text-sm text-zinc-400 mb-4">Votre numéro WhatsApp est lié à TajerGrow AI. L'envoi automatique est actif.</p>
 
-        <div className="inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold mb-5" style={{ background: GOLD, color: "#fff" }} data-testid="status-wa-connected">
+        <h2 className="text-lg font-bold text-zinc-800 mb-1">WhatsApp Connecté</h2>
+        {phone && (
+          <p className="text-sm font-semibold mb-3" style={{ color: NAVY }}>+{phone}</p>
+        )}
+        <p className="text-sm text-zinc-400 mb-5">TajerGrow AI confirme automatiquement vos commandes en Darija.</p>
+
+        <div className="inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold mb-6" style={{ background: GOLD, color: "#fff" }} data-testid="status-wa-connected">
           <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
           TajerGrow AI Active
         </div>
 
-        <div className="flex justify-center">
+        <div className="flex items-center justify-center gap-3">
           <button
             onClick={() => statusQuery.refetch()}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"
             style={{ color: NAVY, border: `1px solid ${NAVY}`, background: "white" }}
             data-testid="button-refresh-status"
           >
-            <RefreshCw className="w-3.5 h-3.5" /> Vérifier le statut
+            <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+          </button>
+          <button
+            onClick={() => {
+              if (confirm("Voulez-vous déconnecter WhatsApp et effacer la session ?")) {
+                disconnectMutation.mutate();
+              }
+            }}
+            disabled={disconnectMutation.isPending}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium text-red-500 border border-red-200 hover:bg-red-50 transition-colors disabled:opacity-50"
+            data-testid="button-disconnect-whatsapp"
+          >
+            {disconnectMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+            Déconnecter
           </button>
         </div>
       </div>
 
-      {/* Webhook URL reminder */}
-      <div className="bg-white rounded-2xl border border-zinc-100 p-4">
-        <p className="text-xs font-bold text-zinc-700 mb-2">Webhook configuré dans Green API</p>
-        <div className="flex items-center gap-2">
-          <code className="flex-1 text-xs font-mono px-3 py-2 rounded-xl truncate" style={{ background: "rgba(30,27,75,0.05)", color: NAVY, border: "1px solid rgba(30,27,75,0.1)" }}>
-            {webhookUrl}
-          </code>
-          <button onClick={copyWebhook} className="shrink-0 p-2 rounded-xl border transition-colors hover:bg-zinc-50" style={{ borderColor: "rgba(30,27,75,0.15)" }} data-testid="button-copy-webhook-connected">
-            {copied ? <Check className="w-4 h-4" style={{ color: GOLD }} /> : <Copy className="w-4 h-4 text-zinc-400" />}
-          </button>
-        </div>
-        <p className="text-xs text-zinc-400 mt-2">Si vous recevez des messages entrants dans le Live Monitoring, ce webhook est bien actif.</p>
+      <div className="bg-white rounded-2xl border border-zinc-100 p-4 text-xs text-zinc-500">
+        <p className="font-semibold text-zinc-700 mb-1">Reconnexion automatique</p>
+        <p>La session est sauvegardée sur le serveur. En cas de redémarrage, la connexion se rétablit automatiquement sans rescanner le QR.</p>
       </div>
     </div>
   );
