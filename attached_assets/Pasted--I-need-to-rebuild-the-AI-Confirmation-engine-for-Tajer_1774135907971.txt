@@ -1,0 +1,27 @@
+"I need to rebuild the AI Confirmation engine for TajerGrow. The previous version was not efficient. I want a 100% automated, human-like workflow as follows:
+1. The Instant Trigger (Automation Logic):
+Event: As soon as a new order arrives via Shopify/YouCan webhook (status: nouveau).
+Action: The system must immediately and automatically send the first WhatsApp message via the linked device (using @whiskeysockets/baileys).
+First Message Template:
+'السلام عليكم سيدي/لالة {Nom_Client}، تبارك الله عليك. معاك فريق الدعم ديال {Nom_Boutique}، شلنا الطلب ديالك لـ {Nom_Produit}. واش ممكن تأكد لينا غير المدينة باش نخرجوها ليك اليوم؟'
+2. Human-Like Progressive AI Conversation:
+AI Brain: Integrate OpenRouter API (using deepseek/deepseek-chat or gpt-4o-mini).
+State Management: The system must track the state of the conversation. Do not ask for all info at once.
+Rules of Engagement:
+Step 1: Greeting + Ask for City.
+Step 2: Once city is given, ask for Product Size/Color (if applicable).
+Step 3: Confirm the final order details and price.
+System Prompt for AI: 'You are a professional Moroccan customer service agent. Speak ONLY in natural Moroccan Darija. Be polite and helpful. Answer any questions about price, shipping (always free), or quality (genuine leather for Anakio). Your ultimate goal is to get a clear "Yes" or "Confirm" from the customer.'
+3. Automatic Status Update (The '3amali' Part):
+Intent Detection: The AI must analyze every customer reply.
+Action: If the AI detects a final confirmation (e.g., 'Ok', 'Oui', 'صيفطوه', 'أكد الطلب'), it must AUTOMATICALLY call the backend API to update the order status to 'confirme' and update the stock levels.
+Log: Save the entire conversation history in the database.
+4. Live Monitoring UI:
+Update the 'Live Monitoring' tab to show the conversation as it happens (Live Chat Vibe).
+I must be able to see: [Customer Name] | [Product] | [Live Chat Window].
+Intervention: If I type in the live chat, the AI must pause for that customer so I can take control manually.
+5. Technical Execution:
+Use Socket.io for real-time dashboard updates.
+Implement a queue system with a 5-10 second delay between messages to look natural.
+Ensure the store_id isolation works perfectly.
+Technical Goal: When I place a test order, I expect a WhatsApp message on my phone within 10 seconds. The AI must chat with me until I confirm, and then my Dashboard status must turn green automatically without me clicking anything."

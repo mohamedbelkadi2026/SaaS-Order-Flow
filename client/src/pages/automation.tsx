@@ -324,6 +324,7 @@ function AiConfirmationTab() {
   const hasOrKey = s?.hasOpenRouterKey;
 
   const MODEL_OPTIONS = [
+    { value: "openai/gpt-4o",               label: "GPT-4o",            badge: "Le plus puissant" },
     { value: "openai/gpt-4o-mini",          label: "GPT-4o Mini",       badge: "Rapide & économique" },
     { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", badge: "Meilleure qualité" },
     { value: "deepseek/deepseek-chat",      label: "DeepSeek Chat",     badge: "Excellent Darija" },

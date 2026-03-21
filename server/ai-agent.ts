@@ -69,9 +69,10 @@ const OPENROUTER_HEADERS = {
 const DEFAULT_MODEL = "openai/gpt-4o-mini";
 
 export const AI_MODELS: Record<string, { label: string; provider: string }> = {
-  "openai/gpt-4o-mini":           { label: "GPT-4o Mini",       provider: "OpenRouter" },
-  "anthropic/claude-3.5-sonnet":  { label: "Claude 3.5 Sonnet", provider: "OpenRouter" },
-  "deepseek/deepseek-chat":       { label: "DeepSeek Chat",      provider: "OpenRouter" },
+  "openai/gpt-4o":                { label: "GPT-4o",             provider: "OpenRouter" },
+  "openai/gpt-4o-mini":           { label: "GPT-4o Mini",        provider: "OpenRouter" },
+  "anthropic/claude-3.5-sonnet":  { label: "Claude 3.5 Sonnet",  provider: "OpenRouter" },
+  "deepseek/deepseek-chat":       { label: "DeepSeek Chat",       provider: "OpenRouter" },
 };
 
 interface ResolvedClient { client: OpenAI; model: string; provider: string; }
