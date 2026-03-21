@@ -240,10 +240,12 @@ export const baileysService = {
     }
     try {
       const jid = toJid(phone);
+      console.log(`[Baileys] Sending to JID: ${jid}`);
       await sock.sendMessage(jid, { text });
+      console.log(`[Baileys] ✅ Message sent to ${jid}`);
       return true;
     } catch (err: any) {
-      console.error("[Baileys] Send error:", err.message);
+      console.error(`[Baileys] ❌ Send error to ${phone}:`, err.message);
       return false;
     }
   },

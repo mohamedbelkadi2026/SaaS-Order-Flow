@@ -1399,6 +1399,11 @@ export async function registerRoutes(
       const mediaBuyerToken = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
       console.log(`[Attribution] Order=${parsed.orderNumber} UTM="${parsed.utmSource}" → Code=${parsed.buyerCode || 'none'} Platform=${parsed.trafficPlatform || 'none'} → Buyer=${mediaBuyerToken ? mediaBuyerToken.username + ' (#' + mediaBuyerToken.id + ')' : 'NOT FOUND'}`);
 
+      console.log("━━━ NEW WEBHOOK ARRIVED ━━━");
+      console.log(`[Webhook] Provider: ${provider} | Order: ${parsed.orderNumber} | Store: ${storeId}`);
+      console.log(`[Webhook] Customer: ${parsed.customerName} | Phone: ${parsed.customerPhone}`);
+      console.log(`[Webhook] Product: ${parsed.lineItems.map((li: any) => li.title).join(', ') || 'N/A'} | City: ${parsed.customerCity}`);
+
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
@@ -1420,6 +1425,18 @@ export async function registerRoutes(
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider, action: 'order_synced', status: 'success', message: `Commande ${parsed.orderNumber} importée via token webhook` });
 
       res.json({ success: true, orderId: order.id });
+
+      // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
+      console.log(`[Webhook] Order ${order.id} created → checking AI settings for store ${storeId}...`);
+      console.log(`[Webhook] Attempting WhatsApp AI trigger for: ${parsed.customerPhone}`);
+      const { baileysService } = await import("./baileys-service");
+      const waState = baileysService.getStatus();
+      console.log(`[WhatsApp] Socket status: ${waState.state} | Phone: ${waState.phone || 'N/A'}`);
+      if (waState.state !== "connected") {
+        console.warn(`[WhatsApp] ⚠️ Not connected (state=${waState.state}) — AI message will be queued, auto-reconnect in progress`);
+      }
+      triggerAIForNewOrder(storeId, order.id, parsed.customerPhone, parsed.customerName, firstProductId)
+        .catch(err => console.error(`[AI] Trigger failed for order ${order.id}:`, err.message));
     } catch (err: any) {
       console.error(`Token webhook error (${provider}):`, err);
       res.status(500).json({ message: 'Webhook processing failed' });
@@ -1449,6 +1466,8 @@ export async function registerRoutes(
       const storeProducts = await storage.getProductsByStore(storeId);
       const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
       const orderItems = matched ? [{ productId: matched.id, quantity: 1, price: totalPrice, orderId: 0 }] : [];
+      console.log("━━━ NEW WEBHOOK ARRIVED (GSheets) ━━━");
+      console.log(`[Webhook] Customer: ${customerName} | Phone: ${customerPhone} | Product: ${productName}`);
       const order = await storage.createOrder({
         storeId, orderNumber, customerName, customerPhone, customerAddress, customerCity,
         status: 'nouveau', totalPrice, productCost: matched ? matched.costPrice : 0,
@@ -1460,6 +1479,10 @@ export async function registerRoutes(
       const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: 'gsheets', action: 'order_synced', status: 'success', message: `Commande Google Sheets ${orderNumber} importée` });
       res.json({ success: true, orderId: order.id });
+      // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
+      console.log(`[Webhook] Attempting WhatsApp AI trigger for GSheets order: ${customerPhone}`);
+      triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
+        .catch(err => console.error(`[AI] GSheets trigger failed for order ${order.id}:`, err.message));
     } catch (err: any) {
       console.error('GSheets webhook error:', err);
       res.status(500).json({ message: 'Processing failed' });

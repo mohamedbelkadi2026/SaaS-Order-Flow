@@ -311,21 +311,29 @@ export async function triggerAIForNewOrder(
   customerName: string,
   productId?: number | null,
 ): Promise<void> {
+  console.log(`[AI] triggerAIForNewOrder called → store=${storeId} order=${orderId} phone=${customerPhone}`);
+
   if (!(await storeHasAIKey(storeId))) {
-    console.warn("[AI] No AI key for store", storeId, "— skipping trigger");
+    console.error(`[AI] ❌ BLOCKED: No OpenRouter/OpenAI API key configured for store ${storeId}. Add OPENROUTER_API_KEY secret or configure it in Automation → IA Confirmation.`);
     return;
   }
 
   try {
     const settings = await storage.getAiSettings(storeId);
-    if (!settings?.enabled) return;
+    if (!settings?.enabled) {
+      console.warn(`[AI] ⚠️ BLOCKED: AI confirmation is DISABLED for store ${storeId}. Enable it in Automation → IA Confirmation.`);
+      return;
+    }
 
     const enabledIds: number[] = settings.enabledProductIds ?? [];
-    if (enabledIds.length > 0 && productId && !enabledIds.includes(productId)) return;
+    if (enabledIds.length > 0 && productId && !enabledIds.includes(productId)) {
+      console.warn(`[AI] ⚠️ BLOCKED: Product ${productId} not in store ${storeId}'s enabled product list [${enabledIds.join(", ")}]`);
+      return;
+    }
 
     const existing = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
     if (existing) {
-      console.log(`[AI] Active conversation already exists for ${customerPhone}`);
+      console.log(`[AI] ⚠️ BLOCKED: Active conversation already exists for ${customerPhone} (conv.id=${existing.id}) — skipping duplicate`);
       return;
     }
 
@@ -362,10 +370,12 @@ export async function triggerAIForNewOrder(
       message: { role: "assistant", content: firstMessage, ts: Date.now() },
     });
 
+    console.log(`[AI] ✅ Conversation created (conv.id=${conv.id}) — queuing WhatsApp message`);
+    console.log(`[AI] Sending first WA message to: ${customerPhone}`);
     await queueWhatsApp(storeId, customerPhone, firstMessage);
-    console.log(`[AI] Triggered: store=${storeId} order=${orderId} phone=${customerPhone} product="${productLabel}"`);
+    console.log(`[AI] ✅ Triggered: store=${storeId} order=${orderId} phone=${customerPhone} product="${productLabel}" step=1`);
   } catch (err: any) {
-    console.error(`[AI] triggerAIForNewOrder error (order ${orderId}):`, err.message);
+    console.error(`[AI] ❌ triggerAIForNewOrder error (order ${orderId}):`, err.message);
   }
 }
 
