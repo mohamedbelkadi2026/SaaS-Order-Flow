@@ -4,63 +4,10 @@ import { broadcastToStore } from "./sse";
 import { sendWhatsAppMessage } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import type { AiConversation } from "@shared/schema";
 
-/* ── Default Moroccan Darija System Prompt ───────────────────── */
-const DEFAULT_PROMPT = `أنت موظف خدمة عملاء محترف في متجر مغربي للتجارة الإلكترونية. اسمك "أمين".
-تتحدث بالدارجة المغربية فقط. أسلوبك ودود وطبيعي كإنسان حقيقي.
-
-قاعدة مهمة جداً: لا ترسل كل الأسئلة في رسالة واحدة. اتبع هذا التسلسل خطوة بخطوة:
-
-الخطوة 1 — تأكيد المدينة:
-رسالتنا الأولى طلبنا من الزبون المدينة فقط. إذا جاوب، احفظ المدينة وانتقل للخطوة 2.
-
-الخطوة 2 — تأكيد المقاس أو الكمية:
-بعد أن تعرف المدينة، اسأله بشكل طبيعي عن المقاس أو أي تفصيل آخر مطلوب (حسب المنتج).
-مثال: "الله يحفظك سيدي، والمدينة [كازا] واش المقاس [42] هو هاداك؟"
-
-الخطوة 3 — التأكيد النهائي:
-بعد تأكيد المقاس، لخص الطلب مع السعر الإجمالي وأخبره أن الطلبية تأكدت.
-مثال: "صافي سيدي، الطلبية ديالك تأكدت وغتوصلك فـ 24 ساعة. نهارك مبروك! 🎉"
-
-قواعد إضافية:
-- إذا سألك الزبون عن السعر: أخبره بالسعر الموجود في تفاصيل الطلب.
-- إذا سألك عن الجودة أو التوصيل: جاوبه بإيجاب وثقة.
-- إذا أكد الزبون (واخا / ok / مزيان / صيفطوه): أنهِ المحادثة بالخطوة 3.
-- إذا ألغى الزبون: أخبره بلطف أن الطلب تلغى.
-- لا تذكر أبداً أنك روبوت أو ذكاء اصطناعي.
-- رسائلك قصيرة (سطر أو سطرين فقط). لا فقرات طويلة.`;
-
-/* ── Keyword banks ───────────────────────────────────────────── */
-const CONFIRM_KEYWORDS = [
-  "نعم", "اه", "آه", "صيفطوه", "صافي", "واخا", "wakha", "waxxa", "oui",
-  "yes", "confirm", "مزيان", "كنقبل", "يعطيك", "مؤكد", "تأكيد",
-  "ok", "okay", "d'accord", "c'est bon", "cest bon", "go", "ابعتوه",
-  "موافق", "راضي", "عيوني", "بالتوفيق", "ابعت", "كملوه", "أكيد", "اكيد",
-];
-const CANCEL_KEYWORDS = [
-  "لا", "non", "no", "cancel", "annuler", "نلغي", "الغ", "إلغاء",
-  "ما بغيتش", "ما كنقبلش", "annulé", "annule", "stop", "باش", "مابغيتش",
-];
-const ATTENTION_KEYWORDS = [
-  "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
-  "واحد حقيقي", "تكلم معاي", "تكلموا معايا", "بشر", "مسؤول",
-  "complaint", "شكاية", "عندي مشكل", "مشكلة", "راجعني", "انسان",
-];
-
-function detectIntent(msg: string): "confirm" | "cancel" | null {
-  const lower = msg.toLowerCase().trim();
-  if (CONFIRM_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "confirm";
-  if (CANCEL_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "cancel";
-  return null;
-}
-
-function detectAttentionNeeded(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return ATTENTION_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
-}
-
-/* ── OpenRouter resolver ─────────────────────────────────────── */
+/* ── OpenRouter config ───────────────────────────────────────── */
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const OPENROUTER_HEADERS = {
   "HTTP-Referer": "https://tajergrow.com",
@@ -101,6 +48,70 @@ async function storeHasAIKey(storeId: number): Promise<boolean> {
     || !!(s?.openaiApiKey?.trim()) || !!(process.env.OPENAI_API_KEY);
 }
 
+/* ── Keyword banks ───────────────────────────────────────────── */
+const CONFIRM_KEYWORDS = [
+  "نعم", "اه", "آه", "صيفطوه", "صافي", "واخا", "wakha", "waxxa", "oui",
+  "yes", "confirm", "مزيان", "كنقبل", "يعطيك", "مؤكد", "تأكيد",
+  "ok", "okay", "d'accord", "c'est bon", "cest bon", "go", "ابعتوه",
+  "موافق", "راضي", "عيوني", "بالتوفيق", "ابعت", "كملوه", "أكيد", "اكيد",
+];
+const CANCEL_KEYWORDS = [
+  "لا", "non", "no", "cancel", "annuler", "نلغي", "الغ", "إلغاء",
+  "ما بغيتش", "ما كنقبلش", "annulé", "annule", "stop", "مابغيتش",
+];
+const ATTENTION_KEYWORDS = [
+  "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
+  "واحد حقيقي", "تكلم معاي", "تكلموا معايا", "بشر", "مسؤول",
+  "complaint", "شكاية", "عندي مشكل", "مشكلة", "راجعني", "انسان",
+];
+
+const MOROCCAN_CITIES = [
+  "الدار البيضاء", "كازابلانكا", "كازا", "الرباط", "فاس", "مراكش",
+  "طنجة", "أكادير", "مكناس", "وجدة", "القنيطرة", "تطوان", "سلا",
+  "العيون", "الجديدة", "بني ملال", "خريبكة", "الناظور", "الحسيمة",
+  "تازة", "ورززات", "خميسات", "تيفلت", "سطات", "برشيد", "محمدية",
+  "قلعة السراغنة", "الفقيه بن صالح", "تارودانت", "الرشيدية", "الراشيدية",
+  "زاكورة", "طاطا", "مديونة", "بن سليمان", "بنسليمان", "تمارة", "الحي الحسني",
+  "سيدي بنور", "آسفي", "اسفي", "الصويرة", "صفرو", "ازيلال", "ميدلت",
+  "casablanca", "rabat", "fes", "marrakech", "tanger", "tangier",
+  "agadir", "meknes", "oujda", "kenitra", "tetouan", "sale",
+  "laayoune", "el jadida", "beni mellal", "khouribga", "nador",
+  "al hoceima", "taza", "settat", "berrechid", "mohammedia",
+  "khemisset", "tifelt", "taroudant", "essaouira", "safi", "azemmour",
+  "temara", "mediouna", "ouarzazate", "errachidia", "midelt", "ifrane",
+  "tiznit", "guelmim", "tan tan", "dakhla", "laayoune", "smara",
+  "ksar el kebir", "larache", "al hoceima", "nador", "berkane",
+  "taourirt", "guercif", "taza", "sefrou", "boulemane", "missour",
+  "tinghir", "kelaa sraghna", "beni mellal",
+];
+
+function detectIntent(msg: string): "confirm" | "cancel" | null {
+  const lower = msg.toLowerCase().trim();
+  if (CONFIRM_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "confirm";
+  if (CANCEL_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "cancel";
+  return null;
+}
+
+function detectAttentionNeeded(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return ATTENTION_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
+}
+
+function detectCity(msg: string): string | null {
+  const lower = msg.toLowerCase().trim();
+  for (const city of MOROCCAN_CITIES) {
+    if (lower.includes(city.toLowerCase())) return city;
+  }
+  return null;
+}
+
+function looksLikeDirectAnswer(msg: string): boolean {
+  const trimmed = msg.trim();
+  const wordCount = trimmed.split(/\s+/).length;
+  const isQuestion = trimmed.includes("?") || trimmed.includes("؟") || trimmed.includes("واش");
+  return wordCount <= 8 && !isQuestion;
+}
+
 /* ── WhatsApp message queue (per-store rate limiter) ─────────── */
 const waQueue = new Map<number, Array<{ phone: string; message: string }>>();
 const waProcessing = new Set<number>();
@@ -120,7 +131,7 @@ async function processWaQueue(storeId: number): Promise<void> {
     const item = queue.shift()!;
     await sendWhatsAppMessage(item.phone, item.message);
     if (queue.length > 0) {
-      await new Promise(r => setTimeout(r, 10000)); // 10s between messages (human-like pacing)
+      await new Promise(r => setTimeout(r, 10000));
     }
   }
   waProcessing.delete(storeId);
@@ -164,7 +175,6 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       resolvedProductId = item.productId ?? null;
       if (item.rawProductName) {
         productName = item.rawProductName;
-        // still try to get stock from product table if productId exists
         if (item.productId) {
           const [p] = await db.select({ stock: products.stock }).from(products).where(eq(products.id, item.productId));
           stockQty = p?.stock ?? null;
@@ -198,6 +208,99 @@ async function getStoreName(storeId: number): Promise<string> {
   }
 }
 
+/* ── Step-specific system prompts ────────────────────────────── */
+function buildStepPrompt(
+  step: number,
+  ctx: OrderContext | null,
+  storeName: string,
+  conv: AiConversation,
+  customSystemPrompt?: string | null,
+): string {
+  const priceDh = ctx?.totalPrice ? `${(ctx.totalPrice / 100).toFixed(0)} درهم` : null;
+  const productLabel = ctx?.productName ?? "المنتج";
+  const city = conv.collectedCity ?? ctx?.customerCity ?? null;
+  const variant = conv.collectedVariant ?? ctx?.productVariant ?? null;
+
+  const stockNote = ctx?.stockQty !== null
+    ? (ctx!.stockQty! <= 0
+        ? " (تنبيه: المخزون نفد! لا تعد بالتسليم الفوري)"
+        : ctx!.stockQty! <= 5
+          ? ` (تنبيه: بقى غير ${ctx!.stockQty} في المخزون — استخدم هذا كحجة للإسراع)`
+          : "")
+    : "";
+
+  const base = `You are "أمين", a professional and warm customer service agent at "${storeName}", a Moroccan e-commerce store.
+
+CRITICAL OUTPUT RULES:
+- Write ONLY in natural Moroccan Darija (not standard Arabic, not French, not Arabizi)
+- Keep replies SHORT: maximum 2 lines
+- Never mention you are an AI, bot, or automated system
+- Be friendly, human, and natural — like a real Moroccan employee
+- Shipping is always FREE — never say otherwise
+${customSystemPrompt ? `\nExtra store instructions: ${customSystemPrompt}` : ""}`;
+
+  if (step === 1) {
+    return `${base}
+
+CURRENT STEP — 1 of 3: Confirm the customer's delivery city.
+Product ordered: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}${stockNote}
+
+Your task:
+- The customer just received our greeting asking for their city
+- If they gave a city name: warmly acknowledge it (e.g. "يزاك الله خير! وصلنا المدينة...") and move to asking about size/variant
+- If they asked about price: tell them ${priceDh ?? "as displayed"} with free delivery, then ask for city again
+- If unclear: ask for city naturally once more in Darija
+- Never ask for city AND size in the same message`;
+  }
+
+  if (step === 2) {
+    const cityLine = city ? `Customer's city: ${city}.` : "";
+    return `${base}
+
+CURRENT STEP — 2 of 3: Confirm the product size, color, or variant.
+Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}${stockNote}
+${cityLine}
+
+Your task:
+- Ask naturally about size/color/variant for this product (if applicable)
+- If the product has no variants, skip this step and summarize the order
+- Example: "الله يحفظك، وواش المقاس ديالك [X] هو نفس؟" or "واش اللون ديالك..."
+- If they answer with a size or color: acknowledge it and confirm
+- Keep it brief and warm`;
+  }
+
+  // Step 3 — final confirmation
+  const summaryParts: string[] = [];
+  if (productLabel) summaryParts.push(`المنتج: ${productLabel}`);
+  if (variant) summaryParts.push(`المقاس/اللون: ${variant}`);
+  if (city) summaryParts.push(`المدينة: ${city}`);
+  if (priceDh) summaryParts.push(`السعر: ${priceDh} (التوصيل مجاني)`);
+
+  return `${base}
+
+CURRENT STEP — 3 of 3: Final order confirmation.
+Order summary: ${summaryParts.length ? summaryParts.join(" | ") : `"${productLabel}"`}${stockNote}
+
+Your task:
+- Summarize the full order details warmly and ask for final confirmation
+- Example: "إذن سيدي، الطلبية ديالك: [المنتج] مقاس [X] لـ [المدينة] بـ [السعر]. واش نؤكد ليك؟"
+- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate and tell them the order is confirmed ✅
+- If they have a question: answer it then re-ask for confirmation
+- Keep it warm and brief`;
+}
+
+/* ── Recovery system prompt ──────────────────────────────────── */
+const RECOVERY_SYSTEM_PROMPT = `You are "أمين", a professional Moroccan sales agent.
+Write ONLY in natural Moroccan Darija. Keep replies SHORT (1-2 lines).
+
+Your goal: win back the customer who abandoned their cart.
+- If they say price is too high: "الله يحفظك، هادا أرخص ثمن — ودابا كاين تخفيض"
+- If they ask about quality: respond with full confidence
+- If they ask about delivery: "التوصيل مجاني من 24 لـ 48 ساعة إن شاء الله"
+- If they confirm (واخا / ok / صيفطوه): tell them order is confirmed
+- If they cancel: respond kindly and thank them
+- Never reveal you are an AI`;
+
 /* ════════════════════════════════════════════════════════════════
    TRIGGER — Fire-and-forget on new order creation
 ════════════════════════════════════════════════════════════════ */
@@ -217,46 +320,40 @@ export async function triggerAIForNewOrder(
     const settings = await storage.getAiSettings(storeId);
     if (!settings?.enabled) return;
 
-    // Product filter check
     const enabledIds: number[] = settings.enabledProductIds ?? [];
     if (enabledIds.length > 0 && productId && !enabledIds.includes(productId)) return;
 
-    // Prevent duplicate active conversation for same phone
     const existing = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
     if (existing) {
       console.log(`[AI] Active conversation already exists for ${customerPhone}`);
       return;
     }
 
-    // Gather context for the first message
     const [ctx, storeName] = await Promise.all([
       getOrderContext(orderId),
       getStoreName(storeId),
     ]);
 
-    const cleanName = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي";
+    const cleanName = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي/لالة";
     const productLabel = ctx.productName || "منتجك";
     const variantPart = ctx.productVariant ? ` (${ctx.productVariant})` : "";
-
-    // Stock urgency line (only shown when stock is critically low)
     const stockUrgency = (ctx.stockQty !== null && ctx.stockQty > 0 && ctx.stockQty <= 3)
       ? `\n⚠️ ماتأخروش — بقاو غير ${ctx.stockQty} قطع فـ السطوك!`
       : "";
 
-    // Step 1 — Ask for city only (progressive flow)
+    // Exact template from spec — Step 1: ask for city only
     const firstMessage =
       `السلام عليكم سيدي/لالة ${cleanName}، تبارك الله عليك 🌟\n` +
       `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.${stockUrgency}\n` +
       `واش ممكن تأكد لينا غير المدينة باش نخرجوها ليك اليوم؟ 🚀`;
 
-    // Create conversation record
     const conv = await storage.createAiConversation({
       storeId, orderId, customerPhone,
       customerName: customerName || null,
       status: "active", isManual: 0,
+      conversationStep: 1,
     });
 
-    // Log + broadcast to live monitoring
     await storage.createAiLog({ storeId, orderId, customerPhone, role: "assistant", message: firstMessage });
     await storage.updateAiConversationLastMessage(conv.id, firstMessage);
 
@@ -265,9 +362,7 @@ export async function triggerAIForNewOrder(
       message: { role: "assistant", content: firstMessage, ts: Date.now() },
     });
 
-    // Queue the WhatsApp send (rate-limited)
     await queueWhatsApp(storeId, customerPhone, firstMessage);
-
     console.log(`[AI] Triggered: store=${storeId} order=${orderId} phone=${customerPhone} product="${productLabel}"`);
   } catch (err: any) {
     console.error(`[AI] triggerAIForNewOrder error (order ${orderId}):`, err.message);
@@ -275,20 +370,8 @@ export async function triggerAIForNewOrder(
 }
 
 /* ════════════════════════════════════════════════════════════════
-   RECOVERY TRIGGER — Fire-and-forget for abandoned lead outreach
+   RECOVERY TRIGGER
 ════════════════════════════════════════════════════════════════ */
-const RECOVERY_SYSTEM_PROMPT = `أنت موظف مبيعات محترف مغربي اسمك "أمين". تتحدث بالدارجة المغربية فقط.
-مهمتك هي إرجاع الزبون الذي تخلى عن سلته واقناعه يكمل الشراء بطريقة طبيعية وودودة.
-
-قواعد المحادثة:
-- رسائلك قصيرة جداً (سطر أو سطرين). لا فقرات طويلة.
-- إذا اشتكى الزبون أن الثمن غالي: قل له "الله يحفظك، هادا أرخص ثمن كيف دايرين ودابا كاين تخفيض" ثم اذكر قيمة له.
-- إذا سأل عن الجودة: جاوبه بإيجاب وثقة كاملة.
-- إذا سأل عن التوصيل: "غيتوصل ليك من 24 لـ 48 ساعة مجانًا إن شاء الله".
-- إذا أكد الزبون (واخا / ok / مزيان / صيفطوه): أخبره أن الطلبية تأكدت وغتصل به في أقرب وقت.
-- إذا ألغى: رد بلطف وشكره.
-- لا تذكر أبداً أنك روبوت أو ذكاء اصطناعي.`;
-
 export async function triggerRecoveryMessage(
   storeId: number,
   orderId: number,
@@ -310,11 +393,11 @@ export async function triggerRecoveryMessage(
       `السلام عليكم ${cleanName}، شلنا باللي كنتي باغي تاخد "${productName}" ولكن وقع شي مشكل؟\n` +
       `واش عندك شي تساؤل نقدر نجاوبك عليه؟${stockPart} 🛍️`;
 
-    // Create conversation record
     const conv = await storage.createAiConversation({
       storeId, orderId, customerPhone,
       customerName: customerName || null,
       status: "active", isManual: 0,
+      conversationStep: 3, // recovery starts at confirmation step
     });
 
     await storage.createAiLog({ storeId, orderId, customerPhone, role: "assistant", message: recoveryMessage });
@@ -333,7 +416,7 @@ export async function triggerRecoveryMessage(
 }
 
 /* ════════════════════════════════════════════════════════════════
-   HANDLE INCOMING — Called when customer replies via WhatsApp
+   HANDLE INCOMING — Step-based AI conversation engine
 ════════════════════════════════════════════════════════════════ */
 export async function handleIncomingMessage(
   storeId: number,
@@ -346,7 +429,7 @@ export async function handleIncomingMessage(
     const conv = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
     if (!conv) return;
 
-    // Manual takeover — log & broadcast only, no AI reply
+    // Manual takeover — just log and broadcast, AI is paused
     if (conv.isManual === 1) {
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "user", message: customerMessage });
       await storage.updateAiConversationLastMessage(conv.id, customerMessage);
@@ -359,18 +442,18 @@ export async function handleIncomingMessage(
     await storage.updateAiConversationLastMessage(conv.id, customerMessage);
     broadcastToStore(storeId, "message", { conversationId: conv.id, role: "user", content: customerMessage, ts: Date.now() });
 
-    // Check if customer is asking for human attention
+    // Human escalation detection
     if (detectAttentionNeeded(customerMessage)) {
       await storage.updateConversationNeedsAttention(conv.id, 1);
       broadcastToStore(storeId, "needs_attention", { conversationId: conv.id, ts: Date.now() });
       console.log(`[AI] Attention needed: conv=${conv.id} phone=${customerPhone}`);
     }
 
-    // ── Fast intent detection (no AI needed) ─────────────────────
+    // ── Fast intent detection — works at any step ─────────────────
     const intent = detectIntent(customerMessage);
 
     if (intent === "confirm" && conv.orderId) {
-      await storage.updateOrderStatus(conv.orderId, "confirme"); // RULE 0: decrements stock
+      await storage.updateOrderStatus(conv.orderId, "confirme");
       await storage.updateAiConversationStatus(conv.id, "confirmed");
       const msg = "بارك الله فيك! طلبك تأكد ✅ غادي يوصلك قريبا إن شاء الله 🚀";
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
@@ -395,44 +478,31 @@ export async function handleIncomingMessage(
       return;
     }
 
-    // ── OpenRouter AI reply ───────────────────────────────────────
+    // ── Step-based AI reply ───────────────────────────────────────
+    const currentStep = conv.conversationStep ?? 1;
     broadcastToStore(storeId, "typing", { conversationId: conv.id, ts: Date.now() });
 
     try {
       const settings = await storage.getAiSettings(storeId);
-      const recentLogs = await storage.getAiLogs(storeId, conv.orderId ?? undefined);
 
-      // Build rich system prompt with order context
-      // Check if this is a recovery conversation (order was abandoned)
+      // Determine if recovery conversation
       let isRecovery = false;
       if (conv.orderId) {
         const { orders: ordersTable } = await import("@shared/schema");
         const [orderRow] = await db.select({ wasAbandoned: ordersTable.wasAbandoned }).from(ordersTable).where(eq(ordersTable.id, conv.orderId));
         isRecovery = (orderRow?.wasAbandoned ?? 0) === 1;
       }
-      let systemPrompt = isRecovery ? RECOVERY_SYSTEM_PROMPT : (settings?.systemPrompt || DEFAULT_PROMPT);
-      if (conv.orderId) {
-        const ctx = await getOrderContext(conv.orderId);
-        const priceDh = ctx.totalPrice ? `${(ctx.totalPrice / 100).toFixed(0)} درهم` : "كما اتفقنا";
-        const details: string[] = [];
-        if (ctx.productName) details.push(`المنتج: ${ctx.productName}${ctx.productVariant ? ` (${ctx.productVariant})` : ""}`);
-        details.push(`السعر: ${priceDh}`);
-        if (ctx.customerCity) details.push(`المدينة: ${ctx.customerCity}`);
-        // Stock awareness — agent knows actual inventory
-        if (ctx.stockQty !== null) {
-          if (ctx.stockQty <= 0) {
-            details.push(`المخزون: نفد! لا تعد بالتسليم إلا بعد مراجعة الفريق`);
-          } else if (ctx.stockQty <= 5) {
-            details.push(`المخزون: ${ctx.stockQty} قطع فقط — استخدم هذا كحجة لإقناع الزبون بالتأكيد الآن`);
-          } else {
-            details.push(`المخزون: متوفر (${ctx.stockQty} قطعة)`);
-          }
-        }
-        if (details.length) {
-          systemPrompt = `${systemPrompt}\n\n[تفاصيل الطلب الحالي: ${details.join(" | ")}]`;
-        }
-      }
 
+      const ctx = conv.orderId ? await getOrderContext(conv.orderId) : null;
+      const storeName = await getStoreName(storeId);
+
+      // Build step-specific system prompt
+      const systemPrompt = isRecovery
+        ? RECOVERY_SYSTEM_PROMPT
+        : buildStepPrompt(currentStep, ctx, storeName, conv, settings?.systemPrompt);
+
+      // Build message history
+      const recentLogs = await storage.getAiLogs(storeId, conv.orderId ?? undefined);
       const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
         { role: "system", content: systemPrompt },
         ...recentLogs.slice(-14).map((l) => ({
@@ -446,31 +516,69 @@ export async function handleIncomingMessage(
       const aiReply = completion.choices[0]?.message?.content?.trim() ?? "";
       if (!aiReply) throw new Error("Empty AI response");
 
-      console.log(`[AI] Reply via ${provider}/${model} for conv ${conv.id}`);
+      console.log(`[AI] Step ${currentStep} reply via ${provider}/${model} for conv ${conv.id}`);
 
+      // ── Advance step based on what the customer just said ────────
+      if (!isRecovery) {
+        let nextStep = currentStep;
+        let stepData: { city?: string; variant?: string } = {};
+
+        if (currentStep === 1) {
+          const detectedCity = detectCity(customerMessage);
+          if (detectedCity) {
+            stepData.city = detectedCity;
+            nextStep = 2;
+            // If product already has a variant from order, skip step 2
+            if (ctx?.productVariant) {
+              stepData.variant = ctx.productVariant;
+              nextStep = 3;
+            }
+          } else if (looksLikeDirectAnswer(customerMessage) && customerMessage.length > 3) {
+            // Short direct answer that's not a city we recognize — treat as city anyway
+            stepData.city = customerMessage.trim();
+            nextStep = 2;
+            if (ctx?.productVariant) {
+              stepData.variant = ctx.productVariant;
+              nextStep = 3;
+            }
+          }
+        } else if (currentStep === 2) {
+          if (looksLikeDirectAnswer(customerMessage) && customerMessage.length > 1) {
+            stepData.variant = customerMessage.trim();
+            nextStep = 3;
+          }
+        }
+
+        if (nextStep !== currentStep) {
+          await storage.updateConversationStep(conv.id, nextStep, stepData);
+          console.log(`[AI] Conv ${conv.id} advanced: step ${currentStep} → ${nextStep}`, stepData);
+        }
+      }
+
+      // Log + broadcast + queue outgoing message
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: aiReply });
       await storage.updateAiConversationLastMessage(conv.id, aiReply);
 
       broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
-      broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider });
+      broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider, step: currentStep });
 
       await queueWhatsApp(storeId, customerPhone, aiReply);
+
     } catch (aiErr: any) {
-      console.error("[AI] OpenRouter error:", aiErr.message);
+      console.error("[AI] Reply error:", aiErr.message);
       broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
       broadcastToStore(storeId, "ai_error", { conversationId: conv.id, error: aiErr.message });
 
-      // Mark as needs attention when AI fails
       await storage.updateConversationNeedsAttention(conv.id, 1);
       broadcastToStore(storeId, "needs_attention", { conversationId: conv.id, ts: Date.now() });
 
-      // Polite fallback + notify admin
       const fallback = "شكرا على رسالتك 🙏 سيتواصل معاك فريقنا خلال دقائق.";
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: fallback });
       await storage.updateAiConversationLastMessage(conv.id, fallback);
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: fallback, ts: Date.now() });
       await queueWhatsApp(storeId, customerPhone, fallback);
     }
+
   } catch (err: any) {
     console.error(`[AI] handleIncomingMessage error (phone ${customerPhone}):`, err.message);
   }

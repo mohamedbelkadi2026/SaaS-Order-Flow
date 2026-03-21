@@ -175,6 +175,7 @@ export interface IStorage {
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
   upsertAiSettings(storeId: number, data: { enabled?: number; systemPrompt?: string | null; enabledProductIds?: number[]; openaiApiKey?: string | null; openrouterApiKey?: string | null; aiModel?: string | null }): Promise<import("@shared/schema").AiSetting>;
   updateConversationNeedsAttention(id: number, val: number): Promise<void>;
+  updateConversationStep(id: number, step: number, data?: { city?: string; variant?: string }): Promise<void>;
 
   // Recovery
   getRecoverySettings(storeId: number): Promise<import("@shared/schema").RecoverySetting | undefined>;
@@ -2168,6 +2169,14 @@ export class DatabaseStorage implements IStorage {
   async setConversationManual(id: number, isManual: number) {
     const { aiConversations } = await import("@shared/schema");
     await db.update(aiConversations).set({ isManual, status: isManual ? "manual" : "active" }).where(eq(aiConversations.id, id));
+  }
+
+  async updateConversationStep(id: number, step: number, data?: { city?: string; variant?: string }) {
+    const { aiConversations } = await import("@shared/schema");
+    const update: Record<string, unknown> = { conversationStep: step };
+    if (data?.city)    update.collectedCity    = data.city;
+    if (data?.variant) update.collectedVariant = data.variant;
+    await db.update(aiConversations).set(update).where(eq(aiConversations.id, id));
   }
 
   // ── Automation ────────────────────────────────────────────────────────────
