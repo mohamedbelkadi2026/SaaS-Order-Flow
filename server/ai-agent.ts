@@ -55,9 +55,22 @@ const CONFIRM_KEYWORDS = [
   "ok", "okay", "d'accord", "c'est bon", "cest bon", "go", "ابعتوه",
   "موافق", "راضي", "عيوني", "بالتوفيق", "ابعت", "كملوه", "أكيد", "اكيد",
 ];
+// ── Strict cancellation only — single "لا/no/non" alone is NOT a cancel
+// because customers say "لا، واش عندكم مقاس 41؟" (still interested).
+// Only explicit, unambiguous phrases trigger cancellation.
 const CANCEL_KEYWORDS = [
-  "لا", "non", "no", "cancel", "annuler", "نلغي", "الغ", "إلغاء",
-  "ما بغيتش", "ما كنقبلش", "annulé", "annule", "stop", "مابغيتش",
+  "بلاش",               // "forget it / nevermind" — strongest Darija cancel
+  "ما بقيتش بغيت",      // "I no longer want it"
+  "ما بقيتش",           // "I no longer (want it)"
+  "ما بغيتش",           // "I don't want it"
+  "ما كنقبلش",          // "I won't accept it"
+  "مابغيتش",            // merged
+  "بغيت نلغي",          // "I want to cancel"
+  "نلغي الطلب",         // "cancel the order"
+  "الغ الطلب",          // "cancel the order"
+  "إلغاء الطلب",        // "cancel the order"
+  "ما كناخدوش",         // "we won't take it"
+  "ما بقيناش",          // "we no longer (want it)"
 ];
 const ATTENTION_KEYWORDS = [
   "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
@@ -87,8 +100,21 @@ const MOROCCAN_CITIES = [
 
 function detectIntent(msg: string): "confirm" | "cancel" | null {
   const lower = msg.toLowerCase().trim();
+
+  // Confirm check first
   if (CONFIRM_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "confirm";
+
+  // ── Question guard: customer is asking something → still interested, never cancel ──
+  // Catches: "لا، واش عندكم 41؟" / "واش كتوصل لا؟" / "شحال الثمن؟" etc.
+  const isQuestion =
+    lower.includes("؟") ||
+    lower.endsWith("?") ||
+    /^(واش|كيفاش|فين|شحال|شنو|علاش|فاش|وقت|امتى|كيفما)\b/.test(lower);
+  if (isQuestion) return null;
+
+  // Cancel only on explicit, unambiguous phrases
   if (CANCEL_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "cancel";
+
   return null;
 }
 
@@ -292,7 +318,7 @@ function buildStepPrompt(
     ? `\nPRODUCT KNOWLEDGE BASE:\n${productKnowledge.join("\n")}`
     : "";
 
-  const base = `You are "أمين", a human customer service agent at "${storeName}" (Moroccan e-commerce store). You are a master Moroccan salesperson.
+  const base = `You are "أمين", a patient and helpful human customer service agent at "${storeName}" (Moroccan e-commerce store). You are a trusted Moroccan salesperson — never pushy, always supportive.
 
 CRITICAL OUTPUT RULES:
 - Write ONLY in natural Moroccan Darija (not MSA, not French, not Arabizi)
@@ -302,6 +328,15 @@ CRITICAL OUTPUT RULES:
 - Shipping is ALWAYS FREE — never say otherwise
 - When hesitant: emphasize "قلب عاد خلص" (inspect before paying), free returns, and premium quality
 - Gender: address as ${address.formal} (formal) or ${address.friendly} (friendly) based on name "${conv.customerName ?? "unknown"}"
+
+PATIENCE MODE — READ CAREFULLY:
+- ANSWER EVERY question about the product FIRST, then gently ask for city/confirmation
+- If the customer says "لا" followed by a question, they are STILL INTERESTED — keep helping
+- If the customer asks 10 questions, answer all 10 warmly — never get frustrated or give up
+- Do NOT push for confirmation after every reply — build trust naturally
+- ONLY mark as cancelled if customer says explicitly: "بلاش" / "ما بقيتش" / "ما بغيتش" / "بغيت نلغي"
+- If undecided, always end with: "واش عندك أي سؤال آخر ${address.formal}؟ كنا هنا دايما 🙏"
+- Your goal is to CLOSE THE SALE by being helpful, not by rushing
 
 ORDER DETAILS:
 - Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
@@ -641,6 +676,19 @@ export async function handleIncomingMessage(
 
       broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider, step: currentStep });
+
+      // ── Long conversation detection: 8+ messages without decision ──
+      // Fires exactly once at message 8 (even count) to notify admin
+      const totalLogs = await storage.getAiLogs(storeId, conv.orderId ?? undefined);
+      if (totalLogs.length === 8 || totalLogs.length === 16) {
+        console.log(`[AI] ⏱️ Long conversation: conv ${conv.id} has ${totalLogs.length} messages — notifying admin`);
+        broadcastToStore(storeId, "long_chat", {
+          conversationId: conv.id,
+          messageCount: totalLogs.length,
+          customerName: conv.customerName,
+          ts: Date.now(),
+        });
+      }
 
       await queueWhatsApp(storeId, customerPhone, aiReply);
 

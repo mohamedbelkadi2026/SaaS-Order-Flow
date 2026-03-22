@@ -967,6 +967,7 @@ function LiveMonitoringTab() {
   const [messages, setMessages] = useState<any[]>([]);
   const [typingConvId, setTypingConvId] = useState<number | null>(null);
   const [attentionIds, setAttentionIds] = useState<Set<number>>(new Set());
+  const [longChatIds, setLongChatIds] = useState<Set<number>>(new Set());
   const messagesEndRef = { current: null as HTMLDivElement | null };
 
   /* ── Request browser notification permission ────────────────── */
@@ -1108,6 +1109,22 @@ function LiveMonitoringTab() {
       }
     });
 
+    es.addEventListener("long_chat", (e) => {
+      const data = JSON.parse(e.data);
+      setLongChatIds(prev => new Set([...prev, data.conversationId]));
+      refetchConvs();
+      toast({
+        title: "🕐 Conversation Longue",
+        description: `${data.messageCount} messages — التدخل مطلوب. Vérifiez si le client est sérieux.`,
+      });
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("TajerGrow — Conversation longue", {
+          body: `${data.customerName || "Client"} : ${data.messageCount} messages sans décision.`,
+          icon: "/favicon.ico",
+        });
+      }
+    });
+
     return () => es.close();
   }, [selectedId]);
 
@@ -1153,16 +1170,18 @@ function LiveMonitoringTab() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
-  const statusColor = (s: string, needsAttn?: boolean) => {
+  const statusColor = (s: string, needsAttn?: boolean, isLong?: boolean) => {
     if (needsAttn) return "#ef4444";
+    if (isLong) return "#d97706"; // amber — long conv
     if (s === "confirmed") return "#22c55e";
     if (s === "cancelled") return "#ef4444";
     if (s === "manual") return GOLD;
     return NAVY;
   };
 
-  const statusLabel = (s: string, needsAttn?: boolean) => {
+  const statusLabel = (s: string, needsAttn?: boolean, isLong?: boolean) => {
     if (needsAttn) return "Attention 🔴";
+    if (isLong) return "Long 🕐";
     if (s === "confirmed") return "Confirmé ✅";
     if (s === "cancelled") return "Annulé ❌";
     if (s === "manual") return "Manuel 👤";
@@ -1202,22 +1221,29 @@ function LiveMonitoringTab() {
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto divide-y divide-zinc-50">
-            {[...conversations].sort((a: any, b: any) => (attentionIds.has(b.id) ? 1 : 0) - (attentionIds.has(a.id) ? 1 : 0)).map((conv: any) => {
+            {[...conversations].sort((a: any, b: any) =>
+              (attentionIds.has(b.id) ? 2 : longChatIds.has(b.id) ? 1 : 0) -
+              (attentionIds.has(a.id) ? 2 : longChatIds.has(a.id) ? 1 : 0)
+            ).map((conv: any) => {
               const needsAttn = attentionIds.has(conv.id);
+              const isLong = longChatIds.has(conv.id) && !needsAttn;
               return (
               <button
                 key={conv.id}
                 onClick={() => { setSelectedId(conv.id); setMessages([]); }}
                 className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors",
-                  needsAttn && "bg-red-50 border-l-4 border-red-400"
+                  needsAttn && "bg-red-50 border-l-4 border-red-400",
+                  isLong && "bg-amber-50 border-l-4 border-amber-400"
                 )}
-                style={selectedId === conv.id && !needsAttn ? { background: "rgba(30,27,75,0.05)", borderLeft: `3px solid ${NAVY}` } : undefined}
+                style={selectedId === conv.id && !needsAttn && !isLong ? { background: "rgba(30,27,75,0.05)", borderLeft: `3px solid ${NAVY}` } : undefined}
                 data-testid={`conv-item-${conv.id}`}
               >
                 <div className="flex items-center justify-between mb-1 gap-1">
                   <div className="flex items-center gap-1.5 min-w-0">
                     {needsAttn ? (
                       <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" title="Attention requise" />
+                    ) : isLong ? (
+                      <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-pulse" title="Conversation longue" />
                     ) : typingConvId === conv.id ? (
                       <span className="w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ background: GOLD }} title="IA en train d'écrire..." />
                     ) : conv.status === "active" ? (
@@ -1225,8 +1251,8 @@ function LiveMonitoringTab() {
                     ) : null}
                     <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: statusColor(conv.status, needsAttn) }}>
-                    {statusLabel(conv.status, needsAttn)}
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: statusColor(conv.status, needsAttn, isLong) }}>
+                    {statusLabel(conv.status, needsAttn, isLong)}
                   </span>
                 </div>
                 {typingConvId === conv.id ? (
@@ -1239,8 +1265,14 @@ function LiveMonitoringTab() {
                     IA en train d'écrire...
                   </p>
                 ) : (
-                  <p className={cn("text-xs truncate", needsAttn ? "text-red-500 font-medium" : "text-zinc-400")}>
-                    {needsAttn ? "⚠️ Client demande assistance humaine" : (conv.lastMessage || "...")}
+                  <p className={cn("text-xs truncate",
+                    needsAttn ? "text-red-500 font-medium" :
+                    isLong ? "text-amber-600 font-medium" :
+                    "text-zinc-400"
+                  )}>
+                    {needsAttn ? "⚠️ Client demande assistance humaine" :
+                     isLong ? "🕐 Conversation longue: التدخل مطلوب" :
+                     (conv.lastMessage || "...")}
                   </p>
                 )}
                 <p className="text-[10px] text-zinc-300 mt-0.5">{conv.customerPhone}</p>
