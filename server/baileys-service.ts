@@ -247,11 +247,28 @@ async function connectToWhatsApp(): Promise<void> {
           );
 
           if (matched.length === 0) {
-            console.log(`[Baileys] No active conv for ${phone}`);
-          }
-
-          for (const conv of matched) {
-            await callAIHandler(conv.storeId, phone, text);
+            // ── LID Fallback ────────────────────────────────────────────
+            // WhatsApp multi-device reports sender JIDs as Linked Account
+            // IDs (e.g. 177532607430859) instead of the real phone number.
+            // When no stored phone matches, look for a SINGLE active conv
+            // created in the last 2 hours and route to it using its stored
+            // phone so the AI handler can find the conversation correctly.
+            const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000);
+            const recentConvs = activeConvs.filter(c =>
+              c.createdAt && new Date(c.createdAt as any) > cutoff
+            );
+            if (recentConvs.length === 1) {
+              const c = recentConvs[0];
+              console.log(`[Baileys] ⚠️ LID fallback → conv ${c.id} | stored: ${c.customerPhone} | incoming JID: ${phone}`);
+              await callAIHandler(c.storeId, c.customerPhone!, text);
+            } else {
+              console.log(`[Baileys] ❌ No match for JID ${phone} — ${recentConvs.length} recent convs (< 2h), ${activeConvs.length} total active`);
+            }
+          } else {
+            // Exact phone match — pass stored phone so AI lookup is reliable
+            for (const conv of matched) {
+              await callAIHandler(conv.storeId, conv.customerPhone!, text);
+            }
           }
         } catch (err: any) {
           console.error("[Baileys] Message routing error:", err.message);
