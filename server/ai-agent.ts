@@ -164,7 +164,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
     const items = await db.select({
       productId: orderItems.productId,
       rawProductName: orderItems.rawProductName,
-      variant: orderItems.variant,
+      variantInfo: orderItems.variantInfo,
     }).from(orderItems).where(eq(orderItems.orderId, orderId));
 
     let productName: string | null = null;
@@ -176,7 +176,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
 
     if (items.length > 0) {
       const item = items[0];
-      productVariant = item.variant ?? null;
+      productVariant = item.variantInfo ?? null;
       resolvedProductId = item.productId ?? null;
 
       if (item.rawProductName) {

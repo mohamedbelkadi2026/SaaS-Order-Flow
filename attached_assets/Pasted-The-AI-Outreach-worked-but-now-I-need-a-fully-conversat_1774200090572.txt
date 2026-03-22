@@ -1,0 +1,21 @@
+The AI Outreach worked, but now I need a fully conversational and persuasive AI Agent. It must reply to customer messages and use specific product knowledge. Follow these instructions:
+1. Product Knowledge Base (Database Update):
+In the Products table, add a new field called ai_description (text).
+UI Update: In the 'Stock' page, add a button or a field next to each product to 'Modifier les infos AI'.
+Action: I want to be able to type specific details for the AI to use (e.g., 'حذاء أناكيو: جلد طبيعي 100%، صناعة يدوية بفاس، الثمن 379 درهم، التوصيل فابور، ضمان 6 أشهر').
+2. The 'Listener' & Context Injection (Backend):
+Fix the WhatsApp listener logic (sock.ev.on('messages.upsert')) to handle customer replies.
+Context Fetching: When a message is received from a phone number:
+Look up the active order associated with that number.
+Retrieve the Customer Name and the AI Description of the product they ordered.
+Send the entire context to OpenRouter (DeepSeek).
+3. Advanced AI Personality & Gender Logic (System Prompt):
+Update the AI System Prompt to be a master of Moroccan sales:
+Gender Detection: 'Analyze the customer name. If it sounds male (Mohamed, Ibrahim...), address him as "سيدي" or "خويا". If female (Fatima, Sara...), address her as "لالة" or "ختي".'
+Persuasion Logic: 'You are a professional salesman. Be extremely polite, use Moroccan emojis, and talk like a real human. If they ask about the product, use the data from ai_description. If they hesitate, emphasize "Paiement à la livraison" and "Vérification avant paiement" (قلب عاد خلص).'
+Goal: 'Answer questions and lead the customer to a final "Yes/Confirm".'
+4. Status Auto-Update (The '3amali' Part):
+If the AI detects that the customer is satisfied and confirmed (e.g., 'Ok', 'C'est bon', 'أكد الطلب', 'صيفطوه'), it must AUTOMATICALLY update the database status to 'confirme' and stop the conversation.
+5. Live Monitoring UI:
+Ensure the 'Live Monitoring' tab shows the chat history in real-time so I can see what the AI is saying and intervene if needed.
+Technical Instruction: Ensure variables like {Nom_Client} are correctly parsed even in subsequent replies. Fix any 'session not defined' errors."

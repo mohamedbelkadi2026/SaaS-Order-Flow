@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -31,6 +31,30 @@ export default function Inventory() {
   const { toast } = useToast();
   const [logsProductId, setLogsProductId] = useState<number | null>(null);
   const [logsProductName, setLogsProductName] = useState<string>("");
+
+  // Quick AI description edit state
+  const [aiEditProduct, setAiEditProduct] = useState<any | null>(null);
+  const [aiDescription, setAiDescription] = useState("");
+  const [aiSaving, setAiSaving] = useState(false);
+
+  const openAiEdit = (product: any) => {
+    setAiEditProduct(product);
+    setAiDescription(product.descriptionDarija || "");
+  };
+
+  const handleAiSave = async () => {
+    if (!aiEditProduct) return;
+    setAiSaving(true);
+    try {
+      await updateProduct.mutateAsync({ id: aiEditProduct.id, descriptionDarija: aiDescription || null });
+      toast({ title: "✅ Description AI sauvegardée", description: `Le produit "${aiEditProduct.name}" est prêt pour l'IA.` });
+      setAiEditProduct(null);
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message || "Erreur", variant: "destructive" });
+    } finally {
+      setAiSaving(false);
+    }
+  };
 
   const { data: stockLogsData, isLoading: logsLoading } = useQuery<any[]>({
     queryKey: ["/api/stock-logs", logsProductId],
@@ -314,6 +338,16 @@ export default function Inventory() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost" size="icon"
+                        className="w-8 h-8"
+                        style={{ color: "#C5A059" }}
+                        title="Modifier les infos AI"
+                        data-testid={`button-ai-edit-product-${product.id}`}
+                        onClick={() => openAiEdit(product)}
+                      >
+                        <Brain className="w-4 h-4" />
+                      </Button>
                       <Button variant="ghost" size="icon" className="w-8 h-8 text-blue-500 hover:text-blue-700" data-testid={`button-logs-product-${product.id}`} title="Historique stock" onClick={() => { setLogsProductId(product.id); setLogsProductName(product.name); }}>
                         <History className="w-4 h-4" />
                       </Button>
@@ -536,6 +570,51 @@ export default function Inventory() {
               <Button variant="outline" onClick={() => { setEditOpen(false); setEditingProduct(null); resetForm(); }}>Annuler</Button>
               <Button data-testid="button-update-product" onClick={handleEdit} disabled={updateProduct.isPending}>
                 {updateProduct.isPending ? "Enregistrement..." : "Mettre à jour"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Quick AI Description Edit Dialog */}
+      <Dialog open={!!aiEditProduct} onOpenChange={(v) => { if (!v) setAiEditProduct(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Brain className="w-5 h-5" style={{ color: "#C5A059" }} />
+              Modifier les infos AI
+              {aiEditProduct && <span className="text-sm font-normal text-muted-foreground">— {aiEditProduct.name}</span>}
+            </DialogTitle>
+            <DialogDescription>
+              Écrivez tout ce que l'IA doit savoir sur ce produit pour répondre aux clients en Darija.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <Textarea
+              data-testid="input-ai-description"
+              value={aiDescription}
+              onChange={e => setAiDescription(e.target.value)}
+              placeholder="مثلاً: حذاء أناكيو: جلد طبيعي 100%، صناعة يدوية بفاس، الثمن 379 درهم، التوصيل فابور، ضمان 6 أشهر، مريح وخفيف، مقاسات من 38 لـ 46..."
+              rows={6}
+              dir="rtl"
+              className="text-sm"
+              style={{ borderColor: "#C5A059", borderWidth: 1.5 }}
+            />
+            <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-950/20">
+              <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Ces informations sont injectées dans chaque réponse de l'IA pour qu'elle réponde avec précision aux questions des clients.
+              </p>
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setAiEditProduct(null)}>Annuler</Button>
+              <Button
+                data-testid="button-save-ai-description"
+                onClick={handleAiSave}
+                disabled={aiSaving}
+                style={{ background: "#C5A059", color: "#fff" }}
+              >
+                {aiSaving ? "Sauvegarde..." : "💾 Sauvegarder pour l'IA"}
               </Button>
             </div>
           </div>
