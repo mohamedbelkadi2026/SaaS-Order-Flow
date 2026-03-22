@@ -669,45 +669,129 @@ function AiConfirmationTab() {
 function WhatsappTab() {
   const { toast } = useToast();
 
-  /* Poll status every 3s — drives all state transitions */
+  /* ── Real-time state (from SSE + polling fallback) ─────────── */
+  const [waState, setWaState] = useState<string>("idle");
+  const [phone, setPhone]     = useState<string | null>(null);
+  const [qrUrl, setQrUrl]     = useState<string | null>(null);
+  const [sseOk, setSseOk]     = useState(false);
+
+  /* Subscribe to SSE for instant QR / status updates */
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function connect() {
+      es = new EventSource("/api/automation/whatsapp/events", { withCredentials: true });
+
+      es.addEventListener("wa_status", (e: MessageEvent) => {
+        try {
+          const d = JSON.parse(e.data);
+          setWaState(d.state ?? "idle");
+          setPhone(d.phone ?? null);
+          setQrUrl(d.qr ?? null);
+          setSseOk(true);
+        } catch { /* ignore parse error */ }
+      });
+
+      es.onerror = () => {
+        es?.close();
+        setSseOk(false);
+        retryTimer = setTimeout(connect, 5000);
+      };
+    }
+
+    connect();
+    return () => {
+      es?.close();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, []);
+
+  /* Polling fallback — 2s interval, keeps UI in sync even without SSE */
   const statusQuery = useQuery<{ state: string; phone: string | null; qr: string | null }>({
     queryKey: ["/api/automation/whatsapp/status"],
     queryFn: () => fetch("/api/automation/whatsapp/status", { credentials: "include" }).then(r => r.json()),
-    refetchInterval: 3000,
+    refetchInterval: sseOk ? 8000 : 2000, // slower polling when SSE is working
   });
 
+  useEffect(() => {
+    if (statusQuery.data) {
+      setWaState(statusQuery.data.state ?? "idle");
+      setPhone(statusQuery.data.phone ?? null);
+      if (statusQuery.data.qr) setQrUrl(statusQuery.data.qr);
+    }
+  }, [statusQuery.data]);
+
+  /* ── Mutations ─────────────────────────────────────────────── */
   const connectMutation = useMutation({
     mutationFn: () => fetch("/api/automation/whatsapp/connect", { method: "POST", credentials: "include" }).then(r => r.json()),
-    onSuccess: () => { statusQuery.refetch(); },
+    onSuccess: () => {
+      setWaState("connecting");
+      statusQuery.refetch();
+    },
     onError: () => toast({ title: "Erreur de connexion", variant: "destructive" }),
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: () => fetch("/api/automation/whatsapp/reset", { method: "POST", credentials: "include" }).then(r => r.json()),
+    onSuccess: () => {
+      setWaState("connecting");
+      setQrUrl(null);
+      toast({ title: "🔄 Réinitialisation en cours", description: "Un nouveau QR Code sera généré dans quelques secondes." });
+      statusQuery.refetch();
+    },
+    onError: () => toast({ title: "Erreur de réinitialisation", variant: "destructive" }),
   });
 
   const disconnectMutation = useMutation({
     mutationFn: () => fetch("/api/automation/whatsapp/disconnect", { method: "POST", credentials: "include" }).then(r => r.json()),
-    onSuccess: () => { statusQuery.refetch(); toast({ title: "WhatsApp déconnecté. Session effacée." }); },
+    onSuccess: () => {
+      setWaState("idle");
+      setPhone(null);
+      setQrUrl(null);
+      toast({ title: "WhatsApp déconnecté. Session effacée." });
+    },
   });
 
-  const waState = statusQuery.data?.state ?? "idle";
-  const phone   = statusQuery.data?.phone ?? null;
-  const qrUrl   = statusQuery.data?.qr ?? null;
+  /* ── Force Restart button (available in all non-connected states) */
+  const ForceRestartBtn = ({ size = "sm" }: { size?: "sm" | "lg" }) => (
+    <button
+      onClick={() => {
+        if (confirm("Voulez-vous forcer un redémarrage ? La session actuelle sera effacée et un nouveau QR Code sera généré.")) {
+          resetMutation.mutate();
+        }
+      }}
+      disabled={resetMutation.isPending}
+      data-testid="button-force-restart-whatsapp"
+      className={`flex items-center gap-2 rounded-xl font-medium transition-all disabled:opacity-50 ${size === "lg" ? "px-6 py-3 text-sm" : "px-4 py-2 text-xs"}`}
+      style={{ color: GOLD, border: `1.5px solid ${GOLD}`, background: "rgba(197,160,89,0.06)" }}
+    >
+      {resetMutation.isPending
+        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        : <RefreshCw className="w-3.5 h-3.5" />}
+      Forcer le Redémarrage
+    </button>
+  );
 
   /* ── IDLE — show connect button ────────────────────────────── */
   if (waState === "idle") {
     return (
       <div className="max-w-md mx-auto space-y-4">
-        <div className="bg-white rounded-2xl border border-zinc-100 p-8 text-center">
-          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5" style={{ background: "rgba(30,27,75,0.06)", border: `2px dashed rgba(30,27,75,0.2)` }}>
+        <div className="bg-white rounded-2xl border border-zinc-100 p-8 text-center space-y-5">
+          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(30,27,75,0.06)", border: `2px dashed rgba(30,27,75,0.2)` }}>
             <Wifi className="w-9 h-9" style={{ color: NAVY, opacity: 0.4 }} />
           </div>
-          <h2 className="text-lg font-bold text-zinc-800 mb-2">WhatsApp non connecté</h2>
-          <p className="text-sm text-zinc-400 mb-6">
-            Cliquez sur le bouton ci-dessous pour générer un QR Code.<br />
-            Scannez-le avec votre téléphone pour lier TajerGrow AI à WhatsApp.
-          </p>
+          <div>
+            <h2 className="text-lg font-bold text-zinc-800 mb-2">WhatsApp non connecté</h2>
+            <p className="text-sm text-zinc-400">
+              Cliquez sur le bouton ci-dessous pour générer un QR Code.<br />
+              Scannez-le avec votre téléphone pour lier TajerGrow AI à WhatsApp.
+            </p>
+          </div>
           <button
             onClick={() => connectMutation.mutate()}
             disabled={connectMutation.isPending}
-            className="flex items-center gap-2 px-6 py-3 rounded-xl text-white font-bold text-sm mx-auto transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="flex items-center gap-2 px-7 py-3 rounded-xl text-white font-bold text-sm mx-auto transition-opacity hover:opacity-90 disabled:opacity-50"
             style={{ background: NAVY }}
             data-testid="button-connect-whatsapp"
           >
@@ -715,11 +799,14 @@ function WhatsappTab() {
               ? <><Loader2 className="w-4 h-4 animate-spin" /> Initialisation...</>
               : <><Wifi className="w-4 h-4" /> Générer QR Code</>}
           </button>
+          <div className="flex justify-center pt-1">
+            <ForceRestartBtn />
+          </div>
         </div>
 
         <div className="bg-white rounded-2xl border border-zinc-100 p-4 text-xs text-zinc-500" style={{ borderLeft: `3px solid ${NAVY}` }}>
           <p className="font-semibold text-zinc-700 mb-1">Connexion directe WhatsApp</p>
-          <p>La connexion utilise le protocole WhatsApp Web. Aucune application tierce requise. La session est sauvegardée et se reconnecte automatiquement après un redémarrage.</p>
+          <p>Protocole WhatsApp Web natif. Aucune application tierce requise. La session se reconnecte automatiquement après un redémarrage.</p>
         </div>
       </div>
     );
@@ -728,13 +815,23 @@ function WhatsappTab() {
   /* ── CONNECTING — loading spinner ──────────────────────────── */
   if (waState === "connecting") {
     return (
-      <div className="max-w-md mx-auto">
-        <div className="bg-white rounded-2xl border border-zinc-100 p-10 text-center">
-          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-5" style={{ background: "rgba(30,27,75,0.06)", border: `2px solid ${NAVY}` }}>
+      <div className="max-w-md mx-auto space-y-4">
+        <div className="bg-white rounded-2xl border border-zinc-100 p-10 text-center space-y-5">
+          <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(30,27,75,0.06)", border: `2px solid ${NAVY}` }}>
             <Loader2 className="w-9 h-9 animate-spin" style={{ color: NAVY }} />
           </div>
-          <h2 className="text-lg font-bold text-zinc-800 mb-2">Connexion en cours...</h2>
-          <p className="text-sm text-zinc-400">Établissement de la connexion WhatsApp. Le QR Code apparaîtra dans quelques secondes.</p>
+          <div>
+            <h2 className="text-lg font-bold text-zinc-800 mb-2">Connexion en cours...</h2>
+            <p className="text-sm text-zinc-400">Le QR Code apparaîtra dans quelques secondes. Ne fermez pas cette page.</p>
+          </div>
+          <div className="flex justify-center gap-1.5">
+            {[0,1,2].map(i => (
+              <div key={i} className="w-2 h-2 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: `${i*0.15}s` }} />
+            ))}
+          </div>
+        </div>
+        <div className="flex justify-center">
+          <ForceRestartBtn />
         </div>
       </div>
     );
@@ -744,26 +841,36 @@ function WhatsappTab() {
   if (waState === "qr") {
     return (
       <div className="max-w-md mx-auto space-y-4">
-        <div className="bg-white rounded-2xl border border-zinc-100 p-6 text-center">
-          <h2 className="text-lg font-bold mb-1" style={{ color: NAVY }}>Scanner le QR Code</h2>
-          <p className="text-sm text-zinc-400 mb-5">Ouvrez WhatsApp → Paramètres → Appareils connectés → Ajouter un appareil</p>
+        <div className="bg-white rounded-2xl border border-zinc-100 p-6 text-center space-y-4">
+          <div>
+            <h2 className="text-xl font-bold mb-1" style={{ color: NAVY }}>Scanner le QR Code</h2>
+            <p className="text-sm text-zinc-400">Ouvrez WhatsApp → Paramètres → Appareils connectés → Ajouter un appareil</p>
+          </div>
 
-          <div className="flex justify-center my-4">
+          {/* QR Image */}
+          <div className="flex justify-center py-2">
             {qrUrl ? (
-              <div className="p-4 bg-white rounded-2xl shadow-sm" style={{ border: `3px solid ${GOLD}` }} data-testid="img-whatsapp-qr">
-                <img src={qrUrl} alt="QR Code WhatsApp" width={240} height={240} className="rounded-xl block" />
+              <div className="p-4 bg-white rounded-2xl shadow-md" style={{ border: `4px solid ${GOLD}` }} data-testid="img-whatsapp-qr">
+                <img src={qrUrl} alt="QR Code WhatsApp" width={250} height={250} className="rounded-xl block" />
               </div>
             ) : (
-              <div className="w-[240px] h-[240px] flex flex-col items-center justify-center gap-3 rounded-2xl" style={{ border: `3px dashed ${GOLD}` }}>
-                <Loader2 className="w-8 h-8 animate-spin" style={{ color: GOLD }} />
-                <p className="text-xs text-zinc-400">Génération du QR...</p>
+              <div className="w-[250px] h-[250px] flex flex-col items-center justify-center gap-3 rounded-2xl" style={{ border: `4px dashed ${GOLD}` }}>
+                <Loader2 className="w-10 h-10 animate-spin" style={{ color: GOLD }} />
+                <p className="text-sm font-medium text-zinc-500">Génération du QR...</p>
               </div>
             )}
           </div>
 
-          <div className="mt-3 space-y-1">
-            <p className="text-xs font-bold" style={{ color: NAVY }}>QR se rafraîchit automatiquement</p>
-            <p className="text-xs text-zinc-400">Les données de statut se mettent à jour toutes les 3 secondes</p>
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold" style={{ background: "rgba(197,160,89,0.12)", color: GOLD }}>
+              <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: GOLD }} />
+              QR se rafraîchit automatiquement
+            </div>
+          </div>
+
+          {/* Force restart inside QR view */}
+          <div className="pt-1 flex justify-center">
+            <ForceRestartBtn />
           </div>
         </div>
 
@@ -783,23 +890,25 @@ function WhatsappTab() {
   /* ── CONNECTED — success state ─────────────────────────────── */
   return (
     <div className="max-w-md mx-auto space-y-4">
-      <div className="bg-white rounded-2xl p-6 text-center" style={{ border: `2px solid ${NAVY}` }}>
-        <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: `rgba(197,160,89,0.12)`, border: `3px solid ${GOLD}` }}>
+      <div className="bg-white rounded-2xl p-7 text-center space-y-4" style={{ border: `2px solid ${NAVY}` }}>
+        <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto" style={{ background: `rgba(197,160,89,0.12)`, border: `3px solid ${GOLD}` }}>
           <Wifi className="w-9 h-9" style={{ color: GOLD }} />
         </div>
 
-        <h2 className="text-lg font-bold text-zinc-800 mb-1">WhatsApp Connecté</h2>
-        {phone && (
-          <p className="text-sm font-semibold mb-3" style={{ color: NAVY }}>+{phone}</p>
-        )}
-        <p className="text-sm text-zinc-400 mb-5">TajerGrow AI confirme automatiquement vos commandes en Darija.</p>
+        <div>
+          <h2 className="text-lg font-bold text-zinc-800 mb-1">WhatsApp Connecté ✅</h2>
+          {phone && (
+            <p className="text-sm font-bold mb-1" style={{ color: NAVY }}>+{phone}</p>
+          )}
+          <p className="text-sm text-zinc-400">TajerGrow AI confirme automatiquement vos commandes en Darija.</p>
+        </div>
 
-        <div className="inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold mb-6" style={{ background: GOLD, color: "#fff" }} data-testid="status-wa-connected">
+        <div className="inline-flex items-center gap-2 px-5 py-2 rounded-full text-sm font-bold" style={{ background: GOLD, color: "#fff" }} data-testid="status-wa-connected">
           <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
           TajerGrow AI Active
         </div>
 
-        <div className="flex items-center justify-center gap-3">
+        <div className="flex items-center justify-center gap-3 pt-2">
           <button
             onClick={() => statusQuery.refetch()}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"

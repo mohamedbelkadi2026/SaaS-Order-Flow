@@ -2916,6 +2916,28 @@ export async function registerRoutes(
     }
   });
 
+  /* POST /api/automation/whatsapp/reset → wipe session files + fresh QR */
+  app.post("/api/automation/whatsapp/reset", requireAuth, async (_req: any, res: any) => {
+    try {
+      const { baileysService } = await import("./baileys-service");
+      baileysService.resetAndRestart().catch(console.error); // non-blocking
+      res.json({ ok: true, message: "Réinitialisation en cours — nouveau QR code bientôt disponible." });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* GET /api/automation/whatsapp/events → SSE stream for real-time WA status */
+  app.get("/api/automation/whatsapp/events", requireAuth, async (_req: any, res: any) => {
+    const { addWASSEClient } = await import("./sse");
+    addWASSEClient(res);
+    // Send current status immediately on subscribe
+    const { baileysService } = await import("./baileys-service");
+    const status = baileysService.getStatus();
+    const payload = `event: wa_status\ndata: ${JSON.stringify({ ...status, ts: Date.now() })}\n\n`;
+    try { res.write(payload); } catch (_) {}
+  });
+
   /* ── AI Settings ──────────────────────────────────────────────── */
   app.get("/api/automation/ai-settings", requireAuth, async (req: any, res: any) => {
     const settings = await storage.getAiSettings(req.user!.storeId!);
