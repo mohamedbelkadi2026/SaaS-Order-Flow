@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History } from "lucide-react";
+import { Plus, Package, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface VariantForm {
@@ -47,10 +47,11 @@ export default function Inventory() {
   const [form, setForm] = useState({
     name: "", sku: "", stock: "", costPrice: "", sellingPrice: "",
     description: "", reference: "",
+    descriptionDarija: "", aiFeatures: "",
   });
 
   const resetForm = () => {
-    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "" });
+    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "" });
     setHasVariants(false);
     setVariants([]);
   };
@@ -108,6 +109,12 @@ export default function Inventory() {
   const handleEdit = async () => {
     if (!editingProduct) return;
     try {
+      // Build AI features as JSON array if provided (comma-separated input)
+      let aiFeaturesParsed: string | null = null;
+      if (form.aiFeatures.trim()) {
+        const featuresArr = form.aiFeatures.split(",").map(f => f.trim()).filter(Boolean);
+        aiFeaturesParsed = JSON.stringify(featuresArr);
+      }
       await updateProduct.mutateAsync({
         id: editingProduct.id,
         name: form.name || undefined,
@@ -117,6 +124,8 @@ export default function Inventory() {
         sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : undefined,
         description: form.description || null,
         reference: form.reference || undefined,
+        descriptionDarija: form.descriptionDarija || null,
+        aiFeatures: aiFeaturesParsed,
       });
       toast({ title: "Produit mis à jour", description: `${form.name} a été modifié` });
       setEditOpen(false);
@@ -139,6 +148,16 @@ export default function Inventory() {
 
   const openEdit = (product: any) => {
     setEditingProduct(product);
+    // Parse AI features from JSON array back to comma-separated string for display
+    let aiFeaturesDisplay = "";
+    if (product.aiFeatures) {
+      try {
+        const arr = JSON.parse(product.aiFeatures);
+        aiFeaturesDisplay = Array.isArray(arr) ? arr.join(", ") : product.aiFeatures;
+      } catch {
+        aiFeaturesDisplay = product.aiFeatures;
+      }
+    }
     setForm({
       name: product.name,
       sku: product.sku,
@@ -147,6 +166,8 @@ export default function Inventory() {
       sellingPrice: ((product.sellingPrice || 0) / 100).toFixed(2),
       description: product.description || "",
       reference: product.reference || "",
+      descriptionDarija: product.descriptionDarija || "",
+      aiFeatures: aiFeaturesDisplay,
     });
     setEditOpen(true);
   };
@@ -474,6 +495,43 @@ export default function Inventory() {
               <Label>Référence</Label>
               <Input data-testid="input-edit-product-reference" value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} />
             </div>
+
+            {/* AI Knowledge Base Section */}
+            <div className="rounded-xl border-2 border-dashed border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-950/20 p-4 space-y-3">
+              <div className="flex items-center gap-2 mb-1">
+                <Brain className="w-4 h-4 text-amber-600" />
+                <span className="font-semibold text-sm text-amber-700 dark:text-amber-400">Enrichir les infos AI</span>
+                <Sparkles className="w-3 h-3 text-amber-500" />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Ces informations sont injectées dans le prompt de l'agent IA pour qu'il réponde aux questions des clients avec précision.
+              </p>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Description Darija (pitch de vente)</Label>
+                <Textarea
+                  data-testid="input-edit-product-darija"
+                  value={form.descriptionDarija}
+                  onChange={e => setForm(f => ({ ...f, descriptionDarija: e.target.value }))}
+                  placeholder="مثلاً: جلد طبيعي 100%، خفيف وراحة فائقة، تصميم مغربي أصيل، توصيل فابور..."
+                  rows={3}
+                  dir="rtl"
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">Caractéristiques produit (séparées par virgule)</Label>
+                <Input
+                  data-testid="input-edit-product-features"
+                  value={form.aiFeatures}
+                  onChange={e => setForm(f => ({ ...f, aiFeatures: e.target.value }))}
+                  placeholder="مثلاً: جلد طبيعي، مريح، مقاوم للماء، ضمان 6 أشهر"
+                  dir="rtl"
+                  className="text-sm"
+                />
+                <p className="text-xs text-muted-foreground">Chaque caractéristique séparée par une virgule sera une puce dans le prompt AI.</p>
+              </div>
+            </div>
+
             <div className="flex justify-end gap-3 pt-2">
               <Button variant="outline" onClick={() => { setEditOpen(false); setEditingProduct(null); resetForm(); }}>Annuler</Button>
               <Button data-testid="button-update-product" onClick={handleEdit} disabled={updateProduct.isPending}>

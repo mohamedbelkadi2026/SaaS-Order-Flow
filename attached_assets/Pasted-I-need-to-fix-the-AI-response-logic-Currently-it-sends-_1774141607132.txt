@@ -1,0 +1,22 @@
+I need to fix the AI response logic. Currently, it sends the first message but doesn't reply back. I need a fully conversational, persuasive AI Agent with product knowledge. Follow these instructions:
+1. Product Knowledge Base (Database Update):
+In the Products table, ensure each product has these fields: name, description_darija, features (array), and image_url.
+UI Update: In the 'Stock' or 'Magasins' page, add a section to 'Enrichir les infos AI' (Enrich AI Info) where I can type details about the product (e.g., 'جلد طبيعي، مريح، توصيل فابور') and upload an image.
+2. The 'Listener' (Incoming Message Webhook):
+Fix the sock.ev.on('messages.upsert') logic to handle customer replies.
+Context Search: When a message is received:
+Look up the order associated with that phone number.
+Retrieve the Product Details and Customer Name.
+Send this entire context to OpenRouter (DeepSeek).
+3. Smart AI Personality & Gender Detection (System Prompt):
+Update the AI System Prompt to be extremely advanced:
+Gender Detection: 'Analyze the customer name. If it sounds male (e.g., Mohamed, Amine), address him as "سيدي" or "خويا". If female (e.g., Fatima, Sara), address her as "لالة" or "اختي".'
+Persuasion Tactics: 'You are a master of sales in Morocco. If the customer hesitates, emphasize the "Check Before Pay" (قلب عاد خلص) and the "Premium Quality". Be friendly, use emojis, and talk like a real human.'
+Product Awareness: 'Use the provided product description and features to answer specific questions. If they ask for a photo, tell them it's exactly like the one in the store.'
+4. Interactive Logic (The 3amali Part):
+The AI must continue the conversation until it hears a clear 'Confirmed' or 'Cancelled'.
+Action: Once confirmed, update the Dashboard status to 'confirme' and send a final: 'صافي سيدي/لالة، الكوموند ديالك غتخرج اليوم. شكراً بزاف!'.
+5. Live Monitoring & Intervention:
+Ensure the Live Monitoring tab displays the conversation and the AI's 'Thinking' process.
+If I manually reply in the dashboard, the AI must stop talking to that client (Manual Override).
+Technical Instruction: Ensure the Baileys socket is always listening and the OpenRouter API is called for every incoming text. Fix any variable initialization errors."

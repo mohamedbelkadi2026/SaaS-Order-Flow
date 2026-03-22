@@ -2026,6 +2026,8 @@ export async function registerRoutes(
         description: z.string().nullable().optional(),
         imageUrl: z.string().nullable().optional(),
         reference: z.string().nullable().optional(),
+        descriptionDarija: z.string().nullable().optional(),
+        aiFeatures: z.string().nullable().optional(), // stored as JSON string
       });
       const data = schema.parse(req.body);
       const updated = await storage.updateProduct(productId, data);

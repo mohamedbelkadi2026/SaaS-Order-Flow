@@ -2139,8 +2139,22 @@ export class DatabaseStorage implements IStorage {
 
   async getActiveAiConversationByPhone(storeId: number, phone: string) {
     const { aiConversations } = await import("@shared/schema");
+    // Try all possible phone formats to avoid mismatch between stored formats
+    const stripped = phone.replace(/^\+/, "");   // remove leading +
+    const local    = stripped.startsWith("212") ? `0${stripped.slice(3)}` : stripped;  // 0XXXXXXXX
+    const e164     = `+${stripped}`;             // +212XXXXXXXX
+    const intl     = stripped;                   // 212XXXXXXXX
     const [row] = await db.select().from(aiConversations).where(
-      and(eq(aiConversations.storeId, storeId), eq(aiConversations.customerPhone, phone), eq(aiConversations.status, "active"))
+      and(
+        eq(aiConversations.storeId, storeId),
+        eq(aiConversations.status, "active"),
+        or(
+          eq(aiConversations.customerPhone, intl),
+          eq(aiConversations.customerPhone, e164),
+          eq(aiConversations.customerPhone, local),
+          eq(aiConversations.customerPhone, `+${local}`),
+        )
+      )
     );
     return row;
   }

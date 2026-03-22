@@ -145,6 +145,8 @@ interface OrderContext {
   customerCity: string | null;
   stockQty: number | null;
   productId: number | null;
+  descriptionDarija: string | null;
+  aiFeatures: string[] | null;
 }
 
 export async function getOrderContextForRoute(orderId: number): Promise<OrderContext> {
@@ -156,6 +158,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
     const [order] = await db.select({
       totalPrice: orders.totalPrice,
       customerCity: orders.customerCity,
+      rawProductName: orders.rawProductName,
     }).from(orders).where(eq(orders.id, orderId));
 
     const items = await db.select({
@@ -168,22 +171,38 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
     let productVariant: string | null = null;
     let stockQty: number | null = null;
     let resolvedProductId: number | null = null;
+    let descriptionDarija: string | null = null;
+    let aiFeatures: string[] | null = null;
 
     if (items.length > 0) {
       const item = items[0];
       productVariant = item.variant ?? null;
       resolvedProductId = item.productId ?? null;
+
       if (item.rawProductName) {
         productName = item.rawProductName;
-        if (item.productId) {
-          const [p] = await db.select({ stock: products.stock }).from(products).where(eq(products.id, item.productId));
-          stockQty = p?.stock ?? null;
-        }
-      } else if (item.productId) {
-        const [p] = await db.select({ name: products.name, stock: products.stock }).from(products).where(eq(products.id, item.productId));
-        productName = p?.name ?? null;
-        stockQty = p?.stock ?? null;
       }
+      if (item.productId) {
+        const [p] = await db.select({
+          name: products.name,
+          stock: products.stock,
+          descriptionDarija: products.descriptionDarija,
+          aiFeatures: products.aiFeatures,
+        }).from(products).where(eq(products.id, item.productId));
+        if (p) {
+          if (!productName) productName = p.name ?? null;
+          stockQty = p.stock ?? null;
+          descriptionDarija = p.descriptionDarija ?? null;
+          if (p.aiFeatures) {
+            try { aiFeatures = JSON.parse(p.aiFeatures); } catch { aiFeatures = null; }
+          }
+        }
+      }
+    }
+
+    // Fallback: use rawProductName from orders table if still no product name
+    if (!productName && order?.rawProductName) {
+      productName = order.rawProductName;
     }
 
     return {
@@ -193,9 +212,11 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       customerCity: order?.customerCity ?? null,
       stockQty,
       productId: resolvedProductId,
+      descriptionDarija,
+      aiFeatures,
     };
   } catch {
-    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null };
+    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null };
   }
 }
 
@@ -206,6 +227,38 @@ async function getStoreName(storeId: number): Promise<string> {
   } catch {
     return "المتجر";
   }
+}
+
+/* ── Gender detection from Arabic/French customer name ───────── */
+const MALE_NAMES = [
+  "محمد","Mohamed","Mohammed","Ahmed","أحمد","Amine","أمين","Khalid","خالد",
+  "Youssef","يوسف","Omar","عمر","Hassan","حسن","Hamid","حميد","Rachid","رشيد",
+  "Nabil","نبيل","Karim","كريم","Samir","سمير","Tarik","طارق","Adil","عادل",
+  "Brahim","Ibrahim","إبراهيم","Ali","علي","Mustapha","مصطفى","Driss","إدريس",
+  "Hicham","هشام","Mehdi","مهدي","Younes","يونس","Ayoub","أيوب","Zakaria","زكريا",
+  "Abdellah","عبدالله","Abdelali","Abderrahim","عبدالرحيم","Soufiane","سفيان",
+];
+const FEMALE_NAMES = [
+  "Fatima","فاطمة","Sara","سارة","Khadija","خديجة","Aisha","عائشة","Maryam","مريم",
+  "Nadia","ناديا","Laila","ليلى","Zineb","زينب","Hanane","حنان","Samira","سميرة",
+  "Houda","هدى","Rim","ريم","Hasnaa","حسناء","Kawtar","كوثر","Sanaa","سناء",
+  "Imane","إيمان","Loubna","لبنى","Wiam","وئام","Chaimae","شيماء","Soukaina","سكينة",
+  "Asma","أسماء","Hiba","هبة","Manal","منال","Salma","سلمى","Amina","آمينة",
+  "Rajaa","رجاء","Hayat","حياة","Ghita","غيثة","Meriem","مريم","Ikram","إكرام",
+];
+
+function detectGender(name: string): "male" | "female" | "unknown" {
+  if (!name) return "unknown";
+  const cleaned = name.split(/[\s\-_,]/)[0].trim();
+  if (MALE_NAMES.some(n => cleaned.toLowerCase().includes(n.toLowerCase()))) return "male";
+  if (FEMALE_NAMES.some(n => cleaned.toLowerCase().includes(n.toLowerCase()))) return "female";
+  return "unknown";
+}
+
+function getGenderAddress(gender: "male" | "female" | "unknown"): { formal: string; friendly: string } {
+  if (gender === "male")   return { formal: "سيدي", friendly: "خويا" };
+  if (gender === "female") return { formal: "لالة", friendly: "اختي" };
+  return { formal: "سيدي/لالة", friendly: "صديقي" };
 }
 
 /* ── Step-specific system prompts ────────────────────────────── */
@@ -220,73 +273,81 @@ function buildStepPrompt(
   const productLabel = ctx?.productName ?? "المنتج";
   const city = conv.collectedCity ?? ctx?.customerCity ?? null;
   const variant = conv.collectedVariant ?? ctx?.productVariant ?? null;
+  const gender = detectGender(conv.customerName ?? "");
+  const address = getGenderAddress(gender);
 
   const stockNote = ctx?.stockQty !== null
     ? (ctx!.stockQty! <= 0
-        ? " (تنبيه: المخزون نفد! لا تعد بالتسليم الفوري)"
+        ? " (IMPORTANT: Stock is ZERO — do not promise delivery, say team will confirm availability)"
         : ctx!.stockQty! <= 5
-          ? ` (تنبيه: بقى غير ${ctx!.stockQty} في المخزون — استخدم هذا كحجة للإسراع)`
+          ? ` (URGENCY: Only ${ctx!.stockQty} units left — use scarcity to close the sale faster)`
           : "")
     : "";
 
-  const base = `You are "أمين", a professional and warm customer service agent at "${storeName}", a Moroccan e-commerce store.
+  // Product knowledge section
+  const productKnowledge: string[] = [];
+  if (ctx?.descriptionDarija) productKnowledge.push(`Description: ${ctx.descriptionDarija}`);
+  if (ctx?.aiFeatures?.length) productKnowledge.push(`Features: ${ctx.aiFeatures.join(" | ")}`);
+  const knowledgeBlock = productKnowledge.length
+    ? `\nPRODUCT KNOWLEDGE BASE:\n${productKnowledge.join("\n")}`
+    : "";
+
+  const base = `You are "أمين", a human customer service agent at "${storeName}" (Moroccan e-commerce store). You are a master Moroccan salesperson.
 
 CRITICAL OUTPUT RULES:
-- Write ONLY in natural Moroccan Darija (not standard Arabic, not French, not Arabizi)
-- Keep replies SHORT: maximum 2 lines
-- Never mention you are an AI, bot, or automated system
-- Be friendly, human, and natural — like a real Moroccan employee
-- Shipping is always FREE — never say otherwise
-${customSystemPrompt ? `\nExtra store instructions: ${customSystemPrompt}` : ""}`;
+- Write ONLY in natural Moroccan Darija (not MSA, not French, not Arabizi)
+- Keep replies SHORT: 1-2 lines maximum — never long paragraphs
+- Never reveal you are an AI or robot
+- Be warm, friendly, use emojis naturally 😊
+- Shipping is ALWAYS FREE — never say otherwise
+- When hesitant: emphasize "قلب عاد خلص" (inspect before paying), free returns, and premium quality
+- Gender: address as ${address.formal} (formal) or ${address.friendly} (friendly) based on name "${conv.customerName ?? "unknown"}"
+
+ORDER DETAILS:
+- Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
+${city ? `- City: ${city}` : ""}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
+${knowledgeBlock}
+${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}`;
 
   if (step === 1) {
     return `${base}
 
-CURRENT STEP — 1 of 3: Confirm the customer's delivery city.
-Product ordered: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}${stockNote}
-
-Your task:
-- The customer just received our greeting asking for their city
-- If they gave a city name: warmly acknowledge it (e.g. "يزاك الله خير! وصلنا المدينة...") and move to asking about size/variant
-- If they asked about price: tell them ${priceDh ?? "as displayed"} with free delivery, then ask for city again
-- If unclear: ask for city naturally once more in Darija
-- Never ask for city AND size in the same message`;
+CURRENT TASK — Step 1/3: Get the customer's delivery city.
+- They just received our greeting asking for city
+- If they gave a city: warmly acknowledge it then naturally move toward size/variant
+- If they asked about price: answer then ask city again
+- If they asked about quality/material: use the product knowledge above and reassure them confidently
+- NEVER ask for city AND size in the same message`;
   }
 
   if (step === 2) {
-    const cityLine = city ? `Customer's city: ${city}.` : "";
     return `${base}
 
-CURRENT STEP — 2 of 3: Confirm the product size, color, or variant.
-Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}${stockNote}
-${cityLine}
-
-Your task:
-- Ask naturally about size/color/variant for this product (if applicable)
-- If the product has no variants, skip this step and summarize the order
-- Example: "الله يحفظك، وواش المقاس ديالك [X] هو نفس؟" or "واش اللون ديالك..."
-- If they answer with a size or color: acknowledge it and confirm
-- Keep it brief and warm`;
+CURRENT TASK — Step 2/3: Confirm size, color, or variant.
+${city ? `City confirmed: ${city}.` : ""}
+- Ask naturally about size/color for "${productLabel}"
+- If product has no variants (e.g. it's a one-size item): skip this and summarize the order
+- If they hesitate or ask questions: use the product knowledge to reassure, then ask again
+- Keep it very brief and warm`;
   }
 
   // Step 3 — final confirmation
   const summaryParts: string[] = [];
-  if (productLabel) summaryParts.push(`المنتج: ${productLabel}`);
-  if (variant) summaryParts.push(`المقاس/اللون: ${variant}`);
-  if (city) summaryParts.push(`المدينة: ${city}`);
-  if (priceDh) summaryParts.push(`السعر: ${priceDh} (التوصيل مجاني)`);
+  if (productLabel) summaryParts.push(`${productLabel}`);
+  if (variant)       summaryParts.push(`مقاس ${variant}`);
+  if (city)          summaryParts.push(`لـ ${city}`);
+  if (priceDh)       summaryParts.push(`${priceDh} (التوصيل مجاني 🚚)`);
 
   return `${base}
 
-CURRENT STEP — 3 of 3: Final order confirmation.
-Order summary: ${summaryParts.length ? summaryParts.join(" | ") : `"${productLabel}"`}${stockNote}
+CURRENT TASK — Step 3/3: Get final confirmation.
+Order summary to present: ${summaryParts.length ? summaryParts.join("، ") : productLabel}
 
-Your task:
-- Summarize the full order details warmly and ask for final confirmation
-- Example: "إذن سيدي، الطلبية ديالك: [المنتج] مقاس [X] لـ [المدينة] بـ [السعر]. واش نؤكد ليك؟"
-- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate and tell them the order is confirmed ✅
-- If they have a question: answer it then re-ask for confirmation
-- Keep it warm and brief`;
+- Summarize warmly: "صافي ${address.formal}، الطلبية ديالك: [summary]. واش نؤكد ليك؟"
+- If they say YES (واخا / صيفطوه / ok / مزيان / any positive): celebrate! "صافي ${address.formal}، الكوموند ديالك غتخرج اليوم إن شاء الله. شكراً بزاف! 🎉"
+- If they hesitate: emphasize free shipping + "قلب عاد خلص"
+- If they have questions: answer using product knowledge then re-confirm
+- Once confirmed say the success message then the conversation is DONE`;
 }
 
 /* ── Recovery system prompt ──────────────────────────────────── */
@@ -465,26 +526,30 @@ export async function handleIncomingMessage(
     if (intent === "confirm" && conv.orderId) {
       await storage.updateOrderStatus(conv.orderId, "confirme");
       await storage.updateAiConversationStatus(conv.id, "confirmed");
-      const msg = "بارك الله فيك! طلبك تأكد ✅ غادي يوصلك قريبا إن شاء الله 🚀";
+      const gender = detectGender(conv.customerName ?? "");
+      const addr = getGenderAddress(gender);
+      const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
       await storage.updateAiConversationLastMessage(conv.id, msg);
       broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: msg, ts: Date.now() });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
       await queueWhatsApp(storeId, customerPhone, msg);
-      console.log(`[AI] Order ${conv.orderId} CONFIRMED — stock decremented`);
+      console.log(`[AI] Order ${conv.orderId} CONFIRMED by ${conv.customerName}`);
       return;
     }
 
     if (intent === "cancel" && conv.orderId) {
       await storage.updateOrderStatus(conv.orderId, "annulé fake");
       await storage.updateAiConversationStatus(conv.id, "cancelled");
-      const msg = "مفهوم، طلبك تلغى 🙏 إلا بغيتي تكمل راسل المتجر مباشرة. شكرا على اهتمامك!";
+      const gender = detectGender(conv.customerName ?? "");
+      const addr = getGenderAddress(gender);
+      const msg = `مفهوم ${addr.formal} 🙏 إلا بغيتي تكمل أو عندك سؤال راسل المتجر مباشرة. نتمنى نخدموا معك قريبا!`;
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
       await storage.updateAiConversationLastMessage(conv.id, msg);
       broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
       await queueWhatsApp(storeId, customerPhone, msg);
-      console.log(`[AI] Order ${conv.orderId} CANCELLED`);
+      console.log(`[AI] Order ${conv.orderId} CANCELLED by ${conv.customerName}`);
       return;
     }
 

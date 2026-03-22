@@ -148,9 +148,9 @@ async function connectToWhatsApp(): Promise<void> {
         if (remoteJid.endsWith("@g.us")) continue; // skip groups
 
         const rawPhone = remoteJid.replace("@s.whatsapp.net", "");
-        const phone = rawPhone.startsWith("212")
-          ? `0${rawPhone.slice(3)}`
-          : rawPhone;
+        // Canonical format: 212XXXXXXXXX (no + sign, with country code)
+        // This must match the format used when storing conversations in aiConversations.customerPhone
+        const phone = normalisePhone(rawPhone); // → "212XXXXXXXXX"
 
         const text =
           msg.message.conversation ||
@@ -161,21 +161,30 @@ async function connectToWhatsApp(): Promise<void> {
 
         if (!text.trim()) continue;
 
-        console.log(`[Baileys] Incoming from ${phone}: ${text.substring(0, 60)}`);
+        console.log(`[Baileys] Incoming from ${phone}: "${text.substring(0, 60)}"`);
 
-        // Route to active AI conversations
+        // Route to active AI conversations — search by all possible phone formats
         try {
+          const phoneVariants = [
+            phone,                              // 212632595440
+            `+${phone}`,                        // +212632595440
+            `0${phone.slice(3)}`,               // 0632595440
+            `+0${phone.slice(3)}`,              // +0632595440
+          ];
           const activeConvs = await db
             .select()
             .from(aiConversations)
-            .where(
-              and(
-                eq(aiConversations.customerPhone, phone),
-                eq(aiConversations.status, "active")
-              )
-            );
+            .where(eq(aiConversations.status, "active"));
 
-          for (const conv of activeConvs) {
+          const matched = activeConvs.filter(c =>
+            c.customerPhone && phoneVariants.some(v => c.customerPhone === v)
+          );
+
+          if (matched.length === 0) {
+            console.log(`[Baileys] No active conversation for ${phone} (tried: ${phoneVariants.join(", ")})`);
+          }
+
+          for (const conv of matched) {
             await callAIHandler(conv.storeId, phone, text);
           }
         } catch (err: any) {

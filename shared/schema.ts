@@ -57,6 +57,8 @@ export const products = pgTable("products", {
   costPrice: integer("cost_price").notNull().default(0),
   sellingPrice: integer("selling_price").notNull().default(0),
   description: text("description"),
+  descriptionDarija: text("description_darija"), // Darija product pitch for AI
+  aiFeatures: text("ai_features"),               // JSON array of feature strings
   imageUrl: text("image_url"),
   reference: text("reference"),
   hasVariants: integer("has_variants").default(0),
