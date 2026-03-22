@@ -394,8 +394,13 @@ export async function triggerAIForNewOrder(
 
     const existing = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
     if (existing) {
-      console.log(`[AI] ⚠️ BLOCKED: Active conversation already exists for ${customerPhone} (conv.id=${existing.id}) — skipping duplicate`);
-      return;
+      if (existing.orderId === orderId) {
+        console.log(`[AI] ⚠️ BLOCKED: Same order (orderId=${orderId}) already has an active conversation (conv.id=${existing.id}) — true duplicate, skipping`);
+        return;
+      }
+      // Different order from the same phone — close stale conv and open a fresh one
+      console.log(`[AI] 🔄 Closing stale conversation (conv.id=${existing.id}, old orderId=${existing.orderId}) — new order ${orderId} takes priority`);
+      await storage.updateAiConversationStatus(existing.id, "closed");
     }
 
     const [ctx, storeName] = await Promise.all([

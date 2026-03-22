@@ -753,6 +753,12 @@ function WhatsappTab() {
     },
   });
 
+  const testSendMutation = useMutation({
+    mutationFn: () => fetch("/api/automation/whatsapp/test", { method: "POST", credentials: "include" }).then(r => r.json()),
+    onSuccess: (data) => toast({ title: "✅ Message de test envoyé !", description: data.message ?? "Vérifiez votre WhatsApp." }),
+    onError: () => toast({ title: "Échec du test", description: "La connexion WhatsApp est peut-être instable.", variant: "destructive" }),
+  });
+
   /* ── Force Restart button (available in all non-connected states) */
   const ForceRestartBtn = ({ size = "sm" }: { size?: "sm" | "lg" }) => (
     <button
@@ -908,7 +914,17 @@ function WhatsappTab() {
           TajerGrow AI Active
         </div>
 
-        <div className="flex items-center justify-center gap-3 pt-2">
+        <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+          <button
+            onClick={() => testSendMutation.mutate()}
+            disabled={testSendMutation.isPending}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all disabled:opacity-50"
+            style={{ background: GOLD, color: "#fff", border: `1.5px solid ${GOLD}` }}
+            data-testid="button-test-whatsapp-send"
+          >
+            {testSendMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            Tester l'envoi
+          </button>
           <button
             onClick={() => statusQuery.refetch()}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors"

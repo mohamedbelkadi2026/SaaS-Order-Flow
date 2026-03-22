@@ -1,6 +1,10 @@
 /**
  * TajerGrow WhatsApp transport layer.
  * Priority: Baileys (direct) → Green API (cloud fallback).
+ * 
+ * Includes a persistent retry queue: messages that fail (WA not connected) 
+ * are stored and retried every 60s up to 3 times.
+ * Queue is also flushed immediately when Baileys connects.
  */
 
 /* ── Phone number normalisation ─────────────────────────────── */
@@ -15,6 +19,49 @@ export function formatPhoneForWhatsApp(phone: string): string {
   return digits;
 }
 
+/* ── Retry queue ────────────────────────────────────────────── */
+interface PendingMessage {
+  phone: string;
+  message: string;
+  retries: number;
+  nextRetry: number;  // epoch ms
+}
+
+const pendingRetryQueue: PendingMessage[] = [];
+
+export function flushPendingQueue(): void {
+  if (pendingRetryQueue.length === 0) return;
+  console.log(`[WA Transport] 🔄 Flushing ${pendingRetryQueue.length} queued message(s) now that WA is connected`);
+  const toFlush = pendingRetryQueue.splice(0, pendingRetryQueue.length);
+  for (const item of toFlush) {
+    sendWhatsAppMessage(item.phone, item.message).catch(console.error);
+  }
+}
+
+// Background retry interval — every 60 seconds
+setInterval(async () => {
+  const now = Date.now();
+  const due = pendingRetryQueue.filter(m => m.nextRetry <= now);
+  if (due.length === 0) return;
+
+  console.log(`[WA Transport] ⏱ Retry interval: ${due.length} message(s) due`);
+  for (const item of due) {
+    pendingRetryQueue.splice(pendingRetryQueue.indexOf(item), 1);
+    const ok = await sendWhatsAppMessage(item.phone, item.message);
+    if (!ok && item.retries < 3) {
+      console.warn(`[WA Transport] 🔁 Retry ${item.retries + 1}/3 failed — will retry again in 60s`);
+      pendingRetryQueue.push({
+        phone: item.phone,
+        message: item.message,
+        retries: item.retries + 1,
+        nextRetry: Date.now() + 60_000,
+      });
+    } else if (!ok) {
+      console.error(`[WA Transport] ❌ Max retries (3) exceeded for ${item.phone} — message dropped`);
+    }
+  }
+}, 60_000);
+
 /* ── Baileys direct send (primary) ──────────────────────────── */
 export async function sendWhatsAppMessage(phone: string, message: string): Promise<boolean> {
   const formatted = formatPhoneForWhatsApp(phone);
@@ -28,21 +75,22 @@ export async function sendWhatsAppMessage(phone: string, message: string): Promi
     if (status.state === "connected" && baileysService.isConnected()) {
       const ok = await baileysService.sendMessage(phone, message);
       if (ok) {
-        console.log(`[WA Transport] ✅ Sent via Baileys to ${formatted}`);
+        console.log(`[SUCCESS]: Message sent to customer via Baileys → ${formatted}`);
         return true;
       }
       console.warn(`[WA Transport] ⚠️ Baileys send returned false — trying fallback`);
     } else {
-      console.warn(`[WA Transport] ⚠️ Baileys not connected (state=${status.state}) — trying auto-reconnect`);
-      // Attempt reconnect if not already connecting
+      console.warn(`[WA Transport] ⚠️ Baileys not connected (state=${status.state})`);
       if (status.state === "idle" || status.state === "qr") {
-        console.log(`[WA Transport] Skipping reconnect (state=${status.state} — user action required for QR scan)`);
+        console.warn(`[WA Transport] User action required (QR scan). Message queued for retry.`);
       } else {
-        // disconnected state — trigger reconnect
         baileysService.start().catch(() => {});
-        console.log(`[WA Transport] Reconnect triggered — message will need to be retried`);
+        console.log(`[WA Transport] Reconnect triggered — message queued for retry`);
       }
-      // Fall through to Green API fallback
+      // Queue for retry
+      pendingRetryQueue.push({ phone, message, retries: 0, nextRetry: Date.now() + 60_000 });
+      console.log(`[WA Transport] 📋 Message added to retry queue (${pendingRetryQueue.length} total). Will retry in 60s.`);
+      return false;
     }
   } catch (err: any) {
     console.error(`[WA Transport] Baileys error: ${err.message}`);
@@ -52,8 +100,11 @@ export async function sendWhatsAppMessage(phone: string, message: string): Promi
   const instanceId = process.env.GREENAPI_INSTANCE_ID ?? "";
   const apiToken   = process.env.GREENAPI_API_TOKEN ?? "";
   if (!instanceId || !apiToken) {
-    console.error(`[WA Transport] ❌ NO TRANSPORT AVAILABLE — Baileys not connected AND Green API not configured!`);
-    console.error(`[WA Transport] ❌ Message to ${formatted} was NOT sent. Connect WhatsApp in Automation → WhatsApp tab.`);
+    console.error(`[ERROR]: Store has no active WhatsApp session. Message to ${formatted} NOT sent.`);
+    console.error(`[WA Transport] Connect WhatsApp in Automation → WhatsApp tab. Message queued for retry.`);
+    if (!pendingRetryQueue.some(m => m.phone === phone && m.message === message)) {
+      pendingRetryQueue.push({ phone, message, retries: 0, nextRetry: Date.now() + 60_000 });
+    }
     return false;
   }
 
@@ -66,7 +117,7 @@ export async function sendWhatsAppMessage(phone: string, message: string): Promi
       body: JSON.stringify({ chatId, message }),
     });
     if (res.ok) {
-      console.log(`[WA Transport] ✅ Sent via Green API to ${chatId}`);
+      console.log(`[SUCCESS]: Message sent to customer via Green API → ${chatId}`);
       return true;
     }
     console.error(`[WA Transport] ❌ Green API error: ${res.status} ${await res.text()}`);

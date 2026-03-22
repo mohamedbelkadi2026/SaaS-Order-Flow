@@ -1,0 +1,24 @@
+"CRITICAL FIX: Orders are being received, but the automated WhatsApp outreach is NOT triggering. I need a 100% stable integration between the Shopify Webhook and the Baileys WhatsApp engine. Follow these technical steps:
+1. Global Socket Management (Backend):
+Create a global WhatsApp Manager service that keeps the socket (sock) accessible throughout the application.
+Persistence: Ensure the session in ./auth_info_baileys is loaded correctly every time the server starts.
+Auto-Reconnect: If the connection is lost, the manager must automatically try to reconnect every 10 seconds.
+2. Webhook to WhatsApp Bridge (The Logic):
+In the POST /api/webhooks/orders route, implement this exact workflow:
+Log the arrival: console.log('[WEBHOOK]: New order received for store:', store_id).
+Find Session: Look up the active WhatsApp connection for that store_id.
+Condition: If the connection is 'open', trigger whatsappService.sendMessage(orderData).
+Formatting: Ensure the phone number is strictly formatted as 2126xxxxxxxx@s.whatsapp.net. Remove any '+' or spaces.
+3. Messaging Queue & Error Logs:
+If the WhatsApp socket is not ready when the order arrives, RETRY sending the message every 1 minute for up to 3 times.
+Detailed Logging: Add logs in the Replit console for every step:
+[SUCCESS]: Message sent to customer {Name}
+[ERROR]: Store {ID} has no active WhatsApp session.
+[DEBUG]: Sending template: {Template_Text}
+4. AI Initial Outreach (The First Text):
+Ensure the first message sent is exactly: 'السلام عليكم سيدي/لالة {Nom_Client}، تبارك الله عليك. معاك فريق الدعم ديال {Nom_Boutique}، شلنا الطلب ديالك لـ {Nom_Produit}. واش ممكن تأكد لينا غير المدينة باش نخرجوها ليك اليوم؟'
+Context: Immediately save this conversation state in the AI_Conversations table as 'AWAITING_CITY'.
+5. Frontend Connectivity Check:
+In the 'Connexion' page, if the status is 'Connected', add a button: 'Tester l'envoi' (Test Sending).
+This button should send a dummy message to the Admin's own number to verify the line is 100% live.
+Technical Goal: Fix the bridge between the database and the WhatsApp client. I want to place an order and see the 'Message Sent' log in the console within 3 seconds."

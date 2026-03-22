@@ -2927,6 +2927,34 @@ export async function registerRoutes(
     }
   });
 
+  /* POST /api/automation/whatsapp/test → send a test message to the owner's own number */
+  app.post("/api/automation/whatsapp/test", requireAuth, async (req: any, res: any) => {
+    try {
+      const { baileysService } = await import("./baileys-service");
+      const status = baileysService.getStatus();
+      if (status.state !== "connected") {
+        return res.status(400).json({ message: "WhatsApp n'est pas connecté." });
+      }
+      // Get the connected phone number and send a test message to itself
+      const testPhone = status.phone ?? "";
+      if (!testPhone) {
+        return res.status(400).json({ message: "Numéro de téléphone non disponible." });
+      }
+      const storeName = req.user?.username ?? "TajerGrow";
+      const testMsg = `✅ *Test TajerGrow AI* — La connexion WhatsApp de votre boutique "${storeName}" est opérationnelle. Les confirmations automatiques sont actives. 🚀`;
+      const { sendWhatsAppMessage } = await import("./whatsapp-service");
+      const ok = await sendWhatsAppMessage(`+${testPhone}`, testMsg);
+      if (ok) {
+        console.log(`[WhatsApp] ✅ Test message sent to ${testPhone}`);
+        res.json({ ok: true, message: `Message de test envoyé à +${testPhone}` });
+      } else {
+        res.status(500).json({ message: "Échec de l'envoi du message de test." });
+      }
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   /* GET /api/automation/whatsapp/events → SSE stream for real-time WA status */
   app.get("/api/automation/whatsapp/events", requireAuth, async (_req: any, res: any) => {
     const { addWASSEClient } = await import("./sse");

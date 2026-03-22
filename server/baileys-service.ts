@@ -168,6 +168,11 @@ async function connectToWhatsApp(): Promise<void> {
         _phoneNumber = _sock?.user?.id?.split(":")[0] ?? null;
         console.log(`[WA-STATUS] Connected — phone: ${_phoneNumber}`);
         await broadcastWAStatus();
+        // Flush any messages that were queued while WA was disconnected
+        try {
+          const { flushPendingQueue } = await import("./whatsapp-service");
+          flushPendingQueue();
+        } catch {}
       }
 
       // ── Closed ───────────────────────────────────────────────
