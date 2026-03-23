@@ -3,7 +3,7 @@ import { storage } from "./storage";
 import { broadcastToStore } from "./sse";
 import { sendWhatsAppMessage } from "./whatsapp-service";
 import { db } from "./db";
-import { products, orderItems, orders, stores } from "@shared/schema";
+import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import type { AiConversation } from "@shared/schema";
 
@@ -709,5 +709,352 @@ export async function handleIncomingMessage(
 
   } catch (err: any) {
     console.error(`[AI] handleIncomingMessage error (phone ${customerPhone}):`, err.message);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   LEAD SALES MODE — Facebook Ads WhatsApp Conversion
+   State machine: AWAITING_NAME → AWAITING_CITY → AWAITING_ADDRESS
+                  → (AWAITING_PRODUCT) → AWAITING_CONFIRM → DONE
+════════════════════════════════════════════════════════════════ */
+
+type LeadStage = "AWAITING_NAME" | "AWAITING_CITY" | "AWAITING_ADDRESS" | "AWAITING_PRODUCT" | "AWAITING_CONFIRM" | "DONE";
+
+/* ── Find best matching product for a store from a free-text message ── */
+async function detectLeadProduct(storeId: number, message: string): Promise<{ id: number; name: string; price: number; description: string } | null> {
+  const prods = await storage.getProductsByStore(storeId);
+  if (prods.length === 0) return null;
+
+  const lower = message.toLowerCase();
+  // Keyword match: any significant word in product name found in message
+  for (const p of prods) {
+    const words = (p.name || "").toLowerCase().split(/\s+/).filter(w => w.length > 3);
+    if (words.some(w => lower.includes(w)) || lower.includes((p.name || "").toLowerCase())) {
+      return { id: p.id, name: p.name || "Produit", price: p.price ?? 0, description: (p as any).descriptionDarija || (p as any).aiFeatures || "" };
+    }
+  }
+  // If store has only 1 product, use it automatically
+  if (prods.length === 1) {
+    const p = prods[0];
+    return { id: p.id, name: p.name || "Produit", price: p.price ?? 0, description: (p as any).descriptionDarija || (p as any).aiFeatures || "" };
+  }
+  return null;
+}
+
+/* ── Generate a lead-stage specific AI reply ─────────────────────────── */
+async function generateLeadReply(
+  storeId: number,
+  stage: LeadStage,
+  conv: AiConversation,
+  customerMessage: string,
+  storeName: string,
+  productList?: string,
+): Promise<string> {
+  const name = conv.leadName || "";
+  const product = conv.leadProductName || "المنتج";
+  const city = conv.leadCity || "";
+  const address = conv.leadAddress || "";
+  const priceLabel = conv.leadPrice ? `${Math.round(conv.leadPrice / 100)} درهم` : "...";
+
+  // Load product knowledge for AWAITING_CONFIRM stage
+  let productKnowledge = "";
+  if (stage === "AWAITING_CONFIRM" && conv.leadProductId) {
+    const [p] = await db.select({ descriptionDarija: products.descriptionDarija, aiFeatures: products.aiFeatures, price: products.price })
+      .from(products).where(eq(products.id, conv.leadProductId));
+    if (p) {
+      const desc = (p.descriptionDarija || "").trim();
+      const feats = p.aiFeatures ? (() => { try { return (JSON.parse(p.aiFeatures!) as string[]).join("، "); } catch { return ""; } })() : "";
+      productKnowledge = [desc, feats].filter(Boolean).join(" | ");
+    }
+  }
+
+  const systemPrompts: Record<LeadStage, string> = {
+    AWAITING_NAME: `أنت وكيل مبيعات محترف من متجر "${storeName}" على واتساب. العميل تواصل معك بعد رؤية إعلان على فيسبوك. تحدث فقط بالدارجة المغربية الطبيعية. العميل أعطاك اسمه أو رد عليك. رحب به بحرارة وأكد اسمه واسأله عن المدينة ديالو للتوصيل. جواب 2 سطر بحد أقصى.`,
+    
+    AWAITING_CITY: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}". أكد المدينة واسأله عن العنوان الكامل (الحي والشارع) باش نوصلوه مزيان. دارجة مغربية طبيعية. جواب 2 سطر.`,
+    
+    AWAITING_ADDRESS: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك العنوان. دير ملخص الطلبية بالكامل:\n- المنتج: ${product}\n- المدينة: ${city}\n- العنوان: "${customerMessage}"\n- الثمن: ${priceLabel} (توصيل مجاني)\n- الدفع عند الاستلام "قلب عاد خلص" ✅\nواسأله "واش نؤكد ليك الطلبية؟" بالدارجة. جواب 4 سطر.`,
+    
+    AWAITING_PRODUCT: `أنت وكيل مبيعات من "${storeName}". العميل بغى يطلب منتج من هاد القائمة:\n${productList || "—"}\nبناءً على جواب العميل: "${customerMessage}"، دير مطابقة وقول لو المنتج لي اخترو وسأله "واش هادا هو؟". دارجة مغربية. جواب 2 سطر.`,
+    
+    AWAITING_CONFIRM: `أنت وكيل مبيعات محترف من "${storeName}".\nالمنتج: ${product}\nالثمن: ${priceLabel}\nالدفع عند الاستلام "قلب عاد خلص"\nالتوصيل مجاني 24-48 ساعة${productKnowledge ? `\nمعلومات المنتج: ${productKnowledge}` : ""}.\n\nإذا سألك العميل عن الجودة أو الثمن أو التوصيل: جاوبه بثقة باستخدام معلومات المنتج.\nإذا قال "واخا" أو "نعم" أو "موافق": قل له الطلبية تأكدات.\nإذا رفض: ودعه بلطف.\nدارجة مغربية طبيعية. 2-3 سطر.`,
+    
+    DONE: `قل للعميل أن طلبيته في المعالجة وأنكم ستتواصل معه للتأكيد. دارجة مغربية. سطر واحد.`,
+  };
+
+  try {
+    const { client: ai, model } = await resolveAIClient(storeId);
+    const logs = await storage.getAiLogs(storeId, undefined, conv.id);
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+      { role: "system", content: systemPrompts[stage] },
+      ...logs.slice(-8).map(l => ({
+        role: (l.role === "user" ? "user" : "assistant") as "user" | "assistant",
+        content: l.message,
+      })),
+      { role: "user", content: customerMessage },
+    ];
+    const completion = await ai.chat.completions.create({ model, messages, max_tokens: 200, temperature: 0.75 });
+    return completion.choices[0]?.message?.content?.trim() || "شكراً على رسالتك 🙏";
+  } catch {
+    // Fallback to simple template if AI fails
+    const fallbacks: Partial<Record<LeadStage, string>> = {
+      AWAITING_NAME: `مرحبا ${name || "صديقي"} 😊! فأي مدينة غتوصلوك؟`,
+      AWAITING_CITY: `مزيان ${name}! أعطيني عنوانك بالتفصيل (الحي والشارع) 📦`,
+      AWAITING_ADDRESS: `صافي ${name} 📋\n✅ ${product}\n📍 ${city} — ${customerMessage}\n💰 ${priceLabel} + شحن مجاني\nواش نؤكد ليك؟`,
+      AWAITING_CONFIRM: `شكراً على السؤال 🙏 المنتج ممتاز والتوصيل مجاني. واش نؤكد ليك الطلبية؟`,
+    };
+    return fallbacks[stage] || "شكراً 🙏";
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   TRIGGER — Called when a new FB-Ads lead contacts for the first time
+════════════════════════════════════════════════════════════════ */
+export async function triggerLeadConversation(
+  storeId: number,
+  phone: string,
+  initialMessage: string,
+): Promise<void> {
+  console.log(`[Lead] 🎯 New FB-Ads lead: store=${storeId} phone=${phone} msg="${initialMessage.substring(0, 60)}"`);
+
+  if (!(await storeHasAIKey(storeId))) {
+    console.warn(`[Lead] No AI key for store ${storeId} — ignoring new lead`);
+    return;
+  }
+
+  // Avoid duplicate lead convs for the same phone
+  const existing = await storage.getActiveAiConversationByPhone(storeId, phone);
+  if (existing) {
+    console.log(`[Lead] Already have active conv ${existing.id} for ${phone} — routing to it`);
+    if (existing.isNewLead) {
+      await handleLeadMessage(storeId, phone, initialMessage, existing);
+    } else {
+      await handleIncomingMessage(storeId, phone, initialMessage);
+    }
+    return;
+  }
+
+  try {
+    const [storeName, productMatch] = await Promise.all([
+      getStoreName(storeId),
+      detectLeadProduct(storeId, initialMessage),
+    ]);
+
+    const prods = await storage.getProductsByStore(storeId);
+    const hasMultipleProducts = prods.length > 1;
+    // If product detected → start at AWAITING_NAME, else if multiple prods → AWAITING_NAME too (will ask product later)
+
+    const greeting =
+      `السلام عليكم! 👋\n` +
+      `معاك فريق ${storeName} على واتساب 🌟\n` +
+      (productMatch
+        ? `شفنا باللي كنتي مهتم بـ *${productMatch.name}* — يسعدنا نساعدك 😊\n`
+        : `يسعدنا نساعدك ونجيب ليك اللي بغيتي 😊\n`) +
+      `دير لي عافاك *اسمك الكامل* باش نكملو معاك 📝`;
+
+    const conv = await storage.createAiConversation({
+      storeId,
+      orderId: null,
+      customerPhone: phone,
+      customerName: null,
+      status: "active",
+      isManual: 0,
+      conversationStep: 1,
+      isNewLead: 1,
+      leadStage: "AWAITING_NAME",
+      leadProductId: productMatch?.id ?? null,
+      leadProductName: productMatch?.name ?? null,
+      leadPrice: productMatch?.price ?? null,
+    });
+
+    // Log greeting (use convId, not orderId)
+    await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "assistant", message: greeting });
+    await storage.updateAiConversationLastMessage(conv.id, greeting);
+
+    broadcastToStore(storeId, "new_conversation", {
+      conversation: { ...conv, lastMessage: greeting, isNewLead: 1, leadStage: "AWAITING_NAME" },
+      message: { role: "assistant", content: greeting, ts: Date.now() },
+    });
+
+    await queueWhatsApp(storeId, phone, greeting);
+    console.log(`[Lead] ✅ Lead conv ${conv.id} created for ${phone} — product: ${productMatch?.name ?? "unknown"}`);
+  } catch (err: any) {
+    console.error(`[Lead] triggerLeadConversation error:`, err.message);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   HANDLE — Each subsequent message in a lead conversation
+════════════════════════════════════════════════════════════════ */
+export async function handleLeadMessage(
+  storeId: number,
+  phone: string,
+  message: string,
+  conv: AiConversation,
+): Promise<void> {
+  if (!conv.isNewLead) return; // Safety guard
+
+  const stage = (conv.leadStage || "AWAITING_NAME") as LeadStage;
+  console.log(`[Lead] Conv ${conv.id} @ ${stage} — "${message.substring(0, 60)}"`);
+
+  // Log + broadcast customer message
+  await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "user", message });
+  await storage.updateAiConversationLastMessage(conv.id, message);
+  broadcastToStore(storeId, "message", { conversationId: conv.id, role: "user", content: message, ts: Date.now(), isNewLead: true });
+
+  // Human escalation
+  if (detectAttentionNeeded(message)) {
+    await storage.updateConversationNeedsAttention(conv.id, 1);
+    broadcastToStore(storeId, "needs_attention", { conversationId: conv.id, ts: Date.now() });
+  }
+
+  broadcastToStore(storeId, "typing", { conversationId: conv.id, ts: Date.now() });
+
+  try {
+    const storeName = await getStoreName(storeId);
+    let reply = "";
+    let nextStage: LeadStage = stage;
+    let leadUpdates: Parameters<typeof storage.updateLeadFields>[1] = {};
+
+    /* ── State transitions ─────────────────────────────────────── */
+    if (stage === "AWAITING_NAME") {
+      // Take message as name (trim to first 3 words max)
+      const extractedName = message.trim().split(/[\n,،]+/)[0].trim().split(/\s+/).slice(0, 3).join(" ");
+      leadUpdates = { leadName: extractedName, leadStage: "AWAITING_CITY" };
+      nextStage = "AWAITING_CITY";
+      // Reload conv with name for reply
+      const updatedConv = { ...conv, leadName: extractedName };
+      reply = await generateLeadReply(storeId, "AWAITING_NAME", updatedConv as any, message, storeName);
+
+    } else if (stage === "AWAITING_CITY") {
+      const city = detectCity(message) || message.trim().split(/\s+/).slice(0, 2).join(" ");
+      leadUpdates = { leadCity: city, leadStage: "AWAITING_ADDRESS" };
+      nextStage = "AWAITING_ADDRESS";
+      reply = await generateLeadReply(storeId, "AWAITING_CITY", { ...conv, leadCity: city } as any, message, storeName);
+
+    } else if (stage === "AWAITING_ADDRESS") {
+      const address = message.trim();
+      // Check if we need to ask for product
+      if (!conv.leadProductId) {
+        const prods = await storage.getProductsByStore(storeId);
+        if (prods.length > 1) {
+          // Need to ask for product
+          const productList = prods.map((p, i) => `${i + 1}. ${p.name} — ${Math.round((p.price || 0) / 100)} DH`).join("\n");
+          leadUpdates = { leadAddress: address, leadStage: "AWAITING_PRODUCT" };
+          nextStage = "AWAITING_PRODUCT";
+          reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address } as any, message, storeName, productList);
+        } else if (prods.length === 1) {
+          // Auto-select the only product
+          leadUpdates = { leadAddress: address, leadProductId: prods[0].id, leadProductName: prods[0].name, leadPrice: prods[0].price ?? 0, leadStage: "AWAITING_CONFIRM" };
+          nextStage = "AWAITING_CONFIRM";
+          reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address, leadProductName: prods[0].name, leadPrice: prods[0].price ?? 0 } as any, message, storeName);
+        } else {
+          leadUpdates = { leadAddress: address, leadStage: "AWAITING_CONFIRM" };
+          nextStage = "AWAITING_CONFIRM";
+          reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address } as any, message, storeName);
+        }
+      } else {
+        leadUpdates = { leadAddress: address, leadStage: "AWAITING_CONFIRM" };
+        nextStage = "AWAITING_CONFIRM";
+        reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address } as any, message, storeName);
+      }
+
+    } else if (stage === "AWAITING_PRODUCT") {
+      // Try to match product from message
+      const prods = await storage.getProductsByStore(storeId);
+      let matched = await detectLeadProduct(storeId, message);
+      // Also try by number (e.g. customer says "1" or "الأول")
+      if (!matched) {
+        const num = parseInt(message.trim());
+        if (!isNaN(num) && num >= 1 && num <= prods.length) matched = { id: prods[num - 1].id, name: prods[num - 1].name || "", price: prods[num - 1].price ?? 0, description: "" };
+      }
+      if (matched) {
+        leadUpdates = { leadProductId: matched.id, leadProductName: matched.name, leadPrice: matched.price, leadStage: "AWAITING_CONFIRM" };
+        nextStage = "AWAITING_CONFIRM";
+        reply = await generateLeadReply(storeId, "AWAITING_PRODUCT", { ...conv, leadProductName: matched.name, leadPrice: matched.price } as any, message, storeName);
+      } else {
+        // Product not matched — ask again
+        const productList = prods.map((p, i) => `${i + 1}. ${p.name} — ${Math.round((p.price || 0) / 100)} DH`).join("\n");
+        reply = `عافاك، اختار المنتج من اللي قلت:\n${productList}`;
+        nextStage = "AWAITING_PRODUCT";
+      }
+
+    } else if (stage === "AWAITING_CONFIRM") {
+      const intent = detectIntent(message);
+
+      if (intent === "confirm") {
+        // ── Create the order! ─────────────────────────────────────
+        try {
+          const order = await storage.createOrderFromLead({
+            storeId,
+            customerName: conv.leadName || "Lead",
+            customerPhone: phone,
+            customerCity: conv.leadCity || "",
+            customerAddress: conv.leadAddress || "",
+            productId: conv.leadProductId ?? null,
+            productName: conv.leadProductName || "",
+            price: conv.leadPrice ?? 0,
+          });
+
+          await storage.updateLeadFields(conv.id, { leadStage: "DONE", createdOrderId: order.id });
+          await storage.updateAiConversationStatus(conv.id, "confirmed");
+
+          const successMsg =
+            `يا سلاامم ${conv.leadName || "صديقي"} 🎉✅\n` +
+            `الطلبية ديالك تأكدات بنجاح!\n` +
+            `📦 *${conv.leadProductName}* غيوصلك ف 24-48 ساعة إن شاء الله\n` +
+            `💰 كتخلص عند الاستلام — قلب عاد خلص 🙏\n` +
+            `شكراً بزاف على ثقتك فينا! 🌟`;
+
+          await storage.createAiLog({ storeId, orderId: order.id, convId: conv.id, customerPhone: phone, role: "assistant", message: successMsg });
+          await storage.updateAiConversationLastMessage(conv.id, successMsg);
+          broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
+          broadcastToStore(storeId, "lead_confirmed", { conversationId: conv.id, orderId: order.id, orderNumber: order.orderNumber, customerName: conv.leadName, ts: Date.now() });
+          broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: successMsg, ts: Date.now(), isNewLead: true });
+          await queueWhatsApp(storeId, phone, successMsg);
+          console.log(`[Lead] 🎉 Order CREATED from lead — orderId=${order.id} orderNumber=${order.orderNumber} customer=${conv.leadName}`);
+          return;
+        } catch (err: any) {
+          console.error(`[Lead] Order creation error:`, err.message);
+          reply = "كاين شي مشكل تقني، فريقنا غيتواصل معاك دابا 🙏";
+        }
+
+      } else if (intent === "cancel") {
+        await storage.updateAiConversationStatus(conv.id, "cancelled");
+        reply = `مفهوم، لا باس 🙏 إلا غيرت رأيك أو عندك سؤال راسلنا — نتمنى نخدموا معك قريبا!`;
+        await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "assistant", message: reply });
+        await storage.updateAiConversationLastMessage(conv.id, reply);
+        broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: reply, ts: Date.now() });
+        await queueWhatsApp(storeId, phone, reply);
+        return;
+      } else {
+        // Customer has a question — use AI with product knowledge
+        reply = await generateLeadReply(storeId, "AWAITING_CONFIRM", conv, message, storeName);
+        nextStage = "AWAITING_CONFIRM"; // Stay on this stage
+      }
+    }
+
+    // Apply lead field updates + persist
+    if (Object.keys(leadUpdates).length > 0) {
+      await storage.updateLeadFields(conv.id, leadUpdates);
+    }
+
+    // Log + broadcast AI reply
+    await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "assistant", message: reply });
+    await storage.updateAiConversationLastMessage(conv.id, reply);
+    broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
+    broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: reply, ts: Date.now(), isNewLead: true, leadStage: nextStage });
+
+    await queueWhatsApp(storeId, phone, reply);
+
+  } catch (err: any) {
+    console.error(`[Lead] handleLeadMessage error (conv ${conv.id}):`, err.message);
+    broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
+    const fallback = "شكراً على رسالتك 🙏 سيتواصل معاك فريقنا قريباً.";
+    await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "assistant", message: fallback });
+    await storage.updateAiConversationLastMessage(conv.id, fallback);
+    broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: fallback, ts: Date.now() });
+    await queueWhatsApp(storeId, phone, fallback);
   }
 }

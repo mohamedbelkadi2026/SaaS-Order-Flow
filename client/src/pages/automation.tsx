@@ -1342,6 +1342,25 @@ function LiveMonitoringTab() {
       }
     });
 
+    es.addEventListener("lead_confirmed", (e) => {
+      const data = JSON.parse(e.data);
+      refetchConvs();
+      toast({
+        title: "🎉 Commande Lead Créée !",
+        description: `${data.customerName || "Lead"} — Commande #${data.orderNumber} confirmée via FB Ads 🎯`,
+      });
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("TajerGrow — Nouveau client via Ads 🎯", {
+          body: `${data.customerName || "Lead"} vient de confirmer sa commande #${data.orderNumber}`,
+          icon: "/favicon.ico",
+        });
+      }
+    });
+
+    es.addEventListener("new_conversation", (e) => {
+      refetchConvs();
+    });
+
     return () => es.close();
   }, [selectedId]);
 
@@ -1396,13 +1415,24 @@ function LiveMonitoringTab() {
     return NAVY;
   };
 
-  const statusLabel = (s: string, needsAttn?: boolean, isLong?: boolean) => {
+  const statusLabel = (s: string, needsAttn?: boolean, isLong?: boolean, isLead?: boolean) => {
     if (needsAttn) return "Attention 🔴";
     if (isLong) return "Long 🕐";
+    if (isLead) return "Lead (Ads) 🎯";
     if (s === "confirmed") return "Confirmé ✅";
     if (s === "cancelled") return "Annulé ❌";
     if (s === "manual") return "Manuel 👤";
     return "En cours 🤖";
+  };
+
+  // Lead stage label for the chat subtitle
+  const leadStageLabel: Record<string, string> = {
+    AWAITING_NAME: "🔹 En attente du nom",
+    AWAITING_CITY: "🏙 En attente de la ville",
+    AWAITING_ADDRESS: "📍 En attente de l'adresse",
+    AWAITING_PRODUCT: "🛒 En attente du produit",
+    AWAITING_CONFIRM: "✅ En attente de confirmation",
+    DONE: "✅ Commande créée",
   };
 
   const bubbleStyle = (role: string) => {
@@ -1439,26 +1469,30 @@ function LiveMonitoringTab() {
         ) : (
           <div className="flex-1 overflow-y-auto divide-y divide-zinc-50">
             {[...conversations].sort((a: any, b: any) =>
-              (attentionIds.has(b.id) ? 2 : longChatIds.has(b.id) ? 1 : 0) -
-              (attentionIds.has(a.id) ? 2 : longChatIds.has(a.id) ? 1 : 0)
+              (attentionIds.has(b.id) ? 3 : b.isNewLead ? 2 : longChatIds.has(b.id) ? 1 : 0) -
+              (attentionIds.has(a.id) ? 3 : a.isNewLead ? 2 : longChatIds.has(a.id) ? 1 : 0)
             ).map((conv: any) => {
               const needsAttn = attentionIds.has(conv.id);
-              const isLong = longChatIds.has(conv.id) && !needsAttn;
+              const isLead = Boolean(conv.isNewLead) && !needsAttn;
+              const isLong = longChatIds.has(conv.id) && !needsAttn && !isLead;
               return (
               <button
                 key={conv.id}
                 onClick={() => { setSelectedId(conv.id); setMessages([]); }}
                 className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors",
                   needsAttn && "bg-red-50 border-l-4 border-red-400",
+                  isLead && "bg-blue-50 border-l-4 border-blue-400",
                   isLong && "bg-amber-50 border-l-4 border-amber-400"
                 )}
-                style={selectedId === conv.id && !needsAttn && !isLong ? { background: "rgba(30,27,75,0.05)", borderLeft: `3px solid ${NAVY}` } : undefined}
+                style={selectedId === conv.id && !needsAttn && !isLead && !isLong ? { background: "rgba(30,27,75,0.05)", borderLeft: `3px solid ${NAVY}` } : undefined}
                 data-testid={`conv-item-${conv.id}`}
               >
                 <div className="flex items-center justify-between mb-1 gap-1">
                   <div className="flex items-center gap-1.5 min-w-0">
                     {needsAttn ? (
                       <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" title="Attention requise" />
+                    ) : isLead ? (
+                      <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0 animate-pulse" title="Nouveau lead Facebook Ads" />
                     ) : isLong ? (
                       <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-pulse" title="Conversation longue" />
                     ) : typingConvId === conv.id ? (
@@ -1466,10 +1500,11 @@ function LiveMonitoringTab() {
                     ) : conv.status === "active" ? (
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: NAVY, opacity: 0.6 }} />
                     ) : null}
-                    <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
+                    <p className="text-sm font-semibold text-zinc-800 truncate">{conv.leadName || conv.customerName || conv.customerPhone}</p>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0" style={{ background: statusColor(conv.status, needsAttn, isLong) }}>
-                    {statusLabel(conv.status, needsAttn, isLong)}
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0"
+                    style={{ background: needsAttn ? "#ef4444" : isLead ? "#3b82f6" : isLong ? "#d97706" : statusColor(conv.status) }}>
+                    {statusLabel(conv.status, needsAttn, isLong, isLead)}
                   </span>
                 </div>
                 {typingConvId === conv.id ? (
@@ -1484,10 +1519,12 @@ function LiveMonitoringTab() {
                 ) : (
                   <p className={cn("text-xs truncate",
                     needsAttn ? "text-red-500 font-medium" :
+                    isLead ? "text-blue-600 font-medium" :
                     isLong ? "text-amber-600 font-medium" :
                     "text-zinc-400"
                   )}>
                     {needsAttn ? "⚠️ Client demande assistance humaine" :
+                     isLead ? (leadStageLabel[conv.leadStage] || "🎯 Nouveau lead FB Ads") :
                      isLong ? "🕐 Conversation longue: التدخل مطلوب" :
                      (conv.lastMessage || "...")}
                   </p>
@@ -1509,10 +1546,17 @@ function LiveMonitoringTab() {
       ) : (
         <div className="bg-white rounded-2xl border border-zinc-100 flex flex-col overflow-hidden">
           {/* Header */}
-          <div className="px-5 py-3 border-b border-zinc-100 flex items-center justify-between">
+          <div className={cn("px-5 py-3 border-b flex items-center justify-between",
+            (selectedConv as any).isNewLead ? "border-blue-100 bg-blue-50" : "border-zinc-100"
+          )}>
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <p className="text-sm font-bold text-zinc-800">{selectedConv.customerName || selectedConv.customerPhone}</p>
+                <p className="text-sm font-bold text-zinc-800">{(selectedConv as any).leadName || selectedConv.customerName || selectedConv.customerPhone}</p>
+                {(selectedConv as any).isNewLead && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full font-bold text-white" style={{ background: "#3b82f6" }}>
+                    🎯 Lead FB Ads
+                  </span>
+                )}
                 {convCtx?.productName && (
                   <span className="text-[11px] px-2 py-0.5 rounded-full font-medium" style={{ background: "rgba(30,27,75,0.07)", color: NAVY }}>
                     {convCtx.productName}{convCtx.productVariant ? ` · ${convCtx.productVariant}` : ""}
@@ -1532,7 +1576,16 @@ function LiveMonitoringTab() {
                   </span>
                 )}
               </div>
-              <p className="text-xs text-zinc-400 mt-0.5">{selectedConv.customerPhone} · Cmd #{selectedConv.orderId}{convCtx?.totalPrice ? ` · ${(convCtx.totalPrice / 100).toFixed(0)} DH` : ""}</p>
+              {(selectedConv as any).isNewLead ? (
+                <p className="text-xs text-blue-500 mt-0.5 font-medium">
+                  {selectedConv.customerPhone}
+                  {(selectedConv as any).leadCity ? ` · ${(selectedConv as any).leadCity}` : ""}
+                  {convCtx?.totalPrice ? ` · ${((selectedConv as any).leadPrice / 100).toFixed(0)} DH` : ""}
+                  {" · "}{leadStageLabel[(selectedConv as any).leadStage] || "Lead actif"}
+                </p>
+              ) : (
+                <p className="text-xs text-zinc-400 mt-0.5">{selectedConv.customerPhone} · Cmd #{selectedConv.orderId}{convCtx?.totalPrice ? ` · ${(convCtx.totalPrice / 100).toFixed(0)} DH` : ""}</p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {selectedConv.orderId && (

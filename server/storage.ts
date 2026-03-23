@@ -169,8 +169,13 @@ export interface IStorage {
   createMarketingCampaign(data: import("@shared/schema").InsertMarketingCampaign): Promise<import("@shared/schema").MarketingCampaign>;
   updateCampaignSent(id: number, totalSent: number, status: string): Promise<void>;
   updateCampaignProgress(id: number, totalSent: number, totalFailed: number, status: string): Promise<void>;
-  getAiLogs(storeId: number, orderId?: number): Promise<import("@shared/schema").AiLog[]>;
+  getAiLogs(storeId: number, orderId?: number, convId?: number): Promise<import("@shared/schema").AiLog[]>;
   createAiLog(data: import("@shared/schema").InsertAiLog): Promise<import("@shared/schema").AiLog>;
+  // Lead management
+  getConnectedStoreIds(): Promise<number[]>;
+  phoneHasOrdersInStore(storeId: number, phone: string): Promise<boolean>;
+  updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; createdOrderId?: number }): Promise<void>;
+  createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number }): Promise<import("@shared/schema").Order>;
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
@@ -2216,11 +2221,18 @@ export class DatabaseStorage implements IStorage {
     await db.update(marketingCampaigns).set({ totalSent, totalFailed, status }).where(eq(marketingCampaigns.id, id));
   }
 
-  async getAiLogs(storeId: number, orderId?: number) {
+  async getAiLogs(storeId: number, orderId?: number, convId?: number) {
     const { aiLogs } = await import("@shared/schema");
-    const conds = orderId !== undefined
-      ? and(eq(aiLogs.storeId, storeId), eq(aiLogs.orderId, orderId))
-      : eq(aiLogs.storeId, storeId);
+    const { isNull } = await import("drizzle-orm");
+    let conds;
+    if (convId !== undefined) {
+      // Lead conversation: filter by convId
+      conds = and(eq(aiLogs.storeId, storeId), eq(aiLogs.convId, convId));
+    } else if (orderId !== undefined) {
+      conds = and(eq(aiLogs.storeId, storeId), eq(aiLogs.orderId, orderId));
+    } else {
+      conds = eq(aiLogs.storeId, storeId);
+    }
     return db.select().from(aiLogs).where(conds).orderBy(aiLogs.createdAt);
   }
 
@@ -2228,6 +2240,71 @@ export class DatabaseStorage implements IStorage {
     const { aiLogs } = await import("@shared/schema");
     const [row] = await db.insert(aiLogs).values(data).returning();
     return row;
+  }
+
+  // ── Lead Sales Mode methods ────────────────────────────────────
+  async getConnectedStoreIds(): Promise<number[]> {
+    const { whatsappSessions } = await import("@shared/schema");
+    const rows = await db.select({ storeId: whatsappSessions.storeId })
+      .from(whatsappSessions)
+      .where(eq(whatsappSessions.status, "connected"));
+    return rows.map(r => r.storeId);
+  }
+
+  async phoneHasOrdersInStore(storeId: number, phone: string): Promise<boolean> {
+    const { inArray } = await import("drizzle-orm");
+    const digits = phone.replace(/\D/g, "");
+    const variants = [
+      digits,
+      `+${digits}`,
+      digits.startsWith("212") ? `0${digits.slice(3)}` : `212${digits.startsWith("0") ? digits.slice(1) : digits}`,
+    ];
+    const result = await db.select({ id: orders.id })
+      .from(orders)
+      .where(and(eq(orders.storeId, storeId), inArray(orders.customerPhone, variants)))
+      .limit(1);
+    return result.length > 0;
+  }
+
+  async updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; createdOrderId?: number }) {
+    const { aiConversations } = await import("@shared/schema");
+    await db.update(aiConversations).set(data as any).where(eq(aiConversations.id, convId));
+  }
+
+  async createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number }): Promise<import("@shared/schema").Order> {
+    const { orderItems: orderItemsTable } = await import("@shared/schema");
+    const orderNumber = `LEAD-${Date.now()}`;
+    const [order] = await db.insert(orders).values({
+      storeId: data.storeId,
+      orderNumber,
+      customerName: data.customerName,
+      customerPhone: data.customerPhone,
+      customerCity: data.customerCity,
+      customerAddress: data.customerAddress,
+      totalPrice: data.price,
+      status: "confirme",
+      source: "whatsapp",
+      utmSource: "FB-Ads-Direct",
+      rawProductName: data.productName,
+      productCost: 0,
+      shippingCost: 0,
+      adSpend: 0,
+    }).returning();
+    // Decrement stock if product linked
+    if (data.productId) {
+      await db.insert(orderItemsTable).values({
+        orderId: order.id,
+        productId: data.productId,
+        quantity: 1,
+        price: data.price,
+        rawProductName: data.productName,
+      });
+      // Decrement stock
+      await db.update(products).set({ stock: sql`${products.stock} - 1` }).where(and(eq(products.id, data.productId), sql`${products.stock} > 0`));
+    }
+    // Increment monthly order counter
+    try { await this.incrementMonthlyOrders(data.storeId); } catch {}
+    return order;
   }
 
   async getWhatsappSession(storeId: number) {

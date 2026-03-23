@@ -475,7 +475,7 @@ export const aiConversations = pgTable("ai_conversations", {
   orderId: integer("order_id").references(() => orders.id),
   customerPhone: text("customer_phone").notNull(),
   customerName: text("customer_name"),
-  status: text("status").default("active"), // active | confirmed | cancelled | manual
+  status: text("status").default("active"), // active | confirmed | cancelled | manual | closed
   isManual: integer("is_manual").default(0),
   needsAttention: integer("needs_attention").default(0), // 1 = admin attention required
   conversationStep: integer("conversation_step").default(1), // 1=city 2=variant 3=confirm
@@ -484,6 +484,16 @@ export const aiConversations = pgTable("ai_conversations", {
   lastMessage: text("last_message"),
   lastMessageAt: timestamp("last_message_at").defaultNow(),
   createdAt: timestamp("created_at").defaultNow(),
+  // ── Facebook Ads Lead Sales Mode ─────────────────────────────
+  isNewLead: integer("is_new_lead").default(0),          // 1 = from FB Ads, no prior order
+  leadStage: text("lead_stage"),                          // AWAITING_NAME|AWAITING_CITY|AWAITING_ADDRESS|AWAITING_PRODUCT|AWAITING_CONFIRM|DONE
+  leadName: text("lead_name"),
+  leadCity: text("lead_city"),
+  leadAddress: text("lead_address"),
+  leadProductId: integer("lead_product_id"),
+  leadProductName: text("lead_product_name"),
+  leadPrice: integer("lead_price"),                       // centimes
+  createdOrderId: integer("created_order_id"),
 });
 export const insertAiConversationSchema = createInsertSchema(aiConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export type AiConversation = typeof aiConversations.$inferSelect;
@@ -512,6 +522,7 @@ export const aiLogs = pgTable("ai_logs", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
   orderId: integer("order_id").references(() => orders.id),
+  convId: integer("conv_id"),  // FK to aiConversations.id — used for lead convs with no orderId
   customerPhone: text("customer_phone"),
   role: text("role").notNull(),
   message: text("message").notNull(),

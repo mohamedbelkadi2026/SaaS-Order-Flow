@@ -61,8 +61,21 @@ async function broadcastWAStatus() {
 /* ── Lazy import to avoid circular deps ─────────────────────── */
 async function callAIHandler(storeId: number, phone: string, text: string) {
   try {
-    const { handleIncomingMessage } = await import("./ai-agent");
-    await handleIncomingMessage(storeId, phone, text);
+    const { handleIncomingMessage, handleLeadMessage } = await import("./ai-agent");
+
+    // Check if this is an active lead (FB-Ads Sales Mode) conversation
+    const { aiConversations: convTable } = await import("@shared/schema");
+    const { and: drAnd, eq: drEq } = await import("drizzle-orm");
+    const activeConvs = await db.select()
+      .from(convTable)
+      .where(drAnd(drEq(convTable.storeId, storeId), drEq(convTable.customerPhone, phone), drEq(convTable.status, "active")))
+      .limit(1);
+
+    if (activeConvs[0]?.isNewLead) {
+      await handleLeadMessage(storeId, phone, text, activeConvs[0]);
+    } else {
+      await handleIncomingMessage(storeId, phone, text);
+    }
   } catch (err: any) {
     console.error("[Baileys] AI handler error:", err.message);
   }
@@ -262,7 +275,26 @@ async function connectToWhatsApp(): Promise<void> {
               console.log(`[Baileys] ⚠️ LID fallback → conv ${c.id} | stored: ${c.customerPhone} | incoming JID: ${phone}`);
               await callAIHandler(c.storeId, c.customerPhone!, text);
             } else {
-              console.log(`[Baileys] ❌ No match for JID ${phone} — ${recentConvs.length} recent convs (< 2h), ${activeConvs.length} total active`);
+              // ── No active conv at all — check for new FB-Ads lead ────
+              // Find connected stores and check if this phone is a new customer
+              try {
+                const { storage: stor } = await import("./storage");
+                const connectedStoreIds = await stor.getConnectedStoreIds();
+                console.log(`[Baileys] 🔍 Unknown phone ${phone} — checking as potential new lead. Connected stores: [${connectedStoreIds.join(",")}]`);
+                if (connectedStoreIds.length > 0) {
+                  const storeId = connectedStoreIds[0];
+                  const hasOrders = await stor.phoneHasOrdersInStore(storeId, phone);
+                  if (!hasOrders) {
+                    console.log(`[Baileys] 🎯 New lead detected! Phone ${phone} has no prior orders in store ${storeId}`);
+                    const { triggerLeadConversation } = await import("./ai-agent");
+                    await triggerLeadConversation(storeId, phone, text);
+                  } else {
+                    console.log(`[Baileys] ℹ️ Phone ${phone} has existing orders but no active conv — ignoring`);
+                  }
+                }
+              } catch (leadErr: any) {
+                console.error("[Baileys] Lead detection error:", leadErr.message);
+              }
             }
           } else {
             // Exact phone match — pass stored phone so AI lookup is reliable
