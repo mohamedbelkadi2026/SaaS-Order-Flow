@@ -45,6 +45,23 @@ let _reconnectTimer: NodeJS.Timeout | null = null;
 let _isRunning = false; // prevent concurrent connectToWhatsApp() calls
 let _activeStoreId: number | null = null; // storeId of the currently connected WhatsApp account
 
+/* ── Message deduplication cache ─────────────────────────────── */
+// WhatsApp multi-device can deliver the same message event multiple times.
+// We cache processed message IDs for 5 minutes to avoid duplicate AI replies.
+const _processedMsgIds = new Map<string, number>(); // msgId → timestamp
+const MSG_DEDUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function isDuplicateMessage(msgId: string): boolean {
+  const now = Date.now();
+  // Clean up old entries
+  for (const [id, ts] of _processedMsgIds) {
+    if (now - ts > MSG_DEDUP_TTL_MS) _processedMsgIds.delete(id);
+  }
+  if (_processedMsgIds.has(msgId)) return true;
+  _processedMsgIds.set(msgId, now);
+  return false;
+}
+
 /* ── SSE broadcast helper — lazy import to avoid circulars ─── */
 async function broadcastWAStatus() {
   try {
@@ -65,11 +82,17 @@ async function callAIHandler(storeId: number, phone: string, text: string) {
     const { handleIncomingMessage, handleLeadMessage } = await import("./ai-agent");
 
     // Check if this is an active lead (FB-Ads Sales Mode) conversation
+    // Use all phone format variants (212..., +212..., 06...)
     const { aiConversations: convTable } = await import("@shared/schema");
-    const { and: drAnd, eq: drEq } = await import("drizzle-orm");
+    const { and: drAnd, eq: drEq, inArray: drIn } = await import("drizzle-orm");
+    const phoneVariants = [
+      phone,
+      phone.startsWith("+") ? phone.slice(1) : `+${phone}`,
+      phone.startsWith("212") ? `0${phone.slice(3)}` : phone,
+    ];
     const activeConvs = await db.select()
       .from(convTable)
-      .where(drAnd(drEq(convTable.storeId, storeId), drEq(convTable.customerPhone, phone), drEq(convTable.status, "active")))
+      .where(drAnd(drEq(convTable.storeId, storeId), drIn(convTable.customerPhone, phoneVariants), drEq(convTable.status, "active")))
       .limit(1);
 
     if (activeConvs[0]?.isNewLead) {
@@ -273,6 +296,13 @@ async function connectToWhatsApp(): Promise<void> {
           "";
 
         if (!text.trim()) continue;
+
+        // ── Deduplication: WhatsApp multi-device fires same event several times ──
+        const msgId = msg.key.id ?? `${phone}-${text.substring(0, 20)}-${Date.now()}`;
+        if (isDuplicateMessage(msgId)) {
+          console.log(`[Baileys] ⏭ Skipping duplicate message ${msgId} from ${phone}`);
+          continue;
+        }
 
         console.log(`[Baileys] Incoming from ${phone}: "${text.substring(0, 80)}"`);
 

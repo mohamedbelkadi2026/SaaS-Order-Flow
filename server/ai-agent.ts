@@ -537,8 +537,47 @@ export async function handleIncomingMessage(
   if (!(await storeHasAIKey(storeId))) return;
 
   try {
-    const conv = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
-    if (!conv) return;
+    let conv = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
+
+    // ── Auto-start conversation for customers who text in without an active conv ──
+    // This handles: customer with a nouveau order texts "شحال الثمن؟" for the first time
+    if (!conv) {
+      // Find their most recent nouveau/confirme order
+      const { orders: ordersTable } = await import("@shared/schema");
+      const { and: drAnd, eq: drEq, inArray: drIn } = await import("drizzle-orm");
+      const phoneVariants = [
+        customerPhone,
+        customerPhone.startsWith("+") ? customerPhone.slice(1) : `+${customerPhone}`,
+        customerPhone.replace(/^\+?212/, "0"),
+      ];
+      const [recentOrder] = await db.select()
+        .from(ordersTable)
+        .where(drAnd(
+          drEq(ordersTable.storeId, storeId),
+          drIn(ordersTable.customerPhone, phoneVariants),
+          drIn(ordersTable.status, ["nouveau", "confirme"]),
+        ))
+        .orderBy(ordersTable.id)
+        .limit(1);
+
+      if (recentOrder) {
+        // Create a conversation for this order automatically
+        console.log(`[AI] Creating new conv for inbound reply — order ${recentOrder.id} phone ${customerPhone}`);
+        const newConv = await storage.createAiConversation({
+          storeId,
+          orderId: recentOrder.id,
+          customerPhone,
+          customerName: recentOrder.customerName ?? null,
+          status: "active",
+          isManual: 0,
+          conversationStep: 2, // start at step 2 (confirmation step)
+        });
+        conv = newConv;
+      } else {
+        // No order at all for this phone — nothing to do here (leads handled separately)
+        return;
+      }
+    }
 
     // Manual takeover — just log and broadcast, AI is paused
     if (conv.isManual === 1) {
