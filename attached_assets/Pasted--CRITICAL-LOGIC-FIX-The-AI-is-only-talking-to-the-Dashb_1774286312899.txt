@@ -1,0 +1,24 @@
+"CRITICAL LOGIC FIX: The AI is only 'talking' to the Dashboard but NOT sending messages back to the customer on WhatsApp. I need to fix the 'Full Loop' communication and separate 'Store Leads' from 'WhatsApp Direct Leads'. Follow these instructions exactly:
+1. The 'Two-Way' Bridge (Backend Fix):
+Update the sock.ev.on('messages.upsert') event in the WhatsApp service.
+Mandatory Action: When the AI generates a reply via OpenRouter, you MUST call await sock.sendMessage(remoteJid, { text: aiResponse }).
+remoteJid: Ensure the AI always replies to the EXACT same JID that sent the message (e.g., 2126xxxxxx@s.whatsapp.net).
+2. Smart Routing (Differentiating Flows):
+Implement logic to detect where the lead came from:
+FLOW A (Store Orders): If the number has an active order in the Orders table with status 'nouveau'.
+Goal: Confirmation. AI asks for City/Size and gets the 'Yes'.
+Action: Auto-update status to 'confirme' in DB once confirmed.
+FLOW B (Direct WhatsApp Ads): If the number is NOT in the Orders table.
+Goal: Sales & Lead Capture. AI explains the product and asks for Name/City/Address.
+Action: Automatically CREATE a new order in the database when the lead is closed.
+3. Product Knowledge Injection (The Brain):
+Before the AI replies, the backend must fetch the ai_description from the Products table for the item being discussed.
+Feed this info to the AI so it can answer questions about quality, price, and 'Check Before Pay' naturally in Moroccan Darija.
+4. Live Monitoring UI:
+Ensure the 'Live Monitoring' tab displays both:
+Messages coming from the customer.
+Real-time messages sent by the AI back to the customer.
+If I (Admin) type in the monitoring chat, disable the AI for that specific number so I can take control.
+5. Connection Persistence:
+Ensure the Baileys session is stable. If it disconnects, try to auto-reconnect immediately.
+Technical Goal: I want to see the conversation in my dashboard, BUT the customer must also see it in their WhatsApp. 100% automated, 100% practical. Fix the 'remoteJid' handling to ensure the AI speaks to the customer, not just to the UI."

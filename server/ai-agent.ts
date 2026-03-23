@@ -54,6 +54,10 @@ const CONFIRM_KEYWORDS = [
   "yes", "confirm", "مزيان", "كنقبل", "يعطيك", "مؤكد", "تأكيد",
   "ok", "okay", "d'accord", "c'est bon", "cest bon", "go", "ابعتوه",
   "موافق", "راضي", "عيوني", "بالتوفيق", "ابعت", "كملوه", "أكيد", "اكيد",
+  // Strong buying signals
+  "بغيتها", "بغيتوه", "نبغيها", "نبغيه", "بغي نطلب", "بغيت نطلب",
+  "خاصني", "خاصنيه", "خاصنيها", "كيفاش نطلب", "عندي نية",
+  "طلبوه", "ابعتوها", "دير ليا", "دير ليه", "كمل معايا",
 ];
 // ── Strict cancellation only — single "لا/no/non" alone is NOT a cancel
 // because customers say "لا، واش عندكم مقاس 41؟" (still interested).
@@ -109,7 +113,8 @@ function detectIntent(msg: string): "confirm" | "cancel" | null {
   const isQuestion =
     lower.includes("؟") ||
     lower.endsWith("?") ||
-    /^(واش|كيفاش|فين|شحال|شنو|علاش|فاش|وقت|امتى|كيفما)\b/.test(lower);
+    /^(واش|كيفاش|فين|شحال|شنو|علاش|فاش|وقت|امتى|امتا|كيفما)\b/.test(lower) ||
+    lower.includes("امتا ") || lower.includes("امتى ");
   if (isQuestion) return null;
 
   // Cancel only on explicit, unambiguous phrases
@@ -775,13 +780,13 @@ async function detectLeadProduct(storeId: number, message: string): Promise<{ id
   for (const p of prods) {
     const words = (p.name || "").toLowerCase().split(/\s+/).filter(w => w.length > 3);
     if (words.some(w => lower.includes(w)) || lower.includes((p.name || "").toLowerCase())) {
-      return { id: p.id, name: p.name || "Produit", price: p.price ?? 0, description: (p as any).descriptionDarija || (p as any).aiFeatures || "" };
+      return { id: p.id, name: p.name || "Produit", price: p.price ?? 0, description: (p as any).descriptionDarija || (p as any).description || (p as any).aiFeatures || "" };
     }
   }
   // If store has only 1 product, use it automatically
   if (prods.length === 1) {
     const p = prods[0];
-    return { id: p.id, name: p.name || "Produit", price: p.price ?? 0, description: (p as any).descriptionDarija || (p as any).aiFeatures || "" };
+    return { id: p.id, name: p.name || "Produit", price: p.price ?? 0, description: (p as any).descriptionDarija || (p as any).description || (p as any).aiFeatures || "" };
   }
   return null;
 }
@@ -814,15 +819,16 @@ async function generateLeadReply(
     if (stage === "AWAITING_CONFIRM" && conv.leadProductId) {
       try {
         const [p] = await db
-          .select({ descriptionDarija: products.descriptionDarija, aiFeatures: products.aiFeatures })
+          .select({ descriptionDarija: products.descriptionDarija, description: products.description, aiFeatures: products.aiFeatures })
           .from(products)
           .where(eq(products.id, conv.leadProductId));
         if (p) {
-          const desc  = (p.descriptionDarija || "").trim();
+          const desc  = (p.descriptionDarija || p.description || "").trim();
           const feats = p.aiFeatures
             ? (() => { try { return (JSON.parse(p.aiFeatures!) as string[]).join("، "); } catch { return ""; } })()
             : "";
           productKnowledge = [desc, feats].filter(Boolean).join(" | ");
+          if (productKnowledge) console.log(`[Lead] Product knowledge loaded for product ${conv.leadProductId}: "${productKnowledge.substring(0, 80)}..."`);
         }
       } catch (pkErr: any) {
         console.warn(`[Lead] product-knowledge load failed for product ${conv.leadProductId}:`, pkErr.message);
@@ -981,10 +987,25 @@ export async function handleLeadMessage(
       reply = await generateLeadReply(storeId, "AWAITING_NAME", updatedConv as any, message, storeName);
 
     } else if (stage === "AWAITING_CITY") {
-      const city = detectCity(message) || message.trim().split(/\s+/).slice(0, 2).join(" ");
-      leadUpdates = { leadCity: city, leadStage: "AWAITING_ADDRESS" };
-      nextStage = "AWAITING_ADDRESS";
-      reply = await generateLeadReply(storeId, "AWAITING_CITY", { ...conv, leadCity: city } as any, message, storeName);
+      const detectedCity = detectCity(message);
+      // Short message (1-3 words, no question, no cancel) is probably a city even if unknown to our list
+      const wordCount = message.trim().split(/\s+/).length;
+      const isLikelyCity = !detectedCity && wordCount <= 3 && !message.includes("؟") && !message.includes("?")
+        && !CANCEL_KEYWORDS.some(kw => message.toLowerCase().includes(kw.toLowerCase()))
+        && !CONFIRM_KEYWORDS.some(kw => message.toLowerCase().includes(kw.toLowerCase()));
+      const cityValue = detectedCity || (isLikelyCity ? message.trim() : null);
+      if (cityValue) {
+        // City accepted → advance to address
+        leadUpdates = { leadCity: cityValue, leadStage: "AWAITING_ADDRESS" };
+        nextStage = "AWAITING_ADDRESS";
+        reply = await generateLeadReply(storeId, "AWAITING_CITY", { ...conv, leadCity: cityValue } as any, message, storeName);
+        console.log(`[Lead] Conv ${conv.id} AWAITING_CITY: city accepted = "${cityValue}" (detected=${!!detectedCity})`);
+      } else {
+        // Message too long / looks like a sentence — ask again (do NOT save garbage as city)
+        nextStage = "AWAITING_CITY";
+        reply = `عفاك ${conv.leadName || "صديقي"} 🙏، محتاجين تعطيني المدينة ديالك باش نوصلوك الطلبية — مثلاً: الدار البيضاء، الرباط، مراكش، أكادير...`;
+        console.log(`[Lead] Conv ${conv.id} AWAITING_CITY: city not recognised in "${message.substring(0, 40)}" — asking again`);
+      }
 
     } else if (stage === "AWAITING_ADDRESS") {
       const address = message.trim();
