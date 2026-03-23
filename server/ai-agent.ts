@@ -212,13 +212,15 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
         const [p] = await db.select({
           name: products.name,
           stock: products.stock,
+          description: products.description,
           descriptionDarija: products.descriptionDarija,
           aiFeatures: products.aiFeatures,
         }).from(products).where(eq(products.id, item.productId));
         if (p) {
           if (!productName) productName = p.name ?? null;
           stockQty = p.stock ?? null;
-          descriptionDarija = p.descriptionDarija ?? null;
+          // Use descriptionDarija first, fall back to regular description
+          descriptionDarija = p.descriptionDarija || p.description || null;
           if (p.aiFeatures) {
             try { aiFeatures = JSON.parse(p.aiFeatures); } catch { aiFeatures = null; }
           }
@@ -634,6 +636,7 @@ export async function handleIncomingMessage(
 
     // ── Step-based AI reply ───────────────────────────────────────
     const currentStep = conv.conversationStep ?? 1;
+    console.log(`[AI]: Customer replied on conv ${conv.id} (order #${conv.orderId}) — "${customerMessage.substring(0, 60)}" — calling OpenRouter...`);
     broadcastToStore(storeId, "typing", { conversationId: conv.id, ts: Date.now() });
 
     try {
@@ -655,14 +658,17 @@ export async function handleIncomingMessage(
         ? RECOVERY_SYSTEM_PROMPT
         : buildStepPrompt(currentStep, ctx, storeName, conv, settings?.systemPrompt);
 
-      // Build message history
+      // Build message history — filter null/empty messages to avoid OpenAI rejection
       const recentLogs = await storage.getAiLogs(storeId, conv.orderId ?? undefined);
       const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
         { role: "system", content: systemPrompt },
-        ...recentLogs.slice(-14).map((l) => ({
-          role: (l.role === "user" ? "user" : "assistant") as "user" | "assistant",
-          content: l.message,
-        })),
+        ...recentLogs
+          .filter(l => l.message && l.message.trim().length > 0)
+          .slice(-14)
+          .map((l) => ({
+            role: (l.role === "user" ? "user" : "assistant") as "user" | "assistant",
+            content: l.message as string,
+          })),
       ];
 
       const { client: ai, model, provider } = await resolveAIClient(storeId);
@@ -670,7 +676,7 @@ export async function handleIncomingMessage(
       const aiReply = completion.choices[0]?.message?.content?.trim() ?? "";
       if (!aiReply) throw new Error("Empty AI response");
 
-      console.log(`[AI] Step ${currentStep} reply via ${provider}/${model} for conv ${conv.id}`);
+      console.log(`[SUCCESS]: AI replied on conv ${conv.id} via ${provider}/${model} — step ${currentStep} — "${aiReply.substring(0, 60)}..."`);
 
       // ── Advance step based on what the customer just said ────────
       if (!isRecovery) {
