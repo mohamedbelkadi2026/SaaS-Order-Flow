@@ -1,0 +1,21 @@
+I need to upgrade the AI Confirmation Agent to become a 'Full Lifecycle Delivery Companion'. The AI must NOT stop responding after the status changes to 'confirme'. It must stay active until the order is 'livré'. Follow these technical steps:
+1. Continuous Conversation Loop:
+Logic: Keep the WhatsApp listener active for every order, regardless of the current status (confirme or expédié).
+State Management: Maintain a history of the chat. If a customer sends a message after the order was already confirmed, the AI must still respond in Moroccan Darija.
+2. Intent-Based Status Reversal (Cancellation Logic):
+Feature: If an order is already marked as 'confirme' but the customer sends a message later saying 'I want to cancel', 'Changed my mind', 'بلاش', or 'الغاء'.
+Action: The AI must detect this 'Cancellation Intent' and AUTOMATICALLY update the status in the database to 'Annulé'.
+Notification: Send a 'toast' notification to the Admin: 'Un client a annulé sa commande via WhatsApp'.
+3. Real-time Shipping Updates (API Sync):
+Integration: Connect the AI responder to the Digylog/Shipping API data.
+Functionality: If a customer asks 'فين وصلات الكوموند ديالي؟' (Where is my order?):
+The AI must fetch the current tracking status from the database (linked to the carrier's API).
+Responses based on status:
+If expédié: 'الطلبية ديالك سيدي راها خرجات اليوم وهي فـ الطريق ليك.'
+If en_cours: 'الموزع راه قريب يوصل عندك، وجد راسك سيدي.'
+4. Automated Notifications (The Proactive AI):
+When the status changes to 'expédié' in our dashboard, the AI should automatically send a notification to the customer: 'خبار زوين سيدي {Nom}! الطلبية ديالك لـ {Produit} راها خرجات دبا وغتوصلك فـ أقرب وقت. هادا هو رابط التتبع: [Link].'
+5. Admin Live Monitoring:
+Ensure the 'Live Monitoring' tab shows all post-confirmation chats clearly.
+Maintain the 'Take Over' button so I can step in if the customer has a complex logistics issue.
+Technical Instruction: Use the existing OpenRouter logic but expand the 'System Prompt' to include logistics knowledge. Ensure PostgreSQL is updated for every intent detection."

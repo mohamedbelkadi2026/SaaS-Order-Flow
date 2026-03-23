@@ -319,10 +319,14 @@ async function connectToWhatsApp(): Promise<void> {
             `+${phone}`,       // +212632595440
             `0${phone.slice(3)}`,   // 0632595440
           ];
+          const { or: drizzleOr } = await import("drizzle-orm");
           const activeConvs = await db
             .select()
             .from(aiConversations)
-            .where(eq(aiConversations.status, "active"));
+            .where(drizzleOr(
+              eq(aiConversations.status, "active"),
+              eq(aiConversations.status, "confirmed"),
+            ));
 
           const matched = activeConvs.filter(c =>
             c.customerPhone && phoneVariants.some(v => c.customerPhone === v)

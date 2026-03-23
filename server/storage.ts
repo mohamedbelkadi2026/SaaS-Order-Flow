@@ -458,7 +458,10 @@ export class DatabaseStorage implements IStorage {
     const [order] = await db.select({ id: orders.id }).from(orders)
       .where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
     if (!order) throw new Error('Order not found or access denied');
-    // Delete order items first (cascade)
+    // Delete dependent rows first to avoid FK constraint violations
+    const { aiLogs, aiConversations } = await import("@shared/schema");
+    await db.delete(aiLogs).where(eq(aiLogs.orderId, id));
+    await db.update(aiConversations).set({ orderId: null }).where(eq(aiConversations.orderId as any, id));
     await db.delete(orderItems).where(eq(orderItems.orderId, id));
     // Delete the order
     await db.delete(orders).where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
@@ -471,7 +474,10 @@ export class DatabaseStorage implements IStorage {
       .where(and(inArray(orders.id, ids), eq(orders.storeId, storeId)));
     const ownedIds = owned.map(o => o.id);
     if (ownedIds.length === 0) return 0;
-    // Delete order items for all these orders
+    // Delete dependent rows first to avoid FK constraint violations
+    const { aiLogs, aiConversations } = await import("@shared/schema");
+    await db.delete(aiLogs).where(inArray(aiLogs.orderId, ownedIds));
+    await db.update(aiConversations).set({ orderId: null }).where(inArray(aiConversations.orderId as any, ownedIds));
     await db.delete(orderItems).where(inArray(orderItems.orderId, ownedIds));
     // Delete the orders
     const deleted = await db.delete(orders)
@@ -2153,7 +2159,11 @@ export class DatabaseStorage implements IStorage {
     const [row] = await db.select().from(aiConversations).where(
       and(
         eq(aiConversations.storeId, storeId),
-        eq(aiConversations.status, "active"),
+        // Include "confirmed" so delivery companion keeps responding post-confirm
+        or(
+          eq(aiConversations.status, "active"),
+          eq(aiConversations.status, "confirmed"),
+        ),
         or(
           eq(aiConversations.customerPhone, intl),
           eq(aiConversations.customerPhone, e164),
@@ -2161,7 +2171,7 @@ export class DatabaseStorage implements IStorage {
           eq(aiConversations.customerPhone, `+${local}`),
         )
       )
-    );
+    ).orderBy(desc(aiConversations.id));
     return row;
   }
 

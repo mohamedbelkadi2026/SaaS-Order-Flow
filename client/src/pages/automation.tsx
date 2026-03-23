@@ -1286,6 +1286,23 @@ function LiveMonitoringTab() {
       }
     });
 
+    es.addEventListener("post_confirm_cancel", (e) => {
+      const data = JSON.parse(e.data);
+      refetchConvs();
+      toast({
+        title: "⚠️ Annulation Post-Confirmation",
+        description: data.message || "Un client a annulé sa commande confirmée via WhatsApp",
+        variant: "destructive",
+        duration: 10000,
+      });
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("TajerGrow — Annulation urgente", {
+          body: data.message || "Un client a annulé sa commande confirmée via WhatsApp",
+          icon: "/favicon.ico",
+        });
+      }
+    });
+
     es.addEventListener("takeover", (e) => {
       const data = JSON.parse(e.data);
       if (data.conversationId === selectedId) refetchConvs();

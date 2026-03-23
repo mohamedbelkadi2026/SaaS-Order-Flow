@@ -147,7 +147,7 @@ function looksLikeDirectAnswer(msg: string): boolean {
 const waQueue = new Map<number, Array<{ phone: string; message: string }>>();
 const waProcessing = new Set<number>();
 
-async function queueWhatsApp(storeId: number, phone: string, message: string): Promise<void> {
+export async function queueWhatsApp(storeId: number, phone: string, message: string): Promise<void> {
   if (!waQueue.has(storeId)) waQueue.set(storeId, []);
   waQueue.get(storeId)!.push({ phone, message });
   if (!waProcessing.has(storeId)) {
@@ -178,6 +178,9 @@ interface OrderContext {
   productId: number | null;
   descriptionDarija: string | null;
   aiFeatures: string[] | null;
+  orderStatus: string | null;
+  trackNumber: string | null;
+  shippingProvider: string | null;
 }
 
 export async function getOrderContextForRoute(orderId: number): Promise<OrderContext> {
@@ -190,6 +193,9 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       totalPrice: orders.totalPrice,
       customerCity: orders.customerCity,
       rawProductName: orders.rawProductName,
+      status: orders.status,
+      trackNumber: orders.trackNumber,
+      shippingProvider: orders.shippingProvider,
     }).from(orders).where(eq(orders.id, orderId));
 
     const items = await db.select({
@@ -247,9 +253,12 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       productId: resolvedProductId,
       descriptionDarija,
       aiFeatures,
+      orderStatus: order?.status ?? null,
+      trackNumber: order?.trackNumber ?? null,
+      shippingProvider: order?.shippingProvider ?? null,
     };
   } catch {
-    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null };
+    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null };
   }
 }
 
@@ -350,6 +359,33 @@ ORDER DETAILS:
 ${city ? `- City: ${city}` : ""}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
 ${knowledgeBlock}
 ${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}`;
+
+  // ── DELIVERY COMPANION MODE — activated when order already confirmed ──
+  if (ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours") {
+    const trackingLine = ctx.trackNumber
+      ? `رقم التتبع ديالك: *${ctx.trackNumber}*${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""}`
+      : null;
+    const deliveryStatus = ctx.orderStatus === "expédié" || ctx.orderStatus === "en_cours"
+      ? "الطلبية ديالك خرجات وهي فـ الطريق ليك 🚚"
+      : "الطلبية ديالك تأكدات وغتخرج قريبا إن شاء الله ✅";
+
+    return `${base}
+
+DELIVERY COMPANION MODE — The order is ALREADY CONFIRMED (status: ${ctx.orderStatus}).
+Your role now is LOGISTICS SUPPORT, not sales.
+
+CURRENT ORDER STATUS: "${ctx.orderStatus}"
+${trackingLine ? `TRACKING: ${trackingLine}` : "No tracking number yet."}
+
+RULES FOR THIS MODE:
+- Do NOT ask for city/variant/confirmation — order is already placed
+- If customer asks "فين الكوموند؟" / "فين وصلات؟" / "وين الكوموند" / "متى يجي": respond with "${deliveryStatus}"${trackingLine ? ` and provide: "${trackingLine}"` : ""}
+- If status is "expédié": "الموزع قريب — وجد راسك ${address.formal} وكن فـ الدار باش يوصلك 🚚"
+- If customer wants to CANCEL: respond with "مفهوم ${address.formal}، غنلغيوها ليك دابا" — this signals CANCEL intent
+- If customer asks about product after confirm: answer questions warmly
+- ALWAYS be reassuring — the order is safe and coming
+- Keep replies SHORT: 1-2 lines max`;
+  }
 
   if (step === 1) {
     return `${base}
@@ -609,33 +645,57 @@ export async function handleIncomingMessage(
     // ── Fast intent detection — works at any step ─────────────────
     const intent = detectIntent(customerMessage);
 
+    // Fetch live order status from DB to determine current phase
+    let liveOrderStatus: string | null = null;
+    if (conv.orderId) {
+      const [liveOrder] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, conv.orderId));
+      liveOrderStatus = liveOrder?.status ?? null;
+    }
+
+    const gender = detectGender(conv.customerName ?? "");
+    const addr = getGenderAddress(gender);
+
     if (intent === "confirm" && conv.orderId) {
-      await storage.updateOrderStatus(conv.orderId, "confirme");
-      await storage.updateAiConversationStatus(conv.id, "confirmed");
-      const gender = detectGender(conv.customerName ?? "");
-      const addr = getGenderAddress(gender);
-      const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
-      await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
-      await storage.updateAiConversationLastMessage(conv.id, msg);
-      broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: msg, ts: Date.now() });
-      broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
-      await queueWhatsApp(storeId, customerPhone, msg);
-      console.log(`[AI] Order ${conv.orderId} CONFIRMED by ${conv.customerName}`);
-      return;
+      // Only auto-confirm if order is still in "nouveau" state (not already confirmed)
+      if (liveOrderStatus === "nouveau" || liveOrderStatus === null) {
+        await storage.updateOrderStatus(conv.orderId, "confirme");
+        const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
+        await storage.updateAiConversationLastMessage(conv.id, msg);
+        // Keep conv ACTIVE — delivery companion continues
+        broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: msg, ts: Date.now() });
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
+        await queueWhatsApp(storeId, customerPhone, msg);
+        console.log(`[AI] Order ${conv.orderId} CONFIRMED by ${conv.customerName} — conv stays ACTIVE for delivery companion`);
+        return;
+      }
+      // Already confirmed — fall through to delivery companion AI reply
     }
 
     if (intent === "cancel" && conv.orderId) {
-      await storage.updateOrderStatus(conv.orderId, "annulé fake");
+      const isPostConfirm = liveOrderStatus === "confirme" || liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
+      const cancelStatus = isPostConfirm ? "annulé" : "annulé fake";
+      await storage.updateOrderStatus(conv.orderId, cancelStatus);
       await storage.updateAiConversationStatus(conv.id, "cancelled");
-      const gender = detectGender(conv.customerName ?? "");
-      const addr = getGenderAddress(gender);
       const msg = `مفهوم ${addr.formal} 🙏 إلا بغيتي تكمل أو عندك سؤال راسل المتجر مباشرة. نتمنى نخدموا معك قريبا!`;
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
       await storage.updateAiConversationLastMessage(conv.id, msg);
       broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
+      if (isPostConfirm) {
+        // Admin toast — confirmed order cancelled via WhatsApp
+        broadcastToStore(storeId, "post_confirm_cancel", {
+          conversationId: conv.id,
+          orderId: conv.orderId,
+          customerName: conv.customerName,
+          customerPhone,
+          message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp`,
+          ts: Date.now(),
+        });
+        console.log(`[AI] ⚠️ POST-CONFIRM CANCEL: Order ${conv.orderId} cancelled by ${conv.customerName} via WhatsApp`);
+      }
       await queueWhatsApp(storeId, customerPhone, msg);
-      console.log(`[AI] Order ${conv.orderId} CANCELLED by ${conv.customerName}`);
+      console.log(`[AI] Order ${conv.orderId} CANCELLED (${cancelStatus}) by ${conv.customerName}`);
       return;
     }
 
@@ -650,8 +710,7 @@ export async function handleIncomingMessage(
       // Determine if recovery conversation
       let isRecovery = false;
       if (conv.orderId) {
-        const { orders: ordersTable } = await import("@shared/schema");
-        const [orderRow] = await db.select({ wasAbandoned: ordersTable.wasAbandoned }).from(ordersTable).where(eq(ordersTable.id, conv.orderId));
+        const [orderRow] = await db.select({ wasAbandoned: orders.wasAbandoned }).from(orders).where(eq(orders.id, conv.orderId));
         isRecovery = (orderRow?.wasAbandoned ?? 0) === 1;
       }
 
@@ -684,7 +743,9 @@ export async function handleIncomingMessage(
       console.log(`[SUCCESS]: AI replied on conv ${conv.id} via ${provider}/${model} — step ${currentStep} — "${aiReply.substring(0, 60)}..."`);
 
       // ── Advance step based on what the customer just said ────────
-      if (!isRecovery) {
+      // Skip step advancement when in delivery companion mode (order already confirmed)
+      const isDeliveryMode = ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours";
+      if (!isRecovery && !isDeliveryMode) {
         let nextStep = currentStep;
         let stepData: { city?: string; variant?: string } = {};
 
