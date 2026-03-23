@@ -168,6 +168,7 @@ export interface IStorage {
   getMarketingCampaigns(storeId: number): Promise<import("@shared/schema").MarketingCampaign[]>;
   createMarketingCampaign(data: import("@shared/schema").InsertMarketingCampaign): Promise<import("@shared/schema").MarketingCampaign>;
   updateCampaignSent(id: number, totalSent: number, status: string): Promise<void>;
+  updateCampaignProgress(id: number, totalSent: number, totalFailed: number, status: string): Promise<void>;
   getAiLogs(storeId: number, orderId?: number): Promise<import("@shared/schema").AiLog[]>;
   createAiLog(data: import("@shared/schema").InsertAiLog): Promise<import("@shared/schema").AiLog>;
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
@@ -2208,6 +2209,11 @@ export class DatabaseStorage implements IStorage {
   async updateCampaignSent(id: number, totalSent: number, status: string) {
     const { marketingCampaigns } = await import("@shared/schema");
     await db.update(marketingCampaigns).set({ totalSent, status }).where(eq(marketingCampaigns.id, id));
+  }
+
+  async updateCampaignProgress(id: number, totalSent: number, totalFailed: number, status: string) {
+    const { marketingCampaigns } = await import("@shared/schema");
+    await db.update(marketingCampaigns).set({ totalSent, totalFailed, status }).where(eq(marketingCampaigns.id, id));
   }
 
   async getAiLogs(storeId: number, orderId?: number) {

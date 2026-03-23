@@ -497,9 +497,10 @@ export const marketingCampaigns = pgTable("marketing_campaigns", {
   message: text("message").notNull(),
   productLink: text("product_link"),
   targetFilter: text("target_filter").default("delivered"),
-  status: text("status").default("draft"),
+  status: text("status").default("draft"), // draft | running | paused | completed | stopped
   totalTargets: integer("total_targets").default(0),
   totalSent: integer("total_sent").default(0),
+  totalFailed: integer("total_failed").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 export const insertMarketingCampaignSchema = createInsertSchema(marketingCampaigns).omit({ id: true, createdAt: true });

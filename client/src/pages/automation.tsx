@@ -6,7 +6,7 @@ import {
   Bot, Megaphone, Wifi, Check, X, Copy, Send, Loader2, RefreshCw, Phone,
   MessageCircle, Zap, Users, Clock, CheckCircle2, AlertCircle, Eye, EyeOff,
   Radio, UserCheck, UserX, Play, TrendingUp, ShoppingCart, DollarSign, Timer,
-  Lock, ChevronDown,
+  Lock, ChevronDown, Pause, Square, Package, Target, BarChart3, CheckSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -74,15 +74,19 @@ export default function AutomationPage() {
 }
 
 /* ════════════════════════════════════════════════════════════════
-   TAB 1 — RETARGETING
+   TAB 1 — RETARGETING (Bulk WhatsApp via Baileys, anti-ban queue)
 ════════════════════════════════════════════════════════════════ */
 function RetargetingTab() {
   const { toast } = useToast();
   const [filter, setFilter] = useState<"delivered" | "injoignable">("delivered");
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [message, setMessage] = useState("مرحبا {nom}، عندنا عرض خاص ليك اليوم! 🎁");
+  const [message, setMessage] = useState("مرحبا *{Nom_Client}*، عندنا عرض خاص ليك اليوم على *{Dernier_Produit}* 🎁");
   const [productLink, setProductLink] = useState("");
   const [campaignName, setCampaignName] = useState("");
+
+  // Live campaign progress state
+  const [activeCampaignId, setActiveCampaignId] = useState<number | null>(null);
+  const [progress, setProgress] = useState<{ sent: number; failed: number; total: number; status: string; currentIndex: number } | null>(null);
 
   const { data: clientsRaw, isLoading } = useQuery<any>({
     queryKey: ["/api/automation/clients", filter],
@@ -90,47 +94,191 @@ function RetargetingTab() {
   });
   const clients: any[] = Array.isArray(clientsRaw) ? clientsRaw : [];
 
-  const { data: campaigns = [] } = useQuery<any[]>({ queryKey: ["/api/automation/campaigns"] });
+  const { data: campaigns = [], refetch: refetchCampaigns } = useQuery<any[]>({ queryKey: ["/api/automation/campaigns"] });
 
-  const saveCampaignMutation = useMutation({
+  /* ── On mount: check if there's already a running campaign ─── */
+  useEffect(() => {
+    fetch("/api/automation/retargeting/active", { credentials: "include" })
+      .then(r => r.json())
+      .then((runs: any[]) => {
+        if (runs.length > 0) {
+          const run = runs[0];
+          setActiveCampaignId(run.campaignId);
+          setProgress({ sent: run.sent, failed: run.failed, total: run.total, status: run.status, currentIndex: run.currentIndex });
+        }
+      }).catch(() => {});
+  }, []);
+
+  /* ── SSE listener for campaign progress ─────────────────────── */
+  useEffect(() => {
+    const es = new EventSource("/api/automation/events", { withCredentials: true });
+    es.addEventListener("campaign_progress", (e) => {
+      const data = JSON.parse(e.data);
+      if (!activeCampaignId || data.campaignId === activeCampaignId) {
+        setActiveCampaignId(data.campaignId);
+        setProgress({ sent: data.sent, failed: data.failed, total: data.total, status: data.status, currentIndex: data.currentIndex });
+        if (data.status === "completed" || data.status === "stopped") {
+          refetchCampaigns();
+          setTimeout(() => { setActiveCampaignId(null); setProgress(null); }, 3000);
+        }
+      }
+    });
+    return () => es.close();
+  }, [activeCampaignId]);
+
+  /* ── Select all/none helpers ─────────────────────────────────── */
+  const allSelected = clients.length > 0 && clients.every((c: any) => selected.has(c.id));
+  const toggleAll = () => {
+    if (allSelected) setSelected(new Set());
+    else setSelected(new Set(clients.map((c: any) => c.id)));
+  };
+  const toggleOne = (id: number, checked: boolean) => {
+    const s = new Set(selected);
+    checked ? s.add(id) : s.delete(id);
+    setSelected(s);
+  };
+
+  /* ── Variable insertion ──────────────────────────────────────── */
+  const insertVar = (v: string) => setMessage(prev => prev + v);
+
+  /* ── Launch campaign ─────────────────────────────────────────── */
+  const launchMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/automation/campaigns", {
+      if (selected.size === 0) throw new Error("Sélectionnez au moins un client.");
+      const selectedClients = clients.filter((c: any) => selected.has(c.id));
+      const recipients = selectedClients.map((c: any) => ({
+        phone: c.customerPhone,
+        name: c.customerName || "",
+        lastProduct: c.lastProductName || "",
+      }));
+      const res = await fetch("/api/automation/retargeting/send", {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: campaignName || `Campagne ${new Date().toLocaleDateString("fr-MA")}`, message, productLink, targetFilter: filter, totalTargets: selected.size }),
+        body: JSON.stringify({
+          name: campaignName || `Campagne ${new Date().toLocaleDateString("fr-MA")}`,
+          message, productLink, targetFilter: filter, recipients,
+        }),
       });
       if (!res.ok) throw new Error((await res.json()).message);
       return res.json();
     },
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/automation/campaigns"] }); toast({ title: "Campagne enregistrée !" }); },
+    onSuccess: (data) => {
+      setActiveCampaignId(data.campaignId);
+      setProgress({ sent: 0, failed: 0, total: data.total, status: "running", currentIndex: 0 });
+      setSelected(new Set());
+      toast({ title: `🚀 Campagne lancée — ${data.total} messages en file d'attente` });
+    },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
-  const selectedClients = clients.filter((c: any) => selected.has(c.id));
+  /* ── Pause / Resume ──────────────────────────────────────────── */
+  const pauseMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/automation/retargeting/${activeCampaignId}/pause`, { method: "PATCH", credentials: "include" });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setProgress(p => p ? { ...p, status: data.status } : p);
+      toast({ title: data.status === "paused" ? "⏸ Campagne suspendue" : "▶ Campagne reprise" });
+    },
+  });
 
-  const buildWaLink = (client: any) => {
-    const phone = client.customerPhone?.replace(/\D/g, "");
-    let msg = message.replace("{nom}", client.customerName || "");
-    if (productLink) msg += `\n\n🔗 ${productLink}`;
-    return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
-  };
+  /* ── Stop ────────────────────────────────────────────────────── */
+  const stopMutation = useMutation({
+    mutationFn: async () => {
+      await fetch(`/api/automation/retargeting/${activeCampaignId}`, { method: "DELETE", credentials: "include" });
+    },
+    onSuccess: () => {
+      toast({ title: "🛑 Campagne arrêtée" });
+      setActiveCampaignId(null);
+      setProgress(null);
+      refetchCampaigns();
+    },
+  });
 
-  const sendAll = () => {
-    if (selected.size === 0) { toast({ title: "Sélectionnez des clients", variant: "destructive" }); return; }
-    selectedClients.forEach((c, i) => {
-      setTimeout(() => { window.open(buildWaLink(c), "_blank", "noopener"); }, i * 800);
-    });
-    saveCampaignMutation.mutate();
-    toast({ title: `${selected.size} messages envoyés via WhatsApp !` });
-  };
+  /* ── Preview text ────────────────────────────────────────────── */
+  const previewText = message
+    .replace(/\*?\{Nom_Client\}\*?/gi, "Mohammed")
+    .replace(/\*?\{Dernier_Produit\}\*?/gi, "Mocassins ANAKIO");
+
+  const progressPct = progress ? Math.round((progress.currentIndex / Math.max(progress.total, 1)) * 100) : 0;
+  const isCampaignRunning = !!activeCampaignId && !!progress && progress.status !== "completed" && progress.status !== "stopped";
 
   return (
     <div className="space-y-5">
+      {/* ── Live Progress Bar (shown while campaign is active) ─── */}
+      {isCampaignRunning && progress && (
+        <div className="bg-white rounded-2xl border-2 border-amber-200 p-5 space-y-3" style={{ boxShadow: "0 0 0 1px rgba(197,160,89,0.2)" }}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full animate-pulse" style={{ background: progress.status === "paused" ? "#d97706" : "#22c55e" }} />
+              <span className="text-sm font-bold text-zinc-800">
+                {progress.status === "paused" ? "⏸ Campagne suspendue" : "🚀 Envoi en cours..."}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => pauseMutation.mutate()}
+                disabled={pauseMutation.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 transition-colors"
+                data-testid="button-pause-campaign"
+              >
+                {progress.status === "paused" ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+                {progress.status === "paused" ? "Reprendre" : "Pause"}
+              </button>
+              <button
+                onClick={() => stopMutation.mutate()}
+                disabled={stopMutation.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border border-red-300 text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
+                data-testid="button-stop-campaign"
+              >
+                <Square className="w-3 h-3" />
+                Arrêter
+              </button>
+            </div>
+          </div>
+          {/* Progress bar */}
+          <div>
+            <div className="flex justify-between text-xs text-zinc-500 mb-1.5">
+              <span>Envoi en cours : <strong className="text-zinc-800">{progress.currentIndex}/{progress.total}</strong></span>
+              <span>{progressPct}%</span>
+            </div>
+            <div className="w-full h-2.5 bg-zinc-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${GOLD}, #d4aa60)` }} />
+            </div>
+          </div>
+          {/* Counters */}
+          <div className="flex gap-4 text-xs">
+            <span className="flex items-center gap-1 text-green-600 font-bold">
+              <Check className="w-3.5 h-3.5" /> {progress.sent} envoyés
+            </span>
+            <span className="flex items-center gap-1 text-red-500 font-bold">
+              <X className="w-3.5 h-3.5" /> {progress.failed} échoués
+            </span>
+            <span className="flex items-center gap-1 text-zinc-400">
+              <Clock className="w-3.5 h-3.5" /> {progress.total - progress.currentIndex} restants · délai 8–15s/msg
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Completed banner */}
+      {progress?.status === "completed" && (
+        <div className="bg-green-50 border border-green-200 rounded-2xl px-5 py-4 flex items-center gap-3">
+          <CheckCircle2 className="w-5 h-5 text-green-600" />
+          <div>
+            <p className="text-sm font-bold text-green-700">Campagne terminée !</p>
+            <p className="text-xs text-green-600">{progress.sent} messages envoyés · {progress.failed} échoués</p>
+          </div>
+        </div>
+      )}
+
       {/* Filter bar */}
       <div className="bg-white rounded-2xl p-4 border border-zinc-100 flex flex-wrap gap-3 items-center">
         <span className="text-sm font-semibold text-zinc-600">Cibler :</span>
-        {([["delivered", "✅ Clients Livrés"], ["injoignable", "📵 Injoignables"]] as const).map(([val, lbl]) => (
-          <button key={val} onClick={() => { setFilter(val); setSelected(new Set()); }}
+        {([["delivered", "✅ Clients Livrés"], ["confirme", "🟢 Commandes Confirmées"], ["injoignable", "📵 Injoignables"]] as const).map(([val, lbl]) => (
+          <button key={val} onClick={() => { setFilter(val as any); setSelected(new Set()); }}
             className={cn("px-4 py-1.5 rounded-xl text-sm font-bold transition-all", filter === val ? "text-white" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200")}
             style={filter === val ? { background: NAVY } : {}}
           >{lbl}</button>
@@ -138,97 +286,166 @@ function RetargetingTab() {
         <span className="ml-auto text-xs text-zinc-400">{clients.length} clients trouvés</span>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-5">
-        {/* Client list */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-5">
+        {/* ── Client table ────────────────────────────────────────── */}
         <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
-          <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between">
-            <span className="text-sm font-bold text-zinc-700">Liste des clients</span>
-            <div className="flex gap-2">
-              <button onClick={() => setSelected(new Set(clients.map((c: any) => c.id)))} className="text-xs text-blue-600 hover:underline">Tout sélectionner</button>
-              <span className="text-zinc-300">|</span>
-              <button onClick={() => setSelected(new Set())} className="text-xs text-zinc-400 hover:underline">Désélectionner</button>
-            </div>
+          <div className="px-4 py-3 border-b border-zinc-100 flex items-center gap-3">
+            {/* Select-all checkbox */}
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              className="rounded border-zinc-300 cursor-pointer"
+              data-testid="checkbox-select-all"
+            />
+            <span className="text-sm font-bold text-zinc-700 flex-1">Liste des clients</span>
+            {selected.size > 0 && (
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: GOLD }}>
+                {selected.size} sélectionné{selected.size > 1 ? "s" : ""}
+              </span>
+            )}
           </div>
+
+          {/* Table header */}
+          {clients.length > 0 && (
+            <div className="grid grid-cols-[32px_1fr_140px_1fr] gap-2 px-4 py-2 bg-zinc-50 border-b border-zinc-100 text-[11px] font-bold text-zinc-400 uppercase tracking-wide">
+              <div />
+              <div>Nom</div>
+              <div>Téléphone</div>
+              <div className="flex items-center gap-1"><Package className="w-3 h-3" /> Dernier produit</div>
+            </div>
+          )}
+
           {isLoading ? (
             <div className="flex items-center justify-center py-10 gap-2 text-zinc-400"><Loader2 className="w-4 h-4 animate-spin" /> Chargement...</div>
           ) : clients.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-zinc-400"><Users className="w-8 h-8 mb-2 opacity-30" /><p className="text-sm">Aucun client trouvé</p></div>
           ) : (
-            <div className="max-h-[420px] overflow-y-auto divide-y divide-zinc-50">
+            <div className="max-h-[440px] overflow-y-auto divide-y divide-zinc-50">
               {clients.map((c: any) => (
-                <label key={c.id} className={cn("flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-zinc-50 transition-colors", selected.has(c.id) && "bg-blue-50")} data-testid={`client-row-${c.id}`}>
-                  <input type="checkbox" checked={selected.has(c.id)} onChange={(e) => {
-                    const s = new Set(selected);
-                    e.target.checked ? s.add(c.id) : s.delete(c.id);
-                    setSelected(s);
-                  }} className="rounded border-zinc-300" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-zinc-800 truncate">{c.customerName}</p>
-                    <p className="text-xs text-zinc-400">{c.customerPhone} · {c.customerCity}</p>
+                <label key={c.id}
+                  className={cn("grid grid-cols-[32px_1fr_140px_1fr] gap-2 items-center px-4 py-2.5 cursor-pointer hover:bg-zinc-50 transition-colors",
+                    selected.has(c.id) && "bg-blue-50")}
+                  data-testid={`client-row-${c.id}`}
+                >
+                  <input type="checkbox" checked={selected.has(c.id)} onChange={e => toggleOne(c.id, e.target.checked)} className="rounded border-zinc-300" />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-zinc-800 truncate">{c.customerName || "—"}</p>
+                    <p className="text-[11px] text-zinc-400 truncate">{c.customerCity || ""}</p>
                   </div>
-                  <a href={buildWaLink(c)} target="_blank" rel="noopener noreferrer" className="shrink-0 p-1.5 rounded-lg transition-colors hover:opacity-80" style={{ color: NAVY }} onClick={e => e.stopPropagation()}>
-                    <MessageCircle className="w-4 h-4" />
-                  </a>
+                  <p className="text-xs text-zinc-500 font-mono truncate">{c.customerPhone}</p>
+                  <p className="text-xs text-zinc-500 truncate flex items-center gap-1">
+                    {c.lastProductName ? <><Package className="w-3 h-3 shrink-0 opacity-50" />{c.lastProductName}</> : <span className="text-zinc-300">—</span>}
+                  </p>
                 </label>
               ))}
             </div>
           )}
           {selected.size > 0 && (
-            <div className="px-4 py-2 border-t border-zinc-100 text-xs text-zinc-500">
-              <strong className="text-zinc-700">{selected.size}</strong> client(s) sélectionné(s)
+            <div className="px-4 py-2 border-t border-zinc-100 flex items-center justify-between">
+              <span className="text-xs text-zinc-500"><strong className="text-zinc-700">{selected.size}</strong> client(s) sélectionné(s)</span>
+              <button onClick={() => setSelected(new Set())} className="text-xs text-zinc-400 hover:text-zinc-600">Tout désélectionner</button>
             </div>
           )}
         </div>
 
-        {/* Message composer */}
+        {/* ── Message composer ─────────────────────────────────────── */}
         <div className="space-y-4">
-          <div className="bg-white rounded-2xl border border-zinc-100 p-4 space-y-4">
+          <div className="bg-white rounded-2xl border border-zinc-100 p-4 space-y-3">
             <p className="text-sm font-bold text-zinc-700">Composer le message</p>
+
             <div>
               <label className="text-xs text-zinc-500 font-medium mb-1 block">Nom de la campagne</label>
-              <input value={campaignName} onChange={e => setCampaignName(e.target.value)} placeholder="Ex: Promo Novembre" className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400" data-testid="input-campaign-name" />
+              <input value={campaignName} onChange={e => setCampaignName(e.target.value)} placeholder="Ex: Promo Ramadan 2025"
+                className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400"
+                data-testid="input-campaign-name" />
             </div>
+
             <div>
-              <label className="text-xs text-zinc-500 font-medium mb-1 block">Message <span className="text-zinc-400">(utilisez {"{nom}"} pour personnaliser)</span></label>
-              <textarea value={message} onChange={e => setMessage(e.target.value)} rows={5} className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400 resize-none" data-testid="input-campaign-message" />
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs text-zinc-500 font-medium">Message</label>
+                {/* Variable insertion buttons */}
+                <div className="flex gap-1">
+                  <button onClick={() => insertVar("*{Nom_Client}*")}
+                    className="text-[10px] font-bold px-2 py-0.5 rounded-lg text-white transition-opacity hover:opacity-80"
+                    style={{ background: NAVY }} data-testid="btn-var-nom">
+                    + Nom
+                  </button>
+                  <button onClick={() => insertVar("*{Dernier_Produit}*")}
+                    className="text-[10px] font-bold px-2 py-0.5 rounded-lg text-white transition-opacity hover:opacity-80"
+                    style={{ background: GOLD }} data-testid="btn-var-produit">
+                    + Produit
+                  </button>
+                </div>
+              </div>
+              <textarea value={message} onChange={e => setMessage(e.target.value)} rows={5} dir="rtl"
+                className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400 resize-none"
+                data-testid="input-campaign-message" />
+              <p className="text-[10px] text-zinc-400 mt-1">Variables : <code>*{"{Nom_Client}*"}</code> et <code>*{"{Dernier_Produit}*"}</code> sont remplacées automatiquement</p>
             </div>
+
             <div>
               <label className="text-xs text-zinc-500 font-medium mb-1 block">Lien produit (optionnel)</label>
-              <input value={productLink} onChange={e => setProductLink(e.target.value)} placeholder="https://votre-boutique.com/produit" className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400" data-testid="input-product-link" />
+              <input value={productLink} onChange={e => setProductLink(e.target.value)} placeholder="https://votre-boutique.com/produit"
+                className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400"
+                data-testid="input-product-link" />
             </div>
 
-            {/* Preview */}
-            <div className="rounded-xl p-3 text-xs" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.12)" }}>
-              <p className="font-semibold mb-1" style={{ color: NAVY }}>Aperçu message :</p>
-              <p className="text-zinc-600 whitespace-pre-wrap">{message.replace("{nom}", "Mohammed")}{productLink && `\n\n🔗 ${productLink}`}</p>
+            {/* Live preview */}
+            <div className="rounded-xl p-3" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.12)" }}>
+              <p className="text-[10px] font-bold uppercase tracking-wide mb-1.5" style={{ color: NAVY }}>Aperçu (Mohammed · Mocassins ANAKIO)</p>
+              <p className="text-xs text-zinc-600 whitespace-pre-wrap" dir="rtl">
+                {previewText}{productLink && `\n\n🔗 ${productLink}`}
+              </p>
             </div>
 
+            {/* Anti-ban notice */}
+            <div className="rounded-xl px-3 py-2 bg-amber-50 border border-amber-200 flex items-start gap-2">
+              <Timer className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+              <p className="text-[11px] text-amber-700">Délai anti-ban : 8–15 secondes entre chaque message pour protéger votre compte WhatsApp.</p>
+            </div>
+
+            {/* Launch button */}
             <button
-              onClick={sendAll}
-              disabled={selected.size === 0 || saveCampaignMutation.isPending}
+              onClick={() => launchMutation.mutate()}
+              disabled={selected.size === 0 || launchMutation.isPending || isCampaignRunning}
               className="w-full py-3.5 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50"
-              style={{ background: NAVY }}
-              data-testid="button-send-bulk"
+              style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}
+              data-testid="button-launch-campaign"
             >
-              {saveCampaignMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              Envoyer via WhatsApp ({selected.size})
+              {launchMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Target className="w-4 h-4" />}
+              {isCampaignRunning ? "Campagne en cours..." : `Lancer la Campagne (${selected.size})`}
             </button>
           </div>
 
-          {/* Campaign history */}
+          {/* ── Campaign history ──────────────────────────────────── */}
           {campaigns.length > 0 && (
             <div className="bg-white rounded-2xl border border-zinc-100 p-4">
-              <p className="text-sm font-bold text-zinc-700 mb-3">Historique des campagnes</p>
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {campaigns.map((c: any) => (
-                  <div key={c.id} className="flex items-center justify-between px-3 py-2 rounded-xl bg-zinc-50">
-                    <div>
-                      <p className="text-xs font-semibold text-zinc-700">{c.name}</p>
-                      <p className="text-[11px] text-zinc-400">{c.totalSent} envois · {new Date(c.createdAt).toLocaleDateString("fr-MA")}</p>
+              <p className="text-sm font-bold text-zinc-700 mb-3 flex items-center gap-2">
+                <BarChart3 className="w-4 h-4" style={{ color: GOLD }} />
+                Historique des campagnes
+              </p>
+              <div className="space-y-2 max-h-52 overflow-y-auto">
+                {campaigns.map((c: any) => {
+                  const successRate = c.totalTargets > 0 ? Math.round((c.totalSent / c.totalTargets) * 100) : 0;
+                  const statusColor = c.status === "completed" ? "#22c55e" : c.status === "running" ? GOLD : c.status === "stopped" ? "#ef4444" : NAVY;
+                  return (
+                    <div key={c.id} className="rounded-xl bg-zinc-50 p-3 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold text-zinc-800 truncate">{c.name}</p>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white shrink-0" style={{ background: statusColor }}>{c.status}</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px] text-zinc-400">
+                        <span className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3 text-green-500" />{c.totalSent} envoyés</span>
+                        {c.totalFailed > 0 && <span className="flex items-center gap-1 text-red-400"><X className="w-3 h-3" />{c.totalFailed}</span>}
+                        <span>·</span>
+                        <span>{successRate}% succès</span>
+                        <span>·</span>
+                        <span>{new Date(c.createdAt).toLocaleDateString("fr-MA")}</span>
+                      </div>
                     </div>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white" style={{ background: NAVY }}>{c.status}</span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

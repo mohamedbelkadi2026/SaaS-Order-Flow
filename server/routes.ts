@@ -2853,7 +2853,7 @@ export async function registerRoutes(
   // AUTOMATION & AI MODULE
   // ══════════════════════════════════════════════════════════════════
 
-  /* ── Clients for retargeting ──────────────────────────────────── */
+  /* ── Clients for retargeting (with last product name) ─────────── */
   app.get("/api/automation/clients", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId;
     if (!storeId) return res.json([]);
@@ -2867,7 +2867,28 @@ export async function registerRoutes(
       status: orders.status,
       createdAt: orders.createdAt,
     }).from(orders).where(and(eq(orders.storeId, storeId), eq(orders.status, status))).orderBy(desc(orders.createdAt)).limit(500);
-    res.json(rows);
+
+    // Enrich with last product name from order_items
+    const orderIds = rows.map(r => r.id);
+    let productMap: Record<number, string> = {};
+    if (orderIds.length > 0) {
+      const { orderItems, products: productsTable } = await import("@shared/schema");
+      const { inArray } = await import("drizzle-orm");
+      const items = await db.select({
+        orderId: orderItems.orderId,
+        rawProductName: orderItems.rawProductName,
+        productName: productsTable.name,
+      })
+      .from(orderItems)
+      .leftJoin(productsTable, eq(orderItems.productId, productsTable.id))
+      .where(inArray(orderItems.orderId, orderIds));
+      for (const item of items) {
+        if (item.orderId && !productMap[item.orderId]) {
+          productMap[item.orderId] = item.productName || item.rawProductName || "";
+        }
+      }
+    }
+    res.json(rows.map(r => ({ ...r, lastProductName: productMap[r.id] || "" })));
   });
 
   /* ── Marketing campaigns ──────────────────────────────────────── */
@@ -2884,6 +2905,64 @@ export async function registerRoutes(
       });
       res.status(201).json(c);
     } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ── Retargeting bulk send (uses Baileys, anti-ban queue) ────── */
+  app.post("/api/automation/retargeting/send", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { name, message, targetFilter, recipients, productLink } = req.body;
+      // recipients: Array<{ id, phone, name, lastProduct }>
+      if (!recipients?.length) return res.status(400).json({ message: "Aucun destinataire sélectionné." });
+      if (!message?.trim())   return res.status(400).json({ message: "Message vide." });
+
+      // Create the campaign record
+      const campaign = await storage.createMarketingCampaign({
+        storeId,
+        name: name || `Campagne ${new Date().toLocaleDateString("fr-MA")}`,
+        message: productLink ? `${message}\n\n🔗 ${productLink}` : message,
+        productLink: productLink || null,
+        targetFilter: targetFilter || "delivered",
+        status: "running",
+        totalTargets: recipients.length,
+        totalSent: 0,
+        totalFailed: 0,
+      });
+
+      // Start the background queue
+      const { startCampaign } = await import("./campaign-engine");
+      startCampaign(campaign.id, storeId, recipients.map((r: any) => ({
+        phone: r.phone,
+        name: r.name || "",
+        lastProduct: r.lastProduct || "",
+      })), productLink ? `${message}\n\n🔗 ${productLink}` : message);
+
+      res.json({ ok: true, campaignId: campaign.id, total: recipients.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* PATCH /api/automation/retargeting/:id/pause — toggle pause/resume */
+  app.patch("/api/automation/retargeting/:id/pause", requireAuth, async (req: any, res: any) => {
+    const { togglePause } = await import("./campaign-engine");
+    const newStatus = togglePause(Number(req.params.id));
+    if (!newStatus) return res.status(404).json({ message: "Campaign not running." });
+    res.json({ ok: true, status: newStatus });
+  });
+
+  /* DELETE /api/automation/retargeting/:id — stop campaign */
+  app.delete("/api/automation/retargeting/:id", requireAuth, async (req: any, res: any) => {
+    const { stopCampaign } = await import("./campaign-engine");
+    stopCampaign(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  /* GET /api/automation/retargeting/active — running campaigns for this store */
+  app.get("/api/automation/retargeting/active", requireAuth, async (req: any, res: any) => {
+    const { getActiveCampaignsForStore } = await import("./campaign-engine");
+    const runs = getActiveCampaignsForStore(req.user!.storeId!);
+    res.json(runs.map(r => ({ campaignId: r.campaignId, sent: r.sent, failed: r.failed, total: r.total, status: r.status, currentIndex: r.currentIndex })));
   });
 
   /* ── WhatsApp / Baileys session management ────────────────────── */
