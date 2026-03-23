@@ -14,15 +14,18 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import pino from "pino";
 import QRCode from "qrcode";
 import path from "path";
 import fs from "fs/promises";
+import os from "os";
 import { db } from "./db";
 import { aiConversations } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import OpenAI from "openai";
 
 /* ── Types ─────────────────────────────────────────────────── */
 export type WAState = "idle" | "qr" | "connecting" | "connected";
@@ -274,6 +277,55 @@ async function connectToWhatsApp(): Promise<void> {
       }
     });
 
+    /* ── Voice note / audio transcription ───────────────────── */
+    async function transcribeAudio(sock: typeof _sock, msg: any): Promise<string | null> {
+      try {
+        // Prefer OPENAI_API_KEY (direct OpenAI), fallback to OPENROUTER_API_KEY
+        const openaiKey = process.env.OPENAI_API_KEY;
+        const routerKey = process.env.OPENROUTER_API_KEY;
+        const apiKey = openaiKey || routerKey;
+        if (!apiKey) {
+          console.warn("[Whisper] ⚠️ No API key for transcription (set OPENAI_API_KEY)");
+          return null;
+        }
+        // Whisper API only available on OpenAI directly (not OpenRouter)
+        // If only OPENROUTER_API_KEY, transcription will fail gracefully
+        const baseURL = "https://api.openai.com/v1";
+        const effectiveKey = openaiKey || apiKey; // will fail gracefully if it's an OR key
+
+        const buffer = await downloadMediaMessage(msg, "buffer", {}, { reuploadRequest: sock!.updateMediaMessage });
+        if (!buffer || (buffer as Buffer).length === 0) {
+          console.warn("[Whisper] ⚠️ Empty audio buffer");
+          return null;
+        }
+
+        // Write to temp .ogg file (Whisper accepts OGG/Opus natively)
+        const tmpPath = path.join(os.tmpdir(), `wa_audio_${Date.now()}.ogg`);
+        await fs.writeFile(tmpPath, buffer as Buffer);
+
+        const { createReadStream } = await import("fs");
+        const openai = new OpenAI({ apiKey: effectiveKey, baseURL });
+
+        let transcription = "";
+        try {
+          const result = await openai.audio.transcriptions.create({
+            file: createReadStream(tmpPath) as any,
+            model: "whisper-1",
+            language: "ar",
+          });
+          transcription = (result.text || "").trim();
+        } finally {
+          await fs.unlink(tmpPath).catch(() => {});
+        }
+
+        console.log(`[Whisper] ✅ Transcribed: "${transcription.substring(0, 100)}"`);
+        return transcription || null;
+      } catch (err: any) {
+        console.error("[Whisper] ❌ Transcription error:", err.message);
+        return null;
+      }
+    }
+
     /* ── Incoming messages → AI handler ─────────────────────── */
     _sock.ev.on("messages.upsert", async ({ messages, type }) => {
       if (type !== "notify") return;
@@ -291,12 +343,49 @@ async function connectToWhatsApp(): Promise<void> {
         const rawPhone = remoteJid.replace("@s.whatsapp.net", "");
         const phone = normalisePhone(rawPhone);
 
-        const text =
+        // ── Check for audio / voice note messages ─────────────
+        const isAudio = !!(msg.message.audioMessage || msg.message.pttMessage);
+        let text =
           msg.message.conversation ||
           msg.message.extendedTextMessage?.text ||
           msg.message.buttonsResponseMessage?.selectedButtonId ||
           msg.message.listResponseMessage?.singleSelectReply?.selectedRowId ||
           "";
+
+        if (!text.trim() && isAudio) {
+          console.log(`[Baileys] 🎤 Voice note from ${phone} — transcribing...`);
+          // Broadcast audio received event so Live Monitoring shows it
+          try {
+            const { broadcastToStore: bcast } = await import("./sse");
+            if (_activeStoreId) {
+              bcast(_activeStoreId, "audio_received", { phone, ts: Date.now(), status: "transcribing" });
+            }
+          } catch { /* sse not ready */ }
+
+          const transcription = await transcribeAudio(_sock, msg);
+          if (transcription) {
+            text = transcription;
+            console.log(`[Baileys] 🎤 Using transcription as message: "${text.substring(0, 80)}"`);
+            // Broadcast with transcription
+            try {
+              const { broadcastToStore: bcast } = await import("./sse");
+              if (_activeStoreId) {
+                bcast(_activeStoreId, "audio_received", { phone, ts: Date.now(), status: "done", transcription: text });
+              }
+            } catch { /* sse not ready */ }
+          } else {
+            // Transcription failed — notify admin and skip
+            console.warn(`[Baileys] 🎤 Transcription failed for ${phone} — sending fallback`);
+            try {
+              const { broadcastToStore: bcast } = await import("./sse");
+              if (_activeStoreId) {
+                bcast(_activeStoreId, "audio_received", { phone, ts: Date.now(), status: "failed" });
+              }
+            } catch { /* sse not ready */ }
+            // Use a placeholder text so AI can acknowledge it
+            text = "[رسالة صوتية]";
+          }
+        }
 
         if (!text.trim()) {
           console.log(`[Baileys] ⏭ Skipping media-only message from ${phone} (no text)`);

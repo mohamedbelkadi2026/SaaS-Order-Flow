@@ -1378,6 +1378,25 @@ function LiveMonitoringTab() {
       refetchConvs();
     });
 
+    es.addEventListener("audio_received", (e) => {
+      const data = JSON.parse(e.data);
+      if (data.status === "done" && data.transcription) {
+        if (data.conversationId === selectedId || !selectedId) {
+          setMessages(prev => [...prev, {
+            role: "system",
+            content: `🎤 رسالة صوتية: "${data.transcription}"`,
+            ts: data.ts || Date.now(),
+          }]);
+        }
+      } else if (data.status === "failed") {
+        toast({
+          title: "🎤 رسالة صوتية",
+          description: "تعذّر التفريغ — تأكد من إعداد OPENAI_API_KEY",
+          variant: "destructive",
+        });
+      }
+    });
+
     return () => es.close();
   }, [selectedId]);
 

@@ -81,9 +81,28 @@ function AgentGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function useOrderStatusSSE() {
+  const { user } = useAuth();
+  useEffect(() => {
+    if (!user) return;
+    const es = new EventSource("/api/automation/events", { withCredentials: true });
+    const invalidateOrders = () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+    };
+    es.addEventListener("confirmed", invalidateOrders);
+    es.addEventListener("cancelled", invalidateOrders);
+    es.addEventListener("post_confirm_cancel", invalidateOrders);
+    return () => es.close();
+  }, [user]);
+}
+
 function ProtectedRoutes() {
   const { user, isLoading } = useAuth();
   const [location, navigate] = useLocation();
+  useOrderStatusSSE();
 
   if (isLoading) {
     return (
