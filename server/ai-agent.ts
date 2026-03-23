@@ -407,7 +407,7 @@ export async function triggerAIForNewOrder(
   customerName: string,
   productId?: number | null,
 ): Promise<void> {
-  console.log(`[AI] triggerAIForNewOrder called → store=${storeId} order=${orderId} phone=${customerPhone}`);
+  console.log(`[WEBHOOK]: New order received for ${customerName} | Order #${orderId} | Store: ${storeId}`);
 
   if (!(await storeHasAIKey(storeId))) {
     console.error(`[AI] ❌ BLOCKED: No OpenRouter/OpenAI API key configured for store ${storeId}. Add OPENROUTER_API_KEY secret or configure it in Automation → IA Confirmation.`);
@@ -438,23 +438,24 @@ export async function triggerAIForNewOrder(
       await storage.updateAiConversationStatus(existing.id, "closed");
     }
 
+    console.log(`[AI]: Initializing conversation context for order #${orderId}`);
     const [ctx, storeName] = await Promise.all([
       getOrderContext(orderId),
       getStoreName(storeId),
     ]);
 
-    const cleanName = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي/لالة";
+    const cleanName    = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي/لالة";
     const productLabel = ctx.productName || "منتجك";
-    const variantPart = ctx.productVariant ? ` (${ctx.productVariant})` : "";
+    const variantPart  = ctx.productVariant ? ` (${ctx.productVariant})` : "";
     const stockUrgency = (ctx.stockQty !== null && ctx.stockQty > 0 && ctx.stockQty <= 3)
       ? `\n⚠️ ماتأخروش — بقاو غير ${ctx.stockQty} قطع فـ السطوك!`
       : "";
 
-    // Exact template from spec — Step 1: ask for city only
+    // Greeting — exact format as specified
     const firstMessage =
-      `السلام عليكم سيدي/لالة ${cleanName}، تبارك الله عليك 🌟\n` +
+      `السلام عليكم سيدي/لالة ${cleanName}، تبارك الله عليك ✨\n` +
       `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.${stockUrgency}\n` +
-      `واش ممكن تأكد لينا غير المدينة باش نخرجوها ليك اليوم؟ 🚀`;
+      `واش نأكد ليك المدينة والمقاس باش نخرجوها ليك اليوم؟ 🚀`;
 
     const conv = await storage.createAiConversation({
       storeId, orderId, customerPhone,
@@ -471,10 +472,9 @@ export async function triggerAIForNewOrder(
       message: { role: "assistant", content: firstMessage, ts: Date.now() },
     });
 
-    console.log(`[AI] ✅ Conversation created (conv.id=${conv.id}) — queuing WhatsApp message`);
-    console.log(`[AI] Sending first WA message to: ${customerPhone}`);
+    console.log(`[WHATSAPP]: Attempting to send message to ${customerPhone}`);
     await queueWhatsApp(storeId, customerPhone, firstMessage);
-    console.log(`[AI] ✅ Triggered: store=${storeId} order=${orderId} phone=${customerPhone} product="${productLabel}" step=1`);
+    console.log(`[SUCCESS]: Outreach sent successfully → order #${orderId} | phone: ${customerPhone} | product: "${productLabel}"`);
   } catch (err: any) {
     console.error(`[AI] ❌ triggerAIForNewOrder error (order ${orderId}):`, err.message);
   }
@@ -789,59 +789,68 @@ async function generateLeadReply(
   storeName: string,
   productList?: string,
 ): Promise<string> {
-  const name = conv.leadName || "";
+  const name    = conv.leadName        || "";
   const product = conv.leadProductName || "المنتج";
-  const city = conv.leadCity || "";
-  const address = conv.leadAddress || "";
+  const city    = conv.leadCity        || "";
   const priceLabel = conv.leadPrice ? `${Math.round(conv.leadPrice / 100)} درهم` : "...";
 
-  // Load product knowledge for AWAITING_CONFIRM stage
-  let productKnowledge = "";
-  if (stage === "AWAITING_CONFIRM" && conv.leadProductId) {
-    const [p] = await db.select({ descriptionDarija: products.descriptionDarija, aiFeatures: products.aiFeatures, price: products.price })
-      .from(products).where(eq(products.id, conv.leadProductId));
-    if (p) {
-      const desc = (p.descriptionDarija || "").trim();
-      const feats = p.aiFeatures ? (() => { try { return (JSON.parse(p.aiFeatures!) as string[]).join("، "); } catch { return ""; } })() : "";
-      productKnowledge = [desc, feats].filter(Boolean).join(" | ");
-    }
-  }
-
-  const systemPrompts: Record<LeadStage, string> = {
-    AWAITING_NAME: `أنت وكيل مبيعات محترف من متجر "${storeName}" على واتساب. العميل تواصل معك بعد رؤية إعلان على فيسبوك. تحدث فقط بالدارجة المغربية الطبيعية. العميل أعطاك اسمه أو رد عليك. رحب به بحرارة وأكد اسمه واسأله عن المدينة ديالو للتوصيل. جواب 2 سطر بحد أقصى.`,
-    
-    AWAITING_CITY: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}". أكد المدينة واسأله عن العنوان الكامل (الحي والشارع) باش نوصلوه مزيان. دارجة مغربية طبيعية. جواب 2 سطر.`,
-    
-    AWAITING_ADDRESS: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك العنوان. دير ملخص الطلبية بالكامل:\n- المنتج: ${product}\n- المدينة: ${city}\n- العنوان: "${customerMessage}"\n- الثمن: ${priceLabel} (توصيل مجاني)\n- الدفع عند الاستلام "قلب عاد خلص" ✅\nواسأله "واش نؤكد ليك الطلبية؟" بالدارجة. جواب 4 سطر.`,
-    
-    AWAITING_PRODUCT: `أنت وكيل مبيعات من "${storeName}". العميل بغى يطلب منتج من هاد القائمة:\n${productList || "—"}\nبناءً على جواب العميل: "${customerMessage}"، دير مطابقة وقول لو المنتج لي اخترو وسأله "واش هادا هو؟". دارجة مغربية. جواب 2 سطر.`,
-    
-    AWAITING_CONFIRM: `أنت وكيل مبيعات محترف من "${storeName}".\nالمنتج: ${product}\nالثمن: ${priceLabel}\nالدفع عند الاستلام "قلب عاد خلص"\nالتوصيل مجاني 24-48 ساعة${productKnowledge ? `\nمعلومات المنتج: ${productKnowledge}` : ""}.\n\nإذا سألك العميل عن الجودة أو الثمن أو التوصيل: جاوبه بثقة باستخدام معلومات المنتج.\nإذا قال "واخا" أو "نعم" أو "موافق": قل له الطلبية تأكدات.\nإذا رفض: ودعه بلطف.\nدارجة مغربية طبيعية. 2-3 سطر.`,
-    
-    DONE: `قل للعميل أن طلبيته في المعالجة وأنكم ستتواصل معه للتأكيد. دارجة مغربية. سطر واحد.`,
+  // Cached fallback replies — used if AI call fails
+  const fallbacks: Partial<Record<LeadStage, string>> = {
+    AWAITING_NAME:    `مرحبا ${name || "صديقي"} 😊! فأي مدينة غتوصلوك؟`,
+    AWAITING_CITY:    `مزيان ${name}! أعطيني عنوانك بالتفصيل (الحي والشارع) 📦`,
+    AWAITING_ADDRESS: `صافي ${name} 📋\n✅ ${product}\n📍 ${city} — ${customerMessage}\n💰 ${priceLabel} + شحن مجاني\nواش نؤكد ليك؟`,
+    AWAITING_CONFIRM: `شكراً على السؤال 🙏 المنتج ممتاز والتوصيل مجاني. واش نؤكد ليك الطلبية؟`,
   };
 
   try {
+    // ── Load product knowledge (AWAITING_CONFIRM only) ────────────
+    let productKnowledge = "";
+    if (stage === "AWAITING_CONFIRM" && conv.leadProductId) {
+      try {
+        const [p] = await db
+          .select({ descriptionDarija: products.descriptionDarija, aiFeatures: products.aiFeatures })
+          .from(products)
+          .where(eq(products.id, conv.leadProductId));
+        if (p) {
+          const desc  = (p.descriptionDarija || "").trim();
+          const feats = p.aiFeatures
+            ? (() => { try { return (JSON.parse(p.aiFeatures!) as string[]).join("، "); } catch { return ""; } })()
+            : "";
+          productKnowledge = [desc, feats].filter(Boolean).join(" | ");
+        }
+      } catch (pkErr: any) {
+        console.warn(`[Lead] product-knowledge load failed for product ${conv.leadProductId}:`, pkErr.message);
+      }
+    }
+
+    const systemPrompts: Record<LeadStage, string> = {
+      AWAITING_NAME: `أنت وكيل مبيعات محترف من متجر "${storeName}" على واتساب. العميل تواصل معك بعد رؤية إعلان على فيسبوك. تحدث فقط بالدارجة المغربية الطبيعية. العميل أعطاك اسمه أو رد عليك. رحب به بحرارة وأكد اسمه واسأله عن المدينة ديالو للتوصيل. جواب 2 سطر بحد أقصى.`,
+      AWAITING_CITY: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}". أكد المدينة واسأله عن العنوان الكامل (الحي والشارع) باش نوصلوه مزيان. دارجة مغربية طبيعية. جواب 2 سطر.`,
+      AWAITING_ADDRESS: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك العنوان. دير ملخص الطلبية بالكامل:\n- المنتج: ${product}\n- المدينة: ${city}\n- العنوان: "${customerMessage}"\n- الثمن: ${priceLabel} (توصيل مجاني)\n- الدفع عند الاستلام "قلب عاد خلص" ✅\nواسأله "واش نؤكد ليك الطلبية؟" بالدارجة. جواب 4 سطر.`,
+      AWAITING_PRODUCT: `أنت وكيل مبيعات من "${storeName}". العميل بغى يطلب منتج من هاد القائمة:\n${productList || "—"}\nبناءً على جواب العميل: "${customerMessage}"، دير مطابقة وقول لو المنتج لي اخترو وسأله "واش هادا هو؟". دارجة مغربية. جواب 2 سطر.`,
+      AWAITING_CONFIRM: `أنت وكيل مبيعات محترف من "${storeName}".\nالمنتج: ${product}\nالثمن: ${priceLabel}\nالدفع عند الاستلام "قلب عاد خلص"\nالتوصيل مجاني 24-48 ساعة${productKnowledge ? `\nمعلومات المنتج: ${productKnowledge}` : ""}.\n\nإذا سألك العميل عن الجودة أو الثمن أو التوصيل: جاوبه بثقة باستخدام معلومات المنتج.\nإذا قال "واخا" أو "نعم" أو "موافق": قل له الطلبية تأكدات.\nإذا رفض: ودعه بلطف.\nدارجة مغربية طبيعية. 2-3 سطر.`,
+      DONE: `قل للعميل أن طلبيته في المعالجة وأنكم ستتواصل معه للتأكيد. دارجة مغربية. سطر واحد.`,
+    };
+
+    // ── Call AI ───────────────────────────────────────────────────
     const { client: ai, model } = await resolveAIClient(storeId);
     const logs = await storage.getAiLogs(storeId, undefined, conv.id);
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: "system", content: systemPrompts[stage] },
-      ...logs.slice(-8).map(l => ({
-        role: (l.role === "user" ? "user" : "assistant") as "user" | "assistant",
-        content: l.message,
-      })),
+      // Filter out null/empty messages to avoid OpenAI rejection
+      ...logs.slice(-8)
+        .filter(l => l.message && l.message.trim().length > 0)
+        .map(l => ({
+          role: (l.role === "user" ? "user" : "assistant") as "user" | "assistant",
+          content: l.message as string,
+        })),
       { role: "user", content: customerMessage },
     ];
     const completion = await ai.chat.completions.create({ model, messages, max_tokens: 200, temperature: 0.75 });
-    return completion.choices[0]?.message?.content?.trim() || "شكراً على رسالتك 🙏";
-  } catch {
-    // Fallback to simple template if AI fails
-    const fallbacks: Partial<Record<LeadStage, string>> = {
-      AWAITING_NAME: `مرحبا ${name || "صديقي"} 😊! فأي مدينة غتوصلوك؟`,
-      AWAITING_CITY: `مزيان ${name}! أعطيني عنوانك بالتفصيل (الحي والشارع) 📦`,
-      AWAITING_ADDRESS: `صافي ${name} 📋\n✅ ${product}\n📍 ${city} — ${customerMessage}\n💰 ${priceLabel} + شحن مجاني\nواش نؤكد ليك؟`,
-      AWAITING_CONFIRM: `شكراً على السؤال 🙏 المنتج ممتاز والتوصيل مجاني. واش نؤكد ليك الطلبية؟`,
-    };
+    return completion.choices[0]?.message?.content?.trim() || fallbacks[stage] || "شكراً على رسالتك 🙏";
+
+  } catch (err: any) {
+    console.warn(`[Lead] generateLeadReply fallback (stage=${stage}):`, err.message);
     return fallbacks[stage] || "شكراً 🙏";
   }
 }
