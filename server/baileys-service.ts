@@ -279,7 +279,10 @@ async function connectToWhatsApp(): Promise<void> {
       if (type !== "notify") return;
 
       for (const msg of messages) {
-        if (msg.key.fromMe) continue;
+        if (msg.key.fromMe) {
+          // Bot's own outgoing messages — skip silently (they're already handled)
+          continue;
+        }
         if (!msg.message) continue;
 
         const remoteJid = msg.key.remoteJid ?? "";
@@ -295,7 +298,10 @@ async function connectToWhatsApp(): Promise<void> {
           msg.message.listResponseMessage?.singleSelectReply?.selectedRowId ||
           "";
 
-        if (!text.trim()) continue;
+        if (!text.trim()) {
+          console.log(`[Baileys] ⏭ Skipping media-only message from ${phone} (no text)`);
+          continue;
+        }
 
         // ── Deduplication: WhatsApp multi-device fires same event several times ──
         const msgId = msg.key.id ?? `${phone}-${text.substring(0, 20)}-${Date.now()}`;
@@ -322,26 +328,35 @@ async function connectToWhatsApp(): Promise<void> {
             c.customerPhone && phoneVariants.some(v => c.customerPhone === v)
           );
 
-          if (matched.length === 0) {
+          if (matched.length > 0) {
+            // ── Exact phone match — pass stored phone so AI lookup is reliable ──
+            console.log(`[Baileys] ✅ Phone matched to conv(s): ${matched.map(c => c.id).join(", ")} | "${text.substring(0, 40)}"`);
+            for (const conv of matched) {
+              await callAIHandler(conv.storeId, conv.customerPhone!, text);
+            }
+          } else {
             // ── LID Fallback ────────────────────────────────────────────
-            // WhatsApp multi-device reports sender JIDs as Linked Account
-            // IDs (e.g. 177532607430859) instead of the real phone number.
-            // When no stored phone matches, look for a SINGLE active conv
-            // created in the last 2 hours and route to it using its stored
-            // phone so the AI handler can find the conversation correctly.
-            const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000);
-            const recentConvs = activeConvs.filter(c =>
-              c.createdAt && new Date(c.createdAt as any) > cutoff
-            );
-            if (recentConvs.length === 1) {
-              const c = recentConvs[0];
-              console.log(`[Baileys] ⚠️ LID fallback → conv ${c.id} | stored: ${c.customerPhone} | incoming JID: ${phone}`);
+            // WhatsApp multi-device can report sender JIDs as Linked Account
+            // IDs (e.g. 177532607430859) instead of real phone numbers.
+            // Strategy: find the most recently created ORDER conv (not lead)
+            // within the last 4 hours — this is almost certainly the sender.
+            // If no order conv, try a fresh lead.
+            console.log(`[Baileys] ⚠️ No exact phone match for "${phone}" — trying LID fallback. Active convs: ${activeConvs.length}`);
+            const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000); // 4-hour window
+            // Only use ORDER convs (orderId != null) for LID fallback — leads have known phones
+            const recentOrderConvs = activeConvs
+              .filter(c => c.orderId !== null && c.createdAt && new Date(c.createdAt as any) > cutoff)
+              .sort((a, b) => new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime());
+
+            if (recentOrderConvs.length > 0) {
+              // Route to the most recently created order conv
+              const c = recentOrderConvs[0];
+              console.log(`[Baileys] ⚠️ LID→ORDER fallback: routing to conv ${c.id} (order #${c.orderId}) | stored: ${c.customerPhone} | incoming JID: ${phone}`);
               await callAIHandler(c.storeId, c.customerPhone!, text);
             } else {
-              // ── No active conv at all — check for new FB-Ads lead ────
-              // Use in-memory _activeStoreId (set when Baileys connects)
+              // No recent order conv — check if it's a new FB-Ads lead
               const storeId = _activeStoreId;
-              console.log(`[Baileys] 🔍 Unknown phone ${phone} — checking as new lead. Active storeId: ${storeId ?? "none"}`);
+              console.log(`[Baileys] 🔍 No order conv found — checking ${phone} as new lead. Active storeId: ${storeId ?? "none"}`);
               if (storeId) {
                 try {
                   const { storage: stor } = await import("./storage");
@@ -357,13 +372,8 @@ async function connectToWhatsApp(): Promise<void> {
                   console.error("[Baileys] Lead detection error:", leadErr.message);
                 }
               } else {
-                console.warn(`[Baileys] ⚠️ Cannot route unknown phone ${phone} — no active storeId in memory. WhatsApp may have reconnected without a storeId.`);
+                console.warn(`[Baileys] ⚠️ Cannot route unknown phone ${phone} — no active storeId in memory.`);
               }
-            }
-          } else {
-            // Exact phone match — pass stored phone so AI lookup is reliable
-            for (const conv of matched) {
-              await callAIHandler(conv.storeId, conv.customerPhone!, text);
             }
           }
         } catch (err: any) {
