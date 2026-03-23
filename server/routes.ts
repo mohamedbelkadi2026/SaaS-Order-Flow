@@ -2974,9 +2974,12 @@ export async function registerRoutes(
   });
 
   /* POST /api/automation/whatsapp/connect → initiate Baileys connection */
-  app.post("/api/automation/whatsapp/connect", requireAuth, async (_req: any, res: any) => {
+  app.post("/api/automation/whatsapp/connect", requireAuth, async (req: any, res: any) => {
     try {
       const { baileysService } = await import("./baileys-service");
+      // Pass storeId so Baileys knows which store's messages to handle
+      const storeId = req.user!.storeId;
+      if (storeId) baileysService.setActiveStoreId(storeId);
       baileysService.start().catch(console.error); // non-blocking
       res.json({ ok: true, message: "Connexion en cours..." });
     } catch (err: any) {
