@@ -723,7 +723,9 @@ export async function handleIncomingMessage(
         : buildStepPrompt(currentStep, ctx, storeName, conv, settings?.systemPrompt);
 
       // Build message history — filter null/empty messages to avoid OpenAI rejection
-      const recentLogs = await storage.getAiLogs(storeId, conv.orderId ?? undefined);
+      const recentLogs = conv.orderId
+        ? await storage.getAiLogs(storeId, conv.orderId)
+        : await storage.getAiLogs(storeId, undefined, conv.id);
       const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
         { role: "system", content: systemPrompt },
         ...recentLogs
@@ -790,7 +792,9 @@ export async function handleIncomingMessage(
 
       // ── Long conversation detection: 8+ messages without decision ──
       // Fires exactly once at message 8 (even count) to notify admin
-      const totalLogs = await storage.getAiLogs(storeId, conv.orderId ?? undefined);
+      const totalLogs = conv.orderId
+        ? await storage.getAiLogs(storeId, conv.orderId)
+        : await storage.getAiLogs(storeId, undefined, conv.id);
       if (totalLogs.length === 8 || totalLogs.length === 16) {
         console.log(`[AI] ⏱️ Long conversation: conv ${conv.id} has ${totalLogs.length} messages — notifying admin`);
         broadcastToStore(storeId, "long_chat", {
@@ -898,7 +902,7 @@ async function generateLeadReply(
     }
 
     const systemPrompts: Record<LeadStage, string> = {
-      AWAITING_NAME:     `أنت وكيل مبيعات محترف من متجر "${storeName}" على واتساب. العميل تواصل معك بعد رؤية إعلان على فيسبوك. تحدث فقط بالدارجة المغربية الطبيعية. العميل أعطاك اسمه أو رد عليك. رحب به بحرارة وأكد اسمه واسأله عن المدينة ديالو للتوصيل. جواب 2 سطر بحد أقصى.`,
+      AWAITING_NAME:     `أنت وكيل مبيعات محترف "Sales Closer" من متجر "${storeName}" على واتساب. العميل تواصل معك بعد رؤية إعلانك. تحدث فقط بالدارجة المغربية الطبيعية. إذا سأل عن المنتج أو الثمن أو الجودة: أجبه بثقة باستخدام معلومات المنتج: ${productList || product}. هدفك: أجب على أسئلته، ثم أكد اسمه واسأله عن المدينة ديالو للتوصيل. جواب 2-3 سطر.`,
       AWAITING_CITY:     `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}". أكد المدينة واسأله عن العنوان الكامل (الحي والشارع) باش نوصلوه مزيان. دارجة مغربية طبيعية. جواب 2 سطر.`,
       AWAITING_ADDRESS:  `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك العنوان. الآن اسأله كم عدد القطع بغيهم من ${product}. دارجة مغربية. جواب سطر واحد.`,
       AWAITING_QUANTITY: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك الكمية. دير ملخص الطلبية بالكامل:\n- المنتج: ${product}\n- المدينة: ${city}\n- الكمية: القطع المطلوبة\n- الثمن: ${priceLabel} (توصيل مجاني)\n- الدفع عند الاستلام "قلب عاد خلص" ✅\nواسأله "واش نؤكد ليك الطلبية؟" بالدارجة. جواب 4 سطر.`,
@@ -964,16 +968,54 @@ export async function triggerLeadConversation(
     ]);
 
     const prods = await storage.getProductsByStore(storeId);
-    const hasMultipleProducts = prods.length > 1;
-    // If product detected → start at AWAITING_NAME, else if multiple prods → AWAITING_NAME too (will ask product later)
 
-    const greeting =
-      `السلام عليكم! 👋\n` +
-      `معاك فريق ${storeName} على واتساب 🌟\n` +
-      (productMatch
-        ? `شفنا باللي كنتي مهتم بـ *${productMatch.name}* — يسعدنا نساعدك 😊\n`
-        : `يسعدنا نساعدك ونجيب ليك اللي بغيتي 😊\n`) +
-      `دير لي عافاك *اسمك الكامل* باش نكملو معاك 📝`;
+    // Build product catalogue snippet for the AI (so it can describe features)
+    const productCatalogue = prods.length > 0
+      ? prods.map(p => {
+          const desc = (p as any).descriptionDarija || (p as any).description || "";
+          let feats = "";
+          if ((p as any).aiFeatures) {
+            try { feats = (JSON.parse((p as any).aiFeatures) as string[]).slice(0, 3).join("، "); } catch {}
+          }
+          return `• ${p.name} — ${Math.round((p.price ?? 0) / 100)} DH${desc ? ` | ${desc.substring(0, 80)}` : ""}${feats ? ` | ${feats}` : ""}`;
+        }).join("\n")
+      : "";
+
+    // ── Generate contextual AI greeting that responds to the customer's first message ──
+    let greeting = "";
+    try {
+      const { client: ai, model } = await resolveAIClient(storeId);
+      const greetingSystem =
+        `أنت بائع محترف من متجر "${storeName}" على واتساب. وصلتك رسالة من عميل جديد رأى إعلانك على فيسبوك أو واتساب.\n` +
+        `هدفك: رحب بيه بدفء بالدارجة المغربية، رد على سؤاله أو اهتمامه بالمنتج إذا ذكر شي، ` +
+        `قدم المنتج المناسب إذا كان عندك معلومات عليه، وفي آخر الرسالة اسأله عن اسمه الكامل باش تكمل معه الطلبية.\n` +
+        `منتجاتنا المتاحة:\n${productCatalogue || "— متجر عام —"}\n` +
+        `⚠️ مهم: رد بالدارجة المغربية الطبيعية فقط. لا تتحدث بالفصحى. جواب 3-4 سطر. ` +
+        `لا تذكر أنك روبوت. في نهاية ردك اسأل: "دير لي عافاك اسمك الكامل 📝"`;
+
+      const completion = await ai.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: greetingSystem },
+          { role: "user", content: initialMessage },
+        ],
+        max_tokens: 200,
+        temperature: 0.8,
+      });
+      greeting = completion.choices[0]?.message?.content?.trim() ?? "";
+    } catch (aiErr: any) {
+      console.warn(`[Lead] AI greeting failed, using static fallback:`, aiErr.message);
+    }
+
+    // Fallback to static greeting if AI fails
+    if (!greeting) {
+      greeting =
+        `السلام عليكم! 👋 معاك فريق ${storeName} 🌟\n` +
+        (productMatch
+          ? `شفنا باللي كنتي مهتم بـ *${productMatch.name}* — المنتج ممتاز وتوصيل مجاني 🚚\n`
+          : `يسعدنا نساعدك ونجيب ليك اللي بغيتي 😊\n`) +
+        `دير لي عافاك *اسمك الكامل* باش نكملو معاك 📝`;
+    }
 
     const conv = await storage.createAiConversation({
       storeId,
@@ -990,13 +1032,19 @@ export async function triggerLeadConversation(
       leadPrice: productMatch?.price ?? null,
     });
 
-    // Log greeting (use convId, not orderId)
+    // Log customer's initial message first
+    await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "user", message: initialMessage });
+    // Log AI greeting
     await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "assistant", message: greeting });
     await storage.updateAiConversationLastMessage(conv.id, greeting);
 
     broadcastToStore(storeId, "new_conversation", {
-      conversation: { ...conv, lastMessage: greeting, isNewLead: 1, leadStage: "AWAITING_NAME" },
-      message: { role: "assistant", content: greeting, ts: Date.now() },
+      conversation: { ...conv, lastMessage: greeting, isNewLead: 1, leadStage: "AWAITING_NAME", leadLabel: "Nouveau Prospect" },
+      message: { role: "assistant", content: greeting, ts: Date.now(), isNewLead: true },
+    });
+    // Also broadcast the customer's initial message so it appears in the chat
+    broadcastToStore(storeId, "message", {
+      conversationId: conv.id, role: "user", content: initialMessage, ts: Date.now() - 500, isNewLead: true,
     });
 
     await queueWhatsApp(storeId, phone, greeting);

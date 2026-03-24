@@ -447,25 +447,49 @@ async function connectToWhatsApp(): Promise<void> {
               console.log(`[Baileys] ⚠️ LID→ORDER fallback: routing to conv ${c.id} (order #${c.orderId}) | stored: ${c.customerPhone} | incoming JID: ${phone}`);
               await callAIHandler(c.storeId, c.customerPhone!, text);
             } else {
-              // No recent order conv — check if it's a new FB-Ads lead
-              const storeId = _activeStoreId;
-              console.log(`[Baileys] 🔍 No order conv found — checking ${phone} as new lead. Active storeId: ${storeId ?? "none"}`);
+              // No recent order conv — this is a potentially new unknown number
+              console.log(`[RECEIVED]: Message from unknown number: ${phone} — "${text.substring(0, 60)}"`);
+
+              // Resolve storeId — use in-memory value or fall back to DB lookup
+              let storeId = _activeStoreId;
+              if (!storeId) {
+                try {
+                  const { whatsappSessions } = await import("@shared/schema");
+                  const { eq: drEq2 } = await import("drizzle-orm");
+                  const rows = await db.select({ storeId: whatsappSessions.storeId })
+                    .from(whatsappSessions)
+                    .where(drEq2(whatsappSessions.status, "connected"))
+                    .limit(1);
+                  if (rows.length > 0) {
+                    storeId = rows[0].storeId;
+                    _activeStoreId = storeId; // cache it
+                    console.log(`[Baileys] 🔧 Recovered storeId from DB: ${storeId}`);
+                  }
+                } catch (sErr: any) {
+                  console.warn("[Baileys] Could not recover storeId from DB:", sErr.message);
+                }
+              }
+
+              console.log(`[Baileys] 🔍 Checking ${phone} as potential new lead. StoreId: ${storeId ?? "none"}`);
+
               if (storeId) {
                 try {
                   const { storage: stor } = await import("./storage");
                   const hasOrders = await stor.phoneHasOrdersInStore(storeId, phone);
                   if (!hasOrders) {
-                    console.log(`[Baileys] 🎯 New lead! Phone ${phone} → store ${storeId}`);
+                    console.log(`[Baileys] 🎯 New lead! Phone ${phone} → store ${storeId} — triggering Sales Closer AI`);
                     const { triggerLeadConversation } = await import("./ai-agent");
                     await triggerLeadConversation(storeId, phone, text);
                   } else {
-                    console.log(`[Baileys] ℹ️ Phone ${phone} has prior orders in store ${storeId} but no active conv — ignoring`);
+                    // Phone has prior orders but no active conv — auto-start confirmation flow
+                    console.log(`[Baileys] ℹ️ Phone ${phone} has prior orders in store ${storeId} — auto-starting confirmation`);
+                    await callAIHandler(storeId, phone, text);
                   }
                 } catch (leadErr: any) {
                   console.error("[Baileys] Lead detection error:", leadErr.message);
                 }
               } else {
-                console.warn(`[Baileys] ⚠️ Cannot route unknown phone ${phone} — no active storeId in memory.`);
+                console.warn(`[Baileys] ⚠️ Cannot route unknown phone ${phone} — no storeId available (WA not linked to a store yet).`);
               }
             }
           }

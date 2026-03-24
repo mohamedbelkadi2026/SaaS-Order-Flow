@@ -1587,7 +1587,7 @@ function LiveMonitoringTab() {
                     "text-zinc-400"
                   )}>
                     {needsAttn ? "⚠️ Client demande assistance humaine" :
-                     isLead ? (leadStageLabel[conv.leadStage] || "🎯 Nouveau lead FB Ads") :
+                     isLead ? (conv.leadStage === "AWAITING_NAME" ? "🆕 Nouveau Prospect" : leadStageLabel[conv.leadStage] || "🎯 Lead actif") :
                      isLong ? "🕐 Conversation longue: التدخل مطلوب" :
                      (conv.lastMessage || "...")}
                   </p>
