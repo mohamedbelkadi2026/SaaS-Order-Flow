@@ -42,6 +42,21 @@ async function resolveAIClient(storeId: number): Promise<ResolvedClient> {
   throw new Error("Veuillez configurer votre clé API OpenRouter pour activer la confirmation automatique.");
 }
 
+/** Wrap AI errors with clearer diagnostics */
+function enrichAiError(err: any): Error {
+  const msg: string = err?.message || String(err);
+  if (msg.includes("401") || msg.toLowerCase().includes("user not found") || msg.toLowerCase().includes("unauthorized")) {
+    return new Error("❌ Clé OpenRouter invalide (401 User not found). Allez sur openrouter.ai/keys → créez une nouvelle clé → mettez-la dans Replit Secrets sous OPENROUTER_API_KEY.");
+  }
+  if (msg.includes("402") || msg.toLowerCase().includes("credit") || msg.toLowerCase().includes("balance")) {
+    return new Error("❌ Solde OpenRouter insuffisant. Rechargez sur openrouter.ai/credits (minimum $5).");
+  }
+  if (msg.includes("429")) {
+    return new Error("⚠️ Limite de requêtes OpenRouter atteinte. Réessayez dans quelques secondes.");
+  }
+  return err;
+}
+
 async function storeHasAIKey(storeId: number): Promise<boolean> {
   const s = await storage.getAiSettings(storeId);
   return !!(s?.openrouterApiKey?.trim()) || !!(process.env.OPENROUTER_API_KEY)
@@ -701,8 +716,9 @@ export async function handleIncomingMessage(
 
     // ── Step-based AI reply ───────────────────────────────────────
     const currentStep = conv.conversationStep ?? 1;
-    console.log(`[AI]: Customer replied on conv ${conv.id} (order #${conv.orderId}) — "${customerMessage.substring(0, 60)}" — calling OpenRouter...`);
+    console.log(`[INCOMING] Conv ${conv.id} | Phone: ${customerPhone} | Step: ${currentStep} | Msg: "${customerMessage.substring(0, 80)}"`);
     broadcastToStore(storeId, "typing", { conversationId: conv.id, ts: Date.now() });
+    console.log(`[SOCKET_EMIT] typing → conv ${conv.id}`);
 
     try {
       const settings = await storage.getAiSettings(storeId);
@@ -738,6 +754,7 @@ export async function handleIncomingMessage(
       ];
 
       const { client: ai, model, provider } = await resolveAIClient(storeId);
+      console.log(`[AI_THINKING] Conv ${conv.id} | Model: ${model} | History: ${messages.length} msgs → sending to ${provider}...`);
       const completion = await ai.chat.completions.create({ model, messages, max_tokens: 200, temperature: 0.7 });
       const aiReply = completion.choices[0]?.message?.content?.trim() ?? "";
       if (!aiReply) throw new Error("Empty AI response");
@@ -789,6 +806,8 @@ export async function handleIncomingMessage(
 
       broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider, step: currentStep });
+      console.log(`[SOCKET_EMIT] message (assistant) → conv ${conv.id} | "${aiReply.substring(0, 60)}"`);
+      console.log(`[OUTGOING] AI reply queued for ${customerPhone} | Conv: ${conv.id}`);
 
       // ── Long conversation detection: 8+ messages without decision ──
       // Fires exactly once at message 8 (even count) to notify admin
@@ -808,18 +827,23 @@ export async function handleIncomingMessage(
       await queueWhatsApp(storeId, customerPhone, aiReply);
 
     } catch (aiErr: any) {
-      console.error("[AI] Reply error:", aiErr.message);
+      const richErr = enrichAiError(aiErr);
+      console.error("[AI] Reply error:", richErr.message);
       broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
-      broadcastToStore(storeId, "ai_error", { conversationId: conv.id, error: aiErr.message });
+      broadcastToStore(storeId, "ai_error", { conversationId: conv.id, error: richErr.message });
 
-      await storage.updateConversationNeedsAttention(conv.id, 1);
-      broadcastToStore(storeId, "needs_attention", { conversationId: conv.id, ts: Date.now() });
-
-      const fallback = "شكرا على رسالتك 🙏 سيتواصل معاك فريقنا خلال دقائق.";
-      await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: fallback });
-      await storage.updateAiConversationLastMessage(conv.id, fallback);
-      broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: fallback, ts: Date.now() });
-      await queueWhatsApp(storeId, customerPhone, fallback);
+      // Only mark as needing attention for non-key errors (key errors are admin issues, not AI failures)
+      const isKeyError = richErr.message.includes("401") || richErr.message.includes("402") || richErr.message.includes("Clé OpenRouter");
+      if (!isKeyError) {
+        await storage.updateConversationNeedsAttention(conv.id, 1);
+        broadcastToStore(storeId, "needs_attention", { conversationId: conv.id, ts: Date.now() });
+        const fallback = "شكرا على رسالتك 🙏 سيتواصل معاك فريقنا خلال دقائق.";
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: fallback });
+        await storage.updateAiConversationLastMessage(conv.id, fallback);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: fallback, ts: Date.now() });
+        await queueWhatsApp(storeId, customerPhone, fallback);
+      }
+      // For key errors: keep conv ACTIVE so AI auto-retries when key is fixed
     }
 
   } catch (err: any) {

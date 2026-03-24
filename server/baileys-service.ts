@@ -399,7 +399,7 @@ async function connectToWhatsApp(): Promise<void> {
           continue;
         }
 
-        console.log(`[Baileys] Incoming from ${phone}: "${text.substring(0, 80)}"`);
+        console.log(`[RECEIVED] WhatsApp message from ${phone}: "${text.substring(0, 80)}"`);
 
         try {
           // Match all possible phone formats stored in DB
