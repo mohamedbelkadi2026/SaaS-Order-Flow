@@ -1271,8 +1271,27 @@ function LiveMonitoringTab() {
     function connect() {
       es = new EventSource("/api/automation/events", { withCredentials: true });
 
-      es.addEventListener("new_conversation", () => {
+      es.addEventListener("new_conversation", (e) => {
         refetchConvs();
+        // If there's a first message in the event, add it to chat if this conv is selected
+        try {
+          const data = JSON.parse(e.data);
+          if (data?.message && data?.conversation?.id) {
+            const convId = data.conversation.id;
+            // Update conversations list immediately with the new conv
+            queryClient.setQueryData(["/api/automation/conversations"], (old: any) => {
+              if (!Array.isArray(old)) return old;
+              const exists = old.some((c: any) => c.id === convId);
+              if (!exists) return [...old, { ...data.conversation }];
+              return old;
+            });
+            if (convId === selectedIdRef.current) {
+              setMessages(prev => [...prev, { role: data.message.role, content: data.message.content, ts: data.message.ts }]);
+            } else {
+              setUnreadIds(prev => new Set([...prev, convId]));
+            }
+          }
+        } catch (_) {}
       });
 
       es.addEventListener("message", (e) => {
