@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -1180,13 +1180,18 @@ function WhatsappTab() {
 function LiveMonitoringTab() {
   const { toast } = useToast();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const selectedIdRef = useRef<number | null>(null);
   const [manualMsg, setManualMsg] = useState("");
   const [messages, setMessages] = useState<any[]>([]);
   const [typingConvId, setTypingConvId] = useState<number | null>(null);
   const [attentionIds, setAttentionIds] = useState<Set<number>>(new Set());
   const [longChatIds, setLongChatIds] = useState<Set<number>>(new Set());
+  const [unreadIds, setUnreadIds] = useState<Set<number>>(new Set());
   const [convTypeFilter, setConvTypeFilter] = useState<"all" | "confirmation" | "direct">("all");
-  const messagesEndRef = { current: null as HTMLDivElement | null };
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep ref in sync with state so SSE handlers always read the latest value
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
   /* ── Request browser notification permission ────────────────── */
   useEffect(() => {
@@ -1255,151 +1260,190 @@ function LiveMonitoringTab() {
     }
   }, [historyMsgs]);
 
-  /* ── SSE connection ─────────────────────────────────────────── */
+  /* ── Persistent SSE connection ───────────────────────────────
+     Uses selectedIdRef so the connection NEVER closes/reopens
+     when the user switches conversations — zero message gaps.
+  ─────────────────────────────────────────────────────────── */
   useEffect(() => {
-    const es = new EventSource("/api/automation/events", { withCredentials: true });
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    es.addEventListener("new_conversation", () => {
-      refetchConvs();
-    });
+    function connect() {
+      es = new EventSource("/api/automation/events", { withCredentials: true });
 
-    es.addEventListener("message", (e) => {
-      const data = JSON.parse(e.data);
-      if (data.conversationId === selectedId || !selectedId) {
-        setMessages(prev => [...prev, { role: data.role, content: data.content, ts: data.ts }]);
-        if (data.conversationId !== selectedId) refetchConvs();
-      }
-    });
-
-    es.addEventListener("confirmed", (e) => {
-      const data = JSON.parse(e.data);
-      refetchConvs();
-      if (data.conversationId === selectedId) {
-        setMessages(prev => [...prev, { role: "system", content: "✅ Commande confirmée automatiquement", ts: data.ts }]);
-      }
-    });
-
-    es.addEventListener("cancelled", (e) => {
-      const data = JSON.parse(e.data);
-      refetchConvs();
-      if (data.conversationId === selectedId) {
-        setMessages(prev => [...prev, { role: "system", content: "❌ Commande annulée", ts: data.ts }]);
-      }
-    });
-
-    es.addEventListener("post_confirm_cancel", (e) => {
-      const data = JSON.parse(e.data);
-      refetchConvs();
-      toast({
-        title: "⚠️ Annulation Post-Confirmation",
-        description: data.message || "Un client a annulé sa commande confirmée via WhatsApp",
-        variant: "destructive",
-        duration: 10000,
+      es.addEventListener("new_conversation", () => {
+        refetchConvs();
       });
-      if ("Notification" in window && Notification.permission === "granted") {
-        new Notification("TajerGrow — Annulation urgente", {
-          body: data.message || "Un client a annulé sa commande confirmée via WhatsApp",
-          icon: "/favicon.ico",
+
+      es.addEventListener("message", (e) => {
+        const data = JSON.parse(e.data);
+        const convId: number = data.conversationId;
+
+        // Instantly update the conv list's lastMessage without waiting for HTTP poll
+        queryClient.setQueryData(["/api/automation/conversations"], (old: any) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((c: any) =>
+            c.id === convId
+              ? { ...c, lastMessage: data.content, updatedAt: new Date().toISOString() }
+              : c
+          );
         });
-      }
-    });
 
-    es.addEventListener("takeover", (e) => {
-      const data = JSON.parse(e.data);
-      if (data.conversationId === selectedId) refetchConvs();
-    });
-
-    es.addEventListener("typing", (e) => {
-      const data = JSON.parse(e.data);
-      setTypingConvId(data.conversationId);
-    });
-
-    es.addEventListener("typing_stop", (e) => {
-      const data = JSON.parse(e.data);
-      setTypingConvId((prev) => (prev === data.conversationId ? null : prev));
-    });
-
-    es.addEventListener("ai_error", (e) => {
-      const data = JSON.parse(e.data);
-      setTypingConvId((prev) => (prev === data.conversationId ? null : prev));
-      if (data.conversationId === selectedId) {
-        toast({ title: "Erreur IA", description: data.error, variant: "destructive" });
-      }
-    });
-
-    es.addEventListener("needs_attention", (e) => {
-      const data = JSON.parse(e.data);
-      setAttentionIds(prev => new Set([...prev, data.conversationId]));
-      refetchConvs();
-      toast({
-        title: "🔴 Attention Requise",
-        description: "Un client demande à parler à un humain.",
-        variant: "destructive",
-      });
-      if ("Notification" in window && Notification.permission === "granted") {
-        new Notification("TajerGrow — Client demande assistance", {
-          body: "Un client a besoin d'un agent humain.",
-          icon: "/favicon.ico",
-        });
-      }
-    });
-
-    es.addEventListener("long_chat", (e) => {
-      const data = JSON.parse(e.data);
-      setLongChatIds(prev => new Set([...prev, data.conversationId]));
-      refetchConvs();
-      toast({
-        title: "🕐 Conversation Longue",
-        description: `${data.messageCount} messages — التدخل مطلوب. Vérifiez si le client est sérieux.`,
-      });
-      if ("Notification" in window && Notification.permission === "granted") {
-        new Notification("TajerGrow — Conversation longue", {
-          body: `${data.customerName || "Client"} : ${data.messageCount} messages sans décision.`,
-          icon: "/favicon.ico",
-        });
-      }
-    });
-
-    es.addEventListener("lead_confirmed", (e) => {
-      const data = JSON.parse(e.data);
-      refetchConvs();
-      toast({
-        title: "🎉 Commande Lead Créée !",
-        description: `${data.customerName || "Lead"} — Commande #${data.orderNumber} confirmée via FB Ads 🎯`,
-      });
-      if ("Notification" in window && Notification.permission === "granted") {
-        new Notification("TajerGrow — Nouveau client via Ads 🎯", {
-          body: `${data.customerName || "Lead"} vient de confirmer sa commande #${data.orderNumber}`,
-          icon: "/favicon.ico",
-        });
-      }
-    });
-
-    es.addEventListener("new_conversation", (e) => {
-      refetchConvs();
-    });
-
-    es.addEventListener("audio_received", (e) => {
-      const data = JSON.parse(e.data);
-      if (data.status === "done" && data.transcription) {
-        if (data.conversationId === selectedId || !selectedId) {
-          setMessages(prev => [...prev, {
-            role: "system",
-            content: `🎤 رسالة صوتية: "${data.transcription}"`,
-            ts: data.ts || Date.now(),
-          }]);
+        if (convId === selectedIdRef.current) {
+          setMessages(prev => [...prev, { role: data.role, content: data.content, ts: data.ts }]);
+        } else {
+          // Mark conv as having new unread messages (green dot on list)
+          setUnreadIds(prev => new Set([...prev, convId]));
         }
-      } else if (data.status === "failed") {
+      });
+
+      es.addEventListener("confirmed", (e) => {
+        const data = JSON.parse(e.data);
+        refetchConvs();
+        if (data.conversationId === selectedIdRef.current) {
+          setMessages(prev => [...prev, { role: "system", content: "✅ Commande confirmée automatiquement", ts: data.ts }]);
+        }
+      });
+
+      es.addEventListener("cancelled", (e) => {
+        const data = JSON.parse(e.data);
+        refetchConvs();
+        if (data.conversationId === selectedIdRef.current) {
+          setMessages(prev => [...prev, { role: "system", content: "❌ Commande annulée", ts: data.ts }]);
+        }
+      });
+
+      es.addEventListener("post_confirm_cancel", (e) => {
+        const data = JSON.parse(e.data);
+        refetchConvs();
         toast({
-          title: "🎤 رسالة صوتية",
-          description: "تعذّر التفريغ — تأكد من إعداد OPENAI_API_KEY",
+          title: "⚠️ Annulation Post-Confirmation",
+          description: data.message || "Un client a annulé sa commande confirmée via WhatsApp",
+          variant: "destructive",
+          duration: 10000,
+        });
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("TajerGrow — Annulation urgente", {
+            body: data.message || "Un client a annulé sa commande confirmée via WhatsApp",
+            icon: "/favicon.ico",
+          });
+        }
+      });
+
+      es.addEventListener("takeover", (e) => {
+        const data = JSON.parse(e.data);
+        refetchConvs();
+        // Update local conv status immediately
+        queryClient.setQueryData(["/api/automation/conversations"], (old: any) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((c: any) =>
+            c.id === data.conversationId
+              ? { ...c, isManual: data.isManual ? 1 : 0, status: data.isManual ? "manual" : "active" }
+              : c
+          );
+        });
+      });
+
+      es.addEventListener("typing", (e) => {
+        const data = JSON.parse(e.data);
+        setTypingConvId(data.conversationId);
+      });
+
+      es.addEventListener("typing_stop", (e) => {
+        const data = JSON.parse(e.data);
+        setTypingConvId((prev) => (prev === data.conversationId ? null : prev));
+      });
+
+      es.addEventListener("ai_error", (e) => {
+        const data = JSON.parse(e.data);
+        setTypingConvId((prev) => (prev === data.conversationId ? null : prev));
+        if (data.conversationId === selectedIdRef.current) {
+          toast({ title: "Erreur IA", description: data.error, variant: "destructive" });
+        }
+      });
+
+      es.addEventListener("needs_attention", (e) => {
+        const data = JSON.parse(e.data);
+        setAttentionIds(prev => new Set([...prev, data.conversationId]));
+        refetchConvs();
+        toast({
+          title: "🔴 Attention Requise",
+          description: "Un client demande à parler à un humain.",
           variant: "destructive",
         });
-      }
-    });
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("TajerGrow — Client demande assistance", {
+            body: "Un client a besoin d'un agent humain.",
+            icon: "/favicon.ico",
+          });
+        }
+      });
 
-    return () => es.close();
-  }, [selectedId]);
+      es.addEventListener("long_chat", (e) => {
+        const data = JSON.parse(e.data);
+        setLongChatIds(prev => new Set([...prev, data.conversationId]));
+        refetchConvs();
+        toast({
+          title: "🕐 Conversation Longue",
+          description: `${data.messageCount} messages — التدخل مطلوب. Vérifiez si le client est sérieux.`,
+        });
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("TajerGrow — Conversation longue", {
+            body: `${data.customerName || "Client"} : ${data.messageCount} messages sans décision.`,
+            icon: "/favicon.ico",
+          });
+        }
+      });
+
+      es.addEventListener("lead_confirmed", (e) => {
+        const data = JSON.parse(e.data);
+        refetchConvs();
+        toast({
+          title: "🎉 Commande Lead Créée !",
+          description: `${data.customerName || "Lead"} — Commande #${data.orderNumber} confirmée via FB Ads 🎯`,
+        });
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("TajerGrow — Nouveau client via Ads 🎯", {
+            body: `${data.customerName || "Lead"} vient de confirmer sa commande #${data.orderNumber}`,
+            icon: "/favicon.ico",
+          });
+        }
+      });
+
+      es.addEventListener("audio_received", (e) => {
+        const data = JSON.parse(e.data);
+        if (data.status === "done" && data.transcription) {
+          if (data.conversationId === selectedIdRef.current) {
+            setMessages(prev => [...prev, {
+              role: "system",
+              content: `🎤 رسالة صوتية: "${data.transcription}"`,
+              ts: data.ts || Date.now(),
+            }]);
+          }
+        } else if (data.status === "failed") {
+          toast({
+            title: "🎤 رسالة صوتية",
+            description: "تعذّر التفريغ — تأكد من إعداد OPENAI_API_KEY",
+            variant: "destructive",
+          });
+        }
+      });
+
+      // Auto-reconnect if the SSE connection drops
+      es.onerror = () => {
+        es?.close();
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ── Scroll to bottom when messages or typing changes ──────── */
   useEffect(() => {
@@ -1428,9 +1472,15 @@ function LiveMonitoringTab() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: msg }),
     }).then(r => r.json()),
-    onSuccess: () => {
-      setMessages(prev => [...prev, { role: "admin", content: manualMsg, ts: Date.now() }]);
+    onSuccess: (data, sentMsg) => {
+      // Use the sent message arg (not stale closure) to add to chat immediately
+      setMessages(prev => [...prev, { role: "admin", content: sentMsg, ts: Date.now() }]);
       setManualMsg("");
+      // If AI was auto-paused, refresh conv list to show "Manuel" status
+      if (data?.autopaused) {
+        queryClient.invalidateQueries({ queryKey: ["/api/automation/conversations"] });
+        toast({ title: "⏸️ IA en pause 10 min", description: "L'IA reprendra automatiquement dans 10 minutes." });
+      }
     },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
@@ -1531,17 +1581,25 @@ function LiveMonitoringTab() {
                 if (convTypeFilter === "direct") return !!c.isNewLead;
                 return true;
               })
-              .sort((a: any, b: any) =>
-              (attentionIds.has(b.id) ? 3 : b.isNewLead ? 2 : longChatIds.has(b.id) ? 1 : 0) -
-              (attentionIds.has(a.id) ? 3 : a.isNewLead ? 2 : longChatIds.has(a.id) ? 1 : 0)
-            ).map((conv: any) => {
+              .sort((a: any, b: any) => {
+                const priority = (c: any) =>
+                  attentionIds.has(c.id) ? 5 :
+                  unreadIds.has(c.id) ? 4 :
+                  c.isNewLead ? 3 :
+                  longChatIds.has(c.id) ? 2 : 0;
+                const pa = priority(a), pb = priority(b);
+                if (pa !== pb) return pb - pa;
+                // Same priority: most recently updated first
+                return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+              })
+            .map((conv: any) => {
               const needsAttn = attentionIds.has(conv.id);
               const isLead = Boolean(conv.isNewLead) && !needsAttn;
               const isLong = longChatIds.has(conv.id) && !needsAttn && !isLead;
               return (
               <button
                 key={conv.id}
-                onClick={() => { setSelectedId(conv.id); setMessages([]); }}
+                onClick={() => { setSelectedId(conv.id); setMessages([]); setUnreadIds(prev => { const n = new Set(prev); n.delete(conv.id); return n; }); }}
                 className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors",
                   needsAttn && "bg-red-50 border-l-4 border-red-400",
                   isLead && "bg-blue-50 border-l-4 border-blue-400",
@@ -1560,10 +1618,15 @@ function LiveMonitoringTab() {
                       <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-pulse" title="Conversation longue" />
                     ) : typingConvId === conv.id ? (
                       <span className="w-2 h-2 rounded-full shrink-0 animate-pulse" style={{ background: GOLD }} title="IA en train d'écrire..." />
+                    ) : unreadIds.has(conv.id) ? (
+                      <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-500 animate-pulse" title="Nouveau message" />
                     ) : conv.status === "active" ? (
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: NAVY, opacity: 0.6 }} />
                     ) : null}
                     <p className="text-sm font-semibold text-zinc-800 truncate">{conv.leadName || conv.customerName || conv.customerPhone}</p>
+                    {unreadIds.has(conv.id) && selectedId !== conv.id && (
+                      <span className="ml-auto shrink-0 w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] font-black flex items-center justify-center">N</span>
+                    )}
                   </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0"
                     style={{ background: needsAttn ? "#ef4444" : (isLead && conv.status === "confirmed") ? GOLD : isLead ? "#3b82f6" : isLong ? "#d97706" : statusColor(conv.status) }}>
@@ -1746,23 +1809,22 @@ function LiveMonitoringTab() {
             <div ref={(el) => { messagesEndRef.current = el; }} />
           </div>
 
-          {/* Manual message input */}
-          {(selectedConv.isManual || selectedConv.status === "active") && selectedConv.status !== "confirmed" && selectedConv.status !== "cancelled" && (
+          {/* Manual message input — always available; auto-pauses AI 10 min if sent during active mode */}
+          {selectedConv.status !== "confirmed" && selectedConv.status !== "cancelled" && (
             <div className="px-4 py-3 border-t border-zinc-100">
               <div className="flex gap-2">
                 <input
                   value={manualMsg}
                   onChange={e => setManualMsg(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter" && manualMsg.trim()) sendMutation.mutate(manualMsg); }}
-                  placeholder={selectedConv.isManual ? "Écrivez votre message (vous contrôlez)..." : "L'IA répond automatiquement..."}
-                  disabled={!selectedConv.isManual && selectedConv.status === "active"}
-                  className="flex-1 rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                  placeholder={selectedConv.isManual ? "Écrivez votre message (vous contrôlez)..." : "Écrire un message (l'IA sera pausée 10 min)..."}
+                  className="flex-1 rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-zinc-400"
                   dir="rtl"
                   data-testid="input-manual-msg"
                 />
                 <button
                   onClick={() => { if (manualMsg.trim()) sendMutation.mutate(manualMsg); }}
-                  disabled={!manualMsg.trim() || sendMutation.isPending || (!selectedConv.isManual && selectedConv.status === "active")}
+                  disabled={!manualMsg.trim() || sendMutation.isPending}
                   className="px-4 py-2 rounded-xl text-white font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-40"
                   style={{ background: NAVY }}
                   data-testid="button-send-manual"
@@ -1771,7 +1833,9 @@ function LiveMonitoringTab() {
                 </button>
               </div>
               {!selectedConv.isManual && (
-                <p className="text-[11px] text-zinc-400 mt-1.5 text-center">Cliquez <strong>Prendre la main</strong> pour écrire manuellement.</p>
+                <p className="text-[11px] text-zinc-400 mt-1.5 text-center">
+                  Envoyer un message met l'IA en <strong>pause 10 min</strong> automatiquement.
+                </p>
               )}
             </div>
           )}

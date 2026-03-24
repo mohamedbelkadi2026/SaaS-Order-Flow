@@ -3236,12 +3236,37 @@ export async function registerRoutes(
       if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
       const { message } = req.body;
       if (!message?.trim()) return res.status(400).json({ message: "Message vide" });
+
+      // Auto-pause AI for 10 minutes when admin sends while AI is active
+      const wasManual = conv.isManual === 1;
+      let autopaused = false;
+      if (!wasManual) {
+        autopaused = true;
+        await storage.setConversationManual(conv.id, 1);
+        broadcastToStore(conv.storeId, "takeover", { conversationId: conv.id, isManual: true });
+        // Auto-restore after 10 minutes
+        setTimeout(async () => {
+          try {
+            const current = await storage.getAiConversation(conv.id);
+            if (current?.isManual === 1) {
+              await storage.setConversationManual(conv.id, 0);
+              broadcastToStore(conv.storeId, "takeover", { conversationId: conv.id, isManual: false });
+              broadcastToStore(conv.storeId, "message", {
+                conversationId: conv.id, role: "system",
+                content: "🤖 IA automatiquement reprise après 10 minutes de pause.",
+                ts: Date.now(),
+              });
+            }
+          } catch {}
+        }, 10 * 60 * 1000);
+      }
+
       await storage.createAiLog({ storeId: conv.storeId, orderId: conv.orderId, customerPhone: conv.customerPhone, role: "admin", message });
       await storage.updateAiConversationLastMessage(conv.id, message);
       broadcastToStore(conv.storeId, "message", { conversationId: conv.id, role: "admin", content: message, ts: Date.now() });
       const { sendWhatsAppMessage } = await import("./whatsapp-service");
       await sendWhatsAppMessage(conv.customerPhone, message);
-      res.json({ success: true });
+      res.json({ success: true, autopaused });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
