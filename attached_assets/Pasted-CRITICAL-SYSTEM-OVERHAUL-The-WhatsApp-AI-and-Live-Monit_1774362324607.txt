@@ -1,0 +1,24 @@
+CRITICAL SYSTEM OVERHAUL: The WhatsApp AI and Live Monitoring are not functional. The AI sends only the first message and stops, and no messages appear in the UI. I need a PERMANENT, practical fix for everything. Follow these steps exactly:
+1. Universal Listener & Real-time Bridge (Socket.io):
+Implement a robust Socket.io setup.
+Action: In the WhatsApp messages.upsert event, EVERY incoming and outgoing message MUST be emitted to the frontend: io.emit('new_message', messageData).
+UI Sync: Update the Live Monitoring tab to listen for this event and update the chat list and window INSTANTLY without page refresh.
+2. AI Conversation Continuity (The Logic Loop):
+Fix the 'One-Message' Bug: The AI must respond to EVERY incoming message from the customer.
+Logic: When a message is received:
+Identify the number.
+Fetch the conversation history from the database.
+Send the Full Context (Customer name, Product details, previous 3 messages) to OpenRouter.
+Wait & Reply: Send the AI's response back to the customer on the SAME number immediately.
+Intent Detection: If the customer confirms (Ok, Oui, صيفطوه), update the order status to 'confirme' and the dashboard must turn Green.
+3. Open Retour Integration (API & UI):
+Database: Ensure the Stores table has a column open_retour_api_key and open_retour_active.
+UI: In the Integrations page, create a functional tab for Open Retour.
+Action: When I save my API key here, it must be stored in PostgreSQL.
+The Button: In 'Mes Commandes', the 'Créer un Retour' button must be linked to a backend service that calls the Open Retour API using this saved key.
+4. Security & Data Integrity:
+Ensure all sensitive keys (OpenRouter, Open Retour) are isolated per store_id.
+If a message is from an Unknown Number, the AI must act as a 'Sales Closer' and try to get the customer's info to create a new order.
+5. Debugging Mode:
+Add console.log for every state: [INCOMING], [AI_THINKING], [OUTGOING], [SOCKET_EMIT]. I want to see exactly where the flow stops in the Replit console.
+Technical Goal: 100% Practical Loop. I place an order -> I get a WA message -> I reply 'شحال الثمن؟' -> AI replies back in 5 seconds -> I see katch-chat live in my dashboard. NO MORE STOPPING."
