@@ -710,8 +710,14 @@ export async function handleIncomingMessage(
     // Human escalation detection
     if (detectAttentionNeeded(customerMessage)) {
       await storage.updateConversationNeedsAttention(conv.id, 1);
-      broadcastToStore(storeId, "needs_attention", { conversationId: conv.id, ts: Date.now() });
-      console.log(`[AI] Attention needed: conv=${conv.id} phone=${customerPhone}`);
+      broadcastToStore(storeId, "needs_attention", {
+        conversationId: conv.id,
+        customerPhone,
+        customerName: conv.customerName ?? null,
+        trigger: customerMessage.substring(0, 80),
+        ts: Date.now(),
+      });
+      console.log(`[AI] Attention needed: conv=${conv.id} phone=${customerPhone} trigger="${customerMessage.substring(0, 40)}"`);
     }
 
     // ── Fast intent detection — works at any step ─────────────────
@@ -904,21 +910,34 @@ export async function handleIncomingMessage(
     } catch (aiErr: any) {
       const richErr = enrichAiError(aiErr);
       console.error("[AI] Reply error:", richErr.message);
-      broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
-      broadcastToStore(storeId, "ai_error", { conversationId: conv.id, error: richErr.message });
-
-      // Only mark as needing attention for non-key errors (key errors are admin issues, not AI failures)
       const isKeyError = richErr.message.includes("401") || richErr.message.includes("402") || richErr.message.includes("Clé OpenRouter");
+      broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
+      broadcastToStore(storeId, "ai_error", {
+        conversationId: conv.id,
+        error: richErr.message,
+        isKeyError,
+        customerPhone,
+        customerName: conv.customerName ?? null,
+        ts: Date.now(),
+      });
+
       if (!isKeyError) {
+        // Non-key error → mark attention + send fallback to customer
         await storage.updateConversationNeedsAttention(conv.id, 1);
-        broadcastToStore(storeId, "needs_attention", { conversationId: conv.id, ts: Date.now() });
+        broadcastToStore(storeId, "needs_attention", {
+          conversationId: conv.id,
+          customerPhone,
+          customerName: conv.customerName ?? null,
+          trigger: "AI generation failed",
+          ts: Date.now(),
+        });
         const fallback = "شكرا على رسالتك 🙏 سيتواصل معاك فريقنا خلال دقائق.";
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: fallback });
         await storage.updateAiConversationLastMessage(conv.id, fallback);
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: fallback, ts: Date.now() });
         await queueWhatsApp(storeId, customerPhone, fallback);
       }
-      // For key errors: keep conv ACTIVE so AI auto-retries when key is fixed
+      // Key errors: keep conv ACTIVE so AI auto-retries once key is fixed — admin sees banner
     }
 
   } catch (err: any) {

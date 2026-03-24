@@ -1188,6 +1188,7 @@ function LiveMonitoringTab() {
   const [longChatIds, setLongChatIds] = useState<Set<number>>(new Set());
   const [unreadIds, setUnreadIds] = useState<Set<number>>(new Set());
   const [convTypeFilter, setConvTypeFilter] = useState<"all" | "confirmation" | "direct">("all");
+  const [apiKeyMissing, setApiKeyMissing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // Keep ref in sync with state so SSE handlers always read the latest value
@@ -1376,8 +1377,22 @@ function LiveMonitoringTab() {
       es.addEventListener("ai_error", (e) => {
         const data = JSON.parse(e.data);
         setTypingConvId((prev) => (prev === data.conversationId ? null : prev));
-        if (data.conversationId === selectedIdRef.current) {
-          toast({ title: "Erreur IA", description: data.error, variant: "destructive" });
+        if (data.isKeyError) {
+          // Show sticky API key warning banner
+          setApiKeyMissing(true);
+          toast({
+            title: "🔑 Clé OpenRouter Invalide",
+            description: "L'IA ne peut pas répondre. Ajoutez une clé valide dans IA Confirmation → Paramètres.",
+            variant: "destructive",
+          });
+        } else {
+          // Always show error toast regardless of selected conv
+          const who = data.customerName || data.customerPhone || "Client";
+          toast({
+            title: "❌ Erreur IA",
+            description: `${who} : ${(data.error || "Erreur inconnue").substring(0, 100)}`,
+            variant: "destructive",
+          });
         }
       });
 
@@ -1385,14 +1400,18 @@ function LiveMonitoringTab() {
         const data = JSON.parse(e.data);
         setAttentionIds(prev => new Set([...prev, data.conversationId]));
         refetchConvs();
+        const who = data.customerName || data.customerPhone || "Client";
+        const trigger = data.trigger && data.trigger !== "AI generation failed"
+          ? `"${data.trigger.substring(0, 50)}"`
+          : "demande d'assistance";
         toast({
-          title: "🔴 Attention Requise",
-          description: "Un client demande à parler à un humain.",
+          title: "🔴 Intervention Requise",
+          description: `${who} : ${trigger} — Cliquez sur 'Prendre la main'.`,
           variant: "destructive",
         });
         if ("Notification" in window && Notification.permission === "granted") {
-          new Notification("TajerGrow — Client demande assistance", {
-            body: "Un client a besoin d'un agent humain.",
+          new Notification(`TajerGrow — ${who} demande assistance`, {
+            body: trigger,
             icon: "/favicon.ico",
           });
         }
@@ -1551,6 +1570,17 @@ function LiveMonitoringTab() {
   };
 
   return (
+    <div className="flex flex-col gap-3">
+    {/* ── API Key missing sticky banner ─────────────────────── */}
+    {apiKeyMissing && (
+      <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-red-200 bg-red-50 text-red-800 text-sm font-medium">
+        <div className="flex items-center gap-2">
+          <span className="text-base">🔑</span>
+          <span>L'IA est <b>bloquée</b> — Clé OpenRouter invalide ou sans crédits. Allez dans <b>IA Confirmation → Paramètres</b> et ajoutez une clé valide.</span>
+        </div>
+        <button onClick={() => setApiKeyMissing(false)} className="shrink-0 text-red-400 hover:text-red-600 font-bold text-lg leading-none" aria-label="Fermer">×</button>
+      </div>
+    )}
     <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-5 h-[calc(100vh-220px)] min-h-[540px]">
       {/* ── Left: Conversation list ───────────────────────────── */}
       <div className="bg-white rounded-2xl border border-zinc-100 flex flex-col overflow-hidden">
@@ -1860,6 +1890,7 @@ function LiveMonitoringTab() {
           )}
         </div>
       )}
+    </div>
     </div>
   );
 }

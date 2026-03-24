@@ -1,0 +1,22 @@
+"I need a PERMANENT and structural fix for the WhatsApp AI module. Currently, conversations are mixing up, and the AI is not responding correctly to individual users. Follow these strict technical instructions:
+1. Chat Isolation (The remoteJid Fix):
+Update the WhatsApp service logic. Every incoming message must be handled using its unique remoteJid (phone number).
+AI Memory: For every request to OpenRouter, you must include the last 5 messages of THAT specific conversation to maintain context. Use a sessions table in the database to store the state of each number.
+2. Smart Lead Routing (The Two Paths):
+Implement a logic that detects the type of user instantly:
+Path A (Store Orders): If the number exists in the Orders table with status 'nouveau'.
+AI Role: Confirmation Agent. Use the product name, size, and city to confirm.
+Action: Update status to 'confirme' automatically when they agree.
+Path B (Direct WhatsApp Ad Leads): If the number DOES NOT exist in the Orders table.
+AI Role: Sales Closer.
+Flow: Greet -> Explain Product (using ai_description from Stock) -> Collect Name/City/Address -> Create a NEW Order in the database.
+3. Live Sync (Dashboard to Phone):
+Use Socket.io to bridge the phone and the dashboard.
+Every message I see on my phone MUST appear in the 'Live Monitoring' tab in less than 1 second, and vice versa.
+Ensure the AI's reply is sent to the EXACT same number that messaged us.
+4. Product Knowledge Base:
+Ensure the AI pulls the ai_description and price from our Products table. If a customer asks 'How much?', the AI must give the real price from the store.
+5. Stability & Monitoring:
+Add a 'Status Indicator' in the sidebar for the WhatsApp connection.
+If the AI fails to generate a response, show a notification to the Admin to 'Take Over' (Prendre la main).
+Technical Goal: I want a 100% functional, isolated, and intelligent conversation loop. Fix the 'remoteJid' handling so that User A and User B never get their messages mixed. Make it '3amali' (practical) for a real business."
