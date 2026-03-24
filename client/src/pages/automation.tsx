@@ -57,7 +57,7 @@ export default function AutomationPage() {
             <TabPill active={tab === "ai"} onClick={() => setTab("ai")} icon={<Bot className="w-4 h-4" />} label="IA Confirmation" />
             <TabPill active={tab === "whatsapp"} onClick={() => setTab("whatsapp")} icon={<Wifi className="w-4 h-4" />} label="Connexion WhatsApp" />
             <TabPill active={tab === "monitoring"} onClick={() => setTab("monitoring")} icon={<Radio className="w-4 h-4" />} label="Live Monitoring" />
-            <TabPill active={tab === "recovery"} onClick={() => setTab("recovery")} icon={<TrendingUp className="w-4 h-4" />} label="Récupération IA" />
+            <TabPill active={tab === "recovery"} onClick={() => setTab("recovery")} icon={<Target className="w-4 h-4" />} label="Ventes Directes (IA)" />
           </div>
         </div>
       </div>
@@ -67,7 +67,7 @@ export default function AutomationPage() {
         {tab === "ai" && <AiConfirmationTab />}
         {tab === "whatsapp" && <WhatsappTab />}
         {tab === "monitoring" && <LiveMonitoringTab />}
-        {tab === "recovery" && <RecoveryTab />}
+        {tab === "recovery" && <VentesDirectesTab />}
       </div>
     </div>
   );
@@ -1185,6 +1185,7 @@ function LiveMonitoringTab() {
   const [typingConvId, setTypingConvId] = useState<number | null>(null);
   const [attentionIds, setAttentionIds] = useState<Set<number>>(new Set());
   const [longChatIds, setLongChatIds] = useState<Set<number>>(new Set());
+  const [convTypeFilter, setConvTypeFilter] = useState<"all" | "confirmation" | "direct">("all");
   const messagesEndRef = { current: null as HTMLDivElement | null };
 
   /* ── Request browser notification permission ────────────────── */
@@ -1454,6 +1455,7 @@ function LiveMonitoringTab() {
   const statusLabel = (s: string, needsAttn?: boolean, isLong?: boolean, isLead?: boolean) => {
     if (needsAttn) return "Attention 🔴";
     if (isLong) return "Long 🕐";
+    if (isLead && s === "confirmed") return "Converti 🏆";
     if (isLead) return "Lead (Ads) 🎯";
     if (s === "confirmed") return "Confirmé ✅";
     if (s === "cancelled") return "Annulé ❌";
@@ -1463,12 +1465,13 @@ function LiveMonitoringTab() {
 
   // Lead stage label for the chat subtitle
   const leadStageLabel: Record<string, string> = {
-    AWAITING_NAME: "🔹 En attente du nom",
-    AWAITING_CITY: "🏙 En attente de la ville",
-    AWAITING_ADDRESS: "📍 En attente de l'adresse",
-    AWAITING_PRODUCT: "🛒 En attente du produit",
-    AWAITING_CONFIRM: "✅ En attente de confirmation",
-    DONE: "✅ Commande créée",
+    AWAITING_NAME:     "🔹 En attente du nom",
+    AWAITING_CITY:     "🏙 En attente de la ville",
+    AWAITING_ADDRESS:  "📍 En attente de l'adresse",
+    AWAITING_QUANTITY: "📦 En attente de la quantité",
+    AWAITING_PRODUCT:  "🛒 En attente du produit",
+    AWAITING_CONFIRM:  "✅ En attente de confirmation",
+    DONE:              "🎯 Commande créée",
   };
 
   const bubbleStyle = (role: string) => {
@@ -1496,6 +1499,24 @@ function LiveMonitoringTab() {
             <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />
           </button>
         </div>
+        {/* Filter toggle */}
+        <div className="px-3 py-2 border-b border-zinc-50 flex gap-1">
+          {[
+            { key: "all", label: "Tous" },
+            { key: "confirmation", label: "Confirmation" },
+            { key: "direct", label: "Ventes Directes" },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setConvTypeFilter(key as any)}
+              className={cn("flex-1 py-1 rounded-lg text-[10px] font-bold transition-all", convTypeFilter === key ? "text-white" : "text-zinc-500 bg-zinc-100 hover:bg-zinc-200")}
+              style={convTypeFilter === key ? { background: key === "direct" ? GOLD : NAVY } : {}}
+              data-testid={`filter-conv-${key}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         {conversations.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-zinc-400 p-4">
@@ -1504,7 +1525,13 @@ function LiveMonitoringTab() {
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto divide-y divide-zinc-50">
-            {[...conversations].sort((a: any, b: any) =>
+            {[...conversations]
+              .filter((c: any) => {
+                if (convTypeFilter === "confirmation") return !c.isNewLead;
+                if (convTypeFilter === "direct") return !!c.isNewLead;
+                return true;
+              })
+              .sort((a: any, b: any) =>
               (attentionIds.has(b.id) ? 3 : b.isNewLead ? 2 : longChatIds.has(b.id) ? 1 : 0) -
               (attentionIds.has(a.id) ? 3 : a.isNewLead ? 2 : longChatIds.has(a.id) ? 1 : 0)
             ).map((conv: any) => {
@@ -1539,7 +1566,7 @@ function LiveMonitoringTab() {
                     <p className="text-sm font-semibold text-zinc-800 truncate">{conv.leadName || conv.customerName || conv.customerPhone}</p>
                   </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0"
-                    style={{ background: needsAttn ? "#ef4444" : isLead ? "#3b82f6" : isLong ? "#d97706" : statusColor(conv.status) }}>
+                    style={{ background: needsAttn ? "#ef4444" : (isLead && conv.status === "confirmed") ? GOLD : isLead ? "#3b82f6" : isLong ? "#d97706" : statusColor(conv.status) }}>
                     {statusLabel(conv.status, needsAttn, isLong, isLead)}
                   </span>
                 </div>
@@ -1755,102 +1782,69 @@ function LiveMonitoringTab() {
 }
 
 /* ════════════════════════════════════════════════════════════════
-   TAB 5 — RÉCUPÉRATION IA (Pro Plan Only)
+   TAB 5 — VENTES DIRECTES (IA) — WhatsApp Conversion Ads
 ════════════════════════════════════════════════════════════════ */
-function RecoveryTab() {
+function VentesDirectesTab() {
   const { toast } = useToast();
-  const [enabled, setEnabled] = useState(false);
-  const [waitMinutes, setWaitMinutes] = useState(30);
-  const [isPro, setIsPro] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  const { data: settings, isLoading: loadingSettings } = useQuery<any>({
-    queryKey: ["/api/automation/recovery-settings"],
-    queryFn: async () => {
-      const r = await fetch("/api/automation/recovery-settings", { credentials: "include" });
-      if (r.status === 403) { setIsPro(false); return null; }
-      setIsPro(true);
-      return r.json();
-    },
-    retry: false,
-  });
 
   const { data: stats, isLoading: loadingStats } = useQuery<any>({
-    queryKey: ["/api/automation/recovery-stats"],
+    queryKey: ["/api/automation/direct-sales-stats"],
     queryFn: async () => {
-      const r = await fetch("/api/automation/recovery-stats", { credentials: "include" });
-      if (!r.ok) return { total: 0, recovered: 0, revenueRecovered: 0 };
+      const r = await fetch("/api/automation/direct-sales-stats", { credentials: "include" });
+      if (!r.ok) return { totalChats: 0, leadsConverted: 0, revenueGenerated: 0 };
       return r.json();
     },
-    refetchInterval: 60000,
-    enabled: isPro,
+    refetchInterval: 30000,
   });
 
-  const { data: sub } = useQuery<any>({ queryKey: ["/api/subscription"] });
-  const webhookKey = useQuery<any>({ queryKey: ["/api/store"] }).data?.webhookKey;
-
-  useEffect(() => {
-    if (settings) {
-      setEnabled(!!settings.enabled);
-      setWaitMinutes(settings.waitMinutes ?? 30);
-    }
-  }, [settings]);
-
-  async function save() {
-    setSaving(true);
-    try {
-      const r = await fetch("/api/automation/recovery-settings", {
-        method: "PUT", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled, waitMinutes }),
-      });
-      if (!r.ok) throw new Error((await r.json()).message);
-      queryClient.invalidateQueries({ queryKey: ["/api/automation/recovery-settings"] });
-      toast({ title: enabled ? "Récupération activée ✅" : "Récupération désactivée", description: `Délai d'attente: ${waitMinutes} minutes` });
-    } catch (e: any) {
-      toast({ title: "Erreur", description: e.message, variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (!isPro) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
-          <Lock className="w-8 h-8 text-white" />
-        </div>
-        <h2 className="text-2xl font-bold mb-2" style={{ color: NAVY }}>Fonctionnalité Pro</h2>
-        <p className="text-zinc-500 max-w-md mb-6">
-          Le système de Récupération IA est réservé aux abonnés du plan Pro. Passez au Pro pour récupérer automatiquement vos leads abandonnés et augmenter votre CA pendant que vous dormez.
-        </p>
-        <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100 max-w-sm w-full mb-6">
-          <div className="text-3xl font-bold mb-1" style={{ color: GOLD }}>400 DH<span className="text-sm font-normal text-zinc-400">/mois</span></div>
-          <div className="text-sm text-zinc-500 mb-4">Plan Pro — Commandes illimitées</div>
-          <ul className="text-left space-y-2 text-sm text-zinc-600">
-            <li className="flex items-center gap-2"><Check className="w-4 h-4" style={{ color: GOLD }} />Récupération IA abandonnés</li>
-            <li className="flex items-center gap-2"><Check className="w-4 h-4" style={{ color: GOLD }} />Commandes illimitées</li>
-            <li className="flex items-center gap-2"><Check className="w-4 h-4" style={{ color: GOLD }} />Toutes les fonctionnalités IA</li>
-          </ul>
-        </div>
-        <p className="text-xs text-zinc-400">Contactez le Super Admin pour upgrader votre plan.</p>
-      </div>
-    );
-  }
+  const convRate = stats?.totalChats > 0
+    ? Math.round((stats.leadsConverted / stats.totalChats) * 100)
+    : 0;
 
   const statCards = [
-    { label: "Leads Abandonnés", value: stats?.total ?? 0, icon: <ShoppingCart className="w-5 h-5" />, color: "#6366f1" },
-    { label: "Leads Récupérés", value: stats?.recovered ?? 0, icon: <TrendingUp className="w-5 h-5" />, color: GOLD },
-    { label: "CA Récupéré", value: `${((stats?.revenueRecovered ?? 0) / 100).toFixed(0)} DH`, icon: <DollarSign className="w-5 h-5" />, color: GOLD },
+    {
+      label: "Total Chats",
+      value: stats?.totalChats ?? 0,
+      icon: <MessageCircle className="w-5 h-5" />,
+      color: NAVY,
+      sub: "nouveaux leads via WhatsApp Ads",
+    },
+    {
+      label: "Leads Convertis",
+      value: stats?.leadsConverted ?? 0,
+      icon: <CheckCircle2 className="w-5 h-5" />,
+      color: GOLD,
+      sub: `${convRate}% taux de conversion`,
+      showBar: true,
+      barPct: convRate,
+    },
+    {
+      label: "CA Généré",
+      value: `${Math.round((stats?.revenueGenerated ?? 0) / 100)} DH`,
+      icon: <DollarSign className="w-5 h-5" />,
+      color: GOLD,
+      sub: "via commandes IA directes",
+    },
   ];
-
-  const recoveryRate = stats?.total > 0 ? Math.round((stats.recovered / stats.total) * 100) : 0;
-
-  const currentHost = window.location.origin;
-  const abandonedWebhookUrl = webhookKey ? `${currentHost}/api/webhooks/abandoned-checkout/${webhookKey}` : "...en chargement";
 
   return (
     <div className="space-y-6">
+
+      {/* Hero Banner */}
+      <div className="rounded-2xl p-6 text-white" style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}>
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
+            <Target className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold mb-1">Ventes Directes (IA) — WhatsApp Ads</h2>
+            <p className="text-white/70 text-sm leading-relaxed">
+              Chaque nouveau message WhatsApp d'un inconnu est détecté automatiquement. L'IA collecte le Nom, Ville, Adresse et Quantité, puis crée la commande instantanément — sans intervention humaine.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {statCards.map((c) => (
@@ -1864,130 +1858,71 @@ function RecoveryTab() {
             <div className="text-3xl font-bold" style={{ color: c.color }}>
               {loadingStats ? <Loader2 className="w-6 h-6 animate-spin" /> : c.value}
             </div>
-            {c.label === "Leads Récupérés" && (
+            {c.showBar && (
               <div className="mt-2">
                 <div className="h-1.5 bg-zinc-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${recoveryRate}%`, background: GOLD }} />
+                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${c.barPct}%`, background: GOLD }} />
                 </div>
-                <span className="text-xs text-zinc-400 mt-1">{recoveryRate}% taux de récupération</span>
               </div>
             )}
+            <p className="text-xs text-zinc-400 mt-1">{c.sub}</p>
           </div>
         ))}
       </div>
 
-      {/* Money Machine Card */}
-      {stats?.revenueRecovered > 0 && (
-        <div className="rounded-2xl p-5 text-white" style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
-              <DollarSign className="w-5 h-5 text-yellow-300" />
-            </div>
+      {/* Revenue Machine Banner (only when revenue > 0) */}
+      {(stats?.revenueGenerated ?? 0) > 0 && (
+        <div className="rounded-2xl p-5" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
+          <div className="flex items-center gap-3 text-white">
+            <DollarSign className="w-7 h-7 shrink-0" />
             <div>
-              <div className="font-bold text-lg">TajerGrow a récupéré <span style={{ color: GOLD }}>{((stats.revenueRecovered) / 100).toFixed(0)} DH</span> pour vous 💰</div>
-              <div className="text-white/60 text-sm">pendant que vous dormiez — l'IA travaille 24h/24</div>
+              <div className="font-bold text-lg">
+                L'IA a généré <span className="underline">{Math.round(stats.revenueGenerated / 100)} DH</span> en ventes directes 🏆
+              </div>
+              <div className="text-white/80 text-sm">Commandes créées automatiquement depuis des leads WhatsApp Ads</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Configuration Card */}
+      {/* How It Works */}
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100">
-        <h3 className="text-base font-bold mb-5" style={{ color: NAVY }}>Configuration de la Récupération Automatique</h3>
-
-        {/* Enable Toggle */}
-        <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: enabled ? GOLD : "#e4e4e7" }}>
-              <TrendingUp className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <div className="font-semibold text-sm text-zinc-800">Activer la récupération automatique</div>
-              <div className="text-xs text-zinc-400">L'IA contacte les leads abandonnés par WhatsApp</div>
-            </div>
-          </div>
-          <button
-            onClick={() => setEnabled(!enabled)}
-            className={cn("relative w-12 h-6 rounded-full transition-all", enabled ? "" : "bg-zinc-300")}
-            style={enabled ? { background: NAVY } : undefined}
-            data-testid="toggle-recovery-enabled"
-          >
-            <span className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all", enabled ? "left-6" : "left-0.5")} />
-          </button>
-        </div>
-
-        {/* Wait Time */}
-        <div className="p-4 rounded-xl bg-zinc-50 mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <Timer className="w-4 h-4 text-zinc-500" />
-            <span className="text-sm font-semibold text-zinc-700">Délai avant contact</span>
-          </div>
-          <div className="grid grid-cols-4 gap-2">
-            {[15, 30, 60, 120].map(m => (
-              <button
-                key={m}
-                onClick={() => setWaitMinutes(m)}
-                className={cn("py-2 rounded-xl text-sm font-bold border-2 transition-all", waitMinutes === m ? "text-white border-transparent" : "text-zinc-500 border-zinc-200 bg-white hover:border-zinc-300")}
-                style={waitMinutes === m ? { background: `linear-gradient(135deg, ${GOLD}, #d4aa60)`, borderColor: "transparent" } : {}}
-                data-testid={`btn-wait-${m}`}
-              >
-                {m < 60 ? `${m} min` : `${m / 60}h`}
-              </button>
-            ))}
-          </div>
-          <p className="text-xs text-zinc-400 mt-2">L'IA attend {waitMinutes} minutes après l'abandon avant d'envoyer le premier message.</p>
-        </div>
-
-        <button
-          onClick={save}
-          disabled={saving}
-          className="w-full py-3 rounded-xl text-white font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-2"
-          style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}
-          data-testid="button-save-recovery"
-        >
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-          Enregistrer les paramètres
-        </button>
+        <h3 className="text-base font-bold mb-4" style={{ color: NAVY }}>Comment ça marche — Flux automatique</h3>
+        <ol className="space-y-4">
+          {[
+            { step: "1", title: "Nouveau message reçu", desc: "Un client vous contacte via votre pub WhatsApp Ads — numéro inconnu.", icon: <MessageCircle className="w-4 h-4" /> },
+            { step: "2", title: "Vérification identité", desc: "Le système vérifie : ce numéro est-il dans la table Commandes? Si NON → Ventes Directes.", icon: <Users className="w-4 h-4" /> },
+            { step: "3", title: "IA Vendeur (Darija)", desc: "L'IA collecte : Nom complet → Ville → Adresse → Quantité → Confirmation.", icon: <Bot className="w-4 h-4" /> },
+            { step: "4", title: "Commande créée", desc: 'Dès que le client confirme, une commande est insérée avec status="confirme" et utm_source="WA-Direct-Ad".', icon: <CheckCircle2 className="w-4 h-4" /> },
+          ].map(({ step, title, desc, icon }) => (
+            <li key={step} className="flex items-start gap-4">
+              <div className="w-8 h-8 rounded-xl flex items-center justify-center text-white shrink-0 text-sm font-bold" style={{ background: GOLD }}>
+                {step}
+              </div>
+              <div className="flex-1 pt-0.5">
+                <div className="flex items-center gap-2 font-semibold text-sm text-zinc-800 mb-0.5">
+                  <span style={{ color: NAVY }}>{icon}</span>
+                  {title}
+                </div>
+                <p className="text-xs text-zinc-500">{desc}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
       </div>
 
-      {/* Webhook Setup Card */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100">
-        <h3 className="text-base font-bold mb-1" style={{ color: NAVY }}>Webhook d'Abandon (Shopify / YouCan)</h3>
-        <p className="text-sm text-zinc-500 mb-4">Configurez cette URL dans Shopify → Paramètres → Notifications → Webhooks → Paiements abandonnés</p>
-        <div className="flex items-center gap-2 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
-          <code className="text-xs text-zinc-700 flex-1 break-all">{abandonedWebhookUrl}</code>
-          <button
-            onClick={() => { navigator.clipboard.writeText(abandonedWebhookUrl); toast({ title: "URL copiée !" }); }}
-            className="shrink-0 p-2 rounded-lg hover:bg-zinc-200 transition-colors"
-            data-testid="button-copy-webhook"
-          >
-            <Copy className="w-4 h-4 text-zinc-500" />
-          </button>
-        </div>
-        <div className="mt-4 p-4 rounded-xl" style={{ background: "rgba(197, 160, 89, 0.08)", border: "1px solid rgba(197, 160, 89, 0.2)" }}>
-          <p className="text-xs font-semibold mb-2" style={{ color: GOLD }}>Comment ça marche:</p>
-          <ol className="text-xs text-zinc-600 space-y-1">
-            <li>1. Un client remplit son numéro mais ne finalise pas l'achat</li>
-            <li>2. Shopify envoie les données à TajerGrow via ce webhook</li>
-            <li>3. Après {waitMinutes} min, l'IA envoie un message WhatsApp en Darija</li>
-            <li>4. L'IA répond aux objections et guide le client vers la confirmation</li>
-            <li>5. Le statut passe à "Confirmé" et votre dashboard se met à jour ✅</li>
-          </ol>
+      {/* Monitoring tip */}
+      <div className="rounded-2xl p-4 flex items-start gap-3" style={{ background: "rgba(197, 160, 89, 0.08)", border: "1px solid rgba(197, 160, 89, 0.25)" }}>
+        <Radio className="w-4 h-4 shrink-0 mt-0.5" style={{ color: GOLD }} />
+        <div>
+          <p className="text-sm font-semibold mb-0.5" style={{ color: NAVY }}>Suivre en temps réel</p>
+          <p className="text-xs text-zinc-500">
+            Dans l'onglet <strong>Live Monitoring</strong>, activez le filtre <strong>"Ventes Directes"</strong> pour voir uniquement les conversations IA avec de nouveaux leads. Les badges <span className="font-bold" style={{ color: GOLD }}>Converti 🏆</span> indiquent les deals closés en temps réel.
+          </p>
         </div>
       </div>
 
-      {/* Recovery Message Preview */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100">
-        <h3 className="text-base font-bold mb-4" style={{ color: NAVY }}>Aperçu du Message de Récupération</h3>
-        <div className="bg-[#ECE5DD] rounded-2xl p-4">
-          <div className="max-w-xs bg-white rounded-2xl rounded-tl-sm p-3 shadow-sm text-sm" dir="rtl" style={{ fontFamily: "sans-serif" }}>
-            السلام عليكم سيدي/لالة، شلنا باللي كنتي باغي تاخد "Nom_Produit" ولكن وقع شي مشكل؟
-            <br />واش عندك شي تساؤل نقدر نجاوبك عليه؟ راه بقى لينا غير 5 حبات فـ السطوك. 🛍️
-            <div className="text-[10px] text-zinc-400 mt-1 text-left">IA · TajerGrow</div>
-          </div>
-        </div>
-        <p className="text-xs text-zinc-400 mt-3">Le message est envoyé automatiquement. L'IA répond ensuite aux questions du client en Darija marocaine.</p>
-      </div>
     </div>
   );
 }
+

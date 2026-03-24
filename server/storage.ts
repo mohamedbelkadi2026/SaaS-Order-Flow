@@ -174,8 +174,9 @@ export interface IStorage {
   // Lead management
   getConnectedStoreIds(): Promise<number[]>;
   phoneHasOrdersInStore(storeId: number, phone: string): Promise<boolean>;
-  updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; createdOrderId?: number }): Promise<void>;
-  createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number }): Promise<import("@shared/schema").Order>;
+  updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; leadQuantity?: number; createdOrderId?: number }): Promise<void>;
+  createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number; quantity?: number }): Promise<import("@shared/schema").Order>;
+  getDirectSalesStats(storeId: number): Promise<{ totalChats: number; leadsConverted: number; revenueGenerated: number }>;
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
@@ -2276,13 +2277,14 @@ export class DatabaseStorage implements IStorage {
     return result.length > 0;
   }
 
-  async updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; createdOrderId?: number }) {
+  async updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; leadQuantity?: number; createdOrderId?: number }) {
     const { aiConversations } = await import("@shared/schema");
     await db.update(aiConversations).set(data as any).where(eq(aiConversations.id, convId));
   }
 
-  async createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number }): Promise<import("@shared/schema").Order> {
+  async createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number; quantity?: number }): Promise<import("@shared/schema").Order> {
     const { orderItems: orderItemsTable } = await import("@shared/schema");
+    const qty = Math.max(1, data.quantity ?? 1);
     const orderNumber = `LEAD-${Date.now()}`;
     const [order] = await db.insert(orders).values({
       storeId: data.storeId,
@@ -2291,10 +2293,10 @@ export class DatabaseStorage implements IStorage {
       customerPhone: data.customerPhone,
       customerCity: data.customerCity,
       customerAddress: data.customerAddress,
-      totalPrice: data.price,
+      totalPrice: data.price * qty,
       status: "confirme",
       source: "whatsapp",
-      utmSource: "FB-Ads-Direct",
+      utmSource: "WA-Direct-Ad",
       rawProductName: data.productName,
       productCost: 0,
       shippingCost: 0,
@@ -2305,16 +2307,39 @@ export class DatabaseStorage implements IStorage {
       await db.insert(orderItemsTable).values({
         orderId: order.id,
         productId: data.productId,
-        quantity: 1,
+        quantity: qty,
         price: data.price,
         rawProductName: data.productName,
       });
-      // Decrement stock
-      await db.update(products).set({ stock: sql`${products.stock} - 1` }).where(and(eq(products.id, data.productId), sql`${products.stock} > 0`));
+      // Decrement stock by quantity
+      await db.update(products).set({ stock: sql`${products.stock} - ${qty}` }).where(and(eq(products.id, data.productId), sql`${products.stock} > 0`));
     }
     // Increment monthly order counter
     try { await this.incrementMonthlyOrders(data.storeId); } catch {}
     return order;
+  }
+
+  async getDirectSalesStats(storeId: number): Promise<{ totalChats: number; leadsConverted: number; revenueGenerated: number }> {
+    const { aiConversations: convTable } = await import("@shared/schema");
+    const { count, sum } = await import("drizzle-orm");
+    const [totalRow] = await db.select({ c: count() }).from(convTable)
+      .where(and(eq(convTable.storeId, storeId), eq(convTable.isNewLead, 1)));
+    const [convertedRow] = await db.select({ c: count() }).from(convTable)
+      .where(and(eq(convTable.storeId, storeId), eq(convTable.isNewLead, 1), eq(convTable.status, "confirmed")));
+    // Revenue = sum of (leadPrice * leadQuantity) for confirmed leads
+    const convRows = await db.select({ leadPrice: convTable.leadPrice, leadQuantity: convTable.leadQuantity })
+      .from(convTable)
+      .where(and(eq(convTable.storeId, storeId), eq(convTable.isNewLead, 1), eq(convTable.status, "confirmed")));
+    const revenueGenerated = convRows.reduce((acc, r) => {
+      const qty = r.leadQuantity ?? 1;
+      const price = r.leadPrice ?? 0;
+      return acc + price * qty;
+    }, 0);
+    return {
+      totalChats: Number(totalRow?.c ?? 0),
+      leadsConverted: Number(convertedRow?.c ?? 0),
+      revenueGenerated,
+    };
   }
 
   async getWhatsappSession(storeId: number) {

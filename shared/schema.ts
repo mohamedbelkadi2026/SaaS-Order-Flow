@@ -493,6 +493,7 @@ export const aiConversations = pgTable("ai_conversations", {
   leadProductId: integer("lead_product_id"),
   leadProductName: text("lead_product_name"),
   leadPrice: integer("lead_price"),                       // centimes
+  leadQuantity: integer("lead_quantity").default(1),
   createdOrderId: integer("created_order_id"),
 });
 export const insertAiConversationSchema = createInsertSchema(aiConversations).omit({ id: true, createdAt: true, lastMessageAt: true });

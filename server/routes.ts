@@ -3321,6 +3321,17 @@ export async function registerRoutes(
     res.json(await storage.getRecoveryStats(req.user!.storeId!));
   });
 
+  app.get("/api/automation/direct-sales-stats", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.isSuperAdmin && req.query.storeId
+        ? Number(req.query.storeId)
+        : req.user!.storeId!;
+      res.json(await storage.getDirectSalesStats(storeId));
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   /* ── Abandoned checkout webhook (generic + Shopify) ───────────── */
   app.post("/api/webhooks/abandoned-checkout/:webhookKey", async (req: any, res: any) => {
     try {

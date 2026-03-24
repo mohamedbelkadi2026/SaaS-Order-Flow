@@ -1,0 +1,23 @@
+"I need to replace the 'Récupération IA' section with a new module called 'Ventes Directes (IA)'. This module is specifically for handling new leads from WhatsApp Conversion Ads. It must be isolated from the standard confirmation flow. Follow these steps:
+1. UI Update (The Menu):
+Rename 'Récupération IA' to 'Ventes Directes (IA)'.
+Create a dashboard for this section showing: Total Chats, Leads Converted, and Revenue Generated via AI Sales.
+2. Smart Inbound Logic (The Listener):
+Update the WhatsApp messages.upsert logic:
+Step 1: Identity Check: When a message is received, check if the phone number exists in the Orders table.
+Step 2: Routing:
+If the number EXISTS: Use the standard 'Confirmation Flow'.
+If the number DOES NOT EXIST: Trigger the 'Sales Closer Flow' (Ventes Directes).
+3. AI Sales Closer Logic (OpenRouter + DeepSeek):
+Role: The AI must act as a 'Persuasive Moroccan Salesman'.
+Objective: Convert the chat into a real order by collecting: Full Name, City, Address, and Quantity.
+Product Context: The AI must use the ai_description from our Products table to answer questions about price and quality.
+System Prompt: 'You are a Sales Expert for {Nom_Boutique}. A new customer just messaged you from an ad. Be extremely friendly in Darija, explain the product, and ask for their delivery info. Once they agree, say the order is confirmed.'
+4. Automated Order Creation (The '3amali' Part):
+Intent Detection: If the AI successfully collects all info and the customer says 'Yes/Confirm/صيفطوه':
+Action: Automatically INSERT a new row into the Orders table.
+Fields: Customer Name, Phone, City, Address, Product (match by keyword), status = 'confirme', and utm_source = 'WA-Direct-Ad'.
+5. Isolated Monitoring:
+In the 'Live Monitoring' tab, add a toggle or filter: [Confirmation Orders] vs [Direct Sales Chats].
+I want to see the AI 'closing' deals with new people in real-time.
+Technical Instruction: Use a 'Conversation State' (e.g., LEAD_COLLECTING_NAME, LEAD_COLLECTING_CITY) in the database to manage these new customers. Ensure the #C5A059 (Gold) theme is used for the 'Converted' badges."

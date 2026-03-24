@@ -829,7 +829,7 @@ export async function handleIncomingMessage(
                   → (AWAITING_PRODUCT) → AWAITING_CONFIRM → DONE
 ════════════════════════════════════════════════════════════════ */
 
-type LeadStage = "AWAITING_NAME" | "AWAITING_CITY" | "AWAITING_ADDRESS" | "AWAITING_PRODUCT" | "AWAITING_CONFIRM" | "DONE";
+type LeadStage = "AWAITING_NAME" | "AWAITING_CITY" | "AWAITING_ADDRESS" | "AWAITING_QUANTITY" | "AWAITING_PRODUCT" | "AWAITING_CONFIRM" | "DONE";
 
 /* ── Find best matching product for a store from a free-text message ── */
 async function detectLeadProduct(storeId: number, message: string): Promise<{ id: number; name: string; price: number; description: string } | null> {
@@ -868,10 +868,11 @@ async function generateLeadReply(
 
   // Cached fallback replies — used if AI call fails
   const fallbacks: Partial<Record<LeadStage, string>> = {
-    AWAITING_NAME:    `مرحبا ${name || "صديقي"} 😊! فأي مدينة غتوصلوك؟`,
-    AWAITING_CITY:    `مزيان ${name}! أعطيني عنوانك بالتفصيل (الحي والشارع) 📦`,
-    AWAITING_ADDRESS: `صافي ${name} 📋\n✅ ${product}\n📍 ${city} — ${customerMessage}\n💰 ${priceLabel} + شحن مجاني\nواش نؤكد ليك؟`,
-    AWAITING_CONFIRM: `شكراً على السؤال 🙏 المنتج ممتاز والتوصيل مجاني. واش نؤكد ليك الطلبية؟`,
+    AWAITING_NAME:     `مرحبا ${name || "صديقي"} 😊! فأي مدينة غتوصلوك؟`,
+    AWAITING_CITY:     `مزيان ${name}! أعطيني عنوانك بالتفصيل (الحي والشارع) 📦`,
+    AWAITING_ADDRESS:  `صافي ${name} 📋 شحال بغيتي من ${product}؟ (1، 2، ...)`,
+    AWAITING_QUANTITY: `صافي ${name} 📋\n✅ ${product}\n📍 ${city} — ${customerMessage}\n💰 ${priceLabel} + شحن مجاني\nواش نؤكد ليك؟`,
+    AWAITING_CONFIRM:  `شكراً على السؤال 🙏 المنتج ممتاز والتوصيل مجاني. واش نؤكد ليك الطلبية؟`,
   };
 
   try {
@@ -897,12 +898,13 @@ async function generateLeadReply(
     }
 
     const systemPrompts: Record<LeadStage, string> = {
-      AWAITING_NAME: `أنت وكيل مبيعات محترف من متجر "${storeName}" على واتساب. العميل تواصل معك بعد رؤية إعلان على فيسبوك. تحدث فقط بالدارجة المغربية الطبيعية. العميل أعطاك اسمه أو رد عليك. رحب به بحرارة وأكد اسمه واسأله عن المدينة ديالو للتوصيل. جواب 2 سطر بحد أقصى.`,
-      AWAITING_CITY: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}". أكد المدينة واسأله عن العنوان الكامل (الحي والشارع) باش نوصلوه مزيان. دارجة مغربية طبيعية. جواب 2 سطر.`,
-      AWAITING_ADDRESS: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك العنوان. دير ملخص الطلبية بالكامل:\n- المنتج: ${product}\n- المدينة: ${city}\n- العنوان: "${customerMessage}"\n- الثمن: ${priceLabel} (توصيل مجاني)\n- الدفع عند الاستلام "قلب عاد خلص" ✅\nواسأله "واش نؤكد ليك الطلبية؟" بالدارجة. جواب 4 سطر.`,
-      AWAITING_PRODUCT: `أنت وكيل مبيعات من "${storeName}". العميل بغى يطلب منتج من هاد القائمة:\n${productList || "—"}\nبناءً على جواب العميل: "${customerMessage}"، دير مطابقة وقول لو المنتج لي اخترو وسأله "واش هادا هو؟". دارجة مغربية. جواب 2 سطر.`,
-      AWAITING_CONFIRM: `أنت وكيل مبيعات محترف من "${storeName}".\nالمنتج: ${product}\nالثمن: ${priceLabel}\nالدفع عند الاستلام "قلب عاد خلص"\nالتوصيل مجاني 24-48 ساعة${productKnowledge ? `\nمعلومات المنتج: ${productKnowledge}` : ""}.\n\nإذا سألك العميل عن الجودة أو الثمن أو التوصيل: جاوبه بثقة باستخدام معلومات المنتج.\nإذا قال "واخا" أو "نعم" أو "موافق": قل له الطلبية تأكدات.\nإذا رفض: ودعه بلطف.\nدارجة مغربية طبيعية. 2-3 سطر.`,
-      DONE: `قل للعميل أن طلبيته في المعالجة وأنكم ستتواصل معه للتأكيد. دارجة مغربية. سطر واحد.`,
+      AWAITING_NAME:     `أنت وكيل مبيعات محترف من متجر "${storeName}" على واتساب. العميل تواصل معك بعد رؤية إعلان على فيسبوك. تحدث فقط بالدارجة المغربية الطبيعية. العميل أعطاك اسمه أو رد عليك. رحب به بحرارة وأكد اسمه واسأله عن المدينة ديالو للتوصيل. جواب 2 سطر بحد أقصى.`,
+      AWAITING_CITY:     `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}". أكد المدينة واسأله عن العنوان الكامل (الحي والشارع) باش نوصلوه مزيان. دارجة مغربية طبيعية. جواب 2 سطر.`,
+      AWAITING_ADDRESS:  `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك العنوان. الآن اسأله كم عدد القطع بغيهم من ${product}. دارجة مغربية. جواب سطر واحد.`,
+      AWAITING_QUANTITY: `أنت وكيل مبيعات من "${storeName}". العميل اسمو "${name}"، ساكن ف "${city}". أعطاك الكمية. دير ملخص الطلبية بالكامل:\n- المنتج: ${product}\n- المدينة: ${city}\n- الكمية: القطع المطلوبة\n- الثمن: ${priceLabel} (توصيل مجاني)\n- الدفع عند الاستلام "قلب عاد خلص" ✅\nواسأله "واش نؤكد ليك الطلبية؟" بالدارجة. جواب 4 سطر.`,
+      AWAITING_PRODUCT:  `أنت وكيل مبيعات من "${storeName}". العميل بغى يطلب منتج من هاد القائمة:\n${productList || "—"}\nبناءً على جواب العميل: "${customerMessage}"، دير مطابقة وقول لو المنتج لي اخترو وسأله "واش هادا هو؟". دارجة مغربية. جواب 2 سطر.`,
+      AWAITING_CONFIRM:  `أنت وكيل مبيعات محترف من "${storeName}".\nالمنتج: ${product}\nالثمن: ${priceLabel}\nالدفع عند الاستلام "قلب عاد خلص"\nالتوصيل مجاني 24-48 ساعة${productKnowledge ? `\nمعلومات المنتج: ${productKnowledge}` : ""}.\n\nإذا سألك العميل عن الجودة أو الثمن أو التوصيل: جاوبه بثقة باستخدام معلومات المنتج.\nإذا قال "واخا" أو "نعم" أو "موافق": قل له الطلبية تأكدات.\nإذا رفض: ودعه بلطف.\nدارجة مغربية طبيعية. 2-3 سطر.`,
+      DONE:              `قل للعميل أن طلبيته في المعالجة وأنكم ستتواصل معه للتأكيد. دارجة مغربية. سطر واحد.`,
     };
 
     // ── Call AI ───────────────────────────────────────────────────
@@ -1070,29 +1072,36 @@ export async function handleLeadMessage(
 
     } else if (stage === "AWAITING_ADDRESS") {
       const address = message.trim();
-      // Check if we need to ask for product
+      // Always ask for quantity next (new stage)
+      leadUpdates = { leadAddress: address, leadStage: "AWAITING_QUANTITY" };
+      nextStage = "AWAITING_QUANTITY";
+      reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address } as any, message, storeName);
+
+    } else if (stage === "AWAITING_QUANTITY") {
+      // Extract quantity from message (number detection)
+      const num = parseInt(message.trim().replace(/[^\d]/g, "")) || 1;
+      const qty = Math.max(1, Math.min(100, num));
+      // Now decide next stage: product detection or confirm
       if (!conv.leadProductId) {
         const prods = await storage.getProductsByStore(storeId);
         if (prods.length > 1) {
-          // Need to ask for product
           const productList = prods.map((p, i) => `${i + 1}. ${p.name} — ${Math.round((p.price || 0) / 100)} DH`).join("\n");
-          leadUpdates = { leadAddress: address, leadStage: "AWAITING_PRODUCT" };
+          leadUpdates = { leadQuantity: qty, leadStage: "AWAITING_PRODUCT" };
           nextStage = "AWAITING_PRODUCT";
-          reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address } as any, message, storeName, productList);
+          reply = await generateLeadReply(storeId, "AWAITING_QUANTITY", { ...conv, leadQuantity: qty } as any, message, storeName, productList);
         } else if (prods.length === 1) {
-          // Auto-select the only product
-          leadUpdates = { leadAddress: address, leadProductId: prods[0].id, leadProductName: prods[0].name, leadPrice: prods[0].price ?? 0, leadStage: "AWAITING_CONFIRM" };
+          leadUpdates = { leadQuantity: qty, leadProductId: prods[0].id, leadProductName: prods[0].name, leadPrice: prods[0].price ?? 0, leadStage: "AWAITING_CONFIRM" };
           nextStage = "AWAITING_CONFIRM";
-          reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address, leadProductName: prods[0].name, leadPrice: prods[0].price ?? 0 } as any, message, storeName);
+          reply = await generateLeadReply(storeId, "AWAITING_QUANTITY", { ...conv, leadQuantity: qty, leadProductName: prods[0].name, leadPrice: prods[0].price ?? 0 } as any, message, storeName);
         } else {
-          leadUpdates = { leadAddress: address, leadStage: "AWAITING_CONFIRM" };
+          leadUpdates = { leadQuantity: qty, leadStage: "AWAITING_CONFIRM" };
           nextStage = "AWAITING_CONFIRM";
-          reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address } as any, message, storeName);
+          reply = await generateLeadReply(storeId, "AWAITING_QUANTITY", { ...conv, leadQuantity: qty } as any, message, storeName);
         }
       } else {
-        leadUpdates = { leadAddress: address, leadStage: "AWAITING_CONFIRM" };
+        leadUpdates = { leadQuantity: qty, leadStage: "AWAITING_CONFIRM" };
         nextStage = "AWAITING_CONFIRM";
-        reply = await generateLeadReply(storeId, "AWAITING_ADDRESS", { ...conv, leadAddress: address } as any, message, storeName);
+        reply = await generateLeadReply(storeId, "AWAITING_QUANTITY", { ...conv, leadQuantity: qty } as any, message, storeName);
       }
 
     } else if (stage === "AWAITING_PRODUCT") {
@@ -1130,6 +1139,7 @@ export async function handleLeadMessage(
             productId: conv.leadProductId ?? null,
             productName: conv.leadProductName || "",
             price: conv.leadPrice ?? 0,
+            quantity: conv.leadQuantity ?? 1,
           });
 
           await storage.updateLeadFields(conv.id, { leadStage: "DONE", createdOrderId: order.id });
