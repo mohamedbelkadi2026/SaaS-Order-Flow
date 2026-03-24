@@ -95,6 +95,12 @@ const ATTENTION_KEYWORDS = [
   "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
   "واحد حقيقي", "تكلم معاي", "تكلموا معايا", "بشر", "مسؤول",
   "complaint", "شكاية", "عندي مشكل", "مشكلة", "راجعني", "انسان",
+  // Complex post-order requests that require human intervention
+  "بغيت نبدل المقاس", "بغيت نبدل اللون", "بغيت نبدل العنوان",
+  "بغيت نغير المقاس", "بغيت نغير العنوان", "بغيت نغير اللون",
+  "غلطت فـ العنوان", "غلطت فـ المقاس", "عنواني غلط",
+  "بغيت نرجع", "رجوع", "استرجاع", "تبديل", "ناو صحيح",
+  "ما جاتش", "ما وصلاتش", "مشكلة فـ التوصيل",
 ];
 
 const MOROCCAN_CITIES = [
@@ -375,14 +381,30 @@ ${city ? `- City: ${city}` : ""}${variant ? `\n- Size/Variant: ${variant}` : ""}
 ${knowledgeBlock}
 ${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}`;
 
+  // ── POST-DELIVERY MODE — order was delivered ────────────────────────
+  if (ctx?.orderStatus === "livré") {
+    const productLabel2 = ctx.productName ?? "المنتج";
+    return `${base}
+
+POST-DELIVERY SUPPORT MODE — The order has been DELIVERED (status: livré).
+Your role: thank the customer, ask for a review, and handle any post-delivery issues warmly.
+
+RULES FOR THIS MODE:
+- Start with: "وصلاتك الكوموند ${address.formal}؟ كنتمنى يكون عجبك ${productLabel2}! 😊"
+- If they are happy: celebrate and ask for a review/recommendation
+- If they have a problem (wrong size, defective, etc.): respond with empathy and say a human agent will follow up
+- ALWAYS be warm and appreciative
+- Keep replies SHORT: 1-2 lines max`;
+  }
+
   // ── DELIVERY COMPANION MODE — activated when order already confirmed ──
   if (ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours") {
     const trackingLine = ctx.trackNumber
       ? `رقم التتبع ديالك: *${ctx.trackNumber}*${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""}`
       : null;
     const deliveryStatus = ctx.orderStatus === "expédié" || ctx.orderStatus === "en_cours"
-      ? "الطلبية ديالك خرجات وهي فـ الطريق ليك 🚚"
-      : "الطلبية ديالك تأكدات وغتخرج قريبا إن شاء الله ✅";
+      ? `الكوموند ديالك راها عند شركة الشحن${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""} وهي فـ الطريق ليك 🚚${trackingLine ? `\nرقم التتبع ديالك: *${ctx.trackNumber}*` : ""}`
+      : "الكوموند ديالك سيدي/لالة راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅";
 
     return `${base}
 
@@ -394,8 +416,10 @@ ${trackingLine ? `TRACKING: ${trackingLine}` : "No tracking number yet."}
 
 RULES FOR THIS MODE:
 - Do NOT ask for city/variant/confirmation — order is already placed
-- If customer asks "فين الكوموند؟" / "فين وصلات؟" / "وين الكوموند" / "متى يجي": respond with "${deliveryStatus}"${trackingLine ? ` and provide: "${trackingLine}"` : ""}
-- If status is "expédié": "الموزع قريب — وجد راسك ${address.formal} وكن فـ الدار باش يوصلك 🚚"
+- If customer asks "فين الكوموند؟" / "فين وصلات؟" / "وين الكوموند" / "سلام" / "متى يجي":
+  Respond EXACTLY with the status: "${deliveryStatus}"
+- If status is "confirme": say "الكوموند ديالك سيدي/لالة راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅"
+- If status is "expédié" or "en_cours": give tracking info if available, say "وجد راسك ${address.formal} وكن فـ الدار باش يوصلك 🚚"
 - If customer wants to CANCEL: respond with "مفهوم ${address.formal}، غنلغيوها ليك دابا" — this signals CANCEL intent
 - If customer asks about product after confirm: answer questions warmly
 - ALWAYS be reassuring — the order is safe and coming
@@ -597,30 +621,63 @@ export async function handleIncomingMessage(
   try {
     let conv = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
 
-    // ── Auto-start conversation for customers who text in without an active conv ──
-    // This handles: customer with a nouveau order texts "شحال الثمن؟" for the first time
+    // ── Auto-start / re-open conversation for customers who text without an active conv ──
+    // Handles all order statuses so "expédié" / "livré" customers are NEVER routed to lead flow
     if (!conv) {
-      // Find their most recent nouveau/confirme order
       const { orders: ordersTable } = await import("@shared/schema");
-      const { and: drAnd, eq: drEq, inArray: drIn } = await import("drizzle-orm");
+      const { and: drAnd, eq: drEq, inArray: drIn, desc: drDesc } = await import("drizzle-orm");
       const phoneVariants = [
         customerPhone,
         customerPhone.startsWith("+") ? customerPhone.slice(1) : `+${customerPhone}`,
         customerPhone.replace(/^\+?212/, "0"),
       ];
+
+      // Search across ALL statuses — priority: active statuses first, then delivered, then cancelled
+      const STATUS_PRIORITY = ["confirme", "expédié", "en_cours", "nouveau", "livré", "annulé", "annulé fake"];
       const [recentOrder] = await db.select()
         .from(ordersTable)
         .where(drAnd(
           drEq(ordersTable.storeId, storeId),
           drIn(ordersTable.customerPhone, phoneVariants),
-          drIn(ordersTable.status, ["nouveau", "confirme"]),
         ))
-        .orderBy(ordersTable.id)
-        .limit(1);
+        .orderBy(drDesc(ordersTable.id))
+        .limit(10)
+        .then(rows => {
+          // Sort by priority: active statuses first
+          return rows.sort((a, b) => {
+            const ai = STATUS_PRIORITY.indexOf(a.status ?? "");
+            const bi = STATUS_PRIORITY.indexOf(b.status ?? "");
+            return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+          });
+        });
 
       if (recentOrder) {
-        // Create a conversation for this order automatically
-        console.log(`[AI] Creating new conv for inbound reply — order ${recentOrder.id} phone ${customerPhone}`);
+        const orderStatus = recentOrder.status ?? "nouveau";
+        const isCancelled = orderStatus === "annulé" || orderStatus === "annulé fake";
+
+        if (isCancelled) {
+          // Cancelled order — tell them it was cancelled, offer to re-order
+          const gender2 = detectGender(recentOrder.customerName ?? "");
+          const addr2 = getGenderAddress(gender2);
+          const cancelledMsg = `السلام عليكم ${addr2.formal}! الكوموند السابقة ديالك راها ألغات. إلا بغيتي تكمل طلب جديد، راسلنا وغنساعدوك 🙏`;
+          // Create a temp conv to send the message
+          const cancelConv = await storage.createAiConversation({
+            storeId, orderId: recentOrder.id, customerPhone,
+            customerName: recentOrder.customerName ?? null,
+            status: "closed", isManual: 0, conversationStep: 1,
+          });
+          await storage.createAiLog({ storeId, orderId: recentOrder.id, customerPhone, role: "user", message: customerMessage });
+          await storage.createAiLog({ storeId, orderId: recentOrder.id, customerPhone, role: "assistant", message: cancelledMsg });
+          await storage.updateAiConversationLastMessage(cancelConv.id, cancelledMsg);
+          broadcastToStore(storeId, "message", { conversationId: cancelConv.id, role: "assistant", content: cancelledMsg, ts: Date.now() });
+          await queueWhatsApp(storeId, customerPhone, cancelledMsg);
+          console.log(`[AI] Replied to cancelled-order customer ${customerPhone} — no new conv opened`);
+          return;
+        }
+
+        // For active/shipped/delivered orders — create a live delivery companion conv
+        const startStep = (orderStatus === "nouveau") ? 2 : 1;
+        console.log(`[AI] Re-opening conv for ${customerPhone} — order #${recentOrder.id} status="${orderStatus}"`);
         const newConv = await storage.createAiConversation({
           storeId,
           orderId: recentOrder.id,
@@ -628,7 +685,7 @@ export async function handleIncomingMessage(
           customerName: recentOrder.customerName ?? null,
           status: "active",
           isManual: 0,
-          conversationStep: 2, // start at step 2 (confirmation step)
+          conversationStep: startStep,
         });
         conv = newConv;
       } else {

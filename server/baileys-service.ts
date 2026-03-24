@@ -85,7 +85,6 @@ async function callAIHandler(storeId: number, phone: string, text: string) {
     const { handleIncomingMessage, handleLeadMessage } = await import("./ai-agent");
 
     // Check if this is an active lead (FB-Ads Sales Mode) conversation
-    // Use all phone format variants (212..., +212..., 06...)
     const { aiConversations: convTable } = await import("@shared/schema");
     const { and: drAnd, eq: drEq, inArray: drIn } = await import("drizzle-orm");
     const phoneVariants = [
@@ -97,6 +96,9 @@ async function callAIHandler(storeId: number, phone: string, text: string) {
       .from(convTable)
       .where(drAnd(drEq(convTable.storeId, storeId), drIn(convTable.customerPhone, phoneVariants), drEq(convTable.status, "active")))
       .limit(1);
+
+    const routeType = activeConvs[0]?.isNewLead ? "New Lead (Sales Closer)" : "Store Order (Confirmation)";
+    console.log(`[ROUTING] Message from ${phone} | Type: ${routeType} | Msg: "${text.substring(0, 60)}"`);
 
     if (activeConvs[0]?.isNewLead) {
       await handleLeadMessage(storeId, phone, text, activeConvs[0]);
@@ -117,6 +119,52 @@ export function normalisePhone(raw: string): string {
 
 function toJid(phone: string): string {
   return `${normalisePhone(phone)}@s.whatsapp.net`;
+}
+
+/* ── Resolve storeId reliably (4 fallback strategies) ─────────
+ * This is the single source of truth for figuring out which store
+ * the currently-connected WhatsApp account belongs to.
+ * Strategy order (most → least reliable):
+ *  1. whatsappSessions WHERE status = 'connected'  (set on connect)
+ *  2. whatsappSessions ANY row  (handles stale "disconnected" status)
+ *  3. stores table single row   (only store in DB)
+ *  4. Hard-coded storeId = 1   (absolute last resort, single-tenant)
+ * ─────────────────────────────────────────────────────────────── */
+async function resolveStoreId(): Promise<number | null> {
+  try {
+    const { whatsappSessions, stores } = await import("@shared/schema");
+    const { eq: drEq } = await import("drizzle-orm");
+
+    // Strategy 1: any session with status=connected
+    const [connected] = await db.select({ storeId: whatsappSessions.storeId })
+      .from(whatsappSessions).where(drEq(whatsappSessions.status, "connected")).limit(1);
+    if (connected) {
+      console.log(`[WA-STATUS] resolveStoreId → strategy 1 (connected): storeId=${connected.storeId}`);
+      return connected.storeId;
+    }
+
+    // Strategy 2: any session in the table (most recent)
+    const [anySession] = await db.select({ storeId: whatsappSessions.storeId })
+      .from(whatsappSessions).limit(1);
+    if (anySession) {
+      console.log(`[WA-STATUS] resolveStoreId → strategy 2 (any session): storeId=${anySession.storeId}`);
+      return anySession.storeId;
+    }
+
+    // Strategy 3: only one store in the DB
+    const allStores = await db.select({ id: stores.id }).from(stores).limit(2);
+    if (allStores.length === 1) {
+      console.log(`[WA-STATUS] resolveStoreId → strategy 3 (single store): storeId=${allStores[0].id}`);
+      return allStores[0].id;
+    }
+
+    // Strategy 4: hard-coded fallback (single-tenant default)
+    console.warn("[WA-STATUS] resolveStoreId → strategy 4 (hard-coded fallback): storeId=1");
+    return 1;
+  } catch (e: any) {
+    console.error("[WA-STATUS] resolveStoreId failed:", e.message);
+    return 1; // absolute last resort
+  }
 }
 
 /* ── Clear session files ─────────────────────────────────────── */
@@ -210,19 +258,8 @@ async function connectToWhatsApp(): Promise<void> {
         await broadcastWAStatus();
 
         // Resolve storeId from DB if not already cached (e.g. on auto-restart)
-        if (!_activeStoreId && _phoneNumber) {
-          try {
-            const { whatsappSessions } = await import("@shared/schema");
-            const rows = await db.select({ storeId: whatsappSessions.storeId })
-              .from(whatsappSessions);
-            if (rows.length === 1) {
-              // Only one store has a WhatsApp session — use it
-              _activeStoreId = rows[0].storeId;
-              console.log(`[WA-STATUS] StoreId resolved from DB: ${_activeStoreId}`);
-            }
-          } catch (e: any) {
-            console.warn("[WA-STATUS] Could not resolve storeId from DB:", e.message);
-          }
+        if (!_activeStoreId) {
+          _activeStoreId = await resolveStoreId();
         }
 
         // Write connected status to DB so getConnectedStoreIds() works too
@@ -466,21 +503,8 @@ async function connectToWhatsApp(): Promise<void> {
 
           let storeId = _activeStoreId;
           if (!storeId) {
-            try {
-              const { whatsappSessions } = await import("@shared/schema");
-              const { eq: drEq2 } = await import("drizzle-orm");
-              const rows = await db.select({ storeId: whatsappSessions.storeId })
-                .from(whatsappSessions)
-                .where(drEq2(whatsappSessions.status, "connected"))
-                .limit(1);
-              if (rows.length > 0) {
-                storeId = rows[0].storeId;
-                _activeStoreId = storeId;
-                console.log(`[Baileys] 🔧 Recovered storeId from DB: ${storeId}`);
-              }
-            } catch (sErr: any) {
-              console.warn("[Baileys] Could not recover storeId from DB:", sErr.message);
-            }
+            storeId = await resolveStoreId();
+            if (storeId) _activeStoreId = storeId;
           }
 
           if (storeId) {
@@ -626,26 +650,9 @@ export async function autoStartBaileys(): Promise<void> {
     await fs.access(path.join(AUTH_DIR, "creds.json"));
     console.log("[WA-STATUS] Existing session found — auto-connecting...");
 
-    // Pre-load storeId from DB so new-lead detection works immediately on restart
-    try {
-      const { whatsappSessions } = await import("@shared/schema");
-      const rows = await db.select({ storeId: whatsappSessions.storeId }).from(whatsappSessions);
-      if (rows.length === 1) {
-        _activeStoreId = rows[0].storeId;
-        console.log(`[WA-STATUS] Pre-loaded storeId from DB: ${_activeStoreId}`);
-      } else if (rows.length > 1) {
-        // Multiple stores — find the most recently updated connected one
-        const { whatsappSessions: ws2 } = await import("@shared/schema");
-        const { eq: drEq } = await import("drizzle-orm");
-        const connectedRows = await db.select({ storeId: ws2.storeId }).from(ws2).where(drEq(ws2.status, "connected")).limit(1);
-        if (connectedRows.length > 0) {
-          _activeStoreId = connectedRows[0].storeId;
-          console.log(`[WA-STATUS] Pre-loaded storeId (connected) from DB: ${_activeStoreId}`);
-        }
-      }
-    } catch (e: any) {
-      console.warn("[WA-STATUS] Could not pre-load storeId:", e.message);
-    }
+    // Pre-load storeId so new-lead routing works immediately on restart
+    _activeStoreId = await resolveStoreId();
+    console.log(`[WA-STATUS] Pre-loaded storeId: ${_activeStoreId}`);
 
     await baileysService.start();
   } catch {

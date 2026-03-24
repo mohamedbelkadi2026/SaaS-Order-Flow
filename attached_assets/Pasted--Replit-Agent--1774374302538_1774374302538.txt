@@ -1,0 +1,28 @@
+
+هاد المشاكل كيتعاودوا لسبب تقني واحد: ريبيت (Replit Agent) مبرمج السيستم باش يكون "حذر" بزاف؛ يعني غير كيوصلو ميساج من نمرة ما كايناش فالداتابيس (Orders)، كيدير return (يعني كيسكت) باش ما يغلطش. وبالنسبة لعدم الرد مورا أول ميساج، فهذا بسباب أن "الخيط" اللي كيربط رد الزبون بمحرك الـ AI مقطوع.
+باش نحلوا هادشي "للأبد" ونردوا البلاتفورم "وحش" ما كيزگل حتى ميساج، غنحطوا هاد البرومبت اللي كيعيد هيكلة "منطق الاستماع" (Listener Logic) بشكل كامل.
+البرومبت النهائي والجذري: تفعيل الرد الشامل وعزل الحالات
+انسخ هاد النص وحطو لـ Replit Agent فوراً:
+"I need a PERMANENT and structural fix for the WhatsApp AI. Currently, it stops after one message and ignores new people messaging directly. This is unacceptable for a production SaaS. Implement this EXACT logic now:
+1. The 'Always Listening' Engine (Backend):
+Update the sock.ev.on('messages.upsert') handler to process EVERY incoming message, regardless of whether the number is in the database or not.
+DO NOT use if (!order) return;. Instead, use a Routing Logic:
+IF number exists in Orders: Start 'Confirmation Mode'.
+IF number DOES NOT exist: Start 'Lead Generation Mode' (Sales Closer).
+2. Fixing the 'One-Message Stop' (The Loop):
+Ensure the AI state is managed by a 'Sessions' table in PostgreSQL.
+Every incoming message must trigger a call to OpenRouter.
+Context Injection: For every message, send the last 5 messages of the conversation to the AI so it remembers the context and continues the chat naturally.
+3. Handling New WhatsApp Leads (Direct Ads):
+If a new person messages: 'بغيت هاد الصباط' or 'سلام':
+AI must welcome them and ask for their Full Name.
+Then ask for their City and Address.
+Action: Once they provide the info and confirm, automatically create a new order in the Orders table with status 'confirme' and utm_source = 'WA-Direct'.
+4. Auto-Status Update (The Green Dashboard):
+Refine the 'Intent Detection'. If the AI detects a 'Yes/Ok/Confirm' at any point, it must IMMEDIATELY update the status to 'confirme' in the database.
+Use Socket.io to make the Dashboard turn Green in real-time without me refreshing.
+5. Product Knowledge Base:
+Ensure the AI pulls the ai_description from the Products table to answer questions about price, material (Anakio leather), and shipping.
+6. Debugging & Logs:
+Add a persistent log in the console: [ROUTING]: Message from {phone}. Type: {Order/New Lead}. AI Response: {text}.
+Instruction: Rewrite the WhatsApp service to be a 'Global Responder'. I want to text the bot from any number and get a reply in Darija within 5 seconds. This must work forever even after restarts."
