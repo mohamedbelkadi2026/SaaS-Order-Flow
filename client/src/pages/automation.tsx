@@ -1462,6 +1462,16 @@ function LiveMonitoringTab() {
         }
       });
 
+      es.addEventListener("shipped_notification", (e) => {
+        const data = JSON.parse(e.data);
+        refetchConvs();
+        toast({
+          title: "📦 Notification d'expédition envoyée",
+          description: `${data.customerName || "Client"} — commande #${data.orderId} notifiée sur WhatsApp${data.trackNumber ? ` (suivi: ${data.trackNumber})` : ""}`,
+          duration: 6000,
+        });
+      });
+
       es.addEventListener("audio_received", (e) => {
         const data = JSON.parse(e.data);
         if (data.status === "done" && data.transcription) {

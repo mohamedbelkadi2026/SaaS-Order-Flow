@@ -1876,16 +1876,20 @@ export async function registerRoutes(
         }
 
         // Auto-notify customer on WhatsApp when order is shipped (expédié)
+        // Uses triggerShipmentNotification which handles: gender, DB logging, Live Chat broadcast, tracking
         if (data.status === 'expédié' && order.customerPhone && order.storeId) {
           try {
-            const { queueWhatsApp } = await import("./ai-agent");
-            const productName = order.rawProductName || "منتجك";
-            const cleanName = (order.customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي";
-            const trackNum = (order as any).trackNumber;
-            const trackLine = trackNum ? `\nرقم التتبع: *${trackNum}*` : "";
-            const msg = `خبار زوين ${cleanName}! 📦 الطلبية ديالك لـ *${productName}* راها خرجات دبا وغتوصلك فـ أقرب وقت إن شاء الله 🚚${trackLine}`;
-            await queueWhatsApp(order.storeId, order.customerPhone, msg);
-            console.log(`[SHIPPED] ✅ Auto-notified ${order.customerPhone} for order #${orderId}`);
+            const { triggerShipmentNotification } = await import("./ai-agent");
+            const fullOrder = await storage.getOrder(orderId); // get latest (may have trackNumber just set)
+            await triggerShipmentNotification(
+              order.storeId,
+              orderId,
+              order.customerPhone,
+              order.customerName || "",
+              order.rawProductName || "منتجك",
+              fullOrder?.trackNumber ?? null,
+              fullOrder?.shippingProvider ?? null,
+            );
           } catch (notifyErr: any) {
             console.warn(`[SHIPPED] ⚠️ Failed to auto-notify customer: ${notifyErr.message}`);
           }

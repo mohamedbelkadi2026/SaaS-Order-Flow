@@ -451,8 +451,8 @@ RULES FOR THIS MODE:
       ? `رقم التتبع ديالك: *${ctx.trackNumber}*${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""}`
       : null;
     const deliveryStatus = ctx.orderStatus === "expédié" || ctx.orderStatus === "en_cours"
-      ? `الكوموند ديالك راها عند شركة الشحن${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""} وهي فـ الطريق ليك 🚚${trackingLine ? `\nرقم التتبع ديالك: *${ctx.trackNumber}*` : ""}`
-      : "الكوموند ديالك سيدي/لالة راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅";
+      ? `الكوموند ديالك ${address.formal} راها عند شركة الشحن${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""} وهي فـ الطريق ليك 🚚${trackingLine ? `\n${trackingLine}` : ""}`
+      : `الكوموند ديالك ${address.formal} راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅`;
 
     return `${base}
 
@@ -464,13 +464,13 @@ ${trackingLine ? `TRACKING: ${trackingLine}` : "No tracking number yet."}
 
 RULES FOR THIS MODE:
 - Do NOT ask for city/variant/confirmation — order is already placed
-- If customer asks "فين الكوموند؟" / "فين وصلات؟" / "وين الكوموند" / "سلام" / "متى يجي":
-  Respond EXACTLY with the status: "${deliveryStatus}"
-- If status is "confirme": say "الكوموند ديالك سيدي/لالة راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅"
+- If customer asks about order status ("فين الكوموند؟" / "فين وصلات؟" / "وين الكوموند" / "سلام" / "متى يجي" / "ماعرفتش"):
+  Respond EXACTLY with: "${deliveryStatus}"
+- If status is "confirme": reassure them the order is confirmed and being prepared to ship
 - If status is "expédié" or "en_cours": give tracking info if available, say "وجد راسك ${address.formal} وكن فـ الدار باش يوصلك 🚚"
-- If customer wants to CANCEL: respond with "مفهوم ${address.formal}، غنلغيوها ليك دابا" — this signals CANCEL intent
-- If customer asks about product after confirm: answer questions warmly
-- ALWAYS be reassuring — the order is safe and coming
+- If customer wants to CANCEL (says "بغيت نلغي" / "بلاش" / "ما بغيتش"): reply "مفهوم ${address.formal}، غنلغيوها ليك دابا" — this signals CANCEL intent (set is_cancelled=true)
+- If customer asks about product, quality, delivery time: answer warmly and briefly
+- ALWAYS be reassuring — the order is safe and on its way
 - Keep replies SHORT: 1-2 lines max`;
   }
 
@@ -938,11 +938,25 @@ export async function handleIncomingMessage(
         broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: aiReply, ts: Date.now() });
         console.log(`[AI] ✅ JSON-confirmed: order ${conv.orderId} → 'confirme'`);
       } else if (needsCancel) {
-        const cancelStatus = (liveOrderStatus === "confirme" || liveOrderStatus === "expédié") ? "annulé" : "annulé fake";
+        const isPostConfirmCancel = liveOrderStatus === "confirme" || liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
+        const cancelStatus = isPostConfirmCancel ? "annulé" : "annulé fake";
         await storage.updateOrderStatus(conv.orderId!, cancelStatus);
         await storage.updateAiConversationStatus(conv.id, "cancelled");
         broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
         console.log(`[AI] ❌ JSON-cancelled: order ${conv.orderId} → '${cancelStatus}'`);
+
+        // ── Admin toast for post-confirmed cancellations ──────────────
+        if (isPostConfirmCancel) {
+          broadcastToStore(storeId, "post_confirm_cancel", {
+            conversationId: conv.id,
+            orderId: conv.orderId,
+            customerName: conv.customerName,
+            customerPhone,
+            message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp (après confirmation)`,
+            ts: Date.now(),
+          });
+          console.log(`[AI] ⚠️ POST-CONFIRM JSON-CANCEL: order ${conv.orderId} | customer: ${conv.customerName}`);
+        }
       }
 
       // ── Long conversation detection: 8+ messages without decision ──
@@ -1003,6 +1017,66 @@ export async function handleIncomingMessage(
 
   } catch (err: any) {
     console.error(`[AI] handleIncomingMessage error (phone ${customerPhone}):`, err.message);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   SHIPMENT NOTIFICATION — Triggered when admin marks order "expédié"
+   Sends proactive WhatsApp message + logs to DB + admin Live Chat
+════════════════════════════════════════════════════════════════ */
+export async function triggerShipmentNotification(
+  storeId: number,
+  orderId: number,
+  customerPhone: string,
+  customerName: string,
+  productName: string,
+  trackNumber?: string | null,
+  shippingProvider?: string | null,
+): Promise<void> {
+  try {
+    const gender = detectGender(customerName || "");
+    const addr = getGenderAddress(gender);
+    const cleanName = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || addr.formal;
+
+    const trackLine = trackNumber
+      ? `\nرقم التتبع ديالك: *${trackNumber}*${shippingProvider ? ` (${shippingProvider})` : ""}`
+      : "";
+
+    const msg =
+      `خبار زوين ${addr.formal} ${cleanName}! 📦\n` +
+      `الطلبية ديالك لـ *${productName || "منتجك"}* راها خرجات دبا وغتوصلك فـ أقرب وقت إن شاء الله 🚚${trackLine}\n` +
+      `إلا عندك أي سؤال كنا هنا 🙏`;
+
+    // Find or re-use the existing active conversation for this customer
+    let conv = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
+    if (!conv) {
+      conv = await storage.createAiConversation({
+        storeId, orderId, customerPhone,
+        customerName: customerName || null,
+        status: "active", isManual: 0, conversationStep: 1,
+      });
+      broadcastToStore(storeId, "new_conversation", {
+        conversation: { ...conv, lastMessage: msg, status: "active" },
+        message: { role: "assistant", content: msg, ts: Date.now() },
+      });
+    }
+
+    // Log to DB + broadcast to admin Live Chat
+    await storage.createAiLog({ storeId, orderId, customerPhone, role: "assistant", message: msg });
+    await storage.updateAiConversationLastMessage(conv.id, msg);
+    broadcastToStore(storeId, "message", {
+      conversationId: conv.id, role: "assistant", content: msg, ts: Date.now(),
+    });
+    broadcastToStore(storeId, "shipped_notification", {
+      conversationId: conv.id, orderId, customerName: cleanName, trackNumber, ts: Date.now(),
+    });
+
+    // Send directly (no 5s delay — admin manually triggered this)
+    await queueWhatsApp(storeId, customerPhone, msg);
+    console.log(`[SHIPPED] ✅ Notification sent → ${customerPhone} | order #${orderId}${trackNumber ? ` | Track: ${trackNumber}` : ""}`);
+
+  } catch (err: any) {
+    console.error(`[SHIPPED] ❌ triggerShipmentNotification error (order ${orderId}):`, err.message);
   }
 }
 
