@@ -665,7 +665,9 @@ export async function handleIncomingMessage(
   customerPhone: string,
   customerMessage: string,
 ): Promise<void> {
-  if (!(await storeHasAIKey(storeId))) return;
+  // ── ALWAYS log + show incoming messages in Live Chat, regardless of AI key ──
+  // The AI key check only blocks the AI reply, NOT the message visibility.
+  console.log(`[INCOMING MESSAGE]: "${customerMessage.substring(0, 100)}" | from: ${customerPhone} | store: ${storeId}`);
 
   try {
     let conv = await storage.getActiveAiConversationByPhone(storeId, customerPhone);
@@ -751,10 +753,23 @@ export async function handleIncomingMessage(
       return;
     }
 
-    // Log + broadcast customer message immediately
+    // ── Log + broadcast customer message IMMEDIATELY (always, regardless of AI key) ──
+    // This ensures the message ALWAYS appears in Live Chat even if AI is disabled/no key.
     await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "user", message: customerMessage });
     await storage.updateAiConversationLastMessage(conv.id, customerMessage);
     broadcastToStore(storeId, "message", { conversationId: conv.id, role: "user", content: customerMessage, ts: Date.now() });
+    console.log(`[SOCKET_EMIT] message (user) → conv ${conv.id} | "${customerMessage.substring(0, 60)}"`);
+
+    // ── AI key gate — block AI reply but message is already visible in Live Chat ──
+    if (!(await storeHasAIKey(storeId))) {
+      console.warn(`[AI] ⚠️ No API key — message logged to conv ${conv.id} but AI cannot reply. Configure OPENROUTER_API_KEY.`);
+      broadcastToStore(storeId, "ai_error", {
+        conversationId: conv.id, customerPhone, customerName: conv.customerName,
+        error: "Clé API manquante — configurez OPENROUTER_API_KEY pour activer les réponses IA.",
+        isKeyError: true,
+      });
+      return;
+    }
 
     // Human escalation detection
     if (detectAttentionNeeded(customerMessage)) {

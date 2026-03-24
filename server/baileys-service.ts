@@ -416,6 +416,7 @@ async function connectToWhatsApp(): Promise<void> {
           continue;
         }
 
+        console.log(`[INCOMING MESSAGE]: "${text.substring(0, 80)}" | from: ${remoteJid}`);
         console.log(`[RECEIVED] WhatsApp message from ${phone}: "${text.substring(0, 80)}"`);
 
         try {
@@ -425,11 +426,12 @@ async function connectToWhatsApp(): Promise<void> {
           // ROUTING PRIORITY (prevents conversation mixing between customers):
           // 1. JID match  — most reliable, survives multi-device LID changes
           // 2. Phone match — normalized phone formats (+212 / 0X / raw)
-          // 3. New unknown — always → Sales Closer lead flow (never legacy fallback)
+          // 3. Order check — customer with order but no active conv → re-open
+          // 4. Unknown     — no order in DB → silently ignore
           // ══════════════════════════════════════════════════════════════════
 
           // ── Step 1: Match by stored WhatsApp JID ─────────────────────────
-          const rawJid = remoteJid; // e.g. "177532607430859@s.whatsapp.net"
+          const rawJid = remoteJid; // e.g. "212688959768@s.whatsapp.net"
           const jidConv = await stor.getActiveAiConversationByJid(rawJid);
 
           if (jidConv) {
@@ -439,7 +441,16 @@ async function connectToWhatsApp(): Promise<void> {
           }
 
           // ── Step 2: Match by normalized phone number ──────────────────────
-          const phoneVariants = [phone, `+${phone}`, `0${phone.slice(3)}`];
+          // Build all phone variants we will search for
+          const phoneVariants = [
+            phone,           // e.g. 212688959768 (international, no +)
+            `+${phone}`,     // +212688959768
+            `0${phone.slice(3)}`,  // 0688959768 (local Moroccan)
+            `+0${phone.slice(3)}`, // +0688959768 (some stores enter this)
+          ];
+          // Helper: normalize a stored phone to pure digits for comparison
+          const normalize = (p: string) => p.replace(/\D/g, "");
+
           const { or: drizzleOr } = await import("drizzle-orm");
           const activeConvs = await db
             .select()
@@ -449,8 +460,10 @@ async function connectToWhatsApp(): Promise<void> {
               eq(aiConversations.status, "confirmed"),
             ));
 
+          // Normalize stored phones too — handles "06 88 95 97 68" (spaces), dashes, etc.
+          const normalizedIncoming = new Set(phoneVariants.map(normalize));
           const matched = activeConvs.filter(c =>
-            c.customerPhone && phoneVariants.some(v => c.customerPhone === v)
+            c.customerPhone && normalizedIncoming.has(normalize(c.customerPhone))
           );
 
           if (matched.length > 0) {

@@ -1307,10 +1307,27 @@ function LiveMonitoringTab() {
         });
 
         if (convId === selectedIdRef.current) {
+          // ── Add message to open chat view ──
           setMessages(prev => [...prev, { role: data.role, content: data.content, ts: data.ts }]);
         } else {
-          // Mark conv as having new unread messages (green dot on list)
+          // ── Mark conv as having new unread messages (green dot on list) ──
           setUnreadIds(prev => new Set([...prev, convId]));
+
+          // ── Toast notification for customer messages in non-selected convs ──
+          if (data.role === "user") {
+            const preview = (data.content || "").substring(0, 60);
+            toast({
+              title: "💬 Message client reçu",
+              description: preview || "Nouveau message WhatsApp",
+              duration: 5000,
+            });
+            if ("Notification" in window && Notification.permission === "granted") {
+              new Notification("TajerGrow — Nouveau message", {
+                body: preview || "Un client vous a envoyé un message WhatsApp",
+                icon: "/favicon.ico",
+              });
+            }
+          }
         }
       });
 
