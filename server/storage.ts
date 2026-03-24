@@ -159,6 +159,8 @@ export interface IStorage {
   getAiConversations(storeId: number): Promise<import("@shared/schema").AiConversation[]>;
   getAiConversation(id: number): Promise<import("@shared/schema").AiConversation | undefined>;
   getActiveAiConversationByPhone(storeId: number, phone: string): Promise<import("@shared/schema").AiConversation | undefined>;
+  getActiveAiConversationByJid(jid: string): Promise<import("@shared/schema").AiConversation | null>;
+  updateConversationJid(id: number, jid: string): Promise<void>;
   createAiConversation(data: import("@shared/schema").InsertAiConversation): Promise<import("@shared/schema").AiConversation>;
   updateAiConversationStatus(id: number, status: string): Promise<void>;
   updateAiConversationLastMessage(id: number, message: string): Promise<void>;
@@ -2174,6 +2176,25 @@ export class DatabaseStorage implements IStorage {
       )
     ).orderBy(desc(aiConversations.id));
     return row;
+  }
+
+  async getActiveAiConversationByJid(jid: string) {
+    const { aiConversations } = await import("@shared/schema");
+    const [row] = await db.select().from(aiConversations).where(
+      and(
+        eq(aiConversations.whatsappJid, jid),
+        or(
+          eq(aiConversations.status, "active"),
+          eq(aiConversations.status, "confirmed"),
+        ),
+      )
+    ).orderBy(desc(aiConversations.id));
+    return row ?? null;
+  }
+
+  async updateConversationJid(id: number, jid: string) {
+    const { aiConversations } = await import("@shared/schema");
+    await db.update(aiConversations).set({ whatsappJid: jid }).where(eq(aiConversations.id, id));
   }
 
   async createAiConversation(data: import("@shared/schema").InsertAiConversation) {

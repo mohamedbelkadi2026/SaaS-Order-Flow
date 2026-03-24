@@ -495,6 +495,7 @@ export const aiConversations = pgTable("ai_conversations", {
   leadPrice: integer("lead_price"),                       // centimes
   leadQuantity: integer("lead_quantity").default(1),
   createdOrderId: integer("created_order_id"),
+  whatsappJid: text("whatsapp_jid"),  // Actual WhatsApp JID (e.g. 212632595440@s.whatsapp.net) for exact routing
 });
 export const insertAiConversationSchema = createInsertSchema(aiConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export type AiConversation = typeof aiConversations.$inferSelect;

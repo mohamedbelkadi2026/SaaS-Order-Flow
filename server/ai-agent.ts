@@ -809,6 +809,24 @@ export async function handleIncomingMessage(
       console.log(`[SOCKET_EMIT] message (assistant) → conv ${conv.id} | "${aiReply.substring(0, 60)}"`);
       console.log(`[OUTGOING] AI reply queued for ${customerPhone} | Conv: ${conv.id}`);
 
+      // ── Post-AI confirmation sync: if AI reply signals order confirmed, update DB ──
+      // Catches cases where customer said ok in a phrasing detectIntent missed,
+      // but the AI correctly understood and replied with a confirmation.
+      if (conv.orderId && liveOrderStatus === "nouveau") {
+        const replyLower = aiReply.toLowerCase();
+        const aiConfirmedOrder =
+          replyLower.includes("غتخرج اليوم") ||
+          replyLower.includes("تأكدات") ||
+          replyLower.includes("الطلب تأكد") ||
+          (replyLower.includes("مزيان") && replyLower.includes("خرج")) ||
+          (replyLower.includes("شكراً") && replyLower.includes("اليوم"));
+        if (aiConfirmedOrder) {
+          console.log(`[AI] Post-reply confirm detected → updating order ${conv.orderId} to 'confirme'`);
+          await storage.updateOrderStatus(conv.orderId, "confirme");
+          broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: aiReply, ts: Date.now() });
+        }
+      }
+
       // ── Long conversation detection: 8+ messages without decision ──
       // Fires exactly once at message 8 (even count) to notify admin
       const totalLogs = conv.orderId
@@ -965,6 +983,7 @@ export async function triggerLeadConversation(
   storeId: number,
   phone: string,
   initialMessage: string,
+  whatsappJid?: string,
 ): Promise<void> {
   console.log(`[Lead] 🎯 New FB-Ads lead: store=${storeId} phone=${phone} msg="${initialMessage.substring(0, 60)}"`);
 
@@ -1054,7 +1073,8 @@ export async function triggerLeadConversation(
       leadProductId: productMatch?.id ?? null,
       leadProductName: productMatch?.name ?? null,
       leadPrice: productMatch?.price ?? null,
-    });
+      whatsappJid: whatsappJid ?? null,
+    } as any);
 
     // Log customer's initial message first
     await storage.createAiLog({ storeId, orderId: null, convId: conv.id, customerPhone: phone, role: "user", message: initialMessage });

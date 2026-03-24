@@ -1,0 +1,21 @@
+"I need a final, structural fix for the WhatsApp AI logic in TajerGrow. There are 3 critical issues that must be solved permanently (Nihaiyan):
+1. Chat Isolation (Fixing the Mixing Bug):
+Problem: The AI is mixing up conversations between different phone numbers.
+Fix: Ensure the sock.ev.on('messages.upsert') handler uses an isolated session object for every remoteJid.
+Action: Every AI request to OpenRouter must include a unique conversation_id based on the sender's phone number. The AI memory must be strictly separated so that User A never sees or replies to User B's context.
+2. New Lead Capture (Lead Generation Mode):
+Problem: When a new person (not in the database) messages WhatsApp directly, we don't have their info.
+Logic Update:
+If a message arrives from a number that IS NOT in the Orders table:
+The AI must act as a 'Sales Closer'.
+It must follow a flow: Greet -> Ask for Full Name -> Ask for City -> Ask for Address.
+3amali Action: Once all 3 pieces of info are collected and the user confirms, the system must AUTOMATICALLY CREATE a new entry in the Orders table with status = 'confirme'.
+3. Fix Auto-Confirmation Status:
+Problem: Orders remain 'en cours' even after the customer says 'Ok' to the AI.
+Fix: Refine the 'Intent Detection' logic. If the AI response contains a confirmation flag (e.g., is_confirmed: true in the JSON response):
+Immediately execute: UPDATE orders SET status = 'confirme' WHERE phone = [customer_number].
+Ensure the Dashboard cards and progress bars update instantly via Socket.io.
+4. UI & Monitoring Sync:
+The 'Live Monitoring' tab must group messages by phone number. When I click on a number, I should see the history of THAT person only.
+Clearly distinguish between 'Store Order' (Shopify) and 'Direct Lead' (WhatsApp Ad).
+Technical Instruction: Use a Map or a database-backed Sessions table to store the state of each conversation (e.g., AWAITING_NAME, AWAITING_CITY). Ensure remoteJid is the primary key for routing messages. Fix this logic across the backend and frontend."

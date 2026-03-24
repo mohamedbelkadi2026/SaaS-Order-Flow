@@ -217,7 +217,13 @@ Four tabs in `client/src/pages/automation.tsx`:
 ### AI Conversations Table (`aiConversations`)
 - Tracks state: `active` | `confirmed` | `cancelled` | `manual`
 - `isManual` flag = admin takeover (AI stops responding)
-- 7 storage methods in storage.ts
+- `whatsappJid` column = actual WhatsApp JID stored on first message for exact future routing (prevents conversation mixing between customers)
+- 9 storage methods in storage.ts: `getActiveAiConversationByPhone`, `getActiveAiConversationByJid`, `updateConversationJid`, etc.
+
+### Message Routing Priority (Baileys)
+1. **JID match** — `getActiveAiConversationByJid(rawJid)` — most reliable, stored on first message
+2. **Phone match** — normalized formats (+212/0X/raw), stores JID on match for future Step 1
+3. **Unknown number** — always → Sales Closer lead flow (old LID→ORDER fallback removed to prevent mixing bug)
 
 ### Automation Routes
 - `GET /api/automation/events` — SSE stream

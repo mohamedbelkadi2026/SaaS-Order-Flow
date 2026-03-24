@@ -402,12 +402,32 @@ async function connectToWhatsApp(): Promise<void> {
         console.log(`[RECEIVED] WhatsApp message from ${phone}: "${text.substring(0, 80)}"`);
 
         try {
-          // Match all possible phone formats stored in DB
-          const phoneVariants = [
-            phone,              // 212632595440
-            `+${phone}`,       // +212632595440
-            `0${phone.slice(3)}`,   // 0632595440
-          ];
+          const { storage: stor } = await import("./storage");
+
+          // ══════════════════════════════════════════════════════════════════
+          // ROUTING PRIORITY (prevents conversation mixing between customers):
+          // 1. JID match  — most reliable, survives multi-device LID changes
+          // 2. Phone match — normalized phone formats (+212 / 0X / raw)
+          // 3. New unknown — always → Sales Closer lead flow (never legacy fallback)
+          // ══════════════════════════════════════════════════════════════════
+
+          // ── Step 1: Match by stored WhatsApp JID ─────────────────────────
+          const rawJid = remoteJid; // e.g. "177532607430859@s.whatsapp.net"
+          const jidConv = await stor.getActiveAiConversationByJid(rawJid);
+
+          if (jidConv) {
+            console.log(`[Baileys] ✅ JID match → conv ${jidConv.id} (${jidConv.customerPhone}) | "${text.substring(0, 40)}"`);
+            if (jidConv.isNewLead) {
+              const { handleLeadMessage } = await import("./ai-agent");
+              await handleLeadMessage(jidConv.storeId, jidConv.customerPhone!, text, jidConv);
+            } else {
+              await callAIHandler(jidConv.storeId, jidConv.customerPhone!, text);
+            }
+            continue; // skip further routing for this message
+          }
+
+          // ── Step 2: Match by normalized phone number ──────────────────────
+          const phoneVariants = [phone, `+${phone}`, `0${phone.slice(3)}`];
           const { or: drizzleOr } = await import("drizzle-orm");
           const activeConvs = await db
             .select()
@@ -422,77 +442,66 @@ async function connectToWhatsApp(): Promise<void> {
           );
 
           if (matched.length > 0) {
-            // ── Exact phone match — pass stored phone so AI lookup is reliable ──
-            console.log(`[Baileys] ✅ Phone matched to conv(s): ${matched.map(c => c.id).join(", ")} | "${text.substring(0, 40)}"`);
+            console.log(`[Baileys] ✅ Phone matched to conv(s): ${matched.map(c => c.id).join(", ")} | JID: ${rawJid}`);
             for (const conv of matched) {
-              await callAIHandler(conv.storeId, conv.customerPhone!, text);
-            }
-          } else {
-            // ── LID Fallback ────────────────────────────────────────────
-            // WhatsApp multi-device can report sender JIDs as Linked Account
-            // IDs (e.g. 177532607430859) instead of real phone numbers.
-            // Strategy: find the most recently created ORDER conv (not lead)
-            // within the last 4 hours — this is almost certainly the sender.
-            // If no order conv, try a fresh lead.
-            console.log(`[Baileys] ⚠️ No exact phone match for "${phone}" — trying LID fallback. Active convs: ${activeConvs.length}`);
-            const cutoff = new Date(Date.now() - 4 * 60 * 60 * 1000); // 4-hour window
-            // Only use ORDER convs (orderId != null) for LID fallback — leads have known phones
-            const recentOrderConvs = activeConvs
-              .filter(c => c.orderId !== null && c.createdAt && new Date(c.createdAt as any) > cutoff)
-              .sort((a, b) => new Date(b.createdAt as any).getTime() - new Date(a.createdAt as any).getTime());
-
-            if (recentOrderConvs.length > 0) {
-              // Route to the most recently created order conv
-              const c = recentOrderConvs[0];
-              console.log(`[Baileys] ⚠️ LID→ORDER fallback: routing to conv ${c.id} (order #${c.orderId}) | stored: ${c.customerPhone} | incoming JID: ${phone}`);
-              await callAIHandler(c.storeId, c.customerPhone!, text);
-            } else {
-              // No recent order conv — this is a potentially new unknown number
-              console.log(`[RECEIVED]: Message from unknown number: ${phone} — "${text.substring(0, 60)}"`);
-
-              // Resolve storeId — use in-memory value or fall back to DB lookup
-              let storeId = _activeStoreId;
-              if (!storeId) {
-                try {
-                  const { whatsappSessions } = await import("@shared/schema");
-                  const { eq: drEq2 } = await import("drizzle-orm");
-                  const rows = await db.select({ storeId: whatsappSessions.storeId })
-                    .from(whatsappSessions)
-                    .where(drEq2(whatsappSessions.status, "connected"))
-                    .limit(1);
-                  if (rows.length > 0) {
-                    storeId = rows[0].storeId;
-                    _activeStoreId = storeId; // cache it
-                    console.log(`[Baileys] 🔧 Recovered storeId from DB: ${storeId}`);
-                  }
-                } catch (sErr: any) {
-                  console.warn("[Baileys] Could not recover storeId from DB:", sErr.message);
-                }
+              // Store JID now so future messages from this JID route via Step 1 (instant, exact)
+              if (!conv.whatsappJid) {
+                stor.updateConversationJid(conv.id, rawJid).catch(() => {});
+                console.log(`[Baileys] 📌 Stored JID ${rawJid} → conv ${conv.id}`);
               }
-
-              console.log(`[Baileys] 🔍 Checking ${phone} as potential new lead. StoreId: ${storeId ?? "none"}`);
-
-              if (storeId) {
-                try {
-                  const { storage: stor } = await import("./storage");
-                  const hasOrders = await stor.phoneHasOrdersInStore(storeId, phone);
-                  if (!hasOrders) {
-                    console.log(`[Baileys] 🎯 New lead! Phone ${phone} → store ${storeId} — triggering Sales Closer AI`);
-                    const { triggerLeadConversation } = await import("./ai-agent");
-                    await triggerLeadConversation(storeId, phone, text);
-                  } else {
-                    // Phone has prior orders but no active conv — auto-start confirmation flow
-                    console.log(`[Baileys] ℹ️ Phone ${phone} has prior orders in store ${storeId} — auto-starting confirmation`);
-                    await callAIHandler(storeId, phone, text);
-                  }
-                } catch (leadErr: any) {
-                  console.error("[Baileys] Lead detection error:", leadErr.message);
-                }
+              if (conv.isNewLead) {
+                const { handleLeadMessage } = await import("./ai-agent");
+                await handleLeadMessage(conv.storeId, conv.customerPhone!, text, conv);
               } else {
-                console.warn(`[Baileys] ⚠️ Cannot route unknown phone ${phone} — no storeId available (WA not linked to a store yet).`);
+                await callAIHandler(conv.storeId, conv.customerPhone!, text);
               }
+            }
+            continue;
+          }
+
+          // ── Step 3: Unknown JID → Sales Closer lead flow ─────────────────
+          // The old LID→ORDER fallback that caused conversation mixing has been
+          // removed. Every unmatched JID is now treated as a new potential customer.
+          console.log(`[Baileys] 🆕 Unknown JID ${rawJid} (phone: ${phone}) — routing to Sales Closer AI`);
+
+          let storeId = _activeStoreId;
+          if (!storeId) {
+            try {
+              const { whatsappSessions } = await import("@shared/schema");
+              const { eq: drEq2 } = await import("drizzle-orm");
+              const rows = await db.select({ storeId: whatsappSessions.storeId })
+                .from(whatsappSessions)
+                .where(drEq2(whatsappSessions.status, "connected"))
+                .limit(1);
+              if (rows.length > 0) {
+                storeId = rows[0].storeId;
+                _activeStoreId = storeId;
+                console.log(`[Baileys] 🔧 Recovered storeId from DB: ${storeId}`);
+              }
+            } catch (sErr: any) {
+              console.warn("[Baileys] Could not recover storeId from DB:", sErr.message);
             }
           }
+
+          if (storeId) {
+            try {
+              const hasOrders = await stor.phoneHasOrdersInStore(storeId, phone);
+              if (!hasOrders) {
+                console.log(`[Baileys] 🎯 New lead! Phone ${phone} → store ${storeId} — triggering Sales Closer AI`);
+                const { triggerLeadConversation } = await import("./ai-agent");
+                await triggerLeadConversation(storeId, phone, text, rawJid);
+              } else {
+                // Known customer with prior orders but no active conv → auto-start
+                console.log(`[Baileys] ℹ️ Phone ${phone} has prior orders in store ${storeId} — auto-starting confirmation`);
+                await callAIHandler(storeId, phone, text);
+              }
+            } catch (leadErr: any) {
+              console.error("[Baileys] Lead/unknown routing error:", leadErr.message);
+            }
+          } else {
+            console.warn(`[Baileys] ⚠️ Cannot route unknown phone ${phone} — no storeId available`);
+          }
+
         } catch (err: any) {
           console.error("[Baileys] Message routing error:", err.message);
         }
