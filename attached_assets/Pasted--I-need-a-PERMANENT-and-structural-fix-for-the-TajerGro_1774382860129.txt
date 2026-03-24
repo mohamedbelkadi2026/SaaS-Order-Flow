@@ -1,0 +1,26 @@
+"I need a PERMANENT and structural fix for the TajerGrow AI. The current AI logic is weak: it stops after one message, fails to detect gender, and doesn't update the UI status. Please implement this 'Absolute Solution' (3amali 100%):
+1. AI Personality & Gender Detection (System Prompt):
+Logic: For every message, the AI must analyze the customer's name.
+Rules:
+If the name is masculine (e.g., Mohamed, Amine, Brahim), use 'سيدي' or 'خويا'.
+If feminine (e.g., Fatima, Sara, Laila), use 'لالة' or 'ختي'.
+Persona: You are a professional, friendly Moroccan salesman. Speak ONLY in natural Darija. Use emojis. Avoid being robotic.
+2. Full Conversation Loop & Memory (The 'No-Stop' Fix):
+Persistence: Save the full chat history in the Chat_History table.
+Context: For every incoming message, fetch the last 10 messages + the Order Details (Name, Product, Price, City, Size).
+Instruction: The AI must keep responding to EVERY customer question (Price? Quality? Delivery time?) until a final decision (Confirm/Cancel) is reached. Even after confirmation, the AI must remain helpful if the customer asks more questions.
+3. Automatic Status Update & Live UI Sync:
+Intent Analysis: Force the AI to use JSON Mode for its internal decision:
+{ "reply": "...", "is_confirmed": true/false, "is_cancelled": true/false }
+DB Trigger: If is_confirmed is TRUE:
+Update Orders table to 'confirme'.
+Live Sync: Immediately emit a Socket.io event ORDER_CONFIRMED to the frontend.
+Frontend Action: The 'Live Monitoring' and 'Mes Commandes' pages must update the status badge to Green (Confirme) instantly without a page refresh.
+4. Technical Implementation (Baileys + OpenRouter):
+Ensure the remoteJid is correctly captured and matched.
+Clean phone numbers (Standardize to 2126...).
+Implement a 5-second delay to simulate a human typing.
+Ensure the AI pulls data from the ai_description field in the Stock for each specific product.
+5. Live Monitoring UI:
+In the 'Live Monitoring' window, show the status of the order next to the customer name. If the AI confirms the order, the status in the UI must turn Green immediately.
+Goal: Place an order -> Receive WA -> Talk in Darija -> AI recognizes gender -> AI answers all questions -> I say 'Ok' -> Dashboard turns Green instantly. NO ERRORS."

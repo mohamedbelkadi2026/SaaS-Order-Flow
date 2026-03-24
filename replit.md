@@ -192,9 +192,15 @@ Four tabs in `client/src/pages/automation.tsx`:
 4. **Live Monitoring** — Real-time conversation dashboard with SSE; left panel = conversation list, right panel = live chat + takeover controls
 
 ### AI Engine (`server/ai-agent.ts`)
+- **Order Confirmation only** — Lead/Ventes Directes fully removed. AI only handles customers with an existing order.
 - `triggerAIForNewOrder(storeId, orderId, phone, name, productId)` — fire-and-forget, checks settings enabled + product filter
-- `handleIncomingMessage(storeId, phone, text)` — GPT-4o chat completion with Darija intent detection (CONFIRM/CANCEL keywords), auto-confirms/cancels orders
-- Hooked into `POST /api/orders` and `POST /api/orders/manual` after response sent
+- `handleIncomingMessage(storeId, phone, text)` — intent fast-path (CONFIRM/CANCEL keywords) → JSON-mode AI step machine
+- **JSON-mode responses**: every AI call uses `JSON_OUTPUT_RULE` mandating `{"reply":"...","is_confirmed":bool,"is_cancelled":bool}` output; `parseAIDecision()` extracts structured decisions robustly (with regex fallback)
+- **Gender-aware prompts**: `detectGender(name)` → `getGenderAddress()` → injects `سيدي`/`لالة` into every step prompt as a MANDATORY label
+- **5-second human typing delay**: AI reply is broadcast to the admin dashboard immediately; WhatsApp delivery waits 5s (both fast-path and AI-path) to simulate a real person typing
+- `buildStepPrompt(step, order, product, gender)` — multi-step Darija confirmation conversation
+- `RECOVERY_SYSTEM_PROMPT` — recovery (abandoned cart) prompt also enforces JSON output
+- Hooked into `POST /api/orders`, `POST /api/orders/manual`, and Shopify/YouCan webhooks after response sent
 
 ### WhatsApp Engine (`server/baileys-service.ts`)
 - `@whiskeysockets/baileys` — pure Node.js WebSocket, no Chromium required

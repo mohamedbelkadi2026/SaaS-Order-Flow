@@ -164,6 +164,29 @@ function looksLikeDirectAnswer(msg: string): boolean {
   return wordCount <= 8 && !isQuestion;
 }
 
+/* ── JSON decision parser (robust, never throws) ────────────── */
+interface AIDecision { reply: string; isConfirmed: boolean; isCancelled: boolean; }
+
+function parseAIDecision(raw: string): AIDecision {
+  // Strip markdown code fences if present
+  const stripped = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+  try {
+    // Try to extract the first JSON object in the response
+    const match = stripped.match(/\{[\s\S]*"reply"[\s\S]*\}/);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      const reply = String(parsed.reply ?? parsed.message ?? "").trim();
+      return {
+        reply: reply || stripped,
+        isConfirmed: !!(parsed.is_confirmed ?? parsed.isConfirmed ?? false),
+        isCancelled: !!(parsed.is_cancelled ?? parsed.isCancelled ?? false),
+      };
+    }
+  } catch { /* ignore JSON parse error, fall through */ }
+  // Fallback: treat the whole response as the reply text, no decision signals
+  return { reply: stripped || raw, isConfirmed: false, isCancelled: false };
+}
+
 /* ── WhatsApp message queue (per-store rate limiter) ─────────── */
 const waQueue = new Map<number, Array<{ phone: string; message: string }>>();
 const waProcessing = new Set<number>();
@@ -324,6 +347,20 @@ function getGenderAddress(gender: "male" | "female" | "unknown"): { formal: stri
   return { formal: "سيدي/لالة", friendly: "صديقي" };
 }
 
+/* ── JSON output mandate appended to every prompt ───────────── */
+const JSON_OUTPUT_RULE = `
+━━━ MANDATORY JSON OUTPUT FORMAT ━━━
+You MUST respond with ONLY a valid JSON object — NO markdown, NO code fences, NO extra text before or after.
+Format:
+{"reply":"<your Darija response here>","is_confirmed":false,"is_cancelled":false}
+
+Rules for the flags:
+- Set "is_confirmed": true ONLY when the customer explicitly agrees to receive the order (e.g. "واخا", "صيفطوه", "ok", "موافق", "نعم").
+- Set "is_cancelled": true ONLY when the customer explicitly says they no longer want it (e.g. "بلاش", "ما بقيتش", "ما بغيتش").
+- For ALL other messages (questions, hesitation, chatting): set BOTH to false and keep the conversation going.
+- NEVER set is_confirmed=true just because the customer asked a question.
+- After confirmation, keep responding helpfully — the conversation does not end.`;
+
 /* ── Step-specific system prompts ────────────────────────────── */
 function buildStepPrompt(
   step: number,
@@ -355,31 +392,42 @@ function buildStepPrompt(
     ? `\nPRODUCT KNOWLEDGE BASE:\n${productKnowledge.join("\n")}`
     : "";
 
+  const genderNote = gender === "male"
+    ? `Customer is MALE — always call him "سيدي" or "خويا"`
+    : gender === "female"
+      ? `Customer is FEMALE — always call her "لالة" or "ختي"`
+      : `Gender unknown — use "سيدي/لالة"`;
+
   const base = `You are "أمين", a patient and helpful human customer service agent at "${storeName}" (Moroccan e-commerce store). You are a trusted Moroccan salesperson — never pushy, always supportive.
 
-CRITICAL OUTPUT RULES:
+GENDER RULE (MANDATORY):
+- Customer name: "${conv.customerName ?? "unknown"}" → ${genderNote}
+- ALWAYS use the correct gender address throughout the ENTIRE conversation
+
+LANGUAGE & STYLE:
 - Write ONLY in natural Moroccan Darija (not MSA, not French, not Arabizi)
 - Keep replies SHORT: 1-2 lines maximum — never long paragraphs
 - Never reveal you are an AI or robot
 - Be warm, friendly, use emojis naturally 😊
 - Shipping is ALWAYS FREE — never say otherwise
 - When hesitant: emphasize "قلب عاد خلص" (inspect before paying), free returns, and premium quality
-- Gender: address as ${address.formal} (formal) or ${address.friendly} (friendly) based on name "${conv.customerName ?? "unknown"}"
 
-PATIENCE MODE — READ CAREFULLY:
+PATIENCE MODE — NO-STOP RULE:
 - ANSWER EVERY question about the product FIRST, then gently ask for city/confirmation
 - If the customer says "لا" followed by a question, they are STILL INTERESTED — keep helping
 - If the customer asks 10 questions, answer all 10 warmly — never get frustrated or give up
 - Do NOT push for confirmation after every reply — build trust naturally
-- ONLY mark as cancelled if customer says explicitly: "بلاش" / "ما بقيتش" / "ما بغيتش" / "بغيت نلغي"
+- ONLY set is_cancelled=true if customer says explicitly: "بلاش" / "ما بقيتش" / "ما بغيتش" / "بغيت نلغي"
 - If undecided, always end with: "واش عندك أي سؤال آخر ${address.formal}؟ كنا هنا دايما 🙏"
 - Your goal is to CLOSE THE SALE by being helpful, not by rushing
 
 ORDER DETAILS:
+- Customer: ${conv.customerName ?? "Unknown"} (${genderNote})
 - Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
 ${city ? `- City: ${city}` : ""}${variant ? `\n- Size/Variant: ${variant}` : ""}${stockNote}
 ${knowledgeBlock}
-${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}`;
+${customSystemPrompt ? `\nSTORE EXTRA RULES:\n${customSystemPrompt}` : ""}
+${JSON_OUTPUT_RULE}`;
 
   // ── POST-DELIVERY MODE — order was delivered ────────────────────────
   if (ctx?.orderStatus === "livré") {
@@ -475,9 +523,10 @@ Your goal: win back the customer who abandoned their cart.
 - If they say price is too high: "الله يحفظك، هادا أرخص ثمن — ودابا كاين تخفيض"
 - If they ask about quality: respond with full confidence
 - If they ask about delivery: "التوصيل مجاني من 24 لـ 48 ساعة إن شاء الله"
-- If they confirm (واخا / ok / صيفطوه): tell them order is confirmed
-- If they cancel: respond kindly and thank them
-- Never reveal you are an AI`;
+- If they confirm (واخا / ok / صيفطوه): set is_confirmed=true and tell them order is confirmed
+- If they cancel explicitly: set is_cancelled=true and respond kindly
+- Never reveal you are an AI
+${JSON_OUTPUT_RULE}`;
 
 /* ════════════════════════════════════════════════════════════════
    TRIGGER — Fire-and-forget on new order creation
@@ -740,11 +789,11 @@ export async function handleIncomingMessage(
         const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
         await storage.updateAiConversationLastMessage(conv.id, msg);
-        // Keep conv ACTIVE — delivery companion continues
         broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: msg, ts: Date.now() });
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
+        console.log(`[AI] Order ${conv.orderId} CONFIRMED (fast-path) by ${conv.customerName}`);
+        await new Promise(r => setTimeout(r, 5000)); // human typing delay
         await queueWhatsApp(storeId, customerPhone, msg);
-        console.log(`[AI] Order ${conv.orderId} CONFIRMED by ${conv.customerName} — conv stays ACTIVE for delivery companion`);
         return;
       }
       // Already confirmed — fall through to delivery companion AI reply
@@ -761,19 +810,16 @@ export async function handleIncomingMessage(
       broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
       if (isPostConfirm) {
-        // Admin toast — confirmed order cancelled via WhatsApp
         broadcastToStore(storeId, "post_confirm_cancel", {
-          conversationId: conv.id,
-          orderId: conv.orderId,
-          customerName: conv.customerName,
-          customerPhone,
+          conversationId: conv.id, orderId: conv.orderId, customerName: conv.customerName, customerPhone,
           message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp`,
           ts: Date.now(),
         });
         console.log(`[AI] ⚠️ POST-CONFIRM CANCEL: Order ${conv.orderId} cancelled by ${conv.customerName} via WhatsApp`);
       }
+      console.log(`[AI] Order ${conv.orderId} CANCELLED (fast-path ${cancelStatus}) by ${conv.customerName}`);
+      await new Promise(r => setTimeout(r, 5000)); // human typing delay
       await queueWhatsApp(storeId, customerPhone, msg);
-      console.log(`[AI] Order ${conv.orderId} CANCELLED (${cancelStatus}) by ${conv.customerName}`);
       return;
     }
 
@@ -818,11 +864,14 @@ export async function handleIncomingMessage(
 
       const { client: ai, model, provider } = await resolveAIClient(storeId);
       console.log(`[AI_THINKING] Conv ${conv.id} | Model: ${model} | History: ${messages.length} msgs → sending to ${provider}...`);
-      const completion = await ai.chat.completions.create({ model, messages, max_tokens: 200, temperature: 0.7 });
-      const aiReply = completion.choices[0]?.message?.content?.trim() ?? "";
-      if (!aiReply) throw new Error("Empty AI response");
+      const completion = await ai.chat.completions.create({ model, messages, max_tokens: 400, temperature: 0.7 });
+      const rawAIResponse = completion.choices[0]?.message?.content?.trim() ?? "";
+      if (!rawAIResponse) throw new Error("Empty AI response");
 
-      console.log(`[SUCCESS]: AI replied on conv ${conv.id} via ${provider}/${model} — step ${currentStep} — "${aiReply.substring(0, 60)}..."`);
+      // ── Parse structured JSON response from AI ────────────────────
+      const decision = parseAIDecision(rawAIResponse);
+      const aiReply = decision.reply;
+      console.log(`[AI_JSON] Conv ${conv.id} | isConfirmed=${decision.isConfirmed} | isCancelled=${decision.isCancelled} | reply="${aiReply.substring(0, 60)}"`);
 
       // ── Advance step based on what the customer just said ────────
       // Skip step advancement when in delivery companion mode (order already confirmed)
@@ -836,19 +885,11 @@ export async function handleIncomingMessage(
           if (detectedCity) {
             stepData.city = detectedCity;
             nextStep = 2;
-            // If product already has a variant from order, skip step 2
-            if (ctx?.productVariant) {
-              stepData.variant = ctx.productVariant;
-              nextStep = 3;
-            }
+            if (ctx?.productVariant) { stepData.variant = ctx.productVariant; nextStep = 3; }
           } else if (looksLikeDirectAnswer(customerMessage) && customerMessage.length > 3) {
-            // Short direct answer that's not a city we recognize — treat as city anyway
             stepData.city = customerMessage.trim();
             nextStep = 2;
-            if (ctx?.productVariant) {
-              stepData.variant = ctx.productVariant;
-              nextStep = 3;
-            }
+            if (ctx?.productVariant) { stepData.variant = ctx.productVariant; nextStep = 3; }
           }
         } else if (currentStep === 2) {
           if (looksLikeDirectAnswer(customerMessage) && customerMessage.length > 1) {
@@ -863,31 +904,30 @@ export async function handleIncomingMessage(
         }
       }
 
-      // Log + broadcast + queue outgoing message
+      // ── Log + broadcast reply to admin dashboard immediately ─────
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: aiReply });
       await storage.updateAiConversationLastMessage(conv.id, aiReply);
 
       broadcastToStore(storeId, "typing_stop", { conversationId: conv.id });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: aiReply, ts: Date.now(), model, provider, step: currentStep });
       console.log(`[SOCKET_EMIT] message (assistant) → conv ${conv.id} | "${aiReply.substring(0, 60)}"`);
-      console.log(`[OUTGOING] AI reply queued for ${customerPhone} | Conv: ${conv.id}`);
 
-      // ── Post-AI confirmation sync: if AI reply signals order confirmed, update DB ──
-      // Catches cases where customer said ok in a phrasing detectIntent missed,
-      // but the AI correctly understood and replied with a confirmation.
-      if (conv.orderId && liveOrderStatus === "nouveau") {
-        const replyLower = aiReply.toLowerCase();
-        const aiConfirmedOrder =
-          replyLower.includes("غتخرج اليوم") ||
-          replyLower.includes("تأكدات") ||
-          replyLower.includes("الطلب تأكد") ||
-          (replyLower.includes("مزيان") && replyLower.includes("خرج")) ||
-          (replyLower.includes("شكراً") && replyLower.includes("اليوم"));
-        if (aiConfirmedOrder) {
-          console.log(`[AI] Post-reply confirm detected → updating order ${conv.orderId} to 'confirme'`);
-          await storage.updateOrderStatus(conv.orderId, "confirme");
-          broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: aiReply, ts: Date.now() });
-        }
+      // ── JSON-driven confirmation / cancellation sync ──────────────
+      // PRIMARY: rely on AI's structured JSON decision
+      // FALLBACK: fast-path keyword detection (catches simple "واخا" before AI call runs below)
+      const needsConfirm = decision.isConfirmed && conv.orderId && liveOrderStatus === "nouveau";
+      const needsCancel  = decision.isCancelled && conv.orderId;
+
+      if (needsConfirm) {
+        await storage.updateOrderStatus(conv.orderId!, "confirme");
+        broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: aiReply, ts: Date.now() });
+        console.log(`[AI] ✅ JSON-confirmed: order ${conv.orderId} → 'confirme'`);
+      } else if (needsCancel) {
+        const cancelStatus = (liveOrderStatus === "confirme" || liveOrderStatus === "expédié") ? "annulé" : "annulé fake";
+        await storage.updateOrderStatus(conv.orderId!, cancelStatus);
+        await storage.updateAiConversationStatus(conv.id, "cancelled");
+        broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
+        console.log(`[AI] ❌ JSON-cancelled: order ${conv.orderId} → '${cancelStatus}'`);
       }
 
       // ── Long conversation detection: 8+ messages without decision ──
@@ -905,7 +945,13 @@ export async function handleIncomingMessage(
         });
       }
 
+      // ── 5-second human typing delay before sending to customer ──
+      // Admin dashboard already shows the reply. The delay makes the customer
+      // experience feel like a real person is typing, not a bot firing instantly.
+      console.log(`[OUTGOING] Waiting 5s before sending to ${customerPhone}...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
       await queueWhatsApp(storeId, customerPhone, aiReply);
+      console.log(`[OUTGOING] AI reply sent to ${customerPhone} | Conv: ${conv.id}`);
 
     } catch (aiErr: any) {
       const richErr = enrichAiError(aiErr);
