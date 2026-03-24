@@ -57,7 +57,6 @@ export default function AutomationPage() {
             <TabPill active={tab === "ai"} onClick={() => setTab("ai")} icon={<Bot className="w-4 h-4" />} label="IA Confirmation" />
             <TabPill active={tab === "whatsapp"} onClick={() => setTab("whatsapp")} icon={<Wifi className="w-4 h-4" />} label="Connexion WhatsApp" />
             <TabPill active={tab === "monitoring"} onClick={() => setTab("monitoring")} icon={<Radio className="w-4 h-4" />} label="Live Monitoring" />
-            <TabPill active={tab === "recovery"} onClick={() => setTab("recovery")} icon={<Target className="w-4 h-4" />} label="Ventes Directes (IA)" />
           </div>
         </div>
       </div>
@@ -67,7 +66,6 @@ export default function AutomationPage() {
         {tab === "ai" && <AiConfirmationTab />}
         {tab === "whatsapp" && <WhatsappTab />}
         {tab === "monitoring" && <LiveMonitoringTab />}
-        {tab === "recovery" && <VentesDirectesTab />}
       </div>
     </div>
   );
@@ -1187,7 +1185,6 @@ function LiveMonitoringTab() {
   const [attentionIds, setAttentionIds] = useState<Set<number>>(new Set());
   const [longChatIds, setLongChatIds] = useState<Set<number>>(new Set());
   const [unreadIds, setUnreadIds] = useState<Set<number>>(new Set());
-  const [convTypeFilter, setConvTypeFilter] = useState<"all" | "confirmation" | "direct">("all");
   const [apiKeyMissing, setApiKeyMissing] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -1540,26 +1537,13 @@ function LiveMonitoringTab() {
     return NAVY;
   };
 
-  const statusLabel = (s: string, needsAttn?: boolean, isLong?: boolean, isLead?: boolean) => {
+  const statusLabel = (s: string, needsAttn?: boolean, isLong?: boolean) => {
     if (needsAttn) return "Attention 🔴";
     if (isLong) return "Long 🕐";
-    if (isLead && s === "confirmed") return "Converti 🏆";
-    if (isLead) return "Lead (Ads) 🎯";
     if (s === "confirmed") return "Confirmé ✅";
     if (s === "cancelled") return "Annulé ❌";
     if (s === "manual") return "Manuel 👤";
     return "En cours 🤖";
-  };
-
-  // Lead stage label for the chat subtitle
-  const leadStageLabel: Record<string, string> = {
-    AWAITING_NAME:     "🔹 En attente du nom",
-    AWAITING_CITY:     "🏙 En attente de la ville",
-    AWAITING_ADDRESS:  "📍 En attente de l'adresse",
-    AWAITING_QUANTITY: "📦 En attente de la quantité",
-    AWAITING_PRODUCT:  "🛒 En attente du produit",
-    AWAITING_CONFIRM:  "✅ En attente de confirmation",
-    DONE:              "🎯 Commande créée",
   };
 
   const bubbleStyle = (role: string) => {
@@ -1598,24 +1582,6 @@ function LiveMonitoringTab() {
             <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />
           </button>
         </div>
-        {/* Filter toggle */}
-        <div className="px-3 py-2 border-b border-zinc-50 flex gap-1">
-          {[
-            { key: "all", label: "Tous" },
-            { key: "confirmation", label: "Confirmation" },
-            { key: "direct", label: "Ventes Directes" },
-          ].map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setConvTypeFilter(key as any)}
-              className={cn("flex-1 py-1 rounded-lg text-[10px] font-bold transition-all", convTypeFilter === key ? "text-white" : "text-zinc-500 bg-zinc-100 hover:bg-zinc-200")}
-              style={convTypeFilter === key ? { background: key === "direct" ? GOLD : NAVY } : {}}
-              data-testid={`filter-conv-${key}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
 
         {conversations.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-zinc-400 p-4">
@@ -1625,44 +1591,33 @@ function LiveMonitoringTab() {
         ) : (
           <div className="flex-1 overflow-y-auto divide-y divide-zinc-50">
             {[...conversations]
-              .filter((c: any) => {
-                if (convTypeFilter === "confirmation") return !c.isNewLead;
-                if (convTypeFilter === "direct") return !!c.isNewLead;
-                return true;
-              })
               .sort((a: any, b: any) => {
                 const priority = (c: any) =>
-                  attentionIds.has(c.id) ? 5 :
-                  unreadIds.has(c.id) ? 4 :
-                  c.isNewLead ? 3 :
+                  attentionIds.has(c.id) ? 4 :
+                  unreadIds.has(c.id) ? 3 :
                   longChatIds.has(c.id) ? 2 : 0;
                 const pa = priority(a), pb = priority(b);
                 if (pa !== pb) return pb - pa;
-                // Same priority: most recently updated first
                 return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
               })
             .map((conv: any) => {
               const needsAttn = attentionIds.has(conv.id);
-              const isLead = Boolean(conv.isNewLead) && !needsAttn;
-              const isLong = longChatIds.has(conv.id) && !needsAttn && !isLead;
+              const isLong = longChatIds.has(conv.id) && !needsAttn;
               return (
               <button
                 key={conv.id}
                 onClick={() => { setSelectedId(conv.id); setMessages([]); setUnreadIds(prev => { const n = new Set(prev); n.delete(conv.id); return n; }); }}
                 className={cn("w-full text-left px-4 py-3 hover:bg-zinc-50 transition-colors",
                   needsAttn && "bg-red-50 border-l-4 border-red-400",
-                  isLead && "bg-blue-50 border-l-4 border-blue-400",
                   isLong && "bg-amber-50 border-l-4 border-amber-400"
                 )}
-                style={selectedId === conv.id && !needsAttn && !isLead && !isLong ? { background: "rgba(30,27,75,0.05)", borderLeft: `3px solid ${NAVY}` } : undefined}
+                style={selectedId === conv.id && !needsAttn && !isLong ? { background: "rgba(30,27,75,0.05)", borderLeft: `3px solid ${NAVY}` } : undefined}
                 data-testid={`conv-item-${conv.id}`}
               >
                 <div className="flex items-center justify-between mb-1 gap-1">
                   <div className="flex items-center gap-1.5 min-w-0">
                     {needsAttn ? (
                       <span className="w-2 h-2 rounded-full bg-red-500 shrink-0 animate-pulse" title="Attention requise" />
-                    ) : isLead ? (
-                      <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0 animate-pulse" title="Nouveau lead Facebook Ads" />
                     ) : isLong ? (
                       <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0 animate-pulse" title="Conversation longue" />
                     ) : typingConvId === conv.id ? (
@@ -1672,14 +1627,14 @@ function LiveMonitoringTab() {
                     ) : conv.status === "active" ? (
                       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: NAVY, opacity: 0.6 }} />
                     ) : null}
-                    <p className="text-sm font-semibold text-zinc-800 truncate">{conv.leadName || conv.customerName || conv.customerPhone}</p>
+                    <p className="text-sm font-semibold text-zinc-800 truncate">{conv.customerName || conv.customerPhone}</p>
                     {unreadIds.has(conv.id) && selectedId !== conv.id && (
                       <span className="ml-auto shrink-0 w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] font-black flex items-center justify-center">N</span>
                     )}
                   </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0"
-                    style={{ background: needsAttn ? "#ef4444" : (isLead && conv.status === "confirmed") ? GOLD : isLead ? "#3b82f6" : isLong ? "#d97706" : statusColor(conv.status) }}>
-                    {statusLabel(conv.status, needsAttn, isLong, isLead)}
+                    style={{ background: needsAttn ? "#ef4444" : isLong ? "#d97706" : statusColor(conv.status) }}>
+                    {statusLabel(conv.status, needsAttn, isLong)}
                   </span>
                 </div>
                 {typingConvId === conv.id ? (
@@ -1694,12 +1649,10 @@ function LiveMonitoringTab() {
                 ) : (
                   <p className={cn("text-xs truncate",
                     needsAttn ? "text-red-500 font-medium" :
-                    isLead ? "text-blue-600 font-medium" :
                     isLong ? "text-amber-600 font-medium" :
                     "text-zinc-400"
                   )}>
                     {needsAttn ? "⚠️ Client demande assistance humaine" :
-                     isLead ? (conv.leadStage === "AWAITING_NAME" ? "🆕 Nouveau Prospect" : leadStageLabel[conv.leadStage] || "🎯 Lead actif") :
                      isLong ? "🕐 Conversation longue: التدخل مطلوب" :
                      (conv.lastMessage || "...")}
                   </p>
@@ -1721,17 +1674,10 @@ function LiveMonitoringTab() {
       ) : (
         <div className="bg-white rounded-2xl border border-zinc-100 flex flex-col overflow-hidden">
           {/* Header */}
-          <div className={cn("px-5 py-3 border-b flex items-center justify-between",
-            (selectedConv as any).isNewLead ? "border-blue-100 bg-blue-50" : "border-zinc-100"
-          )}>
+          <div className="px-5 py-3 border-b border-zinc-100 flex items-center justify-between">
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <p className="text-sm font-bold text-zinc-800">{(selectedConv as any).leadName || selectedConv.customerName || selectedConv.customerPhone}</p>
-                {(selectedConv as any).isNewLead && (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full font-bold text-white" style={{ background: "#3b82f6" }}>
-                    🎯 Lead FB Ads
-                  </span>
-                )}
+                <p className="text-sm font-bold text-zinc-800">{selectedConv.customerName || selectedConv.customerPhone}</p>
                 {convCtx?.productName && (
                   <span className="text-[11px] px-2 py-0.5 rounded-full font-medium" style={{ background: "rgba(30,27,75,0.07)", color: NAVY }}>
                     {convCtx.productName}{convCtx.productVariant ? ` · ${convCtx.productVariant}` : ""}
@@ -1751,16 +1697,7 @@ function LiveMonitoringTab() {
                   </span>
                 )}
               </div>
-              {(selectedConv as any).isNewLead ? (
-                <p className="text-xs text-blue-500 mt-0.5 font-medium">
-                  {selectedConv.customerPhone}
-                  {(selectedConv as any).leadCity ? ` · ${(selectedConv as any).leadCity}` : ""}
-                  {convCtx?.totalPrice ? ` · ${((selectedConv as any).leadPrice / 100).toFixed(0)} DH` : ""}
-                  {" · "}{leadStageLabel[(selectedConv as any).leadStage] || "Lead actif"}
-                </p>
-              ) : (
-                <p className="text-xs text-zinc-400 mt-0.5">{selectedConv.customerPhone} · Cmd #{selectedConv.orderId}{convCtx?.totalPrice ? ` · ${(convCtx.totalPrice / 100).toFixed(0)} DH` : ""}</p>
-              )}
+              <p className="text-xs text-zinc-400 mt-0.5">{selectedConv.customerPhone} · Cmd #{selectedConv.orderId}{convCtx?.totalPrice ? ` · ${(convCtx.totalPrice / 100).toFixed(0)} DH` : ""}</p>
             </div>
             <div className="flex items-center gap-2">
               {selectedConv.orderId && (
@@ -1891,151 +1828,6 @@ function LiveMonitoringTab() {
         </div>
       )}
     </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════════
-   TAB 5 — VENTES DIRECTES (IA) — WhatsApp Conversion Ads
-════════════════════════════════════════════════════════════════ */
-function VentesDirectesTab() {
-  const { toast } = useToast();
-
-  const { data: stats, isLoading: loadingStats } = useQuery<any>({
-    queryKey: ["/api/automation/direct-sales-stats"],
-    queryFn: async () => {
-      const r = await fetch("/api/automation/direct-sales-stats", { credentials: "include" });
-      if (!r.ok) return { totalChats: 0, leadsConverted: 0, revenueGenerated: 0 };
-      return r.json();
-    },
-    refetchInterval: 30000,
-  });
-
-  const convRate = stats?.totalChats > 0
-    ? Math.round((stats.leadsConverted / stats.totalChats) * 100)
-    : 0;
-
-  const statCards = [
-    {
-      label: "Total Chats",
-      value: stats?.totalChats ?? 0,
-      icon: <MessageCircle className="w-5 h-5" />,
-      color: NAVY,
-      sub: "nouveaux leads via WhatsApp Ads",
-    },
-    {
-      label: "Leads Convertis",
-      value: stats?.leadsConverted ?? 0,
-      icon: <CheckCircle2 className="w-5 h-5" />,
-      color: GOLD,
-      sub: `${convRate}% taux de conversion`,
-      showBar: true,
-      barPct: convRate,
-    },
-    {
-      label: "CA Généré",
-      value: `${Math.round((stats?.revenueGenerated ?? 0) / 100)} DH`,
-      icon: <DollarSign className="w-5 h-5" />,
-      color: GOLD,
-      sub: "via commandes IA directes",
-    },
-  ];
-
-  return (
-    <div className="space-y-6">
-
-      {/* Hero Banner */}
-      <div className="rounded-2xl p-6 text-white" style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2a7a)` }}>
-        <div className="flex items-start gap-4">
-          <div className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
-            <Target className="w-6 h-6 text-white" />
-          </div>
-          <div>
-            <h2 className="text-lg font-bold mb-1">Ventes Directes (IA) — WhatsApp Ads</h2>
-            <p className="text-white/70 text-sm leading-relaxed">
-              Chaque nouveau message WhatsApp d'un inconnu est détecté automatiquement. L'IA collecte le Nom, Ville, Adresse et Quantité, puis crée la commande instantanément — sans intervention humaine.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {statCards.map((c) => (
-          <div key={c.label} className="bg-white rounded-2xl p-5 shadow-sm border border-zinc-100">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-sm text-zinc-500 font-medium">{c.label}</span>
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white" style={{ background: c.color }}>
-                {c.icon}
-              </div>
-            </div>
-            <div className="text-3xl font-bold" style={{ color: c.color }}>
-              {loadingStats ? <Loader2 className="w-6 h-6 animate-spin" /> : c.value}
-            </div>
-            {c.showBar && (
-              <div className="mt-2">
-                <div className="h-1.5 bg-zinc-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-700" style={{ width: `${c.barPct}%`, background: GOLD }} />
-                </div>
-              </div>
-            )}
-            <p className="text-xs text-zinc-400 mt-1">{c.sub}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Revenue Machine Banner (only when revenue > 0) */}
-      {(stats?.revenueGenerated ?? 0) > 0 && (
-        <div className="rounded-2xl p-5" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
-          <div className="flex items-center gap-3 text-white">
-            <DollarSign className="w-7 h-7 shrink-0" />
-            <div>
-              <div className="font-bold text-lg">
-                L'IA a généré <span className="underline">{Math.round(stats.revenueGenerated / 100)} DH</span> en ventes directes 🏆
-              </div>
-              <div className="text-white/80 text-sm">Commandes créées automatiquement depuis des leads WhatsApp Ads</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* How It Works */}
-      <div className="bg-white rounded-2xl p-6 shadow-sm border border-zinc-100">
-        <h3 className="text-base font-bold mb-4" style={{ color: NAVY }}>Comment ça marche — Flux automatique</h3>
-        <ol className="space-y-4">
-          {[
-            { step: "1", title: "Nouveau message reçu", desc: "Un client vous contacte via votre pub WhatsApp Ads — numéro inconnu.", icon: <MessageCircle className="w-4 h-4" /> },
-            { step: "2", title: "Vérification identité", desc: "Le système vérifie : ce numéro est-il dans la table Commandes? Si NON → Ventes Directes.", icon: <Users className="w-4 h-4" /> },
-            { step: "3", title: "IA Vendeur (Darija)", desc: "L'IA collecte : Nom complet → Ville → Adresse → Quantité → Confirmation.", icon: <Bot className="w-4 h-4" /> },
-            { step: "4", title: "Commande créée", desc: 'Dès que le client confirme, une commande est insérée avec status="confirme" et utm_source="WA-Direct-Ad".', icon: <CheckCircle2 className="w-4 h-4" /> },
-          ].map(({ step, title, desc, icon }) => (
-            <li key={step} className="flex items-start gap-4">
-              <div className="w-8 h-8 rounded-xl flex items-center justify-center text-white shrink-0 text-sm font-bold" style={{ background: GOLD }}>
-                {step}
-              </div>
-              <div className="flex-1 pt-0.5">
-                <div className="flex items-center gap-2 font-semibold text-sm text-zinc-800 mb-0.5">
-                  <span style={{ color: NAVY }}>{icon}</span>
-                  {title}
-                </div>
-                <p className="text-xs text-zinc-500">{desc}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
-      </div>
-
-      {/* Monitoring tip */}
-      <div className="rounded-2xl p-4 flex items-start gap-3" style={{ background: "rgba(197, 160, 89, 0.08)", border: "1px solid rgba(197, 160, 89, 0.25)" }}>
-        <Radio className="w-4 h-4 shrink-0 mt-0.5" style={{ color: GOLD }} />
-        <div>
-          <p className="text-sm font-semibold mb-0.5" style={{ color: NAVY }}>Suivre en temps réel</p>
-          <p className="text-xs text-zinc-500">
-            Dans l'onglet <strong>Live Monitoring</strong>, activez le filtre <strong>"Ventes Directes"</strong> pour voir uniquement les conversations IA avec de nouveaux leads. Les badges <span className="font-bold" style={{ color: GOLD }}>Converti 🏆</span> indiquent les deals closés en temps réel.
-          </p>
-        </div>
-      </div>
-
     </div>
   );
 }

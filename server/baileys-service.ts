@@ -82,29 +82,9 @@ async function broadcastWAStatus() {
 /* ── Lazy import to avoid circular deps ─────────────────────── */
 async function callAIHandler(storeId: number, phone: string, text: string) {
   try {
-    const { handleIncomingMessage, handleLeadMessage } = await import("./ai-agent");
-
-    // Check if this is an active lead (FB-Ads Sales Mode) conversation
-    const { aiConversations: convTable } = await import("@shared/schema");
-    const { and: drAnd, eq: drEq, inArray: drIn } = await import("drizzle-orm");
-    const phoneVariants = [
-      phone,
-      phone.startsWith("+") ? phone.slice(1) : `+${phone}`,
-      phone.startsWith("212") ? `0${phone.slice(3)}` : phone,
-    ];
-    const activeConvs = await db.select()
-      .from(convTable)
-      .where(drAnd(drEq(convTable.storeId, storeId), drIn(convTable.customerPhone, phoneVariants), drEq(convTable.status, "active")))
-      .limit(1);
-
-    const routeType = activeConvs[0]?.isNewLead ? "New Lead (Sales Closer)" : "Store Order (Confirmation)";
-    console.log(`[ROUTING] Message from ${phone} | Type: ${routeType} | Msg: "${text.substring(0, 60)}"`);
-
-    if (activeConvs[0]?.isNewLead) {
-      await handleLeadMessage(storeId, phone, text, activeConvs[0]);
-    } else {
-      await handleIncomingMessage(storeId, phone, text);
-    }
+    const { handleIncomingMessage } = await import("./ai-agent");
+    console.log(`[ROUTING] Message from ${phone} | Store: ${storeId} | Msg: "${text.substring(0, 60)}"`);
+    await handleIncomingMessage(storeId, phone, text);
   } catch (err: any) {
     console.error("[Baileys] AI handler error:", err.message);
   }
@@ -454,12 +434,7 @@ async function connectToWhatsApp(): Promise<void> {
 
           if (jidConv) {
             console.log(`[Baileys] ✅ JID match → conv ${jidConv.id} (${jidConv.customerPhone}) | "${text.substring(0, 40)}"`);
-            if (jidConv.isNewLead) {
-              const { handleLeadMessage } = await import("./ai-agent");
-              await handleLeadMessage(jidConv.storeId, jidConv.customerPhone!, text, jidConv);
-            } else {
-              await callAIHandler(jidConv.storeId, jidConv.customerPhone!, text);
-            }
+            await callAIHandler(jidConv.storeId, jidConv.customerPhone!, text);
             continue; // skip further routing for this message
           }
 
@@ -486,21 +461,13 @@ async function connectToWhatsApp(): Promise<void> {
                 stor.updateConversationJid(conv.id, rawJid).catch(() => {});
                 console.log(`[Baileys] 📌 Stored JID ${rawJid} → conv ${conv.id}`);
               }
-              if (conv.isNewLead) {
-                const { handleLeadMessage } = await import("./ai-agent");
-                await handleLeadMessage(conv.storeId, conv.customerPhone!, text, conv);
-              } else {
-                await callAIHandler(conv.storeId, conv.customerPhone!, text);
-              }
+              await callAIHandler(conv.storeId, conv.customerPhone!, text);
             }
             continue;
           }
 
-          // ── Step 3: Unknown JID → Sales Closer lead flow ─────────────────
-          // The old LID→ORDER fallback that caused conversation mixing has been
-          // removed. Every unmatched JID is now treated as a new potential customer.
-          console.log(`[Baileys] 🆕 Unknown JID ${rawJid} (phone: ${phone}) — routing to Sales Closer AI`);
-
+          // ── Step 3: Unknown JID → phone NOT in orders → IGNORE ───────────
+          // Only customers who have placed an order receive AI responses.
           let storeId = _activeStoreId;
           if (!storeId) {
             storeId = await resolveStoreId();
@@ -510,20 +477,19 @@ async function connectToWhatsApp(): Promise<void> {
           if (storeId) {
             try {
               const hasOrders = await stor.phoneHasOrdersInStore(storeId, phone);
-              if (!hasOrders) {
-                console.log(`[Baileys] 🎯 New lead! Phone ${phone} → store ${storeId} — triggering Sales Closer AI`);
-                const { triggerLeadConversation } = await import("./ai-agent");
-                await triggerLeadConversation(storeId, phone, text, rawJid);
-              } else {
-                // Known customer with prior orders but no active conv → auto-start
-                console.log(`[Baileys] ℹ️ Phone ${phone} has prior orders in store ${storeId} — auto-starting confirmation`);
+              if (hasOrders) {
+                // Known customer with a prior order but no active conv → auto-start confirmation
+                console.log(`[Baileys] ℹ️ Phone ${phone} has prior orders → auto-starting confirmation`);
                 await callAIHandler(storeId, phone, text);
+              } else {
+                // Unknown phone — no order in DB → silently ignore
+                console.log(`[Baileys] ⏭ Ignoring message from unknown phone ${phone} — no orders in DB`);
               }
-            } catch (leadErr: any) {
-              console.error("[Baileys] Lead/unknown routing error:", leadErr.message);
+            } catch (routeErr: any) {
+              console.error("[Baileys] Unknown-phone routing error:", routeErr.message);
             }
           } else {
-            console.warn(`[Baileys] ⚠️ Cannot route unknown phone ${phone} — no storeId available`);
+            console.warn(`[Baileys] ⚠️ Cannot route phone ${phone} — no storeId resolved`);
           }
 
         } catch (err: any) {

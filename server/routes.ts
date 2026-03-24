@@ -3191,10 +3191,9 @@ export async function registerRoutes(
   app.get("/api/automation/conversations/:id/messages", requireAuth, async (req: any, res: any) => {
     const conv = await storage.getAiConversation(Number(req.params.id));
     if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
-    // Lead convs use convId (no orderId until confirmed)
-    const logs = (conv as any).isNewLead && !conv.orderId
-      ? await storage.getAiLogs(conv.storeId, undefined, conv.id)
-      : await storage.getAiLogs(conv.storeId, conv.orderId ?? undefined);
+    const logs = conv.orderId
+      ? await storage.getAiLogs(conv.storeId, conv.orderId)
+      : await storage.getAiLogs(conv.storeId, undefined, conv.id);
     res.json(logs);
   });
 
@@ -3202,21 +3201,9 @@ export async function registerRoutes(
     try {
       const conv = await storage.getAiConversation(Number(req.params.id));
       if (!conv || conv.storeId !== req.user!.storeId!) return res.status(404).json({ message: "Introuvable" });
-      // Lead convs: return lead product info directly
-      if ((conv as any).isNewLead && !(conv as any).createdOrderId) {
-        return res.json({
-          productName: (conv as any).leadProductName ?? null,
-          stockQty: null,
-          totalPrice: (conv as any).leadPrice ?? null,
-          customerCity: (conv as any).leadCity ?? null,
-          isNewLead: true,
-          leadStage: (conv as any).leadStage,
-        });
-      }
-      const orderId = (conv as any).createdOrderId || conv.orderId;
-      if (!orderId) return res.json({ productName: null, stockQty: null, totalPrice: null, customerCity: null });
+      if (!conv.orderId) return res.json({ productName: null, stockQty: null, totalPrice: null, customerCity: null });
       const { getOrderContextForRoute } = await import("./ai-agent");
-      const ctx = await getOrderContextForRoute(orderId);
+      const ctx = await getOrderContextForRoute(conv.orderId);
       res.json(ctx);
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
@@ -3344,17 +3331,6 @@ export async function registerRoutes(
 
   app.get("/api/automation/recovery-stats", requireAuth, requireProPlan, async (req: any, res: any) => {
     res.json(await storage.getRecoveryStats(req.user!.storeId!));
-  });
-
-  app.get("/api/automation/direct-sales-stats", requireAuth, async (req: any, res: any) => {
-    try {
-      const storeId = req.user!.isSuperAdmin && req.query.storeId
-        ? Number(req.query.storeId)
-        : req.user!.storeId!;
-      res.json(await storage.getDirectSalesStats(storeId));
-    } catch (err: any) {
-      res.status(500).json({ message: err.message });
-    }
   });
 
   /* ── Abandoned checkout webhook (generic + Shopify) ───────────── */
