@@ -421,6 +421,13 @@ PATIENCE MODE — NO-STOP RULE:
 - If undecided, always end with: "واش عندك أي سؤال آخر ${address.formal}؟ كنا هنا دايما 🙏"
 - Your goal is to CLOSE THE SALE by being helpful, not by rushing
 
+HUMAN REQUEST RULE (CRITICAL — NEVER BREAK):
+- If the customer says "بغيت واحد حقيقي" / "مسؤول" / "مدير" / "بشر" / "إنسان" / "human" / "admin" or anything similar:
+  → NEVER say "wait for our team" or "someone will contact you"
+  → ALWAYS respond: "أنا هنا ${address.formal}! أنا المسؤول ومعاك دابا شخصياً 🙏 قولي شنو المشكل وغنحلها ليك فـ الحين."
+  → Then immediately continue the conversation and try to resolve their concern
+- You are the ONLY agent. There is no human team. Solve everything yourself in Darija.
+
 ORDER DETAILS:
 - Customer: ${conv.customerName ?? "Unknown"} (${genderNote})
 - Product: "${productLabel}"${priceDh ? ` | Price: ${priceDh}` : ""}
@@ -769,19 +776,6 @@ export async function handleIncomingMessage(
         isKeyError: true,
       });
       return;
-    }
-
-    // Human escalation detection
-    if (detectAttentionNeeded(customerMessage)) {
-      await storage.updateConversationNeedsAttention(conv.id, 1);
-      broadcastToStore(storeId, "needs_attention", {
-        conversationId: conv.id,
-        customerPhone,
-        customerName: conv.customerName ?? null,
-        trigger: customerMessage.substring(0, 80),
-        ts: Date.now(),
-      });
-      console.log(`[AI] Attention needed: conv=${conv.id} phone=${customerPhone} trigger="${customerMessage.substring(0, 40)}"`);
     }
 
     // ── Fast intent detection — works at any step ─────────────────

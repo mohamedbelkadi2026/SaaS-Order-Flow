@@ -1412,21 +1412,13 @@ function LiveMonitoringTab() {
 
       es.addEventListener("needs_attention", (e) => {
         const data = JSON.parse(e.data);
-        setAttentionIds(prev => new Set([...prev, data.conversationId]));
         refetchConvs();
-        const who = data.customerName || data.customerPhone || "Client";
-        const trigger = data.trigger && data.trigger !== "AI generation failed"
-          ? `"${data.trigger.substring(0, 50)}"`
-          : "demande d'assistance";
-        toast({
-          title: "🔴 Intervention Requise",
-          description: `${who} : ${trigger} — Cliquez sur 'Prendre la main'.`,
-          variant: "destructive",
-        });
-        if ("Notification" in window && Notification.permission === "granted") {
-          new Notification(`TajerGrow — ${who} demande assistance`, {
-            body: trigger,
-            icon: "/favicon.ico",
+        if (data.trigger === "AI generation failed") {
+          const who = data.customerName || data.customerPhone || "Client";
+          toast({
+            title: "⚠️ Erreur IA temporaire",
+            description: `${who} — L'IA a rencontré un problème et a envoyé un message de secours.`,
+            duration: 5000,
           });
         }
       });
@@ -1675,12 +1667,10 @@ function LiveMonitoringTab() {
                   </p>
                 ) : (
                   <p className={cn("text-xs truncate",
-                    needsAttn ? "text-red-500 font-medium" :
                     isLong ? "text-amber-600 font-medium" :
                     "text-zinc-400"
                   )}>
-                    {needsAttn ? "⚠️ Client demande assistance humaine" :
-                     isLong ? "🕐 Conversation longue: التدخل مطلوب" :
+                    {isLong ? "🕐 Conversation longue en cours" :
                      (conv.lastMessage || "...")}
                   </p>
                 )}
@@ -1749,22 +1739,14 @@ function LiveMonitoringTab() {
                   }
                   data-testid="button-takeover"
                 >
-                  {selectedConv.isManual ? <><UserCheck className="w-3 h-3" /> Rendre à l'IA</> : <><UserX className="w-3 h-3" /> Prendre la main</>}
+                  {selectedConv.isManual ? <><UserCheck className="w-3 h-3" /> Rendre à l'IA</> : <><UserX className="w-3 h-3" /> Mode Manuel</>}
                 </button>
               ) : null}
             </div>
           </div>
 
           {/* Status banner */}
-          {selectedId && attentionIds.has(selectedId) ? (
-            <div className="px-4 py-2 text-xs font-semibold flex items-center justify-between gap-2" style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", borderBottom: "1px solid rgba(239,68,68,0.2)" }}>
-              <span className="flex items-center gap-2"><AlertCircle className="w-3.5 h-3.5" /> 🔴 Client demande assistance humaine — prenez la main dès que possible.</span>
-              <button
-                onClick={() => { takeoverMutation.mutate(true); }}
-                className="text-[10px] font-black px-2 py-1 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors whitespace-nowrap"
-              >Prendre la main</button>
-            </div>
-          ) : selectedConv.isManual ? (
+          {selectedConv.isManual ? (
             <div className="px-4 py-2 text-xs font-semibold flex items-center gap-2" style={{ background: `rgba(197,160,89,0.08)`, color: GOLD, borderBottom: `1px solid rgba(197,160,89,0.15)` }}>
               <UserX className="w-3.5 h-3.5" /> Mode manuel actif — l'IA ne répond plus. Vous contrôlez la conversation.
             </div>
