@@ -1361,6 +1361,14 @@ function LiveMonitoringTab() {
       es.addEventListener("post_confirm_cancel", (e) => {
         const data = JSON.parse(e.data);
         refetchConvs();
+        // Show in-chat system message if this is the active conversation
+        if (data.conversationId === selectedIdRef.current) {
+          setMessages(prev => [...prev, {
+            role: "system",
+            content: "🔴 Le client a annulé cette commande après confirmation — statut changé en Annulé",
+            ts: data.ts ?? Date.now(),
+          }]);
+        }
         toast({
           title: "⚠️ Annulation Post-Confirmation",
           description: data.message || "Un client a annulé sa commande confirmée via WhatsApp",

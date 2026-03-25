@@ -88,6 +88,19 @@ const CANCEL_KEYWORDS = [
   "نلغي الطلب",         // "cancel the order"
   "الغ الطلب",          // "cancel the order"
   "إلغاء الطلب",        // "cancel the order"
+  "إلغاء",              // "cancellation"
+  "الغاء",              // "cancellation" (alt spelling)
+  "ألغي",               // "cancel (it)"
+  "الغيت",              // "I cancelled"
+  "بدلت رأيي",          // "I changed my mind"
+  "غيرت رأيي",          // "I changed my mind"
+  "بدلت راي",           // "I changed my mind"
+  "غيرت راي",           // merged
+  "ما كنبغيهاش",        // "I don't want it (f)"
+  "ما كنبغيهش",         // "I don't want it (m)"
+  "مبقيتش بغيت",        // "I no longer want it" (alt)
+  "annuler",             // French cancel
+  "cancel",              // English cancel
   "ما كناخدوش",         // "we won't take it"
   "ما بقيناش",          // "we no longer (want it)"
 ];
@@ -457,9 +470,14 @@ RULES FOR THIS MODE:
     const trackingLine = ctx.trackNumber
       ? `رقم التتبع ديالك: *${ctx.trackNumber}*${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""}`
       : null;
-    const deliveryStatus = ctx.orderStatus === "expédié" || ctx.orderStatus === "en_cours"
+    const isShipped = ctx.orderStatus === "expédié" || ctx.orderStatus === "en_cours";
+    const deliveryStatus = isShipped
       ? `الكوموند ديالك ${address.formal} راها عند شركة الشحن${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""} وهي فـ الطريق ليك 🚚${trackingLine ? `\n${trackingLine}` : ""}`
       : `الكوموند ديالك ${address.formal} راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅`;
+
+    // Gender-aware messages
+    const cancelConfirmedReply = `ما كاين حتى مشكل ${address.formal}، الطلب ديالك تلغى كيفما بغيتي. إيلا حتاجيتي شي حاجة أخرى حنا هنا. نهارك مبروك! 🙏`;
+    const shippedCancelBlockReply = `سمح لينا ${address.formal}، الطلبية راها خرجت دبا مع الموزع، حاول تواصل معانا ملي يعيط ليك 🚚`;
 
     return `${base}
 
@@ -475,10 +493,18 @@ RULES FOR THIS MODE:
   Respond EXACTLY with: "${deliveryStatus}"
 - If status is "confirme": reassure them the order is confirmed and being prepared to ship
 - If status is "expédié" or "en_cours": give tracking info if available, say "وجد راسك ${address.formal} وكن فـ الدار باش يوصلك 🚚"
-- If customer wants to CANCEL (says "بغيت نلغي" / "بلاش" / "ما بغيتش"): reply "مفهوم ${address.formal}، غنلغيوها ليك دابا" — this signals CANCEL intent (set is_cancelled=true)
 - If customer asks about product, quality, delivery time: answer warmly and briefly
 - ALWAYS be reassuring — the order is safe and on its way
-- Keep replies SHORT: 1-2 lines max`;
+- Keep replies SHORT: 1-2 lines max
+${isShipped
+  ? `CANCELLATION RULE (SHIPPED — CANNOT CANCEL):
+- If customer asks to cancel or says "بلاش" / "الغاء" / "ما بغيتش" / "cancel":
+  REFUSE politely using EXACTLY this reply: "${shippedCancelBlockReply}"
+  Set is_cancelled=false — order cannot be cancelled once shipped.`
+  : `CANCELLATION RULE (CONFIRMED — CAN CANCEL):
+- If customer asks to cancel or expresses regret ("بلاش" / "الغاء" / "ما بغيتش" / "بدلت رأيي" / "cancel" / "annuler"):
+  Reply EXACTLY: "${cancelConfirmedReply}"
+  Set is_cancelled=true — this will cancel the order and restore stock automatically.`}`;
   }
 
   if (step === 1) {
@@ -817,20 +843,41 @@ export async function handleIncomingMessage(
     }
 
     if (intent === "cancel" && conv.orderId) {
-      const isPostConfirm = liveOrderStatus === "confirme" || liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
-      const cancelStatus = isPostConfirm ? "annulé" : "annulé fake";
+      const isAlreadyShipped = liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
+
+      // ── Safety guard: Order already with courier — cannot cancel ──
+      if (isAlreadyShipped) {
+        const shippedMsg = `سمح لينا ${addr.formal}، الطلبية راها خرجت دبا مع الموزع، حاول تواصل معانا ملي يعيط ليك 🚚`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "user", message: customerMessage });
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: shippedMsg });
+        await storage.updateAiConversationLastMessage(conv.id, shippedMsg);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "user", content: customerMessage, ts: Date.now() });
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: shippedMsg, ts: Date.now() });
+        console.log(`[AI] 🚚 Cancel blocked (fast-path): order #${conv.orderId} already ${liveOrderStatus} — cannot cancel`);
+        await new Promise(r => setTimeout(r, 3000));
+        await queueWhatsApp(storeId, customerPhone, shippedMsg);
+        return;
+      }
+
+      // ── Cancel allowed: confirme → annulé / nouveau → annulé fake ──
+      const cancelStatus = liveOrderStatus === "confirme" ? "annulé" : "annulé fake";
       await storage.updateOrderStatus(conv.orderId, cancelStatus);
       await storage.updateAiConversationStatus(conv.id, "cancelled");
-      const msg = `مفهوم ${addr.formal} 🙏 إلا بغيتي تكمل أو عندك سؤال راسل المتجر مباشرة. نتمنى نخدموا معك قريبا!`;
+
+      // Use the polite post-confirm message if order was confirmed, generic otherwise
+      const msg = liveOrderStatus === "confirme"
+        ? `ما كاين حتى مشكل ${addr.formal}، الطلب ديالك تلغى كيفما بغيتي. إيلا حتاجيتي شي حاجة أخرى حنا هنا. نهارك مبروك! 🙏`
+        : `مفهوم ${addr.formal} 🙏 إلا بغيتي تكمل أو عندك سؤال راسل المتجر مباشرة. نتمنى نخدموا معك قريبا!`;
+
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
       await storage.updateAiConversationLastMessage(conv.id, msg);
       broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
       broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: cancelStatus, conversationId: conv.id, customerName: conv.customerName, ts: Date.now() });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
-      if (isPostConfirm) {
+      if (liveOrderStatus === "confirme") {
         broadcastToStore(storeId, "post_confirm_cancel", {
           conversationId: conv.id, orderId: conv.orderId, customerName: conv.customerName, customerPhone,
-          message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp`,
+          message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp (après confirmation)`,
           ts: Date.now(),
         });
         console.log(`[AI] ⚠️ POST-CONFIRM CANCEL: Order #${conv.orderId} cancelled by ${conv.customerName} via WhatsApp`);
@@ -956,25 +1003,32 @@ export async function handleIncomingMessage(
         broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: "confirme", conversationId: conv.id, customerName: conv.customerName, ts: confirmedAt.getTime() });
         console.log(`[AI] ✅ JSON-confirmed: order #${conv.orderId} → 'confirme'`);
       } else if (needsCancel) {
-        const isPostConfirmCancel = liveOrderStatus === "confirme" || liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
-        const cancelStatus = isPostConfirmCancel ? "annulé" : "annulé fake";
-        await storage.updateOrderStatus(conv.orderId!, cancelStatus);
-        await storage.updateAiConversationStatus(conv.id, "cancelled");
-        broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
-        broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: cancelStatus, conversationId: conv.id, customerName: conv.customerName, ts: Date.now() });
-        console.log(`[AI] ❌ JSON-cancelled: order #${conv.orderId} → '${cancelStatus}'`);
+        const isAlreadyShippedJSON = liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
 
-        // ── Admin toast for post-confirmed cancellations ──────────────
-        if (isPostConfirmCancel) {
-          broadcastToStore(storeId, "post_confirm_cancel", {
-            conversationId: conv.id,
-            orderId: conv.orderId,
-            customerName: conv.customerName,
-            customerPhone,
-            message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp (après confirmation)`,
-            ts: Date.now(),
-          });
-          console.log(`[AI] ⚠️ POST-CONFIRM JSON-CANCEL: order #${conv.orderId} | customer: ${conv.customerName}`);
+        if (isAlreadyShippedJSON) {
+          // Safety guard: AI decided to cancel but order is already with courier — block it
+          // The AI reply was already sent above ("راها خرجت مع الموزع") via the delivery companion prompt
+          console.log(`[AI] 🚚 Cancel blocked (JSON): order #${conv.orderId} already ${liveOrderStatus} — DB not updated`);
+        } else {
+          const cancelStatus = liveOrderStatus === "confirme" ? "annulé" : "annulé fake";
+          await storage.updateOrderStatus(conv.orderId!, cancelStatus);
+          await storage.updateAiConversationStatus(conv.id, "cancelled");
+          broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
+          broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: cancelStatus, conversationId: conv.id, customerName: conv.customerName, ts: Date.now() });
+          console.log(`[AI] ❌ JSON-cancelled: order #${conv.orderId} → '${cancelStatus}'`);
+
+          // ── Admin toast for post-confirmed cancellations ──────────────
+          if (liveOrderStatus === "confirme") {
+            broadcastToStore(storeId, "post_confirm_cancel", {
+              conversationId: conv.id,
+              orderId: conv.orderId,
+              customerName: conv.customerName,
+              customerPhone,
+              message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp (après confirmation)`,
+              ts: Date.now(),
+            });
+            console.log(`[AI] ⚠️ POST-CONFIRM JSON-CANCEL: order #${conv.orderId} | customer: ${conv.customerName}`);
+          }
         }
       }
 
