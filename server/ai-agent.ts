@@ -230,7 +230,7 @@ async function processWaQueue(storeId: number): Promise<void> {
   const queue = waQueue.get(storeId) ?? [];
   while (queue.length > 0) {
     const item = queue.shift()!;
-    await sendWhatsAppMessage(item.phone, item.message);
+    await sendWhatsAppMessage(item.phone, item.message, storeId);
     if (queue.length > 0) {
       await new Promise(r => setTimeout(r, 10000));
     }
@@ -849,7 +849,7 @@ export async function handleIncomingMessage(
         await storage.updateAiConversationLastMessage(conv.id, imageLogMsg);
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: imageLogMsg, ts: Date.now() });
         console.log(`[AI] 📸 Sending product image to ${customerPhone}: ${ctx.productImageUrl.substring(0, 60)}...`);
-        await sendWhatsAppImage(customerPhone, ctx.productImageUrl, caption);
+        await sendWhatsAppImage(customerPhone, ctx.productImageUrl, caption, storeId);
       } else {
         const noImgReply = `عفواً ${addr.casual}، ما عنديش تصويرة للمنتج دابا 🙏`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noImgReply });

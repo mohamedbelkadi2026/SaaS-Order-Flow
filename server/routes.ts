@@ -1451,11 +1451,11 @@ export async function registerRoutes(
       // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
       console.log(`[Webhook] Order ${order.id} created → checking AI settings for store ${storeId}...`);
       console.log(`[Webhook] Attempting WhatsApp AI trigger for: ${parsed.customerPhone}`);
-      const { baileysService } = await import("./baileys-service");
-      const waState = baileysService.getStatus();
-      console.log(`[WhatsApp] Socket status: ${waState.state} | Phone: ${waState.phone || 'N/A'}`);
+      const { getBaileysInstance } = await import("./baileys-service");
+      const waState = getBaileysInstance(storeId).getStatus();
+      console.log(`[WhatsApp:${storeId}] Socket status: ${waState.state} | Phone: ${waState.phone || 'N/A'}`);
       if (waState.state !== "connected") {
-        console.warn(`[WhatsApp] ⚠️ Not connected (state=${waState.state}) — AI message will be queued, auto-reconnect in progress`);
+        console.warn(`[WhatsApp:${storeId}] ⚠️ Not connected (state=${waState.state}) — AI message will be queued`);
       }
       triggerAIForNewOrder(storeId, order.id, parsed.customerPhone, parsed.customerName, firstProductId)
         .catch(err => console.error(`[AI] Trigger failed for order ${order.id}:`, err.message));
@@ -3020,19 +3020,18 @@ export async function registerRoutes(
   /* ── WhatsApp / Baileys session management ────────────────────── */
 
   /* GET /api/automation/whatsapp/status → { state, phone, qr } */
-  app.get("/api/automation/whatsapp/status", requireAuth, async (_req: any, res: any) => {
-    const { baileysService } = await import("./baileys-service");
-    res.json(baileysService.getStatus());
+  app.get("/api/automation/whatsapp/status", requireAuth, async (req: any, res: any) => {
+    const { getBaileysInstance } = await import("./baileys-service");
+    const storeId: number = req.user!.storeId ?? 1;
+    res.json(getBaileysInstance(storeId).getStatus());
   });
 
   /* POST /api/automation/whatsapp/connect → initiate Baileys connection */
   app.post("/api/automation/whatsapp/connect", requireAuth, async (req: any, res: any) => {
     try {
-      const { baileysService } = await import("./baileys-service");
-      // Pass storeId so Baileys knows which store's messages to handle
-      const storeId = req.user!.storeId;
-      if (storeId) baileysService.setActiveStoreId(storeId);
-      baileysService.start().catch(console.error); // non-blocking
+      const { getBaileysInstance } = await import("./baileys-service");
+      const storeId: number = req.user!.storeId ?? 1;
+      getBaileysInstance(storeId).start().catch(console.error);
       res.json({ ok: true, message: "Connexion en cours..." });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -3040,10 +3039,11 @@ export async function registerRoutes(
   });
 
   /* POST /api/automation/whatsapp/disconnect → logout + clear session */
-  app.post("/api/automation/whatsapp/disconnect", requireAuth, async (_req: any, res: any) => {
+  app.post("/api/automation/whatsapp/disconnect", requireAuth, async (req: any, res: any) => {
     try {
-      const { baileysService } = await import("./baileys-service");
-      await baileysService.logout();
+      const { getBaileysInstance } = await import("./baileys-service");
+      const storeId: number = req.user!.storeId ?? 1;
+      await getBaileysInstance(storeId).logout();
       res.json({ ok: true, message: "Déconnecté. Session effacée." });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -3051,10 +3051,11 @@ export async function registerRoutes(
   });
 
   /* POST /api/automation/whatsapp/reset → wipe session files + fresh QR */
-  app.post("/api/automation/whatsapp/reset", requireAuth, async (_req: any, res: any) => {
+  app.post("/api/automation/whatsapp/reset", requireAuth, async (req: any, res: any) => {
     try {
-      const { baileysService } = await import("./baileys-service");
-      baileysService.resetAndRestart().catch(console.error); // non-blocking
+      const { getBaileysInstance } = await import("./baileys-service");
+      const storeId: number = req.user!.storeId ?? 1;
+      getBaileysInstance(storeId).resetAndRestart().catch(console.error);
       res.json({ ok: true, message: "Réinitialisation en cours — nouveau QR code bientôt disponible." });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -3064,12 +3065,13 @@ export async function registerRoutes(
   /* POST /api/automation/whatsapp/test → send a test message to the owner's own number */
   app.post("/api/automation/whatsapp/test", requireAuth, async (req: any, res: any) => {
     try {
-      const { baileysService } = await import("./baileys-service");
-      const status = baileysService.getStatus();
+      const { getBaileysInstance } = await import("./baileys-service");
+      const storeId: number = req.user!.storeId ?? 1;
+      const instance = getBaileysInstance(storeId);
+      const status = instance.getStatus();
       if (status.state !== "connected") {
         return res.status(400).json({ message: "WhatsApp n'est pas connecté." });
       }
-      // Get the connected phone number and send a test message to itself
       const testPhone = status.phone ?? "";
       if (!testPhone) {
         return res.status(400).json({ message: "Numéro de téléphone non disponible." });
@@ -3077,9 +3079,9 @@ export async function registerRoutes(
       const storeName = req.user?.username ?? "TajerGrow";
       const testMsg = `✅ *Test TajerGrow AI* — La connexion WhatsApp de votre boutique "${storeName}" est opérationnelle. Les confirmations automatiques sont actives. 🚀`;
       const { sendWhatsAppMessage } = await import("./whatsapp-service");
-      const ok = await sendWhatsAppMessage(`+${testPhone}`, testMsg);
+      const ok = await sendWhatsAppMessage(`+${testPhone}`, testMsg, storeId);
       if (ok) {
-        console.log(`[WhatsApp] ✅ Test message sent to ${testPhone}`);
+        console.log(`[WhatsApp:${storeId}] ✅ Test message sent to ${testPhone}`);
         res.json({ ok: true, message: `Message de test envoyé à +${testPhone}` });
       } else {
         res.status(500).json({ message: "Échec de l'envoi du message de test." });
@@ -3089,13 +3091,14 @@ export async function registerRoutes(
     }
   });
 
-  /* GET /api/automation/whatsapp/events → SSE stream for real-time WA status */
-  app.get("/api/automation/whatsapp/events", requireAuth, async (_req: any, res: any) => {
-    const { addWASSEClient } = await import("./sse");
-    addWASSEClient(res);
+  /* GET /api/automation/whatsapp/events → SSE stream for real-time WA status (store-scoped) */
+  app.get("/api/automation/whatsapp/events", requireAuth, async (req: any, res: any) => {
+    const { addSSEClient } = await import("./sse");
+    const storeId: number = req.user!.storeId ?? 1;
+    addSSEClient(storeId, res);
     // Send current status immediately on subscribe
-    const { baileysService } = await import("./baileys-service");
-    const status = baileysService.getStatus();
+    const { getBaileysInstance } = await import("./baileys-service");
+    const status = getBaileysInstance(storeId).getStatus();
     const payload = `event: wa_status\ndata: ${JSON.stringify({ ...status, ts: Date.now() })}\n\n`;
     try { res.write(payload); } catch (_) {}
   });

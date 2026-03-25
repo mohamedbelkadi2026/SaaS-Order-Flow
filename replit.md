@@ -202,17 +202,23 @@ Four tabs in `client/src/pages/automation.tsx`:
 - `RECOVERY_SYSTEM_PROMPT` — recovery (abandoned cart) prompt also enforces JSON output
 - Hooked into `POST /api/orders`, `POST /api/orders/manual`, and Shopify/YouCan webhooks after response sent
 
-### WhatsApp Engine (`server/baileys-service.ts`)
+### WhatsApp Engine (`server/baileys-service.ts`) — Multi-Tenant
 - `@whiskeysockets/baileys` — pure Node.js WebSocket, no Chromium required
-- 4 states: `idle` | `connecting` | `qr` | `connected`
+- **Fully isolated per-store sessions** via `getBaileysInstance(storeId)` factory pattern
+- Each store gets its own auth folder: `./auth_info/store_<storeId>/`
+- LID → phone mapping files live in the store's own auth folder
+- 4 states per session: `idle` | `connecting` | `qr` | `connected`
 - QR generated as Navy/white base64 PNG via `qrcode` package
-- Session persisted in `./auth_info_baileys/` (survives Replit restarts)
 - Auto-reconnects on connection loss; logs out cleanly on `DisconnectReason.loggedOut`
-- `baileysService.sendMessage(phone, text)` routes AI replies to customers
-- `autoStartBaileys()` called on boot — restores existing session silently
+- SSE broadcasts to store-specific channel: `broadcastToStore(storeId, "wa_status", ...)`
+- `autoStartBaileys()` on boot: migrates old `auth_info_baileys/` → `auth_info/store_1/`, then scans all `store_*` dirs and auto-starts stores with existing sessions
+- `baileysService` export kept as backward-compat shim (delegates to `getBaileysInstance(1)`)
 
-### WhatsApp Transport (`server/whatsapp-service.ts`)
-- `sendWhatsAppMessage(phone, message)` — primary: Baileys; fallback: Green API (if env vars set)
+### WhatsApp Transport (`server/whatsapp-service.ts`) — Multi-Tenant
+- `sendWhatsAppMessage(phone, message, storeId?)` — uses `getBaileysInstance(storeId)`; fallback: Green API
+- `sendWhatsAppImage(phone, imageUrl, caption, storeId?)` — per-store image delivery
+- Per-store retry queues (`Map<storeId, PendingMessage[]>`): Store A failures don't affect Store B
+- `flushPendingQueue(storeId)` called by Baileys on connect to drain queued messages
 - Moroccan 0XXXXXXXXX → 212XXXXXXXXX conversion handled in both paths
 
 ### SSE (`server/sse.ts`)
