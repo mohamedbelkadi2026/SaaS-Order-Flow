@@ -56,11 +56,33 @@ const MSG_DEDUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /* ── LID → Phone mapping cache ─────────────────────────────────
  * WhatsApp privacy accounts reply via @lid JIDs (e.g. 177532607430859@lid)
- * instead of their real phone number JIDs. We build a cache:
- *   LID prefix (digits before colon) → real phone (e.g. "+212632595440")
- * Populated proactively when we send a message, and lazily on first @lid reply.
+ * Baileys automatically writes lid-mapping-{lid}_reverse.json files in auth_info_baileys/
+ * containing the real phone number. We read those files on first @lid encounter
+ * and cache the result in memory for subsequent messages.
  * ─────────────────────────────────────────────────────────────── */
-const _lidToPhone = new Map<string, string>(); // LID prefix → stored phone string
+const _lidToPhone = new Map<string, string>(); // LID prefix → real phone string
+
+async function resolveLidToPhone(lidPrefix: string): Promise<string | null> {
+  // 1. Check in-memory cache
+  const cached = _lidToPhone.get(lidPrefix);
+  if (cached) return cached;
+
+  // 2. Read Baileys' own lid-mapping-{lid}_reverse.json file
+  // Baileys writes this automatically when it decrypts messages from LID users
+  try {
+    const mapFile = path.join(AUTH_DIR, `lid-mapping-${lidPrefix}_reverse.json`);
+    const raw = await fs.readFile(mapFile, "utf8");
+    const phone: string = JSON.parse(raw); // contains just the phone digits, e.g. "212632595440"
+    const resolved = phone.startsWith("+") ? phone : `+${phone}`;
+    _lidToPhone.set(lidPrefix, resolved);
+    console.log(`[LID] ✅ Resolved ${lidPrefix}@lid → ${resolved} (from auth file)`);
+    return resolved;
+  } catch {
+    // File doesn't exist yet (first message before Baileys has written it)
+    console.log(`[LID] ⚠️ No mapping file for LID ${lidPrefix} yet — Baileys will write it during decryption`);
+    return null;
+  }
+}
 
 function isDuplicateMessage(msgId: string): boolean {
   const now = Date.now();
@@ -366,53 +388,24 @@ async function connectToWhatsApp(): Promise<void> {
         if (remoteJid.endsWith("@g.us")) continue;
 
         // ── LID resolution: @lid JIDs are WhatsApp privacy-mode addresses ──
-        // They look like "177532607430859@lid" and do NOT contain the real phone.
-        // We resolve them via the _lidToPhone cache (populated on send) or lazily.
+        // Baileys writes lid-mapping-{lid}_reverse.json files automatically when
+        // it decrypts messages. We read those files to get the real phone number.
         const isLid = remoteJid.endsWith("@lid");
         let resolvedPhone: string | null = null;
 
         if (isLid) {
-          const lidPrefix = remoteJid.split("@")[0].split(":")[0]; // "177532607430859"
-          const cached = _lidToPhone.get(lidPrefix);
-          if (cached) {
-            resolvedPhone = cached;
-            console.log(`[Baileys] 🔄 LID ${lidPrefix} → phone ${resolvedPhone} (from cache)`);
-          } else {
-            // Cache miss: try lazy resolution — query WhatsApp for all active conv phones
-            // and find which one maps to this LID
-            console.log(`[Baileys] 🔍 LID ${lidPrefix} cache miss — attempting lazy resolution...`);
-            try {
-              const { or: drOr } = await import("drizzle-orm");
-              const activeConvs2 = await db.select().from(aiConversations)
-                .where(drOr(eq(aiConversations.status, "active"), eq(aiConversations.status, "confirmed")));
-
-              for (const c of activeConvs2) {
-                if (!c.customerPhone) continue;
-                try {
-                  const n = normalisePhone(c.customerPhone);
-                  const results = _sock ? await _sock.onWhatsApp(n) : [];
-                  if (results && results.length > 0 && (results[0] as any).lid) {
-                    const cLidRaw: string = (results[0] as any).lid;
-                    const cLidPrefix = cLidRaw.split("@")[0].split(":")[0];
-                    _lidToPhone.set(cLidPrefix, c.customerPhone); // cache all we find
-                    if (cLidPrefix === lidPrefix) {
-                      resolvedPhone = c.customerPhone;
-                      console.log(`[Baileys] ✅ LID ${lidPrefix} lazily resolved → ${resolvedPhone}`);
-                    }
-                  }
-                } catch { /* skip individual conv resolve errors */ }
-              }
-            } catch { /* ignore lazy resolution errors */ }
-
-            if (!resolvedPhone) {
-              console.log(`[Baileys] ⚠️ LID ${lidPrefix} could not be resolved — checking conv JIDs`);
-              // Last resort: store the LID as JID so getActiveAiConversationByJid might catch future msgs
-            }
+          const lidPrefix = remoteJid.split("@")[0].split(":")[0]; // e.g. "177532607430859"
+          resolvedPhone = await resolveLidToPhone(lidPrefix);
+          if (!resolvedPhone) {
+            // File not yet written — Baileys writes it after decryption.
+            // Try once more after a short delay (gives Baileys time to write the file)
+            await new Promise(r => setTimeout(r, 800));
+            resolvedPhone = await resolveLidToPhone(lidPrefix);
           }
         }
 
         const rawPhone = isLid
-          ? (resolvedPhone ?? remoteJid.split("@")[0]) // use resolved or raw LID prefix
+          ? (resolvedPhone?.replace("+", "") ?? remoteJid.split("@")[0])
           : remoteJid.replace("@s.whatsapp.net", "");
         const phone = resolvedPhone ? normalisePhone(resolvedPhone) : normalisePhone(rawPhone);
 
@@ -657,21 +650,7 @@ export const baileysService = {
       console.log(`[Baileys] Sending to JID: ${jid}`);
       await _sock.sendMessage(jid, { text });
       console.log(`[Baileys] ✅ Message sent to ${jid}`);
-
-      // ── Proactively resolve + cache the customer's LID ────────────
-      // WhatsApp privacy accounts reply via @lid instead of phone JID.
-      // We call onWhatsApp() right after send to learn their LID and cache it,
-      // so when their reply arrives as "@lid", we can route it correctly.
-      try {
-        const results = await _sock.onWhatsApp(normalisePhone(phone));
-        if (results && results.length > 0 && (results[0] as any).lid) {
-          const lidRaw: string = (results[0] as any).lid; // e.g. "177532607430859:4@lid"
-          const lidPrefix = lidRaw.split("@")[0].split(":")[0]; // "177532607430859"
-          _lidToPhone.set(lidPrefix, phone);
-          console.log(`[Baileys] 📌 LID cache: ${lidPrefix} → ${phone} (proactive)`);
-        }
-      } catch { /* onWhatsApp is optional — ignore errors */ }
-
+      // Note: LID ↔ phone mapping is resolved via Baileys' lid-mapping files on first reply.
       return true;
     } catch (err: any) {
       console.error(`[Baileys] ❌ Send error to ${phone}:`, err.message);

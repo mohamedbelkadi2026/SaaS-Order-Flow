@@ -765,7 +765,9 @@ export async function handleIncomingMessage(
     await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "user", message: customerMessage });
     await storage.updateAiConversationLastMessage(conv.id, customerMessage);
     broadcastToStore(storeId, "message", { conversationId: conv.id, role: "user", content: customerMessage, ts: Date.now() });
-    console.log(`[SOCKET_EMIT] message (user) → conv ${conv.id} | "${customerMessage.substring(0, 60)}"`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`[INCOMING] Message from ${customerPhone}: "${customerMessage}"`);
+    console.log(`[INCOMING] Conv: ${conv.id} | Order: ${conv.orderId ?? "none"} | Customer: ${conv.customerName ?? "unknown"}`);
 
     // ── AI key gate — block AI reply but message is already visible in Live Chat ──
     if (!(await storeHasAIKey(storeId))) {
@@ -850,6 +852,7 @@ export async function handleIncomingMessage(
 
       const ctx = conv.orderId ? await getOrderContext(conv.orderId) : null;
       const storeName = await getStoreName(storeId);
+      console.log(`[AI] Searching context for ${customerPhone}... Context found: ${ctx?.productName ?? "no product"} | Price: ${ctx?.totalPrice ? (ctx.totalPrice/100).toFixed(0)+"DH" : "N/A"} | Status: ${ctx?.orderStatus ?? "N/A"}`);
 
       // Build step-specific system prompt
       const systemPrompt = isRecovery
@@ -872,15 +875,23 @@ export async function handleIncomingMessage(
       ];
 
       const { client: ai, model, provider } = await resolveAIClient(storeId);
-      console.log(`[AI_THINKING] Conv ${conv.id} | Model: ${model} | History: ${messages.length} msgs → sending to ${provider}...`);
-      const completion = await ai.chat.completions.create({ model, messages, max_tokens: 400, temperature: 0.7 });
+      console.log(`[AI] Calling ${provider} (${model}) | Conv: ${conv.id} | History: ${messages.length - 1} msgs...`);
+      let completion: Awaited<ReturnType<typeof ai.chat.completions.create>>;
+      try {
+        completion = await ai.chat.completions.create({ model, messages, max_tokens: 400, temperature: 0.7 });
+      } catch (apiErr: any) {
+        console.error(`[AI-ERROR] OpenRouter/OpenAI call FAILED for conv ${conv.id}:`, apiErr?.message || apiErr);
+        console.error(`[AI-ERROR] Status: ${apiErr?.status} | Code: ${apiErr?.code} | Model: ${model}`);
+        throw apiErr;
+      }
       const rawAIResponse = completion.choices[0]?.message?.content?.trim() ?? "";
       if (!rawAIResponse) throw new Error("Empty AI response");
 
       // ── Parse structured JSON response from AI ────────────────────
       const decision = parseAIDecision(rawAIResponse);
       const aiReply = decision.reply;
-      console.log(`[AI_JSON] Conv ${conv.id} | isConfirmed=${decision.isConfirmed} | isCancelled=${decision.isCancelled} | reply="${aiReply.substring(0, 60)}"`);
+      console.log(`[REPLY] AI sending back to ${customerPhone}: "${aiReply.substring(0, 100)}"`);
+      console.log(`[REPLY] confirmed=${decision.isConfirmed} | cancelled=${decision.isCancelled} | conv=${conv.id}`);
 
       // ── Advance step based on what the customer just said ────────
       // Skip step advancement when in delivery companion mode (order already confirmed)
