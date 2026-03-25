@@ -68,7 +68,6 @@ const ADMIN_NAV = [
   { name: "List Client",            href: "/clients",       icon: Contact         },
   { name: "Gestion de l'Équipe",    href: "/team",          icon: Users           },
   { name: "Gestion Media Buyers",   href: "/media-buyers",  icon: Target          },
-  { name: "Factures",               href: "/invoices",      icon: FileText        },
   { name: "Facturation",            href: "/billing",       icon: CreditCard      },
   { name: "Advanced Profitability", href: "/profitability", icon: Calculator      },
   { name: "Publicités",             href: "/publicites",    icon: Receipt         },
