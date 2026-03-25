@@ -665,8 +665,18 @@ export const baileysService = {
     }
     try {
       const jid = toJid(phone);
-      console.log(`[Baileys] Sending image to JID: ${jid} | URL: ${imageUrl.substring(0, 60)}...`);
-      await _sock.sendMessage(jid, { image: { url: imageUrl }, caption });
+      console.log(`[Baileys] Sending image to JID: ${jid} | source: ${imageUrl.substring(0, 60)}...`);
+
+      // Local file path (e.g. "/uploads/products/...") — read as buffer for reliability
+      if (imageUrl.startsWith("/uploads/")) {
+        const { readFileSync } = await import("fs");
+        const localPath = `.${imageUrl}`; // e.g. ./uploads/products/file.jpg
+        const buffer = readFileSync(localPath);
+        await _sock.sendMessage(jid, { image: buffer, caption });
+      } else {
+        await _sock.sendMessage(jid, { image: { url: imageUrl }, caption });
+      }
+
       console.log(`[Baileys] ✅ Image sent to ${jid}`);
       return true;
     } catch (err: any) {

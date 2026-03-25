@@ -13,6 +13,8 @@ import path from "path";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 
+import fs from "fs";
+
 const receiptUpload = multer({
   storage: multer.diskStorage({
     destination: "uploads/",
@@ -26,6 +28,26 @@ const receiptUpload = multer({
     const allowed = ["image/jpeg", "image/jpg", "image/png", "application/pdf"];
     if (allowed.includes(file.mimetype)) cb(null, true);
     else cb(new Error("Seuls les fichiers PDF, JPG et PNG sont acceptés."));
+  },
+});
+
+// Product image upload — saves to uploads/products/ (persistent between restarts)
+const PRODUCT_IMG_DIR = "uploads/products";
+if (!fs.existsSync(PRODUCT_IMG_DIR)) fs.mkdirSync(PRODUCT_IMG_DIR, { recursive: true });
+
+const productImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: PRODUCT_IMG_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+      cb(null, `product_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Seuls les fichiers image (JPG, PNG, WEBP) sont acceptés."));
   },
 });
 
@@ -2806,6 +2828,15 @@ export async function registerRoutes(
   app.post("/api/payments/receipt", requireAuth, receiptUpload.single("file"), (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
     res.json({ url: `/uploads/${req.file.filename}` });
+  });
+
+  // Upload product image — saved to uploads/products/
+  app.post("/api/upload/product-image", requireAuth, productImageUpload.single("image"), (req: any, res: any) => {
+    if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni" });
+    const url = `/uploads/products/${req.file.filename}`;
+    const localPath = req.file.path;
+    console.log(`[Upload] Product image saved: ${localPath} → URL: ${url}`);
+    res.json({ url, localPath });
   });
 
   // Create a payment record (pending)

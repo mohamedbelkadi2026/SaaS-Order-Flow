@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useProducts, useCreateProduct, useUpdateProduct, useDeleteProduct, useInventoryStats } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
@@ -12,7 +12,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles } from "lucide-react";
+import { Plus, Package, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2 } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface VariantForm {
@@ -74,10 +75,45 @@ export default function Inventory() {
     descriptionDarija: "", aiFeatures: "", imageUrl: "",
   });
 
+  // File upload state — shared between Add and Edit dialogs (only one open at a time)
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileSelect = useCallback((file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    setPendingFile(file);
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewUrl(objectUrl);
+  }, []);
+
+  const clearFile = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPendingFile(null);
+    setPreviewUrl(null);
+  };
+
+  // Upload pending file to server and return the URL
+  const uploadFile = async (): Promise<string | null> => {
+    if (!pendingFile) return null;
+    const fd = new FormData();
+    fd.append("image", pendingFile);
+    const res = await fetch("/api/upload/product-image", {
+      method: "POST",
+      credentials: "include",
+      body: fd,
+    });
+    if (!res.ok) throw new Error("Échec de l'upload de l'image");
+    const data = await res.json();
+    return data.url as string;
+  };
+
   const resetForm = () => {
     setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "" });
     setHasVariants(false);
     setVariants([]);
+    clearFile();
   };
 
   const addVariant = () => {
@@ -102,6 +138,13 @@ export default function Inventory() {
       return;
     }
     try {
+      // Upload image first if a file was selected
+      let resolvedImageUrl: string | null = null;
+      if (pendingFile) {
+        resolvedImageUrl = await uploadFile();
+        clearFile();
+      }
+
       const payload: any = {
         name: form.name,
         sku: form.sku,
@@ -110,7 +153,7 @@ export default function Inventory() {
         sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : 0,
         description: form.description || null,
         reference: form.reference || null,
-        imageUrl: form.imageUrl || null,
+        imageUrl: resolvedImageUrl,
       };
       if (hasVariants && variants.length > 0) {
         payload.hasVariants = 1;
@@ -134,13 +177,23 @@ export default function Inventory() {
   const handleEdit = async () => {
     if (!editingProduct) return;
     try {
+      // Upload new image if one was selected
+      let resolvedImageUrl: string | null | undefined = undefined; // undefined = don't change
+      if (pendingFile) {
+        resolvedImageUrl = await uploadFile();
+        clearFile();
+      } else if (form.imageUrl !== (editingProduct.imageUrl || "")) {
+        // User may have cleared the existing image
+        resolvedImageUrl = form.imageUrl || null;
+      }
+
       // Build AI features as JSON array if provided (comma-separated input)
       let aiFeaturesParsed: string | null = null;
       if (form.aiFeatures.trim()) {
         const featuresArr = form.aiFeatures.split(",").map(f => f.trim()).filter(Boolean);
         aiFeaturesParsed = JSON.stringify(featuresArr);
       }
-      await updateProduct.mutateAsync({
+      const updatePayload: any = {
         id: editingProduct.id,
         name: form.name || undefined,
         sku: form.sku || undefined,
@@ -151,8 +204,9 @@ export default function Inventory() {
         reference: form.reference || undefined,
         descriptionDarija: form.descriptionDarija || null,
         aiFeatures: aiFeaturesParsed,
-        imageUrl: form.imageUrl || null,
-      });
+      };
+      if (resolvedImageUrl !== undefined) updatePayload.imageUrl = resolvedImageUrl;
+      await updateProduct.mutateAsync(updatePayload);
       toast({ title: "Produit mis à jour", description: `${form.name} a été modifié` });
       setEditOpen(false);
       setEditingProduct(null);
@@ -438,10 +492,42 @@ export default function Inventory() {
               <Input data-testid="input-product-reference" value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="Référence interne" />
             </div>
             <div className="space-y-2">
-              <Label>URL Image produit</Label>
-              <Input data-testid="input-product-image-url" value={form.imageUrl} onChange={e => setForm(f => ({ ...f, imageUrl: e.target.value }))} placeholder="https://..." />
-              {form.imageUrl && (
-                <img src={form.imageUrl} alt="Aperçu" className="w-20 h-20 rounded-lg object-cover border mt-1" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+              <Label>Photo du produit</Label>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                data-testid="input-product-image-file"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ""; }}
+              />
+              {previewUrl ? (
+                <div className="relative w-fit">
+                  <img src={previewUrl} alt="Aperçu" className="w-28 h-28 rounded-xl object-cover border-2 border-primary/30" />
+                  <button
+                    type="button"
+                    onClick={clearFile}
+                    className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-destructive text-white flex items-center justify-center shadow"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                  <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1 text-[9px] font-medium text-white bg-black/60 rounded px-1.5 py-0.5">
+                    <CheckCircle2 className="w-2.5 h-2.5 text-green-400" />
+                    {pendingFile?.name?.substring(0, 22)}
+                  </div>
+                </div>
+              ) : (
+                <div
+                  data-testid="dropzone-product-image"
+                  className={`border-2 border-dashed rounded-xl p-5 flex flex-col items-center gap-2 cursor-pointer transition-colors ${isDraggingOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30"}`}
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={e => { e.preventDefault(); setIsDraggingOver(true); }}
+                  onDragLeave={() => setIsDraggingOver(false)}
+                  onDrop={e => { e.preventDefault(); setIsDraggingOver(false); const f = e.dataTransfer.files?.[0]; if (f) handleFileSelect(f); }}
+                >
+                  <ImageUp className="w-8 h-8 text-muted-foreground" />
+                  <p className="text-sm font-medium text-center">Glissez une photo ici<br /><span className="text-xs text-muted-foreground font-normal">ou cliquez pour choisir (JPG, PNG, WEBP)</span></p>
+                </div>
               )}
             </div>
 
@@ -575,17 +661,58 @@ export default function Inventory() {
                 <p className="text-xs text-muted-foreground">Chaque caractéristique séparée par une virgule sera une puce dans le prompt AI.</p>
               </div>
               <div className="space-y-2">
-                <Label className="text-xs font-medium">URL Image produit (envoyée par l'IA sur demande)</Label>
-                <Input
-                  data-testid="input-edit-product-image-url"
-                  value={form.imageUrl}
-                  onChange={e => setForm(f => ({ ...f, imageUrl: e.target.value }))}
-                  placeholder="https://..."
-                  className="text-sm"
-                />
-                {form.imageUrl && (
-                  <img src={form.imageUrl} alt="Aperçu" className="w-20 h-20 rounded-lg object-cover border mt-1" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <Label className="text-xs font-medium">Photo du produit (envoyée par l'IA sur demande)</Label>
+                {/* Show existing or new preview */}
+                {(previewUrl || form.imageUrl) ? (
+                  <div className="relative w-fit">
+                    <img
+                      src={previewUrl || form.imageUrl}
+                      alt="Aperçu"
+                      className="w-28 h-28 rounded-xl object-cover border-2 border-primary/30"
+                      onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { clearFile(); setForm(f => ({ ...f, imageUrl: "" })); }}
+                      className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-destructive text-white flex items-center justify-center shadow"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                    {pendingFile && (
+                      <div className="absolute bottom-1 left-1 right-1 flex items-center gap-1 text-[9px] font-medium text-white bg-black/60 rounded px-1.5 py-0.5">
+                        <CheckCircle2 className="w-2.5 h-2.5 text-green-400" />
+                        {pendingFile.name.substring(0, 22)}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="mt-1.5 text-xs text-muted-foreground hover:text-foreground underline-offset-2 underline flex items-center gap-1"
+                    >
+                      <ImageUp className="w-3 h-3" /> Changer la photo
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    data-testid="dropzone-edit-product-image"
+                    className={`border-2 border-dashed rounded-xl p-4 flex flex-col items-center gap-1.5 cursor-pointer transition-colors ${isDraggingOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-muted/30"}`}
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={e => { e.preventDefault(); setIsDraggingOver(true); }}
+                    onDragLeave={() => setIsDraggingOver(false)}
+                    onDrop={e => { e.preventDefault(); setIsDraggingOver(false); const f = e.dataTransfer.files?.[0]; if (f) handleFileSelect(f); }}
+                  >
+                    <ImageUp className="w-6 h-6 text-muted-foreground" />
+                    <p className="text-xs font-medium text-center">Glissez une photo ici<br /><span className="text-muted-foreground font-normal">ou cliquez pour choisir</span></p>
+                  </div>
                 )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  data-testid="input-edit-product-image-file"
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ""; }}
+                />
               </div>
             </div>
 
