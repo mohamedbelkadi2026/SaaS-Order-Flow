@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { storage } from "./storage";
 import { broadcastToStore } from "./sse";
-import { sendWhatsAppMessage } from "./whatsapp-service";
+import { sendWhatsAppMessage, sendWhatsAppImage } from "./whatsapp-service";
 import { db } from "./db";
 import { products, orderItems, orders, stores, aiConversations } from "@shared/schema";
 import { eq } from "drizzle-orm";
@@ -104,6 +104,16 @@ const CANCEL_KEYWORDS = [
   "ما كناخدوش",         // "we won't take it"
   "ما بقيناش",          // "we no longer (want it)"
 ];
+// ── Image request keywords — customer wants to see the product ──
+const IMAGE_KEYWORDS = [
+  "صيفط ليا تصويرة", "صيفط تصويرة", "صيفط ليا صورة", "صيفط صورة",
+  "بنيت نشوفو", "نبغي نشوفو", "نبغي نشوفها", "وريني", "ورينيها", "وريهولي",
+  "وريني صباط", "وريني المنتج", "وريني القاعدة", "كيف كيفاش هو", "كيفاش يبان",
+  "send photo", "send image", "show me photo", "photo stp", "photo svp",
+  "صورة", "تصويرة", "photo", "image du produit",
+  "بنيتي نشوفها", "بغيت نشوف", "مممكن تعطيني صورة",
+];
+
 const ATTENTION_KEYWORDS = [
   "بغيت واحد", "human", "admin", "مدير", "إنسان", "شخص حقيقي",
   "واحد حقيقي", "تكلم معاي", "تكلموا معايا", "بشر", "مسؤول",
@@ -136,10 +146,13 @@ const MOROCCAN_CITIES = [
   "tinghir", "kelaa sraghna", "beni mellal",
 ];
 
-function detectIntent(msg: string): "confirm" | "cancel" | null {
+function detectIntent(msg: string): "confirm" | "cancel" | "image" | null {
   const lower = msg.toLowerCase().trim();
 
-  // Confirm check first
+  // Image request check — check before confirm to catch "وريني" which can overlap
+  if (IMAGE_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "image";
+
+  // Confirm check
   if (CONFIRM_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()))) return "confirm";
 
   // ── Question guard: customer is asking something → still interested, never cancel ──
@@ -238,6 +251,7 @@ interface OrderContext {
   orderStatus: string | null;
   trackNumber: string | null;
   shippingProvider: string | null;
+  productImageUrl: string | null;
 }
 
 export async function getOrderContextForRoute(orderId: number): Promise<OrderContext> {
@@ -267,6 +281,7 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
     let resolvedProductId: number | null = null;
     let descriptionDarija: string | null = null;
     let aiFeatures: string[] | null = null;
+    let productImageUrl: string | null = null;
 
     if (items.length > 0) {
       const item = items[0];
@@ -283,12 +298,14 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
           description: products.description,
           descriptionDarija: products.descriptionDarija,
           aiFeatures: products.aiFeatures,
+          imageUrl: products.imageUrl,
         }).from(products).where(eq(products.id, item.productId));
         if (p) {
           if (!productName) productName = p.name ?? null;
           stockQty = p.stock ?? null;
           // Use descriptionDarija first, fall back to regular description
           descriptionDarija = p.descriptionDarija || p.description || null;
+          productImageUrl = p.imageUrl ?? null;
           if (p.aiFeatures) {
             try { aiFeatures = JSON.parse(p.aiFeatures); } catch { aiFeatures = null; }
           }
@@ -313,9 +330,10 @@ async function getOrderContext(orderId: number): Promise<OrderContext> {
       orderStatus: order?.status ?? null,
       trackNumber: order?.trackNumber ?? null,
       shippingProvider: order?.shippingProvider ?? null,
+      productImageUrl,
     };
   } catch {
-    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null };
+    return { productName: null, productVariant: null, totalPrice: null, customerCity: null, stockQty: null, productId: null, descriptionDarija: null, aiFeatures: null, orderStatus: null, trackNumber: null, shippingProvider: null, productImageUrl: null };
   }
 }
 
@@ -818,6 +836,29 @@ export async function handleIncomingMessage(
 
     const gender = detectGender(conv.customerName ?? "");
     const addr = getGenderAddress(gender);
+
+    // ── Image request fast-path ────────────────────────────────────
+    if (intent === "image" && conv.orderId) {
+      const ctx = await getOrderContext(conv.orderId);
+      if (ctx.productImageUrl) {
+        const caption = ctx.productName
+          ? `هذي هي صورة ${ctx.productName} 📸`
+          : "هذي هي صورة المنتج 📸";
+        const imageLogMsg = `[IMAGE] ${ctx.productImageUrl}`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: imageLogMsg });
+        await storage.updateAiConversationLastMessage(conv.id, imageLogMsg);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: imageLogMsg, ts: Date.now() });
+        console.log(`[AI] 📸 Sending product image to ${customerPhone}: ${ctx.productImageUrl.substring(0, 60)}...`);
+        await sendWhatsAppImage(customerPhone, ctx.productImageUrl, caption);
+      } else {
+        const noImgReply = `عفواً ${addr.casual}، ما عنديش تصويرة للمنتج دابا 🙏`;
+        await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: noImgReply });
+        await storage.updateAiConversationLastMessage(conv.id, noImgReply);
+        broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: noImgReply, ts: Date.now() });
+        await queueWhatsApp(storeId, customerPhone, noImgReply);
+      }
+      return;
+    }
 
     if (intent === "confirm" && conv.orderId) {
       // Only auto-confirm if order is still in "nouveau" state (not already confirmed)

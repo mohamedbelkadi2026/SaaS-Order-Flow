@@ -128,6 +128,26 @@ export async function sendWhatsAppMessage(phone: string, message: string): Promi
   }
 }
 
+/* ── Image sending via Baileys ──────────────────────────────── */
+export async function sendWhatsAppImage(phone: string, imageUrl: string, caption: string): Promise<boolean> {
+  try {
+    const { baileysService } = await import("./baileys-service");
+    const status = baileysService.getStatus();
+    if (status.state === "connected" && baileysService.isConnected()) {
+      const ok = await baileysService.sendImage(phone, imageUrl, caption);
+      if (ok) {
+        console.log(`[WA Transport] ✅ Image sent via Baileys → ${phone}`);
+        return true;
+      }
+    }
+    console.warn(`[WA Transport] ⚠️ Cannot send image — Baileys not connected (state=${status.state})`);
+    return false;
+  } catch (err: any) {
+    console.error(`[WA Transport] ❌ Image send exception: ${err.message}`);
+    return false;
+  }
+}
+
 /* ── Green API helpers (kept for optional fallback status check) */
 export function isGreenApiConfigured(): boolean {
   return !!(process.env.GREENAPI_INSTANCE_ID && process.env.GREENAPI_API_TOKEN);

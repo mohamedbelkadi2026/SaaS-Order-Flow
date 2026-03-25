@@ -658,6 +658,23 @@ export const baileysService = {
     }
   },
 
+  async sendImage(phone: string, imageUrl: string, caption: string): Promise<boolean> {
+    if (!_sock || _waState !== "connected") {
+      console.warn("[WA-STATUS] Cannot send image — not connected. State:", _waState);
+      return false;
+    }
+    try {
+      const jid = toJid(phone);
+      console.log(`[Baileys] Sending image to JID: ${jid} | URL: ${imageUrl.substring(0, 60)}...`);
+      await _sock.sendMessage(jid, { image: { url: imageUrl }, caption });
+      console.log(`[Baileys] ✅ Image sent to ${jid}`);
+      return true;
+    } catch (err: any) {
+      console.error(`[Baileys] ❌ Image send error to ${phone}:`, err.message);
+      return false;
+    }
+  },
+
   isConnected(): boolean {
     return _waState === "connected";
   },

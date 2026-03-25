@@ -1690,6 +1690,7 @@ function LiveMonitoringTab() {
                     "text-zinc-400"
                   )}>
                     {isLong ? "🕐 Conversation longue en cours" :
+                     conv.lastMessage?.startsWith("[IMAGE] ") ? "📸 صورة المنتج" :
                      (conv.lastMessage || "...")}
                   </p>
                 )}
@@ -1790,7 +1791,17 @@ function LiveMonitoringTab() {
             {messages.map((msg, i) => (
               <div key={i} className="flex flex-col max-w-[78%]" style={{ alignSelf: msg.role === "user" ? "flex-start" : "flex-end" }}>
                 <div className="px-4 py-2.5 text-sm" style={bubbleStyle(msg.role)} dir={msg.role !== "user" ? "rtl" : "ltr"}>
-                  {msg.content}
+                  {msg.content?.startsWith("[IMAGE] ") ? (
+                    <div className="flex flex-col gap-1.5">
+                      <img
+                        src={msg.content.replace("[IMAGE] ", "")}
+                        alt="صورة المنتج"
+                        className="w-36 h-36 rounded-xl object-cover border border-white/20"
+                        onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
+                      />
+                      <span className="text-xs opacity-70">📸 صورة المنتج</span>
+                    </div>
+                  ) : msg.content}
                 </div>
                 <span className="text-[10px] text-zinc-300 mt-0.5 px-1 flex items-center gap-1"
                   style={{ justifyContent: msg.role === "user" ? "flex-start" : "flex-end" }}

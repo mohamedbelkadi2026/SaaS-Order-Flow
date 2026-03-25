@@ -71,11 +71,11 @@ export default function Inventory() {
   const [form, setForm] = useState({
     name: "", sku: "", stock: "", costPrice: "", sellingPrice: "",
     description: "", reference: "",
-    descriptionDarija: "", aiFeatures: "",
+    descriptionDarija: "", aiFeatures: "", imageUrl: "",
   });
 
   const resetForm = () => {
-    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "" });
+    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "" });
     setHasVariants(false);
     setVariants([]);
   };
@@ -110,6 +110,7 @@ export default function Inventory() {
         sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : 0,
         description: form.description || null,
         reference: form.reference || null,
+        imageUrl: form.imageUrl || null,
       };
       if (hasVariants && variants.length > 0) {
         payload.hasVariants = 1;
@@ -150,6 +151,7 @@ export default function Inventory() {
         reference: form.reference || undefined,
         descriptionDarija: form.descriptionDarija || null,
         aiFeatures: aiFeaturesParsed,
+        imageUrl: form.imageUrl || null,
       });
       toast({ title: "Produit mis à jour", description: `${form.name} a été modifié` });
       setEditOpen(false);
@@ -192,6 +194,7 @@ export default function Inventory() {
       reference: product.reference || "",
       descriptionDarija: product.descriptionDarija || "",
       aiFeatures: aiFeaturesDisplay,
+      imageUrl: product.imageUrl || "",
     });
     setEditOpen(true);
   };
@@ -434,6 +437,13 @@ export default function Inventory() {
               <Label>Référence</Label>
               <Input data-testid="input-product-reference" value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} placeholder="Référence interne" />
             </div>
+            <div className="space-y-2">
+              <Label>URL Image produit</Label>
+              <Input data-testid="input-product-image-url" value={form.imageUrl} onChange={e => setForm(f => ({ ...f, imageUrl: e.target.value }))} placeholder="https://..." />
+              {form.imageUrl && (
+                <img src={form.imageUrl} alt="Aperçu" className="w-20 h-20 rounded-lg object-cover border mt-1" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+              )}
+            </div>
 
             <div className="flex items-center gap-3 pt-2 border-t">
               <Switch id="has-variants" checked={hasVariants} onCheckedChange={setHasVariants} data-testid="switch-has-variants" />
@@ -563,6 +573,19 @@ export default function Inventory() {
                   className="text-sm"
                 />
                 <p className="text-xs text-muted-foreground">Chaque caractéristique séparée par une virgule sera une puce dans le prompt AI.</p>
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs font-medium">URL Image produit (envoyée par l'IA sur demande)</Label>
+                <Input
+                  data-testid="input-edit-product-image-url"
+                  value={form.imageUrl}
+                  onChange={e => setForm(f => ({ ...f, imageUrl: e.target.value }))}
+                  placeholder="https://..."
+                  className="text-sm"
+                />
+                {form.imageUrl && (
+                  <img src={form.imageUrl} alt="Aperçu" className="w-20 h-20 rounded-lg object-cover border mt-1" onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                )}
               </div>
             </div>
 
