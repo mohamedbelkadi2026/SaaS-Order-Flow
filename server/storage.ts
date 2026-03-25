@@ -163,6 +163,7 @@ export interface IStorage {
   updateConversationJid(id: number, jid: string): Promise<void>;
   createAiConversation(data: import("@shared/schema").InsertAiConversation): Promise<import("@shared/schema").AiConversation>;
   updateAiConversationStatus(id: number, status: string): Promise<void>;
+  updateConversationConfirmedAt(id: number, ts: Date): Promise<void>;
   updateAiConversationLastMessage(id: number, message: string): Promise<void>;
   setConversationManual(id: number, isManual: number): Promise<void>;
 
@@ -2205,6 +2206,11 @@ export class DatabaseStorage implements IStorage {
   async updateAiConversationStatus(id: number, status: string) {
     const { aiConversations } = await import("@shared/schema");
     await db.update(aiConversations).set({ status }).where(eq(aiConversations.id, id));
+  }
+
+  async updateConversationConfirmedAt(id: number, ts: Date) {
+    const { aiConversations } = await import("@shared/schema");
+    await db.update(aiConversations).set({ confirmedAt: ts }).where(eq(aiConversations.id, id));
   }
 
   async updateConversationNeedsAttention(id: number, val: number) {

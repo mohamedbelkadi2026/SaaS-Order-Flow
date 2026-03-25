@@ -92,6 +92,28 @@ function useOrderStatusSSE() {
       queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
     };
+    // Instant optimistic cache update — patch the specific order without waiting for refetch
+    const handleStatusUpdated = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        const { orderId, status } = data;
+        if (!orderId || !status) return;
+        // Patch all cached order lists that contain this order
+        const patchOrders = (list: any[]) =>
+          list.map((o: any) => o.id === orderId ? { ...o, status } : o);
+        queryClient.setQueriesData({ queryKey: ["/api/orders"] }, (old: any) =>
+          Array.isArray(old) ? patchOrders(old) : old);
+        queryClient.setQueriesData({ queryKey: ["/api/orders/filtered"] }, (old: any) => {
+          if (!old) return old;
+          if (Array.isArray(old)) return patchOrders(old);
+          if (old.orders && Array.isArray(old.orders)) return { ...old, orders: patchOrders(old.orders) };
+          return old;
+        });
+        // Also schedule a background refetch so stats + totals are eventually consistent
+        setTimeout(invalidateOrders, 2000);
+      } catch { invalidateOrders(); }
+    };
+    es.addEventListener("ORDER_STATUS_UPDATED", handleStatusUpdated);
     es.addEventListener("confirmed", invalidateOrders);
     es.addEventListener("cancelled", invalidateOrders);
     es.addEventListener("post_confirm_cancel", invalidateOrders);

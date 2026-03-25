@@ -496,6 +496,7 @@ export const aiConversations = pgTable("ai_conversations", {
   leadQuantity: integer("lead_quantity").default(1),
   createdOrderId: integer("created_order_id"),
   whatsappJid: text("whatsapp_jid"),  // Actual WhatsApp JID (e.g. 212632595440@s.whatsapp.net) for exact routing
+  confirmedAt: timestamp("confirmed_at"),  // Set when order is confirmed — used for AI performance metrics
 });
 export const insertAiConversationSchema = createInsertSchema(aiConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export type AiConversation = typeof aiConversations.$inferSelect;

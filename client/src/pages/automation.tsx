@@ -1335,7 +1335,7 @@ function LiveMonitoringTab() {
         const data = JSON.parse(e.data);
         refetchConvs();
         if (data.conversationId === selectedIdRef.current) {
-          setMessages(prev => [...prev, { role: "system", content: "✅ Commande confirmée automatiquement", ts: data.ts }]);
+          setMessages(prev => [...prev, { role: "system", content: "✅ Cette commande a été confirmée automatiquement par l'IA", ts: data.ts }]);
         }
       });
 
@@ -1343,8 +1343,19 @@ function LiveMonitoringTab() {
         const data = JSON.parse(e.data);
         refetchConvs();
         if (data.conversationId === selectedIdRef.current) {
-          setMessages(prev => [...prev, { role: "system", content: "❌ Commande annulée", ts: data.ts }]);
+          setMessages(prev => [...prev, { role: "system", content: "❌ Commande annulée automatiquement par l'IA", ts: data.ts }]);
         }
+      });
+
+      es.addEventListener("ORDER_STATUS_UPDATED", (e) => {
+        const data = JSON.parse(e.data);
+        // Instantly patch the conversation's displayed status in the sidebar list
+        queryClient.setQueryData(["/api/automation/conversations"], (old: any) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((c: any) =>
+            c.id === data.conversationId ? { ...c, orderStatus: data.status } : c
+          );
+        });
       });
 
       es.addEventListener("post_confirm_cancel", (e) => {

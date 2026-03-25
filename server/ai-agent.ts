@@ -796,13 +796,19 @@ export async function handleIncomingMessage(
     if (intent === "confirm" && conv.orderId) {
       // Only auto-confirm if order is still in "nouveau" state (not already confirmed)
       if (liveOrderStatus === "nouveau" || liveOrderStatus === null) {
+        const confirmedAt = new Date();
         await storage.updateOrderStatus(conv.orderId, "confirme");
+        await storage.updateAiConversationStatus(conv.id, "confirmed");
+        await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
         const msg = `صافي ${addr.formal}! الكوموند ديالك تأكدات ✅ غتخرج اليوم إن شاء الله. شكراً بزاف على ثقتك فينا 🎉🚀`;
         await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
         await storage.updateAiConversationLastMessage(conv.id, msg);
+        const convAgeMs = confirmedAt.getTime() - new Date(conv.createdAt!).getTime();
+        console.log(`[PERFORMANCE] ⚡ Order #${conv.orderId} confirmed in ${(convAgeMs / 1000).toFixed(1)}s from conv start (fast-path keyword)`);
         broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: msg, ts: Date.now() });
+        broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: "confirme", conversationId: conv.id, customerName: conv.customerName, ts: confirmedAt.getTime() });
         broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
-        console.log(`[AI] Order ${conv.orderId} CONFIRMED (fast-path) by ${conv.customerName}`);
+        console.log(`[AI] ✅ Order #${conv.orderId} CONFIRMED (fast-path) by ${conv.customerName}`);
         await new Promise(r => setTimeout(r, 5000)); // human typing delay
         await queueWhatsApp(storeId, customerPhone, msg);
         return;
@@ -819,6 +825,7 @@ export async function handleIncomingMessage(
       await storage.createAiLog({ storeId, orderId: conv.orderId, customerPhone, role: "assistant", message: msg });
       await storage.updateAiConversationLastMessage(conv.id, msg);
       broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
+      broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: cancelStatus, conversationId: conv.id, customerName: conv.customerName, ts: Date.now() });
       broadcastToStore(storeId, "message", { conversationId: conv.id, role: "assistant", content: msg, ts: Date.now() });
       if (isPostConfirm) {
         broadcastToStore(storeId, "post_confirm_cancel", {
@@ -826,9 +833,9 @@ export async function handleIncomingMessage(
           message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp`,
           ts: Date.now(),
         });
-        console.log(`[AI] ⚠️ POST-CONFIRM CANCEL: Order ${conv.orderId} cancelled by ${conv.customerName} via WhatsApp`);
+        console.log(`[AI] ⚠️ POST-CONFIRM CANCEL: Order #${conv.orderId} cancelled by ${conv.customerName} via WhatsApp`);
       }
-      console.log(`[AI] Order ${conv.orderId} CANCELLED (fast-path ${cancelStatus}) by ${conv.customerName}`);
+      console.log(`[AI] ❌ Order #${conv.orderId} CANCELLED (fast-path → ${cancelStatus}) by ${conv.customerName}`);
       await new Promise(r => setTimeout(r, 5000)); // human typing delay
       await queueWhatsApp(storeId, customerPhone, msg);
       return;
@@ -939,16 +946,23 @@ export async function handleIncomingMessage(
       const needsCancel  = decision.isCancelled && conv.orderId;
 
       if (needsConfirm) {
+        const confirmedAt = new Date();
         await storage.updateOrderStatus(conv.orderId!, "confirme");
-        broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: aiReply, ts: Date.now() });
-        console.log(`[AI] ✅ JSON-confirmed: order ${conv.orderId} → 'confirme'`);
+        await storage.updateAiConversationStatus(conv.id, "confirmed");
+        await storage.updateConversationConfirmedAt(conv.id, confirmedAt);
+        const convAgeMs = confirmedAt.getTime() - new Date(conv.createdAt!).getTime();
+        console.log(`[PERFORMANCE] ⚡ Order #${conv.orderId} confirmed in ${(convAgeMs / 1000).toFixed(1)}s from conv start (AI JSON decision)`);
+        broadcastToStore(storeId, "confirmed", { conversationId: conv.id, orderId: conv.orderId, message: aiReply, ts: confirmedAt.getTime() });
+        broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: "confirme", conversationId: conv.id, customerName: conv.customerName, ts: confirmedAt.getTime() });
+        console.log(`[AI] ✅ JSON-confirmed: order #${conv.orderId} → 'confirme'`);
       } else if (needsCancel) {
         const isPostConfirmCancel = liveOrderStatus === "confirme" || liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
         const cancelStatus = isPostConfirmCancel ? "annulé" : "annulé fake";
         await storage.updateOrderStatus(conv.orderId!, cancelStatus);
         await storage.updateAiConversationStatus(conv.id, "cancelled");
         broadcastToStore(storeId, "cancelled", { conversationId: conv.id, orderId: conv.orderId, ts: Date.now() });
-        console.log(`[AI] ❌ JSON-cancelled: order ${conv.orderId} → '${cancelStatus}'`);
+        broadcastToStore(storeId, "ORDER_STATUS_UPDATED", { orderId: conv.orderId, status: cancelStatus, conversationId: conv.id, customerName: conv.customerName, ts: Date.now() });
+        console.log(`[AI] ❌ JSON-cancelled: order #${conv.orderId} → '${cancelStatus}'`);
 
         // ── Admin toast for post-confirmed cancellations ──────────────
         if (isPostConfirmCancel) {
@@ -960,7 +974,7 @@ export async function handleIncomingMessage(
             message: `⚠️ ${conv.customerName ?? customerPhone} a annulé sa commande #${conv.orderId} via WhatsApp (après confirmation)`,
             ts: Date.now(),
           });
-          console.log(`[AI] ⚠️ POST-CONFIRM JSON-CANCEL: order ${conv.orderId} | customer: ${conv.customerName}`);
+          console.log(`[AI] ⚠️ POST-CONFIRM JSON-CANCEL: order #${conv.orderId} | customer: ${conv.customerName}`);
         }
       }
 
