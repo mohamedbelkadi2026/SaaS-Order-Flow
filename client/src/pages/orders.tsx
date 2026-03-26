@@ -235,6 +235,7 @@ export default function Orders() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
+  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
   const [shippingProvider, setShippingProvider] = useState<string>("");
   const [editFields, setEditFields] = useState<Record<string, string>>({});
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -323,7 +324,8 @@ export default function Orders() {
   };
 
   const filteredOrders = useMemo(() => {
-    const visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
+    let visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
+    if (showDuplicatesOnly) visible = visible.filter((o: any) => (o.duplicateCount ?? 1) > 1);
     if (!Object.values(colFilters).some(v => v)) return visible;
     return visible.filter((o: any) => {
       if (colFilters.code && !o.orderNumber?.toLowerCase().includes(colFilters.code.toLowerCase())) return false;
@@ -347,7 +349,7 @@ export default function Orders() {
       }
       return true;
     });
-  }, [ordersList, colFilters]);
+  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds]);
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -647,6 +649,17 @@ export default function Orders() {
                 <SelectItem value="pickupDate">Ramassage</SelectItem>
               </SelectContent>
             </Select>
+            <button
+              onClick={() => setShowDuplicatesOnly(v => !v)}
+              data-testid="button-filter-duplicates"
+              className={`h-9 px-3 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors shrink-0 ${
+                showDuplicatesOnly
+                  ? "bg-orange-500 text-white border-orange-500 shadow-sm"
+                  : "bg-white dark:bg-card border-border/60 text-muted-foreground hover:text-orange-600 hover:border-orange-300"
+              }`}
+            >
+              ⚠️ Voir les Doublons
+            </button>
           </div>
         </div>
       </Card>
@@ -729,6 +742,29 @@ export default function Orders() {
                         <TableCell className="whitespace-nowrap">
                           <div className="flex items-center gap-1">
                             <span className="text-[11px]">{order.customerPhone}</span>
+                            {(order.duplicateCount ?? 1) > 1 && (
+                              <Popover>
+                                <PopoverTrigger asChild>
+                                  <button
+                                    onClick={e => e.stopPropagation()}
+                                    data-testid={`badge-duplicate-${order.id}`}
+                                    className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-orange-500 text-white hover:bg-orange-600 transition-colors shrink-0"
+                                  >
+                                    x{order.duplicateCount}
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-64 p-3 text-xs" onClick={e => e.stopPropagation()}>
+                                  <p className="font-semibold text-orange-600 mb-2">⚠️ {order.duplicateCount} commandes — même numéro</p>
+                                  <ul className="space-y-1">
+                                    {(order.duplicateOrderDates ?? []).map((d: string, i: number) => (
+                                      <li key={i} className="text-muted-foreground">
+                                        {i + 1}. {new Date(d).toLocaleString('fr-MA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </PopoverContent>
+                              </Popover>
+                            )}
                             <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`whatsapp-${order.id}`}>
                               <SiWhatsapp className="w-3.5 h-3.5" />
                             </a>
@@ -932,9 +968,34 @@ export default function Orders() {
                         data-testid={`checkbox-mobile-${order.id}`}
                       />
                     )}
-                    <span className="font-bold text-[13px] text-foreground tracking-wide flex-1 min-w-0 truncate">
-                      {order.customerPhone}
-                    </span>
+                    <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                      <span className="font-bold text-[13px] text-foreground tracking-wide truncate">
+                        {order.customerPhone}
+                      </span>
+                      {(order.duplicateCount ?? 1) > 1 && (
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              onClick={e => e.stopPropagation()}
+                              data-testid={`badge-duplicate-mobile-${order.id}`}
+                              className="shrink-0 text-[10px] font-bold text-white bg-orange-500 rounded-full px-1.5 py-0.5 active:scale-95"
+                            >
+                              ⚠️ {order.duplicateCount} Cmds
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-3 text-xs" onClick={e => e.stopPropagation()}>
+                            <p className="font-semibold text-orange-600 mb-2">⚠️ {order.duplicateCount} commandes — même numéro</p>
+                            <ul className="space-y-1">
+                              {(order.duplicateOrderDates ?? []).map((d: string, i: number) => (
+                                <li key={i} className="text-muted-foreground">
+                                  {i + 1}. {new Date(d).toLocaleString('fr-MA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                </li>
+                              ))}
+                            </ul>
+                          </PopoverContent>
+                        </Popover>
+                      )}
+                    </div>
                     {itemCount > 1 && (
                       <span className="text-[10px] font-extrabold text-white bg-amber-500 rounded-full px-1.5 py-0.5 shrink-0">
                         x{itemCount}

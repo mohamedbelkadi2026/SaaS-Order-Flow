@@ -633,10 +633,19 @@ export async function triggerAIForNewOrder(
       ? `\n⚠️ ماتأخروش — بقاو غير ${ctx.stockQty} قطع فـ السطوك!`
       : "";
 
+    // Check if customer has multiple orders (duplicate detection)
+    let dupNote = "";
+    try {
+      const dupCount = await storage.getPhoneOrderCount(storeId, customerPhone);
+      if (dupCount > 1) {
+        dupNote = `\nشفنا سيدي باللي عندك ${dupCount} طلبات عندنا — واش بغيتي نأكد ليك الطلب الجديد هذا، ولا بغيتي نلغيو الطلبات اللي فاتت؟ 🙏`;
+      }
+    } catch { /* non-fatal */ }
+
     // Greeting — exact format as specified
     const firstMessage =
       `السلام عليكم سيدي/لالة ${cleanName}، تبارك الله عليك ✨\n` +
-      `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.${stockUrgency}\n` +
+      `معاك فريق الدعم ديال ${storeName}، شلنا الطلب ديالك لـ "${productLabel}"${variantPart}.${stockUrgency}${dupNote}\n` +
       `واش نأكد ليك المدينة والمقاس باش نخرجوها ليك اليوم؟ 🚀`;
 
     const conv = await storage.createAiConversation({

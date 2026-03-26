@@ -297,7 +297,23 @@ export class DatabaseStorage implements IStorage {
     }
     
     const allOrders = await query;
-    return this.hydrateOrders(allOrders);
+    const hydrated = await this.hydrateOrders(allOrders);
+
+    // Compute phone duplicate map from in-memory list (O(n), no extra query)
+    const phoneMap = new Map<string, { count: number; dates: string[] }>();
+    for (const o of allOrders) {
+      if (!o.customerPhone) continue;
+      if (!phoneMap.has(o.customerPhone)) phoneMap.set(o.customerPhone, { count: 0, dates: [] });
+      const entry = phoneMap.get(o.customerPhone)!;
+      entry.count++;
+      if (o.createdAt) entry.dates.push(o.createdAt instanceof Date ? o.createdAt.toISOString() : String(o.createdAt));
+    }
+    for (const o of hydrated) {
+      const info = phoneMap.get(o.customerPhone ?? "") ?? { count: 1, dates: [] };
+      (o as any).duplicateCount = info.count;
+      (o as any).duplicateOrderDates = info.dates;
+    }
+    return hydrated;
   }
 
   async getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]> {
@@ -433,7 +449,36 @@ export class DatabaseStorage implements IStorage {
       .offset(offset);
 
     const hydrated = await this.hydrateOrders(allOrders);
+    await this.injectDuplicateCountsFromDB(storeId, hydrated);
     return { orders: hydrated, total };
+  }
+
+  /** Inject store-wide duplicate counts + dates for a page of orders (one batch query) */
+  private async injectDuplicateCountsFromDB(storeId: number, orderList: any[]): Promise<void> {
+    if (!orderList.length) return;
+    const phones = [...new Set(orderList.map((o: any) => o.customerPhone).filter(Boolean))] as string[];
+    if (!phones.length) return;
+
+    const phoneOrders = await db
+      .select({ phone: orders.customerPhone, id: orders.id, createdAt: orders.createdAt })
+      .from(orders)
+      .where(and(eq(orders.storeId, storeId), inArray(orders.customerPhone, phones)))
+      .orderBy(desc(orders.createdAt));
+
+    const map = new Map<string, { count: number; dates: string[] }>();
+    for (const row of phoneOrders) {
+      if (!row.phone) continue;
+      if (!map.has(row.phone)) map.set(row.phone, { count: 0, dates: [] });
+      const e = map.get(row.phone)!;
+      e.count++;
+      if (row.createdAt) e.dates.push(row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt));
+    }
+
+    for (const o of orderList) {
+      const info = map.get(o.customerPhone ?? "");
+      o.duplicateCount = info?.count ?? 1;
+      o.duplicateOrderDates = info?.dates ?? [];
+    }
   }
 
   async bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number> {
@@ -2301,6 +2346,20 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(orders.storeId, storeId), inArray(orders.customerPhone, variants)))
       .limit(1);
     return result.length > 0;
+  }
+
+  /** Count all orders for a phone in a store (store-wide, handles 0X/212X variants) */
+  async getPhoneOrderCount(storeId: number, phone: string): Promise<number> {
+    const digits = phone.replace(/\D/g, "");
+    const variants = [
+      digits,
+      `+${digits}`,
+      digits.startsWith("212") ? `0${digits.slice(3)}` : `212${digits.startsWith("0") ? digits.slice(1) : digits}`,
+    ];
+    const [row] = await db.select({ cnt: count() })
+      .from(orders)
+      .where(and(eq(orders.storeId, storeId), inArray(orders.customerPhone, variants)));
+    return row?.cnt ?? 0;
   }
 
   async updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; leadQuantity?: number; createdOrderId?: number }) {
