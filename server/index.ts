@@ -67,8 +67,9 @@ app.use(
 
 app.use(express.urlencoded({ extended: false }));
 
-// Serve uploaded receipts statically
-const uploadsDir = path.resolve("uploads");
+// Serve uploaded receipts statically — DATA_DIR points to the mounted volume on Railway
+const DATA_DIR = process.env.DATA_DIR ?? path.resolve(".");
+const uploadsDir = path.join(DATA_DIR, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use("/uploads", express.static(uploadsDir));
 

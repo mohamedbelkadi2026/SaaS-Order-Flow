@@ -15,9 +15,14 @@ import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 
 import fs from "fs";
 
+// All user-uploaded files live under DATA_DIR so Railway volumes work correctly.
+const DATA_DIR = process.env.DATA_DIR ?? path.resolve(".");
+const UPLOADS_BASE = path.join(DATA_DIR, "uploads");
+if (!fs.existsSync(UPLOADS_BASE)) fs.mkdirSync(UPLOADS_BASE, { recursive: true });
+
 const receiptUpload = multer({
   storage: multer.diskStorage({
-    destination: "uploads/",
+    destination: UPLOADS_BASE,
     filename: (_req, file, cb) => {
       const ext = path.extname(file.originalname);
       cb(null, `receipt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
@@ -32,7 +37,7 @@ const receiptUpload = multer({
 });
 
 // Product image upload — saves to uploads/products/ (persistent between restarts)
-const PRODUCT_IMG_DIR = "uploads/products";
+const PRODUCT_IMG_DIR = path.join(UPLOADS_BASE, "products");
 if (!fs.existsSync(PRODUCT_IMG_DIR)) fs.mkdirSync(PRODUCT_IMG_DIR, { recursive: true });
 
 const productImageUpload = multer({
@@ -192,6 +197,9 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+
+  /* ── Health check — used by Railway (and load balancers) ─────── */
+  app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
   app.get(api.stats.get.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;

@@ -42,7 +42,8 @@ interface BaileysStatus {
 }
 
 /* ── Auth directories ───────────────────────────────────────── */
-const MULTI_AUTH_BASE = path.join(process.cwd(), "auth_info");
+const DATA_DIR = process.env.DATA_DIR ?? process.cwd();
+const MULTI_AUTH_BASE = path.join(DATA_DIR, "auth_info");
 
 function getAuthDir(storeId: number): string {
   return path.join(MULTI_AUTH_BASE, `store_${storeId}`);
@@ -603,7 +604,7 @@ export const baileysService = {
 
 /* ── Migration: move old auth_info_baileys/ → auth_info/store_N/ ─ */
 async function migrateOldSession(): Promise<void> {
-  const OLD_DIR = path.join(process.cwd(), "auth_info_baileys");
+  const OLD_DIR = path.join(DATA_DIR, "auth_info_baileys");
   const oldCreds = path.join(OLD_DIR, "creds.json");
   try {
     await fs.access(oldCreds);

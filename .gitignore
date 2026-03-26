@@ -4,3 +4,19 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+
+# Runtime data — mount these as a Railway Volume at /app/data
+auth_info/
+uploads/
+
+# Replit-specific (not needed on Railway)
+.replit
+replit.nix
+.cache/
+.upm/
+.config/
+.agents/
+.local/
+
+# Logs
+*.log
