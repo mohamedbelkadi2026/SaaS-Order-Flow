@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Link2, Settings, CheckCircle, Unlink, Loader2, RotateCcw, ExternalLink, Eye, EyeOff, MapPin, Video, Home, ChevronRight, Plus } from "lucide-react";
+import { Link2, Settings, CheckCircle, Unlink, Loader2, RotateCcw, ExternalLink, Eye, EyeOff, MapPin, Video, Home, ChevronRight, Plus, Copy, Check } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useIntegrations, useCreateIntegration, useDeleteIntegration } from "@/hooks/use-store-data";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -15,24 +15,24 @@ const GOLD = "#C5A059";
 const NAVY = "#1e1b4b";
 
 const SHIPPING_PROVIDERS = [
-  { id: "digylog",        name: "Digylog",          cities: 581, logo: "https://tajergrow.com/assets/images/company/digylog.svg",   tutorialUrl: "https://youtu.be/digylog" },
-  { id: "onessta",        name: "Onessta",           cities: 378, logo: "https://tajergrow.com/assets/images/company/onessta.svg",   tutorialUrl: "https://youtu.be/onessta" },
-  { id: "ozoneexpress",   name: "Ozone Express",     cities: 628, logo: "https://tajergrow.com/assets/images/company/ozon.svg",      tutorialUrl: "https://youtu.be/ozone" },
-  { id: "sendit",         name: "Sendit",            cities: 500, logo: "https://tajergrow.com/assets/images/company/sendit.svg",    tutorialUrl: "https://youtu.be/sendit" },
-  { id: "ameex",          name: "Ameex",             cities: 420, logo: "https://tajergrow.com/assets/images/company/ameex.svg",     tutorialUrl: "https://youtu.be/ameex" },
-  { id: "cathedis",       name: "Cathedis",          cities: 520, logo: "https://tajergrow.com/assets/images/company/cathidis.svg",  tutorialUrl: "https://youtu.be/cathedis" },
-  { id: "speedex",        name: "Speedex",           cities: 439, logo: "https://tajergrow.com/assets/images/company/speedx.png",    tutorialUrl: "https://youtu.be/speedex" },
-  { id: "kargoexpress",   name: "KargoExpress",      cities: 335, logo: "https://tajergrow.com/assets/images/company/cargo.svg",     tutorialUrl: "https://youtu.be/kargo" },
-  { id: "forcelog",       name: "ForceLog",          cities: 468, logo: "https://tajergrow.com/assets/images/company/forcelog.png",  tutorialUrl: "https://youtu.be/forcelog" },
-  { id: "livo",           name: "Livo",              cities: 369, logo: "https://tajergrow.com/assets/images/company/ol.svg",        tutorialUrl: "https://youtu.be/livo" },
-  { id: "quicklivraison", name: "Quick Livraison",   cities: 404, logo: "https://tajergrow.com/assets/images/company/ql.svg",        tutorialUrl: "https://youtu.be/ql" },
-  { id: "codinafrica",    name: "Codinafrica",       cities: 312, logo: null,                                                        tutorialUrl: "https://youtu.be/codinafrica" },
-  { id: "olivraison",     name: "Olivraison",        cities: 280, logo: null,                                                        tutorialUrl: "https://youtu.be/olivraison" },
-  { id: "livreego",       name: "Livreego",          cities: 295, logo: null,                                                        tutorialUrl: "https://youtu.be/livreego" },
-  { id: "powerdelivery",  name: "PowerDelivery",     cities: 350, logo: null,                                                        tutorialUrl: "https://youtu.be/powerdelivery" },
-  { id: "caledex",        name: "Caledex",           cities: 270, logo: null,                                                        tutorialUrl: "https://youtu.be/caledex" },
-  { id: "oscario",        name: "Oscario",           cities: 390, logo: null,                                                        tutorialUrl: "https://youtu.be/oscario" },
-  { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null,                                                        tutorialUrl: "https://youtu.be/colisspeed" },
+  { id: "digylog",        name: "Digylog",          cities: 581, logo: "https://garean.com/assets/images/company/digylog.svg",   tutorialUrl: "https://youtu.be/digylog" },
+  { id: "onessta",        name: "Onessta",           cities: 378, logo: "https://garean.com/assets/images/company/onessta.svg",   tutorialUrl: "https://youtu.be/onessta" },
+  { id: "ozoneexpress",   name: "Ozone Express",     cities: 628, logo: "https://garean.com/assets/images/company/ozon.svg",      tutorialUrl: "https://youtu.be/ozone" },
+  { id: "sendit",         name: "Sendit",            cities: 500, logo: "https://garean.com/assets/images/company/sendit.svg",    tutorialUrl: "https://youtu.be/sendit" },
+  { id: "ameex",          name: "Ameex",             cities: 420, logo: "https://garean.com/assets/images/company/ameex.svg",     tutorialUrl: "https://youtu.be/ameex" },
+  { id: "cathedis",       name: "Cathedis",          cities: 520, logo: "https://garean.com/assets/images/company/cathidis.svg",  tutorialUrl: "https://youtu.be/cathedis" },
+  { id: "speedex",        name: "Speedex",           cities: 439, logo: "https://garean.com/assets/images/company/speedx.png",    tutorialUrl: "https://youtu.be/speedex" },
+  { id: "kargoexpress",   name: "KargoExpress",      cities: 335, logo: "https://garean.com/assets/images/company/cargo.svg",     tutorialUrl: "https://youtu.be/kargo" },
+  { id: "forcelog",       name: "ForceLog",          cities: 468, logo: "https://garean.com/assets/images/company/forcelog.png",  tutorialUrl: "https://youtu.be/forcelog" },
+  { id: "livo",           name: "Livo",              cities: 369, logo: "https://garean.com/assets/images/company/ol.svg",        tutorialUrl: "https://youtu.be/livo" },
+  { id: "quicklivraison", name: "Quick Livraison",   cities: 404, logo: "https://garean.com/assets/images/company/ql.svg",        tutorialUrl: "https://youtu.be/ql" },
+  { id: "codinafrica",    name: "Codinafrica",       cities: 312, logo: "https://garean.com/assets/images/company/cargo.svg",     tutorialUrl: "https://youtu.be/codinafrica" },
+  { id: "olivraison",     name: "Olivraison",        cities: 280, logo: null,                                                     tutorialUrl: "https://youtu.be/olivraison" },
+  { id: "livreego",       name: "Livreego",          cities: 295, logo: null,                                                     tutorialUrl: "https://youtu.be/livreego" },
+  { id: "powerdelivery",  name: "PowerDelivery",     cities: 350, logo: null,                                                     tutorialUrl: "https://youtu.be/powerdelivery" },
+  { id: "caledex",        name: "Caledex",           cities: 270, logo: null,                                                     tutorialUrl: "https://youtu.be/caledex" },
+  { id: "oscario",        name: "Oscario",           cities: 390, logo: null,                                                     tutorialUrl: "https://youtu.be/oscario" },
+  { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null,                                                     tutorialUrl: "https://youtu.be/colisspeed" },
 ];
 
 function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
@@ -44,15 +44,19 @@ function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
         src={logo}
         alt={name}
         onError={() => setImgError(true)}
-        className="w-full h-full object-contain p-1"
+        style={{ maxHeight: 40 }}
+        className="w-full object-contain p-1.5"
       />
     );
   }
 
   return (
-    <span className="text-white font-bold text-lg">
-      {name.slice(0, 2).toUpperCase()}
-    </span>
+    <div className="flex flex-col items-center justify-center gap-0.5">
+      <div className="w-8 h-8 rounded-lg bg-gray-200 dark:bg-zinc-600 flex items-center justify-center">
+        <span className="text-xs font-bold text-gray-500 dark:text-gray-300">{name.slice(0, 2).toUpperCase()}</span>
+      </div>
+      <span className="text-[8px] text-gray-400 text-center leading-tight max-w-[48px] truncate">{name}</span>
+    </div>
   );
 }
 
@@ -67,6 +71,7 @@ export default function ShippingIntegrations() {
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [showSecret, setShowSecret] = useState(false);
   const [showSettingsSecret, setShowSettingsSecret] = useState(false);
+  const [copiedWebhook, setCopiedWebhook] = useState(false);
 
   /* ── Open Retour ─────────────────────────────────────────────── */
   const [orDialog, setOrDialog] = useState(false);
@@ -326,7 +331,8 @@ export default function ShippingIntegrations() {
                         target="_blank"
                         rel="noopener noreferrer"
                         data-testid={`link-tutorial-${provider.id}`}
-                        className="flex items-center justify-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors py-1"
+                        className="flex items-center justify-center gap-1.5 text-[12px] font-medium hover:opacity-80 transition-opacity py-1"
+                        style={{ color: GOLD }}
                       >
                         <Video className="w-3.5 h-3.5" /> Comment connecter ?
                       </a>
@@ -409,6 +415,31 @@ export default function ShippingIntegrations() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            {/* Webhook URL */}
+            {connectingProvider && (
+              <div className="space-y-1.5">
+                <Label className="font-semibold text-xs uppercase tracking-wide text-muted-foreground">URL Webhook</Label>
+                <div className="flex items-center gap-2 p-2.5 rounded-xl border border-border/60 bg-muted/40">
+                  <code className="flex-1 text-[11px] font-mono text-foreground truncate">
+                    {`https://tajergrow.com/api/webhook/${connectingProvider}/v2`}
+                  </code>
+                  <button
+                    type="button"
+                    data-testid="button-copy-webhook"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`https://tajergrow.com/api/webhook/${connectingProvider}/v2`);
+                      setCopiedWebhook(true);
+                      setTimeout(() => setCopiedWebhook(false), 2000);
+                    }}
+                    className="shrink-0 p-1.5 rounded-lg hover:bg-border/60 transition-colors"
+                    title="Copier"
+                  >
+                    {copiedWebhook ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">Collez cette URL dans les paramètres webhook du transporteur.</p>
+              </div>
+            )}
             <div className="space-y-2">
               <Label className="font-semibold">Clé API</Label>
               <div className="relative">

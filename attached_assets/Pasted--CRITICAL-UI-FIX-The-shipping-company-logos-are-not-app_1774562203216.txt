@@ -1,0 +1,28 @@
+"CRITICAL UI FIX: The shipping company logos are not appearing. Currently, the system shows text placeholders (like DI, ON, OZ). I need you to replace them with the actual official logos and fix the connection modal. Follow these steps:
+1. Update Logos in 'Sociétés de Livraison' (Backend & Frontend):
+Update the data array for shipping companies to use these exact image URLs for the logo field:
+Digylog: https://garean.com/assets/images/company/digylog.svg
+Onessta: https://garean.com/assets/images/company/onessta.svg
+Ozone Express: https://garean.com/assets/images/company/ozon.svg
+Sendit: https://garean.com/assets/images/company/sendit.svg
+Ameex: https://garean.com/assets/images/company/ameex.svg
+Cathedis: https://garean.com/assets/images/company/cathidis.svg
+Speedex: https://garean.com/assets/images/company/speedx.png
+KargoExpress: https://garean.com/assets/images/company/cargo.svg
+ForceLog: https://garean.com/assets/images/company/forcelog.png
+Livo: https://garean.com/assets/images/company/ol.svg
+Quick Livraison: https://garean.com/assets/images/company/ql.svg
+Codinafrica: https://garean.com/assets/images/company/cargo.svg
+2. UI Component Fix (The Card):
+In the ShippingCompanyCard component, ensure the <img> tag is used to display the logo.
+Remove the logic that generates a colored circle with text (Initials) and replace it with a clean image container.
+If the image fails to load, use a clean grey placeholder with the company name in text as a fallback.
+3. Fix the Connection Modal (Refer to Screenshot 1):
+Brand Update: In the 'WebHook' field of the modal, change the domain from garean.com to tajergrow.com.
+The URL should be: https://tajergrow.com/api/webhook/[carrier]/v2.
+Ensure the 'Copy' icon next to the Webhook URL is functional.
+4. Design Polish:
+Make sure the logos are sized consistently (max-height 40px).
+Add the Green 'Connected' Ribbon in the corner for companies that have an active API key in the database.
+Use the Brand Gold (#C5A059) for the 'How to Connect' (Comment connecter ?) links.
+Technical Goal: When I open the page, I want to see the real logos of Moroccan carriers. When I open the Digylog modal, it must show TajerGrow.com links, not the competitor's domain."
