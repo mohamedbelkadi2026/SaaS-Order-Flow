@@ -1,13 +1,12 @@
 import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Link2, Settings, CheckCircle, Unlink, Loader2, Truck, Eye, EyeOff, RotateCcw, ExternalLink } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Link2, Settings, CheckCircle, Unlink, Loader2, RotateCcw, ExternalLink, Eye, EyeOff, MapPin, Video, Home, ChevronRight, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { cn } from "@/lib/utils";
 import { useIntegrations, useCreateIntegration, useDeleteIntegration } from "@/hooks/use-store-data";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
@@ -16,29 +15,60 @@ const GOLD = "#C5A059";
 const NAVY = "#1e1b4b";
 
 const SHIPPING_PROVIDERS = [
-  { id: "cathedis", name: "Cathedis", cities: 520 },
-  { id: "digylog", name: "Digylog", cities: 581 },
-  { id: "onessta", name: "Onessta", cities: 378 },
-  { id: "ozoneexpress", name: "OzoneExpress", cities: 628 },
-  { id: "sendit", name: "Sendit", cities: 500 },
-  { id: "speedex", name: "Speedex", cities: 439 },
-  { id: "kargoexpress", name: "Kargoexpress", cities: 335 },
-  { id: "forcelog", name: "Forcelog", cities: 468 },
-  { id: "livo", name: "Livo", cities: 369 },
-  { id: "quicklivraison", name: "Quicklivraison", cities: 404 },
+  { id: "digylog",        name: "Digylog",          cities: 581, logo: "https://tajergrow.com/assets/images/company/digylog.svg",   tutorialUrl: "https://youtu.be/digylog" },
+  { id: "onessta",        name: "Onessta",           cities: 378, logo: "https://tajergrow.com/assets/images/company/onessta.svg",   tutorialUrl: "https://youtu.be/onessta" },
+  { id: "ozoneexpress",   name: "Ozone Express",     cities: 628, logo: "https://tajergrow.com/assets/images/company/ozon.svg",      tutorialUrl: "https://youtu.be/ozone" },
+  { id: "sendit",         name: "Sendit",            cities: 500, logo: "https://tajergrow.com/assets/images/company/sendit.svg",    tutorialUrl: "https://youtu.be/sendit" },
+  { id: "ameex",          name: "Ameex",             cities: 420, logo: "https://tajergrow.com/assets/images/company/ameex.svg",     tutorialUrl: "https://youtu.be/ameex" },
+  { id: "cathedis",       name: "Cathedis",          cities: 520, logo: "https://tajergrow.com/assets/images/company/cathidis.svg",  tutorialUrl: "https://youtu.be/cathedis" },
+  { id: "speedex",        name: "Speedex",           cities: 439, logo: "https://tajergrow.com/assets/images/company/speedx.png",    tutorialUrl: "https://youtu.be/speedex" },
+  { id: "kargoexpress",   name: "KargoExpress",      cities: 335, logo: "https://tajergrow.com/assets/images/company/cargo.svg",     tutorialUrl: "https://youtu.be/kargo" },
+  { id: "forcelog",       name: "ForceLog",          cities: 468, logo: "https://tajergrow.com/assets/images/company/forcelog.png",  tutorialUrl: "https://youtu.be/forcelog" },
+  { id: "livo",           name: "Livo",              cities: 369, logo: "https://tajergrow.com/assets/images/company/ol.svg",        tutorialUrl: "https://youtu.be/livo" },
+  { id: "quicklivraison", name: "Quick Livraison",   cities: 404, logo: "https://tajergrow.com/assets/images/company/ql.svg",        tutorialUrl: "https://youtu.be/ql" },
+  { id: "codinafrica",    name: "Codinafrica",       cities: 312, logo: null,                                                        tutorialUrl: "https://youtu.be/codinafrica" },
+  { id: "olivraison",     name: "Olivraison",        cities: 280, logo: null,                                                        tutorialUrl: "https://youtu.be/olivraison" },
+  { id: "livreego",       name: "Livreego",          cities: 295, logo: null,                                                        tutorialUrl: "https://youtu.be/livreego" },
+  { id: "powerdelivery",  name: "PowerDelivery",     cities: 350, logo: null,                                                        tutorialUrl: "https://youtu.be/powerdelivery" },
+  { id: "caledex",        name: "Caledex",           cities: 270, logo: null,                                                        tutorialUrl: "https://youtu.be/caledex" },
+  { id: "oscario",        name: "Oscario",           cities: 390, logo: null,                                                        tutorialUrl: "https://youtu.be/oscario" },
+  { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null,                                                        tutorialUrl: "https://youtu.be/colisspeed" },
 ];
+
+function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
+  const [imgError, setImgError] = useState(false);
+
+  if (logo && !imgError) {
+    return (
+      <img
+        src={logo}
+        alt={name}
+        onError={() => setImgError(true)}
+        className="w-full h-full object-contain p-1"
+      />
+    );
+  }
+
+  return (
+    <span className="text-white font-bold text-lg">
+      {name.slice(0, 2).toUpperCase()}
+    </span>
+  );
+}
 
 export default function ShippingIntegrations() {
   const { toast } = useToast();
   const { data: integrations, isLoading } = useIntegrations("shipping");
   const createIntegration = useCreateIntegration();
   const deleteIntegration = useDeleteIntegration();
+
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [settingsProvider, setSettingsProvider] = useState<string | null>(null);
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [showSecret, setShowSecret] = useState(false);
+  const [showSettingsSecret, setShowSettingsSecret] = useState(false);
 
-  /* ── Open Retour state ─────────────────────────────────────── */
+  /* ── Open Retour ─────────────────────────────────────────────── */
   const [orDialog, setOrDialog] = useState(false);
   const [orApiKey, setOrApiKey] = useState("");
   const [orClientId, setOrClientId] = useState("");
@@ -75,10 +105,8 @@ export default function ShippingIntegrations() {
     },
   });
 
-  /* ── Shipping providers ────────────────────────────────────── */
-  const connectedMap = new Map(
-    (integrations || []).map((i: any) => [i.provider, i])
-  );
+  /* ── Shipping providers ──────────────────────────────────────── */
+  const connectedMap = new Map((integrations || []).map((i: any) => [i.provider, i]));
 
   const handleConnect = async () => {
     if (!connectingProvider) return;
@@ -87,12 +115,8 @@ export default function ShippingIntegrations() {
       return;
     }
     try {
-      await createIntegration.mutateAsync({
-        provider: connectingProvider,
-        type: "shipping",
-        credentials: formData,
-      });
-      toast({ title: "Connecté", description: `${connectingProvider} connecté avec succès` });
+      await createIntegration.mutateAsync({ provider: connectingProvider, type: "shipping", credentials: formData });
+      toast({ title: "Connecté ✅", description: `${connectingProvider} connecté avec succès` });
       setConnectingProvider(null);
       setFormData({});
     } catch (err: any) {
@@ -109,119 +133,105 @@ export default function ShippingIntegrations() {
     }
   };
 
-  const openOrDialog = () => {
-    setOrApiKey("");
-    setOrClientId(orSettings?.clientId || "");
-    setOrDialog(true);
-  };
+  const connectingMeta = SHIPPING_PROVIDERS.find(p => p.id === connectingProvider);
+  const settingsMeta   = SHIPPING_PROVIDERS.find(p => p.id === settingsProvider);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
 
+      {/* ── HEADER ────────────────────────────────────────────────── */}
+      <div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-3">
+          <Home className="w-3 h-3" />
+          <span>Accueil</span>
+          <ChevronRight className="w-3 h-3" />
+          <span>Intégrations</span>
+          <ChevronRight className="w-3 h-3" />
+          <span className="font-medium text-foreground">Sociétés de Livraison</span>
+        </div>
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight" style={{ color: NAVY }} data-testid="text-shipping-title">
+              SOCIÉTÉS DE LIVRAISON
+            </h1>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Connectez vos transporteurs marocains pour expédier vos commandes COD.
+            </p>
+          </div>
+          <button
+            onClick={() => toast({ title: "Bientôt disponible", description: "L'ajout manuel de transporteur arrive prochainement." })}
+            data-testid="button-add-carrier"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white shadow-md hover:opacity-90 transition-all shrink-0"
+            style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}
+          >
+            <Plus className="w-4 h-4" /> Ajouter un transporteur
+          </button>
+        </div>
+      </div>
+
       {/* ── SECTION: Open Retour ─────────────────────────────────── */}
       <div>
-        <div className="flex items-center gap-3 mb-1">
-          <RotateCcw className="w-5 h-5" style={{ color: GOLD }} />
-          <h2 className="text-xl font-bold" style={{ color: NAVY }}>Gestion des Retours</h2>
+        <div className="flex items-center gap-2 mb-3">
+          <RotateCcw className="w-4 h-4" style={{ color: GOLD }} />
+          <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Gestion des Retours</h2>
         </div>
-        <p className="text-sm text-muted-foreground mb-4">Connectez votre compte Open Retour pour automatiser les tickets de retour directement depuis vos commandes.</p>
 
         {orLoading ? (
           <div className="flex items-center gap-2 text-muted-foreground text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Chargement...</div>
         ) : (
-          <Card className="relative overflow-hidden rounded-2xl border-2" style={{
-            borderColor: orSettings?.connected ? "rgba(197,160,89,0.5)" : "rgba(30,27,75,0.1)",
+          <Card className="relative overflow-hidden rounded-2xl border-2 transition-shadow hover:shadow-md" style={{
+            borderColor: orSettings?.connected ? "rgba(197,160,89,0.4)" : "rgba(0,0,0,0.07)",
           }}>
             {orSettings?.connected && (
-              <div className="absolute top-0 right-0 z-10">
-                <div className="text-white text-[10px] font-bold px-8 py-1 rotate-45 translate-x-6 -translate-y-1 shadow-sm flex items-center gap-1 justify-center w-32"
-                  style={{ background: GOLD }}>
-                  <CheckCircle className="w-2.5 h-2.5" /> Connecté
-                </div>
+              <div className="absolute top-3.5 right-3.5 z-10">
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
+                  <CheckCircle className="w-3 h-3" /> Connecté
+                </span>
               </div>
             )}
             <CardContent className="p-6">
-              <div className="flex items-start gap-5">
-                {/* Logo */}
+              <div className="flex items-start gap-4">
                 <div className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-sm"
                   style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d2a7a 100%)` }}>
                   <RotateCcw className="w-7 h-7 text-white" />
                 </div>
-
-                {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <h3 className="text-lg font-bold" style={{ color: NAVY }}>Open Retour</h3>
-                    <Badge className="text-[10px] font-bold border-0"
-                      style={{ background: `rgba(197,160,89,0.12)`, color: GOLD }}>
-                      Maroc
-                    </Badge>
-                    <a href="https://openretour.ma" target="_blank" rel="noopener noreferrer"
-                      className="ml-auto text-muted-foreground hover:text-foreground">
+                    <Badge className="text-[10px] font-bold border-0" style={{ background: `rgba(197,160,89,0.12)`, color: GOLD }}>Maroc</Badge>
+                    <a href="https://openretour.ma" target="_blank" rel="noopener noreferrer" className="ml-auto text-muted-foreground hover:text-foreground">
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   </div>
-                  <p className="text-sm text-muted-foreground mb-3">
+                  <p className="text-sm text-muted-foreground mb-4">
                     Plateforme marocaine de gestion des retours COD. Créez des tickets de retour, tracez les colis et gérez les remboursements automatiquement.
                   </p>
-
                   {orSettings?.connected ? (
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2 text-sm">
-                        <CheckCircle className="w-4 h-4 text-green-500" />
-                        <span className="font-semibold text-green-700">Compte connecté</span>
-                        {orSettings.clientId && (
-                          <span className="text-muted-foreground">· Client ID: <code className="bg-zinc-100 px-1 rounded text-xs">{orSettings.clientId}</code></span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={openOrDialog}
-                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border-2 transition-all hover:opacity-90"
-                          style={{ borderColor: GOLD, color: GOLD }}
-                          data-testid="button-or-settings"
-                        >
-                          <Settings className="w-4 h-4" /> Modifier les clés
-                        </button>
-                        <button
-                          onClick={() => disconnectOrMutation.mutate()}
-                          disabled={disconnectOrMutation.isPending}
-                          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
-                          data-testid="button-or-disconnect"
-                        >
-                          {disconnectOrMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unlink className="w-4 h-4" />}
-                          Déconnecter
-                        </button>
-                      </div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      {orSettings.clientId && (
+                        <span className="text-xs text-muted-foreground">
+                          Client ID: <code className="bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded text-[11px]">{orSettings.clientId}</code>
+                        </span>
+                      )}
+                      <button onClick={() => { setOrApiKey(""); setOrClientId(orSettings?.clientId || ""); setOrDialog(true); }}
+                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border-2 hover:opacity-80 transition-all"
+                        style={{ borderColor: GOLD, color: GOLD }} data-testid="button-or-settings">
+                        <Settings className="w-3.5 h-3.5" /> Modifier
+                      </button>
+                      <button onClick={() => disconnectOrMutation.mutate()} disabled={disconnectOrMutation.isPending}
+                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
+                        data-testid="button-or-disconnect">
+                        {disconnectOrMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />} Déconnecter
+                      </button>
                     </div>
                   ) : (
-                    <button
-                      onClick={openOrDialog}
-                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-bold transition-all hover:opacity-90 shadow-md"
-                      style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}
-                      data-testid="button-or-connect"
-                    >
+                    <button onClick={() => { setOrApiKey(""); setOrClientId(""); setOrDialog(true); }}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-bold hover:opacity-90 shadow-md transition-all"
+                      style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }} data-testid="button-or-connect">
                       <Link2 className="w-4 h-4" /> Connecter Open Retour
                     </button>
                   )}
                 </div>
-              </div>
-
-              {/* Features */}
-              <div className="mt-5 pt-4 border-t border-zinc-100 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {[
-                  ["🔄", "Retours automatiques", "Créez des tickets en 1 clic depuis la commande"],
-                  ["📦", "Tracking retour", "Numéro de suivi retour enregistré sur la commande"],
-                  ["🤖", "Déclenchement auto", "Prompt automatique sur les commandes refusées"],
-                ].map(([icon, title, desc]) => (
-                  <div key={title} className="flex items-start gap-2 p-3 rounded-xl" style={{ background: "rgba(30,27,75,0.03)" }}>
-                    <span className="text-base">{icon}</span>
-                    <div>
-                      <p className="text-xs font-semibold text-zinc-700">{title}</p>
-                      <p className="text-[11px] text-zinc-400 mt-0.5">{desc}</p>
-                    </div>
-                  </div>
-                ))}
               </div>
             </CardContent>
           </Card>
@@ -230,63 +240,96 @@ export default function ShippingIntegrations() {
 
       {/* ── SECTION: Shipping Carriers ───────────────────────────── */}
       <div>
-        <h1 className="text-2xl font-display font-bold mb-1" data-testid="text-shipping-title">Sociétés de Livraison</h1>
-        <p className="text-muted-foreground mb-4">Connectez vos transporteurs marocains pour envoyer les commandes en livraison.</p>
+        <div className="flex items-center gap-2 mb-3">
+          <Link2 className="w-4 h-4" style={{ color: GOLD }} />
+          <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Transporteurs</h2>
+          <span className="ml-auto text-xs text-muted-foreground">{SHIPPING_PROVIDERS.length} transporteurs disponibles</span>
+        </div>
 
         {isLoading ? (
           <div className="flex items-center justify-center h-40"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {SHIPPING_PROVIDERS.map((provider) => {
               const connected = connectedMap.get(provider.id);
               return (
-                <Card key={provider.id} className="relative rounded-2xl border-border/50 shadow-sm overflow-hidden hover:shadow-md transition-shadow" data-testid={`card-shipping-${provider.id}`}>
+                <Card
+                  key={provider.id}
+                  data-testid={`card-shipping-${provider.id}`}
+                  className="relative overflow-hidden rounded-2xl border border-border/60 bg-white dark:bg-card shadow-sm hover:shadow-md transition-all duration-200"
+                  style={{ borderColor: connected ? "rgba(16,185,129,0.35)" : undefined }}
+                >
+                  {/* Connected ribbon */}
                   {connected && (
-                    <div className="absolute top-0 right-0 z-10">
-                      <div className="bg-emerald-500 text-white text-[10px] font-bold px-8 py-1 rotate-45 translate-x-6 -translate-y-1 shadow-sm flex items-center gap-1 justify-center w-32">
-                        <CheckCircle className="w-2.5 h-2.5" /> Connecté
+                    <div className="absolute top-0 right-0 z-10 overflow-hidden w-20 h-20 pointer-events-none">
+                      <div className="absolute top-3.5 -right-5 w-24 flex items-center justify-center gap-1 rotate-45 bg-emerald-500 text-white text-[9px] font-bold py-1 shadow-sm">
+                        <CheckCircle className="w-2.5 h-2.5 shrink-0" /> Connecté
                       </div>
                     </div>
                   )}
-                  <CardContent className="p-6 space-y-4">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
-                        <Truck className="w-6 h-6 text-primary" />
+
+                  <CardContent className="p-5 flex flex-col gap-4">
+                    {/* Top row: logo + name */}
+                    <div className="flex items-center gap-3">
+                      <div className="w-14 h-14 rounded-xl border border-border/40 bg-gray-50 dark:bg-zinc-800 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
+                        <ProviderLogo logo={provider.logo} name={provider.name} />
                       </div>
-                      <div>
-                        <h3 className="font-bold text-lg">{provider.name}</h3>
-                        <p className="text-xs text-muted-foreground">{provider.cities} villes couvertes</p>
+                      <div className="min-w-0">
+                        <h3 className="font-bold text-[15px] leading-tight text-foreground">{provider.name}</h3>
+                        <a
+                          href={`#${provider.id}`}
+                          onClick={e => e.preventDefault()}
+                          className="text-[11px] text-blue-500 hover:underline flex items-center gap-0.5 mt-0.5"
+                        >
+                          <Link2 className="w-3 h-3" /> {provider.name} Link
+                        </a>
+                        <div className="flex items-center gap-1 mt-1">
+                          <MapPin className="w-3 h-3 text-muted-foreground" />
+                          <span className="text-[11px] text-muted-foreground">{provider.cities} villes couvertes</span>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    {/* Action buttons */}
+                    <div className="flex flex-col gap-2">
                       {connected ? (
-                        <>
-                          <Button
-                            variant="outline" size="sm" className="flex-1"
+                        <div className="flex gap-2">
+                          <button
                             data-testid={`button-settings-${provider.id}`}
-                            onClick={() => { setSettingsProvider(provider.id); setFormData({}); }}
+                            onClick={() => { setSettingsProvider(provider.id); setFormData({}); setShowSettingsSecret(false); }}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold border-2 transition-all hover:opacity-80"
+                            style={{ borderColor: GOLD, color: GOLD }}
                           >
-                            <Settings className="w-4 h-4 mr-2" /> Paramètres
-                          </Button>
-                          <Button
-                            variant="outline" size="sm" className="text-red-600 border-red-200 hover:bg-red-50"
+                            <Settings className="w-3.5 h-3.5" /> Paramètres
+                          </button>
+                          <button
                             data-testid={`button-disconnect-shipping-${provider.id}`}
                             onClick={() => handleDisconnect(connected)}
                             disabled={deleteIntegration.isPending}
+                            className="px-3 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
                           >
-                            <Unlink className="w-4 h-4" />
-                          </Button>
-                        </>
+                            {deleteIntegration.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
                       ) : (
-                        <Button
-                          className="flex-1 bg-blue-500 hover:bg-blue-600 text-white"
+                        <button
                           data-testid={`button-connect-shipping-${provider.id}`}
                           onClick={() => { setConnectingProvider(provider.id); setFormData({}); setShowSecret(false); }}
+                          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-white text-sm font-bold bg-blue-500 hover:bg-blue-600 transition-colors shadow-sm"
                         >
-                          <Link2 className="w-4 h-4 mr-2" /> Connecter
-                        </Button>
+                          <Link2 className="w-4 h-4" /> Connecter
+                        </button>
                       )}
+
+                      <a
+                        href={provider.tutorialUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        data-testid={`link-tutorial-${provider.id}`}
+                        className="flex items-center justify-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors py-1"
+                      >
+                        <Video className="w-3.5 h-3.5" /> Comment connecter ?
+                      </a>
                     </div>
                   </CardContent>
                 </Card>
@@ -296,7 +339,7 @@ export default function ShippingIntegrations() {
         )}
       </div>
 
-      {/* ── Open Retour Dialog ────────────────────────────────────── */}
+      {/* ── Open Retour Dialog ─────────────────────────────────────── */}
       <Dialog open={orDialog} onOpenChange={setOrDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -305,65 +348,38 @@ export default function ShippingIntegrations() {
               {orSettings?.connected ? "Modifier les identifiants" : "Connecter"} Open Retour
             </DialogTitle>
             <DialogDescription>
-              Obtenez votre API Key et Client ID sur{" "}
-              <a href="https://openretour.ma" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: GOLD }}>
-                openretour.ma
-              </a>
+              Obtenez vos identifiants sur{" "}
+              <a href="https://openretour.ma" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: GOLD }}>openretour.ma</a>
             </DialogDescription>
           </DialogHeader>
-
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label className="font-semibold">Client ID</Label>
-              <Input
-                data-testid="input-or-clientId"
-                placeholder="Votre Client ID Open Retour..."
-                value={orClientId}
-                onChange={e => setOrClientId(e.target.value)}
-              />
+              <Input data-testid="input-or-clientId" placeholder="Votre Client ID..." value={orClientId} onChange={e => setOrClientId(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label className="font-semibold">API Key (Secret)</Label>
               <div className="relative">
-                <Input
-                  data-testid="input-or-apiKey"
-                  type={orShowKey ? "text" : "password"}
-                  placeholder="Votre clé API secrète..."
-                  value={orApiKey}
-                  onChange={e => setOrApiKey(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  onClick={() => setOrShowKey(!orShowKey)}
-                >
+                <Input data-testid="input-or-apiKey" type={orShowKey ? "text" : "password"} placeholder="Votre clé API secrète..." value={orApiKey} onChange={e => setOrApiKey(e.target.value)} />
+                <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setOrShowKey(!orShowKey)}>
                   {orShowKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                🔒 Stockée de façon sécurisée en base de données, isolée par magasin.
-              </p>
+              <p className="text-xs text-muted-foreground">🔒 Stockée de façon sécurisée, isolée par magasin.</p>
             </div>
-
             <div className="p-3 rounded-xl text-xs space-y-1" style={{ background: `rgba(197,160,89,0.07)`, border: `1px solid rgba(197,160,89,0.2)` }}>
               <p className="font-semibold" style={{ color: GOLD }}>Comment trouver vos identifiants ?</p>
-              <ol className="space-y-0.5 text-zinc-600 list-decimal list-inside">
+              <ol className="space-y-0.5 text-muted-foreground list-decimal list-inside">
                 <li>Connectez-vous sur openretour.ma</li>
                 <li>Allez dans Paramètres → API</li>
-                <li>Copiez votre Client ID et générez une API Key</li>
+                <li>Copiez votre Client ID et générez une clé API</li>
               </ol>
             </div>
           </div>
-
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setOrDialog(false)} data-testid="button-or-cancel">Annuler</Button>
-            <Button
-              onClick={() => saveOrMutation.mutate()}
-              disabled={saveOrMutation.isPending || !orApiKey.trim() || !orClientId.trim()}
-              className="text-white font-bold"
-              style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}
-              data-testid="button-or-save"
-            >
+            <Button onClick={() => saveOrMutation.mutate()} disabled={saveOrMutation.isPending || !orApiKey.trim() || !orClientId.trim()}
+              className="text-white font-bold" style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }} data-testid="button-or-save">
               {saveOrMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Link2 className="w-4 h-4 mr-2" />}
               {saveOrMutation.isPending ? "Connexion..." : "Enregistrer et connecter"}
             </Button>
@@ -371,56 +387,50 @@ export default function ShippingIntegrations() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Shipping connect dialog ───────────────────────────────── */}
+      {/* ── Shipping Connect Dialog ──────────────────────────────── */}
       <Dialog open={!!connectingProvider} onOpenChange={(open) => { if (!open) setConnectingProvider(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Connecter {connectingProvider}</DialogTitle>
-            <DialogDescription>Entrez vos identifiants API pour ce transporteur.</DialogDescription>
+            <DialogTitle className="flex items-center gap-3">
+              {connectingMeta?.logo && (
+                <div className="w-8 h-8 rounded-lg border border-border/40 bg-gray-50 flex items-center justify-center overflow-hidden shrink-0">
+                  <img src={connectingMeta.logo} alt={connectingMeta.name} className="w-full h-full object-contain p-0.5" onError={() => {}} />
+                </div>
+              )}
+              Connecter {connectingMeta?.name || connectingProvider}
+            </DialogTitle>
+            <DialogDescription>
+              Entrez vos identifiants API pour ce transporteur.
+              {connectingMeta?.tutorialUrl && (
+                <a href={connectingMeta.tutorialUrl} target="_blank" rel="noopener noreferrer" className="ml-1 underline text-blue-500 inline-flex items-center gap-0.5">
+                  <Video className="w-3 h-3" /> Voir le tutoriel
+                </a>
+              )}
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>Clé API</Label>
+              <Label className="font-semibold">Clé API</Label>
               <div className="relative">
-                <Input
-                  data-testid="input-shipping-apiKey"
-                  type={showSecret ? "text" : "password"}
-                  placeholder="Votre clé API..."
-                  value={formData.apiKey || ""}
-                  onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-                />
-                <button
-                  type="button"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  onClick={() => setShowSecret(!showSecret)}
-                >
+                <Input data-testid="input-shipping-apiKey" type={showSecret ? "text" : "password"} placeholder="Votre clé API..." value={formData.apiKey || ""} onChange={e => setFormData({ ...formData, apiKey: e.target.value })} />
+                <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowSecret(!showSecret)}>
                   {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Token Secret (optionnel)</Label>
-              <Input
-                data-testid="input-shipping-apiSecret"
-                type="password"
-                placeholder="Token secret..."
-                value={formData.apiSecret || ""}
-                onChange={(e) => setFormData({ ...formData, apiSecret: e.target.value })}
-              />
+              <Label>Token Secret <span className="text-muted-foreground font-normal">(optionnel)</span></Label>
+              <Input data-testid="input-shipping-apiSecret" type="password" placeholder="Token secret..." value={formData.apiSecret || ""} onChange={e => setFormData({ ...formData, apiSecret: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label>URL API (optionnelle)</Label>
-              <Input
-                data-testid="input-shipping-apiUrl"
-                placeholder="https://api.transporteur.ma/v1"
-                value={formData.apiUrl || ""}
-                onChange={(e) => setFormData({ ...formData, apiUrl: e.target.value })}
-              />
+              <Label>URL API <span className="text-muted-foreground font-normal">(optionnelle)</span></Label>
+              <Input data-testid="input-shipping-apiUrl" placeholder="https://api.transporteur.ma/v1" value={formData.apiUrl || ""} onChange={e => setFormData({ ...formData, apiUrl: e.target.value })} />
             </div>
+            <p className="text-xs text-muted-foreground">🔒 Vos identifiants sont chiffrés et isolés par magasin.</p>
           </div>
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setConnectingProvider(null)} data-testid="button-cancel-shipping">Annuler</Button>
-            <Button data-testid="button-confirm-shipping" onClick={handleConnect} disabled={createIntegration.isPending}>
+            <Button className="bg-blue-500 hover:bg-blue-600 text-white font-bold" data-testid="button-confirm-shipping" onClick={handleConnect} disabled={createIntegration.isPending}>
               {createIntegration.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Link2 className="w-4 h-4 mr-2" />}
               {createIntegration.isPending ? "Connexion..." : "Connecter"}
             </Button>
@@ -428,38 +438,42 @@ export default function ShippingIntegrations() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Shipping Settings Dialog ─────────────────────────────── */}
       <Dialog open={!!settingsProvider} onOpenChange={(open) => { if (!open) setSettingsProvider(null); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Paramètres — {settingsProvider}</DialogTitle>
+            <DialogTitle className="flex items-center gap-3">
+              {settingsMeta?.logo && (
+                <div className="w-8 h-8 rounded-lg border border-border/40 bg-gray-50 flex items-center justify-center overflow-hidden shrink-0">
+                  <img src={settingsMeta.logo} alt={settingsMeta.name} className="w-full h-full object-contain p-0.5" onError={() => {}} />
+                </div>
+              )}
+              Paramètres — {settingsMeta?.name || settingsProvider}
+            </DialogTitle>
             <DialogDescription>Mettez à jour vos identifiants API.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>Clé API</Label>
-              <Input
-                data-testid="input-settings-apiKey"
-                type="password"
-                placeholder="Nouvelle clé API..."
-                value={formData.apiKey || ""}
-                onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-              />
+              <Label className="font-semibold">Nouvelle clé API</Label>
+              <div className="relative">
+                <Input data-testid="input-settings-apiKey" type={showSettingsSecret ? "text" : "password"} placeholder="Nouvelle clé API..." value={formData.apiKey || ""} onChange={e => setFormData({ ...formData, apiKey: e.target.value })} />
+                <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowSettingsSecret(!showSettingsSecret)}>
+                  {showSettingsSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
             <div className="space-y-2">
-              <Label>Token Secret (optionnel)</Label>
-              <Input
-                data-testid="input-settings-apiSecret"
-                type="password"
-                placeholder="Nouveau token secret..."
-                value={formData.apiSecret || ""}
-                onChange={(e) => setFormData({ ...formData, apiSecret: e.target.value })}
-              />
+              <Label>Token Secret <span className="text-muted-foreground font-normal">(optionnel)</span></Label>
+              <Input data-testid="input-settings-apiSecret" type="password" placeholder="Nouveau token secret..." value={formData.apiSecret || ""} onChange={e => setFormData({ ...formData, apiSecret: e.target.value })} />
             </div>
           </div>
           <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setSettingsProvider(null)}>Annuler</Button>
+            <Button variant="outline" onClick={() => setSettingsProvider(null)} data-testid="button-cancel-settings">Annuler</Button>
             <Button
               data-testid="button-save-settings"
+              className="text-white font-bold"
+              style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}
+              disabled={createIntegration.isPending}
               onClick={async () => {
                 if (!settingsProvider || !formData.apiKey?.trim()) {
                   toast({ title: "Erreur", description: "Clé API requise", variant: "destructive" });
@@ -467,15 +481,15 @@ export default function ShippingIntegrations() {
                 }
                 try {
                   await createIntegration.mutateAsync({ provider: settingsProvider, type: "shipping", credentials: formData });
-                  toast({ title: "Mis à jour", description: "Identifiants mis à jour" });
+                  toast({ title: "Mis à jour ✅", description: "Identifiants mis à jour avec succès" });
                   setSettingsProvider(null);
                   setFormData({});
                 } catch (err: any) {
                   toast({ title: "Erreur", description: err.message, variant: "destructive" });
                 }
               }}
-              disabled={createIntegration.isPending}
             >
+              {createIntegration.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Settings className="w-4 h-4 mr-2" />}
               {createIntegration.isPending ? "Enregistrement..." : "Enregistrer"}
             </Button>
           </div>

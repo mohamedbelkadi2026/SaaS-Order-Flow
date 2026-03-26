@@ -1,0 +1,32 @@
+I need to build the 'Sociétés de Livraison' (Shipping Companies) page in the TajerGrow dashboard, matching the exact UI/UX and layout shown in the 2 provided screenshots.
+1. Page Layout & Components:
+Header Bar: Title 'SHIPPING COMPANIES', breadcrumbs (Home / Shipping Companies), and a functional '+ Add Delivery Service' button in Gold.
+Grid System: Create a responsive grid (3 columns on PC, 1-2 on mobile).
+The Card UI: Each shipping company must have a card with:
+Logo: Top left (using the URLs provided below).
+Status Ribbon: A green 'Connected' badge in the top right corner if the API is active.
+Info: Company Name, a link icon with '[Company] Link', and the number of covered cities (e.g., '581 Cities').
+Action Buttons:
+Primary: Blue 'Connect' button (with a link icon).
+Secondary: 'How to Connect' link (with a video/camera icon).
+2. Shipping Company List & Logos:
+Please use these companies and their official logo URLs:
+Digylog: https://tajergrow.com/assets/images/company/digylog.svg
+Onessta: https://tajergrow.com/assets/images/company/onessta.svg
+Ozone Express: https://tajergrow.com/assets/images/company/ozon.svg
+Sendit: https://tajergrow.com/assets/images/company/sendit.svg
+Ameex: https://tajergrow.com/assets/images/company/ameex.svg
+Cathedis: https://tajergrow.com/assets/images/company/cathidis.svg
+Speedex: https://tajergrow.com/assets/images/company/speedx.png
+KargoExpress: https://tajergrow.com/assets/images/company/cargo.svg
+ForceLog: https://tajergrow.com/assets/images/company/forcelog.png
+Livo: https://tajergrow.com/assets/images/company/ol.svg
+Quick Livraison: https://tajergrow.com/assets/images/company/ql.svg
+(Add others from the screenshot: Codinafrica, Olivraison, Livreego, PowerDelivery, Caledex, Oscario, Colisspeed).
+3. Functional Logic:
+Connect Action: When 'Connect' is clicked, open a modal to enter the API Key or Token for that specific carrier.
+Persistence: Save the connection status in the Integrations table in the database.
+Integration Check: If a carrier is connected, the 'Truck' icon in 'Mes Commandes' should automatically show that carrier as an option for shipping.
+4. Styling:
+Use the TajerGrow Navy Blue (#1e1b4b) and Gold (#C5A059) theme.
+Ensure the cards have a clean white background, thin grey borders, and professional shadows."
