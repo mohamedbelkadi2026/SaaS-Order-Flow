@@ -45,6 +45,7 @@ import Profile from "@/pages/profile";
 import Calculator from "@/pages/calculator";
 import CheckoutPage from "@/pages/checkout";
 import AutomationPage from "@/pages/automation";
+import VerifyEmailPage from "@/pages/verify-email";
 
 const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
@@ -136,11 +137,19 @@ function ProtectedRoutes() {
 
   if (!user) {
     if (location === "/auth") return <AuthPage />;
+    if (location === "/verify-email") return <VerifyEmailPage />;
     return <LandingPage />;
   }
 
   if (location === "/auth") {
     navigate("/");
+    return null;
+  }
+
+  // Redirect unverified owner accounts to the verification page
+  if (location === "/verify-email") return <VerifyEmailPage />;
+  if (user.role === "owner" && !user.isSuperAdmin && !user.isEmailVerified && location !== "/verify-email") {
+    navigate("/verify-email");
     return null;
   }
 

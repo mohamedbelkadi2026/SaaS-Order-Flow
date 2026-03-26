@@ -15,6 +15,7 @@ type User = {
   distributionMethod: string | null;
   isActive: number | null;
   isSuperAdmin: number | null;
+  isEmailVerified: number | null;
   createdAt: string | null;
   dashboardPermissions: Record<string, boolean> | null;
   buyerCode: string | null;

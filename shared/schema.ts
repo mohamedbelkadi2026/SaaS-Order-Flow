@@ -43,8 +43,17 @@ export const users = pgTable("users", {
   distributionMethod: text("distribution_method").default("auto"),
   isSuperAdmin: integer("is_super_admin").default(0),
   isActive: integer("is_active").default(1),
+  isEmailVerified: integer("is_email_verified").default(0),
   dashboardPermissions: jsonb("dashboard_permissions"),
   buyerCode: text("buyer_code"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const emailVerificationCodes = pgTable("email_verification_codes", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").references(() => users.id).notNull(),
+  code: text("code").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

@@ -10,7 +10,7 @@ import {
   Power, RotateCcw, LogIn, LogOut, X, Check,
   BarChart3, DollarSign, Activity, Eye, Package, Calendar,
   AlertCircle, Bell, MessageCircle, Phone, ChevronDown, ChevronUp,
-  CreditCard, FileText, ExternalLink, Clock, Ban,
+  CreditCard, FileText, ExternalLink, Clock, Ban, MailCheck, MailWarning,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -363,7 +363,8 @@ export default function SuperAdminPage() {
   const [search, setSearch] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
   const [expandedStoreId, setExpandedStoreId] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<"stores" | "payments">("stores");
+  const [activeTab, setActiveTab] = useState<"stores" | "payments" | "users">("stores");
+  const [verifyingUserId, setVerifyingUserId] = useState<number | null>(null);
   const [rejectNotes, setRejectNotes] = useState<Record<number, string>>({});
 
   /* ── Guard ──────────────────────────────────────────────────────── */
@@ -388,6 +389,17 @@ export default function SuperAdminPage() {
   const { data: stats } = useQuery<GlobalStats>({
     queryKey: ["/api/admin/stats"],
   });
+
+  type AdminUser = {
+    id: number; username: string; email: string;
+    storeId: number; storeName: string;
+    isEmailVerified: number; isActive: number; createdAt: string | null;
+  };
+  const { data: adminUsers = [], isLoading: usersLoading } = useQuery<AdminUser[]>({
+    queryKey: ["/api/admin/users"],
+    enabled: activeTab === "users",
+  });
+  const unverifiedCount = adminUsers.filter(u => !u.isEmailVerified).length;
 
   /* ── Mutations ──────────────────────────────────────────────────── */
   const toggleMutation = useMutation({
@@ -461,6 +473,16 @@ export default function SuperAdminPage() {
       toast({ title: "Paiement refusé" });
     },
     onError: () => toast({ title: "Erreur", description: "Impossible de refuser.", variant: "destructive" }),
+  });
+
+  const manualVerifyMutation = useMutation({
+    mutationFn: (userId: number) => apiRequest("POST", `/api/admin/users/${userId}/verify`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
+      toast({ title: "✓ Email vérifié", description: "L'utilisateur peut maintenant se connecter." });
+      setVerifyingUserId(null);
+    },
+    onError: () => toast({ title: "Erreur", variant: "destructive" }),
   });
 
   /* ── Filtering ──────────────────────────────────────────────────── */
@@ -549,8 +571,9 @@ export default function SuperAdminPage() {
         {/* ── Tab Nav ──────────────────────────────────────────────── */}
         <div className="flex items-center gap-2 border-b pb-4" style={{ borderColor: "rgba(197,160,89,0.15)" }}>
           {[
-            { id: "stores" as const,   label: "Boutiques",          icon: Store,      count: filtered.length },
-            { id: "payments" as const, label: "Paiements à valider", icon: CreditCard, count: pendingCount, alert: pendingCount > 0 },
+            { id: "stores" as const,   label: "Boutiques",           icon: Store,       count: filtered.length },
+            { id: "payments" as const, label: "Paiements à valider",  icon: CreditCard,  count: pendingCount,   alert: pendingCount > 0 },
+            { id: "users" as const,    label: "Vérification Email",   icon: MailCheck,   count: unverifiedCount, alert: unverifiedCount > 0 },
           ].map(tab => (
             <button
               key={tab.id}
@@ -956,6 +979,99 @@ export default function SuperAdminPage() {
             </div>
           )}
         </section>}
+
+        {/* ── Email Verification Tab ────────────────────────────────── */}
+        {activeTab === "users" && (
+          <section>
+            <div className="flex items-center gap-2 mb-5">
+              <MailCheck className="w-4 h-4" style={{ color: GOLD }} />
+              <h2 className="text-white/80 text-sm font-semibold uppercase tracking-wider">Vérification Email des Propriétaires</h2>
+              {unverifiedCount > 0 && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-bold" style={{ background: "rgba(239,68,68,0.8)", color: "#fff" }}>
+                  {unverifiedCount} non vérifiés
+                </span>
+              )}
+            </div>
+
+            {usersLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <div className="w-6 h-6 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: GOLD, borderTopColor: "transparent" }} />
+              </div>
+            ) : adminUsers.length === 0 ? (
+              <div className="text-center py-12 text-white/40 text-sm">Aucun propriétaire enregistré.</div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {adminUsers.map(u => (
+                  <div
+                    key={u.id}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl border"
+                    style={{
+                      background: u.isEmailVerified ? "rgba(34,197,94,0.06)" : "rgba(239,68,68,0.06)",
+                      borderColor: u.isEmailVerified ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)",
+                    }}
+                    data-testid={`user-row-${u.id}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
+                        style={{ background: u.isEmailVerified ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)" }}
+                      >
+                        {u.isEmailVerified
+                          ? <MailCheck className="w-4 h-4 text-green-400" />
+                          : <MailWarning className="w-4 h-4 text-red-400" />
+                        }
+                      </div>
+                      <div>
+                        <p className="text-white text-sm font-semibold">{u.username}</p>
+                        <p className="text-white/50 text-xs">{u.email}</p>
+                        <p className="text-white/30 text-xs mt-0.5">Boutique: {u.storeName}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 sm:flex-shrink-0">
+                      {u.isEmailVerified ? (
+                        <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: "rgba(34,197,94,0.15)", color: "#4ade80" }}>
+                          <Check className="w-3.5 h-3.5" /> Vérifié
+                        </span>
+                      ) : verifyingUserId === u.id ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-white/60">Confirmer ?</span>
+                          <button
+                            onClick={() => manualVerifyMutation.mutate(u.id)}
+                            disabled={manualVerifyMutation.isPending}
+                            className="text-xs font-bold px-3 py-1.5 rounded-lg"
+                            style={{ background: GOLD, color: NAVY }}
+                            data-testid={`btn-confirm-verify-${u.id}`}
+                          >
+                            {manualVerifyMutation.isPending ? "..." : "Oui"}
+                          </button>
+                          <button
+                            onClick={() => setVerifyingUserId(null)}
+                            className="text-xs px-3 py-1.5 rounded-lg text-white/50 hover:text-white"
+                            style={{ background: "rgba(255,255,255,0.05)" }}
+                            data-testid={`btn-cancel-verify-${u.id}`}
+                          >
+                            Non
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setVerifyingUserId(u.id)}
+                          className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-all hover:opacity-90"
+                          style={{ background: "rgba(197,160,89,0.2)", border: "1px solid rgba(197,160,89,0.4)", color: GOLD }}
+                          data-testid={`btn-verify-${u.id}`}
+                        >
+                          <MailCheck className="w-3.5 h-3.5" />
+                          Vérifier manuellement
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       {/* ── Change Plan Modal ────────────────────────────────────────── */}

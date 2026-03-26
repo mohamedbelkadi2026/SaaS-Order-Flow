@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
-  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, payments,
+  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, payments, emailVerificationCodes,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -18,7 +18,12 @@ import { eq, desc, and, sql, count, ne, like, gte, lte, inArray, or } from "driz
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
   createStore(store: InsertStore): Promise<Store>;
-  
+
+  /* ── Email verification ───────────────────────────────────── */
+  createVerificationCode(userId: number, code: string, expiresAt: Date): Promise<void>;
+  getVerificationCode(userId: number): Promise<{ code: string; expiresAt: Date } | null>;
+  deleteVerificationCode(userId: number): Promise<void>;
+
   getUserById(id: number): Promise<User | undefined>;
   getUser(id: number): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -76,7 +81,7 @@ export interface IStorage {
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
   getInventoryStats(storeId: number): Promise<any>;
-  updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null; password?: string }): Promise<User | undefined>;
+  updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; isEmailVerified?: number; buyerCode?: string | null; password?: string }): Promise<User | undefined>;
   deleteUser(id: number): Promise<void>;
 
   getCustomersByStore(storeId: number): Promise<Customer[]>;
@@ -257,6 +262,22 @@ export class DatabaseStorage implements IStorage {
   async createUser(user: InsertUser): Promise<User> {
     const [newUser] = await db.insert(users).values(user).returning();
     return newUser;
+  }
+
+  /* ── Email verification ───────────────────────────────────── */
+  async createVerificationCode(userId: number, code: string, expiresAt: Date): Promise<void> {
+    await db.delete(emailVerificationCodes).where(eq(emailVerificationCodes.userId, userId));
+    await db.insert(emailVerificationCodes).values({ userId, code, expiresAt });
+  }
+
+  async getVerificationCode(userId: number): Promise<{ code: string; expiresAt: Date } | null> {
+    const [row] = await db.select().from(emailVerificationCodes).where(eq(emailVerificationCodes.userId, userId));
+    if (!row) return null;
+    return { code: row.code, expiresAt: row.expiresAt };
+  }
+
+  async deleteVerificationCode(userId: number): Promise<void> {
+    await db.delete(emailVerificationCodes).where(eq(emailVerificationCodes.userId, userId));
   }
 
   async getProductsByStore(storeId: number): Promise<Product[]> {
@@ -877,7 +898,7 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; buyerCode?: string | null; password?: string }): Promise<User | undefined> {
+  async updateUser(id: number, data: { username?: string; email?: string; phone?: string | null; paymentType?: string; paymentAmount?: number; distributionMethod?: string; isActive?: number; isEmailVerified?: number; buyerCode?: string | null; password?: string }): Promise<User | undefined> {
     const [updated] = await db.update(users).set(data).where(eq(users.id, id)).returning();
     return updated;
   }
@@ -1387,6 +1408,8 @@ export class DatabaseStorage implements IStorage {
         ownerName: owner?.username ?? null,
         ownerPhone: owner?.phone ?? null,
         ownerCreatedAt: owner?.createdAt ?? null,
+        ownerIsActive: owner?.isActive ?? 1,
+        isEmailVerified: owner?.isEmailVerified ?? 0,
         ownerId: owner?.id ?? null,
         teamCount: teamCountMap.get(store.id) ?? 0,
         totalOrders: orderCountMap.get(store.id) ?? 0,

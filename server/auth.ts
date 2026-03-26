@@ -8,6 +8,7 @@ import { storage } from "./storage";
 import { User } from "@shared/schema";
 import { pool } from "./db";
 import connectPgSimple from "connect-pg-simple";
+import { generateOTP, sendVerificationEmail } from "./services/email";
 
 const scryptAsync = promisify(scrypt);
 
@@ -113,6 +114,7 @@ export function setupAuth(app: Express) {
         password: hashedPassword,
         role: "owner",
         storeId: store.id,
+        isEmailVerified: 0,
       });
 
       await storage.createSubscription({
@@ -124,14 +126,87 @@ export function setupAuth(app: Express) {
         isActive: 1,
       });
 
+      // Generate and send OTP
+      const otp = generateOTP();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      await storage.createVerificationCode(user.id, otp, expiresAt);
+      if (email) {
+        sendVerificationEmail(email, otp).catch(e => console.error("[Email] Failed:", e));
+      }
+
       req.login(user, (err) => {
         if (err) return next(err);
         const { password: _, ...safeUser } = user;
-        return res.status(201).json(safeUser);
+        return res.status(201).json({ ...safeUser, needsVerification: true });
       });
     } catch (err) {
       console.error("Signup error:", err);
       return res.status(500).json({ message: "Erreur lors de l'inscription" });
+    }
+  });
+
+  /* ── Resend OTP ─────────────────────────────────────────────── */
+  app.post("/api/auth/send-verification", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+      const user = req.user!;
+      if (user.isEmailVerified) return res.json({ message: "Email déjà vérifié" });
+      if (!user.email) return res.status(400).json({ message: "Pas d'email associé à ce compte" });
+
+      const otp = generateOTP();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      await storage.createVerificationCode(user.id, otp, expiresAt);
+      sendVerificationEmail(user.email, otp).catch(e => console.error("[Email] Failed:", e));
+
+      return res.json({ message: "Code envoyé" });
+    } catch (err) {
+      console.error("send-verification error:", err);
+      return res.status(500).json({ message: "Erreur serveur" });
+    }
+  });
+
+  /* ── Verify OTP ─────────────────────────────────────────────── */
+  app.post("/api/auth/verify-email", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+      const user = req.user!;
+      const { code } = req.body;
+
+      if (!code || typeof code !== "string") {
+        return res.status(400).json({ message: "Code invalide" });
+      }
+
+      if (user.isEmailVerified) {
+        return res.json({ success: true, message: "Email déjà vérifié" });
+      }
+
+      const record = await storage.getVerificationCode(user.id);
+      if (!record) {
+        return res.status(400).json({ message: "Aucun code trouvé. Veuillez en demander un nouveau." });
+      }
+      if (new Date() > record.expiresAt) {
+        await storage.deleteVerificationCode(user.id);
+        return res.status(400).json({ message: "Code expiré. Veuillez en demander un nouveau." });
+      }
+      if (code.trim() !== record.code) {
+        return res.status(400).json({ message: "Code incorrect." });
+      }
+
+      await storage.updateUser(user.id, { isEmailVerified: 1 });
+      await storage.deleteVerificationCode(user.id);
+
+      // Refresh session user
+      const updatedUser = await storage.getUserById(user.id);
+      if (updatedUser) {
+        await new Promise<void>((resolve, reject) => {
+          req.login(updatedUser, (err) => (err ? reject(err) : resolve()));
+        });
+      }
+
+      return res.json({ success: true, message: "Email vérifié avec succès !" });
+    } catch (err) {
+      console.error("verify-email error:", err);
+      return res.status(500).json({ message: "Erreur serveur" });
     }
   });
 
@@ -175,6 +250,9 @@ export function setupAuth(app: Express) {
 export function requireAuth(req: any, res: any, next: any) {
   if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
   if (req.user.isActive === 0 && !req.user.isSuperAdmin) return res.status(403).json({ suspended: true, message: "Votre compte est suspendu. Veuillez contacter l'administration." });
+  if (req.user.role === "owner" && !req.user.isSuperAdmin && !req.user.isEmailVerified) {
+    return res.status(403).json({ needsVerification: true, message: "Veuillez vérifier votre adresse email pour accéder au tableau de bord." });
+  }
   return next();
 }
 

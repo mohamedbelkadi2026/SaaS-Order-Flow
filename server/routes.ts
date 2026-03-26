@@ -2641,6 +2641,38 @@ export async function registerRoutes(
     }
   });
 
+  /* ── Super Admin: List all owner users with verification status ── */
+  app.get("/api/admin/users", requireSuperAdmin, async (_req, res) => {
+    try {
+      const allStores = await storage.getAllStores();
+      const ownerRows = allStores.map((s: any) => ({
+        id: s.ownerId,
+        username: s.ownerName,
+        email: s.ownerEmail,
+        storeId: s.id,
+        storeName: s.name,
+        isEmailVerified: s.isEmailVerified ?? 0,
+        isActive: s.ownerIsActive ?? 1,
+        createdAt: s.ownerCreatedAt,
+      })).filter((r: any) => r.id);
+      res.json(ownerRows);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* ── Super Admin: Manually verify a user's email ────────────────── */
+  app.post("/api/admin/users/:id/verify", requireSuperAdmin, async (req, res) => {
+    try {
+      const userId = Number(req.params.id);
+      const updated = await storage.updateUser(userId, { isEmailVerified: 1 });
+      if (!updated) return res.status(404).json({ message: "Utilisateur introuvable" });
+      res.json({ success: true, message: "Email vérifié manuellement" });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ============================================================
   // SEND TO DELIVERY (SHIPPING)
   // ============================================================
