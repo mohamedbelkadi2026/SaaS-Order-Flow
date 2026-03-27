@@ -129,8 +129,18 @@ app.use((req, res, next) => {
   );
 
   // ── Async setup runs after the port is open ───────────────────────────
-  setupAuth(app);
-  await registerRoutes(httpServer, app);
+  // Wrapped in try/catch so a DB connection hiccup cannot kill the process
+  // after it is already listening — health probes will still return 200.
+  try {
+    setupAuth(app);
+  } catch (err: any) {
+    console.error("[Auth] Session store setup failed (non-fatal):", err.message);
+  }
+  try {
+    await registerRoutes(httpServer, app);
+  } catch (err: any) {
+    console.error("[Routes] Route registration failed (non-fatal):", err.message);
+  }
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
