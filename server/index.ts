@@ -31,6 +31,14 @@ async function ensureSuperAdmin() {
 const app = express();
 const httpServer = createServer(app);
 
+// ── Health probes — registered FIRST, before any middleware ───────────────────
+// Railway probes these routes immediately on deploy. They must never be blocked
+// by Helmet, rate-limiters, body-parsers, or auth.
+app.get("/health",     (_req, res) => res.status(200).send("OK"));
+app.get("/api/health", (_req, res) =>
+  res.status(200).json({ status: "ok", uptime: process.uptime() })
+);
+
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
@@ -111,11 +119,6 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // ── Health probes must respond before anything else is ready ─────────
-  // Register these routes first so Railway's probe gets 200 immediately.
-  app.get("/health",     (_req, res) => res.status(200).send("OK"));
-  app.get("/api/health", (_req, res) => res.status(200).json({ status: "ok" }));
-
   // ── Bind the port NOW so Railway sees a live socket right away ───────
   const port = parseInt(process.env.PORT || "5000", 10);
   await new Promise<void>((resolve) =>
