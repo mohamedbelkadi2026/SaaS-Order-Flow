@@ -34,6 +34,7 @@ const httpServer = createServer(app);
 // ── Health probes — registered FIRST, before any middleware ───────────────────
 // Railway probes these routes immediately on deploy. They must never be blocked
 // by Helmet, rate-limiters, body-parsers, or auth.
+app.get("/",           (_req, res) => res.status(200).send("OK"));
 app.get("/health",     (_req, res) => res.status(200).send("OK"));
 app.get("/api/health", (_req, res) =>
   res.status(200).json({ status: "ok", uptime: process.uptime() })
@@ -123,6 +124,7 @@ app.use((req, res, next) => {
   const port = parseInt(process.env.PORT || "5000", 10);
   await new Promise<void>((resolve) =>
     httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
+      console.log(`HEALTHCHECK_READY: Port ${port} is now open.`);
       log(`serving on port ${port}`);
       resolve();
     })
