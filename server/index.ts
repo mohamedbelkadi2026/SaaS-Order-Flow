@@ -111,6 +111,21 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // ── Health probes must respond before anything else is ready ─────────
+  // Register these routes first so Railway's probe gets 200 immediately.
+  app.get("/health",     (_req, res) => res.status(200).send("OK"));
+  app.get("/api/health", (_req, res) => res.status(200).json({ status: "ok" }));
+
+  // ── Bind the port NOW so Railway sees a live socket right away ───────
+  const port = parseInt(process.env.PORT || "5000", 10);
+  await new Promise<void>((resolve) =>
+    httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
+      log(`serving on port ${port}`);
+      resolve();
+    })
+  );
+
+  // ── Async setup runs after the port is open ───────────────────────────
   setupAuth(app);
   await registerRoutes(httpServer, app);
 
@@ -140,18 +155,8 @@ app.use((req, res, next) => {
 
   await ensureSuperAdmin();
 
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-      startWooCommerceSync();
-      startRecoveryJob();
-      autoStartBaileys().catch(console.error);
-    },
-  );
+  // ── Background jobs start last — they must not block startup ─────────
+  startWooCommerceSync();
+  startRecoveryJob();
+  autoStartBaileys().catch(console.error);
 })();
