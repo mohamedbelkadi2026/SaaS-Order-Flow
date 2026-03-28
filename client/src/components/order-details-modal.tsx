@@ -1,17 +1,18 @@
 import { useState, useEffect } from "react";
-import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogHeader, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
-import { Loader2, X, Trash2, Plus, Tag, Box, RotateCcw, CheckCircle } from "lucide-react";
+import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 
+const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
+const GOLD_MUTED = "#e8d5a8";
 
 // ── Moroccan cities ──────────────────────────────────────────────
 const MOROCCAN_CITIES = [
@@ -24,47 +25,21 @@ const MOROCCAN_CITIES = [
   "Sidi Kacem","Souk El Arbaa","Berkane","Taourirt","Jerada","Tifariti",
 ].sort();
 
-// ── Carrier logo component ───────────────────────────────────────
-function CarrierLogo({ provider }: { provider?: string }) {
-  if (!provider) return null;
-  const logos: Record<string, string> = {
-    amana: "A", digylog: "D", "marocpost": "M", "jumia": "J", "glovo": "G",
-  };
-  const initial = logos[provider?.toLowerCase()] || provider?.[0]?.toUpperCase() || "?";
-  return (
-    <div className="w-6 h-6 rounded bg-blue-600 text-white text-xs flex items-center justify-center font-bold shrink-0">
-      {initial}
-    </div>
-  );
-}
-
-// ── Toggle pill ──────────────────────────────────────────────────
-interface TogglePillProps {
-  value: boolean;
-  onChange: (v: boolean) => void;
-  leftLabel?: string;
-  rightLabel?: string;
-}
-function TogglePill({ value, onChange, leftLabel = "No", rightLabel = "Yes" }: TogglePillProps) {
+// ── Status badge toggle ──────────────────────────────────────────
+function StatusBadge({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button
       type="button"
-      onClick={() => onChange(!value)}
+      onClick={onClick}
       className={cn(
-        "relative inline-flex items-center h-7 w-[72px] rounded-full transition-colors focus:outline-none border",
-        value ? "bg-green-400 border-green-500" : "bg-red-400 border-red-500"
+        "px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all border select-none",
+        active
+          ? "border-yellow-500 text-yellow-900"
+          : "border-gray-300 bg-white text-gray-400 hover:border-gray-400"
       )}
+      style={active ? { backgroundColor: GOLD_MUTED, borderColor: GOLD, color: "#7a5c1e" } : {}}
     >
-      <span className={cn(
-        "absolute text-[10px] font-bold text-white transition-all",
-        value ? "left-2" : "right-2"
-      )}>
-        {value ? leftLabel : rightLabel}
-      </span>
-      <span className={cn(
-        "absolute w-5 h-5 bg-white rounded-full shadow transition-all",
-        value ? "right-1" : "left-1"
-      )} />
+      {label}
     </button>
   );
 }
@@ -77,68 +52,56 @@ interface ItemRowProps {
 }
 function ItemRow({ item, onChange, onDelete }: ItemRowProps) {
   return (
-    <div className="rounded-xl border border-gray-200 p-3 space-y-2 bg-white">
-      <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 py-2.5 px-3 rounded-lg border border-gray-100 bg-white">
+      <div className="flex-1 min-w-0">
         <Input
           value={item.rawProductName || item.product?.name || ""}
           onChange={e => onChange(item.id, "rawProductName", e.target.value)}
-          className="flex-1 text-sm bg-gray-50 border-gray-200"
+          className="text-sm font-medium border-0 p-0 h-auto bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
           placeholder="Nom du produit"
         />
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          onClick={() => onDelete(item.id)}
-          className="shrink-0 border-red-200 hover:bg-red-50 text-red-500"
-        >
-          <Trash2 className="w-4 h-4" />
-        </Button>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1 flex-1">
-          <Badge variant="outline" className="text-xs text-gray-500 font-normal shrink-0">
-            {item.sku || "null"}
-          </Badge>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="w-5 h-5 p-0 text-gray-400 hover:text-red-500"
-            onClick={() => onChange(item.id, "sku", "")}
-          >
-            <X className="w-3 h-3" />
-          </Button>
+        <div className="flex items-center gap-3 mt-1">
+          {item.sku && (
+            <span className="text-[10px] text-gray-400 font-mono">{item.sku}</span>
+          )}
+          <Input
+            value={item.variantInfo || ""}
+            onChange={e => onChange(item.id, "variantInfo", e.target.value)}
+            className="text-xs border-0 p-0 h-auto bg-transparent text-gray-500 focus-visible:ring-0 focus-visible:ring-offset-0 flex-1"
+            placeholder="Taille / Couleur..."
+          />
         </div>
-        <div className="flex items-center gap-1">
-          <Tag className="w-3.5 h-3.5 text-gray-400" />
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center">
           <Input
             type="number"
             value={(item.price / 100).toFixed(0)}
             onChange={e => onChange(item.id, "price", Math.round(parseFloat(e.target.value) * 100))}
-            className="w-20 text-sm text-right"
+            className="w-16 text-sm text-right font-bold h-8"
+            style={{ color: NAVY }}
           />
-          <span className="text-xs font-bold bg-blue-600 text-white px-2 py-1 rounded">DH</span>
+          <span className="text-[10px] font-bold ml-1" style={{ color: NAVY }}>DH</span>
         </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          value={item.variantInfo || ""}
-          onChange={e => onChange(item.id, "variantInfo", e.target.value)}
-          className="flex-1 text-sm bg-gray-50 border-gray-200 text-muted-foreground"
-          placeholder="Variant info..."
-        />
-        <div className="flex items-center gap-1">
-          <Box className="w-3.5 h-3.5 text-gray-400" />
+        <span className="text-gray-300">·</span>
+        <div className="flex items-center">
           <Input
             type="number"
             min={1}
             value={item.quantity}
             onChange={e => onChange(item.id, "quantity", parseInt(e.target.value) || 1)}
-            className="w-16 text-sm text-right"
+            className="w-12 text-sm text-right font-bold h-8"
+            style={{ color: NAVY }}
           />
-          <span className="text-xs font-bold bg-green-600 text-white px-2 py-1 rounded">Qty</span>
+          <span className="text-[10px] font-bold ml-1" style={{ color: NAVY }}>Qté</span>
         </div>
+        <button
+          type="button"
+          onClick={() => onDelete(item.id)}
+          className="text-red-300 hover:text-red-500 transition-colors ml-1"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
       </div>
     </div>
   );
@@ -171,13 +134,14 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // ── Local state mirroring order fields ──
   const [fields, setFields] = useState<any>({});
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
 
   useEffect(() => {
     if (!order) return;
+    const firstItemVariant = order.items?.[0]?.variantInfo || "";
+    const variantFallback = firstItemVariant || order.variantDetails || "";
     setFields({
       replace: !!order.replace,
       canOpen: order.canOpen !== 0,
@@ -192,10 +156,13 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       commentStatus: order.commentStatus || "",
       rawProductName: order.rawProductName || (order.items?.[0]?.rawProductName) || (order.items?.[0]?.product?.name) || "",
       totalPrice: order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00",
-      reference: "",
+      variantInfo: variantFallback !== "null" ? variantFallback : "",
       commentOrder: order.commentOrder || "",
     });
-    setLocalItems((order.items || []).map((item: any) => ({ ...item })));
+    setLocalItems((order.items || []).map((item: any) => ({
+      ...item,
+      variantInfo: item.variantInfo === "null" ? "" : (item.variantInfo || ""),
+    })));
   }, [order]);
 
   // ── Save mutation ──
@@ -218,10 +185,9 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         totalPrice: Math.round(parseFloat(fields.totalPrice || "0") * 100),
         commentOrder: fields.commentOrder || null,
       };
-      console.log(`[MODAL SAVE] order #${order.orderNumber} status=${payload.status}`, payload);
       await apiRequest("PATCH", `/api/orders/${order.id}`, payload);
 
-      // Sync items: delete removed ones and add new ones
+      // Sync items
       for (const item of localItems) {
         if (typeof item.id === "string" && item.id.startsWith("new-")) {
           await apiRequest("POST", `/api/orders/${order.id}/items`, {
@@ -245,9 +211,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     },
     onSuccess: () => {
       const statusChanged = fields.status !== order?.status;
-      const msg = statusChanged
-        ? `Statut mis à jour : ${fields.status}`
-        : "La commande a été mise à jour.";
+      const msg = statusChanged ? `Statut mis à jour : ${fields.status}` : "La commande a été mise à jour.";
       toast({ title: "Modifications enregistrées", description: msg });
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
@@ -301,11 +265,9 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   });
 
   const set = (key: string, value: any) => setFields((f: any) => ({ ...f, [key]: value }));
-
   const handleItemChange = (id: string | number, field: string, value: any) => {
     setLocalItems(items => items.map(i => i.id === id ? { ...i, [field]: value } : i));
   };
-
   const handleItemDelete = async (id: string | number) => {
     try {
       await deleteItem.mutateAsync(id);
@@ -314,168 +276,134 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       toast({ title: "Erreur", description: err.message, variant: "destructive" });
     }
   };
-
   const handleAddItem = () => {
     const tempId = `new-${newItemCounter}`;
     setNewItemCounter(c => c + 1);
-    setLocalItems(items => [...items, {
-      id: tempId, rawProductName: "", sku: "", variantInfo: "", quantity: 1, price: 0,
-    }]);
+    setLocalItems(items => [...items, { id: tempId, rawProductName: "", sku: "", variantInfo: "", quantity: 1, price: 0 }]);
   };
 
-  // ── Build "Détails" string ──
-  const detailsText = (() => {
-    if (localItems.length > 0) {
-      return localItems.map((item) => {
-        const parts: string[] = [`quantity: ${item.quantity}`];
-        if (order?.orderNumber) parts.push(`order_number: ${order.orderNumber}`);
-        if (item.variantInfo) parts.push(`variant: ${item.variantInfo}`);
-        return parts.join(" | ");
-      }).join("\n");
-    }
-    // Fallback: use order-level raw fields saved from webhook
-    const parts: string[] = [];
-    if ((order as any)?.rawQuantity) parts.push(`quantity: ${(order as any).rawQuantity}`);
-    if (order?.orderNumber) parts.push(`order_number: ${order.orderNumber}`);
-    if ((order as any)?.variantDetails) parts.push(`variant: ${(order as any).variantDetails}`);
-    return parts.join(" | ");
-  })();
+  const whatsappLink = fields.customerPhone
+    ? `https://wa.me/${fields.customerPhone.replace(/\D/g, "")}`
+    : null;
+  const callLink = fields.customerPhone ? `tel:${fields.customerPhone}` : null;
 
   if (!order) return null;
 
   return (
     <>
     <Dialog open={!!order} onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className="sm:max-w-2xl p-0 rounded-2xl overflow-hidden border shadow-2xl max-h-[95vh] flex flex-col">
+      <DialogContent className="sm:max-w-2xl p-0 rounded-2xl overflow-hidden shadow-2xl max-h-[95vh] flex flex-col border-0">
+        <DialogTitle className="sr-only">Commande #{order?.orderNumber}</DialogTitle>
         <DialogDescription className="sr-only">Détails et modification de la commande #{order?.orderNumber}</DialogDescription>
 
-        {/* ── Header ── */}
-        <div className="px-6 pt-5 pb-4 border-b bg-white">
-          <div className="flex items-start justify-between">
-            <div>
-              <h2 className="text-xl font-bold text-blue-600">Détails de la commande</h2>
-              <p className="text-sm text-muted-foreground mt-0.5">
-                Store : <span className="font-semibold text-foreground">{storeName || "–"}</span>
-              </p>
+        {/* ── HEADER ── */}
+        <div className="flex items-center justify-between px-6 py-4" style={{ background: NAVY }}>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-white text-sm font-medium opacity-70">Commande</span>
+              <span className="font-bold text-lg" style={{ color: GOLD }}>#{order.orderNumber}</span>
+              {order.trackNumber && (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full text-white/60 border border-white/20">
+                  {order.trackNumber}
+                </span>
+              )}
             </div>
-            <Button variant="ghost" size="icon" onClick={onClose} className="mt-0.5">
-              <X className="w-5 h-5" />
-            </Button>
+            <p className="text-white/50 text-xs mt-0.5">{storeName}</p>
           </div>
-
-          {order.trackNumber && (
-            <div className="mt-2">
-              <Label className="text-xs font-semibold text-muted-foreground">Track Number :</Label>
-              <p className="font-mono font-bold text-sm mt-0.5">{order.trackNumber}</p>
-            </div>
-          )}
-          {!order.trackNumber && (
-            <p className="text-xs text-muted-foreground mt-1">Track Number :</p>
-          )}
-
-          {/* ── 4 Toggles ── */}
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 mt-4">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-muted-foreground">replace :</span>
-              <TogglePill
-                value={fields.replace}
-                onChange={v => set("replace", v)}
-                leftLabel="Yes"
-                rightLabel="No"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-muted-foreground">can open :</span>
-              <TogglePill
-                value={fields.canOpen}
-                onChange={v => set("canOpen", v)}
-                leftLabel="Yes"
-                rightLabel="No"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-muted-foreground">Up Sell :</span>
-              <TogglePill
-                value={fields.upSell}
-                onChange={v => set("upSell", v)}
-                leftLabel="Yes"
-                rightLabel="No"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-muted-foreground">Is Stock :</span>
-              <TogglePill
-                value={fields.isStock}
-                onChange={v => set("isStock", v)}
-                leftLabel="Yes"
-                rightLabel="No"
-              />
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors"
+            data-testid="button-close-modal"
+          >
+            <X className="w-4 h-4 text-white/70" />
+          </button>
         </div>
 
-        {/* ── Body ── */}
-        <div className="overflow-y-auto flex-1 p-6 bg-white space-y-6">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-            {/* Left column */}
-            <div className="space-y-4">
+        {/* ── STATUS PILL TOGGLES ── */}
+        <div className="flex items-center gap-2 px-6 py-3 flex-wrap border-b" style={{ backgroundColor: "#f8f7ff" }}>
+          <StatusBadge label="Replace" active={fields.replace} onClick={() => set("replace", !fields.replace)} />
+          <StatusBadge label="Can Open" active={fields.canOpen} onClick={() => set("canOpen", !fields.canOpen)} />
+          <StatusBadge label="Up Sell" active={fields.upSell} onClick={() => set("upSell", !fields.upSell)} />
+          <StatusBadge label="Is Stock" active={fields.isStock} onClick={() => set("isStock", !fields.isStock)} />
+          {fields.replacementTrackNumber && (
+            <span className="text-xs font-mono px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-500 ml-auto">
+              🔄 {fields.replacementTrackNumber}
+            </span>
+          )}
+        </div>
+
+        {/* ── BODY ── */}
+        <div className="overflow-y-auto flex-1 bg-gray-50">
+
+          {/* ── SPLIT CARD ROW ── */}
+          <div className="grid grid-cols-2 gap-4 p-4">
+
+            {/* LEFT: Customer Card */}
+            <div className="rounded-xl p-4 space-y-3" style={{ backgroundColor: "#f1f0f9" }}>
+              <p className="text-[10px] uppercase tracking-widest font-bold" style={{ color: NAVY, opacity: 0.5 }}>Client</p>
+
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Replacement Track Number</Label>
-                <Input
-                  placeholder="Enter replacement track number"
-                  value={fields.replacementTrackNumber}
-                  onChange={e => set("replacementTrackNumber", e.target.value)}
-                  className="bg-white"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold">Nom du client</Label>
+                <Label className="text-xs font-semibold text-gray-500">Nom</Label>
                 <Input
                   value={fields.customerName}
                   onChange={e => set("customerName", e.target.value)}
-                  className="bg-white"
+                  className="bg-white border-gray-200 text-sm h-9 font-semibold"
+                  style={{ color: NAVY }}
+                  data-testid="input-customer-name"
                 />
               </div>
+
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Téléphone</Label>
-                <Input
-                  value={fields.customerPhone}
-                  onChange={e => set("customerPhone", e.target.value)}
-                  className="bg-white"
-                />
+                <Label className="text-xs font-semibold text-gray-500">Téléphone</Label>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    value={fields.customerPhone}
+                    onChange={e => set("customerPhone", e.target.value)}
+                    className="bg-white border-gray-200 text-sm h-9 flex-1"
+                    data-testid="input-customer-phone"
+                  />
+                  {callLink && (
+                    <a href={callLink} className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors">
+                      <Phone className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+                  {whatsappLink && (
+                    <a href={whatsappLink} target="_blank" rel="noopener noreferrer" className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center border border-green-200 bg-green-50 text-green-600 hover:bg-green-100 transition-colors">
+                      <MessageCircle className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+                </div>
               </div>
+
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Adresse</Label>
+                <Label className="text-xs font-semibold text-gray-500">Ville</Label>
+                <Select value={fields.customerCity} onValueChange={v => set("customerCity", v)}>
+                  <SelectTrigger className="bg-white border-gray-200 text-sm h-9" data-testid="select-city">
+                    <SelectValue placeholder="Sélectionner une ville" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    {MOROCCAN_CITIES.map(city => (
+                      <SelectItem key={city} value={city}>{city}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold text-gray-500">Adresse</Label>
                 <Input
                   value={fields.customerAddress}
                   onChange={e => set("customerAddress", e.target.value)}
-                  className="bg-white"
+                  className="bg-white border-gray-200 text-sm h-9"
+                  data-testid="input-customer-address"
                 />
               </div>
+
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Ville</Label>
-                <div className="relative flex items-center">
-                  {order.shippingProvider && (
-                    <div className="absolute left-2 z-10">
-                      <CarrierLogo provider={order.shippingProvider} />
-                    </div>
-                  )}
-                  <Select value={fields.customerCity} onValueChange={v => set("customerCity", v)}>
-                    <SelectTrigger className={cn("bg-white", order.shippingProvider && "pl-10")}>
-                      <SelectValue placeholder="Sélectionner une ville" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-64">
-                      {MOROCCAN_CITIES.map(city => (
-                        <SelectItem key={city} value={city}>{city}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold">Statut</Label>
+                <Label className="text-xs font-semibold text-gray-500">Statut</Label>
                 <Select value={fields.status} onValueChange={v => set("status", v)}>
-                  <SelectTrigger className="bg-white">
+                  <SelectTrigger className="bg-white border-gray-200 text-sm h-9" data-testid="select-status">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -485,189 +413,220 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold">Comment Status</Label>
-                <Input
-                  value={fields.commentStatus}
-                  onChange={e => set("commentStatus", e.target.value)}
-                  className="bg-white"
-                  placeholder=""
-                />
-              </div>
             </div>
 
-            {/* Right column */}
-            <div className="space-y-4">
+            {/* RIGHT: Product Card */}
+            <div className="rounded-xl p-4 space-y-3 bg-white border border-gray-100">
+              <p className="text-[10px] uppercase tracking-widest font-bold" style={{ color: NAVY, opacity: 0.5 }}>Produit</p>
+
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Nom du produit</Label>
+                <Label className="text-xs font-semibold text-gray-500">Nom du produit</Label>
                 <Input
                   value={fields.rawProductName}
                   onChange={e => set("rawProductName", e.target.value)}
-                  className="bg-white"
+                  className="bg-gray-50 border-gray-200 text-sm h-9 font-semibold"
+                  style={{ color: NAVY }}
                   placeholder="Auto-rempli depuis la boutique"
                   dir="rtl"
+                  data-testid="input-product-name"
                 />
               </div>
+
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Prix</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  value={fields.totalPrice}
-                  onChange={e => set("totalPrice", e.target.value)}
-                  className="bg-white"
-                />
+                <Label className="text-xs font-semibold text-gray-500">Prix total</Label>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={fields.totalPrice}
+                    onChange={e => set("totalPrice", e.target.value)}
+                    className="bg-gray-50 border-gray-200 text-sm h-9 font-bold flex-1"
+                    style={{ color: NAVY }}
+                    data-testid="input-total-price"
+                  />
+                  <span className="text-xs font-bold px-2 py-1.5 rounded-lg text-white" style={{ backgroundColor: NAVY }}>DH</span>
+                </div>
               </div>
+
+              {/* Variant — prominent footwear-first field */}
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Reference</Label>
+                <Label className="text-xs font-semibold text-gray-500">Taille / Variant</Label>
+                <div className="relative">
+                  <Input
+                    value={fields.variantInfo}
+                    onChange={e => {
+                      set("variantInfo", e.target.value);
+                      setLocalItems(items => items.map((item, i) => i === 0 ? { ...item, variantInfo: e.target.value } : item));
+                    }}
+                    className="bg-gray-50 border-gray-200 text-sm h-9 font-bold pr-12"
+                    style={{ color: GOLD !== "" ? "#7a5c1e" : undefined }}
+                    placeholder="Sélectionner variant (ex: 40, Marron)"
+                    data-testid="input-variant-info"
+                  />
+                  {fields.variantInfo && (
+                    <span
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                      style={{ backgroundColor: GOLD_MUTED, color: "#7a5c1e" }}
+                    >
+                      {fields.variantInfo}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs font-semibold text-gray-500">Réf. commande</Label>
                 <Input
-                  value={fields.reference || order.orderNumber || ""}
+                  value={order.orderNumber || ""}
                   readOnly
-                  className="bg-gray-50 text-muted-foreground"
+                  className="bg-gray-100 border-gray-200 text-sm h-9 text-gray-400 font-mono"
                 />
               </div>
+
               <div className="space-y-1">
-                <Label className="text-sm font-semibold">Comment Order</Label>
+                <Label className="text-xs font-semibold text-gray-500">Replacement Track</Label>
                 <Input
-                  value={fields.commentOrder}
-                  onChange={e => set("commentOrder", e.target.value)}
-                  className="bg-white"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-sm font-semibold">Détails</Label>
-                <textarea
-                  readOnly
-                  value={detailsText}
-                  rows={4}
-                  className="w-full p-3 rounded-md border border-input bg-gray-50 text-sm resize-none text-muted-foreground font-mono"
+                  value={fields.replacementTrackNumber}
+                  onChange={e => set("replacementTrackNumber", e.target.value)}
+                  className="bg-gray-50 border-gray-200 text-sm h-9"
+                  placeholder="N° de suivi remplacement"
+                  data-testid="input-replacement-track"
                 />
               </div>
             </div>
           </div>
 
-          {/* ── Order Items ── */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2 text-blue-600 font-bold">
-                <span className="text-base">🛍</span>
-                <span>Order Items</span>
-                <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full">
+          {/* ── ORDER ITEMS ── */}
+          <div className="mx-4 mb-4 rounded-xl border border-gray-100 bg-white overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase tracking-wide" style={{ color: NAVY }}>Articles</span>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ backgroundColor: "#e8e7f8", color: NAVY }}>
                   {localItems.length}
                 </span>
               </div>
-              <Button
+              <button
                 type="button"
-                size="icon"
                 onClick={handleAddItem}
-                className="w-8 h-8 rounded-lg bg-green-600 hover:bg-green-700 text-white"
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-white hover:opacity-90 transition-opacity"
+                style={{ backgroundColor: NAVY }}
               >
-                <Plus className="w-4 h-4" />
-              </Button>
+                <Plus className="w-3.5 h-3.5" />
+              </button>
             </div>
-            <div className="space-y-3">
+            <div className="divide-y divide-gray-50">
               {localItems.map(item => (
-                <ItemRow
-                  key={item.id}
-                  item={item}
-                  onChange={handleItemChange}
-                  onDelete={handleItemDelete}
-                />
+                <ItemRow key={item.id} item={item} onChange={handleItemChange} onDelete={handleItemDelete} />
               ))}
               {localItems.length === 0 && (
-                <p className="text-sm text-muted-foreground text-center py-4 border rounded-xl border-dashed">
+                <p className="text-xs text-gray-400 text-center py-6">
                   Aucun article — cliquez sur + pour en ajouter
                 </p>
               )}
             </div>
           </div>
+
+          {/* ── COMMENTS ── */}
+          <div className="grid grid-cols-2 gap-4 mx-4 mb-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-gray-500">Commentaire client</Label>
+              <textarea
+                value={fields.commentStatus}
+                onChange={e => set("commentStatus", e.target.value)}
+                rows={3}
+                className="w-full p-3 rounded-lg border border-gray-200 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-offset-0"
+                style={{ "--tw-ring-color": GOLD } as any}
+                placeholder="Remarques du client..."
+                data-testid="textarea-comment-status"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold text-gray-500">Note interne</Label>
+              <textarea
+                value={fields.commentOrder}
+                onChange={e => set("commentOrder", e.target.value)}
+                rows={3}
+                className="w-full p-3 rounded-lg border border-gray-200 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-offset-0"
+                placeholder="Note pour l'équipe..."
+                data-testid="textarea-comment-order"
+              />
+            </div>
+          </div>
+
         </div>
 
-        {/* ── Footer ── */}
-        <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-t bg-white">
+        {/* ── FOOTER ── */}
+        <div className="flex items-center justify-between px-6 py-4 border-t bg-white">
           {/* Left: Open Retour */}
-          <div className="flex items-center gap-2">
+          <div>
             {orDone ? (
               <div className="flex items-center gap-1.5 text-sm text-green-700 font-medium">
                 <CheckCircle className="w-4 h-4 text-green-500" />
-                Retour N° <code className="bg-green-50 px-1 rounded text-xs">{orDone.tracking}</code>
+                Retour <code className="bg-green-50 px-1.5 py-0.5 rounded text-xs font-mono">{orDone.tracking}</code>
               </div>
             ) : orSettings?.connected ? (
               <Button
                 variant="outline" size="sm"
                 onClick={() => { setOrReason(order?.comment || order?.commentStatus || ""); setOrOpen(true); }}
-                className="text-amber-700 border-amber-200 hover:bg-amber-50 font-semibold text-xs"
+                className="border-amber-200 text-amber-700 hover:bg-amber-50 font-semibold text-xs"
                 data-testid="button-create-return"
               >
                 <RotateCcw className="w-3.5 h-3.5 mr-1" /> Créer un Retour
               </Button>
             ) : (
-              <span className="text-xs text-muted-foreground hidden sm:block">
-                Connectez Open Retour pour activer les retours
-              </span>
+              <span className="text-xs text-gray-400 hidden sm:block">Open Retour non connecté</span>
             )}
           </div>
-          {/* Right: Save / Cancel */}
-          <div className="flex gap-3">
-            <Button variant="outline" onClick={onClose} className="px-6">Annuler</Button>
+
+          {/* Right: Cancel + Save */}
+          <div className="flex items-center gap-3">
+            <Button variant="outline" onClick={onClose} className="px-5 text-sm">Annuler</Button>
             <Button
               onClick={() => saveOrder.mutate()}
               disabled={saveOrder.isPending}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-6 font-semibold"
+              className="px-7 py-2.5 text-sm font-bold rounded-xl shadow-lg hover:shadow-xl transition-all"
+              style={{ backgroundColor: GOLD, color: "#1e1b4b", border: "none" }}
+              data-testid="button-save-order"
             >
               {saveOrder.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-              Enregistrer les modifications
+              Enregistrer
             </Button>
           </div>
         </div>
       </DialogContent>
     </Dialog>
 
-    {/* ── Open Retour return dialog ──────────────────────────── */}
+    {/* ── Open Retour dialog ──────────────────────────────────── */}
     <Dialog open={orOpen} onOpenChange={setOrOpen}>
       <DialogContent className="sm:max-w-sm">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <RotateCcw className="w-5 h-5" style={{ color: GOLD }} />
-            Créer un ticket de retour
-          </DialogTitle>
-          <DialogDescription>
-            Un ticket Open Retour sera créé pour la commande{" "}
-            <strong>{order?.orderNumber || `#${order?.id}`}</strong> — {order?.customerName}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div className="space-y-2">
-            <Label className="font-semibold text-sm">Raison du retour</Label>
-            <Input
-              data-testid="input-or-reason"
-              placeholder="Ex: produit endommagé, erreur de taille..."
-              value={orReason}
-              onChange={e => setOrReason(e.target.value)}
-            />
-          </div>
-          <div className="p-3 rounded-xl text-xs" style={{ background: "rgba(197,160,89,0.07)", border: "1px solid rgba(197,160,89,0.2)" }}>
-            <p className="font-semibold mb-1" style={{ color: GOLD }}>Ce qui sera transmis à Open Retour :</p>
-            <ul className="text-zinc-600 space-y-0.5">
-              <li>• Client : {order?.customerName} — {order?.customerPhone}</li>
-              <li>• Ville : {order?.customerCity || "N/A"}</li>
-              <li>• Référence : {order?.orderNumber || `#${order?.id}`}</li>
-            </ul>
-          </div>
+        <DialogTitle className="flex items-center gap-2 text-base font-bold" style={{ color: NAVY }}>
+          <RotateCcw className="w-5 h-5" style={{ color: GOLD }} />
+          Créer un ticket de retour
+        </DialogTitle>
+        <DialogDescription>
+          Commande <strong>#{order?.orderNumber || order?.id}</strong> — {order?.customerName}
+        </DialogDescription>
+        <div className="space-y-3 py-1">
+          <Label className="text-sm font-semibold">Raison du retour</Label>
+          <Input
+            data-testid="input-or-reason"
+            placeholder="Ex: produit endommagé, erreur de taille..."
+            value={orReason}
+            onChange={e => setOrReason(e.target.value)}
+          />
         </div>
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => setOrOpen(false)} data-testid="button-or-cancel-modal">Annuler</Button>
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={() => setOrOpen(false)}>Annuler</Button>
           <Button
             onClick={() => createReturn.mutate()}
-            disabled={createReturn.isPending}
-            className="font-bold text-white"
-            style={{ background: `linear-gradient(135deg, #C5A059 0%, #b8904a 100%)` }}
-            data-testid="button-or-confirm-return"
+            disabled={createReturn.isPending || !orReason.trim()}
+            style={{ backgroundColor: GOLD, color: NAVY, border: "none" }}
+            className="font-bold"
           >
-            {createReturn.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RotateCcw className="w-4 h-4 mr-2" />}
-            {createReturn.isPending ? "Création..." : "Créer le retour"}
+            {createReturn.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+            Confirmer le retour
           </Button>
-        </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
     </>

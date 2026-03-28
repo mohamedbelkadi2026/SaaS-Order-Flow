@@ -1,0 +1,23 @@
+"I need to fix the Variant display bug and completely redesign the 'Order Details' modal to have a unique, premium 'TajerGrow' aesthetic. Follow these instructions strictly:
+1. Fix Variant Logic (The 'null' bug):
+Issue: When an order arrives from Shopify/YouCan with a size (e.g., 40), the 'Variant' field in the modal shows 'null' or stays empty.
+Action: Update the Webhook Handler and the UI. The system must capture the variant_title or options from the store and save it to the variant column in the Orders table.
+UI Display: In the order details, the captured variant must appear automatically as the default value in the input field. The agent should see '40' or 'Marron' immediately and only change it if the customer requests a different one.
+2. Redesign: 'TajerGrow Premium' Order Modal:
+Objective: Create a layout that is different from Garean/Qunvert. It must be clean, modern, and high-end.
+The New Layout:
+Header: Use a dark Navy Blue (#1e1b4b) header with the brand Gold (#C5A059) for the order ID.
+Top Action Bar (The Toggles): Instead of standard switches, use a 'Status Pill' design. Place 'Replace', 'Can Open', 'Up Sell', and 'Is Stock' in a horizontal row of elegant, clickable badges that change color when active (e.g., Muted Gold when ON).
+Split-View Content:
+Left Side (Customer Card): A card with a soft light-grey background. Group Name, Phone (with direct Call/WA buttons next to it), City, and Address.
+Right Side (Product Card): Focus on the product name, price, and the Variant Selector.
+Bottom Section (Order Items): Use a clean list view with subtle borders. The 'Price' and 'Quantity' should be in Bold Navy.
+Comment Section: Place 'Commentaire Client' and 'Note Interne' at the very bottom in a clear, wide area.
+3. User Experience (UX) for Agents:
+Ensure all inputs have a high contrast for easy reading on mobile.
+The 'Save' button (Enregistrer) must be a large, floating-style Gold button at the bottom right.
+Add a 'Close' icon (X) that is easy to tap.
+4. Data Integrity:
+Ensure that even with the new design, all data is correctly saved to PostgreSQL.
+Fix the 'null' tag issue seen in the screenshot by ensuring the code checks if (variant) { show badge } else { show "Sélectionner variant" }.
+Technical Goal: I want a unique identity for TajerGrow. The modal should feel like an elite management tool, specifically optimized for footwear (size/color focus) and high-speed confirmation."

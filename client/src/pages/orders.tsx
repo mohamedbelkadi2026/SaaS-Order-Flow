@@ -846,9 +846,11 @@ export default function Orders() {
                       )}
                       {isColVisible('infosSupp') && (
                         <TableCell className="max-w-[160px] text-[11px]" data-testid={`cell-infos-supp-${order.id}`}>
-                          {order.variantDetails ? (
-                            <span className="text-foreground font-medium">{order.variantDetails}</span>
-                          ) : <span className="text-muted-foreground">-</span>}
+                          {order.variantDetails && order.variantDetails !== "null" ? (
+                            <span className="font-semibold px-1.5 py-0.5 rounded-md text-[10px]" style={{ backgroundColor: "#e8d5a8", color: "#7a5c1e" }}>
+                              {order.variantDetails}
+                            </span>
+                          ) : <span className="text-muted-foreground">—</span>}
                         </TableCell>
                       )}
                       {!isMediaBuyer && isColVisible('action') && (

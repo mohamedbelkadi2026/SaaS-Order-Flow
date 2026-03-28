@@ -127,6 +127,15 @@ function extractUtmParams(payload: any): { utmSource: string | null; utmCampaign
   return { utmSource: rawSource, buyerCode, utmCampaign: rawCampaign, trafficPlatform };
 }
 
+/** Strip meaningless variant strings that arrive from Shopify/YouCan */
+function sanitizeVariant(raw: any): string {
+  if (!raw) return '';
+  const s = String(raw).trim();
+  // Shopify default, JS null coercion, or empty placeholder
+  if (s === 'null' || s === 'undefined' || s === 'Default Title' || s === '-') return '';
+  return s;
+}
+
 function parseWebhookOrder(provider: string, payload: any) {
   const { utmSource, buyerCode, utmCampaign, trafficPlatform } = extractUtmParams(payload);
 
@@ -147,7 +156,7 @@ function parseWebhookOrder(provider: string, payload: any) {
     const lineItems = (payload.line_items || []).map((item: any) => ({
       sku: item.sku || '',
       title: item.title || '',
-      variantInfo: item.variant_title || (item.variant_id ? `variant_id: ${item.variant_id}` : ''),
+      variantInfo: sanitizeVariant(item.variant_title),
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
@@ -164,7 +173,7 @@ function parseWebhookOrder(provider: string, payload: any) {
     const lineItems = (payload.items || payload.line_items || []).map((item: any) => ({
       sku: item.sku || '',
       title: item.name || item.title || '',
-      variantInfo: item.variant_title || '',
+      variantInfo: sanitizeVariant(item.variant_title),
       quantity: item.quantity || 1,
       price: Math.round(parseFloat(item.price || '0') * 100),
     }));
