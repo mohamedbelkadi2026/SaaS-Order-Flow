@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import cors from "cors";
 import { registerRoutes } from "./routes";
 import { setupAuth } from "./auth";
 import { serveStatic } from "./static";
@@ -56,6 +57,30 @@ declare module "http" {
 }
 
 const isProduction = process.env.NODE_ENV === "production";
+
+// ── CORS — allow the production domain + Railway previews ─────────────────────
+const ALLOWED_ORIGINS = [
+  "https://tajergrow.com",
+  "https://www.tajergrow.com",
+  /https:\/\/.*\.railway\.app$/,
+  /https:\/\/.*\.up\.railway\.app$/,
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    // allow requests with no origin (server-to-server, mobile, curl)
+    if (!origin) return callback(null, true);
+    const ok = ALLOWED_ORIGINS.some((allowed) =>
+      allowed instanceof RegExp ? allowed.test(origin) : allowed === origin
+    );
+    if (ok || !isProduction) {
+      callback(null, true);
+    } else {
+      console.warn("[CORS] Blocked origin:", origin);
+      callback(null, false);
+    }
+  },
+  credentials: true,
+}));
 
 // ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet({
@@ -133,9 +158,9 @@ app.use((req, res, next) => {
     const status = err.status || err.statusCode || 500;
     const isProd = process.env.NODE_ENV === "production";
 
-    if (!isProd || status >= 500) {
-      console.error("Server error:", isProd ? err.message : err);
-    }
+    // Always log full details — stack trace is critical for Railway debugging
+    console.error(`[SERVER_ERROR] status=${status} message=${err.message}`);
+    if (err.stack) console.error(err.stack);
 
     if (res.headersSent) return next(err);
 

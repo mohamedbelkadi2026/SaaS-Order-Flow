@@ -220,11 +220,17 @@ export function setupAuth(app: Express) {
 
   app.post("/api/auth/login", (req, res, next) => {
     passport.authenticate("local", (err: any, user: User | false, info: any) => {
-      if (err) return next(err);
+      if (err) {
+        console.error("[LOGIN_ERROR] Passport strategy error:", err);
+        return next(err);
+      }
       if (!user) return res.status(401).json({ message: info?.message || "Identifiants incorrects" });
 
       req.login(user, (loginErr) => {
-        if (loginErr) return next(loginErr);
+        if (loginErr) {
+          console.error("[LOGIN_ERROR] Session save error:", loginErr);
+          return next(loginErr);
+        }
         const { password: _, ...safeUser } = user;
         return res.json(safeUser);
       });
