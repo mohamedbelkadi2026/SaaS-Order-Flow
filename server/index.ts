@@ -28,12 +28,22 @@ async function ensureSuperAdmin() {
   }
 }
 
+export function log(message: string, source = "express") {
+  const formattedTime = new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+  console.log(`${formattedTime} [${source}] ${message}`);
+}
+
 const app = express();
 const httpServer = createServer(app);
 
-// ── Health probes — registered FIRST, before any middleware ───────────────────
-// Railway probes /health — registered before Helmet/rate-limiters/body-parsers.
-// Do NOT add a "/" handler here — that would shadow the React frontend in production.
+// ── Health probes — synchronous, registered before everything else ─────────────
+// Railway checks these immediately on deploy. They must never be blocked
+// by Helmet, rate-limiters, body-parsers, auth, or static-file middleware.
 app.get("/health",     (_req, res) => res.status(200).send("OK"));
 app.get("/api/health", (_req, res) =>
   res.status(200).json({ status: "ok", uptime: process.uptime() })
@@ -47,55 +57,43 @@ declare module "http" {
 
 const isProduction = process.env.NODE_ENV === "production";
 
-// ── Security headers via Helmet ───────────────────────────────────────────────
+// ── Security headers ──────────────────────────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: isProduction,
   crossOriginEmbedderPolicy: false,
 }));
 
-// ── Brute-force protection on auth endpoints ─────────────────────────────────
+// ── Brute-force protection on auth endpoints ──────────────────────────────────
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20,                   // max 20 attempts per window per IP
+  windowMs: 15 * 60 * 1000,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Trop de tentatives. Veuillez réessayer dans 15 minutes." },
 });
-app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/login",  authLimiter);
 app.use("/api/auth/signup", authLimiter);
 
+// ── Body parsers (MUST come before any route handlers) ───────────────────────
 app.use(
   express.json({
-    limit: '2mb',
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
+    limit: "2mb",
+    verify: (req, _res, buf) => { req.rawBody = buf; },
   }),
 );
-
 app.use(express.urlencoded({ extended: false }));
 
-// Serve uploaded receipts statically — DATA_DIR points to the mounted volume on Railway
+// ── Uploaded files served statically ─────────────────────────────────────────
 const DATA_DIR = process.env.DATA_DIR ?? path.resolve(".");
 const uploadsDir = path.join(DATA_DIR, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 app.use("/uploads", express.static(uploadsDir));
 
-export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
-}
-
+// ── Request logger ────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
+  const p = req.path;
+  let capturedJsonResponse: Record<string, any> | undefined;
 
   const originalResJson = res.json;
   res.json = function (bodyJson, ...args) {
@@ -105,12 +103,11 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+    if (p.startsWith("/api")) {
+      let logLine = `${req.method} ${p} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
         logLine += ` :: ${JSON.stringify(capturedJsonResponse).substring(0, 200)}`;
       }
-
       log(logLine);
     }
   });
@@ -119,30 +116,19 @@ app.use((req, res, next) => {
 });
 
 (async () => {
-  // ── Bind the port NOW so Railway sees a live socket right away ───────
-  const port = parseInt(process.env.PORT || "5000", 10);
-  await new Promise<void>((resolve) =>
-    httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
-      console.log(`HEALTHCHECK_READY: Port ${port} is now open.`);
-      log(`serving on port ${port}`);
-      resolve();
-    })
-  );
+  // ── Register ALL routes BEFORE opening the port ───────────────────────────
+  // This guarantees no request can arrive before routes are wired up.
+  // (Health probes above are exempt — they're synchronous and always available.)
 
-  // ── Async setup runs after the port is open ───────────────────────────
-  // Wrapped in try/catch so a DB connection hiccup cannot kill the process
-  // after it is already listening — health probes will still return 200.
-  try {
-    setupAuth(app);
-  } catch (err: any) {
-    console.error("[Auth] Session store setup failed (non-fatal):", err.message);
-  }
-  try {
-    await registerRoutes(httpServer, app);
-  } catch (err: any) {
-    console.error("[Routes] Route registration failed (non-fatal):", err.message);
-  }
+  // 1. Auth middleware + login/logout/signup/user routes
+  setupAuth(app);
+  console.log("[Startup] Auth routes registered (/api/auth/login, /api/auth/signup, ...)");
 
+  // 2. All other API routes
+  await registerRoutes(httpServer, app);
+  console.log("[Startup] API routes registered");
+
+  // 3. Global error handler (must come after routes, before static)
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const isProd = process.env.NODE_ENV === "production";
@@ -160,16 +146,27 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
-  if (process.env.NODE_ENV === "production") {
+  // 4. Static file serving + React Router catch-all (must be LAST)
+  if (isProduction) {
     serveStatic(app);
+    console.log("[Startup] Static file serving enabled (production)");
   } else {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
 
-  await ensureSuperAdmin();
+  // ── NOW open the port — all routes are ready ──────────────────────────────
+  const port = parseInt(process.env.PORT || "5000", 10);
+  await new Promise<void>((resolve) =>
+    httpServer.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
+      console.log(`HEALTHCHECK_READY: Port ${port} is now open.`);
+      log(`serving on port ${port}`);
+      resolve();
+    })
+  );
 
-  // ── Background jobs start last — they must not block startup ─────────
+  // ── Background jobs — start after port is open ────────────────────────────
+  await ensureSuperAdmin();
   startWooCommerceSync();
   startRecoveryJob();
   autoStartBaileys().catch(console.error);

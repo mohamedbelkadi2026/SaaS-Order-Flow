@@ -33,14 +33,22 @@ declare global {
 export function setupAuth(app: Express) {
   const PgSession = connectPgSimple(session);
 
-  if (!process.env.SESSION_SECRET) {
-    throw new Error("SESSION_SECRET environment variable is required");
-  }
+  // SESSION_SECRET is required for secure cookies. If missing, generate a
+  // random one and warn loudly — sessions won't persist across restarts.
+  const sessionSecret = process.env.SESSION_SECRET ?? (() => {
+    const fallback = randomBytes(32).toString("hex");
+    console.error(
+      "[Auth] ⚠️  SESSION_SECRET is not set! Using a random secret — " +
+      "all sessions will be invalidated on restart. " +
+      "Set SESSION_SECRET in Railway → Variables."
+    );
+    return fallback;
+  })();
 
   const isProduction = process.env.NODE_ENV === "production";
 
   const sessionSettings: session.SessionOptions = {
-    secret: process.env.SESSION_SECRET,
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     store: new PgSession({
