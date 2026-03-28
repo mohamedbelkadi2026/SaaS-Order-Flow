@@ -4,7 +4,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAgents, useProducts, useStore, useAgentStoreSettings } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest } from "@/lib/queryClient";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,16 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Loader2, Plus, Trash2, Save, Upload } from "lucide-react";
-
-const MOROCCAN_CITIES = [
-  "Agadir","Ait Melloul","Al Hoceima","Asilah","Azrou","Beni Mellal","Berkane",
-  "Berrechid","Casablanca","Chefchaouen","Dakhla","Dcheira El Jihadia","El Jadida",
-  "Errachidia","Essaouira","Fès","Guelmim","Ifrane","Inezgane","Jerada","Kénitra",
-  "Khémisset","Khénifra","Khouribga","Laâyoune","Larache","Marrakech","Meknès",
-  "Mohammedia","Nador","Ouarzazate","Oujda","Ouled Teima","Rabat","Safi","Salé",
-  "Settat","Sidi Kacem","Sidi Slimane","Souk El Arbaa","Tanger","Taourirt","Taroudant",
-  "Taroudnat","Taza","Temara","Tétouan","Tifariti","Tiznit","Zagora",
-].sort();
+import { CityCombobox } from "@/components/city-combobox";
+import { MOROCCAN_CITIES } from "@/lib/carrier-cities";
 
 const ORDER_STATUSES = [
   { value: "nouveau", label: "Nouveau" },
@@ -77,10 +69,30 @@ export default function NewOrderAdd() {
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
   const [customerCity, setCustomerCity] = useState("");
+  const [selectedCarrierProvider, setSelectedCarrierProvider] = useState<string>("");
   const [status, setStatus] = useState("nouveau");
   const [agentId, setAgentId] = useState(isAgent ? String(user?.id || "") : "");
   const [comment, setComment] = useState("");
   const [items, setItems] = useState<LineItem[]>([newItem()]);
+
+  // ── Carrier city lists ─────────────────────────────────────────────
+  const { data: allCarriers = [] } = useQuery<{ id: number; provider: string; isActive: number; cities: string[] }[]>({
+    queryKey: ["/api/carriers/cities/all"],
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const activeCarriers = useMemo(() => (allCarriers as any[]).filter((c: any) => c.isActive === 1), [allCarriers]);
+
+  const activeCities = useMemo(() => {
+    if (!selectedCarrierProvider) {
+      const primary = activeCarriers[0];
+      return primary ? primary.cities as string[] : MOROCCAN_CITIES;
+    }
+    const found = (allCarriers as any[]).find((c: any) => c.provider === selectedCarrierProvider);
+    return found ? found.cities as string[] : MOROCCAN_CITIES;
+  }, [selectedCarrierProvider, allCarriers, activeCarriers]);
+
+  const isCarrierSpecific = activeCities !== MOROCCAN_CITIES && activeCities.length > 0;
 
   const updateItem = (id: string, field: keyof LineItem, value: any) => {
     setItems(prev => prev.map(it => it.id === id ? { ...it, [field]: value } : it));
@@ -205,14 +217,38 @@ export default function NewOrderAdd() {
               <Label className="text-xs mb-1.5 block">Adresse</Label>
               <Input placeholder="Adresse complète" value={customerAddress} onChange={e => setCustomerAddress(e.target.value)} />
             </div>
+            {activeCarriers.length > 1 && (
+              <div>
+                <Label className="text-xs mb-1.5 block">Transporteur</Label>
+                <Select value={selectedCarrierProvider} onValueChange={v => { setSelectedCarrierProvider(v); setCustomerCity(""); }}>
+                  <SelectTrigger className="text-sm">
+                    <SelectValue placeholder="Transporteur par défaut" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activeCarriers.map((c: any) => (
+                      <SelectItem key={c.provider} value={c.provider}>{c.provider}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
-              <Label className="text-xs mb-1.5 block">Ville</Label>
-              <Select value={customerCity} onValueChange={setCustomerCity}>
-                <SelectTrigger className="text-sm"><SelectValue placeholder="Entrez la ville" /></SelectTrigger>
-                <SelectContent>
-                  {MOROCCAN_CITIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Label className="text-xs mb-1.5 block">
+                Ville
+                {isCarrierSpecific && (
+                  <span className="ml-1.5 text-[9px] font-normal text-gray-400 normal-case">
+                    ({selectedCarrierProvider || activeCarriers[0]?.provider})
+                  </span>
+                )}
+              </Label>
+              <CityCombobox
+                value={customerCity}
+                onChange={setCustomerCity}
+                cities={activeCities}
+                isCarrierSpecific={isCarrierSpecific}
+                disabled={activeCarriers.length > 1 && !selectedCarrierProvider && false}
+                data-testid="select-city"
+              />
             </div>
             <div>
               <Label className="text-xs mb-1.5 block">Status</Label>

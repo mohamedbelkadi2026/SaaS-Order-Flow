@@ -127,6 +127,98 @@ function extractUtmParams(payload: any): { utmSource: string | null; utmCampaign
   return { utmSource: rawSource, buyerCode, utmCampaign: rawCampaign, trafficPlatform };
 }
 
+// ─── Carrier city lists (mirrored from client/src/lib/carrier-cities.ts) ─────
+const DIGYLOG_CITIES_DEFAULT = [
+  "Agadir","Afourer","Aghbala","Ain El Aouda","Ain Harrouda","Ain Taoujdate",
+  "Ait Melloul","Al Hoceima","Assa","Asilah","Azemmour","Azilal","Azrou",
+  "Bejaad","Ben Ahmed","Ben Guerir","Beni Mellal","Berkane","Berrechid",
+  "Bouarfa","Boujdour","Bouskoura","Casablanca","Chefchaouen",
+  "Dakhla","Dcheira El Jihadia",
+  "El Hajeb","El Jadida","El Kelaa des Sraghna","Errachidia","Erfoud","Essaouira",
+  "Fès","Fnideq","Figuig","Guelmim","Ifrane","Inezgane","Jerada",
+  "Kénitra","Khémisset","Khénifra","Khouribga","Ksar El Kebir",
+  "Laâyoune","Larache",
+  "Marrakech","Martil","Mdiq","Meknès","Midelt","Mohammedia","Moulay Bousselham",
+  "Nador","Oued Zem","Oujda","Ouarzazate","Ouled Teima",
+  "Rabat","Rissani",
+  "Safi","Salé","Selouane","Settat","Sidi Bennour","Sidi Ifni","Sidi Kacem",
+  "Sidi Slimane","Sidi Yahia El Gharb","Souk El Arbaa",
+  "Tahanaout","Tanger","Taourirt","Taroudant","Taza","Temara","Tétouan",
+  "Tinghir","Tiznit","Zagora",
+].sort();
+
+const CATHEDIS_CITIES_DEFAULT = [
+  "Agadir","Ait Melloul","Al Hoceima","Asilah","Ben Guerir","Beni Mellal",
+  "Berkane","Berrechid","Casablanca","Chefchaouen","Dakhla","Dcheira El Jihadia",
+  "El Jadida","Errachidia","Essaouira","Fès","Fnideq","Guelmim","Ifrane","Inezgane",
+  "Jerada","Kénitra","Khémisset","Khénifra","Khouribga","Laâyoune","Larache",
+  "Marrakech","Meknès","Mohammedia","Nador","Oujda","Ouarzazate","Ouled Teima",
+  "Rabat","Safi","Salé","Settat","Sidi Kacem","Sidi Slimane","Souk El Arbaa",
+  "Tanger","Taourirt","Taroudant","Taza","Temara","Tétouan","Tiznit","Zagora",
+].sort();
+
+const MOROCCAN_CITIES_DEFAULT = [
+  "Agadir","Ait Melloul","Al Hoceima","Asilah","Azilal","Azrou",
+  "Beni Mellal","Berkane","Berrechid","Casablanca","Chefchaouen",
+  "Dakhla","Dcheira El Jihadia","El Jadida","Errachidia","Essaouira",
+  "Fès","Guelmim","Ifrane","Inezgane","Jerada",
+  "Kénitra","Khémisset","Khénifra","Khouribga","Laâyoune","Larache",
+  "Marrakech","Meknès","Mohammedia","Nador","Oujda","Ouarzazate","Ouled Teima",
+  "Rabat","Safi","Salé","Settat","Sidi Kacem","Sidi Slimane","Souk El Arbaa",
+  "Tanger","Taourirt","Taroudant","Taza","Temara","Tétouan","Tiznit","Zagora",
+].sort();
+
+const CITY_ALIASES_SERVER: Record<string, string> = {
+  casa:"Casablanca",csl:"Casablanca","dar beida":"Casablanca",casablanca:"Casablanca",
+  rbt:"Rabat",fes:"Fès",fez:"Fès",fas:"Fès",
+  tangier:"Tanger",tangermed:"Tanger",
+  marrakesh:"Marrakech",meknes:"Meknès",kenitra:"Kénitra",
+  tetouane:"Tétouan",tetouan:"Tétouan",laayoune:"Laâyoune",
+  taroudnat:"Taroudant",khmisset:"Khémisset",khemisset:"Khémisset",
+  khnifra:"Khénifra",khenifra:"Khénifra",benmellal:"Beni Mellal",
+  inzgane:"Inezgane",mohammadia:"Mohammedia",sale:"Salé",
+  jdida:"El Jadida","eljadida":"El Jadida",ksar:"Ksar El Kebir",
+  wzzt:"Ouarzazate",goulimine:"Guelmim",
+};
+
+function normCity(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim();
+}
+
+function getDefaultCitiesForProvider(provider: string): string[] {
+  const p = (provider||"").toLowerCase();
+  if (p.includes("digylog")||p.includes("ecotrack")||p.includes("eco-track")) return DIGYLOG_CITIES_DEFAULT;
+  if (p.includes("cathedis")) return CATHEDIS_CITIES_DEFAULT;
+  return MOROCCAN_CITIES_DEFAULT;
+}
+
+/** Auto-match a raw city name against a carrier's city list. Returns best match or null. */
+function autoMatchCity(raw: string, cities: string[]): string | null {
+  if (!raw || !cities.length) return null;
+  const rawN = normCity(raw);
+  if (!rawN) return null;
+  const exact = cities.find(c => normCity(c) === rawN);
+  if (exact) return exact;
+  const alias = CITY_ALIASES_SERVER[rawN];
+  if (alias) {
+    const am = cities.find(c => normCity(c) === normCity(alias));
+    if (am) return am;
+  }
+  if (rawN.length >= 3) {
+    const sw = cities.find(c => normCity(c).startsWith(rawN));
+    if (sw) return sw;
+    const rs = cities.find(c => rawN.startsWith(normCity(c)) && normCity(c).length >= 3);
+    if (rs) return rs;
+  }
+  if (rawN.length >= 4) {
+    const inc = cities.find(c => normCity(c).includes(rawN));
+    if (inc) return inc;
+    const inc2 = cities.find(c => rawN.includes(normCity(c)) && normCity(c).length >= 4);
+    if (inc2) return inc2;
+  }
+  return null;
+}
+
 /** Strip meaningless variant strings that arrive from Shopify/YouCan */
 function sanitizeVariant(raw: any): string {
   if (!raw) return '';
@@ -1443,10 +1535,32 @@ export async function registerRoutes(
       console.log(`[Webhook] Customer: ${parsed.customerName} | Phone: ${parsed.customerPhone}`);
       console.log(`[Webhook] Product: ${parsed.lineItems.map((li: any) => li.title).join(', ') || 'N/A'} | City: ${parsed.customerCity}`);
 
+      // ── Auto-match city against active carrier's city list ────────────────
+      let resolvedCity = parsed.customerCity || "";
+      try {
+        const shippingIntegrations = await storage.getIntegrationsByStore(storeId, "shipping");
+        const activeCarrier = shippingIntegrations.find(i => i.isActive === 1) || shippingIntegrations[0];
+        if (activeCarrier && resolvedCity) {
+          const carrierCreds = JSON.parse(activeCarrier.credentials || "{}");
+          const cityList: string[] = Array.isArray(carrierCreds.cityList) && carrierCreds.cityList.length > 0
+            ? carrierCreds.cityList
+            : getDefaultCitiesForProvider(activeCarrier.provider);
+          const matched = autoMatchCity(resolvedCity, cityList);
+          if (matched && matched !== resolvedCity) {
+            console.log(`[CityMatch] "${resolvedCity}" → "${matched}" (carrier: ${activeCarrier.provider})`);
+            resolvedCity = matched;
+          } else if (!matched) {
+            console.warn(`[CityMatch] No match found for "${resolvedCity}" in ${activeCarrier.provider} city list`);
+          }
+        }
+      } catch (cityErr: any) {
+        console.warn("[CityMatch] Auto-match skipped:", cityErr.message);
+      }
+
       const order = await storage.createOrder({
         storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
-        customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
+        customerCity: resolvedCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: provider, comment: parsed.comment,
         rawProductName, variantDetails, rawQuantity,
         utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
@@ -1455,7 +1569,7 @@ export async function registerRoutes(
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
-      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);
+      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, resolvedCity);
       if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
 
       await storage.incrementMonthlyOrders(storeId);
@@ -2738,6 +2852,180 @@ export async function registerRoutes(
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // CARRIER CITY MAPPING
+  // ══════════════════════════════════════════════════════════════════
+
+  /**
+   * GET /api/carriers/cities?provider=digylog
+   * Returns the city list for the given carrier (or all active shipping carriers).
+   * Priority: stored cityList in credentials → default list for carrier → generic Moroccan list.
+   */
+  app.get("/api/carriers/cities", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const provider = req.query.provider as string | undefined;
+
+      const integrations = await storage.getIntegrationsByStore(storeId, "shipping");
+
+      if (!integrations.length) {
+        return res.json({
+          provider: null,
+          cities: MOROCCAN_CITIES_DEFAULT,
+          isCarrierSpecific: false,
+          source: "generic",
+        });
+      }
+
+      const target = provider
+        ? integrations.find(i => i.provider.toLowerCase() === provider.toLowerCase())
+        : integrations.find(i => i.isActive === 1) || integrations[0];
+
+      if (!target) {
+        return res.json({
+          provider: provider || null,
+          cities: MOROCCAN_CITIES_DEFAULT,
+          isCarrierSpecific: false,
+          source: "generic",
+        });
+      }
+
+      const creds = JSON.parse(target.credentials || "{}");
+      const storedList: string[] | undefined = creds.cityList;
+      const cities = Array.isArray(storedList) && storedList.length > 0
+        ? storedList
+        : getDefaultCitiesForProvider(target.provider);
+
+      res.json({
+        provider: target.provider,
+        cities,
+        isCarrierSpecific: true,
+        source: Array.isArray(storedList) && storedList.length > 0 ? "stored" : "default",
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /**
+   * GET /api/carriers/cities/all
+   * Returns all active shipping integrations with their city lists.
+   */
+  app.get("/api/carriers/cities/all", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const integrations = await storage.getIntegrationsByStore(storeId, "shipping");
+
+      const result = integrations.map(i => {
+        const creds = JSON.parse(i.credentials || "{}");
+        const storedList: string[] | undefined = creds.cityList;
+        return {
+          id: i.id,
+          provider: i.provider,
+          isActive: i.isActive,
+          cities: Array.isArray(storedList) && storedList.length > 0
+            ? storedList
+            : getDefaultCitiesForProvider(i.provider),
+          source: Array.isArray(storedList) && storedList.length > 0 ? "stored" : "default",
+        };
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /**
+   * POST /api/carriers/refresh-cities
+   * Attempt to fetch the city list from the carrier's API and cache it in credentials.
+   * Falls back gracefully to the default list if the API call fails.
+   */
+  app.post("/api/carriers/refresh-cities", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { provider } = z.object({ provider: z.string().min(1) }).parse(req.body);
+
+      const integration = await storage.getIntegrationByProvider(storeId, provider);
+      if (!integration || integration.type !== "shipping") {
+        return res.status(404).json({ message: `Transporteur ${provider} non connecté` });
+      }
+
+      const creds = JSON.parse(integration.credentials || "{}");
+      const apiKey = creds.apiKey || "";
+
+      let fetchedCities: string[] | null = null;
+      let fetchError: string | null = null;
+
+      // ── Digylog / Eco-Track ──────────────────────────────────────────────
+      if (provider.toLowerCase().includes("digylog") || provider.toLowerCase().includes("ecotrack")) {
+        try {
+          const DIGYLOG_ENDPOINTS = [
+            "https://app.digylog.com/api/v1/cities",
+            "https://api.digylog.com/api/v1/cities",
+            "https://eco-track.ma/api/v2/cities",
+            "https://production.eco-track.ma/api/v1/gouvernorats",
+          ];
+          for (const url of DIGYLOG_ENDPOINTS) {
+            try {
+              const r = await fetch(url, {
+                headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+                signal: AbortSignal.timeout(5000),
+              });
+              if (r.ok) {
+                const data: any = await r.json();
+                const cities: string[] = Array.isArray(data)
+                  ? data.map((c: any) => c.name || c.ville || c.city || c).filter((c: any) => typeof c === "string")
+                  : Array.isArray(data?.data)
+                    ? data.data.map((c: any) => c.name || c.ville || c.city || c).filter((c: any) => typeof c === "string")
+                    : [];
+                if (cities.length > 5) { fetchedCities = cities.sort(); break; }
+              }
+            } catch { continue; }
+          }
+        } catch (e: any) {
+          fetchError = e.message;
+        }
+      }
+
+      // ── Cathedis ─────────────────────────────────────────────────────────
+      if (!fetchedCities && provider.toLowerCase().includes("cathedis")) {
+        try {
+          const r = await fetch("https://api.cathedis.com/api/v1/cities", {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (r.ok) {
+            const data: any = await r.json();
+            fetchedCities = (Array.isArray(data) ? data : data?.cities || [])
+              .map((c: any) => c.name || c.ville || c)
+              .filter((c: any) => typeof c === "string")
+              .sort();
+          }
+        } catch (e: any) { fetchError = e.message; }
+      }
+
+      const finalCities = fetchedCities && fetchedCities.length > 0
+        ? fetchedCities
+        : getDefaultCitiesForProvider(provider);
+
+      await storage.updateIntegration(integration.id, {
+        credentials: JSON.stringify({ ...creds, cityList: finalCities }),
+      });
+
+      res.json({
+        provider,
+        cities: finalCities,
+        count: finalCities.length,
+        source: fetchedCities ? "api" : "default",
+        warning: fetchedCities ? null : `Impossible de récupérer depuis l'API (${fetchError || "erreur inconnue"}). Liste par défaut utilisée.`,
+      });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      res.status(500).json({ message: err.message });
     }
   });
 

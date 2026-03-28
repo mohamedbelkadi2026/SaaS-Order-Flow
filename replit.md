@@ -10,6 +10,17 @@ TajerGrow is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on 
 - **Currency**: MAD (Moroccan Dirham), all prices stored in cents
 - **Language**: French UI throughout
 
+## City Mapping Feature (Carrier-Aware)
+Prevents "Ville invalide" errors at shipping dispatch time.
+- **`client/src/lib/carrier-cities.ts`** — City lists for Digylog, Cathedis, Amana + generic Morocco. `findBestCityMatch()` auto-matches raw city names (aliases, starts-with, contains). `isCityValid()` checks if a city is in the carrier list.
+- **`client/src/components/city-combobox.tsx`** — Searchable dropdown; orange border + warning when city not found in carrier's list; allows free-text fallback.
+- **`GET /api/carriers/cities`** — Returns city list for the primary active shipping integration. Reads `credentials.cityList` (stored), falls back to hardcoded carrier defaults.
+- **`GET /api/carriers/cities/all`** — Returns all shipping integrations with their city lists (used by new-order form carrier selector).
+- **`POST /api/carriers/refresh-cities`** — Tries to fetch cities from carrier API (Digylog/Cathedis endpoints), falls back to defaults, stores result in `credentials.cityList`.
+- **Webhook auto-match** — On order arrival from Shopify/YouCan/token webhooks, city is automatically matched against the primary shipping carrier's city list before save. Logs `[CityMatch]` lines.
+- **Order Details Modal** — City field replaced with `CityCombobox`; shows carrier name in label; orange warning when city unrecognized.
+- **New Order Form** — City field replaced with `CityCombobox`; carrier selector appears when >1 shipping integration is active; city list updates per selected carrier.
+
 ## Authentication & Security
 - Session-based auth using `express-session` + `connect-pg-simple`
 - Passport.js with local strategy (email/password)

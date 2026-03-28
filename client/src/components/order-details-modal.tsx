@@ -9,21 +9,12 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { CityCombobox } from "@/components/city-combobox";
+import { MOROCCAN_CITIES } from "@/lib/carrier-cities";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
 const GOLD_MUTED = "#e8d5a8";
-
-// ── Moroccan cities ──────────────────────────────────────────────
-const MOROCCAN_CITIES = [
-  "Casablanca","Rabat","Fès","Marrakech","Agadir","Tanger","Meknès","Oujda","Kénitra",
-  "Tétouan","Safi","El Jadida","Nador","Beni Mellal","Taza","Khémisset","Errachidia",
-  "Settat","Larache","Khouribga","Guelmim","Berrechid","Mohammedia","Salé","Temara",
-  "Inezgane","Tiznit","Laâyoune","Dakhla","Essaouira","Ouarzazate","Zagora",
-  "Al Hoceima","Ifrane","Khénifra","Azrou","Chefchaouen","Asilah","Taroudant",
-  "Taroudnat","Ait Melloul","Ouled Teima","Dcheira El Jihadia","Sidi Slimane",
-  "Sidi Kacem","Souk El Arbaa","Berkane","Taourirt","Jerada","Tifariti",
-].sort();
 
 // ── Status badge toggle ──────────────────────────────────────────
 function StatusBadge({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
@@ -137,6 +128,14 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [fields, setFields] = useState<any>({});
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
+
+  // ── Carrier city list ─────────────────────────────────────────────
+  const { data: carrierData } = useQuery<{ provider: string | null; cities: string[]; isCarrierSpecific: boolean }>({
+    queryKey: ["/api/carriers/cities"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const carrierCities = carrierData?.cities ?? MOROCCAN_CITIES;
+  const isCarrierSpecific = carrierData?.isCarrierSpecific ?? false;
 
   useEffect(() => {
     if (!order) return;
@@ -377,17 +376,21 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Ville</Label>
-                <Select value={fields.customerCity} onValueChange={v => set("customerCity", v)}>
-                  <SelectTrigger className="bg-white border-gray-200 text-sm h-9" data-testid="select-city">
-                    <SelectValue placeholder="Sélectionner une ville" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-64">
-                    {MOROCCAN_CITIES.map(city => (
-                      <SelectItem key={city} value={city}>{city}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label className="text-xs font-semibold text-gray-500">
+                  Ville
+                  {carrierData?.provider && (
+                    <span className="ml-1.5 text-[9px] font-normal text-gray-400 normal-case">
+                      ({carrierData.provider})
+                    </span>
+                  )}
+                </Label>
+                <CityCombobox
+                  value={fields.customerCity || ""}
+                  onChange={v => set("customerCity", v)}
+                  cities={carrierCities}
+                  isCarrierSpecific={isCarrierSpecific}
+                  data-testid="select-city"
+                />
               </div>
 
               <div className="space-y-1">
