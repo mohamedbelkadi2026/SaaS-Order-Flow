@@ -14,10 +14,13 @@ export function serveStatic(app: Express) {
     );
   }
 
+  // Serve static assets (JS, CSS, images, etc.)
   app.use(express.static(distPath));
 
-  // fall through to index.html if the file doesn't exist
-  app.use("/{*path}", (_req, res) => {
+  // Catch-all for React Router — GET only, never intercept /api/* paths.
+  // This MUST be last so all API routes registered before this take priority.
+  app.get("/{*path}", (req, res, next) => {
+    if (req.path.startsWith("/api/")) return next();
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }
