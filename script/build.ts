@@ -50,10 +50,22 @@ async function buildAll() {
     entryPoints: ["server/index.ts"],
     platform: "node",
     bundle: true,
-    format: "cjs",
-    outfile: "dist/index.cjs",
+    format: "esm",
+    outfile: "dist/index.js",
     define: {
       "process.env.NODE_ENV": '"production"',
+    },
+    // Inject shims so bundled CJS deps can still call require() and so that
+    // __dirname/__filename are available (used by static.ts and session store)
+    banner: {
+      js: [
+        `import { createRequire } from "module";`,
+        `import { fileURLToPath } from "url";`,
+        `import { dirname } from "path";`,
+        `const require = createRequire(import.meta.url);`,
+        `const __filename = fileURLToPath(import.meta.url);`,
+        `const __dirname = dirname(__filename);`,
+      ].join("\n"),
     },
     minify: true,
     external: externals,
