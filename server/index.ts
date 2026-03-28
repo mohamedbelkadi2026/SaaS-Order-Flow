@@ -32,9 +32,8 @@ const app = express();
 const httpServer = createServer(app);
 
 // ── Health probes — registered FIRST, before any middleware ───────────────────
-// Railway probes these routes immediately on deploy. They must never be blocked
-// by Helmet, rate-limiters, body-parsers, or auth.
-app.get("/",           (_req, res) => res.status(200).send("OK"));
+// Railway probes /health — registered before Helmet/rate-limiters/body-parsers.
+// Do NOT add a "/" handler here — that would shadow the React frontend in production.
 app.get("/health",     (_req, res) => res.status(200).send("OK"));
 app.get("/api/health", (_req, res) =>
   res.status(200).json({ status: "ok", uptime: process.uptime() })
