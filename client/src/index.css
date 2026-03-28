@@ -130,3 +130,7 @@
   from { transform: translateX(-50%); }
   to   { transform: translateX(0); }
 }
+
+/* ── Hide scrollbar (keep scroll functional) ────────────── */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
