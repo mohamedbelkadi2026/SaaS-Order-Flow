@@ -30,6 +30,25 @@ declare global {
   }
 }
 
+export async function ensureSessionTable(): Promise<void> {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS "session" (
+        "sid"    varchar   NOT NULL COLLATE "default",
+        "sess"   json      NOT NULL,
+        "expire" timestamp(6) NOT NULL,
+        CONSTRAINT "session_pkey" PRIMARY KEY ("sid")
+      )
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire")
+    `);
+    console.log("[Session] session table verified / created ✓");
+  } catch (err: any) {
+    console.error("[Session] ⚠️  Could not create session table:", err.message);
+  }
+}
+
 export function setupAuth(app: Express) {
   const PgSession = connectPgSimple(session);
 
@@ -53,7 +72,7 @@ export function setupAuth(app: Express) {
     saveUninitialized: false,
     store: new PgSession({
       pool: pool,
-      tableName: "sessions",
+      tableName: "session",
       createTableIfMissing: true,
     }),
     cookie: {
@@ -219,18 +238,26 @@ export function setupAuth(app: Express) {
   });
 
   app.post("/api/auth/login", (req, res, next) => {
+    const { email } = req.body || {};
+    console.log(`[LOGIN] Attempt for: ${email || "(no email)"}`);
+
     passport.authenticate("local", (err: any, user: User | false, info: any) => {
       if (err) {
-        console.error("[LOGIN_ERROR] Passport strategy error:", err);
-        return next(err);
+        console.error("[LOGIN_ERROR] Passport strategy error:", err.message, err.stack);
+        return res.status(500).json({ message: "Erreur serveur lors de l'authentification", detail: err.message });
       }
-      if (!user) return res.status(401).json({ message: info?.message || "Identifiants incorrects" });
+      if (!user) {
+        console.log(`[LOGIN] Rejected: ${info?.message}`);
+        return res.status(401).json({ message: info?.message || "Identifiants incorrects" });
+      }
 
+      console.log(`[LOGIN] Credentials valid for user ${user.id}, saving session...`);
       req.login(user, (loginErr) => {
         if (loginErr) {
-          console.error("[LOGIN_ERROR] Session save error:", loginErr);
-          return next(loginErr);
+          console.error("[LOGIN_ERROR] Session save error:", loginErr.message, loginErr.stack);
+          return res.status(500).json({ message: "Erreur lors de la sauvegarde de session", detail: loginErr.message });
         }
+        console.log(`[LOGIN] ✓ User ${user.id} (${email}) logged in successfully`);
         const { password: _, ...safeUser } = user;
         return res.json(safeUser);
       });

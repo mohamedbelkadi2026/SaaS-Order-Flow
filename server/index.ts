@@ -3,7 +3,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
 import { registerRoutes } from "./routes";
-import { setupAuth } from "./auth";
+import { setupAuth, ensureSessionTable } from "./auth";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWooCommerceSync } from "./jobs/woocommerce-sync";
@@ -144,6 +144,31 @@ app.use((req, res, next) => {
   // ── Register ALL routes BEFORE opening the port ───────────────────────────
   // This guarantees no request can arrive before routes are wired up.
   // (Health probes above are exempt — they're synchronous and always available.)
+
+  // 0. Ensure the sessions table exists in the DB BEFORE setting up auth.
+  //    connect-pg-simple's createTableIfMissing is unreliable on first boot;
+  //    we do it explicitly so req.login() never fails with "relation not found".
+  await ensureSessionTable();
+
+  // 0b. Debug/diagnostic endpoint — useful for Railway log inspection
+  app.get("/api/debug", async (_req, res) => {
+    try {
+      const dbResult = await import("./db").then(m => m.pool.query("SELECT NOW() AS now, current_database() AS db"));
+      res.json({
+        status: "ok",
+        time: dbResult.rows[0].now,
+        database: dbResult.rows[0].db,
+        node: process.version,
+        env: process.env.NODE_ENV,
+        sessionSecret: process.env.SESSION_SECRET ? "SET" : "MISSING (using random fallback)",
+        databaseUrl: process.env.DATABASE_URL
+          ? process.env.DATABASE_URL.replace(/:\/\/[^@]+@/, "://***@")
+          : "NOT SET",
+      });
+    } catch (err: any) {
+      res.status(500).json({ status: "error", message: err.message });
+    }
+  });
 
   // 1. Auth middleware + login/logout/signup/user routes
   setupAuth(app);

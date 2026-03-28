@@ -8,13 +8,19 @@ async function throwIfResNotOk(res: Response) {
     try {
       const json = JSON.parse(text);
       if (json.message) message = json.message;
+      if (json.detail) message = `${json.message} (${json.detail})`;
       if (res.status === 403 && json.suspended) {
         isSuspended = true;
         localStorage.setItem("suspended_message", json.message);
         fetch("/api/auth/logout", { method: "POST", credentials: "include" });
         window.location.replace("/");
       }
-    } catch {}
+    } catch {
+      // Response was not JSON (e.g. HTML from a proxy error page)
+      if (text.trim().startsWith("<")) {
+        message = `Erreur serveur (${res.status}) — vérifiez les logs Railway`;
+      }
+    }
     if (isSuspended) throw new Error("AccountSuspended");
     throw new Error(`${res.status}: ${message}`);
   }
