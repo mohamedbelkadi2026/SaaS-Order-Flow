@@ -524,13 +524,24 @@ export class DatabaseStorage implements IStorage {
 
   async deleteOrder(id: number, storeId: number): Promise<void> {
     // Verify the order belongs to this store for security
-    const [order] = await db.select({ id: orders.id }).from(orders)
+    const [order] = await db.select({ id: orders.id, status: orders.status }).from(orders)
       .where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
     if (!order) throw new Error('Order not found or access denied');
+    // Stock recovery: if confirmed, restore inventory before deleting
+    if (order.status === 'confirme') {
+      const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
+      for (const item of items) {
+        if (item.productId) {
+          await db.update(products).set({ stock: sql`stock + ${item.quantity}` }).where(eq(products.id, item.productId));
+        }
+      }
+    }
     // Delete dependent rows first to avoid FK constraint violations
     const { aiLogs, aiConversations } = await import("@shared/schema");
     await db.delete(aiLogs).where(eq(aiLogs.orderId, id));
     await db.update(aiConversations).set({ orderId: null }).where(eq(aiConversations.orderId as any, id));
+    await db.delete(orderFollowUpLogs).where(eq(orderFollowUpLogs.orderId, id));
+    await db.update(stockLogs).set({ orderId: null } as any).where(eq((stockLogs as any).orderId, id));
     await db.delete(orderItems).where(eq(orderItems.orderId, id));
     // Delete the order
     await db.delete(orders).where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
@@ -539,14 +550,27 @@ export class DatabaseStorage implements IStorage {
   async bulkDeleteOrders(ids: number[], storeId: number): Promise<number> {
     if (ids.length === 0) return 0;
     // Verify all orders belong to this store
-    const owned = await db.select({ id: orders.id }).from(orders)
+    const owned = await db.select({ id: orders.id, status: orders.status }).from(orders)
       .where(and(inArray(orders.id, ids), eq(orders.storeId, storeId)));
     const ownedIds = owned.map(o => o.id);
     if (ownedIds.length === 0) return 0;
+    // Stock recovery: restore inventory for any confirmed orders being deleted
+    const confirmedIds = owned.filter(o => o.status === 'confirme').map(o => o.id);
+    if (confirmedIds.length > 0) {
+      const itemsToRestore = await db.select().from(orderItems)
+        .where(inArray(orderItems.orderId, confirmedIds));
+      for (const item of itemsToRestore) {
+        if (item.productId) {
+          await db.update(products).set({ stock: sql`stock + ${item.quantity}` }).where(eq(products.id, item.productId));
+        }
+      }
+    }
     // Delete dependent rows first to avoid FK constraint violations
     const { aiLogs, aiConversations } = await import("@shared/schema");
     await db.delete(aiLogs).where(inArray(aiLogs.orderId, ownedIds));
     await db.update(aiConversations).set({ orderId: null }).where(inArray(aiConversations.orderId as any, ownedIds));
+    await db.delete(orderFollowUpLogs).where(inArray(orderFollowUpLogs.orderId, ownedIds));
+    await db.update(stockLogs).set({ orderId: null } as any).where(inArray((stockLogs as any).orderId, ownedIds));
     await db.delete(orderItems).where(inArray(orderItems.orderId, ownedIds));
     // Delete the orders
     const deleted = await db.delete(orders)

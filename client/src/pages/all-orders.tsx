@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAllOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useFilterOptions } from "@/hooks/use-store-data";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { formatCurrency } from "@/lib/utils";
@@ -139,6 +141,31 @@ export default function AllOrders() {
   const [assignAgentId, setAssignAgentId] = useState("");
   const [bulkShipProvider, setBulkShipProvider] = useState("");
 
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: number[]) => apiRequest("POST", "/api/orders/bulk-delete", { orderIds: ids }),
+    onSuccess: (data: any, ids) => {
+      const count = data?.deleted ?? ids.length;
+      setHiddenOrderIds((prev: Set<number>) => new Set(Array.from(prev).concat(ids)));
+      setSelectedIds(new Set<number>());
+      queryClient.invalidateQueries({ queryKey: ['/api/orders/all'] });
+      toast({ title: `${count} commande${count > 1 ? 's' : ''} supprimée${count > 1 ? 's' : ''} avec succès` });
+    },
+    onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
+  });
+
+  function handleBulkDelete() {
+    if (selectedIds.size === 0) { toast({ title: "Sélectionnez des commandes à supprimer" }); return; }
+    setShowDeleteModal(true);
+  }
+
+  function confirmDelete() {
+    bulkDeleteMutation.mutate(Array.from(selectedIds));
+    setShowDeleteModal(false);
+  }
+
   const [visibleCols, setVisibleCols] = useState<string[]>(getStoredColumns);
   const [showColMenu, setShowColMenu] = useState(false);
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
@@ -162,8 +189,9 @@ export default function AllOrders() {
   const totalPages = Math.ceil(totalOrders / filters.limit);
 
   const filteredOrders = useMemo(() => {
-    if (!Object.values(colFilters).some(v => v)) return ordersList;
-    return ordersList.filter((o: any) => {
+    let visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
+    if (!Object.values(colFilters).some(v => v)) return visible;
+    return visible.filter((o: any) => {
       if (colFilters.code && !o.orderNumber?.toLowerCase().includes(colFilters.code.toLowerCase())) return false;
       if (colFilters.destinataire && !o.customerName?.toLowerCase().includes(colFilters.destinataire.toLowerCase())) return false;
       if (colFilters.telephone) {
@@ -327,8 +355,16 @@ export default function AllOrders() {
           <Button variant="outline" size="icon" className="h-9 w-9 border-blue-200 text-blue-500 hover:bg-blue-50" title="Assigner" onClick={() => { if (selectedIds.size > 0) setShowAssignModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="all-button-bulk-assign">
             <Headphones className="w-4 h-4" />
           </Button>
-          <Button variant="outline" size="icon" className="h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 opacity-50 cursor-not-allowed" title="Supprimer (bientôt)" disabled data-testid="all-button-bulk-delete">
-            <Trash2 className="w-4 h-4" />
+          <Button
+            variant="outline"
+            size="icon"
+            className={`h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 active:scale-95 transition-all ${selectedIds.size === 0 ? 'opacity-40' : 'opacity-100 hover:border-red-400'}`}
+            title={selectedIds.size > 0 ? `Supprimer ${selectedIds.size} commande(s)` : "Sélectionnez des commandes"}
+            onClick={handleBulkDelete}
+            disabled={selectedIds.size === 0 || bulkDeleteMutation.isPending}
+            data-testid="all-button-bulk-delete"
+          >
+            {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
           </Button>
           <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="all-button-bulk-ship">
             <Truck className="w-4 h-4" />
@@ -770,6 +806,40 @@ export default function AllOrders() {
               Expédier
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showDeleteModal} onOpenChange={(open) => { if (!open) setShowDeleteModal(false); }}>
+        <DialogContent className="sm:max-w-sm rounded-2xl border-none shadow-2xl p-0 overflow-hidden" data-testid="all-dialog-delete-confirm">
+          <div className="bg-red-50 dark:bg-red-950/30 px-6 pt-6 pb-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/40 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-red-600" />
+              </div>
+              <DialogTitle className="text-base font-bold text-red-700 dark:text-red-400">
+                Confirmer la suppression
+              </DialogTitle>
+            </div>
+            <DialogDescription className="text-sm text-red-600/80 dark:text-red-400/80">
+              Êtes-vous sûr de vouloir supprimer <strong>{selectedIds.size} commande{selectedIds.size > 1 ? 's' : ''}</strong> ? Cette action est irréversible et définitive.
+            </DialogDescription>
+          </div>
+          <div className="px-6 py-4 flex justify-end gap-2 bg-background">
+            <Button variant="outline" onClick={() => setShowDeleteModal(false)} className="rounded-lg" data-testid="all-btn-delete-cancel">
+              Annuler
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={confirmDelete}
+              disabled={bulkDeleteMutation.isPending}
+              className="rounded-lg gap-2"
+              data-testid="all-btn-delete-confirm"
+            >
+              {bulkDeleteMutation.isPending
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Suppression...</>
+                : <><Trash2 className="w-4 h-4" /> Supprimer définitivement</>}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 

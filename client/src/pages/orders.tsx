@@ -270,11 +270,12 @@ export default function Orders() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: (ids: number[]) => apiRequest("POST", "/api/orders/bulk-delete", { orderIds: ids }),
-    onSuccess: (_, ids) => {
+    onSuccess: (data: any, ids) => {
+      const count = data?.deleted ?? ids.length;
       setHiddenOrderIds((prev: Set<number>) => new Set(Array.from(prev).concat(ids)));
       setSelectedIds(new Set<number>());
       qc.invalidateQueries({ queryKey: ['/api/orders'] });
-      toast({ title: `${ids.length} commande(s) supprimée(s)`, description: "Les commandes ont été supprimées définitivement." });
+      toast({ title: `${count} commande${count > 1 ? 's' : ''} supprimée${count > 1 ? 's' : ''} avec succès` });
     },
     onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
   });
@@ -516,7 +517,7 @@ export default function Orders() {
                 className={`h-9 w-9 border-red-200 text-red-500 hover:bg-red-50 active:scale-95 transition-all ${selectedIds.size === 0 ? 'opacity-40' : 'opacity-100 hover:border-red-400'}`}
                 title={selectedIds.size > 0 ? `Supprimer ${selectedIds.size} commande(s)` : "Sélectionnez des commandes"}
                 onClick={handleBulkDelete}
-                disabled={bulkDeleteMutation.isPending}
+                disabled={selectedIds.size === 0 || bulkDeleteMutation.isPending}
                 data-testid="button-bulk-delete"
               >
                 {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
