@@ -23,10 +23,10 @@ function StatusBadge({ label, active, onClick }: { label: string; active: boolea
       type="button"
       onClick={onClick}
       className={cn(
-        "px-3 py-1.5 rounded-full text-xs font-bold tracking-wide transition-all border select-none",
+        "flex-1 min-w-0 py-2 px-3 rounded-xl text-xs font-bold tracking-wide transition-all border select-none text-center",
         active
-          ? "border-yellow-500 text-yellow-900"
-          : "border-gray-300 bg-white text-gray-400 hover:border-gray-400"
+          ? "border-yellow-500"
+          : "border-gray-200 bg-white text-gray-400 hover:border-gray-300"
       )}
       style={active ? { backgroundColor: GOLD_MUTED, borderColor: GOLD, color: "#7a5c1e" } : {}}
     >
@@ -43,28 +43,29 @@ interface ItemRowProps {
 }
 function ItemRow({ item, onChange, onDelete }: ItemRowProps) {
   return (
-    <div className="flex items-center gap-2 py-2.5 px-3 rounded-lg border border-gray-100 bg-white">
+    <div className="flex items-start gap-2 py-3 px-4 border-b border-gray-50 last:border-0">
       <div className="flex-1 min-w-0">
         <Input
           value={item.rawProductName || item.product?.name || ""}
           onChange={e => onChange(item.id, "rawProductName", e.target.value)}
-          className="text-sm font-medium border-0 p-0 h-auto bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
+          className="text-sm font-semibold border-0 p-0 h-auto bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 w-full"
+          style={{ color: NAVY, fontSize: 14 }}
           placeholder="Nom du produit"
         />
-        <div className="flex items-center gap-3 mt-1">
+        <div className="flex items-center gap-3 mt-1 flex-wrap">
           {item.sku && (
-            <span className="text-[10px] text-gray-400 font-mono">{item.sku}</span>
+            <span className="text-[10px] text-gray-400 font-mono shrink-0">{item.sku}</span>
           )}
           <Input
             value={item.variantInfo || ""}
             onChange={e => onChange(item.id, "variantInfo", e.target.value)}
-            className="text-xs border-0 p-0 h-auto bg-transparent text-gray-500 focus-visible:ring-0 focus-visible:ring-offset-0 flex-1"
+            className="text-xs border-0 p-0 h-auto bg-transparent text-gray-500 focus-visible:ring-0 focus-visible:ring-offset-0 min-w-0 flex-1"
             placeholder="Taille / Couleur..."
           />
         </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
-        <div className="flex items-center">
+        <div className="flex items-center gap-0.5">
           <Input
             type="number"
             value={(item.price / 100).toFixed(0)}
@@ -72,24 +73,23 @@ function ItemRow({ item, onChange, onDelete }: ItemRowProps) {
             className="w-16 text-sm text-right font-bold h-8"
             style={{ color: NAVY }}
           />
-          <span className="text-[10px] font-bold ml-1" style={{ color: NAVY }}>DH</span>
+          <span className="text-[10px] font-bold" style={{ color: NAVY }}>DH</span>
         </div>
-        <span className="text-gray-300">·</span>
-        <div className="flex items-center">
+        <span className="text-gray-300">×</span>
+        <div className="flex items-center gap-0.5">
           <Input
             type="number"
             min={1}
             value={item.quantity}
             onChange={e => onChange(item.id, "quantity", parseInt(e.target.value) || 1)}
-            className="w-12 text-sm text-right font-bold h-8"
+            className="w-10 text-sm text-center font-bold h-8"
             style={{ color: NAVY }}
           />
-          <span className="text-[10px] font-bold ml-1" style={{ color: NAVY }}>Qté</span>
         </div>
         <button
           type="button"
           onClick={() => onDelete(item.id)}
-          className="text-red-300 hover:text-red-500 transition-colors ml-1"
+          className="text-red-300 hover:text-red-500 transition-colors ml-1 p-1"
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
@@ -112,6 +112,16 @@ const ORDER_STATUSES = [
   { value: "Boite Vocale", label: "Boite Vocale" },
   { value: "Injoignable", label: "Injoignable" },
 ];
+
+// ── Field wrapper ─────────────────────────────────────────────────
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{label}</Label>
+      {children}
+    </div>
+  );
+}
 
 // ── Main Modal ───────────────────────────────────────────────────
 interface OrderDetailsModalProps {
@@ -288,125 +298,146 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
 
   if (!order) return null;
 
+  /* ── Shared input style (16px on mobile prevents iOS zoom) ────── */
+  const inputCls = "w-full bg-white border-gray-200 h-11 text-[16px] sm:text-sm sm:h-9 font-semibold rounded-lg";
+
   return (
     <>
     <Dialog open={!!order} onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className="sm:max-w-2xl p-0 rounded-2xl overflow-hidden shadow-2xl max-h-[95vh] flex flex-col border-0">
+      {/*
+        Mobile: full-screen sheet (no rounded corners, no side margins)
+        Desktop: centered card with max-width and rounded corners
+      */}
+      <DialogContent className={cn(
+        "p-0 border-0 shadow-2xl flex flex-col",
+        "w-full max-w-full rounded-none h-[100dvh]",
+        "sm:rounded-2xl sm:max-w-2xl sm:h-auto sm:max-h-[95vh]",
+        "overflow-hidden"
+      )}>
         <DialogTitle className="sr-only">Commande #{order?.orderNumber}</DialogTitle>
         <DialogDescription className="sr-only">Détails et modification de la commande #{order?.orderNumber}</DialogDescription>
 
         {/* ── HEADER ── */}
-        <div className="flex items-center justify-between px-6 py-4" style={{ background: NAVY }}>
-          <div>
-            <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 shrink-0" style={{ background: NAVY }}>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-white text-sm font-medium opacity-70">Commande</span>
               <span className="font-bold text-lg" style={{ color: GOLD }}>#{order.orderNumber}</span>
               {order.trackNumber && (
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full text-white/60 border border-white/20">
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full text-white/60 border border-white/20 truncate max-w-[140px]">
                   {order.trackNumber}
                 </span>
               )}
             </div>
-            <p className="text-white/50 text-xs mt-0.5">{storeName}</p>
+            <p className="text-white/50 text-xs mt-0.5 truncate">{storeName}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors"
+            className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-white/10 transition-colors shrink-0 ml-2"
             data-testid="button-close-modal"
           >
             <X className="w-4 h-4 text-white/70" />
           </button>
         </div>
 
-        {/* ── STATUS PILL TOGGLES ── */}
-        <div className="flex items-center gap-2 px-6 py-3 flex-wrap border-b" style={{ backgroundColor: "#f8f7ff" }}>
-          <StatusBadge label="Replace" active={fields.replace} onClick={() => set("replace", !fields.replace)} />
-          <StatusBadge label="Can Open" active={fields.canOpen} onClick={() => set("canOpen", !fields.canOpen)} />
-          <StatusBadge label="Up Sell" active={fields.upSell} onClick={() => set("upSell", !fields.upSell)} />
-          <StatusBadge label="Is Stock" active={fields.isStock} onClick={() => set("isStock", !fields.isStock)} />
+        {/* ── STATUS PILL TOGGLES (2×2 grid on mobile) ── */}
+        <div className="px-4 sm:px-6 py-3 border-b shrink-0" style={{ backgroundColor: "#f8f7ff" }}>
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+            <StatusBadge label="Replace" active={fields.replace} onClick={() => set("replace", !fields.replace)} />
+            <StatusBadge label="Can Open" active={fields.canOpen} onClick={() => set("canOpen", !fields.canOpen)} />
+            <StatusBadge label="Up Sell" active={fields.upSell} onClick={() => set("upSell", !fields.upSell)} />
+            <StatusBadge label="Is Stock" active={fields.isStock} onClick={() => set("isStock", !fields.isStock)} />
+          </div>
           {fields.replacementTrackNumber && (
-            <span className="text-xs font-mono px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-500 ml-auto">
-              🔄 {fields.replacementTrackNumber}
-            </span>
+            <div className="mt-2">
+              <span className="text-xs font-mono px-2 py-1 rounded-full bg-white border border-gray-200 text-gray-500">
+                🔄 {fields.replacementTrackNumber}
+              </span>
+            </div>
           )}
         </div>
 
-        {/* ── BODY ── */}
+        {/* ── SCROLLABLE BODY ── */}
         <div className="overflow-y-auto flex-1 bg-gray-50">
 
-          {/* ── SPLIT CARD ROW ── */}
-          <div className="grid grid-cols-2 gap-4 p-4">
+          {/* ── TWO CARDS: stacked on mobile, side-by-side on desktop ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4">
 
-            {/* LEFT: Customer Card */}
-            <div className="rounded-xl p-4 space-y-3" style={{ backgroundColor: "#f1f0f9" }}>
-              <p className="text-[10px] uppercase tracking-widest font-bold" style={{ color: NAVY, opacity: 0.5 }}>Client</p>
+            {/* ╔══════ CLIENT CARD ══════╗ */}
+            <div className="rounded-xl border border-indigo-100 p-4 space-y-4" style={{ backgroundColor: "#f1f0f9" }}>
+              <p className="text-[10px] uppercase tracking-widest font-bold" style={{ color: NAVY, opacity: 0.45 }}>
+                Client
+              </p>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Nom</Label>
+              <Field label="Nom complet">
                 <Input
                   value={fields.customerName}
                   onChange={e => set("customerName", e.target.value)}
-                  className="bg-white border-gray-200 text-sm h-9 font-semibold"
+                  className={inputCls}
                   style={{ color: NAVY }}
                   data-testid="input-customer-name"
                 />
-              </div>
+              </Field>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Téléphone</Label>
-                <div className="flex items-center gap-1.5">
+              <Field label="Téléphone">
+                {/* Phone field: input takes all space, icon buttons to the right */}
+                <div className="flex gap-2">
                   <Input
                     value={fields.customerPhone}
                     onChange={e => set("customerPhone", e.target.value)}
-                    className="bg-white border-gray-200 text-sm h-9 flex-1"
+                    className={cn(inputCls, "flex-1 min-w-0")}
+                    inputMode="tel"
                     data-testid="input-customer-phone"
                   />
                   {callLink && (
-                    <a href={callLink} className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors">
-                      <Phone className="w-3.5 h-3.5" />
+                    <a
+                      href={callLink}
+                      className="shrink-0 w-11 h-11 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center border border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"
+                    >
+                      <Phone className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                     </a>
                   )}
                   {whatsappLink && (
-                    <a href={whatsappLink} target="_blank" rel="noopener noreferrer" className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center border border-green-200 bg-green-50 text-green-600 hover:bg-green-100 transition-colors">
-                      <MessageCircle className="w-3.5 h-3.5" />
+                    <a
+                      href={whatsappLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 w-11 h-11 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center border border-green-200 bg-green-50 text-green-600 hover:bg-green-100 transition-colors"
+                    >
+                      <MessageCircle className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                     </a>
                   )}
                 </div>
-              </div>
+              </Field>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">
-                  Ville
-                  {carrierData?.provider && (
-                    <span className="ml-1.5 text-[9px] font-normal text-gray-400 normal-case">
-                      ({carrierData.provider})
-                    </span>
-                  )}
-                </Label>
+              <Field label={carrierData?.provider ? `Ville (${carrierData.provider})` : "Ville"}>
                 <CityCombobox
                   value={fields.customerCity || ""}
                   onChange={v => set("customerCity", v)}
                   cities={carrierCities}
                   isCarrierSpecific={isCarrierSpecific}
                   data-testid="select-city"
+                  className="w-full"
                 />
-              </div>
+              </Field>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Adresse</Label>
+              <Field label="Adresse">
                 <Input
                   value={fields.customerAddress}
                   onChange={e => set("customerAddress", e.target.value)}
-                  className="bg-white border-gray-200 text-sm h-9"
+                  className={inputCls}
                   data-testid="input-customer-address"
                 />
-              </div>
+              </Field>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Statut</Label>
+              <Field label="Statut de la commande">
                 <Select value={fields.status} onValueChange={v => set("status", v)}>
-                  <SelectTrigger className="bg-white border-gray-200 text-sm h-9" data-testid="select-status">
+                  <SelectTrigger
+                    className="w-full h-11 sm:h-9 text-[16px] sm:text-sm bg-white border-gray-200 rounded-lg font-semibold"
+                    style={{ color: NAVY }}
+                    data-testid="select-status"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -415,193 +446,212 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
+              </Field>
             </div>
 
-            {/* RIGHT: Product Card */}
-            <div className="rounded-xl p-4 space-y-3 bg-white border border-gray-100">
-              <p className="text-[10px] uppercase tracking-widest font-bold" style={{ color: NAVY, opacity: 0.5 }}>Produit</p>
+            {/* ╔══════ PRODUIT CARD ══════╗ */}
+            <div className="rounded-xl border border-gray-100 p-4 space-y-4 bg-white">
+              <p className="text-[10px] uppercase tracking-widest font-bold" style={{ color: NAVY, opacity: 0.45 }}>
+                Produit
+              </p>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Nom du produit</Label>
+              <Field label="Nom du produit">
                 <Input
                   value={fields.rawProductName}
                   onChange={e => set("rawProductName", e.target.value)}
-                  className="bg-gray-50 border-gray-200 text-sm h-9 font-semibold"
+                  className={cn(inputCls, "bg-gray-50")}
                   style={{ color: NAVY }}
                   placeholder="Auto-rempli depuis la boutique"
                   dir="rtl"
                   data-testid="input-product-name"
                 />
-              </div>
+              </Field>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Prix total</Label>
-                <div className="flex items-center gap-1.5">
+              <Field label="Prix total">
+                <div className="flex gap-2 items-center">
                   <Input
                     type="number"
                     step="0.01"
                     value={fields.totalPrice}
                     onChange={e => set("totalPrice", e.target.value)}
-                    className="bg-gray-50 border-gray-200 text-sm h-9 font-bold flex-1"
+                    className={cn(inputCls, "flex-1 bg-gray-50 text-right font-bold")}
                     style={{ color: NAVY }}
                     data-testid="input-total-price"
                   />
-                  <span className="text-xs font-bold px-2 py-1.5 rounded-lg text-white" style={{ backgroundColor: NAVY }}>DH</span>
+                  <span
+                    className="shrink-0 text-xs font-bold px-3 py-2 rounded-lg text-white"
+                    style={{ backgroundColor: NAVY }}
+                  >DH</span>
                 </div>
-              </div>
+              </Field>
 
-              {/* Variant — prominent footwear-first field */}
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Taille / Variant</Label>
+              <Field label="Taille / Variant">
                 <div className="relative">
                   <Input
                     value={fields.variantInfo}
                     onChange={e => {
                       set("variantInfo", e.target.value);
-                      setLocalItems(items => items.map((item, i) => i === 0 ? { ...item, variantInfo: e.target.value } : item));
+                      setLocalItems(items =>
+                        items.map((item, i) => i === 0 ? { ...item, variantInfo: e.target.value } : item)
+                      );
                     }}
-                    className="bg-gray-50 border-gray-200 text-sm h-9 font-bold pr-12"
-                    style={{ color: GOLD !== "" ? "#7a5c1e" : undefined }}
-                    placeholder="Sélectionner variant (ex: 40, Marron)"
+                    className={cn(inputCls, "bg-gray-50 pr-16 font-bold")}
+                    style={{ color: "#7a5c1e" }}
+                    placeholder="Ex: 40, Marron, XL..."
                     data-testid="input-variant-info"
                   />
                   {fields.variantInfo && (
                     <span
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold px-1.5 py-0.5 rounded-full pointer-events-none"
                       style={{ backgroundColor: GOLD_MUTED, color: "#7a5c1e" }}
                     >
                       {fields.variantInfo}
                     </span>
                   )}
                 </div>
-              </div>
+              </Field>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Réf. commande</Label>
+              <Field label="Réf. commande">
                 <Input
                   value={order.orderNumber || ""}
                   readOnly
-                  className="bg-gray-100 border-gray-200 text-sm h-9 text-gray-400 font-mono"
+                  className={cn(inputCls, "bg-gray-100 text-gray-400 font-mono cursor-default")}
                 />
-              </div>
+              </Field>
 
-              <div className="space-y-1">
-                <Label className="text-xs font-semibold text-gray-500">Replacement Track</Label>
+              <Field label="Replacement Track">
                 <Input
                   value={fields.replacementTrackNumber}
                   onChange={e => set("replacementTrackNumber", e.target.value)}
-                  className="bg-gray-50 border-gray-200 text-sm h-9"
+                  className={cn(inputCls, "bg-gray-50")}
                   placeholder="N° de suivi remplacement"
                   data-testid="input-replacement-track"
                 />
-              </div>
+              </Field>
             </div>
           </div>
 
           {/* ── ORDER ITEMS ── */}
-          <div className="mx-4 mb-4 rounded-xl border border-gray-100 bg-white overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100">
+          <div className="mx-4 mb-3 rounded-xl border border-gray-100 bg-white overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-50">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold uppercase tracking-wide" style={{ color: NAVY }}>Articles</span>
-                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ backgroundColor: "#e8e7f8", color: NAVY }}>
+                <span
+                  className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                  style={{ backgroundColor: "#e8e7f8", color: NAVY }}
+                >
                   {localItems.length}
                 </span>
               </div>
               <button
                 type="button"
                 onClick={handleAddItem}
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-white hover:opacity-90 transition-opacity"
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-white hover:opacity-90 transition-opacity"
                 style={{ backgroundColor: NAVY }}
+                data-testid="button-add-item"
               >
-                <Plus className="w-3.5 h-3.5" />
+                <Plus className="w-4 h-4" />
               </button>
             </div>
-            <div className="divide-y divide-gray-50">
+            <div>
               {localItems.map(item => (
                 <ItemRow key={item.id} item={item} onChange={handleItemChange} onDelete={handleItemDelete} />
               ))}
               {localItems.length === 0 && (
-                <p className="text-xs text-gray-400 text-center py-6">
+                <p className="text-xs text-gray-400 text-center py-8">
                   Aucun article — cliquez sur + pour en ajouter
                 </p>
               )}
             </div>
           </div>
 
-          {/* ── COMMENTS ── */}
-          <div className="grid grid-cols-2 gap-4 mx-4 mb-4">
+          {/* ── COMMENTS — stacked on mobile, side-by-side on desktop ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mx-4 mb-4">
             <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-gray-500">Commentaire client</Label>
+              <Label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Commentaire client</Label>
               <textarea
                 value={fields.commentStatus}
                 onChange={e => set("commentStatus", e.target.value)}
                 rows={3}
-                className="w-full p-3 rounded-lg border border-gray-200 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-offset-0"
-                style={{ "--tw-ring-color": GOLD } as any}
+                className="w-full p-3 rounded-xl border border-gray-200 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-yellow-300 focus:ring-offset-0"
                 placeholder="Remarques du client..."
                 data-testid="textarea-comment-status"
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-gray-500">Note interne</Label>
+              <Label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Note interne</Label>
               <textarea
                 value={fields.commentOrder}
                 onChange={e => set("commentOrder", e.target.value)}
                 rows={3}
-                className="w-full p-3 rounded-lg border border-gray-200 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-offset-0"
+                className="w-full p-3 rounded-xl border border-gray-200 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-yellow-300 focus:ring-offset-0"
                 placeholder="Note pour l'équipe..."
                 data-testid="textarea-comment-order"
               />
             </div>
           </div>
 
+          {/* bottom padding so content isn't hidden behind sticky footer on mobile */}
+          <div className="h-4 sm:h-0" />
         </div>
 
-        {/* ── FOOTER ── */}
-        <div className="flex items-center justify-between px-6 py-4 border-t bg-white">
-          {/* Left: Open Retour */}
-          <div>
-            {orDone ? (
-              <div className="flex items-center gap-1.5 text-sm text-green-700 font-medium">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                Retour <code className="bg-green-50 px-1.5 py-0.5 rounded text-xs font-mono">{orDone.tracking}</code>
-              </div>
-            ) : orSettings?.connected ? (
+        {/* ── STICKY FOOTER ──
+            Mobile: full-width stacked buttons stuck to bottom of viewport
+            Desktop: inline justify-between row
+        ── */}
+        <div className="shrink-0 border-t bg-white px-4 sm:px-6 py-3 sm:py-4">
+          {/* Open Retour row (above buttons on mobile) */}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="order-2 sm:order-1">
+              {orDone ? (
+                <div className="flex items-center gap-1.5 text-sm text-green-700 font-medium">
+                  <CheckCircle className="w-4 h-4 text-green-500" />
+                  Retour <code className="bg-green-50 px-1.5 py-0.5 rounded text-xs font-mono">{orDone.tracking}</code>
+                </div>
+              ) : orSettings?.connected ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { setOrReason(order?.comment || order?.commentStatus || ""); setOrOpen(true); }}
+                  className="border-amber-200 text-amber-700 hover:bg-amber-50 font-semibold text-xs"
+                  data-testid="button-create-return"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 mr-1" /> Créer un Retour
+                </Button>
+              ) : (
+                <span className="text-xs text-gray-400 hidden sm:inline">Open Retour non connecté</span>
+              )}
+            </div>
+
+            {/* Action buttons — full-width on mobile, inline on desktop */}
+            <div className="order-1 sm:order-2 flex gap-2 w-full sm:w-auto">
               <Button
-                variant="outline" size="sm"
-                onClick={() => { setOrReason(order?.comment || order?.commentStatus || ""); setOrOpen(true); }}
-                className="border-amber-200 text-amber-700 hover:bg-amber-50 font-semibold text-xs"
-                data-testid="button-create-return"
+                variant="outline"
+                onClick={onClose}
+                className="flex-1 sm:flex-none sm:px-5 h-11 sm:h-9 text-sm font-semibold rounded-xl"
               >
-                <RotateCcw className="w-3.5 h-3.5 mr-1" /> Créer un Retour
+                Annuler
               </Button>
-            ) : (
-              <span className="text-xs text-gray-400 hidden sm:block">Open Retour non connecté</span>
-            )}
-          </div>
-
-          {/* Right: Cancel + Save */}
-          <div className="flex items-center gap-3">
-            <Button variant="outline" onClick={onClose} className="px-5 text-sm">Annuler</Button>
-            <Button
-              onClick={() => saveOrder.mutate()}
-              disabled={saveOrder.isPending}
-              className="px-7 py-2.5 text-sm font-bold rounded-xl shadow-lg hover:shadow-xl transition-all"
-              style={{ backgroundColor: GOLD, color: "#1e1b4b", border: "none" }}
-              data-testid="button-save-order"
-            >
-              {saveOrder.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-              Enregistrer
-            </Button>
+              <Button
+                onClick={() => saveOrder.mutate()}
+                disabled={saveOrder.isPending}
+                className="flex-1 sm:flex-none sm:px-7 h-11 sm:h-9 text-sm font-bold rounded-xl shadow-md hover:shadow-lg transition-all"
+                style={{ backgroundColor: GOLD, color: NAVY, border: "none" }}
+                data-testid="button-save-order"
+              >
+                {saveOrder.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                Enregistrer
+              </Button>
+            </div>
           </div>
         </div>
+
       </DialogContent>
     </Dialog>
 
     {/* ── Open Retour dialog ──────────────────────────────────── */}
     <Dialog open={orOpen} onOpenChange={setOrOpen}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm mx-4 sm:mx-auto rounded-2xl">
         <DialogTitle className="flex items-center gap-2 text-base font-bold" style={{ color: NAVY }}>
           <RotateCcw className="w-5 h-5" style={{ color: GOLD }} />
           Créer un ticket de retour
@@ -616,15 +666,16 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
             placeholder="Ex: produit endommagé, erreur de taille..."
             value={orReason}
             onChange={e => setOrReason(e.target.value)}
+            className="h-11 text-base sm:h-9 sm:text-sm"
           />
         </div>
-        <div className="flex justify-end gap-2 pt-2">
-          <Button variant="outline" onClick={() => setOrOpen(false)}>Annuler</Button>
+        <div className="flex gap-2 pt-2">
+          <Button variant="outline" onClick={() => setOrOpen(false)} className="flex-1 sm:flex-none">Annuler</Button>
           <Button
             onClick={() => createReturn.mutate()}
             disabled={createReturn.isPending || !orReason.trim()}
             style={{ backgroundColor: GOLD, color: NAVY, border: "none" }}
-            className="font-bold"
+            className="font-bold flex-1 sm:flex-none"
           >
             {createReturn.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
             Confirmer le retour
