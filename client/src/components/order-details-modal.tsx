@@ -162,6 +162,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       customerAddress: order.customerAddress || "",
       customerCity: order.customerCity || "",
       status: order.status || "nouveau",
+      comment: order.comment || "",
       commentStatus: order.commentStatus || "",
       rawProductName: order.rawProductName || (order.items?.[0]?.rawProductName) || (order.items?.[0]?.product?.name) || "",
       totalPrice: order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00",
@@ -177,7 +178,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   // ── Save mutation ──
   const saveOrder = useMutation({
     mutationFn: async () => {
-      if (!order) return;
+      if (!order) return null;
       const payload: any = {
         replace: fields.replace ? 1 : 0,
         canOpen: fields.canOpen ? 1 : 0,
@@ -189,12 +190,14 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         customerAddress: fields.customerAddress,
         customerCity: fields.customerCity,
         status: fields.status,
+        comment: fields.comment !== undefined ? (fields.comment || null) : undefined,
         commentStatus: fields.commentStatus || null,
         rawProductName: fields.rawProductName || null,
         totalPrice: Math.round(parseFloat(fields.totalPrice || "0") * 100),
         commentOrder: fields.commentOrder || null,
       };
-      await apiRequest("PATCH", `/api/orders/${order.id}`, payload);
+      const res = await apiRequest("PATCH", `/api/orders/${order.id}`, payload);
+      const updatedOrder = await res.json();
 
       // Sync items
       for (const item of localItems) {
@@ -217,17 +220,18 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
           });
         }
       }
+      return updatedOrder;
     },
-    onSuccess: () => {
-      const statusChanged = fields.status !== order?.status;
-      const msg = statusChanged ? `Statut mis à jour : ${fields.status}` : "La commande a été mise à jour.";
-      toast({ title: "Modifications enregistrées", description: msg });
+    onSuccess: (updatedOrder: any) => {
+      toast({ title: "Commande mise à jour avec succès" });
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
       queryClient.invalidateQueries({ queryKey: ["/api/all-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      onUpdated?.({ ...order, ...fields, status: fields.status });
+      const saved = updatedOrder ?? { ...order, ...fields };
+      onUpdated?.(saved);
+      const statusChanged = (updatedOrder?.status ?? fields.status) !== order?.status;
       if (statusChanged) onClose();
     },
     onError: (err: any) => {
@@ -568,14 +572,14 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
           {/* ── COMMENTS — stacked on mobile, side-by-side on desktop ── */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mx-4 mb-4">
             <div className="space-y-1.5">
-              <Label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Commentaire client</Label>
+              <Label className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Commentaire</Label>
               <textarea
-                value={fields.commentStatus}
-                onChange={e => set("commentStatus", e.target.value)}
+                value={fields.comment}
+                onChange={e => set("comment", e.target.value)}
                 rows={3}
                 className="w-full p-3 rounded-xl border border-gray-200 bg-white text-sm resize-none focus:outline-none focus:ring-2 focus:ring-yellow-300 focus:ring-offset-0"
-                placeholder="Remarques du client..."
-                data-testid="textarea-comment-status"
+                placeholder="Commentaire (visible dans la liste)..."
+                data-testid="textarea-comment"
               />
             </div>
             <div className="space-y-1.5">

@@ -783,7 +783,7 @@ export default function Orders() {
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
-                      {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || "-"}</TableCell>}
+                      {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
                       {isColVisible('livraison') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
                           {order.shippingProvider ? (

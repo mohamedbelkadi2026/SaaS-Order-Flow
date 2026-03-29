@@ -2011,7 +2011,7 @@ export async function registerRoutes(
         totalPrice: z.number().optional(),
       });
       const data = schema.parse(req.body);
-      console.log(`[PATCH /api/orders/${orderId}] status=${data.status ?? '(unchanged)'} storeId=${req.user!.storeId}`);
+      console.log(`[PATCH /api/orders/${orderId}] storeId=${req.user!.storeId} fields=${JSON.stringify({ status: data.status, comment: data.comment, commentStatus: data.commentStatus, commentOrder: data.commentOrder, customerName: data.customerName, customerCity: data.customerCity })}`);
 
       // Route status changes through updateOrderStatus for proper stock handling
       if (data.status && data.status !== order.status) {
@@ -2052,6 +2052,7 @@ export async function registerRoutes(
       let updated: any;
       if (Object.keys(fieldsWithoutStatus).length > 0) {
         updated = await storage.updateOrder(orderId, fieldsWithoutStatus);
+        console.log(`[PATCH /api/orders/${orderId}] saved comment=${updated?.comment ?? 'null'} commentStatus=${updated?.commentStatus ?? 'null'} commentOrder=${updated?.commentOrder ?? 'null'}`);
       } else {
         updated = await storage.getOrder(orderId);
       }
