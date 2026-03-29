@@ -16,6 +16,16 @@ const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
 const GOLD_MUTED = "#e8d5a8";
 
+/** Remove lone hyphens used as placeholder last names (e.g. "Ahmed -") */
+function cleanCustomerName(name: string): string {
+  return (name || "")
+    .split(" ")
+    .map(p => p.trim())
+    .filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—")
+    .join(" ")
+    .trim();
+}
+
 // ── Status badge toggle ──────────────────────────────────────────
 function StatusBadge({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
@@ -42,57 +52,68 @@ interface ItemRowProps {
   onDelete: (id: string | number) => void;
 }
 function ItemRow({ item, onChange, onDelete }: ItemRowProps) {
+  const priceVal = (item.price ?? 0) / 100;
+  const qty = item.quantity || 1;
+  const total = priceVal * qty;
+
   return (
-    <div className="flex items-start gap-2 py-3 px-4 border-b border-gray-50 last:border-0">
-      <div className="flex-1 min-w-0">
-        <Input
-          value={item.rawProductName || item.product?.name || ""}
-          onChange={e => onChange(item.id, "rawProductName", e.target.value)}
-          className="text-sm font-semibold border-0 p-0 h-auto bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 w-full"
-          style={{ color: NAVY, fontSize: 14 }}
-          placeholder="Nom du produit"
-        />
-        <div className="flex items-center gap-3 mt-1 flex-wrap">
-          {item.sku && (
-            <span className="text-[10px] text-gray-400 font-mono shrink-0">{item.sku}</span>
-          )}
+    <div className="py-3 px-4 border-b border-gray-50 last:border-0">
+      {/* Product name + variant */}
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
           <Input
-            value={item.variantInfo || ""}
-            onChange={e => onChange(item.id, "variantInfo", e.target.value)}
-            className="text-xs border-0 p-0 h-auto bg-transparent text-gray-500 focus-visible:ring-0 focus-visible:ring-offset-0 min-w-0 flex-1"
-            placeholder="Taille / Couleur..."
+            value={item.rawProductName || item.product?.name || ""}
+            onChange={e => onChange(item.id, "rawProductName", e.target.value)}
+            className="text-sm font-semibold border-0 p-0 h-auto bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 w-full"
+            style={{ color: NAVY, fontSize: 14 }}
+            placeholder="Nom du produit"
           />
-        </div>
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <div className="flex items-center gap-0.5">
-          <Input
-            type="number"
-            value={(item.price / 100).toFixed(0)}
-            onChange={e => onChange(item.id, "price", Math.round(parseFloat(e.target.value) * 100))}
-            className="w-16 text-sm text-right font-bold h-8"
-            style={{ color: NAVY }}
-          />
-          <span className="text-[10px] font-bold" style={{ color: NAVY }}>DH</span>
-        </div>
-        <span className="text-gray-300">×</span>
-        <div className="flex items-center gap-0.5">
-          <Input
-            type="number"
-            min={1}
-            value={item.quantity}
-            onChange={e => onChange(item.id, "quantity", parseInt(e.target.value) || 1)}
-            className="w-10 text-sm text-center font-bold h-8"
-            style={{ color: NAVY }}
-          />
+          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+            {item.sku && (
+              <span className="text-[10px] text-gray-400 font-mono shrink-0">{item.sku}</span>
+            )}
+            <Input
+              value={item.variantInfo || ""}
+              onChange={e => onChange(item.id, "variantInfo", e.target.value)}
+              className="text-xs border-0 p-0 h-auto bg-transparent text-gray-500 focus-visible:ring-0 focus-visible:ring-offset-0 min-w-0 flex-1"
+              placeholder="Taille / Couleur..."
+            />
+          </div>
         </div>
         <button
           type="button"
           onClick={() => onDelete(item.id)}
-          className="text-red-300 hover:text-red-500 transition-colors ml-1 p-1"
+          className="text-red-300 hover:text-red-500 transition-colors p-1 shrink-0 mt-0.5"
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
+      </div>
+
+      {/* Price × Qty row with live total */}
+      <div className="flex items-center gap-2 mt-2 flex-wrap">
+        <div className="flex items-center gap-0.5">
+          <Input
+            type="number"
+            value={priceVal.toFixed(2)}
+            onChange={e => onChange(item.id, "price", Math.round(parseFloat(e.target.value) * 100))}
+            className="w-20 text-sm text-right font-semibold h-8 rounded-lg"
+            style={{ color: NAVY }}
+          />
+          <span className="text-xs font-bold ml-0.5" style={{ color: NAVY }}>DH</span>
+        </div>
+        <span className="text-gray-400 text-sm">×</span>
+        <Input
+          type="number"
+          min={1}
+          value={qty}
+          onChange={e => onChange(item.id, "quantity", parseInt(e.target.value) || 1)}
+          className="w-14 text-sm text-center font-semibold h-8 rounded-lg"
+          style={{ color: NAVY }}
+        />
+        <span className="text-gray-300 text-sm">=</span>
+        <span className="text-sm font-bold" style={{ color: NAVY }}>
+          {total.toFixed(2)} DH
+        </span>
       </div>
     </div>
   );
@@ -157,7 +178,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       upSell: !!order.upSell,
       isStock: !!order.isStock,
       replacementTrackNumber: order.replacementTrackNumber || "",
-      customerName: order.customerName || "",
+      customerName: cleanCustomerName(order.customerName || ""),
       customerPhone: order.customerPhone || "",
       customerAddress: order.customerAddress || "",
       customerCity: order.customerCity || "",

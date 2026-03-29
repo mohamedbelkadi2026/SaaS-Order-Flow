@@ -52,6 +52,10 @@ const ALL_COLUMNS = [
 
 const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','actionBy','comment','derniereAction','status','prix','adresse','reference','source','action'];
 
+function cleanCustomerName(name: string): string {
+  return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
+}
+
 function getStoredColumns(): string[] {
   try {
     const stored = localStorage.getItem('tajergrow_all_columns');
@@ -507,7 +511,9 @@ export default function AllOrders() {
                 </TableRow>
               ) : (
                 filteredOrders.map((order: any) => {
-                  const productName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
+                  const rawName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
+                  const totalQty = (order.items || []).reduce((s: number, i: any) => s + (i.quantity || 1), 0) || order.rawQuantity || 1;
+                  const productName = totalQty > 1 ? `${rawName} (x${totalQty})` : rawName;
                   const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';
                   const agentName = order.agent?.username || '-';
                   return (
@@ -516,7 +522,7 @@ export default function AllOrders() {
                         <Checkbox checked={selectedIds.has(order.id)} onCheckedChange={() => toggleSelect(order.id)} data-testid={`all-checkbox-order-${order.id}`} />
                       </TableCell>
                       {isColVisible('code') && <TableCell className="whitespace-nowrap text-muted-foreground font-mono text-[10px]">{order.orderNumber || 'N/D'}</TableCell>}
-                      {isColVisible('destinataire') && <TableCell className="whitespace-nowrap font-medium">{order.customerName}</TableCell>}
+                      {isColVisible('destinataire') && <TableCell className="whitespace-nowrap font-medium">{cleanCustomerName(order.customerName)}</TableCell>}
                       {isColVisible('telephone') && (
                         <TableCell className="whitespace-nowrap">
                           <div className="flex items-center gap-1">

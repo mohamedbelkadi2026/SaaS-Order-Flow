@@ -228,13 +228,24 @@ function sanitizeVariant(raw: any): string {
   return s;
 }
 
+/** Strip lone hyphens/dashes left by stores that use "-" as a placeholder last name */
+function cleanName(raw: string): string {
+  return raw
+    .split(' ')
+    .map(p => p.trim())
+    .filter(p => p !== '' && p !== '-' && p !== '–' && p !== '—')
+    .join(' ')
+    .trim();
+}
+
 function parseWebhookOrder(provider: string, payload: any) {
   const { utmSource, buyerCode, utmCampaign, trafficPlatform } = extractUtmParams(payload);
 
   if (provider === 'shopify') {
-    const customerName = payload.customer
+    const rawName = payload.customer
       ? `${payload.customer.first_name || ''} ${payload.customer.last_name || ''}`.trim()
       : (payload.shipping_address?.name || 'Client Shopify');
+    const customerName = cleanName(rawName) || 'Client Shopify';
     const customerPhone = payload.customer?.phone
       || payload.shipping_address?.phone
       || payload.billing_address?.phone
@@ -275,7 +286,7 @@ function parseWebhookOrder(provider: string, payload: any) {
   if (provider === 'woocommerce') {
     const billing = payload.billing || {};
     const shipping = payload.shipping || {};
-    const customerName = `${billing.first_name || shipping.first_name || ''} ${billing.last_name || shipping.last_name || ''}`.trim() || 'Client WooCommerce';
+    const customerName = cleanName(`${billing.first_name || shipping.first_name || ''} ${billing.last_name || shipping.last_name || ''}`) || 'Client WooCommerce';
     const customerPhone = billing.phone || '';
     const customerAddress = `${shipping.address_1 || billing.address_1 || ''} ${shipping.address_2 || billing.address_2 || ''}`.trim();
     const customerCity = shipping.city || billing.city || '';
@@ -3719,7 +3730,7 @@ export async function registerRoutes(
       const body = req.body;
       // Support both Shopify abandoned checkout format and generic format
       const customerName = body.customer?.first_name
-        ? `${body.customer.first_name} ${body.customer.last_name || ""}`.trim()
+        ? cleanName(`${body.customer.first_name} ${body.customer.last_name || ""}`) || "Client"
         : (body.customer_name || body.name || "Client");
       const customerPhone = body.customer?.phone || body.phone || body.customer_phone || "";
       const productName = body.line_items?.[0]?.title || body.product_name || "Produit";
