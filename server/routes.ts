@@ -1653,6 +1653,54 @@ export async function registerRoutes(
     }
   });
 
+  // ── Google Sheets: API-key based webhook (new plug-and-play script) ──
+  app.post("/api/integrations/google-sheets/webhook", async (req, res) => {
+    const apiKey = (req.headers["x-api-key"] || req.body?.apiKey || "").toString().trim();
+    if (!apiKey) return res.status(401).json({ success: false, message: "Missing X-Api-Key header" });
+    try {
+      const store = await storage.getStoreByWebhookKey(apiKey);
+      if (!store) return res.status(403).json({ success: false, message: "Invalid API key" });
+      const storeId = store.id;
+      const data = req.body || {};
+      const customerName    = (data.name    || data.nom    || data.customer_name   || "").toString().trim();
+      const customerPhone   = (data.phone   || data.telephone || data.customer_phone || "").toString().trim();
+      const customerCity    = (data.city    || data.ville   || "").toString().trim();
+      const customerAddress = (data.address || data.adresse || "").toString().trim();
+      const productName     = (data.product || data.produit || "").toString().trim();
+      const quantity        = parseInt(data.quantity || "1") || 1;
+      const rawPrice        = parseFloat(String(data.price || data.prix || "0").replace(",", ".")) || 0;
+      const totalPrice      = Math.round(rawPrice * 100);
+      const orderNumber     = (data.ref || `GS-${Date.now()}`).toString();
+      if (!customerName && !customerPhone) {
+        return res.status(400).json({ success: false, message: "Missing customer name or phone" });
+      }
+      const existingOrder = await storage.getOrderByNumber(storeId, orderNumber);
+      if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
+      const paywall = await storage.checkPaywall(storeId);
+      if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
+      const orderItems = matched ? [{ productId: matched.id, quantity, price: matched.sellingPrice || totalPrice, orderId: 0 }] : [];
+      const order = await storage.createOrder({
+        storeId, orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        status: "nouveau", totalPrice, productCost: matched ? matched.costPrice : 0,
+        shippingCost: 0, adSpend: 0, source: "gsheets", comment: null,
+      }, orderItems);
+      const nextAgentId = await storage.getNextAgent(storeId, matched?.id, customerCity);
+      if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+      await storage.incrementMonthlyOrders(storeId);
+      const integration = await storage.getIntegrationByProvider(storeId, "gsheets");
+      await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: "gsheets", action: "order_synced", status: "success", message: `Commande Google Sheets ${orderNumber} importée (API key)` });
+      console.log(`[GSheets-API] New order #${orderNumber} for store ${storeId} — ${customerName} / ${customerPhone}`);
+      res.json({ success: true, orderId: order.id });
+      triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
+        .catch(err => console.error(`[AI] GSheets-API trigger failed for order ${order.id}:`, err.message));
+    } catch (err: any) {
+      console.error("[GSheets-API] Webhook error:", err);
+      res.status(500).json({ success: false, message: "Processing failed" });
+    }
+  });
+
   // Verify connection: check if integration has received recent logs
   app.post("/api/integrations/verify/:provider", requireAuth, async (req, res) => {
     const provider = req.params.provider;

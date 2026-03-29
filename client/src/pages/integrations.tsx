@@ -191,130 +191,264 @@ function StepsList({ steps }: { steps: { title: string; subtitle?: string }[] })
 // --- Google Sheets Tab ---
 function GoogleSheetsTab({ webhookKey, origin }: { webhookKey: string; origin: string }) {
   const { toast } = useToast();
-  const [understood, setUnderstood] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [verifyResult, setVerifyResult] = useState<any>(null);
   const verify = useVerifyConnection();
-  const createIntegration = useCreateIntegration();
 
-  const webhookUrl = `${origin}/api/webhooks/gsheets/${webhookKey}`;
-  const appScript = `// TajerGrow - Google Sheets Integration Script
-// Copiez ce script dans Apps Script et exécutez-le
+  const apiUrl = `${origin}/api/integrations/google-sheets/webhook`;
+  const apiKey = webhookKey;
 
-const WEBHOOK_URL = "${webhookUrl}";
+  const appScript = `// ═══════════════════════════════════════════════════════════════
+//  🚀 TajerGrow — Google Sheets Integration Script
+//  Script généré automatiquement — Ne pas modifier API_URL / API_KEY
+// ═══════════════════════════════════════════════════════════════
 
-function onFormSubmit(e) {
-  const row = e.values;
+const API_URL = '${apiUrl}';
+const API_KEY = '${apiKey}';
+
+// ─── Configuration des colonnes (1 = A, 2 = B, ..., 10 = J) ───
+const COL_NOM       = 1;   // A — Nom du client
+const COL_TELEPHONE = 2;   // B — Téléphone
+const COL_ADRESSE   = 3;   // C — Adresse
+const COL_VILLE     = 4;   // D — Ville
+const COL_PRODUIT   = 5;   // E — Produit
+const COL_PRIX      = 6;   // F — Prix (DH)
+const COL_QTY       = 7;   // G — Quantité
+const COL_STATUS    = 10;  // J — Statut (vide = à envoyer, SENT = déjà envoyé)
+
+// ─── Menu personnalisé dans Google Sheets ──────────────────────
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🚀 TajerGrow')
+    .addItem('Envoyer les nouvelles commandes', 'sendOrdersToTajerGrow')
+    .addToUi();
+}
+
+// ─── Envoi des nouvelles commandes ────────────────────────────
+function sendOrdersToTajerGrow() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const lastRow = sheet.getLastRow();
 
-  const data = {};
-  headers.forEach((header, index) => {
-    data[header] = row[index] || '';
-  });
-
-  // Map your column headers to our API fields:
-  const payload = {
-    name: data['Nom'] || data['name'] || '',
-    phone: data['Téléphone'] || data['phone'] || '',
-    city: data['Ville'] || data['city'] || '',
-    address: data['Adresse'] || data['address'] || '',
-    product: data['Produit'] || data['product'] || '',
-    price: data['Prix'] || data['price'] || '0',
-    ref: 'GS-' + Date.now()
-  };
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  try {
-    const response = UrlFetchApp.fetch(WEBHOOK_URL, options);
-    Logger.log('TajerGrow Response: ' + response.getContentText());
-  } catch (error) {
-    Logger.log('TajerGrow Error: ' + error.toString());
+  if (lastRow < 2) {
+    SpreadsheetApp.getUi().alert('Aucune commande à envoyer.');
+    return;
   }
+
+  let sent = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  for (let row = 2; row <= lastRow; row++) {
+    const statusCell = sheet.getRange(row, COL_STATUS);
+    const status = statusCell.getValue().toString().trim().toUpperCase();
+
+    // Ignorer les lignes déjà envoyées
+    if (status === 'SENT' || status === 'ENVOYÉ' || status === 'DUPLICATE') {
+      skipped++;
+      continue;
+    }
+
+    const nom       = sheet.getRange(row, COL_NOM).getValue().toString().trim();
+    const telephone = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
+
+    // Ignorer les lignes vides
+    if (!nom && !telephone) continue;
+
+    const adresse = sheet.getRange(row, COL_ADRESSE).getValue().toString().trim();
+    const ville   = sheet.getRange(row, COL_VILLE).getValue().toString().trim();
+    const produit = sheet.getRange(row, COL_PRODUIT).getValue().toString().trim();
+    const prix    = sheet.getRange(row, COL_PRIX).getValue().toString().trim();
+    const qty     = sheet.getRange(row, COL_QTY).getValue() || 1;
+
+    const payload = {
+      name:     nom,
+      phone:    telephone,
+      address:  adresse,
+      city:     ville,
+      product:  produit,
+      price:    prix,
+      quantity: qty.toString(),
+      ref:      'GS-R' + row + '-' + Date.now()
+    };
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Api-Key': API_KEY },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(API_URL, options);
+      const code = response.getResponseCode();
+      const body = JSON.parse(response.getContentText());
+
+      if (code === 200 && body.success && !body.duplicate) {
+        statusCell.setValue('SENT');
+        statusCell.setBackground('#d4edda');
+        Logger.log('✓ Ligne ' + row + ' → Commande #' + body.orderId + ' créée');
+        sent++;
+      } else if (body.duplicate) {
+        statusCell.setValue('DUPLICATE');
+        statusCell.setBackground('#fff3cd');
+        Logger.log('⚠ Ligne ' + row + ' → Commande déjà existante');
+        skipped++;
+      } else {
+        Logger.log('✗ Ligne ' + row + ' → Erreur: ' + response.getContentText());
+        errors++;
+      }
+    } catch (e) {
+      Logger.log('✗ Ligne ' + row + ' → Exception: ' + e.toString());
+      errors++;
+    }
+  }
+
+  const msg = sent + ' commande(s) envoyée(s)' +
+    (skipped > 0 ? ', ' + skipped + ' ignorée(s)' : '') +
+    (errors > 0 ? ', ' + errors + ' erreur(s)' : '') + '.';
+  SpreadsheetApp.getUi().alert('🚀 TajerGrow — ' + msg);
 }`;
 
-  const copyScript = () => {
+  const handleCopy = () => {
     navigator.clipboard.writeText(appScript);
-    toast({ title: "Script copié !", description: "Collez-le dans Apps Script" });
+    setCopied(true);
+    toast({ title: "Script copié !", description: "Collez-le dans Apps Script → Éditeur de code" });
+    setTimeout(() => setCopied(false), 3000);
   };
 
   const handleVerify = async () => {
     const result = await verify.mutateAsync("gsheets");
     setVerifyResult(result);
     if (result.hasActivity) {
-      toast({ title: "Connexion vérifiée !", description: `${result.logsCount} log(s) trouvé(s)` });
+      toast({ title: "Connexion vérifiée !", description: `${result.logsCount} événement(s) reçu(s)` });
     } else {
-      toast({ title: "Aucune activité", description: "Exécutez le script dans Google Sheets pour tester", variant: "default" });
+      toast({ title: "Aucune activité détectée", description: "Exécutez 'Envoyer les nouvelles commandes' dans votre Google Sheet." });
     }
   };
 
+  const STEPS = [
+    { icon: "1", text: "Ouvrez votre Google Sheet et allez dans", highlight: "Extensions → Apps Script" },
+    { icon: "2", text: "Effacez le contenu par défaut, puis cliquez sur", highlight: "«\u00a0Copier le script\u00a0»" },
+    { icon: "3", text: "Collez le script dans l'éditeur, puis cliquez sur", highlight: "Enregistrer (Ctrl+S)" },
+    { icon: "4", text: "Rechargez votre Sheet — le menu", highlight: "🚀 TajerGrow apparaîtra" },
+    { icon: "5", text: "Cliquez sur", highlight: "🚀 TajerGrow → Envoyer les nouvelles commandes" },
+  ];
+
   return (
-    <div className="max-w-2xl mx-auto">
-      <div className="bg-white dark:bg-card rounded-2xl border shadow-sm p-8 space-y-6">
-        <div>
-          <h2 className="text-xl font-bold text-center mb-1">Guide d'intégration avec Google Sheets</h2>
+    <div className="max-w-3xl mx-auto space-y-5">
+      {/* Header card */}
+      <div className="bg-white border rounded-2xl shadow-sm p-6">
+        <div className="flex items-center gap-3 mb-1">
+          <SiGooglesheets className="w-7 h-7 text-green-600" />
+          <h2 className="text-lg font-bold">Google Sheets → TajerGrow</h2>
+          <Badge className="ml-auto bg-green-100 text-green-700 border-green-200">Plug & Play</Badge>
         </div>
+        <p className="text-sm text-muted-foreground">
+          Copiez le script ci-dessous, collez-le dans Google Apps Script et vos commandes se synchronisent automatiquement.
+        </p>
+      </div>
 
-        <div className="space-y-4">
-          <p className="text-sm font-semibold text-blue-600">Étapes :</p>
-          <ol className="space-y-3 text-sm text-muted-foreground">
-            {[
-              { text: "Ouvrez votre ", link: "compte Google Sheets", rest: "." },
-              { text: "Allez dans Extensions > 🎉 Apps Script." },
-              { text: "Cliquez sur le bouton ci-dessous pour copier le script." },
-              { text: "Collez le script dans l'éditeur Apps Script." },
-              { text: "Enregistrez le script et exécutez le code." },
-              { text: "Accordez les autorisations à l'application pour accéder à vos données." },
-            ].map((step, i) => (
-              <li key={i} className="flex gap-2">
-                <span className="text-blue-500 font-bold shrink-0">{i + 1}.</span>
-                <span>
-                  {step.text}
-                  {step.link && <a href="#" className="text-blue-500 underline">{step.link}</a>}
-                  {step.rest}
-                </span>
-              </li>
-            ))}
-          </ol>
-          <a href="#" className="text-sm text-blue-500 underline block">Démo : Comment intégrer Google Sheets avec notre application</a>
+      {/* Steps */}
+      <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-3">
+        <p className="text-sm font-semibold text-[#1e1b4b]">Étapes d'installation :</p>
+        <div className="space-y-2.5">
+          {STEPS.map((s, i) => (
+            <div key={i} className="flex items-start gap-3">
+              <div className="w-6 h-6 rounded-full bg-[#1e1b4b] text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">{s.icon}</div>
+              <p className="text-sm text-muted-foreground">
+                {s.text} <span className="font-semibold text-[#1e1b4b]">{s.highlight}</span>
+              </p>
+            </div>
+          ))}
         </div>
+      </div>
 
-        <div className="space-y-2">
-          <Label className="text-xs text-muted-foreground">Votre URL webhook unique :</Label>
-          <div className="flex gap-2">
-            <Input value={webhookUrl} readOnly className="font-mono text-xs bg-gray-50" />
-            <CopyButton text={webhookUrl} />
+      {/* Script card */}
+      <div className="bg-white border rounded-2xl shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b bg-gray-50">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-red-400" />
+            <div className="w-3 h-3 rounded-full bg-yellow-400" />
+            <div className="w-3 h-3 rounded-full bg-green-400" />
+            <span className="ml-2 text-xs font-mono text-gray-500">Code.gs — Google Apps Script</span>
+          </div>
+          <Button
+            onClick={handleCopy}
+            size="sm"
+            className={cn(
+              "gap-2 text-sm font-semibold px-5 h-9 transition-all",
+              copied
+                ? "bg-green-600 hover:bg-green-700 text-white"
+                : "bg-[#1e1b4b] hover:bg-[#2d2a6e] text-white"
+            )}
+            data-testid="button-copy-script"
+          >
+            {copied ? <CheckCircle className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            {copied ? "Copié !" : "Copier le script"}
+          </Button>
+        </div>
+        <div className="overflow-auto max-h-80 bg-[#1e1b4b]">
+          <pre className="p-5 text-xs font-mono text-green-300 leading-relaxed whitespace-pre">
+            {appScript}
+          </pre>
+        </div>
+      </div>
+
+      {/* API credentials card */}
+      <div className="bg-white border rounded-2xl shadow-sm p-5 space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Vos identifiants (déjà inclus dans le script)</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <Label className="text-xs">API URL</Label>
+            <div className="flex gap-2">
+              <Input value={apiUrl} readOnly className="font-mono text-xs bg-gray-50 flex-1" />
+              <CopyButton text={apiUrl} label="Copier" />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Votre Clé API (API Key)</Label>
+            <div className="flex gap-2">
+              <Input value={apiKey} readOnly className="font-mono text-xs bg-gray-50 flex-1" type="password" />
+              <CopyButton text={apiKey} label="Copier" />
+            </div>
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Ces valeurs sont uniques à votre compte et déjà renseignées dans le script. Ne les partagez pas.
+        </p>
+      </div>
 
-        <div className="flex items-center justify-between">
-          <Button onClick={copyScript} className="bg-blue-600 hover:bg-blue-700 text-white px-6">
-            <Copy className="w-4 h-4 mr-2" /> Copy Code
-          </Button>
-          <label className="flex items-center gap-2 cursor-pointer text-sm">
-            <Checkbox checked={understood} onCheckedChange={v => setUnderstood(!!v)} />
-            I understand the steps
-          </label>
+      {/* Column mapping info */}
+      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
+        <p className="text-xs font-semibold text-amber-800 mb-2">Structure attendue de votre Google Sheet :</p>
+        <div className="grid grid-cols-5 gap-1 text-center text-[11px]">
+          {["A — Nom", "B — Téléphone", "C — Adresse", "D — Ville", "E — Produit", "F — Prix (DH)", "G — Quantité", "H — (libre)", "I — (libre)", "J — Status"].map((col, i) => (
+            <div key={i} className={cn("rounded px-2 py-1.5 font-medium", col.startsWith("J") ? "bg-amber-200 text-amber-900" : "bg-white text-amber-700 border border-amber-200")}>
+              {col}
+            </div>
+          ))}
         </div>
+        <p className="text-xs text-amber-700 mt-2">La colonne <strong>J (Status)</strong> est gérée automatiquement par le script — ne la remplissez pas manuellement.</p>
+      </div>
 
+      {/* Verify */}
+      <div className="bg-white border rounded-2xl shadow-sm p-5 space-y-3">
         {verifyResult && (
-          <div className={cn("p-3 rounded-lg text-sm", verifyResult.hasActivity ? "bg-green-50 text-green-700 border border-green-200" : "bg-amber-50 text-amber-700 border border-amber-200")}>
-            {verifyResult.hasActivity ? `✓ Connexion active — ${verifyResult.logsCount} événement(s)` : "⚠ Aucune activité détectée. Assurez-vous d'avoir exécuté le script."}
+          <div className={cn("p-3 rounded-lg text-sm font-medium", verifyResult.hasActivity ? "bg-green-50 text-green-700 border border-green-200" : "bg-amber-50 text-amber-700 border border-amber-200")}>
+            {verifyResult.hasActivity
+              ? `✓ Connexion active — ${verifyResult.logsCount} commande(s) reçue(s)`
+              : "⚠ Aucune activité détectée. Exécutez le script dans votre Google Sheet."}
           </div>
         )}
-
         <Button
           onClick={handleVerify}
           disabled={verify.isPending}
-          className="w-full bg-[#4CAF82] hover:bg-[#3d9e72] text-white h-12 text-base font-semibold"
+          className="w-full bg-green-600 hover:bg-green-700 text-white h-11 font-semibold gap-2"
+          data-testid="button-verify-gsheets"
         >
-          {verify.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
-          Verify Connection
+          {verify.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          Vérifier la connexion
         </Button>
       </div>
     </div>
