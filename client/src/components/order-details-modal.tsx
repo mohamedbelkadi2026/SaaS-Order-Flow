@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { CityCombobox } from "@/components/city-combobox";
 import { MOROCCAN_CITIES } from "@/lib/carrier-cities";
+import { ProductCombobox, type ProductOption } from "@/components/product-combobox";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
@@ -48,29 +49,39 @@ function StatusBadge({ label, active, onClick }: { label: string; active: boolea
 // ── Order item row ───────────────────────────────────────────────
 interface ItemRowProps {
   item: any;
+  products: ProductOption[];
   onChange: (id: string | number, field: string, value: any) => void;
   onDelete: (id: string | number) => void;
 }
-function ItemRow({ item, onChange, onDelete }: ItemRowProps) {
+function ItemRow({ item, products, onChange, onDelete }: ItemRowProps) {
   const priceVal = (item.price ?? 0) / 100;
   const qty = item.quantity || 1;
   const total = priceVal * qty;
+  const productName = item.rawProductName || item.product?.name || "";
+
+  const handleProductSelect = (p: ProductOption) => {
+    onChange(item.id, "rawProductName", p.name);
+    onChange(item.id, "sku", p.sku || "");
+    onChange(item.id, "price", p.sellingPrice ?? p.costPrice ?? 0);
+    onChange(item.id, "productId", p.id);
+  };
 
   return (
     <div className="py-3 px-4 border-b border-gray-50 last:border-0">
-      {/* Product name + variant */}
+      {/* Product combobox + delete */}
       <div className="flex items-start gap-2">
         <div className="flex-1 min-w-0">
-          <Input
-            value={item.rawProductName || item.product?.name || ""}
-            onChange={e => onChange(item.id, "rawProductName", e.target.value)}
-            className="text-sm font-semibold border-0 p-0 h-auto bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 w-full"
-            style={{ color: NAVY, fontSize: 14 }}
-            placeholder="Nom du produit"
+          <ProductCombobox
+            products={products}
+            value={productName}
+            onChange={handleProductSelect}
+            placeholder="Rechercher dans le stock..."
           />
-          <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+          <div className="flex items-center gap-3 mt-1.5 flex-wrap">
             {item.sku && (
-              <span className="text-[10px] text-gray-400 font-mono shrink-0">{item.sku}</span>
+              <span className="text-[10px] text-gray-400 font-mono shrink-0 bg-gray-100 px-1.5 py-0.5 rounded">
+                {item.sku}
+              </span>
             )}
             <Input
               value={item.variantInfo || ""}
@@ -83,7 +94,7 @@ function ItemRow({ item, onChange, onDelete }: ItemRowProps) {
         <button
           type="button"
           onClick={() => onDelete(item.id)}
-          className="text-red-300 hover:text-red-500 transition-colors p-1 shrink-0 mt-0.5"
+          className="text-red-300 hover:text-red-500 transition-colors p-1 shrink-0 mt-1"
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
@@ -167,6 +178,11 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   });
   const carrierCities = carrierData?.cities ?? MOROCCAN_CITIES;
   const isCarrierSpecific = carrierData?.isCarrierSpecific ?? false;
+
+  const { data: stockProducts = [] } = useQuery<ProductOption[]>({
+    queryKey: ["/api/products"],
+    staleTime: 5 * 60 * 1000,
+  });
 
   useEffect(() => {
     if (!order) return;
@@ -580,7 +596,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
             </div>
             <div>
               {localItems.map(item => (
-                <ItemRow key={item.id} item={item} onChange={handleItemChange} onDelete={handleItemDelete} />
+                <ItemRow key={item.id} item={item} products={stockProducts} onChange={handleItemChange} onDelete={handleItemDelete} />
               ))}
               {localItems.length === 0 && (
                 <p className="text-xs text-gray-400 text-center py-8">

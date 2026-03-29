@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Loader2, Plus, Trash2, Save, Upload } from "lucide-react";
 import { CityCombobox } from "@/components/city-combobox";
 import { MOROCCAN_CITIES } from "@/lib/carrier-cities";
+import { ProductCombobox, type ProductOption } from "@/components/product-combobox";
 
 const ORDER_STATUSES = [
   { value: "nouveau", label: "Nouveau" },
@@ -98,13 +99,10 @@ export default function NewOrderAdd() {
     setItems(prev => prev.map(it => it.id === id ? { ...it, [field]: value } : it));
   };
 
-  const handleProductSelect = (id: string, productId: string) => {
-    const p = (products as any[]).find(p => p.id === parseInt(productId));
-    if (p) {
-      setItems(prev => prev.map(it => it.id === id
-        ? { ...it, productId: p.id, rawProductName: p.name, sku: p.sku || "", price: (p.sellingPrice || p.costPrice || 0) / 100 }
-        : it));
-    }
+  const handleProductSelect = (id: string, p: ProductOption) => {
+    setItems(prev => prev.map(it => it.id === id
+      ? { ...it, productId: p.id, rawProductName: p.name, sku: p.sku || "", price: (p.sellingPrice || p.costPrice || 0) / 100 }
+      : it));
   };
 
   const removeItem = (id: string) => setItems(prev => prev.filter(it => it.id !== id));
@@ -304,21 +302,11 @@ export default function NewOrderAdd() {
             {items.map(item => (
               <div key={item.id} className="grid grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] gap-2 items-center">
                 <div>
-                  {(products as any[]).length > 0 ? (
-                    <Select onValueChange={val => val === "__custom" ? updateItem(item.id, "rawProductName", "") : handleProductSelect(item.id, val)}>
-                      <SelectTrigger className="text-xs h-9">
-                        <SelectValue placeholder="Sélectionnez ou ajoutez..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(products as any[]).map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  ) : null}
-                  <Input
-                    className="text-xs h-9 mt-1"
-                    placeholder="Nom du produit"
+                  <ProductCombobox
+                    products={products as ProductOption[]}
                     value={item.rawProductName}
-                    onChange={e => updateItem(item.id, "rawProductName", e.target.value)}
+                    onChange={p => handleProductSelect(item.id, p)}
+                    placeholder="Rechercher dans le stock..."
                   />
                 </div>
                 <Input className="text-xs h-9" placeholder="Référence" value={item.sku} onChange={e => updateItem(item.id, "sku", e.target.value)} />
