@@ -7,7 +7,8 @@ import {
   MessageCircle, Zap, Users, Clock, CheckCircle2, AlertCircle, Eye, EyeOff,
   Radio, UserCheck, UserX, Play, TrendingUp, ShoppingCart, DollarSign, Timer,
   Lock, ChevronDown, Pause, Square, Package, Target, BarChart3, CheckSquare,
-  Upload, FileSpreadsheet, Smartphone, RotateCw, Plus, Trash2, Cpu,
+  Upload, FileSpreadsheet, Smartphone, RotateCw, Plus, Trash2, Cpu, Download,
+  TableIcon, ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -75,43 +76,109 @@ export default function AutomationPage() {
 /* ════════════════════════════════════════════════════════════════
    TAB 1 — RETARGETING (Bulk WhatsApp via Baileys, anti-ban queue)
 ════════════════════════════════════════════════════════════════ */
+/* ── Template column names ──────────────────────────────────── */
+const TEMPLATE_HEADERS = ["Nom_Complet", "Telephone", "Ville", "Dernier_Produit", "Notes_Optionnelles"];
+
+/* ── Phone sanitization ─────────────────────────────────────── */
+function sanitizePhone(raw: string): string {
+  let p = String(raw ?? "").replace(/[\s.\-()]/g, "");
+  if (p.startsWith("+212")) p = p.slice(1);          // +212 → 212
+  if (p.startsWith("00212")) p = p.slice(2);          // 00212 → 212
+  if (p.startsWith("0") && p.length === 10) p = "212" + p.slice(1); // 06/07 → 212
+  return p;
+}
+
+/* ── Download template helper ───────────────────────────────── */
+async function downloadTemplate() {
+  const XLSX = await import("xlsx");
+  const rows = [
+    TEMPLATE_HEADERS,
+    ["Mohamed Alaoui", "0612345678", "Casablanca", "Mocassins ANAKIO", "Client fidèle"],
+    ["Fatima Zahra", "0698765432", "Marrakech", "Sac en cuir", ""],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{ wch: 22 }, { wch: 16 }, { wch: 14 }, { wch: 22 }, { wch: 20 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Clients");
+  XLSX.writeFile(wb, "modele_retargeting.xlsx");
+}
+
 /* ── Import Modal ───────────────────────────────────────────── */
 function ImportLeadsModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (result: any) => void }) {
   const { toast } = useToast();
-  const [step, setStep] = useState<"upload" | "mapping" | "done">("upload");
+  const [step, setStep] = useState<"upload" | "mapping" | "preview" | "done">("upload");
   const [file, setFile] = useState<File | null>(null);
   const [headers, setHeaders] = useState<string[]>([]);
+  const [allRows, setAllRows] = useState<Record<string, string>[]>([]);
   const [nameCol, setNameCol] = useState("");
   const [phoneCol, setPhoneCol] = useState("");
   const [productCol, setProductCol] = useState("");
+  const [previewRows, setPreviewRows] = useState<{ name: string; phone: string; product: string; phoneRaw: string; phoneOk: boolean }[]>([]);
   const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = async (f: File) => {
-    setFile(f);
+  const usedTemplate = headers.length > 0 && TEMPLATE_HEADERS.every(h => headers.includes(h));
+
+  const parseFile = async (f: File): Promise<{ cols: string[]; rows: Record<string, string>[] }> => {
     const ext = f.name.split(".").pop()?.toLowerCase();
+    const XLSX = await import("xlsx");
     if (ext === "csv" || ext === "txt") {
       const text = await f.text();
-      const firstLine = text.split(/\r?\n/)[0];
-      const cols = firstLine.split(",").map(c => c.trim().replace(/^"|"$/g, ""));
-      setHeaders(cols);
-      setPhoneCol(cols.find(c => /phone|tel|gsm|numéro|numero/i.test(c)) ?? cols[1] ?? "");
-      setNameCol(cols.find(c => /name|nom|client/i.test(c)) ?? cols[0] ?? "");
-      setProductCol(cols.find(c => /product|produit|article/i.test(c)) ?? "");
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      const cols = lines[0].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+      const rows = lines.slice(1).map(l => {
+        const cells = l.split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+        return Object.fromEntries(cols.map((h, i) => [h, cells[i] ?? ""]));
+      });
+      return { cols, rows };
     } else {
-      // XLSX — read first row via xlsx
-      const XLSX = await import("xlsx");
       const buffer = await f.arrayBuffer();
       const wb = XLSX.read(buffer);
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: "" });
-      const cols = data.length > 0 ? Object.keys(data[0]) : [];
-      setHeaders(cols);
-      setPhoneCol(cols.find(c => /phone|tel|gsm|numéro|numero/i.test(c)) ?? cols[1] ?? "");
-      setNameCol(cols.find(c => /name|nom|client/i.test(c)) ?? cols[0] ?? "");
-      setProductCol(cols.find(c => /product|produit|article/i.test(c)) ?? "");
+      const rows = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: "" });
+      const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+      return { cols, rows };
     }
-    setStep("mapping");
+  };
+
+  const buildPreview = (rows: Record<string, string>[], nCol: string, pCol: string, prCol: string) => {
+    return rows.slice(0, 5).map(r => {
+      const phoneRaw = r[pCol] ?? "";
+      const phone = sanitizePhone(phoneRaw);
+      const phoneOk = /^212[67]\d{8}$/.test(phone);
+      return { name: r[nCol] ?? "", phone, phoneRaw, product: r[prCol] ?? "", phoneOk };
+    });
+  };
+
+  const handleFile = async (f: File) => {
+    setFile(f);
+    try {
+      const { cols, rows } = await parseFile(f);
+      setHeaders(cols);
+      setAllRows(rows);
+      const isTemplate = TEMPLATE_HEADERS.every(h => cols.includes(h));
+      if (isTemplate) {
+        const nCol = "Nom_Complet"; const pCol = "Telephone"; const prCol = "Dernier_Produit";
+        setNameCol(nCol); setPhoneCol(pCol); setProductCol(prCol);
+        setPreviewRows(buildPreview(rows, nCol, pCol, prCol));
+        setStep("preview");
+      } else {
+        const pCol = cols.find(c => /phone|tel|gsm|numéro|numero/i.test(c)) ?? cols[1] ?? "";
+        const nCol = cols.find(c => /name|nom|client/i.test(c)) ?? cols[0] ?? "";
+        const prCol = cols.find(c => /product|produit|article/i.test(c)) ?? "";
+        setPhoneCol(pCol); setNameCol(nCol); setProductCol(prCol);
+        setStep("mapping");
+      }
+    } catch {
+      toast({ title: "Fichier invalide", description: "Impossible de lire ce fichier.", variant: "destructive" });
+    }
+  };
+
+  const goToPreview = () => {
+    if (!phoneCol) return;
+    setPreviewRows(buildPreview(allRows, nameCol, phoneCol, productCol));
+    setStep("preview");
   };
 
   const handleImport = async () => {
@@ -126,6 +193,7 @@ function ImportLeadsModal({ onClose, onSuccess }: { onClose: () => void; onSucce
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message);
+      setImportResult(data);
       setStep("done");
       onSuccess(data);
       queryClient.invalidateQueries({ queryKey: ["/api/automation/retargeting/leads"] });
@@ -136,25 +204,47 @@ function ImportLeadsModal({ onClose, onSuccess }: { onClose: () => void; onSucce
     }
   };
 
+  /* ── Step labels ── */
+  const STEPS = ["upload", "mapping", "preview", "done"] as const;
+  const stepIdx = STEPS.indexOf(step);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden max-h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4" style={{ background: NAVY }}>
+        <div className="flex items-center justify-between px-6 py-4 shrink-0" style={{ background: NAVY }}>
           <div className="flex items-center gap-3">
             <FileSpreadsheet className="w-5 h-5 text-white" />
             <h2 className="text-base font-bold text-white">Importer des Clients</h2>
+            {/* Step dots */}
+            <div className="flex items-center gap-1.5 ml-3">
+              {["Fichier", "Colonnes", "Aperçu", "Terminé"].map((label, i) => (
+                <div key={label} className="flex items-center gap-1">
+                  <div className={cn("w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center transition-all", i <= stepIdx ? "text-white" : "bg-white/20 text-white/50")}
+                    style={i <= stepIdx ? { background: GOLD } : {}}>
+                    {i + 1}
+                  </div>
+                  {i < 3 && <div className={cn("w-4 h-0.5 rounded-full", i < stepIdx ? "bg-amber-400" : "bg-white/20")} />}
+                </div>
+              ))}
+            </div>
           </div>
           <button onClick={onClose} className="text-white/60 hover:text-white"><X className="w-5 h-5" /></button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-5 overflow-y-auto flex-1">
+          {/* ── STEP 1: Upload ── */}
           {step === "upload" && (
             <>
-              <p className="text-sm text-zinc-500">Importez votre liste de clients depuis un fichier <strong>CSV</strong> ou <strong>XLSX</strong>.</p>
+              <div className="flex items-start gap-3 rounded-xl p-3" style={{ background: "rgba(197,160,89,0.07)", border: "1px solid rgba(197,160,89,0.25)" }}>
+                <Download className="w-4 h-4 mt-0.5 shrink-0" style={{ color: GOLD }} />
+                <div className="text-xs text-zinc-600">
+                  <strong className="text-zinc-800">Conseil :</strong> Téléchargez d'abord le modèle, remplissez-le, puis importez-le ici pour un traitement optimal et une détection automatique des colonnes.
+                </div>
+              </div>
               <div
                 className="border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer hover:border-amber-400 transition-colors"
-                style={{ borderColor: "rgba(197,160,89,0.4)" }}
+                style={{ borderColor: "rgba(197,160,89,0.35)" }}
                 onClick={() => fileRef.current?.click()}
                 onDragOver={e => e.preventDefault()}
                 onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
@@ -168,15 +258,23 @@ function ImportLeadsModal({ onClose, onSuccess }: { onClose: () => void; onSucce
             </>
           )}
 
+          {/* ── STEP 2: Column mapping (non-template files) ── */}
           {step === "mapping" && headers.length > 0 && (
             <>
               <div className="flex items-center gap-2 text-sm font-semibold text-zinc-700">
                 <FileSpreadsheet className="w-4 h-4" style={{ color: GOLD }} />
-                {file?.name} — {headers.length} colonnes détectées
+                <span>{file?.name}</span>
+                <span className="text-zinc-400 font-normal">— {headers.length} colonnes détectées</span>
               </div>
+
+              <div className="rounded-xl p-3 bg-amber-50 border border-amber-200 text-xs text-amber-700 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                Ce fichier ne correspond pas au modèle standard. Associez manuellement les colonnes ci-dessous.
+              </div>
+
               <div className="space-y-3">
                 {[
-                  { label: "Colonne Nom *", val: nameCol, set: setNameCol, required: false },
+                  { label: "Colonne Nom client", val: nameCol, set: setNameCol, required: false },
                   { label: "Colonne Téléphone *", val: phoneCol, set: setPhoneCol, required: true },
                   { label: "Colonne Dernier Produit", val: productCol, set: setProductCol, required: false },
                 ].map(({ label, val, set, required }) => (
@@ -191,31 +289,111 @@ function ImportLeadsModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                   </div>
                 ))}
               </div>
-              <div className="rounded-xl p-3 text-xs text-zinc-500" style={{ background: "rgba(197,160,89,0.07)", border: "1px solid rgba(197,160,89,0.3)" }}>
-                Les numéros déjà importés seront <strong>ignorés automatiquement</strong> (déduplication).
-              </div>
+
               <div className="flex gap-3">
                 <button onClick={() => setStep("upload")} className="px-4 py-2 rounded-xl border border-zinc-200 text-sm text-zinc-500 hover:bg-zinc-50 transition-colors">Retour</button>
                 <button
-                  onClick={handleImport}
-                  disabled={!phoneCol || importing}
+                  onClick={goToPreview}
+                  disabled={!phoneCol}
                   className="flex-1 py-2.5 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
                   style={{ background: NAVY }}
                 >
-                  {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                  {importing ? "Importation..." : "Lancer l'import"}
+                  <ArrowRight className="w-4 h-4" /> Aperçu des données
                 </button>
               </div>
             </>
           )}
 
-          {step === "done" && (
-            <div className="text-center py-4 space-y-3">
-              <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(34,197,94,0.1)" }}>
-                <CheckCircle2 className="w-8 h-8 text-green-500" />
+          {/* ── STEP 3: Preview ── */}
+          {step === "preview" && (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-bold text-zinc-800">Aperçu — 5 premières lignes</p>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    {allRows.length} ligne{allRows.length > 1 ? "s" : ""} au total · numéros nettoyés automatiquement
+                  </p>
+                </div>
+                {usedTemplate && (
+                  <span className="text-[10px] px-2.5 py-1 rounded-full font-bold text-white" style={{ background: "#22c55e" }}>
+                    ✓ Modèle officiel détecté
+                  </span>
+                )}
               </div>
-              <h3 className="text-base font-bold text-zinc-800">Import réussi !</h3>
-              <button onClick={onClose} className="px-6 py-2.5 rounded-xl text-white text-sm font-bold" style={{ background: GOLD }}>Fermer</button>
+
+              {/* Preview table */}
+              <div className="rounded-xl border border-zinc-100 overflow-hidden">
+                <div className="grid grid-cols-[1fr_140px_1fr] text-[11px] font-bold text-zinc-400 uppercase tracking-wide px-4 py-2.5 bg-zinc-50 border-b border-zinc-100">
+                  <span>Nom</span><span>Téléphone</span><span>Dernier produit</span>
+                </div>
+                {previewRows.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-xs text-zinc-400">Aucune donnée à afficher</div>
+                ) : (
+                  <div className="divide-y divide-zinc-50">
+                    {previewRows.map((row, i) => (
+                      <div key={i} className="grid grid-cols-[1fr_140px_1fr] items-center px-4 py-2.5 text-sm">
+                        <span className="text-zinc-700 truncate font-medium">{row.name || <span className="text-zinc-300">—</span>}</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className={cn("font-mono text-xs truncate", row.phoneOk ? "text-green-600" : "text-red-500")}>
+                            {row.phone || row.phoneRaw}
+                          </span>
+                          {row.phoneOk
+                            ? <Check className="w-3 h-3 text-green-500 shrink-0" />
+                            : <span title="Format de numéro inattendu"><AlertCircle className="w-3 h-3 text-red-400 shrink-0" /></span>}
+                        </div>
+                        <span className="text-zinc-500 text-xs truncate">{row.product || <span className="text-zinc-300">—</span>}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Warning if any phone is bad */}
+              {previewRows.some(r => !r.phoneOk) && (
+                <div className="rounded-xl px-3 py-2.5 bg-amber-50 border border-amber-200 flex items-start gap-2 text-xs text-amber-700">
+                  <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  Certains numéros (en rouge) semblent incorrects. Ils seront quand même importés mais pourraient échouer à l'envoi.
+                </div>
+              )}
+
+              <div className="rounded-xl p-3 text-xs text-zinc-500" style={{ background: "rgba(197,160,89,0.07)", border: "1px solid rgba(197,160,89,0.3)" }}>
+                Les numéros déjà présents dans votre liste seront <strong>ignorés automatiquement</strong> (déduplication).
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setStep(usedTemplate ? "upload" : "mapping")}
+                  className="px-4 py-2 rounded-xl border border-zinc-200 text-sm text-zinc-500 hover:bg-zinc-50 transition-colors"
+                >Retour</button>
+                <button
+                  onClick={handleImport}
+                  disabled={importing || previewRows.length === 0}
+                  className="flex-1 py-2.5 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}
+                >
+                  {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                  {importing ? "Importation en cours..." : `Confirmer l'import (${allRows.length} lignes)`}
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* ── STEP 4: Done ── */}
+          {step === "done" && (
+            <div className="text-center py-6 space-y-4">
+              <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(34,197,94,0.1)", border: "2px solid #22c55e" }}>
+                <CheckCircle2 className="w-10 h-10 text-green-500" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-zinc-800">Import réussi !</h3>
+                {importResult && (
+                  <div className="flex items-center justify-center gap-4 mt-2 text-sm">
+                    <span className="text-green-600 font-semibold">{importResult.imported} ajoutés</span>
+                    {importResult.skipped > 0 && <span className="text-zinc-400">{importResult.skipped} doublons ignorés</span>}
+                  </div>
+                )}
+              </div>
+              <button onClick={onClose} className="px-8 py-2.5 rounded-xl text-white text-sm font-bold" style={{ background: GOLD }}>Voir mes leads</button>
             </div>
           )}
         </div>
@@ -489,14 +667,24 @@ function RetargetingTab() {
             </span>
           )}
         </button>
-        <button
-          onClick={() => setShowImportModal(true)}
-          className="ml-auto flex items-center gap-2 px-4 py-1.5 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
-          style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}
-          data-testid="button-import-leads"
-        >
-          <Upload className="w-3.5 h-3.5" /> Importer Data Client
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => downloadTemplate()}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-xl text-sm font-semibold text-zinc-600 border border-zinc-200 bg-white hover:bg-zinc-50 transition-colors"
+            data-testid="button-download-template"
+            title="Télécharger le modèle XLSX"
+          >
+            <Download className="w-3.5 h-3.5" /> Modèle XLSX
+          </button>
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
+            style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}
+            data-testid="button-import-leads"
+          >
+            <Upload className="w-3.5 h-3.5" /> Importer Data Client
+          </button>
+        </div>
       </div>
 
       {/* Order status filter bar (only in orders view) */}
