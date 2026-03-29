@@ -523,11 +523,51 @@ export const marketingCampaigns = pgTable("marketing_campaigns", {
   totalTargets: integer("total_targets").default(0),
   totalSent: integer("total_sent").default(0),
   totalFailed: integer("total_failed").default(0),
+  senderDeviceId: integer("sender_device_id"),       // null = primary store session
+  rotationEnabled: integer("rotation_enabled").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 export const insertMarketingCampaignSchema = createInsertSchema(marketingCampaigns).omit({ id: true, createdAt: true });
 export type MarketingCampaign = typeof marketingCampaigns.$inferSelect;
 export type InsertMarketingCampaign = z.infer<typeof insertMarketingCampaignSchema>;
+
+// ─── Retargeting Leads (imported from CSV/XLSX) ────────────────────────────
+export const retargetingLeads = pgTable("retargeting_leads", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  name: text("name"),
+  phone: text("phone").notNull(),
+  lastProduct: text("last_product"),
+  source: text("source").default("import"),    // "import" | "manual"
+  importedAt: timestamp("imported_at").defaultNow(),
+});
+export const insertRetargetingLeadSchema = createInsertSchema(retargetingLeads).omit({ id: true, importedAt: true });
+export type RetargetingLead = typeof retargetingLeads.$inferSelect;
+export type InsertRetargetingLead = z.infer<typeof insertRetargetingLeadSchema>;
+
+// ─── WhatsApp Devices (multi-device per store) ─────────────────────────────
+export const whatsappDevices = pgTable("whatsapp_devices", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  label: text("label").notNull().default("WhatsApp"),
+  status: text("status").default("disconnected"), // connected | disconnected | qr | connecting
+  phone: text("phone"),
+  qrCode: text("qr_code"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+export const insertWhatsappDeviceSchema = createInsertSchema(whatsappDevices).omit({ id: true, updatedAt: true });
+export type WhatsappDevice = typeof whatsappDevices.$inferSelect;
+export type InsertWhatsappDevice = z.infer<typeof insertWhatsappDeviceSchema>;
+
+// ─── Campaign Logs (per-message send tracking) ─────────────────────────────
+export const campaignLogs = pgTable("campaign_logs", {
+  id: serial("id").primaryKey(),
+  campaignId: integer("campaign_id").references(() => marketingCampaigns.id).notNull(),
+  deviceId: integer("device_id"),   // null = primary store session
+  phone: text("phone").notNull(),
+  status: text("status").notNull(), // "sent" | "failed"
+  sentAt: timestamp("sent_at").defaultNow(),
+});
 
 // ─── AI Conversation Logs ──────────────────────────────────────────────────
 export const aiLogs = pgTable("ai_logs", {

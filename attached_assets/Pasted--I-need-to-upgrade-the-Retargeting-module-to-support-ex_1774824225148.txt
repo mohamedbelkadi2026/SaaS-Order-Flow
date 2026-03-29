@@ -1,0 +1,27 @@
+"I need to upgrade the 'Retargeting' module to support external data imports and multi-device sending logic. This is a major update. Please follow these instructions:
+1. External Data Import (Google Sheets/CSV):
+Feature: Add an 'Importer Data Client' button in the Retargeting tab.
+Functionality:
+Allow the Admin to upload .xlsx or .csv files.
+Mapping: The user must map columns (Name, Phone, and ideally Last Product).
+Database: Save these imported leads into a dedicated Retargeting_Leads table. They must stay separate from the main 'Orders' table to keep the dashboard clean.
+Deduplication: Automatically skip numbers that already exist in the retargeting list for this store.
+2. Multi-WhatsApp Account Support:
+Database Update: Update the whatsapp_sessions table to allow multiple sessions per store.
+UI Update (Connexion Tab):
+Instead of one QR code, show a list of 'Appareils Connectés'.
+Add an 'Ajouter un nouvel appareil' button to generate a new QR code for a different phone number.
+Label each device (e.g., 'WhatsApp 06...', 'WhatsApp 07...').
+3. Smart Campaign Dispatcher (Choose Sender):
+Selection UI: When I click 'Lancer la Campagne' in the Retargeting tab:
+Add a mandatory dropdown: 'Choisir le numéro d'envoi' (Select from connected devices).
+Add a toggle: 'Rotation Automatique' (If selected, the system rotates between all connected numbers to distribute the load and prevent bans).
+Execution Logic: The backend must use the specific socket instance (sock) associated with the selected device ID to send the messages.
+4. Integration & Logic:
+Matching: Ensure the imported data matches the existing message template variables like *{Nom_Client}*.
+Status Tracking: Create a campaign log that shows which number sent which message and the success rate per device.
+5. Technical Specs:
+Use ExcelJS or Multer for file parsing.
+Ensure the multi-socket manager can handle 5+ active Baileys connections simultaneously without crashing.
+Maintain the #1e1b4b (Navy) and #C5A059 (Gold) aesthetic.
+Technical Goal: I want to import a sheet of 500 old customers, connect 3 different WhatsApp phones, and choose 'WhatsApp #2' to send them a special offer today. 100% Practical and Scalable."

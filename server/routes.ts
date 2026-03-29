@@ -56,6 +56,22 @@ const productImageUpload = multer({
   },
 });
 
+// Leads import — memory storage (CSV / XLSX, max 5 MB)
+const leadsImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = [
+      "text/csv", "application/csv", "text/plain",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-excel",
+    ];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(file.mimetype) || ext === ".csv" || ext === ".xlsx" || ext === ".xls") cb(null, true);
+    else cb(new Error("Seuls les fichiers CSV et XLSX sont acceptés."));
+  },
+});
+
 /**
  * Replaces WhatsApp template variables with actual order data.
  * Returns the formatted message and a wa.me deep link.
@@ -3360,31 +3376,41 @@ export async function registerRoutes(
   app.post("/api/automation/retargeting/send", requireAuth, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;
-      const { name, message, targetFilter, recipients, productLink } = req.body;
+      const { name, message, targetFilter, recipients, productLink, senderDeviceId, rotationEnabled, rotationDeviceIds } = req.body;
       // recipients: Array<{ id, phone, name, lastProduct }>
       if (!recipients?.length) return res.status(400).json({ message: "Aucun destinataire sélectionné." });
       if (!message?.trim())   return res.status(400).json({ message: "Message vide." });
+
+      const finalMessage = productLink ? `${message}\n\n🔗 ${productLink}` : message;
 
       // Create the campaign record
       const campaign = await storage.createMarketingCampaign({
         storeId,
         name: name || `Campagne ${new Date().toLocaleDateString("fr-MA")}`,
-        message: productLink ? `${message}\n\n🔗 ${productLink}` : message,
+        message: finalMessage,
         productLink: productLink || null,
         targetFilter: targetFilter || "delivered",
         status: "running",
         totalTargets: recipients.length,
         totalSent: 0,
         totalFailed: 0,
+        senderDeviceId: senderDeviceId ? Number(senderDeviceId) : null,
+        rotationEnabled: rotationEnabled ? 1 : 0,
       });
 
       // Start the background queue
       const { startCampaign } = await import("./campaign-engine");
-      startCampaign(campaign.id, storeId, recipients.map((r: any) => ({
-        phone: r.phone,
-        name: r.name || "",
-        lastProduct: r.lastProduct || "",
-      })), productLink ? `${message}\n\n🔗 ${productLink}` : message);
+      startCampaign(
+        campaign.id,
+        storeId,
+        recipients.map((r: any) => ({ phone: r.phone, name: r.name || "", lastProduct: r.lastProduct || "" })),
+        finalMessage,
+        {
+          senderDeviceId: senderDeviceId ? Number(senderDeviceId) : null,
+          rotationEnabled: !!rotationEnabled,
+          rotationDeviceIds: Array.isArray(rotationDeviceIds) ? rotationDeviceIds.map(Number) : [],
+        },
+      );
 
       res.json({ ok: true, campaignId: campaign.id, total: recipients.length });
     } catch (err: any) {
@@ -3498,6 +3524,236 @@ export async function registerRoutes(
     const status = getBaileysInstance(storeId).getStatus();
     const payload = `event: wa_status\ndata: ${JSON.stringify({ ...status, ts: Date.now() })}\n\n`;
     try { res.write(payload); } catch (_) {}
+  });
+
+  /* ══════════════════════════════════════════════════════════════════
+     RETARGETING LEADS — import & list
+  ══════════════════════════════════════════════════════════════════ */
+
+  /* GET /api/automation/retargeting/leads — list imported leads */
+  app.get("/api/automation/retargeting/leads", requireAuth, async (req: any, res: any) => {
+    try {
+      const { retargetingLeads } = await import("@shared/schema");
+      const storeId = req.user!.storeId!;
+      const leads = await db.select().from(retargetingLeads)
+        .where(eq(retargetingLeads.storeId, storeId))
+        .orderBy(desc(retargetingLeads.importedAt))
+        .limit(2000);
+      res.json(leads);
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* POST /api/automation/retargeting/import — CSV/XLSX file upload */
+  app.post("/api/automation/retargeting/import", requireAuth, leadsImportUpload.single("file"), async (req: any, res: any) => {
+    try {
+      if (!req.file) return res.status(400).json({ message: "Aucun fichier fourni." });
+      const storeId: number = req.user!.storeId!;
+      const mapping = JSON.parse(req.body.mapping || "{}");
+      // mapping: { nameCol: string, phoneCol: string, productCol?: string }
+
+      const { retargetingLeads } = await import("@shared/schema");
+      const { inArray: drIn } = await import("drizzle-orm");
+
+      let rows: Record<string, string>[] = [];
+      const ext = path.extname(req.file.originalname).toLowerCase();
+
+      if (ext === ".csv" || ext === ".txt" || req.file.mimetype === "text/csv" || req.file.mimetype === "text/plain") {
+        // CSV parsing
+        const text = req.file.buffer.toString("utf8");
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        if (lines.length < 2) return res.status(400).json({ message: "Fichier CSV vide ou invalide." });
+        const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+          const row: Record<string, string> = {};
+          headers.forEach((h, idx) => { row[h] = cols[idx] ?? ""; });
+          rows.push(row);
+        }
+      } else {
+        // XLSX parsing
+        const XLSX = await import("xlsx");
+        const wb = XLSX.read(req.file.buffer, { type: "buffer" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: "" });
+      }
+
+      if (rows.length === 0) return res.status(400).json({ message: "Aucune ligne trouvée dans le fichier." });
+
+      const nameKey = mapping.nameCol || Object.keys(rows[0])[0];
+      const phoneKey = mapping.phoneCol || Object.keys(rows[0])[1];
+      const productKey = mapping.productCol || null;
+
+      // Deduplicate against existing leads in this store
+      const existingLeads = await db.select({ phone: retargetingLeads.phone })
+        .from(retargetingLeads).where(eq(retargetingLeads.storeId, storeId));
+      const existingPhones = new Set(existingLeads.map((l: any) => l.phone.replace(/\D/g, "")));
+
+      const toInsert: any[] = [];
+      let skipped = 0;
+      for (const row of rows) {
+        const phone = String(row[phoneKey] ?? "").trim().replace(/\s/g, "");
+        if (!phone) { skipped++; continue; }
+        const normalised = phone.replace(/\D/g, "");
+        if (existingPhones.has(normalised)) { skipped++; continue; }
+        existingPhones.add(normalised);
+        toInsert.push({
+          storeId,
+          name: String(row[nameKey] ?? "").trim() || null,
+          phone,
+          lastProduct: productKey ? String(row[productKey] ?? "").trim() || null : null,
+          source: "import",
+        });
+      }
+
+      let inserted = 0;
+      if (toInsert.length > 0) {
+        // Batch insert in chunks of 100
+        for (let i = 0; i < toInsert.length; i += 100) {
+          const chunk = toInsert.slice(i, i + 100);
+          await db.insert(retargetingLeads).values(chunk);
+          inserted += chunk.length;
+        }
+      }
+
+      res.json({ ok: true, inserted, skipped, total: rows.length });
+    } catch (err: any) {
+      console.error("[Leads Import]", err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* DELETE /api/automation/retargeting/leads/:id — remove one lead */
+  app.delete("/api/automation/retargeting/leads/:id", requireAuth, async (req: any, res: any) => {
+    try {
+      const { retargetingLeads } = await import("@shared/schema");
+      const { and: drAnd } = await import("drizzle-orm");
+      await db.delete(retargetingLeads).where(
+        drAnd(eq(retargetingLeads.id, Number(req.params.id)), eq(retargetingLeads.storeId, req.user!.storeId!))
+      );
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* DELETE /api/automation/retargeting/leads — clear all leads for store */
+  app.delete("/api/automation/retargeting/leads", requireAuth, async (req: any, res: any) => {
+    try {
+      const { retargetingLeads } = await import("@shared/schema");
+      await db.delete(retargetingLeads).where(eq(retargetingLeads.storeId, req.user!.storeId!));
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* ══════════════════════════════════════════════════════════════════
+     MULTI-DEVICE WHATSAPP MANAGEMENT
+  ══════════════════════════════════════════════════════════════════ */
+
+  /* GET /api/automation/devices — list all devices for this store */
+  app.get("/api/automation/devices", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { getDeviceInstance } = await import("./baileys-service");
+      const storeId = req.user!.storeId!;
+      const devices = await db.select().from(whatsappDevices).where(eq(whatsappDevices.storeId, storeId));
+      // Augment with live in-memory status
+      const enriched = devices.map((d: any) => {
+        try {
+          const inst = getDeviceInstance(d.id, d.storeId);
+          const live = inst.getStatus();
+          return { ...d, status: live.state, phone: live.phone ?? d.phone, qrCode: live.qr ?? d.qrCode };
+        } catch {
+          return d;
+        }
+      });
+      res.json(enriched);
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* POST /api/automation/devices — add a new device and start QR flow */
+  app.post("/api/automation/devices", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { getDeviceInstance } = await import("./baileys-service");
+      const storeId = req.user!.storeId!;
+      const label = (req.body.label as string)?.trim() || `WhatsApp ${Date.now()}`;
+      const [device] = await db.insert(whatsappDevices).values({ storeId, label, status: "disconnected" }).returning();
+      // Start connecting (generates QR)
+      getDeviceInstance(device.id, storeId).start().catch(console.error);
+      res.status(201).json(device);
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* GET /api/automation/devices/:id/status — live QR + status for one device */
+  app.get("/api/automation/devices/:id/status", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { getDeviceInstance } = await import("./baileys-service");
+      const deviceId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const [device] = await db.select().from(whatsappDevices)
+        .where(eq(whatsappDevices.id, deviceId));
+      if (!device || device.storeId !== storeId) return res.status(404).json({ message: "Appareil introuvable." });
+      const live = getDeviceInstance(deviceId, storeId).getStatus();
+      res.json({ ...device, status: live.state, phone: live.phone ?? device.phone, qrCode: live.qr ?? device.qrCode });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* POST /api/automation/devices/:id/connect — (re)start connection for device */
+  app.post("/api/automation/devices/:id/connect", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { getDeviceInstance } = await import("./baileys-service");
+      const deviceId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const [device] = await db.select().from(whatsappDevices).where(eq(whatsappDevices.id, deviceId));
+      if (!device || device.storeId !== storeId) return res.status(404).json({ message: "Appareil introuvable." });
+      getDeviceInstance(deviceId, storeId).start().catch(console.error);
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* POST /api/automation/devices/:id/reset — wipe session files + fresh QR */
+  app.post("/api/automation/devices/:id/reset", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { getDeviceInstance } = await import("./baileys-service");
+      const deviceId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const [device] = await db.select().from(whatsappDevices).where(eq(whatsappDevices.id, deviceId));
+      if (!device || device.storeId !== storeId) return res.status(404).json({ message: "Appareil introuvable." });
+      getDeviceInstance(deviceId, storeId).resetAndRestart().catch(console.error);
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* DELETE /api/automation/devices/:id — disconnect and remove device */
+  app.delete("/api/automation/devices/:id", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { getDeviceInstance, removeDeviceInstance } = await import("./baileys-service");
+      const { and: drAnd } = await import("drizzle-orm");
+      const deviceId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const [device] = await db.select().from(whatsappDevices).where(eq(whatsappDevices.id, deviceId));
+      if (!device || device.storeId !== storeId) return res.status(404).json({ message: "Appareil introuvable." });
+      try { await getDeviceInstance(deviceId, storeId).logout(); } catch { /* ignore */ }
+      removeDeviceInstance(deviceId);
+      await db.delete(whatsappDevices).where(drAnd(eq(whatsappDevices.id, deviceId), eq(whatsappDevices.storeId, storeId)));
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* GET /api/automation/campaign-logs/:campaignId — logs for one campaign */
+  app.get("/api/automation/campaign-logs/:campaignId", requireAuth, async (req: any, res: any) => {
+    try {
+      const { campaignLogs, marketingCampaigns: mc } = await import("@shared/schema");
+      const { and: drAnd } = await import("drizzle-orm");
+      const campaignId = Number(req.params.campaignId);
+      // Verify the campaign belongs to this store
+      const [campaign] = await db.select().from(mc).where(drAnd(eq(mc.id, campaignId), eq(mc.storeId, req.user!.storeId!)));
+      if (!campaign) return res.status(404).json({ message: "Campagne introuvable." });
+      const logs = await db.select().from(campaignLogs).where(eq(campaignLogs.campaignId, campaignId)).orderBy(desc(campaignLogs.sentAt)).limit(500);
+      res.json(logs);
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
   /* ── AI Settings ──────────────────────────────────────────────── */

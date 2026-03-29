@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -7,6 +7,7 @@ import {
   MessageCircle, Zap, Users, Clock, CheckCircle2, AlertCircle, Eye, EyeOff,
   Radio, UserCheck, UserX, Play, TrendingUp, ShoppingCart, DollarSign, Timer,
   Lock, ChevronDown, Pause, Square, Package, Target, BarChart3, CheckSquare,
+  Upload, FileSpreadsheet, Smartphone, RotateCw, Plus, Trash2, Cpu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -74,6 +75,155 @@ export default function AutomationPage() {
 /* ════════════════════════════════════════════════════════════════
    TAB 1 — RETARGETING (Bulk WhatsApp via Baileys, anti-ban queue)
 ════════════════════════════════════════════════════════════════ */
+/* ── Import Modal ───────────────────────────────────────────── */
+function ImportLeadsModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (result: any) => void }) {
+  const { toast } = useToast();
+  const [step, setStep] = useState<"upload" | "mapping" | "done">("upload");
+  const [file, setFile] = useState<File | null>(null);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [nameCol, setNameCol] = useState("");
+  const [phoneCol, setPhoneCol] = useState("");
+  const [productCol, setProductCol] = useState("");
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = async (f: File) => {
+    setFile(f);
+    const ext = f.name.split(".").pop()?.toLowerCase();
+    if (ext === "csv" || ext === "txt") {
+      const text = await f.text();
+      const firstLine = text.split(/\r?\n/)[0];
+      const cols = firstLine.split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+      setHeaders(cols);
+      setPhoneCol(cols.find(c => /phone|tel|gsm|numéro|numero/i.test(c)) ?? cols[1] ?? "");
+      setNameCol(cols.find(c => /name|nom|client/i.test(c)) ?? cols[0] ?? "");
+      setProductCol(cols.find(c => /product|produit|article/i.test(c)) ?? "");
+    } else {
+      // XLSX — read first row via xlsx
+      const XLSX = await import("xlsx");
+      const buffer = await f.arrayBuffer();
+      const wb = XLSX.read(buffer);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json<Record<string, string>>(ws, { defval: "" });
+      const cols = data.length > 0 ? Object.keys(data[0]) : [];
+      setHeaders(cols);
+      setPhoneCol(cols.find(c => /phone|tel|gsm|numéro|numero/i.test(c)) ?? cols[1] ?? "");
+      setNameCol(cols.find(c => /name|nom|client/i.test(c)) ?? cols[0] ?? "");
+      setProductCol(cols.find(c => /product|produit|article/i.test(c)) ?? "");
+    }
+    setStep("mapping");
+  };
+
+  const handleImport = async () => {
+    if (!file || !phoneCol) return;
+    setImporting(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("mapping", JSON.stringify({ nameCol, phoneCol, productCol: productCol || null }));
+      const res = await fetch("/api/automation/retargeting/import", {
+        method: "POST", credentials: "include", body: fd,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message);
+      setStep("done");
+      onSuccess(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/automation/retargeting/leads"] });
+    } catch (e: any) {
+      toast({ title: "Erreur d'import", description: e.message, variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4" style={{ background: NAVY }}>
+          <div className="flex items-center gap-3">
+            <FileSpreadsheet className="w-5 h-5 text-white" />
+            <h2 className="text-base font-bold text-white">Importer des Clients</h2>
+          </div>
+          <button onClick={onClose} className="text-white/60 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          {step === "upload" && (
+            <>
+              <p className="text-sm text-zinc-500">Importez votre liste de clients depuis un fichier <strong>CSV</strong> ou <strong>XLSX</strong>.</p>
+              <div
+                className="border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer hover:border-amber-400 transition-colors"
+                style={{ borderColor: "rgba(197,160,89,0.4)" }}
+                onClick={() => fileRef.current?.click()}
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+              >
+                <Upload className="w-10 h-10 mx-auto mb-3" style={{ color: GOLD, opacity: 0.7 }} />
+                <p className="text-sm font-semibold text-zinc-600">Glissez ou cliquez pour sélectionner</p>
+                <p className="text-xs text-zinc-400 mt-1">CSV ou XLSX · Max 5 MB</p>
+              </div>
+              <input ref={fileRef} type="file" className="hidden" accept=".csv,.xlsx,.xls,.txt"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+            </>
+          )}
+
+          {step === "mapping" && headers.length > 0 && (
+            <>
+              <div className="flex items-center gap-2 text-sm font-semibold text-zinc-700">
+                <FileSpreadsheet className="w-4 h-4" style={{ color: GOLD }} />
+                {file?.name} — {headers.length} colonnes détectées
+              </div>
+              <div className="space-y-3">
+                {[
+                  { label: "Colonne Nom *", val: nameCol, set: setNameCol, required: false },
+                  { label: "Colonne Téléphone *", val: phoneCol, set: setPhoneCol, required: true },
+                  { label: "Colonne Dernier Produit", val: productCol, set: setProductCol, required: false },
+                ].map(({ label, val, set, required }) => (
+                  <div key={label}>
+                    <label className="text-xs font-semibold text-zinc-500 mb-1 block">{label}</label>
+                    <select value={val} onChange={e => set(e.target.value)}
+                      className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
+                      style={{ borderColor: required && !val ? "#ef4444" : "" }}>
+                      {!required && <option value="">— Ignorer —</option>}
+                      {headers.map(h => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-xl p-3 text-xs text-zinc-500" style={{ background: "rgba(197,160,89,0.07)", border: "1px solid rgba(197,160,89,0.3)" }}>
+                Les numéros déjà importés seront <strong>ignorés automatiquement</strong> (déduplication).
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => setStep("upload")} className="px-4 py-2 rounded-xl border border-zinc-200 text-sm text-zinc-500 hover:bg-zinc-50 transition-colors">Retour</button>
+                <button
+                  onClick={handleImport}
+                  disabled={!phoneCol || importing}
+                  className="flex-1 py-2.5 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                  style={{ background: NAVY }}
+                >
+                  {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                  {importing ? "Importation..." : "Lancer l'import"}
+                </button>
+              </div>
+            </>
+          )}
+
+          {step === "done" && (
+            <div className="text-center py-4 space-y-3">
+              <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(34,197,94,0.1)" }}>
+                <CheckCircle2 className="w-8 h-8 text-green-500" />
+              </div>
+              <h3 className="text-base font-bold text-zinc-800">Import réussi !</h3>
+              <button onClick={onClose} className="px-6 py-2.5 rounded-xl text-white text-sm font-bold" style={{ background: GOLD }}>Fermer</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RetargetingTab() {
   const { toast } = useToast();
   const [filter, setFilter] = useState<"delivered" | "injoignable">("delivered");
@@ -81,6 +231,11 @@ function RetargetingTab() {
   const [message, setMessage] = useState("مرحبا *{Nom_Client}*، عندنا عرض خاص ليك اليوم على *{Dernier_Produit}* 🎁");
   const [productLink, setProductLink] = useState("");
   const [campaignName, setCampaignName] = useState("");
+  const [retargetingView, setRetargetingView] = useState<"orders" | "leads">("orders");
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [selectedLeads, setSelectedLeads] = useState<Set<number>>(new Set());
+  const [senderDeviceId, setSenderDeviceId] = useState<number | null>(null);
+  const [rotationEnabled, setRotationEnabled] = useState(false);
 
   // Live campaign progress state
   const [activeCampaignId, setActiveCampaignId] = useState<number | null>(null);
@@ -93,6 +248,25 @@ function RetargetingTab() {
   const clients: any[] = Array.isArray(clientsRaw) ? clientsRaw : [];
 
   const { data: campaigns = [], refetch: refetchCampaigns } = useQuery<any[]>({ queryKey: ["/api/automation/campaigns"] });
+
+  const { data: leadsRaw = [], refetch: refetchLeads } = useQuery<any[]>({
+    queryKey: ["/api/automation/retargeting/leads"],
+    queryFn: () => fetch("/api/automation/retargeting/leads", { credentials: "include" }).then(r => r.json()),
+  });
+  const leads: any[] = Array.isArray(leadsRaw) ? leadsRaw : [];
+
+  const { data: devicesRaw = [] } = useQuery<any[]>({
+    queryKey: ["/api/automation/devices"],
+    queryFn: () => fetch("/api/automation/devices", { credentials: "include" }).then(r => r.json()),
+    refetchInterval: 10000,
+  });
+  const devices: any[] = Array.isArray(devicesRaw) ? devicesRaw : [];
+  const connectedDevices = devices.filter(d => d.status === "connected");
+
+  const deleteLeadsMutation = useMutation({
+    mutationFn: () => fetch("/api/automation/retargeting/leads", { method: "DELETE", credentials: "include" }).then(r => r.json()),
+    onSuccess: () => { refetchLeads(); toast({ title: "Leads supprimés" }); },
+  });
 
   /* ── On mount: check if there's already a running campaign ─── */
   useEffect(() => {
@@ -142,19 +316,30 @@ function RetargetingTab() {
   /* ── Launch campaign ─────────────────────────────────────────── */
   const launchMutation = useMutation({
     mutationFn: async () => {
-      if (selected.size === 0) throw new Error("Sélectionnez au moins un client.");
-      const selectedClients = clients.filter((c: any) => selected.has(c.id));
-      const recipients = selectedClients.map((c: any) => ({
-        phone: c.customerPhone,
-        name: c.customerName || "",
-        lastProduct: c.lastProductName || "",
-      }));
+      const isLeadsView = retargetingView === "leads";
+      let recipients: any[] = [];
+      if (isLeadsView) {
+        if (selectedLeads.size === 0) throw new Error("Sélectionnez au moins un lead.");
+        recipients = leads.filter((l: any) => selectedLeads.has(l.id)).map((l: any) => ({
+          phone: l.phone, name: l.name || "", lastProduct: l.lastProduct || "",
+        }));
+      } else {
+        if (selected.size === 0) throw new Error("Sélectionnez au moins un client.");
+        const selectedClients = clients.filter((c: any) => selected.has(c.id));
+        recipients = selectedClients.map((c: any) => ({
+          phone: c.customerPhone, name: c.customerName || "", lastProduct: c.lastProductName || "",
+        }));
+      }
+      const rotDevIds = rotationEnabled ? connectedDevices.map((d: any) => d.id) : [];
       const res = await fetch("/api/automation/retargeting/send", {
         method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: campaignName || `Campagne ${new Date().toLocaleDateString("fr-MA")}`,
-          message, productLink, targetFilter: filter, recipients,
+          message, productLink, targetFilter: isLeadsView ? "leads" : filter, recipients,
+          senderDeviceId: rotationEnabled ? null : (senderDeviceId || null),
+          rotationEnabled,
+          rotationDeviceIds: rotDevIds,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).message);
@@ -204,6 +389,16 @@ function RetargetingTab() {
 
   return (
     <div className="space-y-5">
+      {showImportModal && (
+        <ImportLeadsModal
+          onClose={() => setShowImportModal(false)}
+          onSuccess={(result) => {
+            toast({ title: `${result.imported} leads importés !`, description: result.skipped > 0 ? `${result.skipped} doublons ignorés.` : undefined });
+            setRetargetingView("leads");
+          }}
+        />
+      )}
+
       {/* ── Live Progress Bar (shown while campaign is active) ─── */}
       {isCampaignRunning && progress && (
         <div className="bg-white rounded-2xl border-2 border-amber-200 p-5 space-y-3" style={{ boxShadow: "0 0 0 1px rgba(197,160,89,0.2)" }}>
@@ -272,20 +467,55 @@ function RetargetingTab() {
         </div>
       )}
 
-      {/* Filter bar */}
+      {/* Sub-tab & Import bar */}
       <div className="bg-white rounded-2xl p-4 border border-zinc-100 flex flex-wrap gap-3 items-center">
-        <span className="text-sm font-semibold text-zinc-600">Cibler :</span>
-        {([["delivered", "✅ Clients Livrés"], ["confirme", "🟢 Commandes Confirmées"], ["injoignable", "📵 Injoignables"]] as const).map(([val, lbl]) => (
-          <button key={val} onClick={() => { setFilter(val as any); setSelected(new Set()); }}
-            className={cn("px-4 py-1.5 rounded-xl text-sm font-bold transition-all", filter === val ? "text-white" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200")}
-            style={filter === val ? { background: NAVY } : {}}
-          >{lbl}</button>
-        ))}
-        <span className="ml-auto text-xs text-zinc-400">{clients.length} clients trouvés</span>
+        <button
+          onClick={() => setRetargetingView("orders")}
+          className={cn("px-4 py-1.5 rounded-xl text-sm font-bold transition-all", retargetingView === "orders" ? "text-white" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200")}
+          style={retargetingView === "orders" ? { background: NAVY } : {}}
+          data-testid="tab-orders-clients"
+        >👥 Clients Commandes</button>
+        <button
+          onClick={() => setRetargetingView("leads")}
+          className={cn("px-4 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5", retargetingView === "leads" ? "text-white" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200")}
+          style={retargetingView === "leads" ? { background: GOLD } : {}}
+          data-testid="tab-leads"
+        >
+          <FileSpreadsheet className="w-3.5 h-3.5" />
+          Leads Importés
+          {leads.length > 0 && (
+            <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-bold", retargetingView === "leads" ? "bg-white/30 text-white" : "bg-amber-100 text-amber-700")}>
+              {leads.length}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setShowImportModal(true)}
+          className="ml-auto flex items-center gap-2 px-4 py-1.5 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
+          style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}
+          data-testid="button-import-leads"
+        >
+          <Upload className="w-3.5 h-3.5" /> Importer Data Client
+        </button>
       </div>
 
+      {/* Order status filter bar (only in orders view) */}
+      {retargetingView === "orders" && (
+        <div className="bg-white rounded-2xl p-3 border border-zinc-100 flex flex-wrap gap-2 items-center">
+          <span className="text-xs font-semibold text-zinc-500">Cibler :</span>
+          {([["delivered", "✅ Livrés"], ["confirme", "🟢 Confirmés"], ["injoignable", "📵 Injoignables"]] as const).map(([val, lbl]) => (
+            <button key={val} onClick={() => { setFilter(val as any); setSelected(new Set()); }}
+              className={cn("px-3 py-1 rounded-xl text-xs font-bold transition-all", filter === val ? "text-white" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200")}
+              style={filter === val ? { background: NAVY } : {}}
+            >{lbl}</button>
+          ))}
+          <span className="ml-auto text-xs text-zinc-400">{clients.length} clients</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-5">
-        {/* ── Client table ────────────────────────────────────────── */}
+        {/* ── Client table (orders view) OR Leads list (leads view) ─── */}
+        {retargetingView === "orders" ? (
         <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
           <div className="px-4 py-3 border-b border-zinc-100 flex items-center gap-3">
             {/* Select-all checkbox */}
@@ -346,6 +576,67 @@ function RetargetingTab() {
             </div>
           )}
         </div>
+        ) : (
+        /* ── Leads list view ── */
+        <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
+          <div className="px-4 py-3 border-b border-zinc-100 flex items-center gap-3">
+            <input type="checkbox"
+              checked={leads.length > 0 && leads.every((l: any) => selectedLeads.has(l.id))}
+              onChange={e => setSelectedLeads(e.target.checked ? new Set(leads.map((l: any) => l.id)) : new Set())}
+              className="rounded border-zinc-300 cursor-pointer"
+            />
+            <span className="text-sm font-bold text-zinc-700 flex-1">Leads importés ({leads.length})</span>
+            {leads.length > 0 && (
+              <button
+                onClick={() => { if (confirm(`Supprimer tous les ${leads.length} leads ?`)) deleteLeadsMutation.mutate(); }}
+                className="text-xs text-red-400 hover:text-red-600 flex items-center gap-1"
+              >
+                <Trash2 className="w-3 h-3" /> Tout effacer
+              </button>
+            )}
+            {selectedLeads.size > 0 && (
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: GOLD }}>
+                {selectedLeads.size} sél.
+              </span>
+            )}
+          </div>
+
+          {leads.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-14 text-zinc-400 gap-3">
+              <FileSpreadsheet className="w-10 h-10 opacity-20" />
+              <p className="text-sm">Aucun lead importé</p>
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-white flex items-center gap-2"
+                style={{ background: GOLD }}
+              >
+                <Upload className="w-3.5 h-3.5" /> Importer maintenant
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-[32px_1fr_140px_1fr] gap-2 px-4 py-2 bg-zinc-50 border-b border-zinc-100 text-[11px] font-bold text-zinc-400 uppercase tracking-wide">
+                <div /><div>Nom</div><div>Téléphone</div><div>Dernier produit</div>
+              </div>
+              <div className="max-h-[440px] overflow-y-auto divide-y divide-zinc-50">
+                {leads.map((l: any) => (
+                  <label key={l.id}
+                    className={cn("grid grid-cols-[32px_1fr_140px_1fr] gap-2 items-center px-4 py-2.5 cursor-pointer hover:bg-zinc-50 transition-colors", selectedLeads.has(l.id) && "bg-amber-50")}
+                    data-testid={`lead-row-${l.id}`}
+                  >
+                    <input type="checkbox" checked={selectedLeads.has(l.id)}
+                      onChange={e => { const s = new Set(selectedLeads); e.target.checked ? s.add(l.id) : s.delete(l.id); setSelectedLeads(s); }}
+                      className="rounded border-zinc-300" />
+                    <p className="text-sm font-semibold text-zinc-800 truncate">{l.name || "—"}</p>
+                    <p className="text-xs text-zinc-500 font-mono truncate">{l.phone}</p>
+                    <p className="text-xs text-zinc-500 truncate">{l.lastProduct || "—"}</p>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        )}
 
         {/* ── Message composer ─────────────────────────────────────── */}
         <div className="space-y-4">
@@ -403,17 +694,65 @@ function RetargetingTab() {
               <p className="text-[11px] text-amber-700">Délai anti-ban : 8–15 secondes entre chaque message pour protéger votre compte WhatsApp.</p>
             </div>
 
+            {/* Device selector */}
+            {devices.length > 0 && (
+              <div className="rounded-xl border border-zinc-200 p-3 space-y-2.5">
+                <p className="text-xs font-semibold text-zinc-600 flex items-center gap-1.5">
+                  <Smartphone className="w-3.5 h-3.5" style={{ color: GOLD }} /> Appareil d'envoi
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none flex-1">
+                    <div
+                      onClick={() => setRotationEnabled(v => !v)}
+                      className={cn("w-9 h-5 rounded-full transition-all relative shrink-0", rotationEnabled ? "bg-green-500" : "bg-zinc-200")}
+                    >
+                      <div className={cn("absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all", rotationEnabled ? "left-4" : "left-0.5")} />
+                    </div>
+                    <span className="text-xs text-zinc-600">
+                      {rotationEnabled ? (
+                        <span className="flex items-center gap-1 text-green-600 font-semibold"><RotateCw className="w-3 h-3" /> Rotation automatique</span>
+                      ) : "Rotation appareils"}
+                    </span>
+                  </label>
+                </div>
+                {!rotationEnabled && (
+                  <select
+                    value={senderDeviceId ?? ""}
+                    onChange={e => setSenderDeviceId(e.target.value ? Number(e.target.value) : null)}
+                    className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
+                    data-testid="select-sender-device"
+                  >
+                    <option value="">Session principale</option>
+                    {connectedDevices.map((d: any) => (
+                      <option key={d.id} value={d.id}>{d.name} ({d.phone || "non connecté"})</option>
+                    ))}
+                  </select>
+                )}
+                {rotationEnabled && connectedDevices.length === 0 && (
+                  <p className="text-[11px] text-amber-600">⚠️ Aucun appareil supplémentaire connecté — la session principale sera utilisée.</p>
+                )}
+                {rotationEnabled && connectedDevices.length > 0 && (
+                  <p className="text-[11px] text-green-600">✓ {connectedDevices.length} appareil(s) en rotation : {connectedDevices.map((d: any) => d.name).join(", ")}</p>
+                )}
+              </div>
+            )}
+
             {/* Launch button */}
-            <button
-              onClick={() => launchMutation.mutate()}
-              disabled={selected.size === 0 || launchMutation.isPending || isCampaignRunning}
-              className="w-full py-3.5 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50"
-              style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}
-              data-testid="button-launch-campaign"
-            >
-              {launchMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Target className="w-4 h-4" />}
-              {isCampaignRunning ? "Campagne en cours..." : `Lancer la Campagne (${selected.size})`}
-            </button>
+            {(() => {
+              const count = retargetingView === "leads" ? selectedLeads.size : selected.size;
+              return (
+                <button
+                  onClick={() => launchMutation.mutate()}
+                  disabled={count === 0 || launchMutation.isPending || isCampaignRunning}
+                  className="w-full py-3.5 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 transition-opacity hover:opacity-90 disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}
+                  data-testid="button-launch-campaign"
+                >
+                  {launchMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Target className="w-4 h-4" />}
+                  {isCampaignRunning ? "Campagne en cours..." : `Lancer la Campagne (${count})`}
+                </button>
+              );
+            })()}
           </div>
 
           {/* ── Campaign history ──────────────────────────────────── */}
@@ -1168,6 +1507,205 @@ function WhatsappTab() {
         <p className="font-semibold text-zinc-700 mb-1">Reconnexion automatique</p>
         <p>La session est sauvegardée sur le serveur. En cas de redémarrage, la connexion se rétablit automatiquement sans rescanner le QR.</p>
       </div>
+
+      <DevicesPanel />
+    </div>
+  );
+}
+
+/* ── DevicesPanel — multi-device management ─────────────────── */
+function DevicesPanel() {
+  const { toast } = useToast();
+  const [showAdd, setShowAdd] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [addingDeviceId, setAddingDeviceId] = useState<number | null>(null);
+  const [deviceQr, setDeviceQr] = useState<string | null>(null);
+
+  const { data: devicesRaw = [], refetch: refetchDevices } = useQuery<any[]>({
+    queryKey: ["/api/automation/devices"],
+    queryFn: () => fetch("/api/automation/devices", { credentials: "include" }).then(r => r.json()),
+    refetchInterval: showAdd && addingDeviceId ? 3000 : 10000,
+  });
+  const devices: any[] = Array.isArray(devicesRaw) ? devicesRaw : [];
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/automation/devices", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName || "Appareil " + (devices.length + 1) }),
+      });
+      if (!res.ok) throw new Error((await res.json()).message);
+      return res.json();
+    },
+    onSuccess: async (device) => {
+      setAddingDeviceId(device.id);
+      refetchDevices();
+      // Connect to get QR
+      const connectRes = await fetch(`/api/automation/devices/${device.id}/connect`, {
+        method: "POST", credentials: "include",
+      });
+      if (connectRes.ok) {
+        const data = await connectRes.json();
+        setDeviceQr(data.qr ?? null);
+      }
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/automation/devices/${id}`, { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error((await res.json()).message);
+    },
+    onSuccess: () => { refetchDevices(); toast({ title: "Appareil supprimé" }); },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const reconnectDevice = async (id: number) => {
+    const res = await fetch(`/api/automation/devices/${id}/connect`, { method: "POST", credentials: "include" });
+    if (res.ok) {
+      const data = await res.json();
+      setAddingDeviceId(id);
+      setDeviceQr(data.qr ?? null);
+      setShowAdd(true);
+    }
+  };
+
+  // Poll for QR update while connecting
+  useEffect(() => {
+    if (!addingDeviceId || !showAdd) return;
+    const timer = setInterval(async () => {
+      const res = await fetch(`/api/automation/devices/${addingDeviceId}/status`, { credentials: "include" });
+      if (res.ok) {
+        const d = await res.json();
+        if (d.status === "connected") {
+          setShowAdd(false);
+          setAddingDeviceId(null);
+          setDeviceQr(null);
+          setNewName("");
+          refetchDevices();
+          toast({ title: "✅ Appareil connecté !", description: d.phone ? `+${d.phone}` : undefined });
+        } else if (d.qr) {
+          setDeviceQr(d.qr);
+        }
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [addingDeviceId, showAdd]);
+
+  return (
+    <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
+      <div className="px-4 py-3 border-b border-zinc-100 flex items-center gap-2">
+        <Smartphone className="w-4 h-4" style={{ color: GOLD }} />
+        <h3 className="text-sm font-bold text-zinc-700 flex-1">Appareils Supplémentaires</h3>
+        <button
+          onClick={() => { setShowAdd(true); setAddingDeviceId(null); setDeviceQr(null); }}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-white"
+          style={{ background: NAVY }}
+          data-testid="button-add-device"
+        >
+          <Plus className="w-3.5 h-3.5" /> Ajouter un appareil
+        </button>
+      </div>
+
+      {/* Devices list */}
+      {devices.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-8 text-zinc-400 gap-2">
+          <Smartphone className="w-8 h-8 opacity-20" />
+          <p className="text-xs">Aucun appareil supplémentaire</p>
+        </div>
+      ) : (
+        <div className="divide-y divide-zinc-50">
+          {devices.map((d: any) => (
+            <div key={d.id} className="flex items-center gap-3 px-4 py-3">
+              <div className={cn("w-2.5 h-2.5 rounded-full shrink-0", d.status === "connected" ? "bg-green-500" : d.status === "qr" || d.status === "connecting" ? "bg-amber-400 animate-pulse" : "bg-zinc-300")} />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-zinc-700 truncate">{d.name}</p>
+                {d.phone && <p className="text-[11px] text-zinc-400 font-mono">+{d.phone}</p>}
+                {!d.phone && <p className="text-[11px] text-zinc-400 capitalize">{d.status === "qr" ? "En attente du scan" : d.status === "connecting" ? "Connexion..." : d.status}</p>}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {d.status !== "connected" && (
+                  <button onClick={() => reconnectDevice(d.id)} className="text-[10px] px-2 py-1 rounded-lg border border-amber-200 text-amber-600 hover:bg-amber-50 flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3" /> QR
+                  </button>
+                )}
+                <button
+                  onClick={() => { if (confirm(`Supprimer "${d.name}" ?`)) deleteMutation.mutate(d.id); }}
+                  className="text-zinc-300 hover:text-red-500 transition-colors"
+                  data-testid={`button-delete-device-${d.id}`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add device modal */}
+      {showAdd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4" style={{ background: NAVY }}>
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-white" />
+                <h3 className="text-sm font-bold text-white">{addingDeviceId ? "Scanner le QR Code" : "Ajouter un appareil"}</h3>
+              </div>
+              <button onClick={() => { setShowAdd(false); setAddingDeviceId(null); setDeviceQr(null); setNewName(""); }} className="text-white/60 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {!addingDeviceId ? (
+                <>
+                  <div>
+                    <label className="text-xs font-semibold text-zinc-500 mb-1 block">Nom de l'appareil</label>
+                    <input
+                      value={newName}
+                      onChange={e => setNewName(e.target.value)}
+                      placeholder={`Appareil ${devices.length + 1}`}
+                      className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
+                      data-testid="input-device-name"
+                    />
+                  </div>
+                  <button
+                    onClick={() => createMutation.mutate()}
+                    disabled={createMutation.isPending}
+                    className="w-full py-2.5 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                    style={{ background: GOLD }}
+                  >
+                    {createMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cpu className="w-4 h-4" />}
+                    {createMutation.isPending ? "Initialisation..." : "Générer le QR Code"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-center text-zinc-500">Scannez ce QR avec votre téléphone WhatsApp</p>
+                  <div className="flex justify-center">
+                    {deviceQr ? (
+                      <div className="p-3 bg-white rounded-2xl shadow" style={{ border: `3px solid ${GOLD}` }}>
+                        <img src={deviceQr} alt="QR Code" width={200} height={200} className="rounded-xl block" />
+                      </div>
+                    ) : (
+                      <div className="w-[200px] h-[200px] flex flex-col items-center justify-center gap-3 rounded-2xl" style={{ border: `3px dashed ${GOLD}` }}>
+                        <Loader2 className="w-8 h-8 animate-spin" style={{ color: GOLD }} />
+                        <p className="text-xs text-zinc-400">Génération QR...</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-center gap-2 text-xs text-amber-600">
+                    <div className="w-1.5 h-1.5 rounded-full animate-pulse bg-amber-400" />
+                    En attente du scan...
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

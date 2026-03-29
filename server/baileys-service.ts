@@ -602,6 +602,219 @@ export const baileysService = {
   getActiveStoreId() { return 1 as number | null; },
 };
 
+/* ═══════════════════════════════════════════════════════════════════
+   MULTI-DEVICE MANAGER — one Baileys socket per whatsapp_devices row
+   Auth dir: auth_info/store_<storeId>/device_<deviceId>/
+═══════════════════════════════════════════════════════════════════ */
+
+function getDeviceAuthDir(storeId: number, deviceId: number): string {
+  return path.join(MULTI_AUTH_BASE, `store_${storeId}`, `device_${deviceId}`);
+}
+
+const _deviceSessions = new Map<number, BaileysSessionInstance>();
+
+function createDeviceSession(deviceId: number, storeId: number): BaileysSessionInstance {
+  const AUTH_DIR = getDeviceAuthDir(storeId, deviceId);
+  const tag = `DEV:${deviceId}`;
+
+  let _sock: ReturnType<typeof makeWASocket> | null = null;
+  let _waState: WAState = "idle";
+  let _qrDataUrl: string | null = null;
+  let _phoneNumber: string | null = null;
+  let _reconnectTimer: NodeJS.Timeout | null = null;
+  let _isRunning = false;
+
+  async function persistStatus(status: string, phone?: string | null, qr?: string | null) {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { eq: drEq } = await import("drizzle-orm");
+      await db.update(whatsappDevices)
+        .set({ status, phone: phone ?? null, qrCode: qr ?? null, updatedAt: new Date() })
+        .where(drEq(whatsappDevices.id, deviceId));
+    } catch { /* non-fatal */ }
+  }
+
+  async function clearSessionFiles() {
+    try { await fs.rm(AUTH_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+
+  function scheduleReconnect(delayMs = 5000) {
+    if (_reconnectTimer) clearTimeout(_reconnectTimer);
+    _reconnectTimer = setTimeout(() => {
+      _reconnectTimer = null;
+      connectDevice().catch(e => console.error(`[${tag}] Reconnect failed:`, e.message));
+    }, delayMs);
+  }
+
+  async function connectDevice(): Promise<void> {
+    if (_isRunning) return;
+    _isRunning = true;
+    try {
+      await fs.mkdir(AUTH_DIR, { recursive: true });
+      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+      const { version } = await fetchLatestBaileysVersion();
+
+      const sock = makeWASocket({
+        version,
+        auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }) as any) },
+        printQRInTerminal: false,
+        logger: pino({ level: "silent" }) as any,
+        browser: [`TajerGrow-D${deviceId}`, "Chrome", "1.0"],
+      });
+      _sock = sock;
+
+      sock.ev.on("creds.update", saveCreds);
+
+      sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+          try {
+            _qrDataUrl = await QRCode.toDataURL(qr);
+          } catch { _qrDataUrl = null; }
+          _waState = "qr";
+          await persistStatus("qr", null, _qrDataUrl);
+          console.log(`[${tag}] QR ready`);
+        }
+
+        if (connection === "connecting") {
+          _waState = "connecting";
+          await persistStatus("connecting");
+          console.log(`[${tag}] Connecting...`);
+        }
+
+        if (connection === "open") {
+          _waState = "connected";
+          _phoneNumber = sock.user?.id?.split(":")[0] ?? null;
+          _qrDataUrl = null;
+          await persistStatus("connected", _phoneNumber, null);
+          console.log(`[${tag}] Connected — phone: ${_phoneNumber}`);
+        }
+
+        if (connection === "close") {
+          _isRunning = false;
+          _sock = null;
+          const code = (lastDisconnect?.error as Boom)?.output?.statusCode;
+          const loggedOut = code === DisconnectReason.loggedOut;
+          _waState = "disconnected";
+          await persistStatus("disconnected");
+          console.log(`[${tag}] Disconnected — code: ${code} | loggedOut: ${loggedOut}`);
+          if (loggedOut) {
+            await clearSessionFiles();
+            await persistStatus("disconnected", null, null);
+          } else if (code !== 401) {
+            scheduleReconnect(5000);
+          }
+        }
+      });
+    } catch (err: any) {
+      _isRunning = false;
+      console.error(`[${tag}] connectDevice error:`, err.message);
+      scheduleReconnect(8000);
+    }
+  }
+
+  return {
+    async start() { await connectDevice(); },
+
+    async resetAndRestart() {
+      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      try { await _sock?.logout(); } catch { /* ignore */ }
+      _sock = null;
+      _isRunning = false;
+      _waState = "idle";
+      _phoneNumber = null;
+      _qrDataUrl = null;
+      await clearSessionFiles();
+      await persistStatus("disconnected", null, null);
+      setTimeout(() => connectDevice().catch(console.error), 1000);
+    },
+
+    async logout() {
+      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      try { await _sock?.logout(); } catch { /* ignore */ }
+      _sock = null;
+      _isRunning = false;
+      _waState = "idle";
+      _phoneNumber = null;
+      _qrDataUrl = null;
+      await clearSessionFiles();
+      await persistStatus("disconnected", null, null);
+      _deviceSessions.delete(deviceId);
+    },
+
+    getStatus(): BaileysStatus {
+      return { state: _waState, phone: _phoneNumber, qr: _qrDataUrl };
+    },
+
+    async sendMessage(phone: string, text: string): Promise<boolean> {
+      if (!_sock || _waState !== "connected") return false;
+      try {
+        await _sock.sendMessage(`${normalisePhone(phone)}@s.whatsapp.net`, { text });
+        return true;
+      } catch (err: any) {
+        console.error(`[${tag}] Send error:`, err.message);
+        return false;
+      }
+    },
+
+    async sendImage(phone: string, imageUrl: string, caption: string): Promise<boolean> {
+      if (!_sock || _waState !== "connected") return false;
+      try {
+        await _sock.sendMessage(`${normalisePhone(phone)}@s.whatsapp.net`, { image: { url: imageUrl }, caption });
+        return true;
+      } catch (err: any) {
+        console.error(`[${tag}] Image send error:`, err.message);
+        return false;
+      }
+    },
+
+    isConnected(): boolean { return _waState === "connected"; },
+  };
+}
+
+export function getDeviceInstance(deviceId: number, storeId: number): BaileysSessionInstance {
+  if (!_deviceSessions.has(deviceId)) {
+    _deviceSessions.set(deviceId, createDeviceSession(deviceId, storeId));
+  }
+  return _deviceSessions.get(deviceId)!;
+}
+
+export function removeDeviceInstance(deviceId: number): void {
+  _deviceSessions.delete(deviceId);
+}
+
+export async function getConnectedDevicesForStore(storeId: number): Promise<{ id: number; phone: string }[]> {
+  const result: { id: number; phone: string }[] = [];
+  for (const [deviceId, session] of _deviceSessions) {
+    if (session.isConnected()) {
+      const status = session.getStatus();
+      result.push({ id: deviceId, phone: status.phone ?? "" });
+    }
+  }
+  return result;
+}
+
+export async function autoStartDevices(): Promise<void> {
+  try {
+    const { whatsappDevices } = await import("@shared/schema");
+    const devices = await db.select().from(whatsappDevices);
+    for (const device of devices) {
+      const deviceAuthDir = getDeviceAuthDir(device.storeId, device.id);
+      const credsFile = path.join(deviceAuthDir, "creds.json");
+      try {
+        await fs.access(credsFile);
+        console.log(`[WA-AUTO-DEV] Starting device ${device.id} (store ${device.storeId})...`);
+        getDeviceInstance(device.id, device.storeId).start().catch(console.error);
+      } catch {
+        // No creds yet — user hasn't scanned QR
+      }
+    }
+  } catch (e: any) {
+    console.log("[WA-AUTO-DEV] No devices to auto-start:", e.message);
+  }
+}
+
 /* ── Migration: move old auth_info_baileys/ → auth_info/store_N/ ─ */
 async function migrateOldSession(): Promise<void> {
   const OLD_DIR = path.join(DATA_DIR, "auth_info_baileys");
