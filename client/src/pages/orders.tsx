@@ -496,12 +496,35 @@ export default function Orders() {
     if (!bulkShipProvider || selectedIds.size === 0) return;
     bulkShip.mutate({ orderIds: Array.from(selectedIds), provider: bulkShipProvider }, {
       onSuccess: (data) => {
-        toast({ title: "Envoi réussi", description: `${data.shipped} commandes expédiées` });
-        setShowBulkShipModal(false);
-        setSelectedIds(new Set());
-        setBulkShipProvider("");
+        if (data.failed > 0 && data.shipped === 0) {
+          // All failed
+          toast({
+            title: "Échec de l'expédition",
+            description: `${data.failed} commande(s) refusée(s) par ${bulkShipProvider}. Vérifiez votre clé API et les logs d'intégration.`,
+            variant: "destructive",
+          });
+        } else if (data.failed > 0) {
+          // Partial success
+          toast({
+            title: "Expédition partielle",
+            description: `${data.shipped} expédiée(s) ✅ · ${data.failed} refusée(s) ❌ — consultez les logs pour les détails.`,
+            variant: "destructive",
+          });
+          setShowBulkShipModal(false);
+          setSelectedIds(new Set());
+          setBulkShipProvider("");
+        } else {
+          // All succeeded
+          toast({ title: "Expédition réussie", description: `${data.shipped} commande(s) envoyée(s) à ${bulkShipProvider}` });
+          setShowBulkShipModal(false);
+          setSelectedIds(new Set());
+          setBulkShipProvider("");
+        }
       },
-      onError: (err: any) => toast({ title: "Erreur", description: err.message, variant: "destructive" }),
+      onError: (err: any) => {
+        const msg = String(err.message || "").replace(/^\d{3}:\s*/, "");
+        toast({ title: "Erreur d'expédition", description: msg, variant: "destructive" });
+      },
     });
   };
 

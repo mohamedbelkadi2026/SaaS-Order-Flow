@@ -22,6 +22,21 @@ Products are displayed everywhere as **"Product Name - Variant"** (e.g., "Mocass
 - **WhatsApp campaign template `{Nom_Produit}`** (`server/routes.ts` `formatWhatsAppMessage`): substitution now includes variant
 - **Invalid variants filtered**: strings `"Default Title"`, `"null"`, `"-"` are never shown
 
+## Real Carrier API Integration (`server/services/carrier-service.ts`)
+The shipping dispatch routes now call actual carrier APIs — no more fake tracking numbers.
+
+- **`server/services/carrier-service.ts`** — Central carrier HTTP service:
+  - Endpoint registry for Digylog, Eco-Track, Cathedis, Onessta, Speedex, Ameex, Sendit, Livo, etc.
+  - Builds the canonical Moroccan COD payload: `nom_complet`, `telephone`, `ville`, `adresse`, `prix` (centimes ÷ 100 → DH), `produit`, `ouverture_colis`, `reference`.
+  - Auth headers: `Authorization: Bearer <apiKey>`, `X-API-KEY`, `Token`; optional `X-API-SECRET`.
+  - Handles 4xx/5xx HTTP errors and logical 2xx errors (`{ success: false }`).
+  - Extracts tracking number from many response key shapes (`barcode`, `tracking_number`, `code_suivi`, …).
+  - Full console logging for every request/response for Railway debugging.
+- **`POST /api/orders/:id/ship`** — Single ship: calls carrier API; only updates status to `Attente De Ramassage` on HTTP 200/201 success; returns `422` with carrier error message on failure.
+- **`POST /api/orders/bulk-ship`** — Bulk ship: iterates eligible `confirme` orders, calls carrier per order, returns `{ shipped, failed, total, results }` so the UI can show partial-failure detail.
+- **Frontend (`orders.tsx`)** — `handleBulkShip` now shows distinct toasts for all-success, partial, and all-failure cases; strips HTTP status prefix from error messages.
+- **DB rule**: order status is updated to `Attente De Ramassage` **only** after the carrier confirms the shipment; failed orders remain `confirme`.
+
 ## City Mapping Feature (Carrier-Aware)
 Prevents "Ville invalide" errors at shipping dispatch time.
 - **`client/src/lib/carrier-cities.ts`** — City lists for Digylog, Cathedis, Amana + generic Morocco. `findBestCityMatch()` auto-matches raw city names (aliases, starts-with, contains). `isCityValid()` checks if a city is in the carrier list.

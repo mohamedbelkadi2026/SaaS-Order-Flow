@@ -12,6 +12,7 @@ import multer from "multer";
 import path from "path";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
+import { shipOrderToCarrier } from "./services/carrier-service";
 
 import fs from "fs";
 
@@ -908,31 +909,90 @@ export async function registerRoutes(
     try {
       const user = req.user!;
       if (user.role === 'agent') {
-        return res.status(403).json({ message: "Agents cannot bulk ship orders" });
+        return res.status(403).json({ message: "Les agents ne peuvent pas expédier en masse" });
       }
+
       const { orderIds, provider } = req.body;
-      if (!Array.isArray(orderIds) || !provider) {
-        return res.status(400).json({ message: "orderIds (array) and provider required" });
+      if (!Array.isArray(orderIds) || orderIds.length === 0 || !provider) {
+        return res.status(400).json({ message: "orderIds (tableau) et provider sont obligatoires" });
       }
-      const integration = await storage.getIntegrationByProvider(user.storeId!, provider);
-      if (!integration) {
-        return res.status(400).json({ message: `No shipping integration found for ${provider}` });
+
+      const storeId = user.storeId!;
+      const integration = await storage.getIntegrationByProvider(storeId, provider);
+      if (!integration || integration.type !== 'shipping') {
+        return res.status(400).json({ message: `Transporteur ${provider} non connecté` });
       }
-      const eligible = await storage.bulkShipOrders(orderIds, user.storeId!);
+
+      const creds = JSON.parse(integration.credentials || '{}');
+      if (!creds.apiKey && !creds.apiUrl) {
+        return res.status(400).json({ message: `Clé API manquante pour ${provider}. Configurez-la dans Intégrations → Sociétés de Livraison.` });
+      }
+
+      const eligible = await storage.bulkShipOrders(orderIds, storeId);
       if (eligible.length === 0) {
-        return res.status(400).json({ message: "No eligible orders (must be 'confirme' status)" });
+        return res.status(400).json({ message: "Aucune commande éligible (statut 'confirme' requis)" });
       }
-      const results: any[] = [];
+
+      const results: { orderId: number; orderNumber?: string; trackingNumber?: string; labelLink?: string; status: 'shipped' | 'failed'; error?: string }[] = [];
+
       for (const order of eligible) {
-        const trackingNumber = `${provider.toUpperCase()}-${Date.now()}-${order.id}`;
-        const labelLink = `/api/labels/${trackingNumber}.pdf`;
-        await storage.updateOrderShipping(order.id, trackingNumber, labelLink, provider);
-        await storage.updateOrderStatus(order.id, 'Attente De Ramassage');
-        results.push({ orderId: order.id, trackingNumber, labelLink, status: 'shipped' });
+        const productName =
+          (order as any).rawProductName ||
+          ((order as any).items && (order as any).items.length > 0
+            ? ((order as any).items[0].rawProductName || (order as any).items[0].product?.name || 'Produit')
+            : 'Produit');
+
+        const shipResult = await shipOrderToCarrier(provider, creds, {
+          customerName: order.customerName,
+          phone:        order.customerPhone,
+          city:         (order as any).customerCity   || '',
+          address:      (order as any).customerAddress || (order as any).customerCity || '',
+          totalPrice:   order.totalPrice,
+          productName,
+          canOpen:      (order as any).canOpen === 1,
+          orderNumber:  (order as any).orderNumber || String(order.id),
+          orderId:      order.id,
+          storeId,
+        });
+
+        if (shipResult.success) {
+          await storage.updateOrderShipping(order.id, shipResult.trackingNumber!, shipResult.labelUrl!, provider);
+          await storage.updateOrderStatus(order.id, 'Attente De Ramassage');
+          await storage.createIntegrationLog({
+            storeId, integrationId: integration.id, provider,
+            action: 'shipping_sent', status: 'success',
+            message: `✅ Commande #${(order as any).orderNumber || order.id} envoyée. Tracking: ${shipResult.trackingNumber}`,
+          });
+          results.push({
+            orderId: order.id,
+            orderNumber: (order as any).orderNumber,
+            trackingNumber: shipResult.trackingNumber,
+            labelLink: shipResult.labelUrl,
+            status: 'shipped',
+          });
+        } else {
+          // Keep 'confirme' status — do not modify the order
+          await storage.createIntegrationLog({
+            storeId, integrationId: integration.id, provider,
+            action: 'shipping_sent', status: 'fail',
+            message: `❌ Commande #${(order as any).orderNumber || order.id} refusée (HTTP ${shipResult.httpStatus ?? '?'}): ${shipResult.error}`,
+          });
+          results.push({
+            orderId: order.id,
+            orderNumber: (order as any).orderNumber,
+            status: 'failed',
+            error: shipResult.error,
+          });
+        }
       }
-      res.json({ shipped: results.length, results });
+
+      const shipped = results.filter(r => r.status === 'shipped').length;
+      const failed  = results.filter(r => r.status === 'failed').length;
+
+      res.json({ shipped, failed, total: results.length, results });
     } catch (err) {
-      res.status(500).json({ message: "Bulk ship failed" });
+      console.error("[BULK-SHIP] Unexpected error:", err);
+      res.status(500).json({ message: "Erreur inattendue lors de l'expédition en masse" });
     }
   });
 
@@ -2917,32 +2977,58 @@ export async function registerRoutes(
       }
 
       const creds = JSON.parse(integration.credentials || '{}');
-      if (!creds.apiKey) {
-        return res.status(400).json({ message: `Clé API manquante pour ${provider}` });
+      if (!creds.apiKey && !creds.apiUrl) {
+        return res.status(400).json({ message: `Clé API manquante pour ${provider}. Configurez-la dans Intégrations → Sociétés de Livraison.` });
       }
 
-      const trackingNumber = `${provider.toUpperCase()}-${Date.now()}-${orderId}`;
-      const labelLink = `/api/labels/${trackingNumber}.pdf`;
+      // Resolve product name: rawProductName on order → first item name → fallback
+      const productName =
+        (order as any).rawProductName ||
+        (order.items && order.items.length > 0
+          ? ((order.items[0] as any).rawProductName || order.items[0].product?.name || 'Produit')
+          : 'Produit');
 
-      try {
-        await storage.updateOrderShipping(orderId, trackingNumber, labelLink, provider);
-        await storage.updateOrderStatus(orderId, 'in_progress');
+      // ── Call carrier API ──────────────────────────────────────────
+      const shipResult = await shipOrderToCarrier(provider, creds, {
+        customerName: order.customerName,
+        phone:        order.customerPhone,
+        city:         order.customerCity  || '',
+        address:      order.customerAddress || order.customerCity || '',
+        totalPrice:   order.totalPrice,
+        productName,
+        canOpen:      order.canOpen === 1,
+        orderNumber:  order.orderNumber || String(orderId),
+        orderId,
+        storeId,
+      });
 
-        await storage.createIntegrationLog({
-          storeId, integrationId: integration.id, provider,
-          action: 'shipping_sent', status: 'success',
-          message: `Commande #${order.orderNumber} envoyée via ${provider}. Tracking: ${trackingNumber}`,
-        });
-
-        res.json({ trackingNumber, labelLink, provider });
-      } catch (apiErr: any) {
+      if (!shipResult.success) {
+        // ── Carrier rejected — keep order status as 'confirme' ──────
         await storage.createIntegrationLog({
           storeId, integrationId: integration.id, provider,
           action: 'shipping_sent', status: 'fail',
-          message: `Erreur envoi commande #${order.orderNumber}: ${apiErr.message}`,
+          message: `❌ Commande #${order.orderNumber} refusée par ${provider} (HTTP ${shipResult.httpStatus ?? '?'}): ${shipResult.error}`,
         });
-        return res.status(500).json({ message: `Erreur d'envoi: ${apiErr.message}` });
+        return res.status(422).json({
+          message:        shipResult.error || `Transporteur ${provider} a refusé la commande`,
+          carrierMessage: shipResult.carrierMessage,
+          httpStatus:     shipResult.httpStatus,
+          rawResponse:    shipResult.rawResponse,
+        });
       }
+
+      // ── Success — update DB only after carrier confirms ───────────
+      const { trackingNumber, labelUrl } = shipResult;
+      await storage.updateOrderShipping(orderId, trackingNumber!, labelUrl!, provider);
+      await storage.updateOrderStatus(orderId, 'Attente De Ramassage');
+
+      await storage.createIntegrationLog({
+        storeId, integrationId: integration.id, provider,
+        action: 'shipping_sent', status: 'success',
+        message: `✅ Commande #${order.orderNumber} envoyée via ${provider}. Tracking: ${trackingNumber}`,
+      });
+
+      res.json({ trackingNumber, labelLink: labelUrl, provider, success: true });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
