@@ -484,7 +484,7 @@ export async function registerRoutes(
 
     let totalOrders = allOrders.length;
     // CONFIRMED = confirme + expédié + delivered (all successfully-confirmed COD orders)
-    const ADMIN_CONFIRMED = new Set(['confirme', 'expédié', 'delivered']);
+    const ADMIN_CONFIRMED = new Set(['confirme', 'expédié', 'delivered', 'Attente De Ramassage']);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
@@ -812,7 +812,7 @@ export async function registerRoutes(
       if (status === 'annule_group') {
         res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
       } else if (status === 'suivi_group') {
-        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné'].includes(o.status)));
+        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage'].includes(o.status)));
       } else {
         res.json(status ? ordersList.filter(o => o.status === status) : ordersList);
       }
@@ -822,7 +822,7 @@ export async function registerRoutes(
         res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
       } else if (status === 'suivi_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
-        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné'].includes(o.status)));
+        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage'].includes(o.status)));
       } else {
         const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
         res.json(ordersList);
@@ -918,7 +918,7 @@ export async function registerRoutes(
         const trackingNumber = `${provider.toUpperCase()}-${Date.now()}-${order.id}`;
         const labelLink = `/api/labels/${trackingNumber}.pdf`;
         await storage.updateOrderShipping(order.id, trackingNumber, labelLink, provider);
-        await storage.updateOrderStatus(order.id, 'in_progress');
+        await storage.updateOrderStatus(order.id, 'Attente De Ramassage');
         results.push({ orderId: order.id, trackingNumber, labelLink, status: 'shipped' });
       }
       res.json({ shipped: results.length, results });

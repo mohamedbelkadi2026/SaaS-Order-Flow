@@ -28,9 +28,39 @@ const ALL_STATUSES = [
   { value: 'Annulé (double)', label: 'Annulé (double)' },
   { value: 'boite vocale', label: 'Boite vocale' },
   { value: 'in_progress', label: 'En cours / Expédié' },
+  { value: 'Attente De Ramassage', label: 'Attente Ramassage' },
   { value: 'delivered', label: 'Livré' },
   { value: 'refused', label: 'Refusé' },
 ];
+
+const CARRIER_LOGOS: Record<string, string> = {
+  digylog: '/carriers/digylog.svg',
+  onessta: '/carriers/onessta.svg',
+  ozoneexpress: '/carriers/ozon.svg',
+  'ozone express': '/carriers/ozon.svg',
+  ozon: '/carriers/ozon.svg',
+  sendit: '/carriers/sendit.svg',
+  ameex: '/carriers/ameex.svg',
+  cathedis: '/carriers/cathidis.svg',
+  cathidis: '/carriers/cathidis.svg',
+  speedex: '/carriers/speedx.png',
+  speedx: '/carriers/speedx.png',
+  kargoexpress: '/carriers/cargo.svg',
+  'kargo express': '/carriers/cargo.svg',
+  cargo: '/carriers/cargo.svg',
+  forcelog: '/carriers/forcelog.png',
+  livo: '/carriers/ol.svg',
+  ol: '/carriers/ol.svg',
+  quicklivraison: '/carriers/ql.svg',
+  'quick livraison': '/carriers/ql.svg',
+  ql: '/carriers/ql.svg',
+};
+
+function getCarrierLogo(provider: string | null | undefined): string | null {
+  if (!provider) return null;
+  const key = provider.toLowerCase().replace(/\s+/g, '');
+  return CARRIER_LOGOS[key] || CARRIER_LOGOS[provider.toLowerCase()] || null;
+}
 
 const ALL_COLUMNS = [
   { key: 'code', label: 'Code', locked: false },
@@ -586,9 +616,12 @@ export default function AllOrders() {
                       {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
                       {isColVisible('livraison') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          {order.shippingProvider ? (
-                            <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
-                          ) : <span className="text-muted-foreground">-</span>}
+                          {order.shippingProvider ? (() => {
+                            const logo = getCarrierLogo(order.shippingProvider);
+                            return logo
+                              ? <img src={logo} alt={order.shippingProvider} style={{ maxHeight: 25, maxWidth: 70 }} className="object-contain mx-auto" />
+                              : <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>;
+                          })() : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
                       {isColVisible('derniereAction') && (
@@ -696,9 +729,12 @@ export default function AllOrders() {
                   {order.agent?.username && (
                     <Badge variant="outline" className="mt-1 text-[10px]">{order.agent.username}</Badge>
                   )}
-                  {order.shippingProvider && (
-                    <Badge className="mt-1 ml-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
-                  )}
+                  {order.shippingProvider && (() => {
+                    const logo = getCarrierLogo(order.shippingProvider);
+                    return logo
+                      ? <img src={logo} alt={order.shippingProvider} style={{ maxHeight: 22, maxWidth: 60 }} className="mt-1 ml-1 object-contain inline-block" />
+                      : <Badge className="mt-1 ml-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>;
+                  })()}
                   {order.utmSource && (
                     <Badge className="mt-1 ml-1 bg-violet-100 text-violet-700 border-violet-200 text-[10px]">{order.utmSource}</Badge>
                   )}

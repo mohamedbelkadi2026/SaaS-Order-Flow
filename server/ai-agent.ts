@@ -488,14 +488,17 @@ RULES FOR THIS MODE:
   }
 
   // ── DELIVERY COMPANION MODE — activated when order already confirmed ──
-  if (ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours") {
+  if (ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours" || ctx?.orderStatus === "Attente De Ramassage") {
     const trackingLine = ctx.trackNumber
       ? `رقم التتبع ديالك: *${ctx.trackNumber}*${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""}`
       : null;
     const isShipped = ctx.orderStatus === "expédié" || ctx.orderStatus === "en_cours";
-    const deliveryStatus = isShipped
-      ? `الكوموند ديالك ${address.formal} راها عند شركة الشحن${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""} وهي فـ الطريق ليك 🚚${trackingLine ? `\n${trackingLine}` : ""}`
-      : `الكوموند ديالك ${address.formal} راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅`;
+    const isAwaitingPickup = ctx.orderStatus === "Attente De Ramassage";
+    const deliveryStatus = isAwaitingPickup
+      ? `الطلبية ديالك راها واجدة وفـ انتظار شركة الشحن تجي تهزها اليوم 📦${trackingLine ? `\n${trackingLine}` : ""}`
+      : isShipped
+        ? `الكوموند ديالك ${address.formal} راها عند شركة الشحن${ctx.shippingProvider ? ` (${ctx.shippingProvider})` : ""} وهي فـ الطريق ليك 🚚${trackingLine ? `\n${trackingLine}` : ""}`
+        : `الكوموند ديالك ${address.formal} راه مأكدة وحنا كنوجدوا فيها دبا باش تخرج ✅`;
 
     // Gender-aware messages
     const cancelConfirmedReply = `ما كاين حتى مشكل ${address.formal}، الطلب ديالك تلغى كيفما بغيتي. إيلا حتاجيتي شي حاجة أخرى حنا هنا. نهارك مبروك! 🙏`;
@@ -514,6 +517,7 @@ RULES FOR THIS MODE:
 - If customer asks about order status ("فين الكوموند؟" / "فين وصلات؟" / "وين الكوموند" / "سلام" / "متى يجي" / "ماعرفتش"):
   Respond EXACTLY with: "${deliveryStatus}"
 - If status is "confirme": reassure them the order is confirmed and being prepared to ship
+- If status is "Attente De Ramassage": tell them exactly: "الطلبية ديالك راها واجدة وفـ انتظار شركة الشحن تجي تهزها اليوم 📦"
 - If status is "expédié" or "en_cours": give tracking info if available, say "وجد راسك ${address.formal} وكن فـ الدار باش يوصلك 🚚"
 - If customer asks about product, quality, delivery time: answer warmly and briefly
 - ALWAYS be reassuring — the order is safe and on its way
@@ -750,7 +754,7 @@ export async function handleIncomingMessage(
       ];
 
       // Search across ALL statuses — priority: active statuses first, then delivered, then cancelled
-      const STATUS_PRIORITY = ["confirme", "expédié", "en_cours", "nouveau", "livré", "annulé", "annulé fake"];
+      const STATUS_PRIORITY = ["confirme", "Attente De Ramassage", "expédié", "en_cours", "nouveau", "livré", "annulé", "annulé fake"];
       const [recentOrder] = await db.select()
         .from(ordersTable)
         .where(drAnd(
@@ -899,7 +903,7 @@ export async function handleIncomingMessage(
     }
 
     if (intent === "cancel" && conv.orderId) {
-      const isAlreadyShipped = liveOrderStatus === "expédié" || liveOrderStatus === "en_cours";
+      const isAlreadyShipped = liveOrderStatus === "expédié" || liveOrderStatus === "en_cours" || liveOrderStatus === "Attente De Ramassage";
 
       // ── Safety guard: Order already with courier — cannot cancel ──
       if (isAlreadyShipped) {
@@ -1005,7 +1009,7 @@ export async function handleIncomingMessage(
 
       // ── Advance step based on what the customer just said ────────
       // Skip step advancement when in delivery companion mode (order already confirmed)
-      const isDeliveryMode = ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours";
+      const isDeliveryMode = ctx?.orderStatus === "confirme" || ctx?.orderStatus === "expédié" || ctx?.orderStatus === "en_cours" || ctx?.orderStatus === "Attente De Ramassage";
       if (!isRecovery && !isDeliveryMode) {
         let nextStep = currentStep;
         let stepData: { city?: string; variant?: string } = {};

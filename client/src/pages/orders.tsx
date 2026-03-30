@@ -25,6 +25,35 @@ function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
 }
 
+const CARRIER_LOGOS: Record<string, string> = {
+  digylog: '/carriers/digylog.svg',
+  onessta: '/carriers/onessta.svg',
+  ozoneexpress: '/carriers/ozon.svg',
+  'ozone express': '/carriers/ozon.svg',
+  ozon: '/carriers/ozon.svg',
+  sendit: '/carriers/sendit.svg',
+  ameex: '/carriers/ameex.svg',
+  cathedis: '/carriers/cathidis.svg',
+  cathidis: '/carriers/cathidis.svg',
+  speedex: '/carriers/speedx.png',
+  speedx: '/carriers/speedx.png',
+  kargoexpress: '/carriers/cargo.svg',
+  'kargo express': '/carriers/cargo.svg',
+  cargo: '/carriers/cargo.svg',
+  forcelog: '/carriers/forcelog.png',
+  livo: '/carriers/ol.svg',
+  ol: '/carriers/ol.svg',
+  quicklivraison: '/carriers/ql.svg',
+  'quick livraison': '/carriers/ql.svg',
+  ql: '/carriers/ql.svg',
+};
+
+function getCarrierLogo(provider: string | null | undefined): string | null {
+  if (!provider) return null;
+  const key = provider.toLowerCase().replace(/\s+/g, '');
+  return CARRIER_LOGOS[key] || CARRIER_LOGOS[provider.toLowerCase()] || null;
+}
+
 const STATUS_MAP: Record<string, string> = {
   nouvelles: "nouveau",
   confirme: "confirme",
@@ -795,9 +824,12 @@ export default function Orders() {
                       {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
                       {isColVisible('livraison') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          {order.shippingProvider ? (
-                            <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>
-                          ) : <span className="text-muted-foreground">-</span>}
+                          {order.shippingProvider ? (() => {
+                            const logo = getCarrierLogo(order.shippingProvider);
+                            return logo
+                              ? <img src={logo} alt={order.shippingProvider} style={{ maxHeight: 25, maxWidth: 70 }} className="object-contain mx-auto" />
+                              : <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>;
+                          })() : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
                       {isColVisible('derniereAction') && (
@@ -1047,11 +1079,12 @@ export default function Orders() {
                         <span className="text-[11px] text-muted-foreground">{storeData.name}</span>
                       </>
                     )}
-                    {order.shippingProvider && (
-                      <Badge className="ml-auto text-[10px] font-semibold bg-blue-50 text-blue-700 border-blue-200 shrink-0">
-                        {order.shippingProvider}
-                      </Badge>
-                    )}
+                    {order.shippingProvider && (() => {
+                      const logo = getCarrierLogo(order.shippingProvider);
+                      return logo
+                        ? <img src={logo} alt={order.shippingProvider} style={{ maxHeight: 22, maxWidth: 60 }} className="ml-auto object-contain shrink-0" />
+                        : <Badge className="ml-auto text-[10px] font-semibold bg-blue-50 text-blue-700 border-blue-200 shrink-0">{order.shippingProvider}</Badge>;
+                    })()}
                   </div>
 
                   {/* ── DIVIDER ── */}

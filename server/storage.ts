@@ -966,8 +966,8 @@ export class DatabaseStorage implements IStorage {
     }
     // Collect all unique campaigns before product filter (for dropdown population)
     const campaigns = [...new Set(allOrders.map(o => o.utmCampaign).filter(Boolean))].sort() as string[];
-    // CONFIRMED = confirme + expédié + delivered (Moroccan COD logic: all orders past the phone confirmation)
-    const CONFIRMED_STATUSES = ['confirme', 'expédié', 'delivered'];
+    // CONFIRMED = confirme + expédié + delivered + Attente De Ramassage (Moroccan COD logic)
+    const CONFIRMED_STATUSES = ['confirme', 'expédié', 'delivered', 'Attente De Ramassage'];
     const DELIVERED_STATUS = 'delivered';
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
@@ -1109,7 +1109,7 @@ export class DatabaseStorage implements IStorage {
             : eq(orders.mediaBuyerId, buyer.id),
           ...dateConditions,
         ));
-      const CONF_STATUSES = ['confirme', 'expédié', 'delivered'];
+      const CONF_STATUSES = ['confirme', 'expédié', 'delivered', 'Attente De Ramassage'];
       const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
       for (const o of buyerOrders) {
         const plt = (o as any).trafficPlatform || 'Organique';
@@ -1294,7 +1294,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select({
       agentId: orders.assignedToId,
       total: count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered', 'Attente De Ramassage'))`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
     }).from(orders)
