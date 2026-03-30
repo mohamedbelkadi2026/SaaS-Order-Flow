@@ -982,6 +982,7 @@ export class DatabaseStorage implements IStorage {
       allItems = await db.select({
         orderId: orderItems.orderId,
         rawProductName: orderItems.rawProductName,
+        variantInfo: orderItems.variantInfo,
         orderRawProductName: orders.rawProductName,
         orderStatus: orders.status,
       }).from(orderItems)
@@ -1070,11 +1071,13 @@ export class DatabaseStorage implements IStorage {
     for (const item of filteredItems) {
       // COALESCE: item-level name → order-level name → fallback label
       const name = item.rawProductName || item.orderRawProductName || 'Produit Sans Nom';
-      if (!productMap[name]) productMap[name] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
-      productMap[name].total++;
-      if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[name].confirmed++;
-      if (item.orderStatus === 'in_progress') productMap[name].inProgress++;
-      if (item.orderStatus === DELIVERED_STATUS) productMap[name].delivered++;
+      const v = (item.variantInfo ?? '').trim();
+      const displayKey = (v && v !== 'Default Title' && v !== 'null' && v !== '-') ? `${name} - ${v}` : name;
+      if (!productMap[displayKey]) productMap[displayKey] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
+      productMap[displayKey].total++;
+      if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[displayKey].confirmed++;
+      if (item.orderStatus === 'in_progress') productMap[displayKey].inProgress++;
+      if (item.orderStatus === DELIVERED_STATUS) productMap[displayKey].delivered++;
     }
     const products = Object.entries(productMap)
       .map(([name, d]) => ({

@@ -81,6 +81,12 @@ function formatWhatsAppMessage(order: any, template: string): { message: string;
   const dateStr = now.toLocaleDateString('fr-MA', { day: '2-digit', month: '2-digit', year: 'numeric' });
   const timeStr = now.toLocaleTimeString('fr-MA', { hour: '2-digit', minute: '2-digit' });
 
+  const _baseProdName = order.rawProductName || order.productName || (order.items?.[0]?.rawProductName) || (order.items?.[0]?.product?.name) || '';
+  const _prodVariant = (order.items?.[0]?.variantInfo || '').trim();
+  const _displayProdName = (_prodVariant && _prodVariant !== 'Default Title' && _prodVariant !== 'null' && _prodVariant !== '-')
+    ? `${_baseProdName} - ${_prodVariant}`
+    : _baseProdName;
+
   const message = template
     .replace(/\*?\{Nom_Client\}\*?/g, order.customerName || '')
     .replace(/\*?\{Ville_Client\}\*?/g, order.customerCity || '')
@@ -88,7 +94,7 @@ function formatWhatsAppMessage(order: any, template: string): { message: string;
     .replace(/\*?\{Phone_Client\}\*?/g, order.customerPhone || '')
     .replace(/\*?\{Date_Commande\}\*?/g, dateStr)
     .replace(/\*?\{Heure\}\*?/g, timeStr)
-    .replace(/\*?\{Nom_Produit\}\*?/g, order.productName || (order.items?.[0]?.productName) || '')
+    .replace(/\*?\{Nom_Produit\}\*?/g, _displayProdName)
     .replace(/\*?\{Transporteur\}\*?/g, order.shippingProvider || '')
     .replace(/\*?\{Date_Livraison\}\*?/g, order.expectedDelivery || '');
 
@@ -560,15 +566,18 @@ export async function registerRoutes(
           : null)
         || null;
       if (!rawName) return;
-      const key = rawName.toLowerCase().trim();
+      const rawVariantVal: string = (o.items && o.items.length > 0 ? (o.items[0] as any).variantInfo : null) || '';
+      const v = rawVariantVal.trim();
+      const displayName = (v && v !== 'Default Title' && v !== 'null' && v !== '-') ? `${rawName} - ${v}` : rawName;
+      const key = displayName.toLowerCase().trim();
       if (!rawProductMap[key]) {
         rawProductMap[key] = {
-          name: rawName,
+          name: displayName,
           total: 0,
           confirme: 0,
           inProgress: 0,
           delivered: 0,
-          inStock: internalProductNames.has(key),
+          inStock: internalProductNames.has(rawName.toLowerCase().trim()),
         };
       }
       rawProductMap[key].total++;

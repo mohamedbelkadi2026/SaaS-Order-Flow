@@ -10,6 +10,18 @@ TajerGrow is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on 
 - **Currency**: MAD (Moroccan Dirham), all prices stored in cents
 - **Language**: French UI throughout
 
+## Smart Product Naming (Variant-Aware)
+Products are displayed everywhere as **"Product Name - Variant"** (e.g., "Mocassins ANAKIO - 43") when a variant exists.
+- **Data source**: `orderItems.variantInfo` (already populated from Shopify/YouCan webhooks via `sanitizeVariant()`); no new DB column needed
+- **Orders table + card view** (`client/src/pages/orders.tsx`): reads `order.items[0].variantInfo` and appends ` - ${variant}` to the base product name
+- **All-Orders table** (`client/src/pages/all-orders.tsx`): same logic
+- **Analytics "Produits Commandés"** (`server/storage.ts` `getFilteredStats`): `allItems` query now includes `variantInfo`; product grouping key is `"Name - Variant"` instead of `"Name"`
+- **Dashboard product performance table** (`server/routes.ts` `rawProductMap`): same variant-aware grouping
+- **AI agent system prompt** (`server/ai-agent.ts` `buildStepPrompt`): `productLabel` is now `"Name - Variant"`
+- **AI agent first greeting** (`server/ai-agent.ts` `initiateAIConversation`): greeting message uses combined `"Name - Variant"` label
+- **WhatsApp campaign template `{Nom_Produit}`** (`server/routes.ts` `formatWhatsAppMessage`): substitution now includes variant
+- **Invalid variants filtered**: strings `"Default Title"`, `"null"`, `"-"` are never shown
+
 ## City Mapping Feature (Carrier-Aware)
 Prevents "Ville invalide" errors at shipping dispatch time.
 - **`client/src/lib/carrier-cities.ts`** — City lists for Digylog, Cathedis, Amana + generic Morocco. `findBestCityMatch()` auto-matches raw city names (aliases, starts-with, contains). `isCityValid()` checks if a city is in the carrier list.

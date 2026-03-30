@@ -401,7 +401,11 @@ function buildStepPrompt(
   customSystemPrompt?: string | null,
 ): string {
   const priceDh = ctx?.totalPrice ? `${(ctx.totalPrice / 100).toFixed(0)} درهم` : null;
-  const productLabel = ctx?.productName ?? "المنتج";
+  const _baseProductLabel = ctx?.productName ?? "المنتج";
+  const _orderVariant = ctx?.productVariant ?? null;
+  const productLabel = (_orderVariant && _orderVariant !== 'Default Title' && _orderVariant !== 'null')
+    ? `${_baseProductLabel} - ${_orderVariant}`
+    : _baseProductLabel;
   const city = conv.collectedCity ?? ctx?.customerCity ?? null;
   const variant = conv.collectedVariant ?? ctx?.productVariant ?? null;
   const gender = detectGender(conv.customerName ?? "");
@@ -627,8 +631,10 @@ export async function triggerAIForNewOrder(
     ]);
 
     const cleanName    = (customerName || "").replace(/[^a-zA-Zء-ي\s]/g, "").trim() || "سيدي/لالة";
-    const productLabel = ctx.productName || "منتجك";
-    const variantPart  = ctx.productVariant ? ` (${ctx.productVariant})` : "";
+    const _baseLabel   = ctx.productName || "منتجك";
+    const _initVariant = (ctx.productVariant && ctx.productVariant !== 'Default Title' && ctx.productVariant !== 'null') ? ctx.productVariant : null;
+    const productLabel = _initVariant ? `${_baseLabel} - ${_initVariant}` : _baseLabel;
+    const variantPart  = "";
     const stockUrgency = (ctx.stockQty !== null && ctx.stockQty > 0 && ctx.stockQty <= 3)
       ? `\n⚠️ ماتأخروش — بقاو غير ${ctx.stockQty} قطع فـ السطوك!`
       : "";
