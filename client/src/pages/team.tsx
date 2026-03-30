@@ -511,7 +511,7 @@ export default function Team() {
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-sm font-semibold text-foreground">Adresse e-mail</Label>
-                  <Input data-testid="input-agent-email" type="email" placeholder="ex: 0G1t4@garean.com" value={formData.email} onChange={e => setFormData(d => ({ ...d, email: e.target.value }))} className="h-11" />
+                  <Input data-testid="input-agent-email" type="email" placeholder="ex: agent@tajergrow.com" value={formData.email} onChange={e => setFormData(d => ({ ...d, email: e.target.value }))} className="h-11" />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-sm font-semibold text-foreground">Mot de passe</Label>

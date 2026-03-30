@@ -639,7 +639,7 @@ export default function Integrations() {
   const { data: magasins } = useMagasins();
   const [activeTab, setActiveTab] = useState<PlatformId>("gsheets");
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "https://app.garean.com";
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://www.tajergrow.com";
   const webhookKey = webhookData?.webhookKey || "LOADING";
   const stores = magasins || [];
   const platform = PLATFORMS.find(p => p.id === activeTab)!;
