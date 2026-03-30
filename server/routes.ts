@@ -3622,6 +3622,23 @@ export async function registerRoutes(
     }
   });
 
+  /* POST /api/automation/retargeting/leads/bulk-delete — delete selected leads by ID */
+  app.post("/api/automation/retargeting/leads/bulk-delete", requireAuth, async (req: any, res: any) => {
+    try {
+      const { retargetingLeads } = await import("@shared/schema");
+      const { inArray: drInArray, and: drAnd } = await import("drizzle-orm");
+      const { ids } = req.body;
+      const storeId = req.user!.storeId!;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ message: "ids (array) requis" });
+      }
+      const result = await db.delete(retargetingLeads)
+        .where(drAnd(drInArray(retargetingLeads.id, ids.map(Number)), eq(retargetingLeads.storeId, storeId)))
+        .returning({ id: retargetingLeads.id });
+      res.json({ ok: true, deleted: result.length });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
   /* DELETE /api/automation/retargeting/leads/:id — remove one lead */
   app.delete("/api/automation/retargeting/leads/:id", requireAuth, async (req: any, res: any) => {
     try {

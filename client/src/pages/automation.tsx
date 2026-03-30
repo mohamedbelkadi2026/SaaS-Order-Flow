@@ -441,10 +441,66 @@ function RetargetingTab() {
   const devices: any[] = Array.isArray(devicesRaw) ? devicesRaw : [];
   const connectedDevices = devices.filter(d => d.status === "connected");
 
-  const deleteLeadsMutation = useMutation({
-    mutationFn: () => fetch("/api/automation/retargeting/leads", { method: "DELETE", credentials: "include" }).then(r => r.json()),
-    onSuccess: () => { refetchLeads(); toast({ title: "Leads supprimés" }); },
+  const [showLeadsDeleteModal, setShowLeadsDeleteModal] = useState(false);
+  const [leadsDeleteMode, setLeadsDeleteMode] = useState<"all" | "selected" | "single">("all");
+  const [leadsDeleteSingleId, setLeadsDeleteSingleId] = useState<number | null>(null);
+
+  const LEADS_KEY = "/api/automation/retargeting/leads";
+
+  const deleteAllLeadsMutation = useMutation({
+    mutationFn: () => fetch(LEADS_KEY, { method: "DELETE", credentials: "include" }).then(r => r.json()),
+    onSuccess: () => {
+      queryClient.setQueryData([LEADS_KEY], []);
+      setSelectedLeads(new Set());
+      toast({ title: "Leads supprimés avec succès" });
+    },
+    onError: () => toast({ title: "Erreur", description: "Impossible de supprimer les leads.", variant: "destructive" }),
   });
+
+  const bulkDeleteLeadsMutation = useMutation({
+    mutationFn: (ids: number[]) => fetch("/api/automation/retargeting/leads/bulk-delete", {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }).then(r => r.json()),
+    onSuccess: (_data, ids) => {
+      queryClient.setQueryData([LEADS_KEY], (prev: any[]) => (prev || []).filter((l: any) => !ids.includes(l.id)));
+      setSelectedLeads(new Set());
+      toast({ title: `${ids.length} lead${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''} avec succès` });
+    },
+    onError: () => toast({ title: "Erreur", description: "Impossible de supprimer les leads.", variant: "destructive" }),
+  });
+
+  const deleteSingleLeadMutation = useMutation({
+    mutationFn: (id: number) => fetch(`/api/automation/retargeting/leads/${id}`, { method: "DELETE", credentials: "include" }).then(r => r.json()),
+    onSuccess: (_data, id) => {
+      queryClient.setQueryData([LEADS_KEY], (prev: any[]) => (prev || []).filter((l: any) => l.id !== id));
+      setSelectedLeads(prev => { const s = new Set(prev); s.delete(id); return s; });
+      toast({ title: "Lead supprimé avec succès" });
+    },
+    onError: () => toast({ title: "Erreur", description: "Impossible de supprimer le lead.", variant: "destructive" }),
+  });
+
+  function openDeleteModal(mode: "all" | "selected") {
+    setLeadsDeleteMode(mode);
+    setLeadsDeleteSingleId(null);
+    setShowLeadsDeleteModal(true);
+  }
+
+  function openDeleteSingle(id: number) {
+    setLeadsDeleteMode("single");
+    setLeadsDeleteSingleId(id);
+    setShowLeadsDeleteModal(true);
+  }
+
+  function confirmLeadsDelete() {
+    setShowLeadsDeleteModal(false);
+    if (leadsDeleteMode === "all") deleteAllLeadsMutation.mutate();
+    else if (leadsDeleteMode === "selected") bulkDeleteLeadsMutation.mutate(Array.from(selectedLeads));
+    else if (leadsDeleteMode === "single" && leadsDeleteSingleId !== null) deleteSingleLeadMutation.mutate(leadsDeleteSingleId);
+  }
+
+  const isLeadsDeleting = deleteAllLeadsMutation.isPending || bulkDeleteLeadsMutation.isPending || deleteSingleLeadMutation.isPending;
 
   /* ── On mount: check if there's already a running campaign ─── */
   useEffect(() => {
@@ -575,6 +631,47 @@ function RetargetingTab() {
             setRetargetingView("leads");
           }}
         />
+      )}
+
+      {/* ── Leads Delete Confirmation Modal ───────────────────────── */}
+      {showLeadsDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="bg-red-50 px-6 pt-6 pb-4">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5 text-red-600" />
+                </div>
+                <p className="text-base font-bold text-red-700">Confirmer la suppression</p>
+              </div>
+              <p className="text-sm text-red-600/80">
+                {leadsDeleteMode === "all"
+                  ? `Voulez-vous supprimer tous les leads importés (${leads.length}) ? Cette action est irréversible.`
+                  : leadsDeleteMode === "selected"
+                  ? `Voulez-vous supprimer les ${selectedLeads.size} lead${selectedLeads.size > 1 ? 's' : ''} sélectionné${selectedLeads.size > 1 ? 's' : ''} ? Cette action est irréversible.`
+                  : "Voulez-vous supprimer ce lead ? Cette action est irréversible."}
+              </p>
+            </div>
+            <div className="px-6 py-4 flex justify-end gap-2 bg-white">
+              <button
+                onClick={() => setShowLeadsDeleteModal(false)}
+                className="px-4 py-2 rounded-xl text-sm font-semibold border border-zinc-200 text-zinc-600 hover:bg-zinc-50 transition-colors"
+                data-testid="btn-leads-delete-cancel"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={confirmLeadsDelete}
+                disabled={isLeadsDeleting}
+                className="px-4 py-2 rounded-xl text-sm font-bold text-white bg-red-500 hover:bg-red-600 transition-colors flex items-center gap-2 disabled:opacity-60"
+                data-testid="btn-leads-delete-confirm"
+              >
+                {isLeadsDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Supprimer définitivement
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Live Progress Bar (shown while campaign is active) ─── */}
@@ -772,20 +869,30 @@ function RetargetingTab() {
               checked={leads.length > 0 && leads.every((l: any) => selectedLeads.has(l.id))}
               onChange={e => setSelectedLeads(e.target.checked ? new Set(leads.map((l: any) => l.id)) : new Set())}
               className="rounded border-zinc-300 cursor-pointer"
+              data-testid="checkbox-select-all-leads"
             />
-            <span className="text-sm font-bold text-zinc-700 flex-1">Leads importés ({leads.length})</span>
-            {leads.length > 0 && (
+            <span className="text-sm font-bold text-zinc-700 flex-1">
+              Leads importés <span className="text-xs font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">{leads.length}</span>
+            </span>
+            {selectedLeads.size > 0 && (
               <button
-                onClick={() => { if (confirm(`Supprimer tous les ${leads.length} leads ?`)) deleteLeadsMutation.mutate(); }}
-                className="text-xs text-red-400 hover:text-red-600 flex items-center gap-1"
+                onClick={() => openDeleteModal("selected")}
+                disabled={isLeadsDeleting}
+                className="text-xs font-bold text-red-500 hover:text-red-700 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                data-testid="button-delete-selected-leads"
               >
-                <Trash2 className="w-3 h-3" /> Tout effacer
+                <Trash2 className="w-3 h-3" /> Supprimer ({selectedLeads.size})
               </button>
             )}
-            {selectedLeads.size > 0 && (
-              <span className="text-xs font-bold px-2.5 py-1 rounded-full text-white" style={{ background: GOLD }}>
-                {selectedLeads.size} sél.
-              </span>
+            {leads.length > 0 && (
+              <button
+                onClick={() => openDeleteModal("all")}
+                disabled={isLeadsDeleting}
+                className="text-xs text-red-400 hover:text-red-600 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                data-testid="button-delete-all-leads"
+              >
+                {isLeadsDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />} Tout effacer
+              </button>
             )}
           </div>
 
@@ -803,22 +910,31 @@ function RetargetingTab() {
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-[32px_1fr_140px_1fr] gap-2 px-4 py-2 bg-zinc-50 border-b border-zinc-100 text-[11px] font-bold text-zinc-400 uppercase tracking-wide">
-                <div /><div>Nom</div><div>Téléphone</div><div>Dernier produit</div>
+              <div className="grid grid-cols-[32px_1fr_140px_1fr_32px] gap-2 px-4 py-2 bg-zinc-50 border-b border-zinc-100 text-[11px] font-bold text-zinc-400 uppercase tracking-wide">
+                <div /><div>Nom</div><div>Téléphone</div><div>Dernier produit</div><div />
               </div>
               <div className="max-h-[440px] overflow-y-auto divide-y divide-zinc-50">
                 {leads.map((l: any) => (
-                  <label key={l.id}
-                    className={cn("grid grid-cols-[32px_1fr_140px_1fr] gap-2 items-center px-4 py-2.5 cursor-pointer hover:bg-zinc-50 transition-colors", selectedLeads.has(l.id) && "bg-amber-50")}
+                  <div key={l.id}
+                    className={cn("grid grid-cols-[32px_1fr_140px_1fr_32px] gap-2 items-center px-4 py-2.5 hover:bg-zinc-50 transition-colors", selectedLeads.has(l.id) && "bg-amber-50")}
                     data-testid={`lead-row-${l.id}`}
                   >
                     <input type="checkbox" checked={selectedLeads.has(l.id)}
                       onChange={e => { const s = new Set(selectedLeads); e.target.checked ? s.add(l.id) : s.delete(l.id); setSelectedLeads(s); }}
-                      className="rounded border-zinc-300" />
+                      className="rounded border-zinc-300 cursor-pointer" />
                     <p className="text-sm font-semibold text-zinc-800 truncate">{l.name || "—"}</p>
                     <p className="text-xs text-zinc-500 font-mono truncate">{l.phone}</p>
                     <p className="text-xs text-zinc-500 truncate">{l.lastProduct || "—"}</p>
-                  </label>
+                    <button
+                      onClick={() => openDeleteSingle(l.id)}
+                      disabled={isLeadsDeleting}
+                      className="w-7 h-7 flex items-center justify-center rounded-lg text-zinc-300 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-40"
+                      data-testid={`button-delete-lead-${l.id}`}
+                      title="Supprimer ce lead"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 ))}
               </div>
             </>
