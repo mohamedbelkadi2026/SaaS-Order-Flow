@@ -217,17 +217,17 @@ const TOOLS = [
 ];
 
 const CARRIERS_MARQUEE = [
-  { name: "Digylog",          logo: "https://garean.com/assets/images/company/digylog.svg",   premium: true },
-  { name: "Cathedis",         logo: "https://garean.com/assets/images/company/cathidis.svg",  premium: false },
-  { name: "Onessta",          logo: "https://garean.com/assets/images/company/onessta.svg",   premium: false },
-  { name: "Speedex",          logo: "https://garean.com/assets/images/company/speedx.png",    premium: false },
-  { name: "Kargo Express",    logo: "https://garean.com/assets/images/company/cargo.svg",     premium: false },
-  { name: "Ozone Express",    logo: "https://garean.com/assets/images/company/ozon.svg",      premium: false },
-  { name: "ForceLog",         logo: "https://garean.com/assets/images/company/forcelog.png",  premium: false },
-  { name: "Ameex",            logo: "https://garean.com/assets/images/company/ameex.svg",     premium: false },
-  { name: "Sendit",           logo: "https://garean.com/assets/images/company/sendit.svg",    premium: false },
-  { name: "Quick Livraison",  logo: "https://garean.com/assets/images/company/ql.svg",        premium: false },
-  { name: "Ozone Livraison",  logo: "https://garean.com/assets/images/company/ol.svg",        premium: false },
+  { name: "Digylog",          logo: "/carriers/digylog.svg",   premium: true },
+  { name: "Cathedis",         logo: "/carriers/cathidis.svg",  premium: false },
+  { name: "Onessta",          logo: "/carriers/onessta.svg",   premium: false },
+  { name: "Speedex",          logo: "/carriers/speedx.png",    premium: false },
+  { name: "Kargo Express",    logo: "/carriers/cargo.svg",     premium: false },
+  { name: "Ozone Express",    logo: "/carriers/ozon.svg",      premium: false },
+  { name: "ForceLog",         logo: "/carriers/forcelog.png",  premium: false },
+  { name: "Ameex",            logo: "/carriers/ameex.svg",     premium: false },
+  { name: "Sendit",           logo: "/carriers/sendit.svg",    premium: false },
+  { name: "Quick Livraison",  logo: "/carriers/ql.svg",        premium: false },
+  { name: "Ozone Livraison",  logo: "/carriers/ol.svg",        premium: false },
 ];
 
 /* ── Marquee Track (generic) ───────────────────────────────────── */
