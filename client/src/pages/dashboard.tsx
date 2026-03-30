@@ -234,11 +234,15 @@ export default function Dashboard() {
   const confirmPct = totalOrders > 0 ? ((confirme / totalOrders) * 100).toFixed(2) : '0';
   const cancelPct = totalOrders > 0 ? ((cancelled / totalOrders) * 100).toFixed(2) : '0';
   const inProgressPct = totalOrders > 0 ? ((inProgress / totalOrders) * 100).toFixed(2) : '0';
+  // nouveau = leads not yet actioned (total minus confirmed minus cancelled)
+  const nouveauPct = totalOrders > 0 ? (((stats?.nouveau || 0) / totalOrders) * 100).toFixed(2) : '0';
 
+  // Pie shows cumulative confirmed (stable after shipping), cancelled, and new leads
+  // inProgress is a subset of confirme (cumulative), so excluded to avoid double-counting
   const pieData = [
     { name: `Confirmé ${confirmPct}%`,   value: confirme,           color: STATUS_COLORS.confirme },
     { name: `Annulé ${cancelPct}%`,      value: cancelled,          color: STATUS_COLORS.cancelled },
-    { name: `En Cours ${inProgressPct}%`,value: inProgress,         color: STATUS_COLORS.transit },
+    { name: `Nouveau ${nouveauPct}%`,    value: stats?.nouveau || 0, color: STATUS_COLORS.nouveau },
   ].filter(d => d.value > 0);
 
   const deliveryPieData = [

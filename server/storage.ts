@@ -850,13 +850,15 @@ export class DatabaseStorage implements IStorage {
       const variants = allVariants.filter(v => v.productId === p.id);
       const totalStock = p.stock + variants.reduce((s, v) => s + v.stock, 0);
       
+      // Cumulative: count all statuses reached after agent confirmation
+      const INVENTORY_CONFIRMED = ['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
       const confirmedItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          eq(orders.status, 'confirme')
+          inArray(orders.status, INVENTORY_CONFIRMED)
         ));
       
       const deliveredItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
@@ -966,8 +968,8 @@ export class DatabaseStorage implements IStorage {
     }
     // Collect all unique campaigns before product filter (for dropdown population)
     const campaigns = [...new Set(allOrders.map(o => o.utmCampaign).filter(Boolean))].sort() as string[];
-    // CONFIRMED = confirme + expédié + delivered + Attente De Ramassage (Moroccan COD logic)
-    const CONFIRMED_STATUSES = ['confirme', 'expédié', 'delivered', 'Attente De Ramassage'];
+    // Cumulative confirmed statuses: once confirmed by agent, always counted as confirmed
+    const CONFIRMED_STATUSES = ['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
     const DELIVERED_STATUS = 'delivered';
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
@@ -1109,7 +1111,7 @@ export class DatabaseStorage implements IStorage {
             : eq(orders.mediaBuyerId, buyer.id),
           ...dateConditions,
         ));
-      const CONF_STATUSES = ['confirme', 'expédié', 'delivered', 'Attente De Ramassage'];
+      const CONF_STATUSES = ['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
       const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
       for (const o of buyerOrders) {
         const plt = (o as any).trafficPlatform || 'Organique';
@@ -1294,7 +1296,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select({
       agentId: orders.assignedToId,
       total: count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered', 'Attente De Ramassage'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'))`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
     }).from(orders)

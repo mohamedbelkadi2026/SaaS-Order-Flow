@@ -1,0 +1,19 @@
+"CRITICAL ANALYTICS REPAIR: The Confirmation Rate is dropping when orders move to shipping. I need to implement 'Cumulative Confirmation Logic' across the entire SaaS (Admin, Media Buyer, and Product Tables). Follow these rules:
+1. Redefine 'Confirmed' for Calculations (Backend Logic):
+The Logic: An order must be counted as 'CONFIRMÉE' if its status is: (confirme OR expédié OR livré OR refusée OR attente de ramassage OR en cours de livraison).
+Reason: Once a lead is confirmed by the agent, it remains a 'Confirmed Lead' forever in the statistics, even after it is sent to the carrier.
+Update all SQL Queries: Every COUNT or SUM that calculates the 'Confirmés' column must use this inclusive list of statuses.
+2. Update Dashboard Cards (Global & Media Buyer):
+Card 'Confirmées': Must show the total number of orders that reached the confirmation stage (Inclusive of all shipping statuses).
+Confirmation Rate %: Formula must be: (Count of all confirmed-stage orders / Total Leads) * 100.
+This percentage must remain stable (e.g., 50%) when I click the 'Green Truck' icon to ship the orders.
+3. Update 'PRODUITS COMMANDÉS' Table:
+The 'Confirmés' column in the product performance table must also use this cumulative logic.
+% Confirmation: Ensure this column reflects the real success of the agent/product regardless of the shipping progress.
+4. Media Buyer Dashboard Sync:
+Apply the same cumulative logic to the Media Buyer's personal dashboard. They need to see their real confirmation rate stay constant even after their orders are shipped.
+5. Technical Implementation:
+Use an array of statuses const confirmedStatuses = ['confirme', 'expédié', 'livré', 'refusée', ...].
+Use WHERE status IN (...) in your database queries.
+Ensure Socket.io updates these cumulative numbers in real-time when a status changes.
+Goal: I want 100% accurate performance tracking. If I have 10 leads and 5 are confirmed, my rate is 50%. If I send those 5 to Digylog, my confirmation rate must STAY at 50%, not drop to 0%."
