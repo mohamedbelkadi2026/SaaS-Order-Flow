@@ -1,0 +1,25 @@
+"I need to implement a fully dynamic 'Carrier Logo Mapping' system. The 'Livraison' column should automatically display the correct logo based on the carrier selected for each order. Follow these steps:
+1. Create a Global Logo Mapping (Utility):
+Create a constant or a helper function getCarrierLogo(carrierName) that maps carrier names to their official URLs:
+Cathedis: https://garean.com/assets/images/company/cathidis.svg
+Digylog: https://garean.com/assets/images/company/digylog.svg
+Onessta: https://garean.com/assets/images/company/onessta.svg
+Speedex: https://garean.com/assets/images/company/speedx.png
+KargoExpress: https://garean.com/assets/images/company/cargo.svg
+Ozone Express: https://garean.com/assets/images/company/ozon.svg
+ForceLog: https://garean.com/assets/images/company/forcelog.png
+Livo: https://garean.com/assets/images/company/ol.svg
+Quick Livraison: https://garean.com/assets/images/company/ql.svg
+(Include all other carriers from previous lists).
+2. Update Table & Mobile Cards UI:
+In the 'Livraison' column of the Orders table (and in the mobile view cards):
+Action: Replace the text name with an <img> tag.
+Source: Use src={getCarrierLogo(order.carrier_name)}.
+Styling: Set a uniform size (e.g., height: 24px or max-width: 80px).
+Fallback: If a carrier name is not recognized or has no logo, display the carrier name as Text in a clean badge.
+3. Automatic Sync with Integration:
+Ensure that when I use the 'Green Truck Icon' to send an order to any carrier, the system correctly saves that carrier's name in the Orders table so the logo updates instantly.
+When adding a 'Nouvelle Commande' or editing an order, as soon as I select a carrier from the dropdown, the logo should preview in the form.
+4. Performance:
+Use a fast-loading strategy for these logos (caching) to ensure the table remains smooth even with 100+ rows.
+Technical Goal: I want a professional look where I can see at a glance which orders are with Digylog and which are with Cathedis through their logos, automatically."

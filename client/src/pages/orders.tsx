@@ -1327,11 +1327,28 @@ export default function Orders() {
                   <SelectValue placeholder="Sélectionner..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {shippingIntegrations?.map((si: any) => (
-                    <SelectItem key={si.provider} value={si.provider}>{si.provider}</SelectItem>
-                  ))}
+                  {shippingIntegrations?.map((si: any) => {
+                    const logo = getCarrierLogo(si.provider);
+                    return (
+                      <SelectItem key={si.provider} value={si.provider}>
+                        <span className="flex items-center gap-2">
+                          {logo && <img src={logo} alt={si.provider} style={{ height: 18, maxWidth: 50 }} className="object-contain shrink-0" />}
+                          <span>{si.provider}</span>
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
+              {bulkShipProvider && (() => {
+                const logo = getCarrierLogo(bulkShipProvider);
+                return logo ? (
+                  <div className="flex items-center gap-3 mt-2 p-2.5 rounded-lg bg-muted/50 border border-border">
+                    <img src={logo} alt={bulkShipProvider} style={{ height: 32, maxWidth: 90 }} className="object-contain" />
+                    <span className="text-sm font-medium text-foreground">{bulkShipProvider}</span>
+                  </div>
+                ) : null;
+              })()}
             </div>
             <p className="text-xs text-muted-foreground">{selectedIds.size} commande(s) sélectionnée(s)</p>
           </div>
