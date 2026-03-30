@@ -39,6 +39,40 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// ── Global uncaught exception handler ─────────────────────────────────────────
+// Baileys (WhatsApp library) can throw synchronous crypto errors inside WebSocket
+// event handlers (e.g. aesDecryptGCM "Unsupported state or unable to authenticate
+// data"). These are uncaught exceptions that would otherwise crash the process.
+// We catch them here, log them, and let the Baileys reconnect logic handle recovery.
+process.on("uncaughtException", (err: Error) => {
+  const msg = err?.message ?? String(err);
+  // Baileys crypto / WebSocket decode errors — non-fatal, ignore gracefully
+  if (
+    msg.includes("Unsupported state or unable to authenticate") ||
+    msg.includes("aesDecryptGCM") ||
+    msg.includes("decodeFrame") ||
+    msg.includes("noise-handler")
+  ) {
+    console.warn("[WA] Baileys crypto error (non-fatal, session will reconnect):", msg);
+    return;
+  }
+  // For all other uncaught exceptions, log and exit so the process manager restarts
+  console.error("[FATAL] Uncaught exception:", err);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason: unknown) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  if (
+    msg.includes("Unsupported state or unable to authenticate") ||
+    msg.includes("aesDecryptGCM")
+  ) {
+    console.warn("[WA] Baileys unhandled rejection (non-fatal):", msg);
+    return;
+  }
+  console.error("[FATAL] Unhandled rejection:", reason);
+});
+
 const app = express();
 const httpServer = createServer(app);
 
