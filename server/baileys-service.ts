@@ -54,6 +54,7 @@ export interface BaileysSessionInstance {
   start(): Promise<void>;
   resetAndRestart(): Promise<void>;
   logout(): Promise<void>;
+  disconnect?(): Promise<void>;
   getStatus(): BaileysStatus;
   sendMessage(phone: string, text: string): Promise<boolean>;
   sendImage(phone: string, imageUrl: string, caption: string): Promise<boolean>;
@@ -62,6 +63,30 @@ export interface BaileysSessionInstance {
 
 /* ── Per-store session map ──────────────────────────────────── */
 const _sessions = new Map<number, BaileysSessionInstance>();
+
+/* ── Shared Baileys version cache (one network call for all) ── */
+type WAVersion = [number, number, number];
+let _cachedBaileysVersion: WAVersion | null = null;
+let _versionFetchPromise: Promise<WAVersion> | null = null;
+async function getCachedVersion(): Promise<WAVersion> {
+  if (_cachedBaileysVersion) return _cachedBaileysVersion;
+  if (!_versionFetchPromise) {
+    _versionFetchPromise = fetchLatestBaileysVersion()
+      .then(r => { _cachedBaileysVersion = r.version as WAVersion; _versionFetchPromise = null; return r.version as WAVersion; })
+      .catch(() => { _versionFetchPromise = null; return [2, 3000, 1023534] as WAVersion; });
+  }
+  return _versionFetchPromise;
+}
+
+/* ── Connection semaphore (one Baileys socket initialises at a time) ── */
+let _connectChain: Promise<void> = Promise.resolve();
+function withConnectLock(tag: string, fn: () => Promise<void>): Promise<void> {
+  const next = _connectChain
+    .then(() => fn())
+    .catch(e => console.error(`[WA-LOCK:${tag}]`, e?.message ?? e));
+  _connectChain = next.then(() => {}, () => {});
+  return next;
+}
 
 /* ── Phone normalisation (shared util) ───────────────────────── */
 export function normalisePhone(raw: string): string {
@@ -220,8 +245,8 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
     try {
       await fs.mkdir(AUTH_DIR, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-      const { version } = await fetchLatestBaileysVersion();
-      const logger = pino({ level: "silent" });
+      const version = await getCachedVersion();
+      const logger = pino({ level: "error" });
 
       _sock = makeWASocket({
         version,
@@ -622,7 +647,23 @@ function createDeviceSession(deviceId: number, storeId: number): BaileysSessionI
   let _qrDataUrl: string | null = null;
   let _phoneNumber: string | null = null;
   let _reconnectTimer: NodeJS.Timeout | null = null;
+  let _heartbeatTimer: NodeJS.Timeout | null = null;
   let _isRunning = false;
+  let _connectingAt: number | null = null;
+
+  /* ── SSE broadcast for this device ──────────────────────── */
+  async function broadcastDevice() {
+    try {
+      const { broadcastToStore } = await import("./sse");
+      broadcastToStore(storeId, "wa_device_status", {
+        deviceId,
+        state: _waState,
+        phone: _phoneNumber,
+        qr: _qrDataUrl,
+        ts: Date.now(),
+      });
+    } catch { /* sse not ready */ }
+  }
 
   async function persistStatus(status: string, phone?: string | null, qr?: string | null) {
     try {
@@ -638,31 +679,62 @@ function createDeviceSession(deviceId: number, storeId: number): BaileysSessionI
     try { await fs.rm(AUTH_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 
+  function clearHeartbeat() {
+    if (_heartbeatTimer) { clearTimeout(_heartbeatTimer); _heartbeatTimer = null; }
+  }
+
+  function scheduleHeartbeat() {
+    clearHeartbeat();
+    /* If still "connecting" after 90 s with no QR → assume dead, restart */
+    _heartbeatTimer = setTimeout(async () => {
+      _heartbeatTimer = null;
+      if (_waState === "connecting" && _connectingAt && Date.now() - _connectingAt > 90_000) {
+        console.warn(`[${tag}] Heartbeat: stuck connecting for 90 s — restarting`);
+        _isRunning = false;
+        try { _sock?.end(new Error("heartbeat-timeout")); } catch { /* ignore */ }
+        _sock = null;
+        _waState = "idle";
+        scheduleReconnect(3000);
+      }
+    }, 95_000);
+  }
+
   function scheduleReconnect(delayMs = 5000) {
     if (_reconnectTimer) clearTimeout(_reconnectTimer);
     _reconnectTimer = setTimeout(() => {
       _reconnectTimer = null;
-      connectDevice().catch(e => console.error(`[${tag}] Reconnect failed:`, e.message));
+      doConnect().catch(e => console.error(`[${tag}] Reconnect failed:`, e.message));
     }, delayMs);
   }
 
-  async function connectDevice(): Promise<void> {
-    if (_isRunning) return;
+  async function doConnect(): Promise<void> {
+    if (_isRunning) {
+      console.log(`[${tag}] Already connecting — skipping.`);
+      return;
+    }
     _isRunning = true;
+    _connectingAt = Date.now();
+
     try {
       await fs.mkdir(AUTH_DIR, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-      const { version } = await fetchLatestBaileysVersion();
+      /* Use shared version cache — avoids redundant network calls */
+      const version = await getCachedVersion();
+      const logger = pino({ level: "error" });
 
       const sock = makeWASocket({
         version,
-        auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }) as any) },
+        auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
         printQRInTerminal: false,
-        logger: pino({ level: "silent" }) as any,
+        logger,
         browser: [`TajerGrow-D${deviceId}`, "Chrome", "1.0"],
+        connectTimeoutMs: 40_000,
+        retryRequestDelayMs: 500,
+        getMessage: async () => undefined,
       });
       _sock = sock;
 
+      scheduleHeartbeat();
       sock.ev.on("creds.update", saveCreds);
 
       sock.ev.on("connection.update", async (update) => {
@@ -670,16 +742,24 @@ function createDeviceSession(deviceId: number, storeId: number): BaileysSessionI
 
         if (qr) {
           try {
-            _qrDataUrl = await QRCode.toDataURL(qr);
+            _qrDataUrl = await QRCode.toDataURL(qr, {
+              width: 280, margin: 2,
+              color: { dark: "#1e1b4b", light: "#ffffff" },
+            });
           } catch { _qrDataUrl = null; }
           _waState = "qr";
+          _connectingAt = null;
+          clearHeartbeat();
           await persistStatus("qr", null, _qrDataUrl);
+          await broadcastDevice();
           console.log(`[${tag}] QR ready`);
         }
 
         if (connection === "connecting") {
           _waState = "connecting";
+          _connectingAt = _connectingAt ?? Date.now();
           await persistStatus("connecting");
+          await broadcastDevice();
           console.log(`[${tag}] Connecting...`);
         }
 
@@ -687,39 +767,53 @@ function createDeviceSession(deviceId: number, storeId: number): BaileysSessionI
           _waState = "connected";
           _phoneNumber = sock.user?.id?.split(":")[0] ?? null;
           _qrDataUrl = null;
+          _isRunning = false;
+          _connectingAt = null;
+          clearHeartbeat();
           await persistStatus("connected", _phoneNumber, null);
+          await broadcastDevice();
           console.log(`[${tag}] Connected — phone: ${_phoneNumber}`);
         }
 
         if (connection === "close") {
           _isRunning = false;
           _sock = null;
+          _connectingAt = null;
+          clearHeartbeat();
           const code = (lastDisconnect?.error as Boom)?.output?.statusCode;
           const loggedOut = code === DisconnectReason.loggedOut;
-          _waState = "disconnected";
+          _waState = "idle";
           await persistStatus("disconnected");
+          await broadcastDevice();
           console.log(`[${tag}] Disconnected — code: ${code} | loggedOut: ${loggedOut}`);
           if (loggedOut) {
             await clearSessionFiles();
             await persistStatus("disconnected", null, null);
           } else if (code !== 401) {
-            scheduleReconnect(5000);
+            scheduleReconnect(6000);
           }
         }
       });
     } catch (err: any) {
       _isRunning = false;
+      _connectingAt = null;
+      clearHeartbeat();
       console.error(`[${tag}] connectDevice error:`, err.message);
-      scheduleReconnect(8000);
+      scheduleReconnect(10_000);
     }
   }
 
+  /* ── Public API ─────────────────────────────────────────── */
   return {
-    async start() { await connectDevice(); },
+    async start() {
+      /* Use semaphore so 2nd/3rd device waits for 1st to finish init */
+      return withConnectLock(tag, () => doConnect());
+    },
 
     async resetAndRestart() {
       if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
-      try { await _sock?.logout(); } catch { /* ignore */ }
+      clearHeartbeat();
+      try { _sock?.end(new Error("reset")); } catch { /* ignore */ }
       _sock = null;
       _isRunning = false;
       _waState = "idle";
@@ -727,11 +821,13 @@ function createDeviceSession(deviceId: number, storeId: number): BaileysSessionI
       _qrDataUrl = null;
       await clearSessionFiles();
       await persistStatus("disconnected", null, null);
-      setTimeout(() => connectDevice().catch(console.error), 1000);
+      await broadcastDevice();
+      setTimeout(() => withConnectLock(tag, () => doConnect()).catch(console.error), 1500);
     },
 
     async logout() {
       if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      clearHeartbeat();
       try { await _sock?.logout(); } catch { /* ignore */ }
       _sock = null;
       _isRunning = false;
@@ -740,7 +836,21 @@ function createDeviceSession(deviceId: number, storeId: number): BaileysSessionI
       _qrDataUrl = null;
       await clearSessionFiles();
       await persistStatus("disconnected", null, null);
+      await broadcastDevice();
       _deviceSessions.delete(deviceId);
+    },
+
+    /* Disconnect without wiping files (preserves session for next restart) */
+    async disconnect() {
+      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      clearHeartbeat();
+      try { _sock?.end(new Error("user-disconnect")); } catch { /* ignore */ }
+      _sock = null;
+      _isRunning = false;
+      _waState = "idle";
+      _connectingAt = null;
+      await persistStatus("disconnected");
+      await broadcastDevice();
     },
 
     getStatus(): BaileysStatus {

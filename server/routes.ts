@@ -3664,6 +3664,25 @@ export async function registerRoutes(
      MULTI-DEVICE WHATSAPP MANAGEMENT
   ══════════════════════════════════════════════════════════════════ */
 
+  /* POST /api/automation/devices/init-slots — ensure 3 device rows exist for store */
+  app.post("/api/automation/devices/init-slots", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const storeId = req.user!.storeId!;
+      const existing = await db.select().from(whatsappDevices).where(eq(whatsappDevices.storeId, storeId));
+      const needed = 3 - existing.length;
+      if (needed > 0) {
+        const inserts = Array.from({ length: needed }, (_, i) => ({
+          storeId,
+          label: `Appareil ${existing.length + i + 1}`,
+          status: "disconnected" as const,
+        }));
+        await db.insert(whatsappDevices).values(inserts);
+      }
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
   /* GET /api/automation/devices — list all devices for this store */
   app.get("/api/automation/devices", requireAuth, async (req: any, res: any) => {
     try {
@@ -3738,6 +3757,21 @@ export async function registerRoutes(
       const [device] = await db.select().from(whatsappDevices).where(eq(whatsappDevices.id, deviceId));
       if (!device || device.storeId !== storeId) return res.status(404).json({ message: "Appareil introuvable." });
       getDeviceInstance(deviceId, storeId).resetAndRestart().catch(console.error);
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  /* POST /api/automation/devices/:id/disconnect — soft disconnect (keeps session files) */
+  app.post("/api/automation/devices/:id/disconnect", requireAuth, async (req: any, res: any) => {
+    try {
+      const { whatsappDevices } = await import("@shared/schema");
+      const { getDeviceInstance } = await import("./baileys-service");
+      const deviceId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const [device] = await db.select().from(whatsappDevices).where(eq(whatsappDevices.id, deviceId));
+      if (!device || device.storeId !== storeId) return res.status(404).json({ message: "Appareil introuvable." });
+      const inst = getDeviceInstance(deviceId, storeId);
+      if (inst.disconnect) await inst.disconnect();
       res.json({ ok: true });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });

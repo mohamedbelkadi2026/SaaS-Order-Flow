@@ -1028,7 +1028,7 @@ function RetargetingTab() {
                   >
                     <option value="">Session principale</option>
                     {connectedDevices.map((d: any) => (
-                      <option key={d.id} value={d.id}>{d.name} ({d.phone || "non connecté"})</option>
+                      <option key={d.id} value={d.id}>{d.label || d.name || `Appareil ${d.id}`} ({d.phone ? `+${d.phone}` : "non connecté"})</option>
                     ))}
                   </select>
                 )}
@@ -1036,7 +1036,7 @@ function RetargetingTab() {
                   <p className="text-[11px] text-amber-600">⚠️ Aucun appareil supplémentaire connecté — la session principale sera utilisée.</p>
                 )}
                 {rotationEnabled && connectedDevices.length > 0 && (
-                  <p className="text-[11px] text-green-600">✓ {connectedDevices.length} appareil(s) en rotation : {connectedDevices.map((d: any) => d.name).join(", ")}</p>
+                  <p className="text-[11px] text-green-600">✓ {connectedDevices.length} appareil(s) en rotation : {connectedDevices.map((d: any) => d.label || d.name || `Appareil ${d.id}`).join(", ")}</p>
                 )}
               </div>
             )}
@@ -1817,197 +1817,261 @@ function WhatsappTab() {
   );
 }
 
-/* ── DevicesPanel — multi-device management ─────────────────── */
-function DevicesPanel() {
+/* ── DevicesPanel — 3 fixed WhatsApp slots ───────────────────── */
+const SLOT_LABELS = ["Appareil 1", "Appareil 2", "Appareil 3"];
+
+function DeviceCard({ device, slotIndex, onRefresh }: { device: any; slotIndex: number; onRefresh: () => void }) {
   const { toast } = useToast();
-  const [showAdd, setShowAdd] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [addingDeviceId, setAddingDeviceId] = useState<number | null>(null);
-  const [deviceQr, setDeviceQr] = useState<string | null>(null);
-
-  const { data: devicesRaw = [], refetch: refetchDevices } = useQuery<any[]>({
-    queryKey: ["/api/automation/devices"],
-    queryFn: () => fetch("/api/automation/devices", { credentials: "include" }).then(r => r.json()),
-    refetchInterval: showAdd && addingDeviceId ? 3000 : 10000,
+  const [liveStatus, setLiveStatus] = useState<{ state: string; phone: string | null; qr: string | null }>({
+    state: device.status ?? "disconnected",
+    phone: device.phone ?? null,
+    qr: device.qrCode ?? null,
   });
-  const devices: any[] = Array.isArray(devicesRaw) ? devicesRaw : [];
+  const [actionPending, setActionPending] = useState<string | null>(null);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch("/api/automation/devices", {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName || "Appareil " + (devices.length + 1) }),
-      });
-      if (!res.ok) throw new Error((await res.json()).message);
-      return res.json();
-    },
-    onSuccess: async (device) => {
-      setAddingDeviceId(device.id);
-      refetchDevices();
-      // Connect to get QR
-      const connectRes = await fetch(`/api/automation/devices/${device.id}/connect`, {
-        method: "POST", credentials: "include",
-      });
-      if (connectRes.ok) {
-        const data = await connectRes.json();
-        setDeviceQr(data.qr ?? null);
-      }
-    },
-    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
-  });
+  /* ── Sync from SSE ──────────────────────────────────────────── */
+  useEffect(() => {
+    const es = new EventSource("/api/automation/events", { withCredentials: true });
+    const handler = (e: MessageEvent) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "wa_device_status" && msg.data?.deviceId === device.id) {
+          setLiveStatus({ state: msg.data.state, phone: msg.data.phone ?? null, qr: msg.data.qr ?? null });
+        }
+      } catch { /* ignore */ }
+    };
+    es.addEventListener("message", handler);
+    return () => es.close();
+  }, [device.id]);
 
-  const deleteMutation = useMutation({
-    mutationFn: async (id: number) => {
-      const res = await fetch(`/api/automation/devices/${id}`, { method: "DELETE", credentials: "include" });
-      if (!res.ok) throw new Error((await res.json()).message);
-    },
-    onSuccess: () => { refetchDevices(); toast({ title: "Appareil supprimé" }); },
-    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
-  });
-
-  const reconnectDevice = async (id: number) => {
-    const res = await fetch(`/api/automation/devices/${id}/connect`, { method: "POST", credentials: "include" });
-    if (res.ok) {
-      const data = await res.json();
-      setAddingDeviceId(id);
-      setDeviceQr(data.qr ?? null);
-      setShowAdd(true);
+  /* ── Fast poll when connecting / qr state ───────────────────── */
+  useEffect(() => {
+    const isActive = liveStatus.state === "connecting" || liveStatus.state === "qr";
+    if (!isActive) {
+      if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+      return;
     }
+    if (pollingRef.current) return; // already polling
+    pollingRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/automation/devices/${device.id}/status`, { credentials: "include" });
+        if (!r.ok) return;
+        const d = await r.json();
+        const newState = d.status ?? "disconnected";
+        setLiveStatus({ state: newState, phone: d.phone ?? null, qr: d.qrCode ?? null });
+        if (newState === "connected") {
+          toast({ title: `✅ ${device.label || SLOT_LABELS[slotIndex]} connecté !`, description: d.phone ? `+${d.phone}` : undefined });
+          onRefresh();
+          if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+        }
+      } catch { /* ignore */ }
+    }, 2500);
+    return () => {
+      if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+    };
+  }, [liveStatus.state, device.id]);
+
+  /* ── Actions ─────────────────────────────────────────────────── */
+  const api = async (path: string, method = "POST") => {
+    const r = await fetch(path, { method, credentials: "include" });
+    if (!r.ok) throw new Error((await r.json()).message || "Erreur");
+    return r.json();
   };
 
-  // Poll for QR update while connecting
-  useEffect(() => {
-    if (!addingDeviceId || !showAdd) return;
-    const timer = setInterval(async () => {
-      const res = await fetch(`/api/automation/devices/${addingDeviceId}/status`, { credentials: "include" });
-      if (res.ok) {
-        const d = await res.json();
-        if (d.status === "connected") {
-          setShowAdd(false);
-          setAddingDeviceId(null);
-          setDeviceQr(null);
-          setNewName("");
-          refetchDevices();
-          toast({ title: "✅ Appareil connecté !", description: d.phone ? `+${d.phone}` : undefined });
-        } else if (d.qr) {
-          setDeviceQr(d.qr);
-        }
-      }
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [addingDeviceId, showAdd]);
+  const handleConnect = async () => {
+    setActionPending("connect");
+    try {
+      await api(`/api/automation/devices/${device.id}/connect`);
+      setLiveStatus(s => ({ ...s, state: "connecting", qr: null }));
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+    } finally { setActionPending(null); }
+  };
+
+  const handleDisconnect = async () => {
+    setActionPending("disconnect");
+    try {
+      await api(`/api/automation/devices/${device.id}/disconnect`);
+      setLiveStatus({ state: "disconnected", phone: null, qr: null });
+      onRefresh();
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+    } finally { setActionPending(null); }
+  };
+
+  const handleReset = async () => {
+    setActionPending("reset");
+    try {
+      await api(`/api/automation/devices/${device.id}/reset`);
+      setLiveStatus({ state: "connecting", phone: null, qr: null });
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+    } finally { setActionPending(null); }
+  };
+
+  const handleLogout = async () => {
+    setActionPending("logout");
+    try {
+      await api(`/api/automation/devices/${device.id}`, "DELETE");
+      onRefresh();
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+    } finally { setActionPending(null); }
+  };
+
+  const st = liveStatus.state;
+  const isConnected = st === "connected";
+  const isQr = st === "qr";
+  const isConnecting = st === "connecting";
+  const label = device.label || SLOT_LABELS[slotIndex];
+
+  const statusColor = isConnected ? "bg-green-500" : isQr || isConnecting ? "bg-amber-400 animate-pulse" : "bg-zinc-300";
+  const statusText = isConnected ? "Connecté" : isQr ? "QR Prêt" : isConnecting ? "Connexion..." : "Déconnecté";
+  const statusBg = isConnected ? "bg-green-50 text-green-700 border-green-200" : isQr || isConnecting ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-zinc-50 text-zinc-500 border-zinc-200";
+
+  const pending = (action: string) => actionPending === action;
 
   return (
-    <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden">
-      <div className="px-4 py-3 border-b border-zinc-100 flex items-center gap-2">
-        <Smartphone className="w-4 h-4" style={{ color: GOLD }} />
-        <h3 className="text-sm font-bold text-zinc-700 flex-1">Appareils Supplémentaires</h3>
-        <button
-          onClick={() => { setShowAdd(true); setAddingDeviceId(null); setDeviceQr(null); }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-white"
-          style={{ background: NAVY }}
-          data-testid="button-add-device"
-        >
-          <Plus className="w-3.5 h-3.5" /> Ajouter un appareil
-        </button>
+    <div className="bg-white rounded-2xl border border-zinc-100 overflow-hidden shadow-sm">
+      {/* ── Card header ─────────────────────────────────────── */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-zinc-50">
+        <div className={cn("w-2.5 h-2.5 rounded-full shrink-0", statusColor)} />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-zinc-800">{label}</p>
+          {isConnected && liveStatus.phone && (
+            <p className="text-[11px] text-zinc-400 font-mono">+{liveStatus.phone}</p>
+          )}
+        </div>
+        <span className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full border", statusBg)}>{statusText}</span>
       </div>
 
-      {/* Devices list */}
-      {devices.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-8 text-zinc-400 gap-2">
-          <Smartphone className="w-8 h-8 opacity-20" />
-          <p className="text-xs">Aucun appareil supplémentaire</p>
-        </div>
-      ) : (
-        <div className="divide-y divide-zinc-50">
-          {devices.map((d: any) => (
-            <div key={d.id} className="flex items-center gap-3 px-4 py-3">
-              <div className={cn("w-2.5 h-2.5 rounded-full shrink-0", d.status === "connected" ? "bg-green-500" : d.status === "qr" || d.status === "connecting" ? "bg-amber-400 animate-pulse" : "bg-zinc-300")} />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-zinc-700 truncate">{d.name}</p>
-                {d.phone && <p className="text-[11px] text-zinc-400 font-mono">+{d.phone}</p>}
-                {!d.phone && <p className="text-[11px] text-zinc-400 capitalize">{d.status === "qr" ? "En attente du scan" : d.status === "connecting" ? "Connexion..." : d.status}</p>}
+      {/* ── QR Code area (shown when in qr state) ───────────── */}
+      {(isQr || isConnecting) && (
+        <div className="px-4 py-4 flex flex-col items-center gap-3 bg-zinc-50/50">
+          {isQr && liveStatus.qr ? (
+            <>
+              <p className="text-xs text-zinc-500 text-center">Ouvrez WhatsApp → Paramètres → Appareils connectés → Ajouter un appareil</p>
+              <div className="p-3 bg-white rounded-2xl shadow-md" style={{ border: `3px solid ${GOLD}` }}>
+                <img src={liveStatus.qr} alt="QR Code" width={200} height={200} className="rounded-xl block" data-testid={`img-device-qr-${device.id}`} />
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {d.status !== "connected" && (
-                  <button onClick={() => reconnectDevice(d.id)} className="text-[10px] px-2 py-1 rounded-lg border border-amber-200 text-amber-600 hover:bg-amber-50 flex items-center gap-1">
-                    <RefreshCw className="w-3 h-3" /> QR
-                  </button>
-                )}
-                <button
-                  onClick={() => { if (confirm(`Supprimer "${d.name}" ?`)) deleteMutation.mutate(d.id); }}
-                  className="text-zinc-300 hover:text-red-500 transition-colors"
-                  data-testid={`button-delete-device-${d.id}`}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+              <div className="flex items-center gap-2 text-xs text-amber-600 font-medium">
+                <div className="w-1.5 h-1.5 rounded-full animate-pulse bg-amber-400" />
+                En attente du scan...
+              </div>
+            </>
+          ) : (
+            <div className="py-6 flex flex-col items-center gap-3">
+              <Loader2 className="w-9 h-9 animate-spin" style={{ color: NAVY }} />
+              <p className="text-xs text-zinc-500">Génération du QR Code...</p>
+              <div className="flex gap-1">
+                {[0,1,2].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: GOLD, animationDelay: `${i*0.15}s` }} />)}
               </div>
             </div>
-          ))}
+          )}
         </div>
       )}
 
-      {/* Add device modal */}
-      {showAdd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
-            <div className="flex items-center justify-between px-6 py-4" style={{ background: NAVY }}>
-              <div className="flex items-center gap-2">
-                <Smartphone className="w-4 h-4 text-white" />
-                <h3 className="text-sm font-bold text-white">{addingDeviceId ? "Scanner le QR Code" : "Ajouter un appareil"}</h3>
-              </div>
-              <button onClick={() => { setShowAdd(false); setAddingDeviceId(null); setDeviceQr(null); setNewName(""); }} className="text-white/60 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* ── Action buttons ──────────────────────────────────── */}
+      <div className="px-4 py-3 flex flex-wrap gap-2">
+        {!isConnected && !isConnecting && !isQr && (
+          <button
+            onClick={handleConnect}
+            disabled={!!actionPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-white disabled:opacity-50 transition-colors"
+            style={{ background: NAVY }}
+            data-testid={`btn-device-connect-${device.id}`}
+          >
+            {pending("connect") ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wifi className="w-3.5 h-3.5" />}
+            {pending("connect") ? "Connexion..." : "Connecter"}
+          </button>
+        )}
+        {(isConnecting || isQr) && (
+          <button
+            onClick={handleDisconnect}
+            disabled={!!actionPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-zinc-200 text-zinc-600 hover:bg-zinc-50 disabled:opacity-50"
+            data-testid={`btn-device-cancel-${device.id}`}
+          >
+            <X className="w-3.5 h-3.5" /> Annuler
+          </button>
+        )}
+        {isConnected && (
+          <button
+            onClick={handleDisconnect}
+            disabled={!!actionPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+            data-testid={`btn-device-disconnect-${device.id}`}
+          >
+            {pending("disconnect") ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+            Déconnecter
+          </button>
+        )}
+        <button
+          onClick={handleReset}
+          disabled={!!actionPending}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-amber-200 text-amber-600 hover:bg-amber-50 disabled:opacity-50"
+          data-testid={`btn-device-reset-${device.id}`}
+        >
+          {pending("reset") ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+          Réinitialiser
+        </button>
+        {!isConnected && !isConnecting && !isQr && (
+          <button
+            onClick={handleLogout}
+            disabled={!!actionPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-zinc-400 hover:text-red-500 disabled:opacity-50 ml-auto"
+            data-testid={`btn-device-logout-${device.id}`}
+          >
+            {pending("logout") ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
-            <div className="p-6 space-y-4">
-              {!addingDeviceId ? (
-                <>
-                  <div>
-                    <label className="text-xs font-semibold text-zinc-500 mb-1 block">Nom de l'appareil</label>
-                    <input
-                      value={newName}
-                      onChange={e => setNewName(e.target.value)}
-                      placeholder={`Appareil ${devices.length + 1}`}
-                      className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
-                      data-testid="input-device-name"
-                    />
-                  </div>
-                  <button
-                    onClick={() => createMutation.mutate()}
-                    disabled={createMutation.isPending}
-                    className="w-full py-2.5 rounded-xl text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
-                    style={{ background: GOLD }}
-                  >
-                    {createMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cpu className="w-4 h-4" />}
-                    {createMutation.isPending ? "Initialisation..." : "Générer le QR Code"}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm text-center text-zinc-500">Scannez ce QR avec votre téléphone WhatsApp</p>
-                  <div className="flex justify-center">
-                    {deviceQr ? (
-                      <div className="p-3 bg-white rounded-2xl shadow" style={{ border: `3px solid ${GOLD}` }}>
-                        <img src={deviceQr} alt="QR Code" width={200} height={200} className="rounded-xl block" />
-                      </div>
-                    ) : (
-                      <div className="w-[200px] h-[200px] flex flex-col items-center justify-center gap-3 rounded-2xl" style={{ border: `3px dashed ${GOLD}` }}>
-                        <Loader2 className="w-8 h-8 animate-spin" style={{ color: GOLD }} />
-                        <p className="text-xs text-zinc-400">Génération QR...</p>
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center justify-center gap-2 text-xs text-amber-600">
-                    <div className="w-1.5 h-1.5 rounded-full animate-pulse bg-amber-400" />
-                    En attente du scan...
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
+function DevicesPanel() {
+  const { data: devicesRaw = [], refetch: refetchDevices, isLoading } = useQuery<any[]>({
+    queryKey: ["/api/automation/devices"],
+    queryFn: async () => {
+      await fetch("/api/automation/devices/init-slots", { method: "POST", credentials: "include" });
+      const r = await fetch("/api/automation/devices", { credentials: "include" });
+      if (!r.ok) throw new Error("Erreur chargement appareils");
+      return r.json();
+    },
+    refetchInterval: 30_000,
+  });
+  const devices: any[] = Array.isArray(devicesRaw) ? devicesRaw : [];
+
+  return (
+    <div className="space-y-4">
+      {/* ── Section header ──────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-1">
+        <Smartphone className="w-4 h-4" style={{ color: GOLD }} />
+        <h3 className="text-sm font-bold text-zinc-700">Appareils WhatsApp (Multi-Numéro)</h3>
+        <div className="flex-1" />
+        <span className="text-[11px] text-zinc-400">{devices.filter(d => d.status === "connected").length} / 3 connecté(s)</span>
+      </div>
+
+      {/* ── Info banner ─────────────────────────────────────── */}
+      <div className="rounded-xl px-3 py-2.5 text-[11px] text-zinc-500 flex items-start gap-2" style={{ background: "rgba(30,27,75,0.04)", border: "1px solid rgba(30,27,75,0.10)" }}>
+        <Wifi className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: NAVY }} />
+        <span>Chaque appareil possède sa propre session isolée. Cliquez <strong>Connecter</strong> sur un slot pour démarrer la connexion, puis scannez le QR avec WhatsApp.</span>
+      </div>
+
+      {/* ── 3 device cards ──────────────────────────────────── */}
+      {isLoading ? (
+        <div className="flex flex-col gap-3">
+          {[0,1,2].map(i => (
+            <div key={i} className="bg-white rounded-2xl border border-zinc-100 h-[72px] animate-pulse" />
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {devices.slice(0, 3).map((d, i) => (
+            <DeviceCard key={d.id} device={d} slotIndex={i} onRefresh={refetchDevices} />
+          ))}
         </div>
       )}
     </div>

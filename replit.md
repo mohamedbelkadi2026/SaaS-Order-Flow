@@ -213,16 +213,22 @@ Four tabs in `client/src/pages/automation.tsx`:
 - `RECOVERY_SYSTEM_PROMPT` — recovery (abandoned cart) prompt also enforces JSON output
 - Hooked into `POST /api/orders`, `POST /api/orders/manual`, and Shopify/YouCan webhooks after response sent
 
-### WhatsApp Engine (`server/baileys-service.ts`) — Multi-Tenant
+### WhatsApp Engine (`server/baileys-service.ts`) — Multi-Tenant + Multi-Device
 - `@whiskeysockets/baileys` — pure Node.js WebSocket, no Chromium required
-- **Fully isolated per-store sessions** via `getBaileysInstance(storeId)` factory pattern
-- Each store gets its own auth folder: `./auth_info/store_<storeId>/`
-- LID → phone mapping files live in the store's own auth folder
+- **Primary store session**: `getBaileysInstance(storeId)` factory — one session per store
+  - Auth folder: `./auth_info/store_<storeId>/`
+  - SSE broadcasts: `broadcastToStore(storeId, "wa_status", ...)`
+- **Multi-device sessions**: `getDeviceInstance(deviceId, storeId)` factory — one per `whatsapp_devices` row
+  - Auth folder: `./auth_info/store_<storeId>/device_<deviceId>/`
+  - SSE broadcasts: `broadcastToStore(storeId, "wa_device_status", { deviceId, state, phone, qr })`
+  - Heartbeat timer: if stuck in "connecting" for 90 s, auto-restarts
+- **Shared version cache** (`getCachedVersion()`): Baileys version fetched once from WhatsApp servers, reused by all sessions — prevents hang when adding 2nd/3rd device
+- **Connection semaphore** (`withConnectLock()`): serialises socket initialisation so multiple devices don't race to connect simultaneously
+- **pino logger** at `"error"` level — minimal noise, no CPU waste
 - 4 states per session: `idle` | `connecting` | `qr` | `connected`
-- QR generated as Navy/white base64 PNG via `qrcode` package
-- Auto-reconnects on connection loss; logs out cleanly on `DisconnectReason.loggedOut`
-- SSE broadcasts to store-specific channel: `broadcastToStore(storeId, "wa_status", ...)`
-- `autoStartBaileys()` on boot: migrates old `auth_info_baileys/` → `auth_info/store_1/`, then scans all `store_*` dirs and auto-starts stores with existing sessions
+- QR: Navy/white base64 PNG via `qrcode` package
+- Auto-reconnects on loss; heartbeat detects dead sockets; 90 s timeout restarts hung connections
+- `autoStartBaileys()` on boot: migrates legacy `auth_info_baileys/` → `auth_info/store_1/`, auto-starts stores with existing sessions; `autoStartDevices()` auto-starts devices with saved credentials
 - `baileysService` export kept as backward-compat shim (delegates to `getBaileysInstance(1)`)
 
 ### WhatsApp Transport (`server/whatsapp-service.ts`) — Multi-Tenant
