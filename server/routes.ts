@@ -928,14 +928,11 @@ export async function registerRoutes(
       }
 
       const storeId = user.storeId!;
-      const integration = await storage.getIntegrationByProvider(storeId, provider);
-      if (!integration || integration.type !== 'shipping') {
-        return res.status(400).json({ message: `Transporteur ${provider} non connecté` });
-      }
 
-      const creds = JSON.parse(integration.credentials || '{}');
-      if (!creds.apiKey && !creds.apiUrl) {
-        return res.status(400).json({ message: `Clé API manquante pour ${provider}. Configurez-la dans Intégrations → Sociétés de Livraison.` });
+      // Smart dispatch: try carrier accounts first, fall back to legacy storeIntegrations
+      const defaultCreds = await storage.getAccountForShipping(storeId, provider);
+      if (!defaultCreds) {
+        return res.status(400).json({ message: `Transporteur ${provider} non connecté. Ajoutez un compte dans Intégrations → Sociétés de Livraison.` });
       }
 
       const eligible = await storage.bulkShipOrders(orderIds, storeId);
@@ -957,10 +954,30 @@ export async function registerRoutes(
           ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
           : 'Produit');
 
+      // Pre-load all active carrier accounts for smart city-based dispatch
+      const allCarrierAccounts = await storage.getCarrierAccounts(storeId, provider);
+      const activeAccounts = allCarrierAccounts.filter((a: any) => a.isActive === 1);
+
+      // Resolve credentials per-order (city routing or default)
+      const getCredsForOrder = (city: string): Record<string, string> => {
+        // 1. Try city-specific account
+        const cityAcct = activeAccounts.find((a: any) => {
+          if (a.assignmentRule !== 'city') return false;
+          try {
+            const cities: string[] = JSON.parse(a.assignmentData || '[]');
+            return cities.some((c: string) => c.toLowerCase() === city.toLowerCase());
+          } catch { return false; }
+        });
+        if (cityAcct) return { apiKey: cityAcct.apiKey, apiSecret: cityAcct.apiSecret || '', apiUrl: cityAcct.apiUrl || '' };
+        // 2. Default account
+        const def = activeAccounts.find((a: any) => a.isDefault === 1) || activeAccounts[0];
+        if (def) return { apiKey: def.apiKey, apiSecret: def.apiSecret || '', apiUrl: def.apiUrl || '' };
+        // 3. Fall back to the pre-validated defaultCreds
+        return defaultCreds as Record<string, string>;
+      };
+
       // Pre-load carrier city list for auto-matching
-      const bulkCityList: string[] = Array.isArray(creds.cityList) && creds.cityList.length > 0
-        ? creds.cityList
-        : getDefaultCitiesForProvider(provider);
+      const bulkCityList: string[] = getDefaultCitiesForProvider(provider);
 
       const getResolvedCity = (order: any): string => {
         const raw = ((order as any).customerCity || '').trim();
@@ -982,18 +999,22 @@ export async function registerRoutes(
 
         // Fire all requests in this batch simultaneously
         const settled = await Promise.allSettled(
-          batch.map(order => shipOrderToCarrier(provider, creds, {
-            customerName: order.customerName,
-            phone:        order.customerPhone,
-            city:         getResolvedCity(order),
-            address:      (order as any).customerAddress  || (order as any).customerCity || '',
-            totalPrice:   order.totalPrice,
-            productName:  getProductName(order),
-            canOpen:      (order as any).canOpen === 1,
-            orderNumber:  (order as any).orderNumber || String(order.id),
-            orderId:      order.id,
-            storeId,
-          }))
+          batch.map(order => {
+            const resolvedCity = getResolvedCity(order);
+            const orderCreds = getCredsForOrder(resolvedCity);
+            return shipOrderToCarrier(provider, orderCreds, {
+              customerName: order.customerName,
+              phone:        order.customerPhone,
+              city:         resolvedCity,
+              address:      (order as any).customerAddress || (order as any).customerCity || '',
+              totalPrice:   order.totalPrice,
+              productName:  getProductName(order),
+              canOpen:      (order as any).canOpen === 1,
+              orderNumber:  (order as any).orderNumber || String(order.id),
+              orderId:      order.id,
+              storeId,
+            });
+          })
         );
 
         // ── Classify results ───────────────────────────────────────
@@ -1466,6 +1487,135 @@ export async function registerRoutes(
     });
     await storage.deleteIntegration(id);
     res.json({ message: "Déconnecté" });
+  });
+
+  // ============================================================
+  // CARRIER ACCOUNTS (Multi-account per carrier)
+  // ============================================================
+
+  app.get("/api/carrier-accounts", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const provider = req.query.provider as string | undefined;
+    const accounts = await storage.getCarrierAccounts(storeId, provider);
+    // Mask apiKey in list view — return first 8 + stars
+    const masked = accounts.map(a => ({
+      ...a,
+      apiKeyMasked: a.apiKey.slice(0, 8) + "•".repeat(Math.max(0, a.apiKey.length - 8)),
+    }));
+    res.json(masked);
+  });
+
+  app.post("/api/carrier-accounts", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { carrierName, connectionName, apiKey, apiSecret, apiUrl, storeName, assignmentRule, isDefault } = req.body;
+    if (!carrierName || !apiKey) {
+      return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
+    }
+    const { randomUUID } = await import("crypto");
+    const webhookToken = `${carrierName}-${storeId}-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+
+    // Auto-number the connection if no name given
+    const existing = await storage.getCarrierAccounts(storeId, carrierName);
+    const name = connectionName || `Connection ${existing.length + 1}`;
+
+    const acct = await storage.createCarrierAccount({
+      storeId,
+      carrierName,
+      connectionName: name,
+      apiKey,
+      apiSecret: apiSecret || null,
+      apiUrl: apiUrl || null,
+      webhookToken,
+      storeName: storeName || null,
+      isDefault: isDefault ? 1 : (existing.length === 0 ? 1 : 0),
+      isActive: 1,
+      assignmentRule: assignmentRule || "default",
+    });
+
+    await storage.createIntegrationLog({
+      storeId, integrationId: null, provider: carrierName,
+      action: 'carrier_account_created', status: 'success',
+      message: `Compte transporteur "${name}" créé pour ${carrierName}`,
+    });
+
+    res.json(acct);
+  });
+
+  app.patch("/api/carrier-accounts/:id", requireAuth, async (req, res) => {
+    const id = Number(req.params.id);
+    const storeId = req.user!.storeId!;
+    const acct = await storage.getCarrierAccount(id);
+    if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
+
+    const { connectionName, apiKey, apiSecret, apiUrl, storeName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
+    const updated = await storage.updateCarrierAccount(id, {
+      ...(connectionName !== undefined && { connectionName }),
+      ...(apiKey !== undefined && apiKey !== "" && { apiKey }),
+      ...(apiSecret !== undefined && { apiSecret }),
+      ...(apiUrl !== undefined && { apiUrl }),
+      ...(storeName !== undefined && { storeName }),
+      ...(assignmentRule !== undefined && { assignmentRule }),
+      ...(isDefault !== undefined && { isDefault: isDefault ? 1 : 0 }),
+      ...(isActive !== undefined && { isActive: isActive ? 1 : 0 }),
+      ...(assignmentData !== undefined && { assignmentData }),
+    });
+    res.json(updated);
+  });
+
+  app.delete("/api/carrier-accounts/:id", requireAuth, async (req, res) => {
+    const id = Number(req.params.id);
+    const storeId = req.user!.storeId!;
+    const acct = await storage.getCarrierAccount(id);
+    if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
+    await storage.deleteCarrierAccount(id);
+    res.json({ message: "Supprimé" });
+  });
+
+  // Webhook endpoint keyed to the unique webhookToken per account
+  app.post("/api/webhook/carrier/:token", async (req, res) => {
+    try {
+      const token = req.params.token;
+      // Find the account by webhook token
+      const allStores = await storage.getAllActiveIntegrationsByProvider("*").catch(() => []);
+      // We can't easily look up by token without a query — use a DB call
+      const { db } = await import("./db");
+      const { carrierAccounts: tbl } = await import("@shared/schema");
+      const { eq } = await import("drizzle-orm");
+      const [account] = await db.select().from(tbl).where(eq(tbl.webhookToken, token));
+
+      if (!account) {
+        return res.status(404).json({ message: "Webhook token invalide" });
+      }
+
+      const body = req.body;
+      const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
+      const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
+
+      let newStatus: string | null = null;
+      if (rawStatus.includes("livr")) newStatus = "Livré";
+      else if (rawStatus.includes("retour")) newStatus = "Retour";
+      else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev")) newStatus = "Attente De Ramassage";
+
+      if (trackingNumber && newStatus) {
+        const order = await storage.getOrderByTrackingNumber(account.storeId, trackingNumber);
+        if (order) {
+          await storage.updateOrderStatus(order.id, newStatus);
+          console.log(`[Webhook:${account.carrierName}] #${order.id} → ${newStatus}`);
+        }
+      }
+
+      await storage.createIntegrationLog({
+        storeId: account.storeId, integrationId: null, provider: account.carrierName,
+        action: 'webhook_received', status: 'success',
+        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}`,
+        payload: JSON.stringify(body).slice(0, 500),
+      });
+
+      res.json({ received: true });
+    } catch (err: any) {
+      console.error("[Webhook:carrier]", err);
+      res.status(500).json({ message: "Erreur webhook" });
+    }
   });
 
   // ============================================================
@@ -3033,14 +3183,11 @@ export async function registerRoutes(
       if (!order) return res.status(404).json({ message: "Commande non trouvée" });
       if (order.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
 
-      const integration = await storage.getIntegrationByProvider(storeId, provider);
-      if (!integration || integration.type !== 'shipping') {
-        return res.status(400).json({ message: `Transporteur ${provider} non connecté` });
-      }
-
-      const creds = JSON.parse(integration.credentials || '{}');
-      if (!creds.apiKey && !creds.apiUrl) {
-        return res.status(400).json({ message: `Clé API manquante pour ${provider}. Configurez-la dans Intégrations → Sociétés de Livraison.` });
+      // Smart dispatch: carrier accounts first, then legacy storeIntegrations
+      const rawOrderCityForDispatch = (order.customerCity || '').trim();
+      const creds = await storage.getAccountForShipping(storeId, provider, rawOrderCityForDispatch);
+      if (!creds) {
+        return res.status(400).json({ message: `Transporteur ${provider} non connecté. Ajoutez un compte dans Intégrations → Sociétés de Livraison.` });
       }
 
       // Resolve product name: rawProductName on order → first item name → fallback
@@ -3051,9 +3198,7 @@ export async function registerRoutes(
           : 'Produit');
 
       // ── Auto-match city against carrier's city list ─────────────
-      const carrierCityList: string[] = Array.isArray(creds.cityList) && creds.cityList.length > 0
-        ? creds.cityList
-        : getDefaultCitiesForProvider(provider);
+      const carrierCityList: string[] = getDefaultCitiesForProvider(provider);
       const rawOrderCity = (order.customerCity || '').trim();
       const matchedCity = autoMatchCity(rawOrderCity, carrierCityList) || rawOrderCity;
       if (matchedCity !== rawOrderCity) {

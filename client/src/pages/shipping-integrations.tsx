@@ -5,11 +5,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Link2, Settings, CheckCircle, Unlink, Loader2, RotateCcw, ExternalLink, Eye, EyeOff, MapPin, Video, Home, ChevronRight, Plus, Copy, Check } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import {
+  Link2, Settings, CheckCircle, Unlink, Loader2, RotateCcw,
+  ExternalLink, Eye, EyeOff, MapPin, Video, Home, ChevronRight,
+  Plus, Copy, Check, Trash2, Pencil, X,
+} from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useIntegrations, useCreateIntegration, useDeleteIntegration } from "@/hooks/use-store-data";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 
 const GOLD = "#C5A059";
 const NAVY = "#1e1b4b";
@@ -27,29 +32,24 @@ const SHIPPING_PROVIDERS = [
   { id: "livo",           name: "Livo",              cities: 369, logo: "/carriers/ol.svg",        tutorialUrl: "https://youtu.be/livo" },
   { id: "quicklivraison", name: "Quick Livraison",   cities: 404, logo: "/carriers/ql.svg",        tutorialUrl: "https://youtu.be/ql" },
   { id: "codinafrica",    name: "Codinafrica",       cities: 312, logo: "/carriers/cargo.svg",     tutorialUrl: "https://youtu.be/codinafrica" },
-  { id: "olivraison",     name: "Olivraison",        cities: 280, logo: null,                                                     tutorialUrl: "https://youtu.be/olivraison" },
-  { id: "livreego",       name: "Livreego",          cities: 295, logo: null,                                                     tutorialUrl: "https://youtu.be/livreego" },
-  { id: "powerdelivery",  name: "PowerDelivery",     cities: 350, logo: null,                                                     tutorialUrl: "https://youtu.be/powerdelivery" },
-  { id: "caledex",        name: "Caledex",           cities: 270, logo: null,                                                     tutorialUrl: "https://youtu.be/caledex" },
-  { id: "oscario",        name: "Oscario",           cities: 390, logo: null,                                                     tutorialUrl: "https://youtu.be/oscario" },
-  { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null,                                                     tutorialUrl: "https://youtu.be/colisspeed" },
+  { id: "olivraison",     name: "Olivraison",        cities: 280, logo: null,                      tutorialUrl: "https://youtu.be/olivraison" },
+  { id: "livreego",       name: "Livreego",          cities: 295, logo: null,                      tutorialUrl: "https://youtu.be/livreego" },
+  { id: "powerdelivery",  name: "PowerDelivery",     cities: 350, logo: null,                      tutorialUrl: "https://youtu.be/powerdelivery" },
+  { id: "caledex",        name: "Caledex",           cities: 270, logo: null,                      tutorialUrl: "https://youtu.be/caledex" },
+  { id: "oscario",        name: "Oscario",           cities: 390, logo: null,                      tutorialUrl: "https://youtu.be/oscario" },
+  { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null,                      tutorialUrl: "https://youtu.be/colisspeed" },
 ];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
   const [imgError, setImgError] = useState(false);
-
   if (logo && !imgError) {
     return (
-      <img
-        src={logo}
-        alt={name}
-        onError={() => setImgError(true)}
-        style={{ maxHeight: 40 }}
-        className="w-full object-contain p-1.5"
-      />
+      <img src={logo} alt={name} onError={() => setImgError(true)}
+        style={{ maxHeight: 40 }} className="w-full object-contain p-1.5" />
     );
   }
-
   return (
     <div className="flex flex-col items-center justify-center gap-0.5">
       <div className="w-8 h-8 rounded-lg bg-gray-200 dark:bg-zinc-600 flex items-center justify-center">
@@ -60,24 +60,484 @@ function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
   );
 }
 
+function copyToClipboard(text: string, onDone: () => void) {
+  navigator.clipboard.writeText(text).then(onDone);
+}
+
+// ─── Carrier Accounts Hooks ───────────────────────────────────────────────────
+
+function useCarrierAccounts(provider: string) {
+  return useQuery<any[]>({
+    queryKey: ["/api/carrier-accounts", provider],
+    queryFn: () => fetch(`/api/carrier-accounts?provider=${provider}`, { credentials: "include" }).then(r => r.json()),
+    enabled: !!provider,
+  });
+}
+
+function useCreateCarrierAccount() {
+  return useMutation({
+    mutationFn: (data: any) => apiRequest("POST", "/api/carrier-accounts", data),
+    onSuccess: (_d, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/carrier-accounts", vars.carrierName] });
+      queryClient.invalidateQueries({ queryKey: ["/api/carrier-accounts"] });
+    },
+  });
+}
+
+function useUpdateCarrierAccount() {
+  return useMutation({
+    mutationFn: ({ id, ...data }: any) => apiRequest("PATCH", `/api/carrier-accounts/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/carrier-accounts"] });
+    },
+  });
+}
+
+function useDeleteCarrierAccount() {
+  return useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/carrier-accounts/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/carrier-accounts"] });
+    },
+  });
+}
+
+// ─── Connection Modal (Add / Edit) ────────────────────────────────────────────
+
+interface ConnectModalProps {
+  providerId: string;
+  providerName: string;
+  editAccount?: any;
+  onClose: () => void;
+}
+
+function ConnectModal({ providerId, providerName, editAccount, onClose }: ConnectModalProps) {
+  const { toast } = useToast();
+  const create = useCreateCarrierAccount();
+  const update = useUpdateCarrierAccount();
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://tajergrow.com";
+  const webhookUrl = editAccount
+    ? `${origin}/api/webhook/carrier/${editAccount.webhookToken}`
+    : `${origin}/api/webhooks/shipping/${providerId}`;
+
+  const [storeName, setStoreName]           = useState(editAccount?.storeName || "");
+  const [apiKey, setApiKey]                 = useState("");
+  const [showKey, setShowKey]               = useState(false);
+  const [assignDefault, setAssignDefault]   = useState<boolean>(editAccount ? editAccount.assignmentRule === "default" || editAccount.isDefault === 1 : true);
+  const [assignCity, setAssignCity]         = useState<boolean>(editAccount?.assignmentRule === "city");
+  const [assignProduct, setAssignProduct]   = useState<boolean>(editAccount?.assignmentRule === "product");
+  const [copiedWebhook, setCopiedWebhook]   = useState(false);
+
+  const resolvedRule = assignCity ? "city" : assignProduct ? "product" : "default";
+
+  const handleSubmit = async () => {
+    if (!editAccount && !apiKey.trim()) {
+      toast({ title: "Champ requis", description: "Entrez votre token d'autorisation", variant: "destructive" });
+      return;
+    }
+    try {
+      if (editAccount) {
+        await update.mutateAsync({
+          id: editAccount.id,
+          storeName,
+          assignmentRule: resolvedRule,
+          isDefault: assignDefault ? 1 : 0,
+          ...(apiKey.trim() && { apiKey }),
+        });
+        toast({ title: "Mis à jour ✅" });
+      } else {
+        await create.mutateAsync({
+          carrierName: providerId,
+          apiKey,
+          storeName,
+          assignmentRule: resolvedRule,
+          isDefault: assignDefault ? 1 : 0,
+        });
+        toast({ title: "Connecté ✅", description: `${providerName} ajouté avec succès` });
+      }
+      onClose();
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const isPending = create.isPending || update.isPending;
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-md rounded-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-bold" style={{ color: NAVY }}>
+            {editAccount ? `Modifier — ${editAccount.connectionName}` : `Connexion avec ${providerName}`}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-5 py-2">
+          {/* Store label */}
+          <div className="space-y-1.5">
+            <Label className="font-semibold text-sm">Boutique <span className="text-red-500">*</span></Label>
+            <Input
+              data-testid="input-carrier-storename"
+              placeholder="Nom de votre boutique"
+              value={storeName}
+              onChange={e => setStoreName(e.target.value)}
+            />
+          </div>
+
+          {/* Authorization */}
+          <div className="space-y-1.5">
+            <Label className="font-semibold text-sm">Authorization {editAccount && <span className="text-muted-foreground font-normal">(laisser vide pour conserver)</span>}</Label>
+            <div className="relative">
+              <Input
+                data-testid="input-carrier-apikey"
+                type={showKey ? "text" : "password"}
+                placeholder="Authorization token..."
+                value={apiKey}
+                onChange={e => setApiKey(e.target.value)}
+              />
+              <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setShowKey(!showKey)}>
+                {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* WebHook */}
+          <div className="space-y-1.5">
+            <Label className="font-semibold text-sm">WebHook</Label>
+            <div className="flex items-center gap-2 p-2.5 rounded-xl border border-border/60 bg-muted/30">
+              <code className="flex-1 text-[11px] font-mono text-foreground truncate">{webhookUrl}</code>
+              <button type="button"
+                data-testid="button-copy-webhook"
+                onClick={() => copyToClipboard(webhookUrl, () => { setCopiedWebhook(true); setTimeout(() => setCopiedWebhook(false), 2000); })}
+                className="shrink-0 p-1.5 rounded-lg hover:bg-border/60 transition-colors">
+                {copiedWebhook ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">Collez cette URL dans les paramètres webhook du transporteur.</p>
+          </div>
+
+          {/* Assignment rule */}
+          <div className="space-y-2 pt-1">
+            <p className="text-sm font-semibold text-foreground">Pourquoi connectez-vous cette société ?</p>
+            <div className="flex flex-col gap-2">
+              {[
+                { label: "Connecter par Défaut", active: assignDefault, set: () => { setAssignDefault(true); setAssignCity(false); setAssignProduct(false); } },
+                { label: "Connecter par Ville",  active: assignCity,    set: () => { setAssignDefault(false); setAssignCity(true); setAssignProduct(false); } },
+                { label: "Connecter par Produit",active: assignProduct,  set: () => { setAssignDefault(false); setAssignCity(false); setAssignProduct(true); } },
+              ].map(opt => (
+                <label key={opt.label} className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <div
+                    onClick={opt.set}
+                    className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${opt.active ? "border-blue-500 bg-blue-500" : "border-gray-300"}`}
+                  >
+                    {opt.active && <Check className="w-2.5 h-2.5 text-white" />}
+                  </div>
+                  <span className="text-sm text-foreground">{opt.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-between gap-3 pt-2">
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-connect">
+            Fermer
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={isPending}
+            className="text-white font-bold px-8"
+            style={{ background: "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)" }}
+            data-testid="button-confirm-connect"
+          >
+            {isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Link2 className="w-4 h-4 mr-2" />}
+            {isPending ? "..." : editAccount ? "Enregistrer" : "Connecter"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Credentials View Modal ───────────────────────────────────────────────────
+
+interface CredentialsModalProps {
+  providerId: string;
+  providerName: string;
+  onClose: () => void;
+  onAddNew: () => void;
+}
+
+function CredentialsModal({ providerId, providerName, onClose, onAddNew }: CredentialsModalProps) {
+  const { toast } = useToast();
+  const { data: accounts = [], isLoading } = useCarrierAccounts(providerId);
+  const updateAcct   = useUpdateCarrierAccount();
+  const deleteAcct   = useDeleteCarrierAccount();
+
+  const [activeTab, setActiveTab]     = useState(0);
+  const [editingId, setEditingId]     = useState<number | null>(null);
+  const [copiedId, setCopiedId]       = useState<number | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "https://tajergrow.com";
+
+  const handleToggle = async (acct: any) => {
+    try {
+      await updateAcct.mutateAsync({ id: acct.id, isActive: acct.isActive === 1 ? 0 : 1 });
+      queryClient.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await deleteAcct.mutateAsync(id);
+      queryClient.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
+      setConfirmDeleteId(null);
+      if (activeTab >= accounts.length - 1) setActiveTab(Math.max(0, accounts.length - 2));
+      toast({ title: "Supprimé" });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-lg rounded-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-bold" style={{ color: NAVY }}>
+            Credentials for {providerName}
+          </DialogTitle>
+        </DialogHeader>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center h-32"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>
+        ) : accounts.length === 0 ? (
+          <div className="text-center py-10 space-y-3">
+            <p className="text-muted-foreground text-sm">Aucune connexion trouvée.</p>
+            <Button onClick={() => { onClose(); onAddNew(); }} className="text-white font-bold"
+              style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}>
+              <Plus className="w-4 h-4 mr-2" /> Ajouter une connexion
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Tabs */}
+            <div className="flex gap-1 p-1 bg-muted/40 rounded-xl overflow-x-auto">
+              {accounts.map((acct, i) => (
+                <button
+                  key={acct.id}
+                  onClick={() => setActiveTab(i)}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${
+                    activeTab === i
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  data-testid={`tab-connection-${i}`}
+                >
+                  {acct.connectionName || `Connection ${i + 1}`}
+                </button>
+              ))}
+            </div>
+
+            {/* Account detail */}
+            {accounts[activeTab] && (() => {
+              const acct = accounts[activeTab];
+              const webhookUrl = `${origin}/api/webhook/carrier/${acct.webhookToken}`;
+              return (
+                <div className="space-y-4">
+                  {/* Header */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-bold text-base text-foreground">{acct.connectionName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(acct.createdAt).toLocaleDateString("fr-FR", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    </div>
+                    {acct.isDefault === 1 && (
+                      <Badge className="text-[10px] font-bold bg-blue-100 text-blue-700 border-blue-200">Défaut</Badge>
+                    )}
+                  </div>
+
+                  {/* Info block */}
+                  <div className="rounded-xl border border-border/50 overflow-hidden">
+                    <div className="bg-muted/30 px-4 py-2 border-b border-border/40">
+                      <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Connection Information</p>
+                    </div>
+                    <div className="divide-y divide-border/30">
+                      {[
+                        ["Store", acct.storeName || "N/A"],
+                        ["Status", acct.isActive === 1 ? "Active" : "Inactive"],
+                        ["Règle", acct.assignmentRule === "city" ? "Par Ville" : acct.assignmentRule === "product" ? "Par Produit" : "Défaut"],
+                        ["Created At", new Date(acct.createdAt).toLocaleString("fr-FR")],
+                      ].map(([label, val]) => (
+                        <div key={label} className="flex items-center justify-between px-4 py-2.5">
+                          <span className="text-sm text-muted-foreground">{label}:</span>
+                          <span className={`text-sm font-medium ${val === "Active" ? "text-emerald-600" : val === "Inactive" ? "text-red-500" : "text-foreground"}`}>{val}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button size="sm" variant="outline" className="border-blue-200 text-blue-600 hover:bg-blue-50"
+                      onClick={() => setEditingId(acct.id)} data-testid={`button-edit-account-${acct.id}`}>
+                      <Pencil className="w-3.5 h-3.5 mr-1" /> Edit
+                    </Button>
+                    <Button size="sm" variant="outline" className="border-red-200 text-red-600 hover:bg-red-50"
+                      onClick={() => setConfirmDeleteId(acct.id)} data-testid={`button-delete-account-${acct.id}`}>
+                      <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete
+                    </Button>
+                    <div className="flex items-center gap-2 ml-auto">
+                      <Switch
+                        checked={acct.isActive === 1}
+                        onCheckedChange={() => handleToggle(acct)}
+                        data-testid={`switch-account-${acct.id}`}
+                      />
+                      <span className={`text-sm font-medium ${acct.isActive === 1 ? "text-emerald-600" : "text-muted-foreground"}`}>
+                        {acct.isActive === 1 ? "Active" : "Inactive"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Credential table */}
+                  <div className="rounded-xl border border-border/50 overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-muted/30 border-b border-border/40">
+                          <th className="text-left px-4 py-2.5 font-bold text-muted-foreground text-xs uppercase tracking-wide">Credential</th>
+                          <th className="text-left px-4 py-2.5 font-bold text-muted-foreground text-xs uppercase tracking-wide">Value</th>
+                          <th className="text-right px-4 py-2.5 font-bold text-muted-foreground text-xs uppercase tracking-wide">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr className="border-b border-border/20 last:border-0">
+                          <td className="px-4 py-3 font-medium text-foreground">Authorization</td>
+                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground truncate max-w-[180px]">
+                            {acct.apiKeyMasked || `${(acct.apiKey || "").slice(0, 8)}••••••••`}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              data-testid={`button-copy-key-${acct.id}`}
+                              onClick={() => {
+                                copyToClipboard(acct.apiKeyMasked || "", () => {
+                                  setCopiedId(acct.id);
+                                  setTimeout(() => setCopiedId(null), 2000);
+                                });
+                                toast({ title: "Copié ✅", description: "Token copié dans le presse-papier" });
+                              }}
+                              className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
+                            >
+                              {copiedId === acct.id ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                            </button>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="px-4 py-3 font-medium text-foreground">WebHook URL</td>
+                          <td className="px-4 py-3 font-mono text-xs text-muted-foreground truncate max-w-[180px]">{webhookUrl}</td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              onClick={() => {
+                                copyToClipboard(webhookUrl, () => {
+                                  setCopiedId(-acct.id);
+                                  setTimeout(() => setCopiedId(null), 2000);
+                                });
+                                toast({ title: "Copié ✅" });
+                              }}
+                              className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
+                            >
+                              {copiedId === -acct.id ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                            </button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Add new account button */}
+            <div className="flex justify-end pt-1">
+              <Button
+                size="sm"
+                onClick={() => { onClose(); onAddNew(); }}
+                className="text-white font-semibold"
+                style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}
+                data-testid="button-add-account-from-credentials"
+              >
+                <Plus className="w-3.5 h-3.5 mr-1.5" /> Ajouter une connexion
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+
+      {/* Edit sub-modal */}
+      {editingId !== null && (() => {
+        const acct = accounts.find(a => a.id === editingId);
+        if (!acct) return null;
+        return (
+          <ConnectModal
+            providerId={providerId}
+            providerName={providerName}
+            editAccount={acct}
+            onClose={() => { setEditingId(null); queryClient.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] }); }}
+          />
+        );
+      })()}
+
+      {/* Confirm delete */}
+      {confirmDeleteId !== null && (
+        <Dialog open onOpenChange={(open) => { if (!open) setConfirmDeleteId(null); }}>
+          <DialogContent className="sm:max-w-xs rounded-2xl">
+            <DialogHeader>
+              <DialogTitle className="text-red-600">Supprimer cette connexion ?</DialogTitle>
+              <DialogDescription>Cette action est irréversible.</DialogDescription>
+            </DialogHeader>
+            <div className="flex gap-3 justify-end mt-4">
+              <Button variant="outline" onClick={() => setConfirmDeleteId(null)}>Annuler</Button>
+              <Button
+                className="bg-red-500 hover:bg-red-600 text-white"
+                onClick={() => handleDelete(confirmDeleteId!)}
+                disabled={deleteAcct.isPending}
+                data-testid="button-confirm-delete-account"
+              >
+                {deleteAcct.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4 mr-1" />} Supprimer
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </Dialog>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
 export default function ShippingIntegrations() {
   const { toast } = useToast();
-  const { data: integrations, isLoading } = useIntegrations("shipping");
-  const createIntegration = useCreateIntegration();
+  const { data: integrations, isLoading: integrationsLoading } = useIntegrations("shipping");
   const deleteIntegration = useDeleteIntegration();
 
-  const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
-  const [settingsProvider, setSettingsProvider] = useState<string | null>(null);
-  const [formData, setFormData] = useState<Record<string, string>>({});
-  const [showSecret, setShowSecret] = useState(false);
-  const [showSettingsSecret, setShowSettingsSecret] = useState(false);
-  const [copiedWebhook, setCopiedWebhook] = useState(false);
+  // All carrier accounts (for connected status)
+  const { data: allAccounts = [] } = useQuery<any[]>({
+    queryKey: ["/api/carrier-accounts"],
+    queryFn: () => fetch("/api/carrier-accounts", { credentials: "include" }).then(r => r.json()),
+  });
 
-  /* ── Open Retour ─────────────────────────────────────────────── */
-  const [orDialog, setOrDialog] = useState(false);
-  const [orApiKey, setOrApiKey] = useState("");
-  const [orClientId, setOrClientId] = useState("");
-  const [orShowKey, setOrShowKey] = useState(false);
+  const [viewingCredentials, setViewingCredentials] = useState<string | null>(null);
+  const [addingAccount, setAddingAccount]           = useState<string | null>(null);
+
+  /* ── Open Retour ────────────────────────────────────────────── */
+  const [orDialog, setOrDialog]       = useState(false);
+  const [orApiKey, setOrApiKey]       = useState("");
+  const [orClientId, setOrClientId]   = useState("");
+  const [orShowKey, setOrShowKey]     = useState(false);
 
   const { data: orSettings, isLoading: orLoading } = useQuery<any>({
     queryKey: ["/api/open-retour/settings"],
@@ -85,74 +545,48 @@ export default function ShippingIntegrations() {
   });
 
   const saveOrMutation = useMutation({
-    mutationFn: () => fetch("/api/open-retour/settings", {
-      method: "POST", credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey: orApiKey, clientId: orClientId }),
-    }).then(r => r.json()),
-    onSuccess: (data) => {
+    mutationFn: () => apiRequest("POST", "/api/open-retour/settings", { apiKey: orApiKey, clientId: orClientId }),
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/open-retour/settings"] });
-      if (data.success) {
-        toast({ title: "Open Retour connecté ✅", description: data.message });
-        setOrDialog(false);
-      } else {
-        toast({ title: "Erreur", description: data.message, variant: "destructive" });
-      }
+      if (data.success) { toast({ title: "Open Retour connecté ✅", description: data.message }); setOrDialog(false); }
+      else toast({ title: "Erreur", description: data.message, variant: "destructive" });
     },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
   const disconnectOrMutation = useMutation({
-    mutationFn: () => fetch("/api/open-retour/settings", { method: "DELETE", credentials: "include" }).then(r => r.json()),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/open-retour/settings"] });
-      toast({ title: "Open Retour déconnecté" });
-    },
+    mutationFn: () => apiRequest("DELETE", "/api/open-retour/settings"),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/open-retour/settings"] }); toast({ title: "Open Retour déconnecté" }); },
   });
 
-  /* ── Shipping providers ──────────────────────────────────────── */
-  const connectedMap = new Map((integrations || []).map((i: any) => [i.provider, i]));
+  // Determine connected state per provider:
+  // connected = has active carrier account OR legacy storeIntegrations entry
+  const legacyMap = new Map((integrations || []).map((i: any) => [i.provider, i]));
+  const accountsByProvider = new Map<string, any[]>();
+  for (const a of allAccounts) {
+    if (!accountsByProvider.has(a.carrierName)) accountsByProvider.set(a.carrierName, []);
+    accountsByProvider.get(a.carrierName)!.push(a);
+  }
 
-  const handleConnect = async () => {
-    if (!connectingProvider) return;
-    if (!formData.apiKey?.trim()) {
-      toast({ title: "Champ requis", description: "Veuillez entrer la clé API", variant: "destructive" });
-      return;
-    }
-    try {
-      await createIntegration.mutateAsync({ provider: connectingProvider, type: "shipping", credentials: formData });
-      toast({ title: "Connecté ✅", description: `${connectingProvider} connecté avec succès` });
-      setConnectingProvider(null);
-      setFormData({});
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message, variant: "destructive" });
-    }
+  const isConnected = (providerId: string) => {
+    const accts = accountsByProvider.get(providerId) || [];
+    return accts.some(a => a.isActive === 1) || !!legacyMap.get(providerId);
   };
 
-  const handleDisconnect = async (integration: any) => {
-    try {
-      await deleteIntegration.mutateAsync(integration.id);
-      toast({ title: "Déconnecté", description: `${integration.provider} déconnecté` });
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message, variant: "destructive" });
-    }
-  };
+  const getAccountCount = (providerId: string) => (accountsByProvider.get(providerId) || []).length;
 
-  const connectingMeta = SHIPPING_PROVIDERS.find(p => p.id === connectingProvider);
-  const settingsMeta   = SHIPPING_PROVIDERS.find(p => p.id === settingsProvider);
+  const viewingMeta = SHIPPING_PROVIDERS.find(p => p.id === viewingCredentials);
+  const addingMeta  = SHIPPING_PROVIDERS.find(p => p.id === addingAccount);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
 
-      {/* ── HEADER ────────────────────────────────────────────────── */}
+      {/* ── HEADER ─────────────────────────────────────────────── */}
       <div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-3">
-          <Home className="w-3 h-3" />
-          <span>Accueil</span>
-          <ChevronRight className="w-3 h-3" />
-          <span>Intégrations</span>
-          <ChevronRight className="w-3 h-3" />
-          <span className="font-medium text-foreground">Sociétés de Livraison</span>
+          <Home className="w-3 h-3" /><span>Accueil</span>
+          <ChevronRight className="w-3 h-3" /><span>Intégrations</span>
+          <ChevronRight className="w-3 h-3" /><span className="font-medium text-foreground">Sociétés de Livraison</span>
         </div>
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
@@ -160,33 +594,23 @@ export default function ShippingIntegrations() {
               SOCIÉTÉS DE LIVRAISON
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Connectez vos transporteurs marocains pour expédier vos commandes COD.
+              Connectez vos transporteurs marocains · Multi-comptes · Dispatch intelligent par ville
             </p>
           </div>
-          <button
-            onClick={() => toast({ title: "Bientôt disponible", description: "L'ajout manuel de transporteur arrive prochainement." })}
-            data-testid="button-add-carrier"
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white shadow-md hover:opacity-90 transition-all shrink-0"
-            style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}
-          >
-            <Plus className="w-4 h-4" /> Ajouter un transporteur
-          </button>
         </div>
       </div>
 
-      {/* ── SECTION: Open Retour ─────────────────────────────────── */}
+      {/* ── Open Retour ──────────────────────────────────────── */}
       <div>
         <div className="flex items-center gap-2 mb-3">
           <RotateCcw className="w-4 h-4" style={{ color: GOLD }} />
           <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">Gestion des Retours</h2>
         </div>
-
         {orLoading ? (
           <div className="flex items-center gap-2 text-muted-foreground text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Chargement...</div>
         ) : (
-          <Card className="relative overflow-hidden rounded-2xl border-2 transition-shadow hover:shadow-md" style={{
-            borderColor: orSettings?.connected ? "rgba(197,160,89,0.4)" : "rgba(0,0,0,0.07)",
-          }}>
+          <Card className="relative overflow-hidden rounded-2xl border-2 transition-shadow hover:shadow-md"
+            style={{ borderColor: orSettings?.connected ? "rgba(197,160,89,0.4)" : "rgba(0,0,0,0.07)" }}>
             {orSettings?.connected && (
               <div className="absolute top-3.5 right-3.5 z-10">
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
@@ -209,30 +633,24 @@ export default function ShippingIntegrations() {
                     </a>
                   </div>
                   <p className="text-sm text-muted-foreground mb-4">
-                    Plateforme marocaine de gestion des retours COD. Créez des tickets de retour, tracez les colis et gérez les remboursements automatiquement.
+                    Plateforme marocaine de gestion des retours COD. Créez des tickets, tracez les colis et gérez les remboursements.
                   </p>
                   {orSettings?.connected ? (
                     <div className="flex flex-wrap gap-2 items-center">
-                      {orSettings.clientId && (
-                        <span className="text-xs text-muted-foreground">
-                          Client ID: <code className="bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded text-[11px]">{orSettings.clientId}</code>
-                        </span>
-                      )}
                       <button onClick={() => { setOrApiKey(""); setOrClientId(orSettings?.clientId || ""); setOrDialog(true); }}
                         className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border-2 hover:opacity-80 transition-all"
-                        style={{ borderColor: GOLD, color: GOLD }} data-testid="button-or-settings">
+                        style={{ borderColor: GOLD, color: GOLD }}>
                         <Settings className="w-3.5 h-3.5" /> Modifier
                       </button>
                       <button onClick={() => disconnectOrMutation.mutate()} disabled={disconnectOrMutation.isPending}
-                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
-                        data-testid="button-or-disconnect">
+                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-600 hover:bg-red-50 transition-colors">
                         {disconnectOrMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />} Déconnecter
                       </button>
                     </div>
                   ) : (
                     <button onClick={() => { setOrApiKey(""); setOrClientId(""); setOrDialog(true); }}
                       className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-bold hover:opacity-90 shadow-md transition-all"
-                      style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }} data-testid="button-or-connect">
+                      style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}>
                       <Link2 className="w-4 h-4" /> Connecter Open Retour
                     </button>
                   )}
@@ -243,7 +661,7 @@ export default function ShippingIntegrations() {
         )}
       </div>
 
-      {/* ── SECTION: Shipping Carriers ───────────────────────────── */}
+      {/* ── Carriers Grid ─────────────────────────────────────── */}
       <div>
         <div className="flex items-center gap-2 mb-3">
           <Link2 className="w-4 h-4" style={{ color: GOLD }} />
@@ -251,46 +669,55 @@ export default function ShippingIntegrations() {
           <span className="ml-auto text-xs text-muted-foreground">{SHIPPING_PROVIDERS.length} transporteurs disponibles</span>
         </div>
 
-        {isLoading ? (
+        {integrationsLoading ? (
           <div className="flex items-center justify-center h-40"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {SHIPPING_PROVIDERS.map((provider) => {
-              const connected = connectedMap.get(provider.id);
+              const connected = isConnected(provider.id);
+              const accountCount = getAccountCount(provider.id);
+
               return (
                 <Card
                   key={provider.id}
                   data-testid={`card-shipping-${provider.id}`}
-                  className="relative overflow-hidden rounded-2xl border border-border/60 bg-white dark:bg-card shadow-sm hover:shadow-md transition-all duration-200"
-                  style={{ borderColor: connected ? "rgba(16,185,129,0.35)" : undefined }}
+                  className="relative overflow-hidden rounded-2xl border transition-all duration-200 hover:shadow-lg"
+                  style={{
+                    borderColor: connected ? "rgba(16,185,129,0.5)" : "rgba(0,0,0,0.08)",
+                    borderWidth: connected ? 2 : 1,
+                  }}
                 >
-                  {/* Connected ribbon */}
+                  {/* Connected ribbon (diagonal banner, top-right) */}
                   {connected && (
-                    <div className="absolute top-0 right-0 z-10 overflow-hidden w-20 h-20 pointer-events-none">
-                      <div className="absolute top-3.5 -right-5 w-24 flex items-center justify-center gap-1 rotate-45 bg-emerald-500 text-white text-[9px] font-bold py-1 shadow-sm">
-                        <CheckCircle className="w-2.5 h-2.5 shrink-0" /> Connecté
+                    <div className="absolute top-0 right-0 z-10 overflow-hidden w-24 h-24 pointer-events-none">
+                      <div className="absolute top-5 -right-6 w-28 flex items-center justify-center gap-1 rotate-45 bg-emerald-500 text-white text-[9px] font-bold py-1 shadow">
+                        <CheckCircle className="w-2.5 h-2.5 shrink-0" /> Connected
                       </div>
                     </div>
                   )}
 
                   <CardContent className="p-5 flex flex-col gap-4">
-                    {/* Top row: logo + name */}
+                    {/* Top: logo + name + cities */}
                     <div className="flex items-center gap-3">
                       <div className="w-14 h-14 rounded-xl border border-border/40 bg-gray-50 dark:bg-zinc-800 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
                         <ProviderLogo logo={provider.logo} name={provider.name} />
                       </div>
                       <div className="min-w-0">
                         <h3 className="font-bold text-[15px] leading-tight text-foreground">{provider.name}</h3>
-                        <a
-                          href={`#${provider.id}`}
-                          onClick={e => e.preventDefault()}
-                          className="text-[11px] text-blue-500 hover:underline flex items-center gap-0.5 mt-0.5"
-                        >
+                        <a href={`#${provider.id}`} onClick={e => e.preventDefault()}
+                          className="text-[11px] text-blue-500 hover:underline flex items-center gap-0.5 mt-0.5">
                           <Link2 className="w-3 h-3" /> {provider.name} Link
                         </a>
-                        <div className="flex items-center gap-1 mt-1">
-                          <MapPin className="w-3 h-3 text-muted-foreground" />
-                          <span className="text-[11px] text-muted-foreground">{provider.cities} villes couvertes</span>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex items-center gap-1">
+                            <MapPin className="w-3 h-3 text-muted-foreground" />
+                            <span className="text-[11px] text-muted-foreground">{provider.cities} villes</span>
+                          </div>
+                          {accountCount > 0 && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100">
+                              {accountCount} connexion{accountCount > 1 ? "s" : ""}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -299,27 +726,32 @@ export default function ShippingIntegrations() {
                     <div className="flex flex-col gap-2">
                       {connected ? (
                         <div className="flex gap-2">
+                          {/* Eye: view credentials */}
                           <button
-                            data-testid={`button-settings-${provider.id}`}
-                            onClick={() => { setSettingsProvider(provider.id); setFormData({}); setShowSettingsSecret(false); }}
-                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold border-2 transition-all hover:opacity-80"
-                            style={{ borderColor: GOLD, color: GOLD }}
+                            data-testid={`button-view-credentials-${provider.id}`}
+                            onClick={() => setViewingCredentials(provider.id)}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold border-2 transition-all hover:bg-muted/40"
+                            style={{ borderColor: "rgba(0,0,0,0.15)", color: "inherit" }}
+                            title="Voir les credentials"
                           >
-                            <Settings className="w-3.5 h-3.5" /> Paramètres
+                            <Eye className="w-4 h-4" />
                           </button>
+
+                          {/* Plus: add new account */}
                           <button
-                            data-testid={`button-disconnect-shipping-${provider.id}`}
-                            onClick={() => handleDisconnect(connected)}
-                            disabled={deleteIntegration.isPending}
-                            className="px-3 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
+                            data-testid={`button-add-account-${provider.id}`}
+                            onClick={() => setAddingAccount(provider.id)}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-semibold border-2 transition-all hover:bg-emerald-50"
+                            style={{ borderColor: "rgba(16,185,129,0.5)", color: "#10b981" }}
+                            title="Ajouter une connexion"
                           >
-                            {deleteIntegration.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
+                            <Plus className="w-4 h-4" />
                           </button>
                         </div>
                       ) : (
                         <button
                           data-testid={`button-connect-shipping-${provider.id}`}
-                          onClick={() => { setConnectingProvider(provider.id); setFormData({}); setShowSecret(false); }}
+                          onClick={() => setAddingAccount(provider.id)}
                           className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-white text-sm font-bold bg-blue-500 hover:bg-blue-600 transition-colors shadow-sm"
                         >
                           <Link2 className="w-4 h-4" /> Connecter
@@ -345,13 +777,34 @@ export default function ShippingIntegrations() {
         )}
       </div>
 
-      {/* ── Open Retour Dialog ─────────────────────────────────────── */}
+      {/* ── Modals ────────────────────────────────────────────── */}
+
+      {/* Add / first connection */}
+      {addingAccount && addingMeta && (
+        <ConnectModal
+          providerId={addingAccount}
+          providerName={addingMeta.name}
+          onClose={() => setAddingAccount(null)}
+        />
+      )}
+
+      {/* Credentials view */}
+      {viewingCredentials && viewingMeta && (
+        <CredentialsModal
+          providerId={viewingCredentials}
+          providerName={viewingMeta.name}
+          onClose={() => setViewingCredentials(null)}
+          onAddNew={() => setAddingAccount(viewingCredentials)}
+        />
+      )}
+
+      {/* ── Open Retour Dialog ─────────────────────────────── */}
       <Dialog open={orDialog} onOpenChange={setOrDialog}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md rounded-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <RotateCcw className="w-5 h-5" style={{ color: GOLD }} />
-              {orSettings?.connected ? "Modifier les identifiants" : "Connecter"} Open Retour
+              {orSettings?.connected ? "Modifier" : "Connecter"} Open Retour
             </DialogTitle>
             <DialogDescription>
               Obtenez vos identifiants sur{" "}
@@ -361,167 +814,24 @@ export default function ShippingIntegrations() {
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label className="font-semibold">Client ID</Label>
-              <Input data-testid="input-or-clientId" placeholder="Votre Client ID..." value={orClientId} onChange={e => setOrClientId(e.target.value)} />
+              <Input placeholder="Votre Client ID..." value={orClientId} onChange={e => setOrClientId(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label className="font-semibold">API Key (Secret)</Label>
               <div className="relative">
-                <Input data-testid="input-or-apiKey" type={orShowKey ? "text" : "password"} placeholder="Votre clé API secrète..." value={orApiKey} onChange={e => setOrApiKey(e.target.value)} />
+                <Input type={orShowKey ? "text" : "password"} placeholder="Votre clé API secrète..." value={orApiKey} onChange={e => setOrApiKey(e.target.value)} />
                 <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setOrShowKey(!orShowKey)}>
                   {orShowKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              <p className="text-xs text-muted-foreground">🔒 Stockée de façon sécurisée, isolée par magasin.</p>
-            </div>
-            <div className="p-3 rounded-xl text-xs space-y-1" style={{ background: `rgba(197,160,89,0.07)`, border: `1px solid rgba(197,160,89,0.2)` }}>
-              <p className="font-semibold" style={{ color: GOLD }}>Comment trouver vos identifiants ?</p>
-              <ol className="space-y-0.5 text-muted-foreground list-decimal list-inside">
-                <li>Connectez-vous sur openretour.ma</li>
-                <li>Allez dans Paramètres → API</li>
-                <li>Copiez votre Client ID et générez une clé API</li>
-              </ol>
             </div>
           </div>
           <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setOrDialog(false)} data-testid="button-or-cancel">Annuler</Button>
+            <Button variant="outline" onClick={() => setOrDialog(false)}>Annuler</Button>
             <Button onClick={() => saveOrMutation.mutate()} disabled={saveOrMutation.isPending || !orApiKey.trim() || !orClientId.trim()}
-              className="text-white font-bold" style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }} data-testid="button-or-save">
+              className="text-white font-bold" style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}>
               {saveOrMutation.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Link2 className="w-4 h-4 mr-2" />}
-              {saveOrMutation.isPending ? "Connexion..." : "Enregistrer et connecter"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* ── Shipping Connect Dialog ──────────────────────────────── */}
-      <Dialog open={!!connectingProvider} onOpenChange={(open) => { if (!open) setConnectingProvider(null); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-3">
-              {connectingMeta?.logo && (
-                <div className="w-8 h-8 rounded-lg border border-border/40 bg-gray-50 flex items-center justify-center overflow-hidden shrink-0">
-                  <img src={connectingMeta.logo} alt={connectingMeta.name} className="w-full h-full object-contain p-0.5" onError={() => {}} />
-                </div>
-              )}
-              Connecter {connectingMeta?.name || connectingProvider}
-            </DialogTitle>
-            <DialogDescription>
-              Entrez vos identifiants API pour ce transporteur.
-              {connectingMeta?.tutorialUrl && (
-                <a href={connectingMeta.tutorialUrl} target="_blank" rel="noopener noreferrer" className="ml-1 underline text-blue-500 inline-flex items-center gap-0.5">
-                  <Video className="w-3 h-3" /> Voir le tutoriel
-                </a>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            {/* Webhook URL */}
-            {connectingProvider && (
-              <div className="space-y-1.5">
-                <Label className="font-semibold text-xs uppercase tracking-wide text-muted-foreground">URL Webhook</Label>
-                <div className="flex items-center gap-2 p-2.5 rounded-xl border border-border/60 bg-muted/40">
-                  <code className="flex-1 text-[11px] font-mono text-foreground truncate">
-                    {`https://tajergrow.com/api/webhook/${connectingProvider}/v2`}
-                  </code>
-                  <button
-                    type="button"
-                    data-testid="button-copy-webhook"
-                    onClick={() => {
-                      navigator.clipboard.writeText(`https://tajergrow.com/api/webhook/${connectingProvider}/v2`);
-                      setCopiedWebhook(true);
-                      setTimeout(() => setCopiedWebhook(false), 2000);
-                    }}
-                    className="shrink-0 p-1.5 rounded-lg hover:bg-border/60 transition-colors"
-                    title="Copier"
-                  >
-                    {copiedWebhook ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
-                  </button>
-                </div>
-                <p className="text-[10px] text-muted-foreground">Collez cette URL dans les paramètres webhook du transporteur.</p>
-              </div>
-            )}
-            <div className="space-y-2">
-              <Label className="font-semibold">Clé API</Label>
-              <div className="relative">
-                <Input data-testid="input-shipping-apiKey" type={showSecret ? "text" : "password"} placeholder="Votre clé API..." value={formData.apiKey || ""} onChange={e => setFormData({ ...formData, apiKey: e.target.value })} />
-                <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowSecret(!showSecret)}>
-                  {showSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Token Secret <span className="text-muted-foreground font-normal">(optionnel)</span></Label>
-              <Input data-testid="input-shipping-apiSecret" type="password" placeholder="Token secret..." value={formData.apiSecret || ""} onChange={e => setFormData({ ...formData, apiSecret: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label>URL API <span className="text-muted-foreground font-normal">(optionnelle)</span></Label>
-              <Input data-testid="input-shipping-apiUrl" placeholder="https://api.transporteur.ma/v1" value={formData.apiUrl || ""} onChange={e => setFormData({ ...formData, apiUrl: e.target.value })} />
-            </div>
-            <p className="text-xs text-muted-foreground">🔒 Vos identifiants sont chiffrés et isolés par magasin.</p>
-          </div>
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setConnectingProvider(null)} data-testid="button-cancel-shipping">Annuler</Button>
-            <Button className="bg-blue-500 hover:bg-blue-600 text-white font-bold" data-testid="button-confirm-shipping" onClick={handleConnect} disabled={createIntegration.isPending}>
-              {createIntegration.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Link2 className="w-4 h-4 mr-2" />}
-              {createIntegration.isPending ? "Connexion..." : "Connecter"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* ── Shipping Settings Dialog ─────────────────────────────── */}
-      <Dialog open={!!settingsProvider} onOpenChange={(open) => { if (!open) setSettingsProvider(null); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-3">
-              {settingsMeta?.logo && (
-                <div className="w-8 h-8 rounded-lg border border-border/40 bg-gray-50 flex items-center justify-center overflow-hidden shrink-0">
-                  <img src={settingsMeta.logo} alt={settingsMeta.name} className="w-full h-full object-contain p-0.5" onError={() => {}} />
-                </div>
-              )}
-              Paramètres — {settingsMeta?.name || settingsProvider}
-            </DialogTitle>
-            <DialogDescription>Mettez à jour vos identifiants API.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label className="font-semibold">Nouvelle clé API</Label>
-              <div className="relative">
-                <Input data-testid="input-settings-apiKey" type={showSettingsSecret ? "text" : "password"} placeholder="Nouvelle clé API..." value={formData.apiKey || ""} onChange={e => setFormData({ ...formData, apiKey: e.target.value })} />
-                <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowSettingsSecret(!showSettingsSecret)}>
-                  {showSettingsSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Token Secret <span className="text-muted-foreground font-normal">(optionnel)</span></Label>
-              <Input data-testid="input-settings-apiSecret" type="password" placeholder="Nouveau token secret..." value={formData.apiSecret || ""} onChange={e => setFormData({ ...formData, apiSecret: e.target.value })} />
-            </div>
-          </div>
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setSettingsProvider(null)} data-testid="button-cancel-settings">Annuler</Button>
-            <Button
-              data-testid="button-save-settings"
-              className="text-white font-bold"
-              style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #b8904a 100%)` }}
-              disabled={createIntegration.isPending}
-              onClick={async () => {
-                if (!settingsProvider || !formData.apiKey?.trim()) {
-                  toast({ title: "Erreur", description: "Clé API requise", variant: "destructive" });
-                  return;
-                }
-                try {
-                  await createIntegration.mutateAsync({ provider: settingsProvider, type: "shipping", credentials: formData });
-                  toast({ title: "Mis à jour ✅", description: "Identifiants mis à jour avec succès" });
-                  setSettingsProvider(null);
-                  setFormData({});
-                } catch (err: any) {
-                  toast({ title: "Erreur", description: err.message, variant: "destructive" });
-                }
-              }}
-            >
-              {createIntegration.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Settings className="w-4 h-4 mr-2" />}
-              {createIntegration.isPending ? "Enregistrement..." : "Enregistrer"}
+              {saveOrMutation.isPending ? "Connexion..." : "Enregistrer"}
             </Button>
           </div>
         </DialogContent>

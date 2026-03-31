@@ -1,0 +1,26 @@
+"I need to implement a professional Multi-Account Integration system for shipping carriers in TajerGrow.com, following the UI and logic in the provided screenshots.
+1. Database Architecture (Multi-Account):
+Create a carrier_accounts table to allow multiple connections for the same carrier:
+id, store_id, carrier_name (e.g., Digylog), connection_name (e.g., Connection 1).
+auth_token (The Authorization credential).
+webhook_url (Unique generated URL for this connection).
+is_default (Boolean).
+assignment_rule: (Default, By City, or By Product).
+2. Connection Modal & UI (Refer to Image 1 & 2):
+Modal 'Connection with [Carrier]':
+Store/Boutique: Input for the store name.
+Authorization: Input field for the API Token/Key.
+WebHook: Auto-generated read-only field: https://tajergrow.com/api/webhooks/shipping/[carrier_id]. Add a 'Copy' button.
+Why are you connecting? Checkboxes: 'Connect by Default', 'Connect by City', 'Connect by Product'.
+Credentials View (Image 2): Create a sub-page to list all active connections for a carrier. Show a table with: Credential Name | Value (Masked) | Status (Active/Inactive) | Actions (Edit, Delete, Copy).
+3. Functional Integration Logic (3amali):
+Smart Dispatch: When I click the 'Green Truck Icon' to ship an order:
+The system must check which shipping account is linked to that specific order's store.
+If 'Connect by City' is active, use the account that covers that specific city.
+Use the correct auth_token for that specific account when making the API call to Digylog.
+Webhook Handling: Ensure each account has a unique webhook endpoint so that status updates (Livré/Retour) from Digylog return to the correct order in the correct store.
+4. Visual Design (TajerGrow Theme):
+Use the Connected Green Ribbon on the carrier card (Image 3).
+Add the Eye icon (to view credentials) and Plus icon (to add a new account) on the carrier card.
+Maintain the Navy Blue (#1e1b4b) and Gold (#C5A059) luxury aesthetic.
+Technical Instruction: Ensure that adding a new account doesn't overwrite the old one. Use a 'Many-to-One' relationship between carrier_accounts and stores. All API calls must be dynamic based on the selected connection."

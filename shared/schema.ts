@@ -161,6 +161,25 @@ export const adSpend = pgTable("ad_spend", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// ─── Multi-account carrier connections ──────────────────────────────────────
+// Supports multiple API keys per carrier per store (by city, by product, etc.)
+export const carrierAccounts = pgTable("carrier_accounts", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  carrierName: text("carrier_name").notNull(),         // e.g. "digylog"
+  connectionName: text("connection_name").notNull().default("Connection 1"),
+  apiKey: text("api_key").notNull(),
+  apiSecret: text("api_secret"),                       // optional
+  apiUrl: text("api_url"),                             // optional override
+  webhookToken: text("webhook_token").notNull(),        // unique slug for webhook URL
+  storeName: text("store_name"),                       // user's label (boutique name)
+  isDefault: integer("is_default").default(0),
+  isActive: integer("is_active").default(1),
+  assignmentRule: text("assignment_rule").default("default"), // "default"|"city"|"product"
+  assignmentData: text("assignment_data"),             // JSON array of cities or SKUs
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
@@ -410,6 +429,7 @@ export const insertOrderSchema = createInsertSchema(orders).omit({ id: true, cre
 export const insertOrderItemSchema = createInsertSchema(orderItems).omit({ id: true });
 export const insertAdSpendSchema = createInsertSchema(adSpendTracking).omit({ id: true, createdAt: true });
 export const insertAdSpendNewSchema = createInsertSchema(adSpend).omit({ id: true, createdAt: true });
+export const insertCarrierAccountSchema = createInsertSchema(carrierAccounts).omit({ id: true, createdAt: true });
 export const insertIntegrationSchema = createInsertSchema(storeIntegrations).omit({ id: true, createdAt: true });
 export const insertIntegrationLogSchema = createInsertSchema(integrationLogs).omit({ id: true, createdAt: true });
 export const insertAgentProductSchema = createInsertSchema(agentProducts).omit({ id: true });
@@ -432,6 +452,8 @@ export type AdSpendEntry = typeof adSpendTracking.$inferSelect;
 export type InsertAdSpend = z.infer<typeof insertAdSpendSchema>;
 export type AdSpendNewEntry = typeof adSpend.$inferSelect;
 export type InsertAdSpendNew = z.infer<typeof insertAdSpendNewSchema>;
+export type CarrierAccount = typeof carrierAccounts.$inferSelect;
+export type InsertCarrierAccount = z.infer<typeof insertCarrierAccountSchema>;
 export type StoreIntegration = typeof storeIntegrations.$inferSelect;
 export type InsertIntegration = z.infer<typeof insertIntegrationSchema>;
 export type IntegrationLog = typeof integrationLogs.$inferSelect;

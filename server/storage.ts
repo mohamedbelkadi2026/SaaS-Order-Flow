@@ -2,9 +2,11 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, payments, emailVerificationCodes,
+  carrierAccounts,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
+  type CarrierAccount, type InsertCarrierAccount,
   type StoreIntegration, type InsertIntegration, type IntegrationLog, type InsertIntegrationLog,
   type Subscription, type InsertSubscription, type Customer, type InsertCustomer,
   type AgentProduct,
@@ -60,6 +62,14 @@ export interface IStorage {
 
   getOrGenerateWebhookKey(storeId: number): Promise<string>;
   getStoreByWebhookKey(key: string): Promise<Store | undefined>;
+
+  // ── Carrier Accounts (multi-account) ─────────────────────────────
+  getCarrierAccounts(storeId: number, carrierName?: string): Promise<CarrierAccount[]>;
+  getCarrierAccount(id: number): Promise<CarrierAccount | undefined>;
+  createCarrierAccount(data: InsertCarrierAccount): Promise<CarrierAccount>;
+  updateCarrierAccount(id: number, data: Partial<InsertCarrierAccount>): Promise<CarrierAccount | undefined>;
+  deleteCarrierAccount(id: number): Promise<void>;
+  getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string } | null>;
 
   getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]>;
   getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]>;
@@ -710,6 +720,106 @@ export class DatabaseStorage implements IStorage {
 
     const [created] = await db.insert(adSpendTracking).values(entry).returning();
     return created;
+  }
+
+  // ── Carrier Accounts (multi-account) ─────────────────────────────
+
+  async getCarrierAccounts(storeId: number, carrierName?: string): Promise<CarrierAccount[]> {
+    if (carrierName) {
+      return db.select().from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, carrierName)))
+        .orderBy(desc(carrierAccounts.isDefault), desc(carrierAccounts.createdAt));
+    }
+    return db.select().from(carrierAccounts)
+      .where(eq(carrierAccounts.storeId, storeId))
+      .orderBy(desc(carrierAccounts.isDefault), desc(carrierAccounts.createdAt));
+  }
+
+  async getCarrierAccount(id: number): Promise<CarrierAccount | undefined> {
+    const [acct] = await db.select().from(carrierAccounts).where(eq(carrierAccounts.id, id));
+    return acct;
+  }
+
+  async createCarrierAccount(data: InsertCarrierAccount): Promise<CarrierAccount> {
+    // If new account is marked as default, unset any existing default for same carrier
+    if (data.isDefault === 1) {
+      await db.update(carrierAccounts)
+        .set({ isDefault: 0 })
+        .where(and(
+          eq(carrierAccounts.storeId, data.storeId),
+          eq(carrierAccounts.carrierName, data.carrierName),
+        ));
+    }
+    const [created] = await db.insert(carrierAccounts).values(data).returning();
+    return created;
+  }
+
+  async updateCarrierAccount(id: number, data: Partial<InsertCarrierAccount>): Promise<CarrierAccount | undefined> {
+    // If setting as default, clear others first
+    if (data.isDefault === 1) {
+      const acct = await this.getCarrierAccount(id);
+      if (acct) {
+        await db.update(carrierAccounts)
+          .set({ isDefault: 0 })
+          .where(and(
+            eq(carrierAccounts.storeId, acct.storeId),
+            eq(carrierAccounts.carrierName, acct.carrierName),
+          ));
+      }
+    }
+    const [updated] = await db.update(carrierAccounts)
+      .set(data)
+      .where(eq(carrierAccounts.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteCarrierAccount(id: number): Promise<void> {
+    await db.delete(carrierAccounts).where(eq(carrierAccounts.id, id));
+  }
+
+  /**
+   * Smart dispatch: find the best carrier account for an order.
+   * Priority:
+   *   1. Active account with assignmentRule = 'city' that covers the order's city
+   *   2. Active account with assignmentRule = 'default' (or isDefault = 1)
+   *   3. Fall back to legacy storeIntegrations entry
+   */
+  async getAccountForShipping(
+    storeId: number,
+    provider: string,
+    city?: string,
+  ): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string } | null> {
+    const accounts = await this.getCarrierAccounts(storeId, provider);
+    const active   = accounts.filter(a => a.isActive === 1);
+
+    // 1. Try city-based routing
+    if (city && active.length > 0) {
+      const cityAcct = active.find(a => {
+        if (a.assignmentRule !== 'city') return false;
+        try {
+          const cities: string[] = JSON.parse(a.assignmentData || '[]');
+          return cities.some(c => c.toLowerCase() === city.toLowerCase());
+        } catch { return false; }
+      });
+      if (cityAcct) return { apiKey: cityAcct.apiKey, apiSecret: cityAcct.apiSecret ?? undefined, apiUrl: cityAcct.apiUrl ?? undefined };
+    }
+
+    // 2. Default account
+    const defaultAcct = active.find(a => a.isDefault === 1) || active.find(a => a.assignmentRule === 'default') || active[0];
+    if (defaultAcct) {
+      return { apiKey: defaultAcct.apiKey, apiSecret: defaultAcct.apiSecret ?? undefined, apiUrl: defaultAcct.apiUrl ?? undefined };
+    }
+
+    // 3. Fallback to legacy storeIntegrations
+    const legacy = await this.getIntegrationByProvider(storeId, provider);
+    if (legacy) {
+      try {
+        const creds = JSON.parse(legacy.credentials || '{}');
+        if (creds.apiKey) return creds;
+      } catch {}
+    }
+    return null;
   }
 
   async getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]> {
