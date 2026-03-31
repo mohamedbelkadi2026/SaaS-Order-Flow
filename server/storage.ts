@@ -785,7 +785,7 @@ export class DatabaseStorage implements IStorage {
       }
     }
     const [updated] = await db.update(carrierAccounts)
-      .set(data)
+      .set({ ...data, updatedAt: new Date() })
       .where(eq(carrierAccounts.id, id))
       .returning();
     return updated;

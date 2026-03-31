@@ -177,7 +177,9 @@ export const carrierAccounts = pgTable("carrier_accounts", {
   isActive: integer("is_active").default(1),
   assignmentRule: text("assignment_rule").default("default"), // "default"|"city"|"product"
   assignmentData: text("assignment_data"),             // JSON array of cities or SKUs
+  settings: jsonb("settings").default({}),             // flexible carrier-specific config
   createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const storeIntegrations = pgTable("store_integrations", {
