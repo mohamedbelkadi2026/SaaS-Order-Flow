@@ -5,15 +5,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select, SelectContent, SelectItem,
+  SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog, DialogContent, DialogHeader,
   DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
-  Link2, Settings, CheckCircle, Unlink, Loader2, RotateCcw,
-  ExternalLink, Eye, EyeOff, MapPin, Video, Home, ChevronRight,
-  Plus, Copy, Check, Trash2, Pencil,
+  Link2, CheckCircle, Loader2, Eye, EyeOff,
+  MapPin, Video, Home, ChevronRight,
+  Plus, Copy, Check, Trash2, Pencil, AlertCircle,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -43,6 +47,17 @@ const PROVIDERS = [
   { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                     },
 ];
 
+/* ─── Webhook domain ─────────────────────────────────────────── */
+function getWebhookDomain(): string {
+  if (typeof window === "undefined") return "https://www.tajergrow.com";
+  const { origin } = window.location;
+  // Replit dev domains → substitute the real production domain
+  if (origin.includes("replit") || origin.includes("repl.co") || origin.includes("garean")) {
+    return "https://www.tajergrow.com";
+  }
+  return origin;
+}
+
 /* ─── Logo ───────────────────────────────────────────────────── */
 function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
   const [err, setErr] = useState(false);
@@ -64,19 +79,7 @@ function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
   );
 }
 
-/* ─── Copy helper ────────────────────────────────────────────── */
-function useCopyText() {
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const copy = (text: string, key: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopiedKey(key);
-      setTimeout(() => setCopiedKey(null), 2000);
-    });
-  };
-  return { copiedKey, copy };
-}
-
-/* ─── Carrier accounts API hooks ─────────────────────────────── */
+/* ─── API hooks ──────────────────────────────────────────────── */
 function useCarrierAccounts(provider?: string) {
   const url = provider
     ? `/api/carrier-accounts?provider=${provider}`
@@ -93,7 +96,18 @@ function useCarrierAccounts(provider?: string) {
   });
 }
 
-/* ─── ConnectModal (add / edit a carrier account) ────────────── */
+function useStores() {
+  return useQuery<any[]>({
+    queryKey: ["/api/magasins"],
+    queryFn: async () => {
+      const res = await fetch("/api/magasins", { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
+}
+
+/* ─── ConnectModal ───────────────────────────────────────────── */
 interface ConnectModalProps {
   providerId: string;
   providerName: string;
@@ -103,49 +117,77 @@ interface ConnectModalProps {
 function ConnectModal({ providerId, providerName, existingAccount, onClose }: ConnectModalProps) {
   const { toast } = useToast();
   const qc = useQueryClient();
+  const { data: stores = [] } = useStores();
 
-  const [storeName,       setStoreName]       = useState<string>(existingAccount?.storeName || "");
-  const [apiKey,          setApiKey]          = useState<string>("");
-  const [showKey,         setShowKey]         = useState(false);
-  const [rule,            setRule]            = useState<"default"|"city"|"product">(
+  const [selectedStoreId, setSelectedStoreId] = useState<string>(
+    existingAccount?.storeName
+      ? stores.find((s: any) => s.name === existingAccount.storeName)?.id?.toString() || "__manual__"
+      : ""
+  );
+  const [apiKey,        setApiKey]        = useState("");
+  const [showKey,       setShowKey]       = useState(false);
+  const [rule,          setRule]          = useState<"default" | "city" | "product">(
     existingAccount?.assignmentRule || "default"
   );
-  const [webhookCopied,   setWebhookCopied]   = useState(false);
+  const [webhookCopied, setWebhookCopied] = useState(false);
+  const [submitError,   setSubmitError]   = useState<string | null>(null);
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const domain = getWebhookDomain();
   const webhookUrl = existingAccount?.webhookToken
-    ? `${origin}/api/webhook/carrier/${existingAccount.webhookToken}`
-    : `${origin}/api/webhooks/shipping/${providerId}`;
+    ? `${domain}/api/webhook/carrier/${existingAccount.webhookToken}`
+    : `${domain}/api/webhooks/shipping/${providerId}`;
+
+  /* Resolve display name for the selected store */
+  const selectedStore = stores.find((s: any) => s.id?.toString() === selectedStoreId);
+  const resolvedStoreName = selectedStore?.name || existingAccount?.storeName || "";
 
   const mutation = useMutation({
     mutationFn: async () => {
+      setSubmitError(null);
       if (existingAccount) {
-        const body: any = { storeName, assignmentRule: rule };
+        const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
         if (apiKey.trim()) body.apiKey = apiKey;
         const res = await apiRequest("PATCH", `/api/carrier-accounts/${existingAccount.id}`, body);
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
+        return data;
       } else {
         const res = await apiRequest("POST", "/api/carrier-accounts", {
-          carrierName: providerId, apiKey, storeName, assignmentRule: rule,
+          carrierName: providerId,
+          apiKey,
+          storeName: resolvedStoreName,
+          assignmentRule: rule,
           isDefault: rule === "default" ? 1 : 0,
         });
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
+        return data;
       }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts"] });
-      toast({ title: existingAccount ? "Mis à jour ✅" : "Connecté ✅", description: `${providerName} ${existingAccount ? "mis à jour" : "ajouté"} avec succès` });
+      toast({
+        title: existingAccount ? "Mis à jour ✅" : "Connecté ✅",
+        description: `${providerName} ${existingAccount ? "mis à jour" : "ajouté"} avec succès`,
+      });
       onClose();
     },
     onError: (e: any) => {
-      toast({ title: "Erreur", description: e.message || "Une erreur est survenue", variant: "destructive" });
+      const msg = e?.message || "Une erreur est survenue";
+      setSubmitError(msg);
+      toast({ title: "Erreur de connexion", description: msg, variant: "destructive" });
     },
   });
 
   const handleSubmit = () => {
+    setSubmitError(null);
     if (!existingAccount && !apiKey.trim()) {
-      toast({ title: "Champ requis", description: "Entrez votre token d'autorisation", variant: "destructive" });
+      setSubmitError("Le token d'autorisation est requis.");
+      return;
+    }
+    if (!existingAccount && !selectedStoreId) {
+      setSubmitError("Veuillez sélectionner une boutique.");
       return;
     }
     mutation.mutate();
@@ -156,28 +198,48 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       <DialogContent className="sm:max-w-md rounded-2xl">
         <DialogHeader>
           <DialogTitle style={{ color: NAVY }}>
-            {existingAccount ? `Modifier — ${existingAccount.connectionName}` : `Connexion avec ${providerName}`}
+            {existingAccount
+              ? `Modifier — ${existingAccount.connectionName}`
+              : `Connexion avec ${providerName}`}
           </DialogTitle>
+          {!existingAccount && (
+            <DialogDescription className="text-sm text-muted-foreground">
+              Liez un compte <strong>{providerName}</strong> à l'une de vos boutiques.
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         <div className="space-y-5 py-2">
-          {/* Store name */}
+
+          {/* ── Boutique dropdown ── */}
           <div className="space-y-1.5">
             <Label className="font-semibold text-sm">
               Boutique <span className="text-red-500">*</span>
             </Label>
-            <Input
-              data-testid="input-carrier-storename"
-              placeholder="Nom de votre boutique"
-              value={storeName}
-              onChange={e => setStoreName(e.target.value)}
-            />
+            {stores.length === 0 ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des boutiques...
+              </div>
+            ) : (
+              <Select value={selectedStoreId} onValueChange={setSelectedStoreId}>
+                <SelectTrigger data-testid="select-boutique" className="w-full">
+                  <SelectValue placeholder="Sélectionnez votre boutique..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {stores.map((s: any) => (
+                    <SelectItem key={s.id} value={s.id.toString()}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
-          {/* Authorization token */}
+          {/* ── Authorization token ── */}
           <div className="space-y-1.5">
             <Label className="font-semibold text-sm">
-              Authorization{" "}
+              Authorization Token{" "}
               {existingAccount && (
                 <span className="text-muted-foreground font-normal text-xs">
                   (laisser vide pour conserver)
@@ -188,9 +250,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               <Input
                 data-testid="input-carrier-apikey"
                 type={showKey ? "text" : "password"}
-                placeholder="Authorization token..."
+                placeholder="Entrez votre token d'autorisation..."
                 value={apiKey}
                 onChange={e => setApiKey(e.target.value)}
+                className={!existingAccount && !apiKey.trim() && submitError ? "border-red-400" : ""}
               />
               <button
                 type="button"
@@ -202,11 +265,13 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             </div>
           </div>
 
-          {/* WebHook URL */}
+          {/* ── WebHook URL ── */}
           <div className="space-y-1.5">
-            <Label className="font-semibold text-sm">WebHook</Label>
+            <Label className="font-semibold text-sm">WebHook URL</Label>
             <div className="flex items-center gap-2 p-2.5 rounded-xl border bg-muted/30">
-              <code className="flex-1 text-[11px] font-mono truncate">{webhookUrl}</code>
+              <code className="flex-1 text-[11px] font-mono truncate text-foreground">
+                {webhookUrl}
+              </code>
               <button
                 type="button"
                 data-testid="button-copy-webhook"
@@ -227,40 +292,51 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             </p>
           </div>
 
-          {/* Assignment rule */}
+          {/* ── Assignment rule ── */}
           <div className="space-y-2 pt-1">
             <p className="text-sm font-semibold">Pourquoi connectez-vous cette société ?</p>
             {(["default", "city", "product"] as const).map(r => (
-              <label key={r} className="flex items-center gap-2.5 cursor-pointer">
+              <label key={r} className="flex items-center gap-2.5 cursor-pointer select-none">
                 <div
                   onClick={() => setRule(r)}
-                  className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${
+                  className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
                     rule === r ? "border-blue-500 bg-blue-500" : "border-gray-300"
                   }`}
                 >
                   {rule === r && <Check className="w-2.5 h-2.5 text-white" />}
                 </div>
                 <span className="text-sm">
-                  {r === "default" ? "Connecter par Défaut" : r === "city" ? "Connecter par Ville" : "Connecter par Produit"}
+                  {r === "default" ? "Connexion par Défaut" : r === "city" ? "Connexion par Ville" : "Connexion par Produit"}
                 </span>
               </label>
             ))}
           </div>
+
+          {/* ── Error banner ── */}
+          {submitError && (
+            <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700">
+              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+              <p className="text-sm">{submitError}</p>
+            </div>
+          )}
         </div>
 
         <div className="flex justify-between gap-3 pt-2">
-          <Button variant="outline" onClick={onClose} data-testid="button-cancel-connect">
-            Fermer
+          <Button variant="outline" onClick={onClose} data-testid="button-cancel-connect" disabled={mutation.isPending}>
+            Annuler
           </Button>
           <Button
             onClick={handleSubmit}
             disabled={mutation.isPending}
-            className="text-white font-bold px-8"
+            className="text-white font-bold px-8 min-w-[130px]"
             style={{ background: "linear-gradient(135deg,#3b82f6,#2563eb)" }}
             data-testid="button-confirm-connect"
           >
-            {mutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            {mutation.isPending ? "..." : existingAccount ? "Enregistrer" : "Connecter"}
+            {mutation.isPending ? (
+              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Connexion...</>
+            ) : (
+              <><Link2 className="w-4 h-4 mr-2" />{existingAccount ? "Enregistrer" : "Connecter"}</>
+            )}
           </Button>
         </div>
       </DialogContent>
@@ -268,7 +344,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   );
 }
 
-/* ─── CredentialsModal (view / manage accounts for a carrier) ─ */
+/* ─── CredentialsModal ───────────────────────────────────────── */
 interface CredentialsModalProps {
   providerId: string;
   providerName: string;
@@ -279,13 +355,20 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
   const { toast } = useToast();
   const qc = useQueryClient();
   const { data: accounts = [], isLoading } = useCarrierAccounts(providerId);
-  const { copiedKey, copy } = useCopyText();
 
   const [activeTab,       setActiveTab]       = useState(0);
   const [editAccount,     setEditAccount]     = useState<any>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [copiedKey,       setCopiedKey]       = useState<string | null>(null);
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const domain = getWebhookDomain();
+
+  const copyText = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2000);
+    toast({ title: "Copié ✅" });
+  };
 
   const toggleMutation = useMutation({
     mutationFn: (acct: any) =>
@@ -316,9 +399,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
       <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
         <DialogContent className="sm:max-w-lg rounded-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle style={{ color: NAVY }}>
-              Credentials — {providerName}
-            </DialogTitle>
+            <DialogTitle style={{ color: NAVY }}>Credentials — {providerName}</DialogTitle>
           </DialogHeader>
 
           {isLoading ? (
@@ -340,7 +421,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
             <div className="space-y-4 mt-2">
               {/* Tab bar */}
               <div className="flex gap-1 p-1 bg-muted/40 rounded-xl overflow-x-auto">
-                {accounts.map((a, i) => (
+                {accounts.map((a: any, i: number) => (
                   <button
                     key={a.id}
                     onClick={() => setActiveTab(i)}
@@ -356,10 +437,9 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                 ))}
               </div>
 
-              {/* Account detail */}
               {acct && (
                 <div className="space-y-4">
-                  {/* Header row */}
+                  {/* Header */}
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <p className="font-bold text-base">{acct.connectionName}</p>
@@ -376,7 +456,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     )}
                   </div>
 
-                  {/* Info table */}
+                  {/* Info rows */}
                   <div className="rounded-xl border border-border/50 overflow-hidden">
                     <div className="bg-muted/30 px-4 py-2 border-b border-border/40">
                       <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
@@ -385,15 +465,17 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     </div>
                     <div className="divide-y divide-border/30">
                       {[
-                        ["Store",     acct.storeName || "—"],
-                        ["Status",    acct.isActive === 1 ? "Active" : "Inactive"],
+                        ["Boutique",  acct.storeName || "—"],
+                        ["Statut",    acct.isActive === 1 ? "Active" : "Inactive"],
                         ["Règle",     acct.assignmentRule === "city" ? "Par Ville" : acct.assignmentRule === "product" ? "Par Produit" : "Défaut"],
                         ["Créé le",   new Date(acct.createdAt).toLocaleDateString("fr-FR")],
                       ].map(([label, val]) => (
                         <div key={label} className="flex items-center justify-between px-4 py-2.5">
                           <span className="text-sm text-muted-foreground">{label} :</span>
                           <span className={`text-sm font-medium ${
-                            val === "Active" ? "text-emerald-600" : val === "Inactive" ? "text-red-500" : ""
+                            val === "Active" ? "text-emerald-600"
+                            : val === "Inactive" ? "text-red-500"
+                            : ""
                           }`}>
                             {val}
                           </span>
@@ -402,15 +484,15 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     </div>
                   </div>
 
-                  {/* Action buttons */}
+                  {/* Actions */}
                   <div className="flex items-center gap-2 flex-wrap">
                     <Button size="sm" variant="outline" className="border-blue-200 text-blue-600 hover:bg-blue-50"
                       onClick={() => setEditAccount(acct)} data-testid={`button-edit-account-${acct.id}`}>
-                      <Pencil className="w-3.5 h-3.5 mr-1" /> Edit
+                      <Pencil className="w-3.5 h-3.5 mr-1" /> Modifier
                     </Button>
                     <Button size="sm" variant="outline" className="border-red-200 text-red-600 hover:bg-red-50"
                       onClick={() => setConfirmDeleteId(acct.id)} data-testid={`button-delete-account-${acct.id}`}>
-                      <Trash2 className="w-3.5 h-3.5 mr-1" /> Delete
+                      <Trash2 className="w-3.5 h-3.5 mr-1" /> Supprimer
                     </Button>
                     <div className="flex items-center gap-2 ml-auto">
                       <Switch
@@ -425,14 +507,14 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     </div>
                   </div>
 
-                  {/* Credentials table */}
+                  {/* Credential table */}
                   <div className="rounded-xl border border-border/50 overflow-hidden">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="bg-muted/30 border-b border-border/40">
                           <th className="text-left px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">Credential</th>
-                          <th className="text-left px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">Value</th>
-                          <th className="text-right px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">Copy</th>
+                          <th className="text-left px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">Valeur</th>
+                          <th className="text-right px-4 py-2.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">Copier</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -444,7 +526,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                           <td className="px-4 py-3 text-right">
                             <button
                               data-testid={`button-copy-key-${acct.id}`}
-                              onClick={() => { copy(acct.apiKeyMasked || "", `key-${acct.id}`); toast({ title: "Copié ✅" }); }}
+                              onClick={() => copyText(acct.apiKeyMasked || "", `key-${acct.id}`)}
                               className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
                             >
                               {copiedKey === `key-${acct.id}`
@@ -456,11 +538,11 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         <tr>
                           <td className="px-4 py-3 font-medium">WebHook URL</td>
                           <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-[180px] truncate">
-                            {`${origin}/api/webhook/carrier/${acct.webhookToken}`}
+                            {`${domain}/api/webhook/carrier/${acct.webhookToken}`}
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
-                              onClick={() => { copy(`${origin}/api/webhook/carrier/${acct.webhookToken}`, `wh-${acct.id}`); toast({ title: "Copié ✅" }); }}
+                              onClick={() => copyText(`${domain}/api/webhook/carrier/${acct.webhookToken}`, `wh-${acct.id}`)}
                               className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
                             >
                               {copiedKey === `wh-${acct.id}`
@@ -495,7 +577,10 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
           providerId={providerId}
           providerName={providerName}
           existingAccount={editAccount}
-          onClose={() => { setEditAccount(null); qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] }); }}
+          onClose={() => {
+            setEditAccount(null);
+            qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
+          }}
         />
       )}
 
@@ -515,203 +600,15 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                 disabled={deleteMutation.isPending}
                 data-testid="button-confirm-delete-account"
               >
-                {deleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4 mr-1" />}
+                {deleteMutation.isPending
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : <Trash2 className="w-4 h-4 mr-1" />}
                 Supprimer
               </Button>
             </div>
           </DialogContent>
         </Dialog>
       )}
-    </>
-  );
-}
-
-/* ─── Open Retour section ────────────────────────────────────── */
-function OpenRetourSection() {
-  const { toast } = useToast();
-  const qc = useQueryClient();
-
-  const [dialog,    setDialog]    = useState(false);
-  const [apiKey,    setApiKey]    = useState("");
-  const [clientId,  setClientId]  = useState("");
-  const [showKey,   setShowKey]   = useState(false);
-
-  const { data: orSettings, isLoading } = useQuery<any>({
-    queryKey: ["/api/open-retour/settings"],
-    queryFn: async () => {
-      const res = await fetch("/api/open-retour/settings", { credentials: "include" });
-      if (!res.ok) return null;
-      return res.json();
-    },
-  });
-
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/open-retour/settings", { apiKey, clientId });
-      return res.json();
-    },
-    onSuccess: (data: any) => {
-      qc.invalidateQueries({ queryKey: ["/api/open-retour/settings"] });
-      if (data?.success) {
-        toast({ title: "Open Retour connecté ✅" });
-        setDialog(false);
-      } else {
-        toast({ title: "Erreur", description: data?.message, variant: "destructive" });
-      }
-    },
-    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
-  });
-
-  const disconnectMutation = useMutation({
-    mutationFn: () => apiRequest("DELETE", "/api/open-retour/settings"),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/open-retour/settings"] });
-      toast({ title: "Open Retour déconnecté" });
-    },
-    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
-  });
-
-  const connected = orSettings?.connected;
-
-  return (
-    <>
-      <div>
-        <div className="flex items-center gap-2 mb-3">
-          <RotateCcw className="w-4 h-4" style={{ color: GOLD }} />
-          <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">
-            Gestion des Retours
-          </h2>
-        </div>
-
-        {isLoading ? (
-          <div className="flex items-center gap-2 text-muted-foreground text-sm">
-            <Loader2 className="w-4 h-4 animate-spin" /> Chargement...
-          </div>
-        ) : (
-          <Card
-            className="relative overflow-hidden rounded-2xl border-2 transition-shadow hover:shadow-md"
-            style={{ borderColor: connected ? "rgba(197,160,89,0.4)" : "rgba(0,0,0,0.07)" }}
-          >
-            {connected && (
-              <div className="absolute top-3.5 right-3.5 z-10">
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500 text-white shadow-sm">
-                  <CheckCircle className="w-3 h-3" /> Connecté
-                </span>
-              </div>
-            )}
-            <CardContent className="p-6">
-              <div className="flex items-start gap-4">
-                <div
-                  className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 shadow-sm"
-                  style={{ background: `linear-gradient(135deg,${NAVY},#2d2a7a)` }}
-                >
-                  <RotateCcw className="w-7 h-7 text-white" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap mb-1">
-                    <h3 className="text-lg font-bold" style={{ color: NAVY }}>Open Retour</h3>
-                    <Badge className="text-[10px] font-bold border-0" style={{ background: `rgba(197,160,89,0.12)`, color: GOLD }}>
-                      Maroc
-                    </Badge>
-                    <a href="https://openretour.ma" target="_blank" rel="noopener noreferrer" className="ml-auto text-muted-foreground hover:text-foreground">
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Plateforme marocaine de gestion des retours COD. Créez des tickets, tracez les colis et gérez les remboursements.
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {connected ? (
-                      <>
-                        <button
-                          onClick={() => { setApiKey(""); setClientId(orSettings?.clientId || ""); setDialog(true); }}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border-2 hover:opacity-80 transition-all"
-                          style={{ borderColor: GOLD, color: GOLD }}
-                        >
-                          <Settings className="w-3.5 h-3.5" /> Modifier
-                        </button>
-                        <button
-                          onClick={() => disconnectMutation.mutate()}
-                          disabled={disconnectMutation.isPending}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border border-red-200 text-red-600 hover:bg-red-50 transition-colors"
-                        >
-                          {disconnectMutation.isPending
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <Unlink className="w-3.5 h-3.5" />}
-                          Déconnecter
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        onClick={() => { setApiKey(""); setClientId(""); setDialog(true); }}
-                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-bold hover:opacity-90 shadow-md transition-all"
-                        style={{ background: `linear-gradient(135deg,${GOLD},#b8904a)` }}
-                      >
-                        <Link2 className="w-4 h-4" /> Connecter Open Retour
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
-
-      {/* Open Retour dialog */}
-      <Dialog open={dialog} onOpenChange={setDialog}>
-        <DialogContent className="sm:max-w-md rounded-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <RotateCcw className="w-5 h-5" style={{ color: GOLD }} />
-              {connected ? "Modifier" : "Connecter"} Open Retour
-            </DialogTitle>
-            <DialogDescription>
-              Obtenez vos identifiants sur{" "}
-              <a href="https://openretour.ma" target="_blank" rel="noopener noreferrer"
-                className="underline" style={{ color: GOLD }}>
-                openretour.ma
-              </a>
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label className="font-semibold">Client ID</Label>
-              <Input placeholder="Votre Client ID..." value={clientId} onChange={e => setClientId(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label className="font-semibold">API Key (Secret)</Label>
-              <div className="relative">
-                <Input
-                  type={showKey ? "text" : "password"}
-                  placeholder="Votre clé API secrète..."
-                  value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  onClick={() => setShowKey(v => !v)}
-                >
-                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-          </div>
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setDialog(false)}>Annuler</Button>
-            <Button
-              onClick={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending || !apiKey.trim() || !clientId.trim()}
-              className="text-white font-bold"
-              style={{ background: `linear-gradient(135deg,${GOLD},#b8904a)` }}
-            >
-              {saveMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {saveMutation.isPending ? "Connexion..." : "Enregistrer"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </>
   );
 }
@@ -730,8 +627,8 @@ export default function ShippingIntegrations() {
     accountsByProvider.get(a.carrierName)!.push(a);
   }
 
-  const isConnected    = (id: string) => (accountsByProvider.get(id) || []).some(a => a.isActive === 1);
-  const accountCount   = (id: string) => (accountsByProvider.get(id) || []).length;
+  const isConnected  = (id: string) => (accountsByProvider.get(id) || []).some((a: any) => a.isActive === 1);
+  const accountCount = (id: string) => (accountsByProvider.get(id) || []).length;
 
   const viewingMeta = PROVIDERS.find(p => p.id === viewingProvider) || null;
   const addingMeta  = PROVIDERS.find(p => p.id === addingProvider)  || null;
@@ -739,7 +636,7 @@ export default function ShippingIntegrations() {
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
 
-      {/* Breadcrumb */}
+      {/* Breadcrumb + title */}
       <div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-3">
           <Home className="w-3 h-3" />
@@ -761,18 +658,15 @@ export default function ShippingIntegrations() {
         </p>
       </div>
 
-      {/* Open Retour */}
-      <OpenRetourSection />
-
       {/* Carriers grid */}
       <div>
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-4">
           <Link2 className="w-4 h-4" style={{ color: GOLD }} />
           <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">
-            Transporteurs
+            Transporteurs disponibles
           </h2>
           <span className="ml-auto text-xs text-muted-foreground">
-            {PROVIDERS.length} transporteurs disponibles
+            {PROVIDERS.length} transporteurs
           </span>
         </div>
 
@@ -788,7 +682,7 @@ export default function ShippingIntegrations() {
                 className="relative overflow-hidden rounded-2xl border transition-all duration-200 hover:shadow-lg"
                 style={{
                   borderColor: connected ? "rgba(16,185,129,0.5)" : "rgba(0,0,0,0.08)",
-                  borderWidth: connected ? 2 : 1,
+                  borderWidth:  connected ? 2 : 1,
                 }}
               >
                 {/* Connected ribbon */}
@@ -839,6 +733,7 @@ export default function ShippingIntegrations() {
                           style={{ borderColor: "rgba(0,0,0,0.12)" }}
                         >
                           <Eye className="w-4 h-4" />
+                          <span className="text-xs">Voir</span>
                         </button>
                         <button
                           data-testid={`button-add-account-${provider.id}`}
@@ -848,6 +743,7 @@ export default function ShippingIntegrations() {
                           style={{ borderColor: "rgba(16,185,129,0.5)", color: "#10b981" }}
                         >
                           <Plus className="w-4 h-4" />
+                          <span className="text-xs">Ajouter</span>
                         </button>
                       </div>
                     ) : (
@@ -861,7 +757,7 @@ export default function ShippingIntegrations() {
                     )}
 
                     <a
-                      href={`https://youtu.be/${provider.id}`}
+                      href={`https://www.youtube.com/results?search_query=${encodeURIComponent(provider.name + " livraison Maroc intégration")}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       data-testid={`link-tutorial-${provider.id}`}
@@ -878,7 +774,7 @@ export default function ShippingIntegrations() {
         </div>
       </div>
 
-      {/* Modals — rendered at page root to avoid nesting issues */}
+      {/* Modals */}
       {addingProvider && addingMeta && (
         <ConnectModal
           providerId={addingProvider}
@@ -892,7 +788,10 @@ export default function ShippingIntegrations() {
           providerId={viewingProvider}
           providerName={viewingMeta.name}
           onClose={() => setViewingProvider(null)}
-          onAddNew={() => { setViewingProvider(null); setAddingProvider(viewingProvider); }}
+          onAddNew={() => {
+            setViewingProvider(null);
+            setAddingProvider(viewingProvider);
+          }}
         />
       )}
     </div>

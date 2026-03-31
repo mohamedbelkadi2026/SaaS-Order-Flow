@@ -1506,69 +1506,90 @@ export async function registerRoutes(
   });
 
   app.post("/api/carrier-accounts", requireAuth, async (req, res) => {
-    const storeId = req.user!.storeId!;
-    const { carrierName, connectionName, apiKey, apiSecret, apiUrl, storeName, assignmentRule, isDefault } = req.body;
-    if (!carrierName || !apiKey) {
-      return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
+    try {
+      const storeId = req.user!.storeId!;
+      const { carrierName, connectionName, apiKey, apiSecret, apiUrl, storeName, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
+      if (!carrierName || !apiKey) {
+        return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
+      }
+      const { randomUUID } = await import("crypto");
+      const webhookToken = `${carrierName}-${storeId}-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+
+      // Auto-number the connection if no name given
+      const existing = await storage.getCarrierAccounts(storeId, carrierName);
+      const name = connectionName || `Connection ${existing.length + 1}`;
+
+      const acct = await storage.createCarrierAccount({
+        storeId,
+        carrierName,
+        connectionName: name,
+        apiKey,
+        apiSecret: apiSecret || null,
+        apiUrl: apiUrl || null,
+        webhookToken,
+        storeName: storeName || null,
+        isDefault: isDefault ? 1 : (existing.length === 0 ? 1 : 0),
+        isActive: 1,
+        assignmentRule: assignmentRule || "default",
+      });
+
+      // Log creation (non-blocking — failure won't affect the response)
+      storage.createIntegrationLog({
+        storeId, integrationId: null, provider: carrierName,
+        action: 'carrier_account_created', status: 'success',
+        message: `Compte transporteur "${name}" créé pour ${carrierName}`,
+      }).catch(e => console.error('[LOG-ERROR] createIntegrationLog:', e));
+
+      res.json(acct);
+    } catch (error: any) {
+      console.error('[DB-ERROR] POST /api/carrier-accounts:', error?.message || error);
+      console.error('[DB-ERROR] Stack:', error?.stack);
+      res.status(500).json({
+        message: error?.message?.includes('relation') || error?.message?.includes('does not exist')
+          ? 'Table carrier_accounts introuvable — contactez le support'
+          : error?.message || 'Erreur serveur lors de la création du compte transporteur',
+      });
     }
-    const { randomUUID } = await import("crypto");
-    const webhookToken = `${carrierName}-${storeId}-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-
-    // Auto-number the connection if no name given
-    const existing = await storage.getCarrierAccounts(storeId, carrierName);
-    const name = connectionName || `Connection ${existing.length + 1}`;
-
-    const acct = await storage.createCarrierAccount({
-      storeId,
-      carrierName,
-      connectionName: name,
-      apiKey,
-      apiSecret: apiSecret || null,
-      apiUrl: apiUrl || null,
-      webhookToken,
-      storeName: storeName || null,
-      isDefault: isDefault ? 1 : (existing.length === 0 ? 1 : 0),
-      isActive: 1,
-      assignmentRule: assignmentRule || "default",
-    });
-
-    await storage.createIntegrationLog({
-      storeId, integrationId: null, provider: carrierName,
-      action: 'carrier_account_created', status: 'success',
-      message: `Compte transporteur "${name}" créé pour ${carrierName}`,
-    });
-
-    res.json(acct);
   });
 
   app.patch("/api/carrier-accounts/:id", requireAuth, async (req, res) => {
-    const id = Number(req.params.id);
-    const storeId = req.user!.storeId!;
-    const acct = await storage.getCarrierAccount(id);
-    if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
+    try {
+      const id = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(id);
+      if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
 
-    const { connectionName, apiKey, apiSecret, apiUrl, storeName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
-    const updated = await storage.updateCarrierAccount(id, {
-      ...(connectionName !== undefined && { connectionName }),
-      ...(apiKey !== undefined && apiKey !== "" && { apiKey }),
-      ...(apiSecret !== undefined && { apiSecret }),
-      ...(apiUrl !== undefined && { apiUrl }),
-      ...(storeName !== undefined && { storeName }),
-      ...(assignmentRule !== undefined && { assignmentRule }),
-      ...(isDefault !== undefined && { isDefault: isDefault ? 1 : 0 }),
-      ...(isActive !== undefined && { isActive: isActive ? 1 : 0 }),
-      ...(assignmentData !== undefined && { assignmentData }),
-    });
-    res.json(updated);
+      const { connectionName, apiKey, apiSecret, apiUrl, storeName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
+      const updated = await storage.updateCarrierAccount(id, {
+        ...(connectionName !== undefined && { connectionName }),
+        ...(apiKey !== undefined && apiKey !== "" && { apiKey }),
+        ...(apiSecret !== undefined && { apiSecret }),
+        ...(apiUrl !== undefined && { apiUrl }),
+        ...(storeName !== undefined && { storeName }),
+        ...(assignmentRule !== undefined && { assignmentRule }),
+        ...(isDefault !== undefined && { isDefault: isDefault ? 1 : 0 }),
+        ...(isActive !== undefined && { isActive: isActive ? 1 : 0 }),
+        ...(assignmentData !== undefined && { assignmentData }),
+      });
+      res.json(updated);
+    } catch (error: any) {
+      console.error('[DB-ERROR] PATCH /api/carrier-accounts:', error?.message || error);
+      res.status(500).json({ message: error?.message || 'Erreur serveur lors de la mise à jour du compte' });
+    }
   });
 
   app.delete("/api/carrier-accounts/:id", requireAuth, async (req, res) => {
-    const id = Number(req.params.id);
-    const storeId = req.user!.storeId!;
-    const acct = await storage.getCarrierAccount(id);
-    if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
-    await storage.deleteCarrierAccount(id);
-    res.json({ message: "Supprimé" });
+    try {
+      const id = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(id);
+      if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
+      await storage.deleteCarrierAccount(id);
+      res.json({ message: "Supprimé" });
+    } catch (error: any) {
+      console.error('[DB-ERROR] DELETE /api/carrier-accounts:', error?.message || error);
+      res.status(500).json({ message: error?.message || 'Erreur serveur lors de la suppression du compte' });
+    }
   });
 
   // Webhook endpoint keyed to the unique webhookToken per account
