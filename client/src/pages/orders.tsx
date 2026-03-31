@@ -280,6 +280,7 @@ export default function Orders() {
   const [bulkShipProvider, setBulkShipProvider] = useState("");
   const [shipProgress, setShipProgress] = useState<{
     active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
+    results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string }[];
   } | null>(null);
 
   // ── Pre-shipping validation state ─────────────────────────────
@@ -565,8 +566,15 @@ export default function Orders() {
     bulkShip.mutate({ orderIds, provider }, {
       onSuccess: (data) => {
         // SSE may have already set active:false via the `complete` flag,
-        // but always sync final numbers from the HTTP response
-        setShipProgress(prev => prev ? { ...prev, active: false, shipped: data.shipped ?? prev.shipped, failed: data.failed ?? prev.failed, done: data.total ?? prev.total } : null);
+        // but always sync final numbers + per-order results from the HTTP response
+        setShipProgress(prev => prev ? {
+          ...prev,
+          active: false,
+          shipped: data.shipped ?? prev.shipped,
+          failed: data.failed ?? prev.failed,
+          done: data.total ?? prev.done,
+          results: data.results ?? [],
+        } : null);
         setSelectedIds(new Set());
         setBulkShipProvider("");
         queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
@@ -1450,6 +1458,39 @@ export default function Orders() {
               </div>
             )}
           </div>
+
+          {/* Per-order error details — shown only when there are failures */}
+          {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (
+            <div className="px-6 pb-2">
+              <p className="text-xs font-bold text-red-600 mb-2 flex items-center gap-1">
+                <span>⚠️</span>
+                <span>سبب الفشل — تفاصيل الأخطاء:</span>
+              </p>
+              <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+                {shipProgress.results
+                  .filter(r => r.status === 'failed')
+                  .map((r, idx) => (
+                    <div
+                      key={r.orderId || idx}
+                      className="flex items-start gap-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2"
+                    >
+                      <span className="text-sm mt-0.5 shrink-0">❌</span>
+                      <div className="min-w-0">
+                        {r.orderNumber && (
+                          <p className="text-xs font-bold text-red-700 dark:text-red-400">
+                            #{r.orderNumber}
+                          </p>
+                        )}
+                        <p className="text-xs text-red-600 dark:text-red-300 break-words leading-snug">
+                          {r.error || "Erreur inconnue retournée par le transporteur."}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                }
+              </div>
+            </div>
+          )}
 
           {!shipProgress?.active && (
             <div className="px-6 py-4 flex justify-end">
