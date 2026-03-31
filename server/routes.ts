@@ -315,13 +315,23 @@ function parseWebhookOrder(provider: string, payload: any) {
     const customerCity = shipping.city || billing.city || '';
     const totalPrice = Math.round(parseFloat(payload.total || '0') * 100);
     const orderNumber = String(payload.number || payload.id);
-    const lineItems = (payload.line_items || []).map((item: any) => ({
-      sku: item.sku || '',
-      title: item.name || '',
-      variantInfo: item.variation_id ? `variation_id: ${item.variation_id}` : '',
-      quantity: item.quantity || 1,
-      price: Math.round(parseFloat(item.price || '0') * 100),
-    }));
+    const lineItems = (payload.line_items || []).map((item: any) => {
+      // Extract human-readable variant from meta_data attributes
+      const meta: any[] = item.meta_data || [];
+      const variantParts = meta
+        .filter((m: any) => m.display_key && !String(m.display_key).startsWith('_') && m.display_value && String(m.display_value).trim())
+        .map((m: any) => String(m.display_value).trim());
+      const variantInfo = variantParts.length > 0
+        ? sanitizeVariant(variantParts.join(' / '))
+        : (item.variation_id ? sanitizeVariant(String(item.variation_id)) : '');
+      return {
+        sku: item.sku || '',
+        title: item.name || '',
+        variantInfo,
+        quantity: item.quantity || 1,
+        price: Math.round(parseFloat(item.price || '0') * 100),
+      };
+    });
     return { customerName, customerPhone, customerAddress, customerCity, totalPrice, orderNumber, lineItems, comment: payload.customer_note || null, utmSource, buyerCode, utmCampaign, trafficPlatform };
   }
 
@@ -1565,7 +1575,10 @@ export async function registerRoutes(
       }
 
       const rawProductName = parsed.lineItems.length > 0
-        ? parsed.lineItems.map((li: any) => li.title).filter(Boolean).join(' + ')
+        ? parsed.lineItems.map((li: any) => {
+            const v = (li.variantInfo || '').trim();
+            return v ? `${li.title} - ${v}` : li.title;
+          }).filter(Boolean).join(' + ')
         : null;
       const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
@@ -1659,7 +1672,10 @@ export async function registerRoutes(
       }
 
       const rawProductName = parsed.lineItems.length > 0
-        ? parsed.lineItems.map((li: any) => li.title).filter(Boolean).join(' + ')
+        ? parsed.lineItems.map((li: any) => {
+            const v = (li.variantInfo || '').trim();
+            return v ? `${li.title} - ${v}` : li.title;
+          }).filter(Boolean).join(' + ')
         : null;
       const variantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
       const rawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;

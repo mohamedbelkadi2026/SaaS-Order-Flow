@@ -1074,7 +1074,10 @@ export class DatabaseStorage implements IStorage {
       // COALESCE: item-level name → order-level name → fallback label
       const name = item.rawProductName || item.orderRawProductName || 'Produit Sans Nom';
       const v = (item.variantInfo ?? '').trim();
-      const displayKey = (v && v !== 'Default Title' && v !== 'null' && v !== '-') ? `${name} - ${v}` : name;
+      // Guard: don't append variant if rawProductName already contains it (handles
+      // combined "Name - Variant" stored by new webhook/manual-order logic)
+      const variantNotInName = v && !name.includes(v);
+      const displayKey = (variantNotInName && v !== 'Default Title' && v !== 'null' && v !== '-') ? `${name} - ${v}` : name;
       if (!productMap[displayKey]) productMap[displayKey] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
       productMap[displayKey].total++;
       if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[displayKey].confirmed++;

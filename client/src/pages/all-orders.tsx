@@ -579,7 +579,8 @@ export default function AllOrders() {
                 filteredOrders.map((order: any) => {
                   const rawName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
                   const rawVariant = order.items?.[0]?.variantInfo || '';
-                  const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null') ? `${rawName} - ${rawVariant}` : rawName;
+                  const variantAlreadyInName = rawVariant && rawName.includes(rawVariant);
+                  const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null' && !variantAlreadyInName) ? `${rawName} - ${rawVariant}` : rawName;
                   const totalQty = (order.items || []).reduce((s: number, i: any) => s + (i.quantity || 1), 0) || order.rawQuantity || 1;
                   const productName = totalQty > 1 ? `${displayName} (x${totalQty})` : displayName;
                   const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';

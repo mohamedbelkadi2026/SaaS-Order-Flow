@@ -31,6 +31,7 @@ interface LineItem {
   id: string;
   productId: number | null;
   rawProductName: string;
+  baseProductName: string;   // product title without variant — used for auto-combine
   sku: string;
   variantInfo: string;
   price: number;
@@ -38,7 +39,7 @@ interface LineItem {
 }
 
 function newItem(): LineItem {
-  return { id: `item-${Date.now()}-${Math.random()}`, productId: null, rawProductName: "", sku: "", variantInfo: "", price: 0, quantity: 1 };
+  return { id: `item-${Date.now()}-${Math.random()}`, productId: null, rawProductName: "", baseProductName: "", sku: "", variantInfo: "", price: 0, quantity: 1 };
 }
 
 export default function NewOrderAdd() {
@@ -96,13 +97,30 @@ export default function NewOrderAdd() {
   const isCarrierSpecific = activeCities !== MOROCCAN_CITIES && activeCities.length > 0;
 
   const updateItem = (id: string, field: keyof LineItem, value: any) => {
-    setItems(prev => prev.map(it => it.id === id ? { ...it, [field]: value } : it));
+    setItems(prev => prev.map(it => {
+      if (it.id !== id) return it;
+      const next = { ...it, [field]: value };
+      // Auto-combine: when variantInfo changes, update rawProductName to "Product - Variant"
+      if (field === 'variantInfo') {
+        const base = it.baseProductName || it.rawProductName;
+        const v = String(value).trim();
+        next.rawProductName = v ? `${base} - ${v}` : base;
+      }
+      // When rawProductName is manually changed (free-text, no product selected), reset base too
+      if (field === 'rawProductName' && !it.productId) {
+        next.baseProductName = String(value);
+      }
+      return next;
+    }));
   };
 
   const handleProductSelect = (id: string, p: ProductOption) => {
-    setItems(prev => prev.map(it => it.id === id
-      ? { ...it, productId: p.id, rawProductName: p.name, sku: p.sku || "", price: (p.sellingPrice || p.costPrice || 0) / 100 }
-      : it));
+    setItems(prev => prev.map(it => {
+      if (it.id !== id) return it;
+      const v = it.variantInfo.trim();
+      const combinedName = v ? `${p.name} - ${v}` : p.name;
+      return { ...it, productId: p.id, rawProductName: combinedName, baseProductName: p.name, sku: p.sku || "", price: (p.sellingPrice || p.costPrice || 0) / 100 };
+    }));
   };
 
   const removeItem = (id: string) => setItems(prev => prev.filter(it => it.id !== id));
@@ -310,7 +328,13 @@ export default function NewOrderAdd() {
                   />
                 </div>
                 <Input className="text-xs h-9" placeholder="Référence" value={item.sku} onChange={e => updateItem(item.id, "sku", e.target.value)} />
-                <Input className="text-xs h-9" placeholder="ex: color:red;size:xl" value={item.variantInfo} onChange={e => updateItem(item.id, "variantInfo", e.target.value)} />
+                <Input
+                  className="text-xs h-9"
+                  placeholder="ex: 42, Rouge, XL..."
+                  value={item.variantInfo}
+                  title={item.rawProductName ? `Nom affiché: ${item.rawProductName}` : undefined}
+                  onChange={e => updateItem(item.id, "variantInfo", e.target.value)}
+                />
                 <Input
                   type="number" className="text-xs h-9" placeholder="0"
                   value={item.price || ""}

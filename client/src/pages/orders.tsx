@@ -805,7 +805,8 @@ export default function Orders() {
                 filteredOrders.map((order: any) => {
                   const rawName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
                   const rawVariant = order.items?.[0]?.variantInfo || '';
-                  const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null') ? `${rawName} - ${rawVariant}` : rawName;
+                  const variantAlreadyInName = rawVariant && rawName.includes(rawVariant);
+                  const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null' && !variantAlreadyInName) ? `${rawName} - ${rawVariant}` : rawName;
                   const totalQty = (order.items || []).reduce((s: number, i: any) => s + (i.quantity || 1), 0) || order.rawQuantity || 1;
                   const productName = totalQty > 1 ? `${displayName} (x${totalQty})` : displayName;
                   const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';
@@ -1030,7 +1031,8 @@ export default function Orders() {
               const itemCount = (order.items?.length) || 1;
               const _baseCardName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '—';
               const _cardVariant = order.items?.[0]?.variantInfo || '';
-              const productName = (_cardVariant && _cardVariant !== 'Default Title' && _cardVariant !== 'null') ? `${_baseCardName} - ${_cardVariant}` : _baseCardName;
+              const _cardVariantInName = _cardVariant && _baseCardName.includes(_cardVariant);
+              const productName = (_cardVariant && _cardVariant !== 'Default Title' && _cardVariant !== 'null' && !_cardVariantInName) ? `${_baseCardName} - ${_cardVariant}` : _baseCardName;
               const orderDate = order.createdAt
                 ? new Date(order.createdAt).toLocaleString('fr-MA', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short', year: 'numeric' })
                 : '—';
