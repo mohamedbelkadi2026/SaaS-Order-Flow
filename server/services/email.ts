@@ -1,44 +1,18 @@
+import { Resend } from "resend";
 import { randomInt } from "crypto";
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export function generateOTP(): string {
   return String(randomInt(100000, 999999));
 }
 
-interface SendEmailOptions {
-  to: string;
-  subject: string;
-  html: string;
-  text: string;
-}
-
-async function sendViaResend(opts: SendEmailOptions): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) throw new Error("RESEND_API_KEY not set");
-
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: "TajerGrow <noreply@tajergrow.com>",
-      to: [opts.to],
-      subject: opts.subject,
-      html: opts.html,
-      text: opts.text,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Resend error: ${err}`);
-  }
-}
-
 export async function sendVerificationEmail(email: string, code: string): Promise<void> {
-  const subject = "Votre code de vérification TajerGrow";
-  const text = `Bonjour ! Votre code pour activer votre compte TajerGrow est : ${code}\n\nCe code expire dans 10 minutes.`;
+  if (!process.env.RESEND_API_KEY) {
+    console.log(`[Email:DEV] No RESEND_API_KEY. OTP for ${email} → \x1b[33m${code}\x1b[0m`);
+    return;
+  }
+
   const html = `
 <!DOCTYPE html>
 <html>
@@ -70,7 +44,7 @@ export async function sendVerificationEmail(email: string, code: string): Promis
         </td></tr>
         <!-- Footer -->
         <tr><td style="background:#f9fafb;padding:20px 40px;border-top:1px solid #e5e7eb;text-align:center;">
-          <p style="margin:0;color:#9ca3af;font-size:11px;">© 2026 TajerGrow · Plateforme COD Maroc</p>
+          <p style="margin:0;color:#9ca3af;font-size:11px;">© ${new Date().getFullYear()} TajerGrow · Plateforme COD Maroc</p>
         </td></tr>
       </table>
     </td></tr>
@@ -78,10 +52,18 @@ export async function sendVerificationEmail(email: string, code: string): Promis
 </body>
 </html>`;
 
-  if (process.env.RESEND_API_KEY) {
-    await sendViaResend({ to: email, subject, html, text });
-    console.log(`[Email] Verification email sent to ${email}`);
-  } else {
-    console.log(`[Email:DEV] No RESEND_API_KEY set. OTP for ${email} → \x1b[33m${code}\x1b[0m`);
+  const { error } = await resend.emails.send({
+    from: "TajerGrow <onboarding@resend.dev>",
+    to: [email],
+    subject: "Votre code de vérification TajerGrow",
+    html,
+    text: `Bonjour ! Votre code d'activation TajerGrow est : ${code}\n\nCe code expire dans 10 minutes.`,
+  });
+
+  if (error) {
+    console.error("[Email] Resend error:", error);
+    throw new Error(`Email send failed: ${(error as any).message || JSON.stringify(error)}`);
   }
+
+  console.log(`[Email] Verification email sent to ${email}`);
 }
