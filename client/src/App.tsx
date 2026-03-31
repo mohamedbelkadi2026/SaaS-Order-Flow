@@ -127,6 +127,25 @@ function ProtectedRoutes() {
   const [location, navigate] = useLocation();
   useOrderStatusSSE();
 
+  // Compute derived state before any early returns (Rules of Hooks)
+  const needsVerification = !!(
+    user &&
+    user.role === "owner" &&
+    !user.isSuperAdmin &&
+    !user.isEmailVerified &&
+    location !== "/verify-email"
+  );
+  const isAuthPage = location === "/auth";
+
+  // All redirects via useEffect — never call navigate() during render
+  useEffect(() => {
+    if (!isLoading && user && isAuthPage) navigate("/");
+  }, [isLoading, user, isAuthPage]);
+
+  useEffect(() => {
+    if (needsVerification) navigate("/verify-email");
+  }, [needsVerification]);
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -136,22 +155,16 @@ function ProtectedRoutes() {
   }
 
   if (!user) {
-    if (location === "/auth") return <AuthPage />;
+    if (isAuthPage) return <AuthPage />;
     if (location === "/verify-email") return <VerifyEmailPage />;
     return <LandingPage />;
   }
 
-  if (location === "/auth") {
-    navigate("/");
-    return null;
-  }
+  if (isAuthPage) return null;
 
-  // Redirect unverified owner accounts to the verification page
+  // Show verify page regardless of verification state when on that route
   if (location === "/verify-email") return <VerifyEmailPage />;
-  if (user.role === "owner" && !user.isSuperAdmin && !user.isEmailVerified && location !== "/verify-email") {
-    navigate("/verify-email");
-    return null;
-  }
+  if (needsVerification) return null;
 
   return (
     <ActiveStoreProvider>
