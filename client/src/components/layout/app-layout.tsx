@@ -162,6 +162,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [langMenuOpen, setLangMenuOpen] = useState(false);
+  const [integrationOpen, setIntegrationOpen] = useState(() => location.startsWith("/integrations"));
   const langMenuRef = useRef<HTMLDivElement>(null);
   const { t, i18n } = useTranslation();
 
@@ -184,6 +185,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   /* Close mobile drawer on route change */
   useEffect(() => { setMobileOpen(false); }, [location]);
+
+  /* Auto-open integration menu when on integration pages */
+  useEffect(() => {
+    if (location.startsWith("/integrations")) setIntegrationOpen(true);
+  }, [location]);
 
   /* Close dropdowns when route changes */
   useEffect(() => {
@@ -348,26 +354,45 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
           return (
             <div key={item.name}>
-              <Link
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 group",
-                  isActive
-                    ? "text-white"
-                    : "text-white/70 hover:text-white hover:bg-white/10"
-                )}
-                style={isActive ? { background: 'rgba(255,255,255,0.18)' } : {}}
-              >
-                <item.icon
-                  className="w-[18px] h-[18px] shrink-0 opacity-90"
-                />
-                <span className="flex-1 leading-tight">{t(NAV_KEYS[item.name] || item.name)}</span>
-                {hasSubmenu && (
-                  isActive
+              {isIntegrationMenu ? (
+                /* Integration — toggle button (no direct navigation) */
+                <button
+                  onClick={() => setIntegrationOpen(o => !o)}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 group",
+                    isActive
+                      ? "text-white"
+                      : "text-white/70 hover:text-white hover:bg-white/10"
+                  )}
+                  style={isActive ? { background: 'rgba(255,255,255,0.18)' } : {}}
+                  data-testid="button-integration-menu"
+                >
+                  <item.icon className="w-[18px] h-[18px] shrink-0 opacity-90" />
+                  <span className="flex-1 leading-tight text-left">{t(NAV_KEYS[item.name] || item.name)}</span>
+                  {integrationOpen
                     ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
-                    : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />
-                )}
-              </Link>
+                    : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />}
+                </button>
+              ) : (
+                <Link
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 group",
+                    isActive
+                      ? "text-white"
+                      : "text-white/70 hover:text-white hover:bg-white/10"
+                  )}
+                  style={isActive ? { background: 'rgba(255,255,255,0.18)' } : {}}
+                >
+                  <item.icon className="w-[18px] h-[18px] shrink-0 opacity-90" />
+                  <span className="flex-1 leading-tight">{t(NAV_KEYS[item.name] || item.name)}</span>
+                  {hasSubmenu && (
+                    isActive
+                      ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
+                      : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />
+                  )}
+                </Link>
+              )}
 
               {/* Orders submenu */}
               {isOrdersMenu && (
@@ -401,8 +426,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 </div>
               )}
 
-              {/* Integration submenu */}
-              {isIntegrationMenu && isActive && (
+              {/* Integration submenu — persistent collapsible */}
+              {isIntegrationMenu && integrationOpen && (
                 <div className="mt-0.5 mb-1 ml-4 space-y-0.5">
                   {INTEGRATION_SUB_ITEMS.map((sub) => {
                     const subActive = location === sub.href || (sub.name === "Boutiques" && location === "/integrations");
@@ -411,10 +436,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                         key={sub.name}
                         href={sub.href}
                         className={cn(
-                          "block px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-100",
+                          "flex items-center gap-2 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-100",
                           subActive ? "text-white font-bold" : "text-white/60 hover:text-white hover:bg-white/10"
                         )}
                         style={subActive ? { background: 'rgba(255,255,255,0.15)' } : {}}
+                        data-testid={`link-integration-${sub.name.toLowerCase().replace(/\s+/g, "-")}`}
                       >
                         {t(INTEGRATION_SUB_KEYS[sub.name] || sub.name)}
                       </Link>
