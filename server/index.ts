@@ -8,6 +8,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
+import { initSocket } from "./socket";
 import { autoStartBaileys, autoStartDevices } from "./baileys-service";
 import { db } from "./db";
 import { users } from "@shared/schema";
@@ -207,6 +208,9 @@ app.use((req, res, next) => {
   // 1. Auth middleware + login/logout/signup/user routes
   setupAuth(app);
   console.log("[Startup] Auth routes registered (/api/auth/login, /api/auth/signup, ...)");
+
+  // 1b. Initialize Socket.io (must be before routes so emit helpers are ready)
+  initSocket(httpServer);
 
   // 2. All other API routes
   await registerRoutes(httpServer, app);

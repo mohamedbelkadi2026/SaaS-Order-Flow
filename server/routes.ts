@@ -13,6 +13,7 @@ import path from "path";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 import { shipOrderToCarrier } from "./services/carrier-service";
+import { emitNewOrder, emitOrderUpdated } from "./socket";
 
 import fs from "fs";
 
@@ -1168,6 +1169,9 @@ export async function registerRoutes(
           totalPrice: order.totalPrice ?? 0,
         });
       }
+      // Real-time: notify all connected clients of this store
+      emitOrderUpdated(order.storeId, orderId, status);
+      broadcastToStore(order.storeId, "order_updated", { orderId, status });
       res.json(updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
@@ -1825,6 +1829,10 @@ export async function registerRoutes(
         message: `Commande ${parsed.orderNumber} importée${nextAgentId ? ` (assignée à agent #${nextAgentId})` : ''} (${parsed.lineItems.length} articles, ${orderItemsToCreate.length} matchés)`,
       });
 
+      // Real-time: push new order to all connected store clients
+      emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+
       res.json({ success: true, orderId: order.id, assignedTo: nextAgentId });
     } catch (err: any) {
       console.error(`Webhook error (${provider}):`, err);
@@ -1986,6 +1994,9 @@ export async function registerRoutes(
       await storage.incrementMonthlyOrders(storeId);
       const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: 'gsheets', action: 'order_synced', status: 'success', message: `Commande Google Sheets ${orderNumber} importée` });
+      // Real-time push
+      emitNewOrder(storeId, { id: order.id, orderNumber, customerName, status: 'nouveau', source: 'gsheets' });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       res.json({ success: true, orderId: order.id });
       // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
       console.log(`[Webhook] Attempting WhatsApp AI trigger for GSheets order: ${customerPhone}`);
@@ -2110,6 +2121,9 @@ export async function registerRoutes(
         mediaBuyerId: mediaBuyerShopify?.id || null,
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
+      emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: 'shopify' });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+
       res.json({ success: true, orderId: order.id });
     } catch (err) {
       console.error('Shopify webhook error:', err);
@@ -2207,6 +2221,10 @@ export async function registerRoutes(
       if (agentId) await storage.assignOrder(order.id, agentId);
 
       await storage.incrementMonthlyOrders(storeId);
+
+      // Real-time push
+      emitNewOrder(storeId, { id: order.id, orderNumber, customerName: data.customerName, status: data.status, source: 'manual' });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
 
       res.status(201).json(order);
 

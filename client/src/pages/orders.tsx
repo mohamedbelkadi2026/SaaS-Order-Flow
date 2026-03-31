@@ -20,6 +20,7 @@ import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { useRealtime } from "@/hooks/use-realtime";
 import { apiRequest } from "@/lib/queryClient";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 
@@ -268,6 +269,7 @@ export default function Orders() {
     onError: (e: any) => toast({ title: "Erreur Open Retour", description: e.message, variant: "destructive" }),
   });
 
+  useRealtime(); // live order + status updates via Socket.io
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());

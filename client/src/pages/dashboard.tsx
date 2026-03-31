@@ -18,6 +18,7 @@ import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, 
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { useRealtime } from "@/hooks/use-realtime";
 
 // Brand-aligned status colors
 const STATUS_COLORS = {
@@ -65,6 +66,7 @@ function getDatePreset(preset: string): { dateFrom: string; dateTo: string } {
 }
 
 export default function Dashboard() {
+  useRealtime(); // live order + status updates via Socket.io
   const [filters, setFilters] = useState({
     city: 'all',
     productId: 'all',
