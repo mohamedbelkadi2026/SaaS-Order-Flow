@@ -933,63 +933,95 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Aucune commande éligible (statut 'confirme' requis)" });
       }
 
-      const results: { orderId: number; orderNumber?: string; trackingNumber?: string; labelLink?: string; status: 'shipped' | 'failed'; error?: string }[] = [];
+      type ShipResult = { orderId: number; orderNumber?: string; trackingNumber?: string; labelLink?: string; status: 'shipped' | 'failed'; error?: string };
+      const results: ShipResult[] = [];
+      const total = eligible.length;
+      let done = 0;
+      let shippedCount = 0;
+      let failedCount  = 0;
 
-      for (const order of eligible) {
-        const productName =
-          (order as any).rawProductName ||
-          ((order as any).items && (order as any).items.length > 0
-            ? ((order as any).items[0].rawProductName || (order as any).items[0].product?.name || 'Produit')
-            : 'Produit');
+      // ── Helpers ─────────────────────────────────────────────────
+      const getProductName = (order: any) =>
+        order.rawProductName ||
+        (order.items?.length > 0
+          ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
+          : 'Produit');
 
-        const shipResult = await shipOrderToCarrier(provider, creds, {
-          customerName: order.customerName,
-          phone:        order.customerPhone,
-          city:         (order as any).customerCity   || '',
-          address:      (order as any).customerAddress || (order as any).customerCity || '',
-          totalPrice:   order.totalPrice,
-          productName,
-          canOpen:      (order as any).canOpen === 1,
-          orderNumber:  (order as any).orderNumber || String(order.id),
-          orderId:      order.id,
-          storeId,
+      const broadcastProgress = () => broadcastToStore(storeId, 'shipping_progress', {
+        done, total, shipped: shippedCount, failed: failedCount,
+      });
+
+      // ── Batch processing (5 simultaneous, no sequential blocking) ─
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
+        const batch = eligible.slice(i, i + BATCH_SIZE);
+
+        // Fire all requests in this batch simultaneously
+        const settled = await Promise.allSettled(
+          batch.map(order => shipOrderToCarrier(provider, creds, {
+            customerName: order.customerName,
+            phone:        order.customerPhone,
+            city:         (order as any).customerCity    || '',
+            address:      (order as any).customerAddress  || (order as any).customerCity || '',
+            totalPrice:   order.totalPrice,
+            productName:  getProductName(order),
+            canOpen:      (order as any).canOpen === 1,
+            orderNumber:  (order as any).orderNumber || String(order.id),
+            orderId:      order.id,
+            storeId,
+          }))
+        );
+
+        // ── Classify results ───────────────────────────────────────
+        const dbUpdates: Promise<unknown>[] = [];
+        const logUpdates: Promise<unknown>[] = [];
+
+        settled.forEach((outcome, idx) => {
+          const order = batch[idx];
+          const ref   = (order as any).orderNumber || order.id;
+
+          if (outcome.status === 'fulfilled' && outcome.value.success) {
+            const { trackingNumber, labelUrl } = outcome.value;
+            // Queue DB writes — run them in parallel after classifying
+            dbUpdates.push(
+              storage.updateOrderShipping(order.id, trackingNumber!, labelUrl!, provider),
+              storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
+            );
+            logUpdates.push(storage.createIntegrationLog({
+              storeId, integrationId: integration.id, provider,
+              action: 'shipping_sent', status: 'success',
+              message: `✅ Commande #${ref} envoyée. Tracking: ${trackingNumber}`,
+            }));
+            results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, trackingNumber, labelLink: labelUrl, status: 'shipped' });
+            shippedCount++;
+          } else {
+            const errMsg =
+              outcome.status === 'rejected'
+                ? String(outcome.reason?.message || outcome.reason || 'Erreur inconnue')
+                : (outcome.value?.error || 'Erreur inconnue');
+            const httpCode = outcome.status === 'fulfilled' ? (outcome.value?.httpStatus ?? '?') : '?';
+            logUpdates.push(storage.createIntegrationLog({
+              storeId, integrationId: integration.id, provider,
+              action: 'shipping_sent', status: 'fail',
+              message: `❌ Commande #${ref} refusée (HTTP ${httpCode}): ${errMsg}`,
+            }));
+            results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'failed', error: errMsg });
+            failedCount++;
+          }
         });
 
-        if (shipResult.success) {
-          await storage.updateOrderShipping(order.id, shipResult.trackingNumber!, shipResult.labelUrl!, provider);
-          await storage.updateOrderStatus(order.id, 'Attente De Ramassage');
-          await storage.createIntegrationLog({
-            storeId, integrationId: integration.id, provider,
-            action: 'shipping_sent', status: 'success',
-            message: `✅ Commande #${(order as any).orderNumber || order.id} envoyée. Tracking: ${shipResult.trackingNumber}`,
-          });
-          results.push({
-            orderId: order.id,
-            orderNumber: (order as any).orderNumber,
-            trackingNumber: shipResult.trackingNumber,
-            labelLink: shipResult.labelUrl,
-            status: 'shipped',
-          });
-        } else {
-          // Keep 'confirme' status — do not modify the order
-          await storage.createIntegrationLog({
-            storeId, integrationId: integration.id, provider,
-            action: 'shipping_sent', status: 'fail',
-            message: `❌ Commande #${(order as any).orderNumber || order.id} refusée (HTTP ${shipResult.httpStatus ?? '?'}): ${shipResult.error}`,
-          });
-          results.push({
-            orderId: order.id,
-            orderNumber: (order as any).orderNumber,
-            status: 'failed',
-            error: shipResult.error,
-          });
-        }
+        // ── Flush DB writes in parallel before moving to next batch ─
+        await Promise.all([...dbUpdates, ...logUpdates]);
+        done += batch.length;
+
+        // ── Broadcast progress via SSE ─────────────────────────────
+        broadcastProgress();
       }
 
-      const shipped = results.filter(r => r.status === 'shipped').length;
-      const failed  = results.filter(r => r.status === 'failed').length;
+      // Final broadcast — ensures frontend always receives 100%
+      broadcastToStore(storeId, 'shipping_progress', { done: total, total, shipped: shippedCount, failed: failedCount, complete: true });
 
-      res.json({ shipped, failed, total: results.length, results });
+      res.json({ shipped: shippedCount, failed: failedCount, total: results.length, results });
     } catch (err) {
       console.error("[BULK-SHIP] Unexpected error:", err);
       res.status(500).json({ message: "Erreur inattendue lors de l'expédition en masse" });

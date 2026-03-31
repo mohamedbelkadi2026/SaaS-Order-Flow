@@ -22,6 +22,20 @@ Products are displayed everywhere as **"Product Name - Variant"** (e.g., "Mocass
 - **WhatsApp campaign template `{Nom_Produit}`** (`server/routes.ts` `formatWhatsAppMessage`): substitution now includes variant
 - **Invalid variants filtered**: strings `"Default Title"`, `"null"`, `"-"` are never shown
 
+## Shipping Performance Optimization (Parallel Batching + SSE Progress)
+The bulk ship endpoint now processes orders **in parallel batches of 5** (instead of one-by-one), targeting 50 orders in under 15 seconds.
+
+- **10-second timeout per API call**: `AbortController` in `carrier-service.ts`; timeout errors return a clear message instead of hanging indefinitely.
+- **`Promise.allSettled()` batching**: 5 carrier API calls fire simultaneously. Failed orders in a batch don't block the remaining ones.
+- **Parallel DB writes**: After each batch resolves, `updateOrderShipping` + `updateOrderStatus` for all successful orders run in parallel via `Promise.all`, reducing DB round-trips.
+- **SSE real-time progress**: After each batch the server broadcasts `shipping_progress` events (`{ done, total, shipped, failed }`) via `broadcastToStore`. A final broadcast includes `complete: true`.
+- **Frontend progress modal** (`orders.tsx`):
+  - Clicking the truck icon opens a progress modal immediately (not a toast) and hides the selection modal.
+  - A local `EventSource` on `/api/automation/events` is opened while `active === true`.
+  - The progress bar animates from `0% → 100%` as SSE events arrive, showing "Envoi des commandes en cours... X / Total".
+  - On completion, the progress bar turns green (all success) or orange (partial failures) and shows ✅ N success / ❌ N failed cards.
+  - The modal blocks interaction while active (can't accidentally close it), then shows a "Fermer" button when done.
+
 ## Real Carrier API Integration (`server/services/carrier-service.ts`)
 The shipping dispatch routes now call actual carrier APIs — no more fake tracking numbers.
 

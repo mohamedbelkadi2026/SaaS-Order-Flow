@@ -240,6 +240,7 @@ export default function Orders() {
   const updateOrder = useUpdateOrder();
   const bulkAssign = useBulkAssign();
   const bulkShip = useBulkShip();
+  const queryClient = useQueryClient();
 
   /* ── Open Retour prompt ───────────────────────────────────────── */
   const [orPrompt, setOrPrompt] = useState<{ orderId: number; orderRef: string; customerName: string } | null>(null);
@@ -276,6 +277,9 @@ export default function Orders() {
   const [assignServiceType, setAssignServiceType] = useState("confirmation");
   const [assignAgentId, setAssignAgentId] = useState("");
   const [bulkShipProvider, setBulkShipProvider] = useState("");
+  const [shipProgress, setShipProgress] = useState<{
+    active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
+  } | null>(null);
 
   const [visibleCols, setVisibleCols] = useState<string[]>(getStoredColumns);
   const [showColMenu, setShowColMenu] = useState(false);
@@ -397,6 +401,28 @@ export default function Orders() {
     setHiddenOrderIds(new Set());
   }, [urlStatus]);
 
+  // ── SSE listener for real-time shipping progress ──────────────────
+  useEffect(() => {
+    if (!shipProgress?.active) return;
+    const es = new EventSource("/api/automation/events", { withCredentials: true });
+    es.addEventListener("shipping_progress", (e: MessageEvent) => {
+      try {
+        const d = JSON.parse(e.data);
+        setShipProgress(prev => prev ? {
+          ...prev,
+          done: d.done ?? prev.done,
+          total: d.total ?? prev.total,
+          shipped: d.shipped ?? prev.shipped,
+          failed: d.failed ?? prev.failed,
+          active: !d.complete,
+        } : null);
+        if (d.complete) es.close();
+      } catch {}
+    });
+    es.onerror = () => { /* keep alive — server may not be streaming yet */ };
+    return () => es.close();
+  }, [shipProgress?.active]);
+
   const openOrder = (order: any) => {
     setSelectedOrder(order);
     setEditFields({
@@ -494,35 +520,27 @@ export default function Orders() {
 
   const handleBulkShip = () => {
     if (!bulkShipProvider || selectedIds.size === 0) return;
-    bulkShip.mutate({ orderIds: Array.from(selectedIds), provider: bulkShipProvider }, {
+    const orderIds = Array.from(selectedIds);
+    const provider = bulkShipProvider;
+
+    // Close selection modal and open progress modal immediately
+    setShowBulkShipModal(false);
+    setShipProgress({ active: true, done: 0, total: orderIds.length, shipped: 0, failed: 0, provider });
+
+    bulkShip.mutate({ orderIds, provider }, {
       onSuccess: (data) => {
-        if (data.failed > 0 && data.shipped === 0) {
-          // All failed
-          toast({
-            title: "Échec de l'expédition",
-            description: `${data.failed} commande(s) refusée(s) par ${bulkShipProvider}. Vérifiez votre clé API et les logs d'intégration.`,
-            variant: "destructive",
-          });
-        } else if (data.failed > 0) {
-          // Partial success
-          toast({
-            title: "Expédition partielle",
-            description: `${data.shipped} expédiée(s) ✅ · ${data.failed} refusée(s) ❌ — consultez les logs pour les détails.`,
-            variant: "destructive",
-          });
-          setShowBulkShipModal(false);
-          setSelectedIds(new Set());
-          setBulkShipProvider("");
-        } else {
-          // All succeeded
-          toast({ title: "Expédition réussie", description: `${data.shipped} commande(s) envoyée(s) à ${bulkShipProvider}` });
-          setShowBulkShipModal(false);
-          setSelectedIds(new Set());
-          setBulkShipProvider("");
-        }
+        // SSE may have already set active:false via the `complete` flag,
+        // but always sync final numbers from the HTTP response
+        setShipProgress(prev => prev ? { ...prev, active: false, shipped: data.shipped ?? prev.shipped, failed: data.failed ?? prev.failed, done: data.total ?? prev.total } : null);
+        setSelectedIds(new Set());
+        setBulkShipProvider("");
+        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
       },
       onError: (err: any) => {
         const msg = String(err.message || "").replace(/^\d{3}:\s*/, "");
+        setShipProgress(null);
         toast({ title: "Erreur d'expédition", description: msg, variant: "destructive" });
       },
     });
@@ -1332,6 +1350,81 @@ export default function Orders() {
               Enregistrer
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── SHIPPING PROGRESS MODAL ──────────────────────────────── */}
+      <Dialog open={shipProgress !== null} onOpenChange={(open) => { if (!open && !shipProgress?.active) setShipProgress(null); }}>
+        <DialogContent className="sm:max-w-sm rounded-2xl border-none shadow-2xl p-0 overflow-hidden" data-testid="dialog-ship-progress">
+          <div className="bg-indigo-50 dark:bg-indigo-950/30 px-6 pt-6 pb-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-900/40 flex items-center justify-center shrink-0">
+                {shipProgress?.active
+                  ? <Loader2 className="w-5 h-5 text-indigo-600 animate-spin" />
+                  : <Truck className="w-5 h-5 text-indigo-600" />
+                }
+              </div>
+              <div>
+                <DialogTitle className="text-base font-bold text-indigo-700 dark:text-indigo-400">
+                  {shipProgress?.active ? "Expédition en cours..." : "Expédition terminée"}
+                </DialogTitle>
+                {shipProgress && (
+                  <p className="text-xs text-indigo-500 mt-0.5">{shipProgress.provider}</p>
+                )}
+              </div>
+            </div>
+
+            {/* Progress bar */}
+            {shipProgress && (
+              <div className="mt-2">
+                <div className="flex justify-between text-xs text-indigo-600 font-medium mb-1">
+                  <span>{shipProgress.active ? "Envoi des commandes en cours..." : "Traitement terminé"}</span>
+                  <span className="font-bold">{shipProgress.done} / {shipProgress.total}</span>
+                </div>
+                <div className="w-full bg-indigo-100 dark:bg-indigo-900/40 rounded-full h-2.5 overflow-hidden">
+                  <div
+                    className="h-2.5 rounded-full transition-all duration-500"
+                    style={{
+                      width: shipProgress.total > 0 ? `${Math.round((shipProgress.done / shipProgress.total) * 100)}%` : '0%',
+                      background: shipProgress.active ? '#6366f1' : (shipProgress.failed > 0 ? '#f97316' : '#22c55e'),
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Result summary (shown after complete) */}
+            {shipProgress && !shipProgress.active && (
+              <div className="flex gap-3 mt-4">
+                <div className="flex-1 flex items-center gap-2 bg-green-50 dark:bg-green-900/20 border border-green-200 rounded-xl px-3 py-2">
+                  <span className="text-lg">✅</span>
+                  <div>
+                    <p className="text-xs text-green-600 font-semibold">Expédiées</p>
+                    <p className="text-xl font-bold text-green-700">{shipProgress.shipped}</p>
+                  </div>
+                </div>
+                <div className="flex-1 flex items-center gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 rounded-xl px-3 py-2">
+                  <span className="text-lg">❌</span>
+                  <div>
+                    <p className="text-xs text-red-500 font-semibold">Échouées</p>
+                    <p className="text-xl font-bold text-red-600">{shipProgress.failed}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {!shipProgress?.active && (
+            <div className="px-6 py-4 flex justify-end">
+              <Button
+                onClick={() => setShipProgress(null)}
+                className="bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl"
+                data-testid="button-close-ship-progress"
+              >
+                Fermer
+              </Button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

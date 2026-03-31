@@ -189,7 +189,11 @@ export async function shipOrderToCarrier(
   console.log(`${tag} URL:     ${apiUrl}`);
   console.log(`${tag} Payload: ${JSON.stringify(payload, null, 2)}`);
 
-  // ── HTTP request ────────────────────────────────────────────────
+  // ── HTTP request (10-second timeout) ─────────────────────────────
+  const TIMEOUT_MS = 10_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
   let httpStatus = 0;
   let rawBody: unknown;
   try {
@@ -197,8 +201,9 @@ export async function shipOrderToCarrier(
       method:  "POST",
       headers,
       body:    JSON.stringify(payload),
-      // Node 18 fetch uses native TLS; we rely on the OS cert store
+      signal:  controller.signal,
     });
+    clearTimeout(timer);
 
     httpStatus = response.status;
     const contentType = response.headers.get("content-type") || "";
@@ -262,13 +267,17 @@ export async function shipOrderToCarrier(
       rawResponse: rawBody,
     };
   } catch (networkErr: any) {
-    const errMsg = networkErr?.message || String(networkErr);
-    console.error(`${tag} ❌ Network error (status=${httpStatus}): ${errMsg}`);
+    clearTimeout(timer);
+    const isTimeout = networkErr?.name === "AbortError" || networkErr?.code === "ABORT_ERR";
+    const errMsg = isTimeout
+      ? `Délai dépassé (10s) — ${provider} n'a pas répondu à temps`
+      : (networkErr?.message || String(networkErr));
+    console.error(`${tag} ❌ ${isTimeout ? "Timeout" : "Network error"} (status=${httpStatus}): ${errMsg}`);
     return {
       success: false,
       httpStatus,
       rawResponse: rawBody,
-      error: `Erreur réseau vers ${provider}: ${errMsg}`,
+      error: errMsg,
     };
   }
 }
