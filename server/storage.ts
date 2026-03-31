@@ -43,6 +43,7 @@ export interface IStorage {
   
   getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
+  getOrdersByPhone(storeId: number, phone: string): Promise<OrderWithDetails[]>;
   getOrder(id: number): Promise<OrderWithDetails | undefined>;
   getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
@@ -350,6 +351,22 @@ export class DatabaseStorage implements IStorage {
   async getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]> {
     const allOrders = await db.select().from(orders)
       .where(eq(orders.assignedToId, agentId))
+      .orderBy(desc(orders.createdAt));
+    return this.hydrateOrders(allOrders);
+  }
+
+  async getOrdersByPhone(storeId: number, phone: string): Promise<OrderWithDetails[]> {
+    // Normalize: strip leading zeros / country code variants so we match broadly
+    const normalized = phone.replace(/^\+?212/, '0').replace(/^00212/, '0');
+    const allOrders = await db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        or(
+          eq(orders.customerPhone, phone),
+          eq(orders.customerPhone, normalized),
+          like(orders.customerPhone, `%${normalized.slice(-9)}`),
+        ),
+      ))
       .orderBy(desc(orders.createdAt));
     return this.hydrateOrders(allOrders);
   }

@@ -1107,6 +1107,23 @@ export async function registerRoutes(
     }
   });
 
+  // Customer order history — MUST be before /api/orders/:id to avoid route conflict
+  app.get("/api/orders/customer/:phone", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const phone = decodeURIComponent(req.params.phone).trim();
+      if (!phone) return res.status(400).json({ message: "Numéro de téléphone requis" });
+      const customerOrders = await storage.getOrdersByPhone(storeId, phone);
+      // Attach store name for display
+      const store = await storage.getStore(storeId);
+      const enriched = customerOrders.map(o => ({ ...o, storeName: store?.name ?? "" }));
+      res.json(enriched);
+    } catch (err: any) {
+      console.error("[DB-ERROR] GET /api/orders/customer/:phone:", err?.message);
+      res.status(500).json({ message: err?.message || "Erreur serveur" });
+    }
+  });
+
   app.get("/api/orders/:id", requireAuth, async (req, res) => {
     const orderId = Number(req.params.id);
     const order = await storage.getOrder(orderId);

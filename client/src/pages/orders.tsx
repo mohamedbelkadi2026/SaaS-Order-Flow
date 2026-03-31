@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
+import { CustomerHistoryModal } from "@/components/customer-history-modal";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -271,6 +272,7 @@ export default function Orders() {
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
+  const [customerHistoryPhone, setCustomerHistoryPhone] = useState<string | null>(null);
   const [shippingProvider, setShippingProvider] = useState<string>("");
   const [editFields, setEditFields] = useState<Record<string, string>>({});
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -866,27 +868,14 @@ export default function Orders() {
                           <div className="flex items-center gap-1">
                             <span className="text-[11px]">{order.customerPhone}</span>
                             {(order.duplicateCount ?? 1) > 1 && (
-                              <Popover>
-                                <PopoverTrigger asChild>
-                                  <button
-                                    onClick={e => e.stopPropagation()}
-                                    data-testid={`badge-duplicate-${order.id}`}
-                                    className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-orange-500 text-white hover:bg-orange-600 transition-colors shrink-0"
-                                  >
-                                    x{order.duplicateCount}
-                                  </button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-64 p-3 text-xs" onClick={e => e.stopPropagation()}>
-                                  <p className="font-semibold text-orange-600 mb-2">⚠️ {order.duplicateCount} commandes — même numéro</p>
-                                  <ul className="space-y-1">
-                                    {(order.duplicateOrderDates ?? []).map((d: string, i: number) => (
-                                      <li key={i} className="text-muted-foreground">
-                                        {i + 1}. {new Date(d).toLocaleString('fr-MA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </PopoverContent>
-                              </Popover>
+                              <button
+                                onClick={e => { e.stopPropagation(); setCustomerHistoryPhone(order.customerPhone); }}
+                                data-testid={`badge-duplicate-${order.id}`}
+                                title={`${order.duplicateCount} commandes — cliquez pour voir l'historique`}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-orange-500 text-white hover:bg-orange-600 active:scale-95 transition-all shrink-0 cursor-pointer shadow-sm"
+                              >
+                                x{order.duplicateCount}
+                              </button>
                             )}
                             <a href={whatsappLink(order.customerPhone, order)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-green-500 hover:text-green-700" data-testid={`whatsapp-${order.id}`}>
                               <SiWhatsapp className="w-3.5 h-3.5" />
@@ -1101,27 +1090,13 @@ export default function Orders() {
                         {order.customerPhone}
                       </span>
                       {(order.duplicateCount ?? 1) > 1 && (
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <button
-                              onClick={e => e.stopPropagation()}
-                              data-testid={`badge-duplicate-mobile-${order.id}`}
-                              className="shrink-0 text-[10px] font-bold text-white bg-orange-500 rounded-full px-1.5 py-0.5 active:scale-95"
-                            >
-                              ⚠️ {order.duplicateCount} Cmds
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-64 p-3 text-xs" onClick={e => e.stopPropagation()}>
-                            <p className="font-semibold text-orange-600 mb-2">⚠️ {order.duplicateCount} commandes — même numéro</p>
-                            <ul className="space-y-1">
-                              {(order.duplicateOrderDates ?? []).map((d: string, i: number) => (
-                                <li key={i} className="text-muted-foreground">
-                                  {i + 1}. {new Date(d).toLocaleString('fr-MA', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                </li>
-                              ))}
-                            </ul>
-                          </PopoverContent>
-                        </Popover>
+                        <button
+                          onClick={e => { e.stopPropagation(); setCustomerHistoryPhone(order.customerPhone); }}
+                          data-testid={`badge-duplicate-mobile-${order.id}`}
+                          className="shrink-0 text-[10px] font-bold text-white bg-orange-500 rounded-full px-1.5 py-0.5 active:scale-95 hover:bg-orange-600 transition-colors cursor-pointer"
+                        >
+                          ⚠️ {order.duplicateCount} Cmds
+                        </button>
                       )}
                     </div>
                     {itemCount > 1 && (
@@ -1684,6 +1659,13 @@ export default function Orders() {
         onClose={() => setSelectedOrder(null)}
         onUpdated={(updated: any) => setSelectedOrder((prev: any) => prev ? { ...prev, ...updated } : prev)}
       />
+
+      {customerHistoryPhone && (
+        <CustomerHistoryModal
+          phone={customerHistoryPhone}
+          onClose={() => setCustomerHistoryPhone(null)}
+        />
+      )}
 
       {/* ── Open Retour prompt dialog ─────────────────────────────── */}
       <Dialog open={!!orPrompt} onOpenChange={(open) => { if (!open) setOrPrompt(null); }}>
