@@ -957,6 +957,20 @@ export async function registerRoutes(
           ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
           : 'Produit');
 
+      // Pre-load carrier city list for auto-matching
+      const bulkCityList: string[] = Array.isArray(creds.cityList) && creds.cityList.length > 0
+        ? creds.cityList
+        : getDefaultCitiesForProvider(provider);
+
+      const getResolvedCity = (order: any): string => {
+        const raw = ((order as any).customerCity || '').trim();
+        const matched = autoMatchCity(raw, bulkCityList);
+        if (matched && matched !== raw) {
+          console.log(`[BulkShip] City auto-corrected: "${raw}" → "${matched}" (#${(order as any).orderNumber})`);
+        }
+        return matched || raw;
+      };
+
       const broadcastProgress = () => broadcastToStore(storeId, 'shipping_progress', {
         done, total, shipped: shippedCount, failed: failedCount,
       });
@@ -971,7 +985,7 @@ export async function registerRoutes(
           batch.map(order => shipOrderToCarrier(provider, creds, {
             customerName: order.customerName,
             phone:        order.customerPhone,
-            city:         (order as any).customerCity    || '',
+            city:         getResolvedCity(order),
             address:      (order as any).customerAddress  || (order as any).customerCity || '',
             totalPrice:   order.totalPrice,
             productName:  getProductName(order),
@@ -3036,11 +3050,21 @@ export async function registerRoutes(
           ? ((order.items[0] as any).rawProductName || order.items[0].product?.name || 'Produit')
           : 'Produit');
 
+      // ── Auto-match city against carrier's city list ─────────────
+      const carrierCityList: string[] = Array.isArray(creds.cityList) && creds.cityList.length > 0
+        ? creds.cityList
+        : getDefaultCitiesForProvider(provider);
+      const rawOrderCity = (order.customerCity || '').trim();
+      const matchedCity = autoMatchCity(rawOrderCity, carrierCityList) || rawOrderCity;
+      if (matchedCity !== rawOrderCity) {
+        console.log(`[Ship] City auto-corrected: "${rawOrderCity}" → "${matchedCity}" for carrier ${provider}`);
+      }
+
       // ── Call carrier API ──────────────────────────────────────────
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName: order.customerName,
         phone:        order.customerPhone,
-        city:         order.customerCity  || '',
+        city:         matchedCity,
         address:      order.customerAddress || order.customerCity || '',
         totalPrice:   order.totalPrice,
         productName,

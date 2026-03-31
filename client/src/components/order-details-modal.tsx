@@ -17,6 +17,34 @@ const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
 const GOLD_MUTED = "#e8d5a8";
 
+const CARRIER_LOGOS: Record<string, string> = {
+  digylog: '/carriers/digylog.svg',
+  onessta: '/carriers/onessta.svg',
+  ozoneexpress: '/carriers/ozon.svg',
+  'ozone express': '/carriers/ozon.svg',
+  ozon: '/carriers/ozon.svg',
+  sendit: '/carriers/sendit.svg',
+  ameex: '/carriers/ameex.svg',
+  cathedis: '/carriers/cathidis.svg',
+  cathidis: '/carriers/cathidis.svg',
+  speedex: '/carriers/speedx.png',
+  speedx: '/carriers/speedx.png',
+  kargoexpress: '/carriers/cargo.svg',
+  'kargo express': '/carriers/cargo.svg',
+  cargo: '/carriers/cargo.svg',
+  forcelog: '/carriers/forcelog.png',
+  livo: '/carriers/ol.svg',
+  ol: '/carriers/ol.svg',
+  quicklivraison: '/carriers/ql.svg',
+  'quick livraison': '/carriers/ql.svg',
+  ql: '/carriers/ql.svg',
+};
+
+function getCarrierLogo(provider: string | null | undefined): string | null {
+  if (!provider) return null;
+  return CARRIER_LOGOS[(provider || "").toLowerCase()] ?? null;
+}
+
 /** Remove lone hyphens used as placeholder last names (e.g. "Ahmed -") */
 function cleanCustomerName(name: string): string {
   return (name || "")
@@ -458,6 +486,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   onChange={v => set("customerCity", v)}
                   cities={carrierCities}
                   isCarrierSpecific={isCarrierSpecific}
+                  carrierLogo={getCarrierLogo(carrierData?.provider)}
                   data-testid="select-city"
                   className="w-full"
                 />

@@ -7,6 +7,7 @@ interface CityComboboxProps {
   onChange: (city: string) => void;
   cities: string[];
   isCarrierSpecific?: boolean;
+  carrierLogo?: string | null;
   disabled?: boolean;
   placeholder?: string;
   className?: string;
@@ -14,7 +15,7 @@ interface CityComboboxProps {
 }
 
 /**
- * Searchable city picker.
+ * Searchable city picker with optional carrier logo on each row.
  * - Filters the city list as you type
  * - Shows orange warning border when the current value is not in the carrier's city list
  * - Allows free-text entry as a fallback (so agents can always type something)
@@ -24,6 +25,7 @@ export function CityCombobox({
   onChange,
   cities,
   isCarrierSpecific = false,
+  carrierLogo,
   disabled = false,
   placeholder = "Sélectionner une ville...",
   className,
@@ -85,7 +87,16 @@ export function CityCombobox({
   return (
     <div className={cn("relative", className)}>
       {/* Trigger button / search input */}
-      <div className="relative">
+      <div className="relative flex items-center">
+        {/* Carrier logo shown inside the left side of the input when not searching */}
+        {carrierLogo && !open && value && (
+          <img
+            src={carrierLogo}
+            alt=""
+            className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none object-contain"
+            style={{ height: 16, maxWidth: 36 }}
+          />
+        )}
         <input
           ref={inputRef}
           type="text"
@@ -97,11 +108,13 @@ export function CityCombobox({
           placeholder={disabled ? "Choisir un transporteur d'abord" : placeholder}
           data-testid={testId}
           className={cn(
-            "w-full h-9 rounded-md border px-3 pr-8 text-sm outline-none transition-colors",
+            "w-full h-9 rounded-md border text-sm outline-none transition-colors",
             "bg-white placeholder:text-muted-foreground",
             disabled
-              ? "cursor-not-allowed opacity-60 bg-muted border-input"
-              : "cursor-pointer focus:ring-2 focus:ring-ring focus:ring-offset-1",
+              ? "cursor-not-allowed opacity-60 bg-muted border-input px-3 pr-8"
+              : "cursor-pointer focus:ring-2 focus:ring-ring focus:ring-offset-1 pr-8",
+            // Indent text when logo is shown to avoid overlap
+            carrierLogo && !open && value ? "pl-11" : "pl-3",
             isUnmatched && !disabled
               ? "border-orange-400 bg-orange-50 focus:ring-orange-300"
               : "border-gray-200 focus:ring-gray-300"
@@ -147,10 +160,24 @@ export function CityCombobox({
                     value === city ? "bg-accent/50 font-medium" : ""
                   )}
                 >
-                  <Check
-                    className={cn("w-3.5 h-3.5 shrink-0", value === city ? "opacity-100 text-primary" : "opacity-0")}
-                  />
-                  {city}
+                  {/* Carrier logo on each row */}
+                  {carrierLogo ? (
+                    <img
+                      src={carrierLogo}
+                      alt=""
+                      className="object-contain shrink-0"
+                      style={{ height: 14, width: 30 }}
+                    />
+                  ) : (
+                    <Check
+                      className={cn("w-3.5 h-3.5 shrink-0", value === city ? "opacity-100 text-primary" : "opacity-0")}
+                    />
+                  )}
+                  <span className="flex-1">{city}</span>
+                  {/* Checkmark on the right when logo is shown */}
+                  {carrierLogo && value === city && (
+                    <Check className="w-3.5 h-3.5 text-primary shrink-0" />
+                  )}
                 </button>
               ))
             )}

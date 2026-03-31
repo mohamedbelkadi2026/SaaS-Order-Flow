@@ -14,12 +14,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { apiRequest } from "@/lib/queryClient";
+import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 
 function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
@@ -281,6 +282,24 @@ export default function Orders() {
     active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
   } | null>(null);
 
+  // ── Pre-shipping validation state ─────────────────────────────
+  const [shipValidation, setShipValidation] = useState<{
+    valid: OrderValidationResult[];
+    invalid: OrderValidationResult[];
+    suggestOnly: OrderValidationResult[];
+  } | null>(null);
+
+  // Fetch carrier city list for the selected provider (for pre-flight validation)
+  const { data: bulkCarrierData } = useQuery<{ provider: string | null; cities: string[]; isCarrierSpecific: boolean }>({
+    queryKey: ["/api/carriers/cities", bulkShipProvider],
+    queryFn: () =>
+      bulkShipProvider
+        ? fetch(`/api/carriers/cities?provider=${encodeURIComponent(bulkShipProvider)}`, { credentials: "include" }).then(r => r.json())
+        : Promise.resolve({ provider: null, cities: [], isCarrierSpecific: false }),
+    enabled: !!bulkShipProvider,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const [visibleCols, setVisibleCols] = useState<string[]>(getStoredColumns);
   const [showColMenu, setShowColMenu] = useState(false);
 
@@ -422,6 +441,22 @@ export default function Orders() {
     es.onerror = () => { /* keep alive — server may not be streaming yet */ };
     return () => es.close();
   }, [shipProgress?.active]);
+
+  // ── Pre-shipping validation: run whenever carrier or selection changes ──
+  useEffect(() => {
+    if (!bulkShipProvider || !showBulkShipModal) {
+      setShipValidation(null);
+      return;
+    }
+    if (!bulkCarrierData) return;
+    const selectedOrders = filteredOrders.filter((o: any) => selectedIds.has(o.id));
+    if (selectedOrders.length === 0) { setShipValidation(null); return; }
+    const results = validateOrdersBatch(selectedOrders, bulkCarrierData.cities ?? [], bulkCarrierData.isCarrierSpecific ?? false);
+    const invalid = results.filter(r => !r.valid);
+    const suggestOnly = results.filter(r => r.valid && r.suggestedCity);
+    const valid = results.filter(r => r.valid);
+    setShipValidation({ valid, invalid, suggestOnly });
+  }, [bulkShipProvider, bulkCarrierData, selectedIds, filteredOrders, showBulkShipModal]);
 
   const openOrder = (order: any) => {
     setSelectedOrder(order);
@@ -1430,19 +1465,25 @@ export default function Orders() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showBulkShipModal} onOpenChange={setShowBulkShipModal}>
-        <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-bulk-ship">
+      <Dialog open={showBulkShipModal} onOpenChange={(open) => { setShowBulkShipModal(open); if (!open) { setBulkShipProvider(""); setShipValidation(null); } }}>
+        <DialogContent className="sm:max-w-lg rounded-xl" data-testid="dialog-bulk-ship">
           <DialogHeader>
-            <DialogTitle className="text-lg font-bold">Expédier les commandes</DialogTitle>
-            <DialogDescription className="text-sm text-muted-foreground">Seules les commandes confirmées seront expédiées</DialogDescription>
+            <DialogTitle className="text-lg font-bold flex items-center gap-2">
+              <Truck className="w-5 h-5 text-indigo-500" />
+              Expédier les commandes
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              Seules les commandes avec le statut <Badge variant="outline" className="text-emerald-600 mx-1">confirmé</Badge> seront expédiées.
+            </DialogDescription>
           </DialogHeader>
+
           <div className="space-y-4 py-2">
-            <p className="text-sm text-muted-foreground">Seules les commandes avec le statut <Badge variant="outline" className="text-emerald-600 mx-1">confirmé</Badge> seront expédiées.</p>
+            {/* ── Carrier selector ── */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-muted-foreground uppercase">Transporteur</label>
-              <Select value={bulkShipProvider} onValueChange={setBulkShipProvider}>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Transporteur</label>
+              <Select value={bulkShipProvider} onValueChange={v => { setBulkShipProvider(v); setShipValidation(null); }}>
                 <SelectTrigger className="bg-white dark:bg-card" data-testid="select-bulk-ship-provider">
-                  <SelectValue placeholder="Sélectionner..." />
+                  <SelectValue placeholder="Sélectionner un transporteur..." />
                 </SelectTrigger>
                 <SelectContent>
                   {shippingIntegrations?.map((si: any) => {
@@ -1451,7 +1492,7 @@ export default function Orders() {
                       <SelectItem key={si.provider} value={si.provider}>
                         <span className="flex items-center gap-2">
                           {logo && <img src={logo} alt={si.provider} style={{ height: 18, maxWidth: 50 }} className="object-contain shrink-0" />}
-                          <span>{si.provider}</span>
+                          <span className="capitalize">{si.provider}</span>
                         </span>
                       </SelectItem>
                     );
@@ -1463,18 +1504,134 @@ export default function Orders() {
                 return logo ? (
                   <div className="flex items-center gap-3 mt-2 p-2.5 rounded-lg bg-muted/50 border border-border">
                     <img src={logo} alt={bulkShipProvider} style={{ height: 32, maxWidth: 90 }} className="object-contain" />
-                    <span className="text-sm font-medium text-foreground">{bulkShipProvider}</span>
+                    <span className="text-sm font-medium text-foreground capitalize">{bulkShipProvider}</span>
                   </div>
                 ) : null;
               })()}
             </div>
+
+            {/* ── Pre-flight validation panel ── */}
+            {bulkShipProvider && !bulkCarrierData && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Vérification des villes...
+              </div>
+            )}
+
+            {bulkCarrierData && shipValidation && (
+              <div className="space-y-3">
+                {/* Summary bar */}
+                {shipValidation.invalid.length === 0 ? (
+                  <div className="flex items-center gap-2 rounded-lg px-3 py-2 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm font-medium">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    {selectedIds.size} commande(s) validée(s) — prêtes à expédier
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 rounded-lg px-3 py-2 bg-amber-50 border border-amber-300 text-amber-800 text-sm font-medium">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    {shipValidation.invalid.length} erreur(s) détectée(s) sur {selectedIds.size} commande(s)
+                  </div>
+                )}
+
+                {/* Error list */}
+                {shipValidation.invalid.length > 0 && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/60 overflow-hidden max-h-52 overflow-y-auto">
+                    <div className="px-3 py-2 bg-amber-100 border-b border-amber-200 flex items-center gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: "#C5A059" }}>
+                        Commandes avec erreurs — à corriger avant envoi
+                      </span>
+                    </div>
+                    {shipValidation.invalid.map(r => (
+                      <div key={r.orderId} className="px-3 py-2.5 border-b border-amber-100 last:border-0">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-gray-700 truncate">
+                              {r.orderNumber} — {r.customerName}
+                            </p>
+                            <div className="mt-1 space-y-0.5">
+                              {r.cityError && (
+                                <p className="text-[11px] text-red-600 font-medium flex items-center gap-1">
+                                  <XCircle className="w-3 h-3 shrink-0" />
+                                  {r.cityError}
+                                </p>
+                              )}
+                              {r.phoneError && (
+                                <p className="text-[11px] text-red-600 font-medium flex items-center gap-1">
+                                  <XCircle className="w-3 h-3 shrink-0" />
+                                  {r.phoneError}
+                                </p>
+                              )}
+                              {r.addressError && (
+                                <p className="text-[11px] text-red-600 font-medium flex items-center gap-1">
+                                  <XCircle className="w-3 h-3 shrink-0" />
+                                  {r.addressError}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const order = filteredOrders.find((o: any) => o.id === r.orderId);
+                              if (order) { setShowBulkShipModal(false); openOrder(order); }
+                            }}
+                            className="shrink-0 text-[10px] font-bold px-2.5 py-1.5 rounded-lg border transition-colors"
+                            style={{ color: "#C5A059", borderColor: "#C5A059", background: "rgba(197,160,89,0.08)" }}
+                          >
+                            Corriger
+                          </button>
+                        </div>
+                        {r.suggestedCity && (
+                          <p className="mt-1 text-[10px] text-amber-700 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 shrink-0" />
+                            Suggestion : <strong>{r.suggestedCity}</strong>
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* City suggestions (non-blocking) */}
+                {shipValidation.suggestOnly.length > 0 && shipValidation.invalid.length === 0 && (
+                  <div className="rounded-lg border border-blue-200 bg-blue-50/60 px-3 py-2 text-[11px] text-blue-700">
+                    <strong>Auto-correction</strong> : {shipValidation.suggestOnly.length} ville(s) seront corrigées automatiquement par le serveur avant envoi.
+                  </div>
+                )}
+              </div>
+            )}
+
             <p className="text-xs text-muted-foreground">{selectedIds.size} commande(s) sélectionnée(s)</p>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowBulkShipModal(false)}>Annuler</Button>
-            <Button onClick={handleBulkShip} disabled={!bulkShipProvider || bulkShip.isPending} className="bg-indigo-500 hover:bg-indigo-600 text-white" data-testid="button-confirm-bulk-ship">
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => { setShowBulkShipModal(false); setBulkShipProvider(""); setShipValidation(null); }}>
+              Annuler
+            </Button>
+            {/* If there are invalid orders but also some valid ones, allow partial ship */}
+            {shipValidation && shipValidation.invalid.length > 0 && shipValidation.valid.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const validIds = new Set(shipValidation.valid.map(r => r.orderId));
+                  setSelectedIds(validIds);
+                  setTimeout(() => handleBulkShip(), 50);
+                }}
+                className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                data-testid="button-ship-valid-only"
+              >
+                <Truck className="w-4 h-4 mr-1" />
+                Expédier les valides ({shipValidation.valid.length})
+              </Button>
+            )}
+            <Button
+              onClick={handleBulkShip}
+              disabled={!bulkShipProvider || bulkShip.isPending || (shipValidation !== null && shipValidation.invalid.length > 0 && shipValidation.valid.length === 0)}
+              className="bg-indigo-500 hover:bg-indigo-600 text-white"
+              data-testid="button-confirm-bulk-ship"
+            >
               {bulkShip.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Truck className="w-4 h-4 mr-2" />}
-              Expédier
+              {shipValidation && shipValidation.invalid.length > 0 ? "Expédier quand même" : "Expédier"}
             </Button>
           </DialogFooter>
         </DialogContent>
