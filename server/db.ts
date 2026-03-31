@@ -108,6 +108,18 @@ export async function initializeDatabase(): Promise<void> {
     `);
 
     console.log("[DATABASE]: carrier_accounts table verified/created.");
+
+    // email_verification_codes — required for the signup OTP flow
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_verification_codes (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER NOT NULL,
+        code       TEXT NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("[DATABASE]: email_verification_codes table verified/created.");
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
   } finally {

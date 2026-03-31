@@ -5,22 +5,41 @@ export function generateOTP(): string {
   return String(randomInt(100000, 999999));
 }
 
-export async function sendVerificationEmail(email: string, code: string): Promise<void> {
-  // ── ALWAYS print the code so login works even when email fails ────────────
-  console.log("\x1b[36m╔══════════════════════════════════════════╗\x1b[0m");
-  console.log(`\x1b[36m║  [EMAIL] OTP for \x1b[33m${email}\x1b[36m\x1b[0m`);
-  console.log(`\x1b[36m║  \x1b[0mCode: \x1b[33;1m${code}\x1b[0m`);
-  console.log("\x1b[36m╚══════════════════════════════════════════╝\x1b[0m");
+/**
+ * Resolves the "from" address:
+ *   - If RESEND_FROM_EMAIL is set in env (e.g. "no-reply@tajergrow.com"),
+ *     use "TajerGrow <{RESEND_FROM_EMAIL}>"
+ *   - Otherwise fall back to Resend's shared test domain (works on free tier
+ *     for the account owner's own email only).
+ *
+ * After verifying tajergrow.com in Resend, add to Railway Variables:
+ *   RESEND_FROM_EMAIL = no-reply@tajergrow.com
+ */
+function getSenderAddress(): string {
+  const fromEmail = process.env.RESEND_FROM_EMAIL?.trim();
+  if (fromEmail) return `TajerGrow <${fromEmail}>`;
+  return "TajerGrow <onboarding@resend.dev>";
+}
 
-  // ── API key check ─────────────────────────────────────────────────────────
-  const apiKey = process.env.RESEND_API_KEY;
+export async function sendVerificationEmail(email: string, code: string): Promise<void> {
+  // Always log the code in plain text — readable in both Replit and Railway dashboards
+  console.log("[EMAIL] ============================================================");
+  console.log(`[EMAIL] Verification code for: ${email}`);
+  console.log(`[EMAIL] CODE: ${code}`);
+  console.log("[EMAIL] ============================================================");
+
+  // API key guard
+  const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
-    console.error("[Email] ❌ RESEND_API_KEY is not set — email NOT sent (use code above).");
+    console.error("[EMAIL] ERROR: RESEND_API_KEY is not set. Email will NOT be sent.");
+    console.error("[EMAIL] Add RESEND_API_KEY to Railway Variables and redeploy.");
     return;
   }
-  console.log(`[Email] RESEND_API_KEY loaded ✓ (prefix: ${apiKey.slice(0, 8)}...)`);
+  const sender = getSenderAddress();
+  console.log(`[EMAIL] API key loaded OK (prefix: ${apiKey.slice(0, 8)}...)`);
+  console.log(`[EMAIL] Sender: ${sender}`);
+  console.log(`[EMAIL] Recipient: ${email}`);
 
-  // ── Build HTML email ──────────────────────────────────────────────────────
   const html = `
 <!DOCTYPE html>
 <html>
@@ -56,12 +75,11 @@ export async function sendVerificationEmail(email: string, code: string): Promis
 </body>
 </html>`;
 
-  // ── Send via Resend ───────────────────────────────────────────────────────
   try {
-    console.log(`[Email] Calling Resend API → to: ${email}...`);
+    console.log("[EMAIL] Sending via Resend API...");
     const client = new Resend(apiKey);
     const { data, error } = await client.emails.send({
-      from: "TajerGrow <onboarding@resend.dev>",
+      from: sender,
       to: [email],
       subject: "Votre code de vérification TajerGrow",
       html,
@@ -69,24 +87,28 @@ export async function sendVerificationEmail(email: string, code: string): Promis
     });
 
     if (error) {
-      const errMsg = (error as any).message || JSON.stringify(error);
-      console.error(`[Email] ❌ Resend API error: ${errMsg}`);
-      // Free-tier restriction — domain not verified
+      const errName    = (error as any).name    || "UnknownError";
+      const errMsg     = (error as any).message || JSON.stringify(error);
+      const statusCode = (error as any).statusCode ?? "";
+
+      console.error(`[EMAIL] Resend API error [${statusCode}] ${errName}: ${errMsg}`);
+
       if (errMsg.includes("testing emails") || errMsg.includes("verify a domain")) {
-        console.warn("[Email] ⚠️  FREE TIER RESTRICTION: Resend only allows sending to your own");
-        console.warn(`[Email]    account email on the free plan. To send to any address:`);
-        console.warn("[Email]    1. Go to https://resend.com/domains");
-        console.warn("[Email]    2. Add and verify tajergrow.com");
-        console.warn("[Email]    3. Update 'from' to noreply@tajergrow.com");
-        console.warn("[Email] → For now, use the code printed above ↑");
+        console.error("[EMAIL] FREE TIER RESTRICTION: You must verify tajergrow.com at");
+        console.error("[EMAIL] https://resend.com/domains then set:");
+        console.error("[EMAIL]   RESEND_FROM_EMAIL = no-reply@tajergrow.com  (Railway Variable)");
+        console.error("[EMAIL] Until then, use the CODE printed above to verify manually.");
+      } else if (String(statusCode) === "401" || String(statusCode) === "403") {
+        console.error("[EMAIL] Auth error — double-check RESEND_API_KEY in Railway Variables.");
       }
-      // Don't throw — let the user still verify using the console code
+      // Don't throw: code is already saved in DB, user can enter it even if email fails
       return;
     }
 
-    console.log(`[Email] ✅ Email sent successfully! Resend ID: ${data?.id}`);
+    console.log(`[EMAIL] SUCCESS — email delivered. Resend ID: ${data?.id}`);
   } catch (err: any) {
-    console.error("[Email] Exception:", err.message);
-    console.warn("[Email] → The code above ↑ is still valid — use it to verify.");
+    console.error(`[EMAIL] Exception while calling Resend: ${err.message}`);
+    console.error("[EMAIL] Full error:", err);
+    console.error("[EMAIL] The OTP code above is still valid — user can enter it manually.");
   }
 }

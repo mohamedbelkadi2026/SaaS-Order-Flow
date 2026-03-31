@@ -32,9 +32,12 @@ export default function VerifyEmailPage() {
     mutationFn: () => apiRequest("POST", "/api/auth/verify-email", { code }),
     onSuccess: async (res: any) => {
       if (res.success) {
-        await queryClient.invalidateQueries({ queryKey: ["/api/user"] });
         toast({ title: "Email vérifié ✅", description: "Bienvenue sur TajerGrow !" });
-        navigate("/");
+        // Hard redirect after 1 second so the toast is visible and the session
+        // is fully re-fetched from the server (more reliable than cache invalidation).
+        setTimeout(() => {
+          window.location.replace("/");
+        }, 1000);
       } else {
         toast({ title: "Erreur", description: res.message, variant: "destructive" });
       }
