@@ -10,7 +10,7 @@ import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
 import { initSocket } from "./socket";
 import { autoStartBaileys, autoStartDevices } from "./baileys-service";
-import { db } from "./db";
+import { db, initializeDatabase } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import path from "path";
@@ -204,6 +204,9 @@ app.use((req, res, next) => {
       res.status(500).json({ status: "error", message: err.message });
     }
   });
+
+  // 0. Startup DB migrations — ensures critical tables exist on Railway prod
+  await initializeDatabase();
 
   // 1. Auth middleware + login/logout/signup/user routes
   setupAuth(app);

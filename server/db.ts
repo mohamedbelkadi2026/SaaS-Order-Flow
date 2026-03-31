@@ -67,3 +67,50 @@ try {
 }
 
 export const db = drizzle(pool, { schema });
+
+/**
+ * Startup migration: ensures all critical tables exist on the production DB
+ * (Railway) so a fresh deploy never hits a 500 from a missing table.
+ *
+ * NOTE: columns match the Drizzle schema exactly (serial integer PK, integer
+ * store_id) — NOT the UUID-based schema in raw CREATE TABLE snippets floating
+ * around, which would be incompatible with all ORM queries.
+ */
+export async function initializeDatabase(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS carrier_accounts (
+        id               SERIAL PRIMARY KEY,
+        store_id         INTEGER NOT NULL,
+        carrier_name     TEXT NOT NULL,
+        connection_name  TEXT NOT NULL DEFAULT 'Connection 1',
+        api_key          TEXT NOT NULL,
+        api_secret       TEXT,
+        api_url          TEXT,
+        webhook_token    TEXT NOT NULL DEFAULT '',
+        store_name       TEXT,
+        is_default       INTEGER DEFAULT 0,
+        is_active        INTEGER DEFAULT 1,
+        assignment_rule  TEXT DEFAULT 'default',
+        assignment_data  TEXT,
+        settings         JSONB DEFAULT '{}',
+        created_at       TIMESTAMP DEFAULT NOW(),
+        updated_at       TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // Add settings / updated_at columns if the table already existed without them
+    await client.query(`
+      ALTER TABLE carrier_accounts
+        ADD COLUMN IF NOT EXISTS settings    JSONB DEFAULT '{}',
+        ADD COLUMN IF NOT EXISTS updated_at  TIMESTAMP DEFAULT NOW();
+    `);
+
+    console.log("[DATABASE]: carrier_accounts table verified/created.");
+  } catch (err: any) {
+    console.error("[DATABASE] initializeDatabase error:", err.message);
+  } finally {
+    client.release();
+  }
+}
