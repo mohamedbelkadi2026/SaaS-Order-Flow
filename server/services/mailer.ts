@@ -86,8 +86,12 @@ function buildEmailHtml(code: string): string {
 }
 
 // ── Main send function ──────────────────────────────────────────────────────
+// Throws on any failure so the caller can decide whether to block the signup.
 export async function sendVerificationEmail(email: string, code: string): Promise<void> {
-  // ── Step 1: Always log OTP first — readable in Railway even if everything else fails ──
+  console.log('[MAIL-TRACE]: Starting email for', email);
+  console.log('[MAIL-TRACE]: API Key exists:', !!process.env.RESEND_API_KEY);
+
+  // ── Always log OTP first — visible in Railway even if everything below fails ──
   console.log("==================================================================");
   console.log(`[OTP_BACKDOOR]: Email: ${email} | Code: ${code}`);
   console.log(`[SERVER-OTP]: The code for user ${email} is ${code}`);
@@ -95,23 +99,24 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   console.log('[AUTH-CODE-FOR-USER]:', email, 'code is:', code);
   console.log("==================================================================");
 
-  // ── Step 2: Validate API key ────────────────────────────────────────────────
+  // ── Validate API key ────────────────────────────────────────────────────────
   const apiKey = process.env.RESEND_API_KEY?.trim();
-  console.log('[DEBUG]: Using API Key starting with: ' + process.env.RESEND_API_KEY?.substring(0, 7));
+  console.log('[DEBUG]: Using API Key starting with: ' + (apiKey?.substring(0, 7) ?? 'NONE'));
 
   if (!apiKey) {
-    console.error('MISSING RESEND_API_KEY IN SECRETS');
-    console.error("[MAILER] Add RESEND_API_KEY to Railway Variables → Redeploy.");
-    return;
+    const msg = 'RESEND_API_KEY is not set — add it to Railway Variables and redeploy.';
+    console.error('[MAIL-CRITICAL-FAIL]: ' + msg);
+    throw new Error(msg);
   }
 
-  // ── Step 3: Send email ──────────────────────────────────────────────────────
-  const sender = getSender();
+  // ── Send ────────────────────────────────────────────────────────────────────
+  const sender = "TajerGrow <no-reply@tajergrow.com>";
+  console.log(`[MAIL-TRACE]: Sender resolved: ${sender}`);
   console.log(`[RESEND_STATUS]: Email attempt for ${email}`);
-  console.log(`[EMAIL_INIT]: Attempting to send code to ${email}`);
   console.log(`[MAILER] From: ${sender} → To: ${email}`);
 
   try {
+    // Always initialize inside the function — avoids stale connection issues
     const resend = new Resend(apiKey);
     const response = await resend.emails.send({
       from: sender,
@@ -141,28 +146,27 @@ export async function sendVerificationEmail(email: string, code: string): Promis
         "https://www.tajergrow.com",
       ].join("\n"),
     });
+
     console.log('[RESEND_API_RESPONSE]:', JSON.stringify(response, null, 2));
     const { data, error } = response;
 
     // Resend SDK returns soft errors as { data: null, error: {...} } rather than throwing.
-    // We must check this explicitly — these include 401 (bad key), 403 (domain), etc.
+    // 401 = bad key, 403 = unverified domain, 422 = invalid address, etc.
     if (error) {
-      console.error('[RESEND_CRITICAL_ERROR]:', JSON.stringify(error, null, 2));
-      console.error('[RESEND_CRITICAL_ERROR] message:', (error as any)?.message);
-      console.error('[RESEND_CRITICAL_ERROR] status:', (error as any)?.statusCode ?? (error as any)?.status);
-      console.error(`[MAILER] OTP ${code} for ${email} is saved in DB — user can still enter it manually from logs above.`);
-      return;
+      const errMsg = (error as any)?.message ?? JSON.stringify(error);
+      const errStatus = (error as any)?.statusCode ?? (error as any)?.status ?? 'unknown';
+      console.error('[MAIL-CRITICAL-FAIL]:', JSON.stringify(error, null, 2));
+      console.error(`[MAIL-CRITICAL-FAIL] status=${errStatus} message=${errMsg}`);
+      throw new Error(`Resend error ${errStatus}: ${errMsg}`);
     }
 
     console.log('[RESEND_SUCCESS]:', JSON.stringify(data, null, 2));
-    console.log(`[RESEND]: Email sent to ${email}`);
-    console.log(`[EMAIL_SUCCESS]: Message ID ${data?.id ?? 'unknown'}`);
-  } catch (error: any) {
-    // True exceptions — network failure, SDK crash, etc.
-    console.error('[RESEND_CRITICAL_ERROR]:', JSON.stringify(error, null, 2));
-    console.error('[RESEND_CRITICAL_ERROR] message:', error?.message);
-    console.error('[RESEND_CRITICAL_ERROR] status:', error?.statusCode ?? error?.status);
-    console.error(`[MAILER] OTP ${code} for ${email} is saved in DB — user can still enter it manually from logs above.`);
+    console.log(`[RESEND]: Email sent to ${email} — Message ID: ${data?.id ?? 'unknown'}`);
+  } catch (e: any) {
+    // Re-throw Resend soft-error exceptions (from the block above) unchanged,
+    // and wrap genuine network / SDK crashes so the caller always gets a throw.
+    console.error('[MAIL-CRITICAL-FAIL]:', e?.message ?? e);
+    throw e;
   }
 }
 

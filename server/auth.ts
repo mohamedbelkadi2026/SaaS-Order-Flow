@@ -170,7 +170,10 @@ export function setupAuth(app: Express) {
         await sendVerificationEmail(email, otp);
       } catch (emailErr: any) {
         console.error('[SIGNUP-EMAIL-FAIL]:', emailErr?.message ?? emailErr);
-        // Do NOT abort signup — user can still use "Renvoyer" on the verify page
+        // Email failed — delete the created user/store so the signup can be retried cleanly
+        try { await storage.deleteUser(user.id); } catch (_) {}
+        try { await storage.deleteStore(store.id); } catch (_) {}
+        return res.status(500).json({ message: "Erreur lors de l'envoi de l'email de vérification. Vérifiez votre adresse et réessayez." });
       }
 
       req.login(user, (err) => {
