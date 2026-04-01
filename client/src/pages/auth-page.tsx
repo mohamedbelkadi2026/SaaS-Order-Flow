@@ -33,6 +33,7 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
         setLocation("/");
       } else {
         await signup(storeName, username, email, password);
+        console.log("User registered, redirecting to verification page...");
         setLocation("/verify-email");
       }
     } catch {}

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useLocation, Link } from "wouter";
+import { useLocation } from "wouter";
 import { Loader2, MailCheck, RefreshCw, ArrowRight, ShieldCheck, LogOut, CheckCircle2 } from "lucide-react";
 
 const GOLD = "#C5A059";
@@ -121,11 +121,11 @@ export default function VerifyEmailPage() {
     <div className="min-h-screen flex flex-col items-center justify-center px-4"
       style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d2a7a 60%, #1a1060 100%)` }}>
 
-      {/* Logo — clicking goes back to the landing page */}
-      <Link href="/" className="mb-10 text-center block cursor-pointer group" data-testid="link-logo-home">
-        <h1 className="text-3xl font-black tracking-tight transition-opacity group-hover:opacity-80" style={{ color: GOLD }}>TajerGrow</h1>
+      {/* Logo — non-clickable while in verification lock */}
+      <div className="mb-10 text-center" data-testid="logo-verify-page">
+        <h1 className="text-3xl font-black tracking-tight" style={{ color: GOLD }}>TajerGrow</h1>
         <p className="text-white/50 text-sm mt-1">La plateforme COD marocaine</p>
-      </Link>
+      </div>
 
       {/* Card */}
       <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden">

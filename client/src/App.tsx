@@ -154,20 +154,22 @@ function ProtectedRoutes() {
   const unverifiedOwner = !!(
     user && user.role === "owner" && !user.isSuperAdmin && !user.isEmailVerified
   );
-  // Paths an unverified owner can access freely — "/" shows the landing page
-  const UNVERIFIED_ACCESSIBLE = ["/verify-email", "/auth", "/login", "/register", "/"];
-  const needsVerification = unverifiedOwner && !UNVERIFIED_ACCESSIBLE.includes(location);
+  // Strict lock: unverified owners may ONLY be on /verify-email.
+  // Every other route — including "/" — sends them back.
+  const needsVerification = unverifiedOwner && location !== "/verify-email";
 
   // All redirects via useEffect — never navigate during render
   useEffect(() => {
     if (!isLoading && user && ["/auth", "/login", "/register"].includes(location)) {
-      // Unverified → send back to the verification page so they can't get "lost"
       navigate(unverifiedOwner ? "/verify-email" : "/");
     }
   }, [isLoading, user, location, unverifiedOwner]);
 
   useEffect(() => {
-    if (needsVerification) navigate("/verify-email");
+    if (needsVerification) {
+      console.log("User registered, redirecting to verification page...");
+      navigate("/verify-email");
+    }
   }, [needsVerification]);
 
   if (isLoading) {
@@ -189,12 +191,9 @@ function ProtectedRoutes() {
 
   // ── Logged in — handle special pages first ────────────────────────────────
   if (location === "/auth" || location === "/login" || location === "/register") return null; // useEffect handles redirect
-  // Unverified owners: verify page
+  // Unverified owners: ONLY the verify page is allowed — useEffect redirects everything else
   if (location === "/verify-email") return <VerifyEmailPage />;
-  // Unverified owners at "/" → show the public landing page (logo links back here too)
-  if (unverifiedOwner && location === "/") return <LandingPage />;
-  // Any other private page while unverified → null while useEffect redirects to /verify-email
-  if (needsVerification) return null;
+  if (needsVerification) return null; // briefly null while useEffect fires the redirect
 
   // ── Verified user → full app ──────────────────────────────────────────────
   return (
