@@ -6,11 +6,11 @@ export function generateOTP(): string {
 }
 
 // ── The sender address ──────────────────────────────────────────────────────
-// Using onboarding@resend.dev for diagnostics — bypasses domain DNS issues.
-// Switch to no-reply@tajergrow.com via RESEND_FROM_EMAIL once DNS is confirmed.
+// tajergrow.com is verified in Resend — no-reply@tajergrow.com is the default.
+// Override via RESEND_FROM_EMAIL env var if ever needed.
 function getSender(): string {
   const override = process.env.RESEND_FROM_EMAIL?.trim();
-  return override ? `TajerGrow <${override}>` : "TajerGrow <onboarding@resend.dev>";
+  return override ? `TajerGrow <${override}>` : "TajerGrow <no-reply@tajergrow.com>";
 }
 
 // ── HTML email template ─────────────────────────────────────────────────────
