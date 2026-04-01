@@ -12,6 +12,7 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   // Grep for [SERVER-OTP] in your Railway dashboard to find the code instantly.
   console.log("==================================================================");
   console.log(`[SERVER-OTP]: The code for user ${email} is ${code}`);
+  console.log('--- PRODUCTION OTP DEBUG --- Email: ' + email + ' | Code: ' + code);
   console.log("==================================================================");
   console.log(`[EMAIL] Verification code for: ${email} | CODE: ${code}`);
 
@@ -103,8 +104,8 @@ export async function sendVerificationEmail(email: string, code: string): Promis
 
     console.log(`[EMAIL] SUCCESS — email delivered. Resend ID: ${data?.id}`);
   } catch (err: any) {
+    console.error('RESEND_ERROR:', err);
     console.error(`[EMAIL] Exception: ${err.message}`);
-    console.error("[EMAIL] Full exception:", err);
     console.error("[EMAIL] The OTP code above is still valid — use it from Railway Logs.");
   }
 }
