@@ -226,13 +226,12 @@ export default function VerifyEmailPage() {
         </div>
       </div>
 
-      {/* Dev note */}
-      {!import.meta.env.VITE_RESEND_CONFIGURED && (
-        <div className="mt-6 max-w-sm w-full px-4 py-3 rounded-2xl text-xs text-center"
-          style={{ background: "rgba(197,160,89,0.12)", color: GOLD, border: "1px solid rgba(197,160,89,0.3)" }}>
-          <strong>Mode Dev :</strong> Le code OTP est affiché dans les logs du serveur (console).
-        </div>
-      )}
+      {/* Admin console hint — always visible */}
+      <div className="mt-6 max-w-sm w-full px-4 py-3 rounded-2xl text-xs text-center"
+        style={{ background: "rgba(197,160,89,0.08)", color: GOLD, border: "1px solid rgba(197,160,89,0.25)" }}>
+        Si vous ne recevez pas l'email — <strong>Consultez la console pour le code de test</strong>
+        <span className="block text-white/30 mt-1">Cherchez <code className="font-mono">[AUTH-DEBUG]</code> dans les logs serveur</span>
+      </div>
     </div>
   );
 }

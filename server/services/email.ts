@@ -16,10 +16,12 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   console.log("==================================================================");
   console.log(`[EMAIL] Verification code for: ${email} | CODE: ${code}`);
 
+  console.log('--- [AUTH-DEBUG] --- Email: ' + email + ' | Code: ' + code);
+
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
-    console.error("[EMAIL] ERROR: RESEND_API_KEY is not set — email will NOT be sent.");
-    console.error("[EMAIL] Add RESEND_API_KEY to Railway Variables and redeploy.");
+    console.error('MISSING RESEND_API_KEY IN SECRETS');
+    console.error("[EMAIL] Add RESEND_API_KEY to Railway Variables → Redeploy.");
     return;
   }
 

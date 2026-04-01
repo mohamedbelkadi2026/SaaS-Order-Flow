@@ -237,6 +237,41 @@ export function setupAuth(app: Express) {
     }
   });
 
+  /* ── Debug: Get latest OTP for an email (super-admin only) ─────── */
+  app.get("/api/auth/debug-otp", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+      if (!req.user!.isSuperAdmin) return res.status(403).json({ message: "Super admin requis" });
+
+      const targetEmail = (req.query.email as string)?.trim() || req.user!.email;
+      if (!targetEmail) return res.status(400).json({ message: "Email requis" });
+
+      const targetUser = await storage.getUserByEmail(targetEmail);
+      if (!targetUser) return res.status(404).json({ message: "Utilisateur introuvable", email: targetEmail });
+
+      const record = await storage.getVerificationCode(targetUser.id);
+      if (!record) {
+        return res.json({ found: false, message: "Aucun code actif pour cet utilisateur.", email: targetEmail });
+      }
+
+      const isExpired = new Date() > record.expiresAt;
+      const secondsLeft = Math.max(0, Math.round((record.expiresAt.getTime() - Date.now()) / 1000));
+      console.log(`[DEBUG-OTP] Super admin ${req.user!.email} queried code for ${targetEmail}: ${record.code}`);
+
+      return res.json({
+        found: true,
+        email: targetEmail,
+        code: record.code,
+        expiresAt: record.expiresAt,
+        isExpired,
+        secondsLeft,
+      });
+    } catch (err: any) {
+      console.error("[DEBUG-OTP] Error:", err.message);
+      return res.status(500).json({ message: "Erreur serveur" });
+    }
+  });
+
   app.post("/api/auth/login", (req, res, next) => {
     const { email } = req.body || {};
     console.log(`[LOGIN] Attempt for: ${email || "(no email)"}`);
