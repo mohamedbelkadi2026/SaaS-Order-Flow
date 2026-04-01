@@ -121,6 +121,7 @@ export async function sendVerificationEmail(email: string, code: string): Promis
       return;
     }
 
+    console.log(`[RESEND]: Email sent to ${email}`);
     console.log(`[EMAIL_SUCCESS]: Message ID ${data?.id}`);
   } catch (err: any) {
     console.error(`[EMAIL_ERROR]: Full error details: ${JSON.stringify({ message: err.message, stack: err.stack })}`);
