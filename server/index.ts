@@ -77,6 +77,11 @@ process.on("unhandledRejection", (reason: unknown) => {
 const app = express();
 const httpServer = createServer(app);
 
+// ── Trust the Railway / Cloudflare proxy — MUST be first ──────────────────────
+// Without this, Express sees every request as HTTP (x-forwarded-proto is ignored),
+// causing session cookies to be rejected in production and redirect loops.
+app.set("trust proxy", true);
+
 // ── Health probes — synchronous, registered before everything else ─────────────
 // Railway checks these immediately on deploy. They must never be blocked
 // by Helmet, rate-limiters, body-parsers, auth, or static-file middleware.

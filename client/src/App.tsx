@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route, useLocation, Link } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -47,6 +47,31 @@ import CheckoutPage from "@/pages/checkout";
 import AutomationPage from "@/pages/automation";
 import VerifyEmailPage from "@/pages/verify-email";
 
+// ── Purely public paths — always rendered, no auth/verification check ─────────
+// Any path listed here is served directly from AppRouter before any auth logic.
+const PUBLIC_PATHS: Record<string, React.ComponentType> = {
+  "/partenaires-livraison": ShippingPartnersPublicPage,
+  "/tarifs": TarifsPage,
+  "/faq": FaqPage,
+  "/terms": TermsPage,
+  "/privacy": PrivacyPage,
+  "/blog": BlogPage,
+  "/temoignages": TemoignagesPage,
+};
+
+// ── Private routes that trigger the email-verification guard ──────────────────
+// "/" (dashboard) is also private — unverified users see LandingPage there instead.
+const PRIVATE_PREFIXES = [
+  "/orders", "/inventory", "/team", "/clients", "/magasins",
+  "/invoices", "/billing", "/profitability", "/integrations",
+  "/admin", "/media-buyers", "/mes-depenses", "/publicites",
+  "/profile", "/calculator", "/checkout", "/automation",
+];
+
+function isPrivatePath(path: string) {
+  return PRIVATE_PREFIXES.some(p => path === p || path.startsWith(p + "/"));
+}
+
 const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
   "/invoices", "/billing", "/profitability",
@@ -67,8 +92,8 @@ function AgentGuard({ children }: { children: React.ReactNode }) {
   const [location, navigate] = useLocation();
   const { toast } = useToast();
 
-  const isAgentBlocked = user?.role === 'agent' && AGENT_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
-  const isMediaBuyerBlocked = user?.role === 'media_buyer' && MEDIA_BUYER_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
+  const isAgentBlocked = user?.role === "agent" && AGENT_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
+  const isMediaBuyerBlocked = user?.role === "media_buyer" && MEDIA_BUYER_BLOCKED_PATHS.some(p => location === p || location.startsWith(p + "/"));
   const isBlocked = isAgentBlocked || isMediaBuyerBlocked;
 
   useEffect(() => {
@@ -82,10 +107,11 @@ function AgentGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Only open the SSE connection for verified users to avoid noise in logs
 function useOrderStatusSSE() {
   const { user } = useAuth();
   useEffect(() => {
-    if (!user) return;
+    if (!user || !user.isEmailVerified) return;
     const es = new EventSource("/api/automation/events", { withCredentials: true });
     const invalidateOrders = () => {
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
@@ -93,13 +119,11 @@ function useOrderStatusSSE() {
       queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
     };
-    // Instant optimistic cache update — patch the specific order without waiting for refetch
     const handleStatusUpdated = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
         const { orderId, status } = data;
         if (!orderId || !status) return;
-        // Patch all cached order lists that contain this order
         const patchOrders = (list: any[]) =>
           list.map((o: any) => o.id === orderId ? { ...o, status } : o);
         queryClient.setQueriesData({ queryKey: ["/api/orders"] }, (old: any) =>
@@ -110,7 +134,6 @@ function useOrderStatusSSE() {
           if (old.orders && Array.isArray(old.orders)) return { ...old, orders: patchOrders(old.orders) };
           return old;
         });
-        // Also schedule a background refetch so stats + totals are eventually consistent
         setTimeout(invalidateOrders, 2000);
       } catch { invalidateOrders(); }
     };
@@ -127,20 +150,17 @@ function ProtectedRoutes() {
   const [location, navigate] = useLocation();
   useOrderStatusSSE();
 
-  // Compute derived state before any early returns (Rules of Hooks)
-  const needsVerification = !!(
-    user &&
-    user.role === "owner" &&
-    !user.isSuperAdmin &&
-    !user.isEmailVerified &&
-    location !== "/verify-email"
+  // Unverified owners are only blocked on private dashboard routes.
+  // Public pages (/, /tarifs, /faq, etc.) remain accessible.
+  const unverifiedOwner = !!(
+    user && user.role === "owner" && !user.isSuperAdmin && !user.isEmailVerified
   );
-  const isAuthPage = location === "/auth";
+  const needsVerification = unverifiedOwner && isPrivatePath(location);
 
-  // All redirects via useEffect — never call navigate() during render
+  // All redirects via useEffect — never navigate during render
   useEffect(() => {
-    if (!isLoading && user && isAuthPage) navigate("/");
-  }, [isLoading, user, isAuthPage]);
+    if (!isLoading && user && location === "/auth") navigate("/");
+  }, [isLoading, user, location]);
 
   useEffect(() => {
     if (needsVerification) navigate("/verify-email");
@@ -154,18 +174,24 @@ function ProtectedRoutes() {
     );
   }
 
+  // ── Not logged in ─────────────────────────────────────────────────────────
   if (!user) {
-    if (isAuthPage) return <AuthPage />;
+    if (location === "/auth") return <AuthPage />;
     if (location === "/verify-email") return <VerifyEmailPage />;
     return <LandingPage />;
   }
 
-  if (isAuthPage) return null;
-
-  // Show verify page regardless of verification state when on that route
+  // ── Logged in — handle special pages first ────────────────────────────────
+  if (location === "/auth") return null;           // useEffect redirects to "/"
   if (location === "/verify-email") return <VerifyEmailPage />;
-  if (needsVerification) return null;
+  if (needsVerification) return null;              // useEffect redirects to /verify-email
 
+  // Unverified owner at "/" or any public-ish path → show landing page, not dashboard
+  if (unverifiedOwner && !isPrivatePath(location)) {
+    return <LandingPage />;
+  }
+
+  // ── Verified user → full app ──────────────────────────────────────────────
   return (
     <ActiveStoreProvider>
       <AppLayout>
@@ -208,15 +234,12 @@ function AppRouter() {
   const { user, isLoading } = useAuth();
   const [location] = useLocation();
 
-  if (location === "/partenaires-livraison") return <ShippingPartnersPublicPage />;
-  if (location === "/tarifs") return <TarifsPage />;
-  if (location === "/faq") return <FaqPage />;
-  if (location === "/terms") return <TermsPage />;
-  if (location === "/privacy") return <PrivacyPage />;
-  if (location === "/blog") return <BlogPage />;
-  if (location === "/temoignages") return <TemoignagesPage />;
+  // ── 1. Always-public pages — no auth check, no verification check ──────────
+  const PublicPage = PUBLIC_PATHS[location];
+  if (PublicPage) return <PublicPage />;
 
-  if (location === "/super-admin" || location === "/admin") {
+  // ── 2. Super-admin panel ───────────────────────────────────────────────────
+  if (location === "/super-admin") {
     if (isLoading) {
       return (
         <div className="min-h-screen flex items-center justify-center" style={{ background: "#0f1e38" }}>
@@ -228,6 +251,7 @@ function AppRouter() {
     return <SuperAdminPage />;
   }
 
+  // ── 3. Everything else — auth/verification aware ───────────────────────────
   return <ProtectedRoutes />;
 }
 

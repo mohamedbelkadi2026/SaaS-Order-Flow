@@ -5,38 +5,27 @@ export function generateOTP(): string {
   return String(randomInt(100000, 999999));
 }
 
-/**
- * Resolves the "from" address:
- *   - If RESEND_FROM_EMAIL is set in env (e.g. "no-reply@tajergrow.com"),
- *     use "TajerGrow <{RESEND_FROM_EMAIL}>"
- *   - Otherwise fall back to Resend's shared test domain (works on free tier
- *     for the account owner's own email only).
- *
- * After verifying tajergrow.com in Resend, add to Railway Variables:
- *   RESEND_FROM_EMAIL = no-reply@tajergrow.com
- */
-function getSenderAddress(): string {
-  const fromEmail = process.env.RESEND_FROM_EMAIL?.trim();
-  if (fromEmail) return `TajerGrow <${fromEmail}>`;
-  return "TajerGrow <onboarding@resend.dev>";
-}
-
 export async function sendVerificationEmail(email: string, code: string): Promise<void> {
-  // Always log the code in plain text — readable in both Replit and Railway dashboards
+  // ── Always print the code — visible in Railway Logs even if email fails ───
   console.log("[EMAIL] ============================================================");
   console.log(`[EMAIL] Verification code for: ${email}`);
   console.log(`[EMAIL] CODE: ${code}`);
   console.log("[EMAIL] ============================================================");
+  // Exact format the user needs to grep in Railway Logs:
+  console.log(`[PROD-DEBUG]: Code for ${email} is ${code}`);
 
-  // API key guard
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
-    console.error("[EMAIL] ERROR: RESEND_API_KEY is not set. Email will NOT be sent.");
+    console.error("[EMAIL] ERROR: RESEND_API_KEY is not set — email will NOT be sent.");
     console.error("[EMAIL] Add RESEND_API_KEY to Railway Variables and redeploy.");
     return;
   }
-  const sender = getSenderAddress();
-  console.log(`[EMAIL] API key loaded OK (prefix: ${apiKey.slice(0, 8)}...)`);
+
+  // Always use onboarding@resend.dev until tajergrow.com domain is verified in Resend.
+  // After domain verification: change this line to "TajerGrow <no-reply@tajergrow.com>"
+  const sender = "TajerGrow <onboarding@resend.dev>";
+
+  console.log(`[EMAIL] API key prefix: ${apiKey.slice(0, 8)}...`);
   console.log(`[EMAIL] Sender: ${sender}`);
   console.log(`[EMAIL] Recipient: ${email}`);
 
@@ -91,24 +80,23 @@ export async function sendVerificationEmail(email: string, code: string): Promis
       const errMsg     = (error as any).message || JSON.stringify(error);
       const statusCode = (error as any).statusCode ?? "";
 
-      console.error(`[EMAIL] Resend API error [${statusCode}] ${errName}: ${errMsg}`);
+      console.error(`[EMAIL] FULL ERROR — [${statusCode}] ${errName}: ${errMsg}`);
+      console.error("[EMAIL] Full error object:", JSON.stringify(error, null, 2));
 
       if (errMsg.includes("testing emails") || errMsg.includes("verify a domain")) {
-        console.error("[EMAIL] FREE TIER RESTRICTION: You must verify tajergrow.com at");
-        console.error("[EMAIL] https://resend.com/domains then set:");
-        console.error("[EMAIL]   RESEND_FROM_EMAIL = no-reply@tajergrow.com  (Railway Variable)");
-        console.error("[EMAIL] Until then, use the CODE printed above to verify manually.");
+        console.error("[EMAIL] FREE TIER: Only the Resend account owner email can receive mail.");
+        console.error("[EMAIL] Verify tajergrow.com at https://resend.com/domains to send to anyone.");
       } else if (String(statusCode) === "401" || String(statusCode) === "403") {
         console.error("[EMAIL] Auth error — double-check RESEND_API_KEY in Railway Variables.");
       }
-      // Don't throw: code is already saved in DB, user can enter it even if email fails
+      // Code is still in DB — user can enter it manually from Railway Logs
       return;
     }
 
     console.log(`[EMAIL] SUCCESS — email delivered. Resend ID: ${data?.id}`);
   } catch (err: any) {
-    console.error(`[EMAIL] Exception while calling Resend: ${err.message}`);
-    console.error("[EMAIL] Full error:", err);
-    console.error("[EMAIL] The OTP code above is still valid — user can enter it manually.");
+    console.error(`[EMAIL] Exception: ${err.message}`);
+    console.error("[EMAIL] Full exception:", err);
+    console.error("[EMAIL] The OTP code above is still valid — use it from Railway Logs.");
   }
 }

@@ -2,8 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useLocation } from "wouter";
-import { Loader2, MailCheck, RefreshCw, ArrowRight, ShieldCheck } from "lucide-react";
+import { useLocation, Link } from "wouter";
+import { Loader2, MailCheck, RefreshCw, ArrowRight, ShieldCheck, LogOut } from "lucide-react";
 
 const GOLD = "#C5A059";
 const NAVY = "#1e1b4b";
@@ -44,6 +44,19 @@ export default function VerifyEmailPage() {
     },
     onError: (e: any) => {
       toast({ title: "Code incorrect", description: e.message || "Veuillez réessayer.", variant: "destructive" });
+    },
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/auth/logout", {}),
+    onSuccess: () => {
+      queryClient.clear();
+      window.location.replace("/");
+    },
+    onError: () => {
+      // Force redirect even on error
+      queryClient.clear();
+      window.location.replace("/");
     },
   });
 
@@ -99,11 +112,11 @@ export default function VerifyEmailPage() {
     <div className="min-h-screen flex flex-col items-center justify-center px-4"
       style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d2a7a 60%, #1a1060 100%)` }}>
 
-      {/* Logo */}
-      <div className="mb-10 text-center">
-        <h1 className="text-3xl font-black tracking-tight" style={{ color: GOLD }}>TajerGrow</h1>
+      {/* Logo — clicking goes back to the landing page */}
+      <Link href="/" className="mb-10 text-center block cursor-pointer group" data-testid="link-logo-home">
+        <h1 className="text-3xl font-black tracking-tight transition-opacity group-hover:opacity-80" style={{ color: GOLD }}>TajerGrow</h1>
         <p className="text-white/50 text-sm mt-1">La plateforme COD marocaine</p>
-      </div>
+      </Link>
 
       {/* Card */}
       <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl overflow-hidden">
@@ -190,6 +203,26 @@ export default function VerifyEmailPage() {
           <p className="text-[11px] text-gray-400 text-center mt-5">
             Le code expire dans 10 minutes · Vérifiez vos spams si vous ne le trouvez pas.
           </p>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3 mt-5 mb-3">
+            <div className="flex-1 h-px bg-gray-100" />
+            <span className="text-xs text-gray-400">mauvais compte ?</span>
+            <div className="flex-1 h-px bg-gray-100" />
+          </div>
+
+          {/* Logout */}
+          <button
+            onClick={() => logoutMutation.mutate()}
+            disabled={logoutMutation.isPending}
+            data-testid="button-logout-verify"
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border border-gray-200 text-gray-500 hover:text-red-600 hover:border-red-200 hover:bg-red-50 transition-all disabled:opacity-50"
+          >
+            {logoutMutation.isPending
+              ? <><Loader2 className="w-4 h-4 animate-spin" /> Déconnexion...</>
+              : <><LogOut className="w-4 h-4" /> Déconnexion</>
+            }
+          </button>
         </div>
       </div>
 
