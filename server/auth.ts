@@ -160,18 +160,22 @@ export function setupAuth(app: Express) {
         isActive: 1,
       });
 
-      // Generate and send OTP
+      // Generate OTP and send immediately — email fires before response is returned
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
       await storage.createVerificationCode(user.id, otp, expiresAt);
-      if (email) {
-        sendVerificationEmail(email, otp).catch(e => console.error("[Email] Failed:", e));
+      console.log('--- [AUTO-OTP-SENT] --- User: ' + email + ' | Code: ' + otp);
+      try {
+        await sendVerificationEmail(email, otp);
+      } catch (emailErr: any) {
+        console.error('[SIGNUP-EMAIL-FAIL]:', emailErr?.message ?? emailErr);
+        // Do NOT abort signup — user can still use "Renvoyer" on the verify page
       }
 
       req.login(user, (err) => {
         if (err) return next(err);
         const { password: _, ...safeUser } = user;
-        return res.status(201).json({ ...safeUser, needsVerification: true });
+        return res.status(201).json({ ...safeUser, needsVerification: true, emailSent: true });
       });
     } catch (err) {
       console.error("Signup error:", err);

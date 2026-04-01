@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, Link } from "wouter";
-import { Loader2, MailCheck, RefreshCw, ArrowRight, ShieldCheck, LogOut } from "lucide-react";
+import { Loader2, MailCheck, RefreshCw, ArrowRight, ShieldCheck, LogOut, CheckCircle2 } from "lucide-react";
 
 const GOLD = "#C5A059";
 const NAVY = "#1e1b4b";
@@ -14,10 +14,19 @@ export default function VerifyEmailPage() {
   const [, navigate] = useLocation();
   const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(""));
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
-  const [cooldown, setCooldown] = useState(0);
+  // Start at 60s on mount — signup already sent the email automatically
+  const [cooldown, setCooldown] = useState(60);
+  const [emailSentBanner, setEmailSentBanner] = useState(true);
+
+  const { data: currentUser } = useQuery<any>({
+    queryKey: ["/api/user"],
+  });
 
   useEffect(() => {
     inputRefs.current[0]?.focus();
+    // Hide the "email sent" banner after 5 seconds
+    const t = setTimeout(() => setEmailSentBanner(false), 5000);
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
@@ -135,8 +144,27 @@ export default function VerifyEmailPage() {
           <h2 className="text-xl font-bold text-center mb-1" style={{ color: NAVY }}>
             Vérifiez votre email
           </h2>
+
+          {/* "Email sent" confirmation banner — fades after 5 s */}
+          {emailSentBanner && (
+            <div
+              data-testid="banner-email-sent"
+              className="flex items-center gap-2 rounded-xl px-3 py-2 mb-3 text-xs font-medium"
+              style={{ background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.25)", color: "#166534" }}
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-green-600" />
+              <span>
+                Code envoyé à&nbsp;
+                <strong>{currentUser?.email ?? "votre adresse email"}</strong>
+              </span>
+            </div>
+          )}
+
           <p className="text-sm text-gray-500 text-center mb-7 leading-relaxed">
-            Nous avons envoyé un code à 6 chiffres à votre adresse email. Saisissez-le ci-dessous.
+            {currentUser?.email
+              ? <>Un code à 6 chiffres a été envoyé à <strong>{currentUser.email}</strong>. Saisissez-le ci-dessous.</>
+              : "Un code à 6 chiffres a été envoyé à votre adresse email. Saisissez-le ci-dessous."
+            }
           </p>
 
           {/* OTP Input */}
@@ -201,7 +229,7 @@ export default function VerifyEmailPage() {
           </button>
 
           <p className="text-[11px] text-gray-400 text-center mt-5">
-            Le code expire dans 10 minutes · Vérifiez vos spams si vous ne le trouvez pas.
+            Le code expire dans 15 minutes · Vérifiez vos spams si vous ne le trouvez pas.
           </p>
 
           {/* Divider */}
