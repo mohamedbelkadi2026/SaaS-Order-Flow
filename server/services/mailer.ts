@@ -111,7 +111,8 @@ export async function sendVerificationEmail(email: string, code: string): Promis
     const response = await resend.emails.send({
       from: sender,
       to: [email],
-      subject: "Activation de votre compte TajerGrow",
+      reply_to: "contact@tajergrow.com",
+      subject: "Code de vérification TajerGrow",
       html: buildEmailHtml(code),
       text: [
         "Bonjour,",
