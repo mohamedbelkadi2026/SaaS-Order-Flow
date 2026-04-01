@@ -5,6 +5,12 @@ import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { Loader2, MailCheck, RefreshCw, ArrowRight, ShieldCheck, LogOut, CheckCircle2 } from "lucide-react";
 
+const SPAM_HINT: Record<string, string> = {
+  fr: "Si vous ne recevez pas le code immédiatement, veuillez vérifier votre dossier Courriers indésirables (Spam).",
+  ar: "إيلا ما وصلكش الكود فـ الحين، عفاك شيك حتى خانة الرسائل غير المرغوب فيها (Spam) فـ الجيمايل ديالك.",
+  en: "If you don't receive the code right away, please check your Spam or Junk folder.",
+};
+
 const GOLD = "#C5A059";
 const NAVY = "#1e1b4b";
 const OTP_LENGTH = 6;
@@ -21,6 +27,11 @@ export default function VerifyEmailPage() {
   const { data: currentUser } = useQuery<any>({
     queryKey: ["/api/user"],
   });
+
+  const userLang: string = currentUser?.preferredLanguage
+    || localStorage.getItem("tajer_lang")
+    || "fr";
+  const spamHint = SPAM_HINT[userLang] ?? SPAM_HINT["fr"];
 
   useEffect(() => {
     inputRefs.current[0]?.focus();
@@ -228,8 +239,12 @@ export default function VerifyEmailPage() {
             }
           </button>
 
-          <p className="text-[11px] text-gray-400 text-center mt-5">
-            Le code expire dans 15 minutes · Vérifiez vos spams si vous ne le trouvez pas.
+          <p
+            className="text-[11px] text-gray-400 text-center mt-5 leading-relaxed"
+            dir={userLang === "ar" ? "rtl" : "ltr"}
+            data-testid="spam-hint"
+          >
+            {spamHint}
           </p>
 
           {/* Divider */}
@@ -254,12 +269,6 @@ export default function VerifyEmailPage() {
         </div>
       </div>
 
-      {/* Admin console hint — always visible */}
-      <div className="mt-6 max-w-sm w-full px-4 py-3 rounded-2xl text-xs text-center"
-        style={{ background: "rgba(197,160,89,0.08)", color: GOLD, border: "1px solid rgba(197,160,89,0.25)" }}>
-        Si vous ne recevez pas l'email — <strong>Consultez la console pour le code de test</strong>
-        <span className="block text-white/30 mt-1">Cherchez <code className="font-mono">[AUTH-DEBUG]</code> dans les logs serveur</span>
-      </div>
     </div>
   );
 }

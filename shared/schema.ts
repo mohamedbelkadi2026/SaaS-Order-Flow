@@ -44,6 +44,7 @@ export const users = pgTable("users", {
   isSuperAdmin: integer("is_super_admin").default(0),
   isActive: integer("is_active").default(1),
   isEmailVerified: integer("is_email_verified").default(0),
+  preferredLanguage: text("preferred_language").default("fr"),
   dashboardPermissions: jsonb("dashboard_permissions"),
   buyerCode: text("buyer_code"),
   createdAt: timestamp("created_at").defaultNow(),

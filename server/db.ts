@@ -120,6 +120,13 @@ export async function initializeDatabase(): Promise<void> {
       );
     `);
     console.log("[DATABASE]: email_verification_codes table verified/created.");
+
+    // preferred_language — added for multi-language onboarding support
+    await client.query(`
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS preferred_language TEXT DEFAULT 'fr';
+    `);
+    console.log("[DATABASE]: users.preferred_language column verified/created.");
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
   } finally {

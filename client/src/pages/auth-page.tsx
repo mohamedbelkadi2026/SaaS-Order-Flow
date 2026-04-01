@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation } from "wouter";
-import { Loader2, Store, Lock, Mail, User, ShieldAlert, Crown, Check } from "lucide-react";
+import { Loader2, Store, Lock, Mail, User, ShieldAlert, Crown, Check, Globe } from "lucide-react";
+import { setLanguage } from "@/i18n";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
@@ -16,6 +17,20 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
   const [username, setUsername] = useState("");
   const [storeName, setStoreName] = useState("");
   const [suspendedMsg, setSuspendedMsg] = useState<string | null>(null);
+  const [selectedLang, setSelectedLang] = useState<"fr" | "ar" | "en">(
+    (localStorage.getItem("tajer_lang") as "fr" | "ar" | "en") || "fr"
+  );
+
+  const LANGS: { code: "fr" | "ar" | "en"; label: string; flag: string }[] = [
+    { code: "fr", label: "Français", flag: "🇫🇷" },
+    { code: "ar", label: "العربية", flag: "🇲🇦" },
+    { code: "en", label: "English", flag: "🇬🇧" },
+  ];
+
+  const handleLangChange = (lang: "fr" | "ar" | "en") => {
+    setSelectedLang(lang);
+    setLanguage(lang);
+  };
 
   useEffect(() => {
     const msg = localStorage.getItem("suspended_message");
@@ -32,7 +47,7 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
         await login(email, password);
         setLocation("/");
       } else {
-        await signup(storeName, username, email, password);
+        await signup(storeName, username, email, password, selectedLang);
         console.log("User registered, redirecting to verification page...");
         setLocation("/verify-email");
       }
@@ -204,6 +219,32 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
                           className={inputClass}
                           required
                         />
+                      </div>
+                    </div>
+
+                    {/* Language selector */}
+                    <div>
+                      <label className="block text-xs font-bold mb-1.5 uppercase tracking-wide flex items-center gap-1.5" style={{ color: NAVY }}>
+                        <Globe className="w-3.5 h-3.5" /> Langue de l'interface
+                      </label>
+                      <div className="flex gap-2" data-testid="language-selector">
+                        {LANGS.map(({ code, label, flag }) => (
+                          <button
+                            key={code}
+                            type="button"
+                            onClick={() => handleLangChange(code)}
+                            data-testid={`lang-option-${code}`}
+                            className="flex-1 flex items-center justify-center gap-1.5 h-10 rounded-xl border-2 text-xs font-semibold transition-all"
+                            style={{
+                              borderColor: selectedLang === code ? GOLD : "#e5e7eb",
+                              background: selectedLang === code ? `rgba(197,160,89,0.08)` : "#f9fafb",
+                              color: selectedLang === code ? NAVY : "#6b7280",
+                            }}
+                          >
+                            <span>{flag}</span>
+                            <span>{label}</span>
+                          </button>
+                        ))}
                       </div>
                     </div>
                   </>

@@ -27,7 +27,7 @@ type AuthContextType = {
   user: User | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  signup: (storeName: string, username: string, email: string, password: string) => Promise<void>;
+  signup: (storeName: string, username: string, email: string, password: string, language: string) => Promise<void>;
   logout: () => Promise<void>;
   loginMutation: ReturnType<typeof useMutation>;
   signupMutation: ReturnType<typeof useMutation>;
@@ -74,8 +74,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const signupMutation = useMutation({
-    mutationFn: async ({ storeName, username, email, password }: { storeName: string; username: string; email: string; password: string }) => {
-      const res = await apiRequest("POST", "/api/auth/signup", { storeName, username, email, password });
+    mutationFn: async ({ storeName, username, email, password, language }: { storeName: string; username: string; email: string; password: string; language: string }) => {
+      const res = await apiRequest("POST", "/api/auth/signup", { storeName, username, email, password, language });
       return res.json();
     },
     onSuccess: (data) => {
@@ -91,8 +91,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await loginMutation.mutateAsync({ email, password });
   };
 
-  const signup = async (storeName: string, username: string, email: string, password: string) => {
-    await signupMutation.mutateAsync({ storeName, username, email, password });
+  const signup = async (storeName: string, username: string, email: string, password: string, language: string) => {
+    await signupMutation.mutateAsync({ storeName, username, email, password, language });
   };
 
   const logout = async () => {

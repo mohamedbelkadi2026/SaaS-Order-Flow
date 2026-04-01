@@ -129,11 +129,12 @@ export function setupAuth(app: Express) {
 
   app.post("/api/auth/signup", async (req, res, next) => {
     try {
-      const { storeName, username, email, password } = req.body;
+      const { storeName, username, email, password, language } = req.body;
 
       if (!storeName || !username || !email || !password) {
         return res.status(400).json({ message: "Tous les champs sont requis" });
       }
+      const preferredLanguage = ["fr", "ar", "en"].includes(language) ? language : "fr";
 
       const existingUser = await storage.getUserByEmail(email);
       if (existingUser) {
@@ -149,6 +150,7 @@ export function setupAuth(app: Express) {
         role: "owner",
         storeId: store.id,
         isEmailVerified: 0,
+        preferredLanguage,
       });
 
       await storage.createSubscription({
