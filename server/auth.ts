@@ -8,7 +8,7 @@ import { storage } from "./storage";
 import { User } from "@shared/schema";
 import { pool } from "./db";
 import connectPgSimple from "connect-pg-simple";
-import { generateOTP, sendVerificationEmail } from "./services/email";
+import { generateOTP, sendVerificationEmail, sendTestEmail } from "./services/mailer";
 
 const scryptAsync = promisify(scrypt);
 
@@ -155,7 +155,7 @@ export function setupAuth(app: Express) {
 
       // Generate and send OTP
       const otp = generateOTP();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
       await storage.createVerificationCode(user.id, otp, expiresAt);
       if (email) {
         sendVerificationEmail(email, otp).catch(e => console.error("[Email] Failed:", e));
@@ -181,7 +181,7 @@ export function setupAuth(app: Express) {
       if (!user.email) return res.status(400).json({ message: "Pas d'email associé à ce compte" });
 
       const otp = generateOTP();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
       await storage.createVerificationCode(user.id, otp, expiresAt);
       sendVerificationEmail(user.email, otp).catch(e => console.error("[Email] Failed:", e));
 
@@ -269,6 +269,37 @@ export function setupAuth(app: Express) {
     } catch (err: any) {
       console.error("[DEBUG-OTP] Error:", err.message);
       return res.status(500).json({ message: "Erreur serveur" });
+    }
+  });
+
+  /* ── Test Resend connection (super-admin only) ──────────────────── */
+  app.get("/api/auth/test-resend", async (req, res) => {
+    try {
+      if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
+      if (!req.user!.isSuperAdmin) return res.status(403).json({ message: "Super admin requis" });
+
+      const target = "mehamadchalabi100@gmail.com";
+      const result = await sendTestEmail(target);
+
+      if (result.success) {
+        return res.json({
+          success: true,
+          message: `Email de test envoyé à ${target}`,
+          messageId: result.messageId,
+          from: process.env.RESEND_FROM_EMAIL
+            ? `TajerGrow <${process.env.RESEND_FROM_EMAIL}>`
+            : "TajerGrow <no-reply@tajergrow.com>",
+        });
+      } else {
+        return res.status(502).json({
+          success: false,
+          message: "Échec d'envoi — vérifiez les logs Railway",
+          error: result.error,
+        });
+      }
+    } catch (err: any) {
+      console.error("[TEST-RESEND] Error:", err.message);
+      return res.status(500).json({ message: "Erreur serveur", error: err.message });
     }
   });
 
