@@ -511,15 +511,17 @@ export default function LandingPage() {
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            {/* Logo */}
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: GOLD }}>
-                <Crown className="w-4 h-4 text-white" />
+            {/* Logo — links to dashboard for verified users, landing page for everyone else */}
+            <Link href="/" data-testid="link-logo-nav">
+              <div className="flex items-center gap-2.5 cursor-pointer group">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center transition-opacity group-hover:opacity-80" style={{ background: GOLD }}>
+                  <Crown className="w-4 h-4 text-white" />
+                </div>
+                <span className="text-xl font-bold text-white transition-opacity group-hover:opacity-80" style={{ fontFamily: "'Playfair Display', serif", letterSpacing: "-0.02em" }}>
+                  TajerGrow
+                </span>
               </div>
-              <span className="text-xl font-bold text-white" style={{ fontFamily: "'Playfair Display', serif", letterSpacing: "-0.02em" }}>
-                TajerGrow
-              </span>
-            </div>
+            </Link>
 
             {/* Desktop Nav */}
             <nav className="hidden md:flex items-center gap-8">
@@ -965,20 +967,20 @@ export default function LandingPage() {
 
             {/* Brand column (spans 2 on lg) */}
             <div className="lg:col-span-2 text-center sm:text-left">
-              <div className="flex items-center gap-2.5 mb-4 justify-center sm:justify-start">
+              <Link href="/" className="inline-flex items-center gap-2.5 mb-4 group" data-testid="link-logo-footer">
                 <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-opacity group-hover:opacity-80"
                   style={{ background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`, boxShadow: "0 4px 12px rgba(197,160,89,0.4)" }}
                 >
                   <Crown className="w-4 h-4 text-white" />
                 </div>
                 <span
-                  className="text-2xl font-bold text-white"
+                  className="text-2xl font-bold text-white transition-opacity group-hover:opacity-80"
                   style={{ fontFamily: "'Playfair Display', serif" }}
                 >
                   TajerGrow
                 </span>
-              </div>
+              </Link>
               <p className="text-sm leading-relaxed max-w-xs mx-auto sm:mx-0" style={{ color: "rgba(255,255,255,0.5)" }}>
                 TajerGrow : La solution n°1 pour la gestion des commandes COD au Maroc. Optimisez votre confirmation, suivez vos colis et maîtrisez votre rentabilité.
               </p>

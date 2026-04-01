@@ -150,17 +150,21 @@ function ProtectedRoutes() {
   const [location, navigate] = useLocation();
   useOrderStatusSSE();
 
-  // Unverified owners are only blocked on private dashboard routes.
-  // Public pages (/, /tarifs, /faq, etc.) remain accessible.
+  // Unverified owner = logged-in owner who hasn't confirmed their email yet.
+  // They are ALWAYS redirected to /verify-email — no page is accessible until verified.
   const unverifiedOwner = !!(
     user && user.role === "owner" && !user.isSuperAdmin && !user.isEmailVerified
   );
-  const needsVerification = unverifiedOwner && isPrivatePath(location);
+  // Guard fires on every route except /verify-email itself to avoid redirect loops
+  const needsVerification = unverifiedOwner && location !== "/verify-email";
 
   // All redirects via useEffect — never navigate during render
   useEffect(() => {
-    if (!isLoading && user && ["/auth", "/login", "/register"].includes(location)) navigate("/");
-  }, [isLoading, user, location]);
+    if (!isLoading && user && ["/auth", "/login", "/register"].includes(location)) {
+      // Unverified → send back to the verification page so they can't get "lost"
+      navigate(unverifiedOwner ? "/verify-email" : "/");
+    }
+  }, [isLoading, user, location, unverifiedOwner]);
 
   useEffect(() => {
     if (needsVerification) navigate("/verify-email");
@@ -178,19 +182,17 @@ function ProtectedRoutes() {
   if (!user) {
     if (location === "/auth" || location === "/login") return <AuthPage initialTab="login" />;
     if (location === "/register") return <AuthPage initialTab="register" />;
-    if (location === "/verify-email") return <VerifyEmailPage />;
+    // /verify-email requires being logged in — redirect guests to login instead
+    if (location === "/verify-email") return <AuthPage initialTab="login" />;
     return <LandingPage />;
   }
 
   // ── Logged in — handle special pages first ────────────────────────────────
-  if (location === "/auth" || location === "/login" || location === "/register") return null; // useEffect redirects to "/"
+  if (location === "/auth" || location === "/login" || location === "/register") return null; // useEffect handles redirect
+  // Unverified owners always land here — show the verify page
   if (location === "/verify-email") return <VerifyEmailPage />;
-  if (needsVerification) return null;              // useEffect redirects to /verify-email
-
-  // Unverified owner at "/" or any public-ish path → show landing page, not dashboard
-  if (unverifiedOwner && !isPrivatePath(location)) {
-    return <LandingPage />;
-  }
+  // Any other page while unverified → null while useEffect redirects to /verify-email
+  if (needsVerification) return null;
 
   // ── Verified user → full app ──────────────────────────────────────────────
   return (

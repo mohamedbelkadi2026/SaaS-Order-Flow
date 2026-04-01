@@ -1,0 +1,21 @@
+"I need a final, deep structural fix for the User Onboarding and Navigation flow. The system must be 100% practical (3amali) for production on Railway. Please implement these changes:
+1. Smart Redirection Logic (Resume Registration):
+State Awareness: Update the AuthContext and Navigation logic.
+The Logic: Whenever a user clicks 'Connexion', 'Commencer', or 'Essai Gratuit':
+If NOT logged in: Take them to /register or /login.
+If Logged in but NOT verified: Automatically redirect them to /verify-email. They should not be able to see the landing page as a 'guest' anymore.
+If Logged in and Verified: Take them directly to the /dashboard.
+The Goal: A user should never get 'lost'. If they closed the tab during the code stage, clicking login must bring them back to the code stage.
+2. Production Email Fix (Railway & Resend):
+Fix the 'From' address: Ensure the code uses TajerGrow <onboarding@resend.dev> for all production emails on Railway to avoid spam filters.
+Environment Variable Sync: Force the app to use process.env.RESEND_API_KEY.
+Emergency Fallback (Logs): In production, add a console.log('[RAILWAY-VERIFY]: Code for ' + email + ' is ' + code) so I can find the code in my Railway logs if the email is delayed.
+3. Landing Page Button Functionality:
+Ensure ALL buttons on the landing page are linked using react-router-dom Link.
+Commencer mon essai gratuit: This must trigger the registration flow and automatically assign the 'TRIAL' plan (60 orders).
+Logo Link: Ensure clicking the logo always takes the user to the correct home (Landing page if guest, Dashboard if verified user).
+4. Session Persistence:
+Use LocalStorage or Cookies correctly to ensure that even if the user refreshes the page on /verify-email, they stay logged in and the system remembers they need to enter the code.
+5. Route Guard Fix:
+Ensure /verify-email is a Protected Route. Only users who have just registered can see it.
+Technical Instruction: Refactor the routes.tsx and App.tsx to handle these states. Push to GitHub immediately. I want to test the full flow from registration to dashboard without any dead links."

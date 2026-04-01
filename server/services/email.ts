@@ -11,8 +11,8 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   console.log(`[EMAIL] Verification code for: ${email}`);
   console.log(`[EMAIL] CODE: ${code}`);
   console.log("[EMAIL] ============================================================");
-  // Exact format the user needs to grep in Railway Logs:
-  console.log(`[PROD-DEBUG]: Code for ${email} is ${code}`);
+  // Exact format to grep in Railway Logs if the email is delayed or blocked:
+  console.log(`[RAILWAY-VERIFY]: Code for ${email} is ${code}`);
 
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
