@@ -6,13 +6,14 @@ export function generateOTP(): string {
 }
 
 export async function sendVerificationEmail(email: string, code: string): Promise<void> {
-  // ── Always print the code — visible in Railway Logs even if email fails ───
-  console.log("[EMAIL] ============================================================");
-  console.log(`[EMAIL] Verification code for: ${email}`);
-  console.log(`[EMAIL] CODE: ${code}`);
-  console.log("[EMAIL] ============================================================");
-  // Exact format to grep in Railway Logs if the email is delayed or blocked:
-  console.log(`[RAILWAY-VERIFY]: Code for ${email} is ${code}`);
+  // ── ALWAYS logged first — before ANY network call or error condition ───────
+  // This guarantees the code appears in Railway "View Logs" even if Resend is
+  // down, the API key is wrong, or the free-tier domain restriction kicks in.
+  // Grep for [SERVER-OTP] in your Railway dashboard to find the code instantly.
+  console.log("==================================================================");
+  console.log(`[SERVER-OTP]: The code for user ${email} is ${code}`);
+  console.log("==================================================================");
+  console.log(`[EMAIL] Verification code for: ${email} | CODE: ${code}`);
 
   const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
@@ -83,13 +84,20 @@ export async function sendVerificationEmail(email: string, code: string): Promis
       console.error(`[EMAIL] FULL ERROR — [${statusCode}] ${errName}: ${errMsg}`);
       console.error("[EMAIL] Full error object:", JSON.stringify(error, null, 2));
 
-      if (errMsg.includes("testing emails") || errMsg.includes("verify a domain")) {
-        console.error("[EMAIL] FREE TIER: Only the Resend account owner email can receive mail.");
-        console.error("[EMAIL] Verify tajergrow.com at https://resend.com/domains to send to anyone.");
+      if (errMsg.includes("testing emails") || errMsg.includes("verify a domain") || errMsg.includes("own email address")) {
+        console.error("==================================================================");
+        console.error("[RESEND-BLOCKED] FREE TIER RESTRICTION:");
+        console.error("  Resend only delivers to the account owner email on the free plan.");
+        console.error("  Other users CANNOT receive emails until you verify tajergrow.com.");
+        console.error("  ACTION: Go to https://resend.com/domains → Add tajergrow.com");
+        console.error("  Then set RESEND_FROM_EMAIL=no-reply@tajergrow.com in Railway.");
+        console.error(`  → The code for ${email} is already in the logs above — search [SERVER-OTP]`);
+        console.error("==================================================================");
       } else if (String(statusCode) === "401" || String(statusCode) === "403") {
-        console.error("[EMAIL] Auth error — double-check RESEND_API_KEY in Railway Variables.");
+        console.error("[EMAIL] Auth error — RESEND_API_KEY may be invalid. Check Railway Variables.");
       }
-      // Code is still in DB — user can enter it manually from Railway Logs
+      // The OTP code is ALWAYS saved in the DB + logged above with [SERVER-OTP]
+      // The user can still enter it manually — no data is lost.
       return;
     }
 
