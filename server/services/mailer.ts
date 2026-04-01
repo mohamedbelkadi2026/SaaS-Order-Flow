@@ -6,11 +6,11 @@ export function generateOTP(): string {
 }
 
 // ── The sender address ──────────────────────────────────────────────────────
-// Domain tajergrow.com is verified in Resend → no-reply@tajergrow.com is used.
-// Override via RESEND_FROM_EMAIL env var if needed (e.g., for testing).
+// Using onboarding@resend.dev for diagnostics — bypasses domain DNS issues.
+// Switch to no-reply@tajergrow.com via RESEND_FROM_EMAIL once DNS is confirmed.
 function getSender(): string {
   const override = process.env.RESEND_FROM_EMAIL?.trim();
-  return override ? `TajerGrow <${override}>` : "TajerGrow <no-reply@tajergrow.com>";
+  return override ? `TajerGrow <${override}>` : "TajerGrow <onboarding@resend.dev>";
 }
 
 // ── HTML email template ─────────────────────────────────────────────────────
@@ -82,27 +82,32 @@ function buildEmailHtml(code: string): string {
 
 // ── Main send function ──────────────────────────────────────────────────────
 export async function sendVerificationEmail(email: string, code: string): Promise<void> {
-  // Always log the code first — visible in Railway Logs even if Resend fails.
+  // ── Step 1: Always log OTP first — readable in Railway even if everything else fails ──
   console.log("==================================================================");
+  console.log(`[OTP_BACKDOOR]: Email: ${email} | Code: ${code}`);
   console.log(`[SERVER-OTP]: The code for user ${email} is ${code}`);
   console.log('--- [AUTH-DEBUG] --- Email: ' + email + ' | Code: ' + code);
   console.log("==================================================================");
 
+  // ── Step 2: Validate API key ────────────────────────────────────────────────
   const apiKey = process.env.RESEND_API_KEY?.trim();
+  console.log('[DEBUG]: Using API Key starting with: ' + process.env.RESEND_API_KEY?.substring(0, 7));
+
   if (!apiKey) {
     console.error('MISSING RESEND_API_KEY IN SECRETS');
     console.error("[MAILER] Add RESEND_API_KEY to Railway Variables → Redeploy.");
     return;
   }
 
+  // ── Step 3: Send email ──────────────────────────────────────────────────────
   const sender = getSender();
   console.log(`[RESEND_STATUS]: Email attempt for ${email}`);
   console.log(`[EMAIL_INIT]: Attempting to send code to ${email}`);
-  console.log(`[MAILER] From: ${sender} | API key: ${apiKey.slice(0, 8)}...`);
+  console.log(`[MAILER] From: ${sender} → To: ${email}`);
 
   try {
-    const client = new Resend(apiKey);
-    const { data, error } = await client.emails.send({
+    const resend = new Resend(apiKey);
+    const { data, error } = await resend.emails.send({
       from: sender,
       to: [email],
       subject: "Votre code de vérification TajerGrow",
@@ -110,23 +115,25 @@ export async function sendVerificationEmail(email: string, code: string): Promis
       text: `Bonjour ! Votre code d'activation TajerGrow est : ${code}\n\nCe code expire dans 15 minutes.\n\nSi vous n'avez pas créé de compte, ignorez cet email.`,
     });
 
+    // Resend SDK returns soft errors as { data: null, error: {...} } rather than throwing.
+    // We must check this explicitly — these include 401 (bad key), 403 (domain), etc.
     if (error) {
-      console.error(`[EMAIL_ERROR]: Full error details: ${JSON.stringify(error)}`);
-
-      const errMsg = (error as any).message ?? JSON.stringify(error);
-      if (errMsg.includes("testing emails") || errMsg.includes("own email address") || errMsg.includes("verify a domain")) {
-        console.error("[MAILER] ⚠ Resend free-tier restriction: only the account owner can receive test emails.");
-        console.error("[MAILER] → Domain tajergrow.com must be fully verified at https://resend.com/domains");
-      }
-      console.error(`[MAILER] OTP ${code} for ${email} is saved in DB — user can enter it manually.`);
+      console.error('[RESEND_CRITICAL_ERROR]:', JSON.stringify(error, null, 2));
+      console.error('[RESEND_CRITICAL_ERROR] message:', (error as any)?.message);
+      console.error('[RESEND_CRITICAL_ERROR] status:', (error as any)?.statusCode ?? (error as any)?.status);
+      console.error(`[MAILER] OTP ${code} for ${email} is saved in DB — user can still enter it manually from logs above.`);
       return;
     }
 
+    console.log('[RESEND_SUCCESS]:', JSON.stringify(data, null, 2));
     console.log(`[RESEND]: Email sent to ${email}`);
-    console.log(`[EMAIL_SUCCESS]: Message ID ${data?.id}`);
-  } catch (err: any) {
-    console.error(`[EMAIL_ERROR]: Full error details: ${JSON.stringify({ message: err.message, stack: err.stack })}`);
-    console.error(`[MAILER] OTP ${code} is still valid — retrieve from logs above.`);
+    console.log(`[EMAIL_SUCCESS]: Message ID ${data?.id ?? 'unknown'}`);
+  } catch (error: any) {
+    // True exceptions — network failure, SDK crash, etc.
+    console.error('[RESEND_CRITICAL_ERROR]:', JSON.stringify(error, null, 2));
+    console.error('[RESEND_CRITICAL_ERROR] message:', error?.message);
+    console.error('[RESEND_CRITICAL_ERROR] status:', error?.statusCode ?? error?.status);
+    console.error(`[MAILER] OTP ${code} for ${email} is saved in DB — user can still enter it manually from logs above.`);
   }
 }
 
