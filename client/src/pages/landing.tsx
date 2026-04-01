@@ -537,26 +537,53 @@ export default function LandingPage() {
               ))}
             </nav>
 
-            {/* Desktop CTAs */}
+            {/* Desktop CTAs — adapt to auth state */}
             <div className="hidden md:flex items-center gap-3">
-              <Link href="/login">
-                <button
-                  className="text-sm font-medium px-4 py-2 rounded-lg transition-all hover:bg-white/10"
-                  style={{ color: "rgba(255,255,255,0.85)" }}
-                  data-testid="header-login-button"
-                >
-                  Connexion
-                </button>
-              </Link>
-              <Link href="/register">
-                <button
-                  className="text-sm font-bold px-5 py-2.5 rounded-lg transition-all hover:brightness-110 shadow-lg"
-                  style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, color: "#fff" }}
-                  data-testid="header-trial-button"
-                >
-                  Essai Gratuit
-                </button>
-              </Link>
+              {user && !user.isEmailVerified ? (
+                // Logged in but unverified → prompt to verify
+                <Link href="/verify-email">
+                  <button
+                    className="text-sm font-bold px-5 py-2.5 rounded-lg transition-all hover:brightness-110 shadow-lg animate-pulse"
+                    style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, color: "#fff" }}
+                    data-testid="header-verify-button"
+                  >
+                    Vérifier mon compte
+                  </button>
+                </Link>
+              ) : user ? (
+                // Logged in and verified → go to dashboard
+                <Link href="/dashboard">
+                  <button
+                    className="text-sm font-bold px-5 py-2.5 rounded-lg transition-all hover:brightness-110 shadow-lg"
+                    style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, color: "#fff" }}
+                    data-testid="header-dashboard-button"
+                  >
+                    Mon tableau de bord
+                  </button>
+                </Link>
+              ) : (
+                // Not logged in → standard CTAs
+                <>
+                  <Link href="/login">
+                    <button
+                      className="text-sm font-medium px-4 py-2 rounded-lg transition-all hover:bg-white/10"
+                      style={{ color: "rgba(255,255,255,0.85)" }}
+                      data-testid="header-login-button"
+                    >
+                      Connexion
+                    </button>
+                  </Link>
+                  <Link href="/register">
+                    <button
+                      className="text-sm font-bold px-5 py-2.5 rounded-lg transition-all hover:brightness-110 shadow-lg"
+                      style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, color: "#fff" }}
+                      data-testid="header-trial-button"
+                    >
+                      Essai Gratuit
+                    </button>
+                  </Link>
+                </>
+              )}
             </div>
 
             {/* Mobile menu toggle */}
@@ -579,12 +606,28 @@ export default function LandingPage() {
               </button>
             ))}
             <div className="pt-2 flex flex-col gap-2">
-              <Link href="/login"><button className="w-full py-2.5 rounded-lg text-sm font-medium border border-white/20 text-white">Connexion</button></Link>
-              <Link href="/register">
-                <button className="w-full py-2.5 rounded-lg text-sm font-bold text-white" style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }}>
-                  Essai Gratuit
-                </button>
-              </Link>
+              {user && !user.isEmailVerified ? (
+                <Link href="/verify-email">
+                  <button className="w-full py-2.5 rounded-lg text-sm font-bold text-white animate-pulse" style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }} data-testid="mobile-verify-button">
+                    Vérifier mon compte
+                  </button>
+                </Link>
+              ) : user ? (
+                <Link href="/dashboard">
+                  <button className="w-full py-2.5 rounded-lg text-sm font-bold text-white" style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }} data-testid="mobile-dashboard-button">
+                    Mon tableau de bord
+                  </button>
+                </Link>
+              ) : (
+                <>
+                  <Link href="/login"><button className="w-full py-2.5 rounded-lg text-sm font-medium border border-white/20 text-white">Connexion</button></Link>
+                  <Link href="/register">
+                    <button className="w-full py-2.5 rounded-lg text-sm font-bold text-white" style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }}>
+                      Essai Gratuit
+                    </button>
+                  </Link>
+                </>
+              )}
             </div>
           </div>
         )}

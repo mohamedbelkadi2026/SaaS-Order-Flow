@@ -30,10 +30,11 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
     try {
       if (isLogin) {
         await login(email, password);
+        setLocation("/");
       } else {
         await signup(storeName, username, email, password);
+        setLocation("/verify-email");
       }
-      setLocation("/");
     } catch {}
   };
 
