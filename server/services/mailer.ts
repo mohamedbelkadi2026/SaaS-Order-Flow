@@ -20,7 +20,7 @@ function buildEmailHtml(code: string): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Code de vérification TajerGrow</title>
+  <title>Activation de votre compte TajerGrow</title>
 </head>
 <body style="margin:0;padding:0;background:#f0f2f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f2f5;padding:48px 16px;">
@@ -111,9 +111,25 @@ export async function sendVerificationEmail(email: string, code: string): Promis
     const response = await resend.emails.send({
       from: sender,
       to: [email],
-      subject: "Votre code de vérification TajerGrow",
+      subject: "Activation de votre compte TajerGrow",
       html: buildEmailHtml(code),
-      text: `Bonjour ! Votre code d'activation TajerGrow est : ${code}\n\nCe code expire dans 15 minutes.\n\nSi vous n'avez pas créé de compte, ignorez cet email.`,
+      text: [
+        "Bonjour,",
+        "",
+        "Merci de vous être inscrit sur TajerGrow — la plateforme COD marocaine.",
+        "",
+        "Votre code d'activation est :",
+        "",
+        `    ${code}`,
+        "",
+        "Entrez ce code dans les 15 minutes pour activer votre compte.",
+        "",
+        "Si vous n'avez pas créé de compte sur TajerGrow, ignorez simplement cet email.",
+        "",
+        "—",
+        "L'équipe TajerGrow",
+        "https://www.tajergrow.com",
+      ].join("\n"),
     });
     console.log('[RESEND_API_RESPONSE]:', JSON.stringify(response, null, 2));
     const { data, error } = response;
