@@ -87,6 +87,7 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   console.log(`[OTP_BACKDOOR]: Email: ${email} | Code: ${code}`);
   console.log(`[SERVER-OTP]: The code for user ${email} is ${code}`);
   console.log('--- [AUTH-DEBUG] --- Email: ' + email + ' | Code: ' + code);
+  console.log('[AUTH-CODE-FOR-USER]:', email, 'code is:', code);
   console.log("==================================================================");
 
   // ── Step 2: Validate API key ────────────────────────────────────────────────
@@ -107,13 +108,15 @@ export async function sendVerificationEmail(email: string, code: string): Promis
 
   try {
     const resend = new Resend(apiKey);
-    const { data, error } = await resend.emails.send({
+    const response = await resend.emails.send({
       from: sender,
       to: [email],
       subject: "Votre code de vérification TajerGrow",
       html: buildEmailHtml(code),
       text: `Bonjour ! Votre code d'activation TajerGrow est : ${code}\n\nCe code expire dans 15 minutes.\n\nSi vous n'avez pas créé de compte, ignorez cet email.`,
     });
+    console.log('[RESEND_API_RESPONSE]:', JSON.stringify(response, null, 2));
+    const { data, error } = response;
 
     // Resend SDK returns soft errors as { data: null, error: {...} } rather than throwing.
     // We must check this explicitly — these include 401 (bad key), 403 (domain), etc.
