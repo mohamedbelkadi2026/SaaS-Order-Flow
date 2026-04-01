@@ -65,10 +65,15 @@ function buildEmailHtml(code: string): string {
 
         <!-- Footer -->
         <tr>
-          <td style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:20px 48px;text-align:center;">
-            <p style="margin:0;color:#9ca3af;font-size:11px;">
+          <td style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:24px 48px;text-align:center;">
+            <p style="margin:0 0 6px;color:#9ca3af;font-size:11px;">
               © ${new Date().getFullYear()} TajerGrow · Plateforme COD Maroc<br>
+              TajerGrow HQ, Agadir, Maroc<br>
               <a href="https://www.tajergrow.com" style="color:#C5A059;text-decoration:none;">www.tajergrow.com</a>
+            </p>
+            <p style="margin:8px 0 0;color:#d1d5db;font-size:10px;">
+              Cet email a été envoyé automatiquement suite à votre inscription. Ne pas répondre à cet email.<br>
+              Si vous n'avez pas créé de compte, ignorez ce message — aucune action n'est requise.
             </p>
           </td>
         </tr>
@@ -112,6 +117,10 @@ export async function sendVerificationEmail(email: string, code: string): Promis
       from: sender,
       to: [email],
       reply_to: "contact@tajergrow.com",
+      headers: {
+        "List-Unsubscribe": "<mailto:contact@tajergrow.com?subject=unsubscribe>",
+        "X-Entity-Ref-ID": `tajergrow-otp-${Date.now()}`,
+      },
       subject: "Code de vérification TajerGrow",
       html: buildEmailHtml(code),
       text: [

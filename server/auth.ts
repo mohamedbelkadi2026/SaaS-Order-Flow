@@ -164,6 +164,7 @@ export function setupAuth(app: Express) {
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
       await storage.createVerificationCode(user.id, otp, expiresAt);
+      console.log(`[SIGNUP-EVENT]: Email triggered for ${email}`);
       console.log('--- [AUTO-OTP-SENT] --- User: ' + email + ' | Code: ' + otp);
       try {
         await sendVerificationEmail(email, otp);

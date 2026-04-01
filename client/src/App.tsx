@@ -151,12 +151,12 @@ function ProtectedRoutes() {
   useOrderStatusSSE();
 
   // Unverified owner = logged-in owner who hasn't confirmed their email yet.
-  // They are ALWAYS redirected to /verify-email — no page is accessible until verified.
   const unverifiedOwner = !!(
     user && user.role === "owner" && !user.isSuperAdmin && !user.isEmailVerified
   );
-  // Guard fires on every route except /verify-email itself to avoid redirect loops
-  const needsVerification = unverifiedOwner && location !== "/verify-email";
+  // Paths an unverified owner can access freely — "/" shows the landing page
+  const UNVERIFIED_ACCESSIBLE = ["/verify-email", "/auth", "/login", "/register", "/"];
+  const needsVerification = unverifiedOwner && !UNVERIFIED_ACCESSIBLE.includes(location);
 
   // All redirects via useEffect — never navigate during render
   useEffect(() => {
@@ -189,9 +189,11 @@ function ProtectedRoutes() {
 
   // ── Logged in — handle special pages first ────────────────────────────────
   if (location === "/auth" || location === "/login" || location === "/register") return null; // useEffect handles redirect
-  // Unverified owners always land here — show the verify page
+  // Unverified owners: verify page
   if (location === "/verify-email") return <VerifyEmailPage />;
-  // Any other page while unverified → null while useEffect redirects to /verify-email
+  // Unverified owners at "/" → show the public landing page (logo links back here too)
+  if (unverifiedOwner && location === "/") return <LandingPage />;
+  // Any other private page while unverified → null while useEffect redirects to /verify-email
   if (needsVerification) return null;
 
   // ── Verified user → full app ──────────────────────────────────────────────
