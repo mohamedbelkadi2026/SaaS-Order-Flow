@@ -96,6 +96,7 @@ export async function sendVerificationEmail(email: string, code: string): Promis
   }
 
   const sender = getSender();
+  console.log(`[RESEND_STATUS]: Email attempt for ${email}`);
   console.log(`[EMAIL_INIT]: Attempting to send code to ${email}`);
   console.log(`[MAILER] From: ${sender} | API key: ${apiKey.slice(0, 8)}...`);
 

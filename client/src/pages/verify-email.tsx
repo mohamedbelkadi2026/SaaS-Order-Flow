@@ -36,7 +36,7 @@ export default function VerifyEmailPage() {
         // Hard redirect after 1 second so the toast is visible and the session
         // is fully re-fetched from the server (more reliable than cache invalidation).
         setTimeout(() => {
-          window.location.replace("/");
+          window.location.replace("/dashboard");
         }, 1000);
       } else {
         toast({ title: "Erreur", description: res.message, variant: "destructive" });
