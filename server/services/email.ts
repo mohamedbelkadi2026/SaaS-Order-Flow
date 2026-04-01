@@ -23,13 +23,14 @@ export async function sendVerificationEmail(email: string, code: string): Promis
     return;
   }
 
-  // Always use onboarding@resend.dev until tajergrow.com domain is verified in Resend.
-  // After domain verification: change this line to "TajerGrow <no-reply@tajergrow.com>"
-  const sender = "TajerGrow <onboarding@resend.dev>";
-
+  // Sender is controlled by the RESEND_FROM_EMAIL Railway variable.
+  // • Default (no domain yet): onboarding@resend.dev  — always works on Resend free tier.
+  // • After tajergrow.com is verified in Resend dashboard:
+  //     set RESEND_FROM_EMAIL=no-reply@tajergrow.com in Railway → instant switch, no redeploy needed.
+  const fromEnv = process.env.RESEND_FROM_EMAIL?.trim();
+  const sender  = fromEnv ? `TajerGrow <${fromEnv}>` : "TajerGrow <onboarding@resend.dev>";
   console.log(`[EMAIL] API key prefix: ${apiKey.slice(0, 8)}...`);
-  console.log(`[EMAIL] Sender: ${sender}`);
-  console.log(`[EMAIL] Recipient: ${email}`);
+  console.log(`[EMAIL] From: ${sender} → To: ${email}`);
 
   const html = `
 <!DOCTYPE html>
