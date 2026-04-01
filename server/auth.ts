@@ -52,19 +52,26 @@ export async function ensureSessionTable(): Promise<void> {
 export function setupAuth(app: Express) {
   const PgSession = connectPgSimple(session);
 
-  // SESSION_SECRET is required for secure cookies. If missing, generate a
-  // random one and warn loudly — sessions won't persist across restarts.
-  const sessionSecret = process.env.SESSION_SECRET ?? (() => {
-    const fallback = randomBytes(32).toString("hex");
-    console.error(
-      "[Auth] ⚠️  SESSION_SECRET is not set! Using a random secret — " +
-      "all sessions will be invalidated on restart. " +
-      "Set SESSION_SECRET in Railway → Variables."
-    );
-    return fallback;
-  })();
+  // SESSION_SECRET — required for signed, persistent cookies.
+  // If missing: log a loud error, fall back to a random secret (sessions
+  // will reset on every server restart). Does NOT crash the process.
+  const SESSION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  let sessionSecret: string;
+  if (process.env.SESSION_SECRET) {
+    sessionSecret = process.env.SESSION_SECRET;
+    console.log("[Session] SESSION_SECRET: SET ✓ — sessions will persist across restarts.");
+  } else {
+    sessionSecret = randomBytes(32).toString("hex");
+    console.error("=================================================================");
+    console.error("[Session] ERROR: SESSION_SECRET is NOT set in environment variables!");
+    console.error("[Session] Sessions will be INVALIDATED on every server restart.");
+    console.error("[Session] ACTION: Add SESSION_SECRET to Railway → Variables → Redeploy.");
+    console.error("=================================================================");
+  }
 
   const isProduction = process.env.NODE_ENV === "production";
+  console.log(`[Session] Cookie config: secure=${isProduction}, maxAge=7d, httpOnly=true, sameSite=lax`);
 
   const sessionSettings: session.SessionOptions = {
     secret: sessionSecret,
@@ -76,10 +83,10 @@ export function setupAuth(app: Express) {
       createTableIfMissing: true,
     }),
     cookie: {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: "lax",
+      maxAge: SESSION_EXPIRY_MS, // 7 days — users stay logged in without daily re-auth
+      httpOnly: true,            // JS cannot read the cookie — XSS protection
+      secure: isProduction,      // HTTPS-only in production (Railway/Cloudflare)
+      sameSite: "lax",           // CSRF protection while allowing normal navigation
     },
   };
 
