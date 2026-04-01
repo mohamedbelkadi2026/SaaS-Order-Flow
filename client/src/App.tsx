@@ -159,7 +159,7 @@ function ProtectedRoutes() {
 
   // All redirects via useEffect — never navigate during render
   useEffect(() => {
-    if (!isLoading && user && location === "/auth") navigate("/");
+    if (!isLoading && user && ["/auth", "/login", "/register"].includes(location)) navigate("/");
   }, [isLoading, user, location]);
 
   useEffect(() => {
@@ -176,13 +176,14 @@ function ProtectedRoutes() {
 
   // ── Not logged in ─────────────────────────────────────────────────────────
   if (!user) {
-    if (location === "/auth") return <AuthPage />;
+    if (location === "/auth" || location === "/login") return <AuthPage initialTab="login" />;
+    if (location === "/register") return <AuthPage initialTab="register" />;
     if (location === "/verify-email") return <VerifyEmailPage />;
     return <LandingPage />;
   }
 
   // ── Logged in — handle special pages first ────────────────────────────────
-  if (location === "/auth") return null;           // useEffect redirects to "/"
+  if (location === "/auth" || location === "/login" || location === "/register") return null; // useEffect redirects to "/"
   if (location === "/verify-email") return <VerifyEmailPage />;
   if (needsVerification) return null;              // useEffect redirects to /verify-email
 

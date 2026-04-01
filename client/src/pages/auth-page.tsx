@@ -6,8 +6,8 @@ import { Loader2, Store, Lock, Mail, User, ShieldAlert, Crown, Check } from "luc
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
 
-export default function AuthPage() {
-  const [isLogin, setIsLogin] = useState(true);
+export default function AuthPage({ initialTab = "login" }: { initialTab?: "login" | "register" }) {
+  const [isLogin, setIsLogin] = useState(initialTab === "login");
   const { login, signup, loginMutation, signupMutation } = useAuth();
   const [, setLocation] = useLocation();
 

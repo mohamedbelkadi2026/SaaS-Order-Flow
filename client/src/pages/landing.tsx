@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
+import { useAuth } from "@/hooks/use-auth";
 import {
   BarChart3, Package, Smartphone, Truck, Target, TrendingUp,
   Check, ChevronRight, Star, Zap, Shield, Crown,
@@ -97,7 +98,7 @@ const PLANS = [
     popular: false,
     features: ["60 commandes offertes", "Dashboard complet", "1 agent inclus", "Support communauté"],
     cta: "Commencer Gratuitement",
-    href: "/auth",
+    planKey: "trial",
   },
   {
     name: "Starter",
@@ -109,7 +110,7 @@ const PLANS = [
     popular: true,
     features: ["1 500 commandes/mois", "Agents illimités", "Intégration Shopify & YouCan", "Export Excel avancé", "Support prioritaire"],
     cta: "Choisir Starter",
-    href: "/auth",
+    planKey: "starter",
   },
   {
     name: "Pro",
@@ -121,7 +122,7 @@ const PLANS = [
     popular: false,
     features: ["Commandes illimitées", "Tout de Starter", "Media Buyer Workspace", "Analytics avancées", "Support VIP 24/7", "Personnalisation"],
     cta: "Choisir Pro",
-    href: "/auth",
+    planKey: "pro",
   },
 ];
 
@@ -470,6 +471,8 @@ function MarqueeCarriers() {
 
 /* ── Main Component ────────────────────────────────────────────── */
 export default function LandingPage() {
+  const { user } = useAuth();
+  const [, navigate] = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
@@ -481,7 +484,16 @@ export default function LandingPage() {
 
   const scrollTo = (id: string) => {
     setMobileMenuOpen(false);
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+    const el = document.getElementById(id);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth" });
+    }
+  };
+
+  // Smart CTA: Trial always → /register. Starter/Pro → /checkout?plan=... if logged in, else /register
+  const getPlanHref = (planKey: string) => {
+    if (planKey === "trial") return "/register";
+    return user ? `/checkout?plan=${planKey}` : "/register";
   };
 
   return (
@@ -525,7 +537,7 @@ export default function LandingPage() {
 
             {/* Desktop CTAs */}
             <div className="hidden md:flex items-center gap-3">
-              <Link href="/auth">
+              <Link href="/login">
                 <button
                   className="text-sm font-medium px-4 py-2 rounded-lg transition-all hover:bg-white/10"
                   style={{ color: "rgba(255,255,255,0.85)" }}
@@ -534,7 +546,7 @@ export default function LandingPage() {
                   Connexion
                 </button>
               </Link>
-              <Link href="/auth">
+              <Link href="/register">
                 <button
                   className="text-sm font-bold px-5 py-2.5 rounded-lg transition-all hover:brightness-110 shadow-lg"
                   style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, color: "#fff" }}
@@ -565,8 +577,8 @@ export default function LandingPage() {
               </button>
             ))}
             <div className="pt-2 flex flex-col gap-2">
-              <Link href="/auth"><button className="w-full py-2.5 rounded-lg text-sm font-medium border border-white/20 text-white">Connexion</button></Link>
-              <Link href="/auth">
+              <Link href="/login"><button className="w-full py-2.5 rounded-lg text-sm font-medium border border-white/20 text-white">Connexion</button></Link>
+              <Link href="/register">
                 <button className="w-full py-2.5 rounded-lg text-sm font-bold text-white" style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})` }}>
                   Essai Gratuit
                 </button>
@@ -638,7 +650,7 @@ export default function LandingPage() {
 
               {/* CTA Buttons */}
               <div className="flex flex-col sm:flex-row gap-4">
-                <Link href="/auth">
+                <Link href="/register">
                   <button
                     className="flex items-center justify-center gap-2 px-8 py-4 rounded-xl text-white font-bold text-base transition-all hover:brightness-110 hover:scale-105 shadow-xl"
                     style={{ background: `linear-gradient(135deg, ${GOLD}, ${GOLD_LIGHT})`, boxShadow: `0 8px 32px rgba(197,160,89,0.4)` }}
@@ -878,7 +890,7 @@ export default function LandingPage() {
                     ))}
                   </ul>
 
-                  <Link href={plan.href}>
+                  <Link href={getPlanHref(plan.planKey)}>
                     <button
                       className="w-full py-3.5 rounded-xl font-bold text-sm transition-all hover:brightness-110"
                       style={plan.popular
@@ -924,7 +936,7 @@ export default function LandingPage() {
             <p className="text-lg mb-10" style={{ color: "rgba(255,255,255,0.6)" }}>
               Rejoignez +200 marchands marocains qui gèrent leurs commandes avec TajerGrow. Commencez avec 60 commandes gratuites.
             </p>
-            <Link href="/auth">
+            <Link href="/register">
               <button
                 className="inline-flex items-center gap-3 px-10 py-5 rounded-2xl text-white font-black text-lg transition-all hover:brightness-110 hover:scale-105"
                 style={{
@@ -1018,22 +1030,35 @@ export default function LandingPage() {
                 Plateforme
               </h4>
               <ul className="space-y-2.5">
-                {[
-                  ["Dashboard", "/auth"],
-                  ["Mes Commandes", "/auth"],
-                  ["Stock", "/auth"],
-                  ["Intégrations", "#trust"],
-                ].map(([label, href]) => (
+                {([
+                  ["Dashboard", user ? "/" : "/register", false],
+                  ["Mes Commandes", user ? "/orders" : "/register", false],
+                  ["Stock", user ? "/inventory" : "/register", false],
+                  ["Intégrations", "trust", true],
+                ] as [string, string, boolean][]).map(([label, dest, isScroll]) => (
                   <li key={label}>
-                    <a
-                      href={href}
-                      className="text-sm transition-colors duration-200"
-                      style={{ color: "rgba(255,255,255,0.5)" }}
-                      onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
-                      onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
-                    >
-                      {label}
-                    </a>
+                    {isScroll ? (
+                      <button
+                        onClick={() => scrollTo(dest)}
+                        className="text-sm transition-colors duration-200"
+                        style={{ color: "rgba(255,255,255,0.5)" }}
+                        onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
+                        onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
+                      >
+                        {label}
+                      </button>
+                    ) : (
+                      <Link href={dest}>
+                        <span
+                          className="text-sm transition-colors duration-200 cursor-pointer"
+                          style={{ color: "rgba(255,255,255,0.5)" }}
+                          onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = GOLD)}
+                          onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.5)")}
+                        >
+                          {label}
+                        </span>
+                      </Link>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -1045,22 +1070,23 @@ export default function LandingPage() {
                 Liens Utiles
               </h4>
               <ul className="space-y-2.5">
-                {[
+                {([
                   ["Tarifs", "/tarifs"],
                   ["FAQ", "/faq"],
                   ["Blog", "/blog"],
                   ["Témoignages", "/temoignages"],
-                ].map(([label, href]) => (
+                ] as [string, string][]).map(([label, href]) => (
                   <li key={label}>
-                    <a
-                      href={href}
-                      className="text-sm transition-colors duration-200"
-                      style={{ color: "rgba(255,255,255,0.5)" }}
-                      onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
-                      onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
-                    >
-                      {label}
-                    </a>
+                    <Link href={href}>
+                      <span
+                        className="text-sm transition-colors duration-200 cursor-pointer"
+                        style={{ color: "rgba(255,255,255,0.5)" }}
+                        onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = GOLD)}
+                        onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.5)")}
+                      >
+                        {label}
+                      </span>
+                    </Link>
                   </li>
                 ))}
               </ul>
@@ -1072,20 +1098,21 @@ export default function LandingPage() {
                 Légal
               </h4>
               <ul className="space-y-2.5">
-                {[
+                {([
                   ["Conditions d'utilisation", "/terms"],
                   ["Politique de confidentialité", "/privacy"],
-                ].map(([label, href]) => (
+                ] as [string, string][]).map(([label, href]) => (
                   <li key={label}>
-                    <a
-                      href={href}
-                      className="text-sm transition-colors duration-200"
-                      style={{ color: "rgba(255,255,255,0.5)" }}
-                      onMouseEnter={e => (e.currentTarget.style.color = GOLD)}
-                      onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,255,255,0.5)")}
-                    >
-                      {label}
-                    </a>
+                    <Link href={href}>
+                      <span
+                        className="text-sm transition-colors duration-200 cursor-pointer"
+                        style={{ color: "rgba(255,255,255,0.5)" }}
+                        onMouseEnter={e => ((e.currentTarget as HTMLElement).style.color = GOLD)}
+                        onMouseLeave={e => ((e.currentTarget as HTMLElement).style.color = "rgba(255,255,255,0.5)")}
+                      >
+                        {label}
+                      </span>
+                    </Link>
                   </li>
                 ))}
               </ul>
