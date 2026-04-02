@@ -89,10 +89,40 @@ export async function initializeDatabase(): Promise<void> {
     // ── 1. Verify carrier_accounts is visible via to_regclass (schema check) ──
     const regCheck = await client.query(`SELECT to_regclass('public.carrier_accounts') AS tbl`);
     const tableExists = regCheck.rows[0]?.tbl !== null;
-    console.log(`[DB] to_regclass('public.carrier_accounts'): ${tableExists ? "EXISTS ✅" : "NOT FOUND — will create now"}`);
+    console.log(`[DB] to_regclass('public.carrier_accounts'): ${tableExists ? "EXISTS" : "NOT FOUND — will create now"}`);
 
-    // ── 2. CREATE TABLE using explicit public. prefix ─────────────────────────
-    // NOTE: keeping SERIAL integer IDs — do NOT change to UUID, that breaks the ORM.
+    // ── 2. UUID mismatch detector ─────────────────────────────────────────────
+    // If the table was manually created with UUID columns it is incompatible with
+    // the Drizzle ORM (which uses serial integer IDs). No real data can have been
+    // saved while this mismatch existed, so it is safe to drop and recreate.
+    if (tableExists) {
+      const colTypes = await client.query(`
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'carrier_accounts'
+        ORDER BY ordinal_position
+      `);
+      const cols = colTypes.rows;
+      const idCol   = cols.find((c: any) => c.column_name === 'id');
+      const storeCol = cols.find((c: any) => c.column_name === 'store_id');
+      const hasUUID = idCol?.data_type === 'uuid' || storeCol?.data_type === 'uuid';
+
+      console.log(`[DB] carrier_accounts column types — id: ${idCol?.data_type ?? 'missing'}, store_id: ${storeCol?.data_type ?? 'missing'}`);
+
+      if (hasUUID) {
+        console.log(`[DB] ⚠️  UUID-based carrier_accounts detected — incompatible with ORM integer IDs.`);
+        console.log(`[DB] Dropping and recreating carrier_accounts with correct integer schema...`);
+        // CASCADE also removes any dependent FK constraints or views
+        await client.query(`DROP TABLE public.carrier_accounts CASCADE`);
+        console.log(`[DB] carrier_accounts dropped — will recreate below.`);
+      } else {
+        console.log(`[DB] carrier_accounts schema OK (integer IDs) ✅`);
+      }
+    }
+
+    // ── 3. CREATE TABLE using explicit public. prefix ─────────────────────────
+    // Columns intentionally use NOT NULL DEFAULT '' for text fields so that
+    // ADD COLUMN IF NOT EXISTS also works on partially-created tables.
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.carrier_accounts (
         id               SERIAL PRIMARY KEY,
@@ -114,7 +144,7 @@ export async function initializeDatabase(): Promise<void> {
       );
     `);
 
-    // ── 3. Ensure EVERY column exists (handles tables created manually/partially) ──
+    // ── 4. Ensure EVERY column exists (handles tables created manually/partially) ──
     await client.query(`
       ALTER TABLE public.carrier_accounts
         ADD COLUMN IF NOT EXISTS carrier_name     TEXT NOT NULL DEFAULT '',
@@ -133,9 +163,15 @@ export async function initializeDatabase(): Promise<void> {
         ADD COLUMN IF NOT EXISTS updated_at       TIMESTAMP DEFAULT NOW();
     `);
 
-    // ── 4. Confirm table is now accessible ────────────────────────────────────
-    const finalCheck = await client.query(`SELECT to_regclass('public.carrier_accounts') AS tbl`);
-    console.log(`[DB] carrier_accounts final check: ${finalCheck.rows[0]?.tbl ? "READY ✅" : "STILL MISSING ⚠️"}`);
+    // ── 5. Confirm table is now accessible with correct schema ────────────────
+    const finalColCheck = await client.query(`
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'carrier_accounts'
+      ORDER BY ordinal_position
+    `);
+    const finalIdType = finalColCheck.rows.find((c: any) => c.column_name === 'id')?.data_type;
+    console.log(`[DB] carrier_accounts READY ✅ — id type: ${finalIdType ?? 'unknown'} (expected: integer)`);
 
     // ── 5. orders: add carrier tracking columns ───────────────────────────────
     await client.query(`
