@@ -21,11 +21,12 @@ import https from "https";
 const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
 
 // ── Carrier API base URLs ─────────────────────────────────────────────────────
+// Always use verified .ma domains for Moroccan carriers.
 const CARRIER_ENDPOINTS: Record<string, string> = {
-  digylog:        "https://app.digylog.com/api/v1/orders",
+  digylog:        "https://api.digylog.ma/v1/orders",    // ✅ correct .ma domain
   ecotrack:       "https://app.ecotrack.ma/api/v1/orders",
   "eco-track":    "https://app.ecotrack.ma/api/v1/orders",
-  cathedis:       "https://app.cathedis.com/api/v1/parcels",
+  cathedis:       "https://app.cathedis.ma/api/v1/parcels",
   onessta:        "https://api.onessta.com/api/v1/orders",
   ozoneexpress:   "https://api.ozoneexpress.ma/api/v1/orders",
   sendit:         "https://api.sendit.ma/api/v1/orders",
@@ -37,6 +38,40 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   quicklivraison: "https://api.quicklivraison.ma/api/v1/orders",
   codinafrica:    "https://api.codinafrica.ma/api/v1/orders",
 };
+
+// ── Known bad-URL corrections (auto-applied before every request) ──────────
+// Maps patterns that appear in user-pasted URLs to the correct replacement.
+const URL_CORRECTIONS: Array<{ match: RegExp; replace: string; hint: string }> = [
+  {
+    match:   /app\.digylog\.com/gi,
+    replace: "api.digylog.ma",
+    hint:    "app.digylog.com → api.digylog.ma",
+  },
+  {
+    match:   /app\.cathedis\.com/gi,
+    replace: "app.cathedis.ma",
+    hint:    "app.cathedis.com → app.cathedis.ma",
+  },
+];
+
+/**
+ * Auto-correct known wrong domains and strip trailing slashes / whitespace.
+ * Returns { url, corrected } so callers can log when a fix was applied.
+ */
+function autoCorrectUrl(raw: string): { url: string; corrected: boolean; hints: string[] } {
+  let url = raw.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim().replace(/\/+$/, "");
+  const hints: string[] = [];
+
+  for (const rule of URL_CORRECTIONS) {
+    if (rule.match.test(url)) {
+      url = url.replace(rule.match, rule.replace);
+      hints.push(rule.hint);
+      rule.match.lastIndex = 0; // reset stateful regex
+    }
+  }
+
+  return { url, corrected: hints.length > 0, hints };
+}
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
 const TIMEOUT_MS = 20_000; // 20 seconds
@@ -260,11 +295,9 @@ export async function shipOrderToCarrier(
   const providerKey = provider.toLowerCase().replace(/\s+/g, "");
   const defaultUrl  = CARRIER_ENDPOINTS[providerKey];
 
-  // Strip control chars, newlines, and spaces that cause ENOTFOUND / ECONNREFUSED
-  const sanitizeUrl = (raw: string | undefined | null): string =>
-    (raw || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
-
-  const apiUrl = sanitizeUrl(creds.apiUrl) || defaultUrl || "";
+  // Auto-correct then sanitize the URL from credentials; fall back to default
+  const rawCredUrl = (creds.apiUrl || "").trim();
+  const { url: apiUrl, corrected, hints } = autoCorrectUrl(rawCredUrl || defaultUrl || "");
 
   if (!apiUrl) {
     const err = `Aucune URL API configurée pour "${provider}". Ajoutez l'URL dans Intégrations → Transporteurs.`;
@@ -272,10 +305,15 @@ export async function shipOrderToCarrier(
     return { success: false, error: err };
   }
 
+  if (corrected) {
+    console.warn(`${tag} [URL-FIX] Auto-corrected URL: ${hints.join(", ")}`);
+    console.warn(`${tag} [URL-FIX] Final URL: ${apiUrl}`);
+  }
+
   // Validate that the URL actually looks like an HTTP(S) URL
   const urlLooksValid = /^https?:\/\/.+/i.test(apiUrl);
   if (!urlLooksValid) {
-    const err = `⚠️ الرابط الخاص بشركة الشحن غير صحيح: "${apiUrl}". يجب أن يبدأ بـ https://`;
+    const err = `⚠️ الرابط الخاص بشركة الشحن غير صحيح: "${apiUrl}". يجب أن يبدأ بـ https:// وينتهي بـ .ma`;
     console.error(`${tag} ❌ Bad URL format: "${apiUrl}"`);
     return { success: false, error: err };
   }
@@ -336,7 +374,7 @@ export async function shipOrderToCarrier(
 
   console.log(`\n${"═".repeat(70)}`);
   console.log(`${tag} 🚀 SENDING ORDER TO CARRIER`);
-  console.log(`[DEBUG-SHIPPING]: Attempting to hit URL: ${apiUrl}`);
+  console.log(`[API-DEBUG]: Calling Carrier at: ${apiUrl}`);
   console.log(`${tag} URL:            ${apiUrl}`);
   console.log(`${tag} PHONE SANITIZE: "${input.phone}" → "${sanitizedPhone}"`);
   console.log(`${tag} CITY:           "${input.city}"   ADDRESS: "${input.address}"`);
@@ -370,7 +408,7 @@ export async function shipOrderToCarrier(
 
       if (isTransient) {
         console.warn(`${tag} ⚠️ Transient network error (${firstErr.code}) — retrying in 1.5s...`);
-        console.warn(`[DEBUG-SHIPPING]: Retry attempt for URL: ${apiUrl}`);
+        console.warn(`[API-DEBUG]: Retry attempt for URL: ${apiUrl}`);
         await new Promise(r => setTimeout(r, 1500));
         response = await attempt(); // second attempt — let it throw if it fails again
       } else {
@@ -452,7 +490,7 @@ export async function shipOrderToCarrier(
     console.error(`[SHIPPING-ERROR] Error code:    ${err?.code || "(no code)"}`);
     console.error(`[SHIPPING-ERROR] Error message: ${err?.message || String(err)}`);
     if (isDnsError) {
-      console.error(`[DEBUG-SHIPPING]: ENOTFOUND — DNS cannot resolve "${apiUrl}". Check the URL in Shipping Integrations.`);
+      console.error(`[API-DEBUG]: ENOTFOUND — DNS cannot resolve "${apiUrl}". Verify the URL ends with .ma (e.g. api.digylog.ma). Check Shipping Integrations.`);
     }
     if (isInvalidHeader) {
       console.error(`[AUTH-ERROR]: Token contains illegal characters (newline/control char). Re-paste the API token in Shipping Integrations.`);
@@ -468,7 +506,7 @@ export async function shipOrderToCarrier(
     let errMsg: string;
 
     if (isDnsError) {
-      errMsg = `⚠️ الرابط الخاص بشركة الشحن غير صحيح أو لا يمكن الوصول إليه (ENOTFOUND): "${apiUrl}". يرجى التأكد من الرابط في إعدادات التكامل.`;
+      errMsg = `⚠️ رابط شركة الشحن غير صحيح. يرجى التأكد من استعمال رابط ينتهي بـ .ma (مثال: api.digylog.ma). الرابط المستخدم: "${apiUrl}".`;
     } else if (isInvalidHeader) {
       errMsg = `⚠️ خطأ في رمز الربط (Token): يرجى التأكد من نسخه ولصقه بشكل صحيح بدون فراغات أو أسطر إضافية. اذهب إلى إعدادات التكامل وأعد لصق المفتاح.`;
     } else if (isTimeout) {
