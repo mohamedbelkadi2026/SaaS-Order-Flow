@@ -100,14 +100,24 @@ export async function initializeDatabase(): Promise<void> {
       );
     `);
 
-    // Add settings / updated_at columns if the table already existed without them
+    // Ensure every column exists even if the table was created manually / externally
     await client.query(`
       ALTER TABLE carrier_accounts
-        ADD COLUMN IF NOT EXISTS settings    JSONB DEFAULT '{}',
-        ADD COLUMN IF NOT EXISTS updated_at  TIMESTAMP DEFAULT NOW();
+        ADD COLUMN IF NOT EXISTS connection_name  TEXT NOT NULL DEFAULT 'Connection 1',
+        ADD COLUMN IF NOT EXISTS api_secret       TEXT,
+        ADD COLUMN IF NOT EXISTS api_url          TEXT,
+        ADD COLUMN IF NOT EXISTS webhook_token    TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS store_name       TEXT,
+        ADD COLUMN IF NOT EXISTS is_default       INTEGER DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS is_active        INTEGER DEFAULT 1,
+        ADD COLUMN IF NOT EXISTS assignment_rule  TEXT DEFAULT 'default',
+        ADD COLUMN IF NOT EXISTS assignment_data  TEXT,
+        ADD COLUMN IF NOT EXISTS settings         JSONB DEFAULT '{}',
+        ADD COLUMN IF NOT EXISTS created_at       TIMESTAMP DEFAULT NOW(),
+        ADD COLUMN IF NOT EXISTS updated_at       TIMESTAMP DEFAULT NOW();
     `);
 
-    console.log("[DATABASE]: carrier_accounts table verified/created.");
+    console.log("[DATABASE]: carrier_accounts table verified/created — all columns ensured.");
 
     // email_verification_codes — required for the signup OTP flow
     await client.query(`

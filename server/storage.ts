@@ -767,7 +767,9 @@ export class DatabaseStorage implements IStorage {
           eq(carrierAccounts.carrierName, data.carrierName),
         ));
     }
+    console.log(`[SHIPPING]: Attempting to save to carrier_accounts — store: ${data.storeId}, carrier: ${data.carrierName}, connection: "${data.connectionName}", apiKey length: ${data.apiKey?.length ?? 0}`);
     const [created] = await db.insert(carrierAccounts).values(data).returning();
+    console.log(`[SHIPPING]: carrier_accounts INSERT success — new id: ${created.id}`);
     return created;
   }
 
