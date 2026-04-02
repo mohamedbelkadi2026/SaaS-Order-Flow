@@ -271,6 +271,16 @@ export async function shipOrderToCarrier(
   const apiKey    = creds.apiKey?.trim()    || "";
   const apiSecret = creds.apiSecret?.trim() || "";
 
+  // Log key resolution for Digylog/EcoTrack (first 5 chars only for security)
+  if (providerKey.includes("digylog") || providerKey.includes("ecotrack")) {
+    if (apiKey) {
+      const preview = apiKey.slice(0, 5) + "*".repeat(Math.max(0, apiKey.length - 5));
+      console.log(`${tag} [KEY-CHECK] API key resolved ✅ — starts with: "${preview.slice(0, 5)}..." (length: ${apiKey.length})`);
+    } else {
+      console.warn(`${tag} [KEY-CHECK] ⚠️ API key is EMPTY — shipping will likely fail with 401.`);
+    }
+  }
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Accept":       "application/json",

@@ -836,6 +836,15 @@ export class DatabaseStorage implements IStorage {
         if (creds.apiKey) return creds;
       } catch {}
     }
+
+    // 4. Env-var fallback — for Digylog/EcoTrack, use Railway variable if DB has no entry
+    const providerNorm = provider.toLowerCase().replace(/[\s\-]/g, "");
+    const isDigylogLike = providerNorm.includes("digylog") || providerNorm.includes("ecotrack");
+    if (isDigylogLike && process.env.DIGYLOG_API_KEY) {
+      console.log(`[CARRIER-KEY] Digylog key not found in DB for store ${storeId} — falling back to DIGYLOG_API_KEY env var.`);
+      return { apiKey: process.env.DIGYLOG_API_KEY };
+    }
+
     return null;
   }
 
