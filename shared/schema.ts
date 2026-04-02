@@ -125,6 +125,8 @@ export const orders = pgTable("orders", {
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
   pickupDate: timestamp("pickup_date"),
+  carrierId: integer("carrier_id"),
+  carrierName: text("carrier_name"),
 });
 
 export const orderItems = pgTable("order_items", {

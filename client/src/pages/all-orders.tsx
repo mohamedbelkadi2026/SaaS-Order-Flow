@@ -646,12 +646,14 @@ export default function AllOrders() {
                       {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
                       {isColVisible('livraison') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          {order.shippingProvider ? (() => {
-                            const logo = getCarrierLogo(order.shippingProvider);
+                          {(() => {
+                            const carrier = (order as any).carrierName || order.shippingProvider;
+                            if (!carrier) return <span className="text-muted-foreground text-[10px]">Non assigné</span>;
+                            const logo = getCarrierLogo(carrier);
                             return logo
-                              ? <img src={logo} alt={order.shippingProvider} style={{ maxHeight: 25, maxWidth: 70 }} className="object-contain mx-auto" />
-                              : <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>;
-                          })() : <span className="text-muted-foreground">-</span>}
+                              ? <img src={logo} alt={carrier} style={{ maxHeight: 25, maxWidth: 70 }} className="object-contain mx-auto" />
+                              : <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{carrier}</Badge>;
+                          })()}
                         </TableCell>
                       )}
                       {isColVisible('derniereAction') && (
@@ -759,11 +761,13 @@ export default function AllOrders() {
                   {order.agent?.username && (
                     <Badge variant="outline" className="mt-1 text-[10px]">{order.agent.username}</Badge>
                   )}
-                  {order.shippingProvider && (() => {
-                    const logo = getCarrierLogo(order.shippingProvider);
+                  {(() => {
+                    const carrier = (order as any).carrierName || order.shippingProvider;
+                    if (!carrier) return null;
+                    const logo = getCarrierLogo(carrier);
                     return logo
-                      ? <img src={logo} alt={order.shippingProvider} style={{ maxHeight: 22, maxWidth: 60 }} className="mt-1 ml-1 object-contain inline-block" />
-                      : <Badge className="mt-1 ml-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>;
+                      ? <img src={logo} alt={carrier} style={{ maxHeight: 22, maxWidth: 60 }} className="mt-1 ml-1 object-contain inline-block" />
+                      : <Badge className="mt-1 ml-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{carrier}</Badge>;
                   })()}
                   {order.utmSource && (
                     <Badge className="mt-1 ml-1 bg-violet-100 text-violet-700 border-violet-200 text-[10px]">{order.utmSource}</Badge>

@@ -100,9 +100,13 @@ export async function initializeDatabase(): Promise<void> {
       );
     `);
 
-    // Ensure every column exists even if the table was created manually / externally
+    // Ensure EVERY column exists even if the table was created manually / partially
+    // carrier_name and api_key are NOT NULL in the Drizzle schema but must use a default
+    // here so that ADD COLUMN works when the table already has rows.
     await client.query(`
       ALTER TABLE carrier_accounts
+        ADD COLUMN IF NOT EXISTS carrier_name     TEXT NOT NULL DEFAULT '',
+        ADD COLUMN IF NOT EXISTS api_key          TEXT NOT NULL DEFAULT '',
         ADD COLUMN IF NOT EXISTS connection_name  TEXT NOT NULL DEFAULT 'Connection 1',
         ADD COLUMN IF NOT EXISTS api_secret       TEXT,
         ADD COLUMN IF NOT EXISTS api_url          TEXT,
@@ -118,6 +122,14 @@ export async function initializeDatabase(): Promise<void> {
     `);
 
     console.log("[DATABASE]: carrier_accounts table verified/created — all columns ensured.");
+
+    // Ensure orders table has carrier tracking columns
+    await client.query(`
+      ALTER TABLE orders
+        ADD COLUMN IF NOT EXISTS carrier_name TEXT,
+        ADD COLUMN IF NOT EXISTS carrier_id   INTEGER;
+    `);
+    console.log("[DATABASE]: orders.carrier_name + carrier_id columns ensured.");
 
     // email_verification_codes — required for the signup OTP flow
     await client.query(`

@@ -911,7 +911,7 @@ export class DatabaseStorage implements IStorage {
 
   async updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined> {
     const [updated] = await db.update(orders)
-      .set({ trackNumber: trackingNumber, labelLink, shippingProvider })
+      .set({ trackNumber: trackingNumber, labelLink, shippingProvider, carrierName: shippingProvider })
       .where(eq(orders.id, orderId))
       .returning();
     return updated;
