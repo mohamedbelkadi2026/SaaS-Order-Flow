@@ -90,9 +90,13 @@ function ItemRow({ item, products, onChange, onDelete }: ItemRowProps) {
 
   const handleProductSelect = (p: ProductOption) => {
     onChange(item.id, "rawProductName", p.name);
-    onChange(item.id, "sku", p.sku || "");
-    onChange(item.id, "price", p.sellingPrice ?? p.costPrice ?? 0);
-    onChange(item.id, "productId", p.id);
+    if (p.id !== -1) {
+      // Stock product: auto-fill price and SKU
+      onChange(item.id, "sku", p.sku || "");
+      onChange(item.id, "price", p.sellingPrice ?? p.costPrice ?? 0);
+      onChange(item.id, "productId", p.id);
+    }
+    // id === -1 means manually typed name — price/qty stay as-is
   };
 
   return (
@@ -104,7 +108,7 @@ function ItemRow({ item, products, onChange, onDelete }: ItemRowProps) {
             products={products}
             value={productName}
             onChange={handleProductSelect}
-            placeholder="Rechercher dans le stock..."
+            placeholder="Stock ou nom libre... (Entrée pour ajouter)"
           />
           <div className="flex items-center gap-3 mt-1.5 flex-wrap">
             {item.sku && (
@@ -243,10 +247,31 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       variantInfo: variantFallback !== "null" ? variantFallback : "",
       commentOrder: order.commentOrder || "",
     });
-    setLocalItems((order.items || []).map((item: any) => ({
+    const mappedItems = (order.items || []).map((item: any) => ({
       ...item,
       variantInfo: item.variantInfo === "null" ? "" : (item.variantInfo || ""),
-    })));
+      // Ensure rawProductName is never null/empty when product name is available
+      rawProductName: item.rawProductName || item.product?.name || "",
+    }));
+
+    // If the order has no items rows but has a rawProductName (e.g. Shopify/WooCommerce webhook),
+    // seed the Articles section with that product name so it's never empty.
+    if (mappedItems.length === 0) {
+      const seedName = order.rawProductName || "";
+      if (seedName) {
+        mappedItems.push({
+          id: "seed-0",
+          rawProductName: seedName,
+          sku: "",
+          variantInfo: order.variantDetails && order.variantDetails !== "null" ? order.variantDetails : "",
+          quantity: order.rawQuantity || 1,
+          price: order.totalPrice || 0,
+          productId: null,
+        });
+      }
+    }
+
+    setLocalItems(mappedItems);
   }, [order]);
 
   // ── Save mutation ──
@@ -275,7 +300,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
 
       // Sync items
       for (const item of localItems) {
-        if (typeof item.id === "string" && item.id.startsWith("new-")) {
+        if (typeof item.id === "string" && (item.id.startsWith("new-") || item.id.startsWith("seed-"))) {
           await apiRequest("POST", `/api/orders/${order.id}/items`, {
             rawProductName: item.rawProductName,
             sku: item.sku || null,
@@ -356,6 +381,11 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     setLocalItems(items => items.map(i => i.id === id ? { ...i, [field]: value } : i));
   };
   const handleItemDelete = async (id: string | number) => {
+    // new-* and seed-* items don't exist in DB yet — just remove from local state
+    if (typeof id === "string" && (id.startsWith("new-") || id.startsWith("seed-"))) {
+      setLocalItems(items => items.filter(i => i.id !== id));
+      return;
+    }
     try {
       await deleteItem.mutateAsync(id);
       setLocalItems(items => items.filter(i => i.id !== id));
