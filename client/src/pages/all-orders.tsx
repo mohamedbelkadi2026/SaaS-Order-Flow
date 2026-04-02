@@ -191,15 +191,28 @@ export default function AllOrders() {
 
   const { data: activeCarrierAccounts, isLoading: loadingCarrierAccounts } = useQuery<any[]>({
     queryKey: ["/api/shipping/active-accounts"],
-    queryFn: () =>
-      fetch("/api/shipping/active-accounts", { credentials: "include" })
-        .then(r => r.json())
-        .then(data => {
-          console.log("[DEBUG-SHIPPING]: Carriers received on frontend:", data?.length, data);
-          return Array.isArray(data) ? data : [];
-        }),
+    queryFn: async () => {
+      // Primary: new dedicated endpoint (requires latest Railway deployment)
+      const r1 = await fetch("/api/shipping/active-accounts", { credentials: "include" });
+      if (r1.ok) {
+        const data = await r1.json();
+        console.log("[DEBUG-SHIPPING]: Carriers from /api/shipping/active-accounts:", data?.length, data);
+        return Array.isArray(data) ? data : [];
+      }
+      // Fallback: old endpoint — works even on older Railway deployments
+      console.warn("[DEBUG-SHIPPING]: /api/shipping/active-accounts returned", r1.status, "— falling back to /api/carrier-accounts");
+      const r2 = await fetch("/api/carrier-accounts", { credentials: "include" });
+      if (!r2.ok) return [];
+      const data2 = await r2.json();
+      const active = (Array.isArray(data2) ? data2 : []).filter(
+        (a: any) => a.isActive === 1 || a.isActive === true || a.is_active === 1 || a.is_active === true
+      );
+      console.log("[DEBUG-SHIPPING]: Carriers from fallback /api/carrier-accounts:", active?.length, active);
+      return active;
+    },
     enabled: showBulkShipModal,
     staleTime: 0,
+    retry: false,
   });
 
   // Auto-select the only account when there's exactly one

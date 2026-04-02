@@ -1547,18 +1547,24 @@ export async function registerRoutes(
   app.get("/api/shipping/active-accounts", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
+      console.log(`[DISPATCH-START]: Searching for active carrier accounts for store: ${storeId}`);
+
       const all = await storage.getCarrierAccounts(storeId);
 
       // Normalise is_active — DB returns integer 1/0; guard against booleans too
       const active = all.filter((a: any) => a.isActive === 1 || a.isActive === true);
 
-      console.log(
-        `[DEBUG-SHIPPING]: Carriers found in DB for store ${storeId}:`,
-        active.length,
-        active.map((a: any) => `${a.carrierName}/${a.connectionName}(id:${a.id})`)
-      );
+      if (active.length === 0) {
+        console.log(`[DISPATCH-ERROR]: No active credentials found in carrier_accounts table for store ${storeId}. Total rows: ${all.length}`);
+      } else {
+        console.log(
+          `[DISPATCH-OK]: Active carriers for store ${storeId}:`,
+          active.length,
+          active.map((a: any) => `${a.carrierName}/${a.connectionName}(id:${a.id}, active:${a.isActive})`)
+        );
+      }
 
-      // Return safe subset — no raw API key
+      // Return safe subset — never expose raw API key to frontend
       res.json(active.map((a: any) => ({
         id:             a.id,
         carrierName:    a.carrierName,
@@ -1568,7 +1574,7 @@ export async function registerRoutes(
         assignmentRule: a.assignmentRule,
       })));
     } catch (err: any) {
-      console.error('[SHIPPING-ACCOUNTS] Error:', err.message);
+      console.error(`[DISPATCH-ERROR]: Exception in /api/shipping/active-accounts — ${err.message}`);
       res.status(500).json({ message: err.message });
     }
   });

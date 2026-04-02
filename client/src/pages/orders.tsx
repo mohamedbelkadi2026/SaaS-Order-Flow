@@ -283,6 +283,7 @@ export default function Orders() {
   const [assignServiceType, setAssignServiceType] = useState("confirmation");
   const [assignAgentId, setAssignAgentId] = useState("");
   const [bulkShipProvider, setBulkShipProvider] = useState("");
+  const [bulkShipAccountId, setBulkShipAccountId] = useState<number | null>(null);
   const [shipProgress, setShipProgress] = useState<{
     active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
     results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string }[];
@@ -304,6 +305,30 @@ export default function Orders() {
         : Promise.resolve({ provider: null, cities: [], isCarrierSpecific: false }),
     enabled: !!bulkShipProvider,
     staleTime: 5 * 60 * 1000,
+  });
+
+  // Active carrier accounts — fetched from carrier_accounts table, NOT legacy storeIntegrations
+  const { data: activeCarrierAccounts, isLoading: loadingCarrierAccounts } = useQuery<any[]>({
+    queryKey: ["/api/shipping/active-accounts"],
+    queryFn: async () => {
+      const r1 = await fetch("/api/shipping/active-accounts", { credentials: "include" });
+      if (r1.ok) {
+        const data = await r1.json();
+        console.log("[DEBUG-SHIPPING]: Carriers from /api/shipping/active-accounts:", data?.length, data);
+        return Array.isArray(data) ? data : [];
+      }
+      // Fallback for older Railway deployments
+      console.warn("[DEBUG-SHIPPING]: Fallback to /api/carrier-accounts (status:", r1.status, ")");
+      const r2 = await fetch("/api/carrier-accounts", { credentials: "include" });
+      if (!r2.ok) return [];
+      const data2 = await r2.json();
+      return (Array.isArray(data2) ? data2 : []).filter(
+        (a: any) => a.isActive === 1 || a.isActive === true || a.is_active === 1 || a.is_active === true
+      );
+    },
+    enabled: showBulkShipModal,
+    staleTime: 0,
+    retry: false,
   });
 
   const [visibleCols, setVisibleCols] = useState<string[]>(getStoredColumns);
@@ -448,6 +473,16 @@ export default function Orders() {
     return () => es.close();
   }, [shipProgress?.active]);
 
+  // Auto-select the only account when exactly one is connected
+  useEffect(() => {
+    if (!showBulkShipModal) return;
+    if (activeCarrierAccounts?.length === 1 && !bulkShipAccountId) {
+      const acct = activeCarrierAccounts[0];
+      setBulkShipAccountId(acct.id);
+      setBulkShipProvider(acct.carrierName);
+    }
+  }, [activeCarrierAccounts, showBulkShipModal]);
+
   // ── Pre-shipping validation: runs immediately with client-side city list,
   //    upgrades to server list when bulkCarrierData arrives ──
   useEffect(() => {
@@ -565,12 +600,13 @@ export default function Orders() {
     if (!bulkShipProvider || selectedIds.size === 0) return;
     const orderIds = Array.from(selectedIds);
     const provider = bulkShipProvider;
+    const accountId = bulkShipAccountId;
 
     // Close selection modal and open progress modal immediately
     setShowBulkShipModal(false);
     setShipProgress({ active: true, done: 0, total: orderIds.length, shipped: 0, failed: 0, provider });
 
-    bulkShip.mutate({ orderIds, provider }, {
+    bulkShip.mutate({ orderIds, provider, accountId }, {
       onSuccess: (data) => {
         // SSE may have already set active:false via the `complete` flag,
         // but always sync final numbers + per-order results from the HTTP response
@@ -584,6 +620,7 @@ export default function Orders() {
         } : null);
         setSelectedIds(new Set());
         setBulkShipProvider("");
+        setBulkShipAccountId(null);
         queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
         queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
         queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
@@ -1486,7 +1523,7 @@ export default function Orders() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showBulkShipModal} onOpenChange={(open) => { setShowBulkShipModal(open); if (!open) { setBulkShipProvider(""); setShipValidation(null); } }}>
+      <Dialog open={showBulkShipModal} onOpenChange={(open) => { setShowBulkShipModal(open); if (!open) { setBulkShipProvider(""); setBulkShipAccountId(null); setShipValidation(null); } }}>
         <DialogContent className="sm:max-w-lg rounded-xl" data-testid="dialog-bulk-ship">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold flex items-center gap-2">
@@ -1499,36 +1536,86 @@ export default function Orders() {
           </DialogHeader>
 
           <div className="space-y-4 py-2">
-            {/* ── Carrier selector ── */}
+            {/* ── Carrier selector — from carrier_accounts table ── */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Transporteur</label>
-              <Select value={bulkShipProvider} onValueChange={v => { setBulkShipProvider(v); setShipValidation(null); }}>
-                <SelectTrigger className="bg-white dark:bg-card" data-testid="select-bulk-ship-provider">
-                  <SelectValue placeholder="Sélectionner un transporteur..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {shippingIntegrations?.map((si: any) => {
-                    const logo = getCarrierLogo(si.provider);
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Société de livraison</label>
+
+              {/* Loading */}
+              {loadingCarrierAccounts && (
+                <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Chargement des transporteurs...
+                </div>
+              )}
+
+              {/* Empty state */}
+              {!loadingCarrierAccounts && (activeCarrierAccounts?.length ?? 0) === 0 && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
+                  <span>
+                    Aucune société connectée.{" "}
+                    <a href="/shipping-integrations" className="underline font-semibold" onClick={() => setShowBulkShipModal(false)}>
+                      Configurer maintenant
+                    </a>
+                  </span>
+                </div>
+              )}
+
+              {/* Dropdown */}
+              {!loadingCarrierAccounts && (activeCarrierAccounts?.length ?? 0) > 0 && (
+                <>
+                  <Select
+                    value={bulkShipAccountId ? String(bulkShipAccountId) : ""}
+                    onValueChange={v => {
+                      const acct = activeCarrierAccounts?.find((a: any) => String(a.id) === v);
+                      if (acct) {
+                        setBulkShipAccountId(acct.id);
+                        setBulkShipProvider(acct.carrierName);
+                      }
+                      setShipValidation(null);
+                    }}
+                  >
+                    <SelectTrigger className="bg-white dark:bg-card" data-testid="select-bulk-ship-provider">
+                      <SelectValue placeholder="Sélectionner un compte transporteur..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {activeCarrierAccounts?.map((acct: any) => {
+                        const logo = getCarrierLogo(acct.carrierName);
+                        return (
+                          <SelectItem key={acct.id} value={String(acct.id)}>
+                            <span className="flex items-center gap-2">
+                              {logo && <img src={logo} alt={acct.carrierName} style={{ height: 18, maxWidth: 50 }} className="object-contain shrink-0" />}
+                              <span className="capitalize font-medium">{acct.carrierName}</span>
+                              {acct.connectionName && acct.connectionName !== acct.carrierName && (
+                                <span className="text-muted-foreground text-[11px]">— {acct.connectionName}</span>
+                              )}
+                              {acct.isDefault === 1 && (
+                                <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">défaut</span>
+                              )}
+                            </span>
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+
+                  {/* Selected account preview */}
+                  {bulkShipAccountId && (() => {
+                    const acct = activeCarrierAccounts?.find((a: any) => a.id === bulkShipAccountId);
+                    if (!acct) return null;
+                    const logo = getCarrierLogo(acct.carrierName);
                     return (
-                      <SelectItem key={si.provider} value={si.provider}>
-                        <span className="flex items-center gap-2">
-                          {logo && <img src={logo} alt={si.provider} style={{ height: 18, maxWidth: 50 }} className="object-contain shrink-0" />}
-                          <span className="capitalize">{si.provider}</span>
-                        </span>
-                      </SelectItem>
+                      <div className="flex items-center gap-3 mt-2 p-2.5 rounded-lg bg-muted/50 border border-border">
+                        {logo && <img src={logo} alt={acct.carrierName} style={{ height: 32, maxWidth: 90 }} className="object-contain shrink-0" />}
+                        <div>
+                          <p className="text-sm font-semibold capitalize">{acct.carrierName}</p>
+                          <p className="text-[11px] text-muted-foreground">{acct.connectionName}</p>
+                        </div>
+                      </div>
                     );
-                  })}
-                </SelectContent>
-              </Select>
-              {bulkShipProvider && (() => {
-                const logo = getCarrierLogo(bulkShipProvider);
-                return logo ? (
-                  <div className="flex items-center gap-3 mt-2 p-2.5 rounded-lg bg-muted/50 border border-border">
-                    <img src={logo} alt={bulkShipProvider} style={{ height: 32, maxWidth: 90 }} className="object-contain" />
-                    <span className="text-sm font-medium text-foreground capitalize">{bulkShipProvider}</span>
-                  </div>
-                ) : null;
-              })()}
+                  })()}
+                </>
+              )}
             </div>
 
             {/* ── Pre-flight validation panel ── */}
@@ -1626,7 +1713,7 @@ export default function Orders() {
           </div>
 
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => { setShowBulkShipModal(false); setBulkShipProvider(""); setShipValidation(null); }}>
+            <Button variant="outline" onClick={() => { setShowBulkShipModal(false); setBulkShipProvider(""); setBulkShipAccountId(null); setShipValidation(null); }}>
               Annuler
             </Button>
             {/* If there are invalid orders but also some valid ones, allow partial ship */}
@@ -1647,7 +1734,7 @@ export default function Orders() {
             )}
             <Button
               onClick={handleBulkShip}
-              disabled={!bulkShipProvider || bulkShip.isPending || (shipValidation !== null && shipValidation.invalid.length > 0 && shipValidation.valid.length === 0)}
+              disabled={!bulkShipAccountId || bulkShip.isPending || (shipValidation !== null && shipValidation.invalid.length > 0 && shipValidation.valid.length === 0)}
               className="bg-indigo-500 hover:bg-indigo-600 text-white"
               data-testid="button-confirm-bulk-ship"
             >
