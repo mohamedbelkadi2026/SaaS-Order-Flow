@@ -171,6 +171,7 @@ export default function AllOrders() {
   const [assignServiceType, setAssignServiceType] = useState("confirmation");
   const [assignAgentId, setAssignAgentId] = useState("");
   const [bulkShipProvider, setBulkShipProvider] = useState("");
+  const [bulkShipAccountId, setBulkShipAccountId] = useState<number | null>(null);
   const [shipValidation, setShipValidation] = useState<{
     valid: OrderValidationResult[];
     invalid: OrderValidationResult[];
@@ -185,6 +186,14 @@ export default function AllOrders() {
         : Promise.resolve({ provider: null, cities: [], isCarrierSpecific: false }),
     enabled: !!bulkShipProvider,
     staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: activeCarrierAccounts, isLoading: loadingCarrierAccounts } = useQuery<any[]>({
+    queryKey: ["/api/carrier-accounts"],
+    queryFn: () => fetch("/api/carrier-accounts", { credentials: "include" }).then(r => r.json()),
+    enabled: showBulkShipModal,
+    staleTime: 30 * 1000,
+    select: (data) => data.filter((a: any) => a.isActive === 1),
   });
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -357,6 +366,12 @@ export default function AllOrders() {
     });
   };
 
+  const resetBulkShipModal = () => {
+    setBulkShipProvider("");
+    setBulkShipAccountId(null);
+    setShipValidation(null);
+  };
+
   const handleBulkShip = () => {
     if (!bulkShipProvider || selectedIds.size === 0) return;
     const selectedOrders = filteredOrders.filter((o: any) => selectedIds.has(o.id));
@@ -368,12 +383,12 @@ export default function AllOrders() {
         variant: "destructive",
       });
     }
-    bulkShip.mutate({ orderIds: Array.from(selectedIds), provider: bulkShipProvider }, {
+    bulkShip.mutate({ orderIds: Array.from(selectedIds), provider: bulkShipProvider, accountId: bulkShipAccountId }, {
       onSuccess: (data) => {
         toast({ title: "Envoi réussi", description: `${data.shipped} commandes expédiées` });
         setShowBulkShipModal(false);
         setSelectedIds(new Set());
-        setBulkShipProvider("");
+        resetBulkShipModal();
       },
       onError: (err: any) => toast({ title: "Erreur", description: err.message, variant: "destructive" }),
     });
@@ -846,7 +861,7 @@ export default function AllOrders() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showBulkShipModal} onOpenChange={(open) => { setShowBulkShipModal(open); if (!open) { setBulkShipProvider(""); setShipValidation(null); } }}>
+      <Dialog open={showBulkShipModal} onOpenChange={(open) => { setShowBulkShipModal(open); if (!open) resetBulkShipModal(); }}>
         <DialogContent className="sm:max-w-lg rounded-xl" data-testid="all-dialog-bulk-ship">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold flex items-center gap-2">
@@ -860,34 +875,84 @@ export default function AllOrders() {
 
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Transporteur</label>
-              <Select value={bulkShipProvider} onValueChange={v => { setBulkShipProvider(v); setShipValidation(null); }}>
-                <SelectTrigger className="bg-white dark:bg-card" data-testid="all-select-bulk-ship-provider">
-                  <SelectValue placeholder="Sélectionner un transporteur..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {shippingIntegrations?.map((si: any) => {
-                    const logo = getCarrierLogo(si.provider);
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Société de livraison</label>
+
+              {/* ── Loading state ── */}
+              {loadingCarrierAccounts && (
+                <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Chargement des transporteurs...
+                </div>
+              )}
+
+              {/* ── Empty state — no connected carriers ── */}
+              {!loadingCarrierAccounts && activeCarrierAccounts?.length === 0 && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
+                  <span>
+                    Aucune société de livraison connectée.{" "}
+                    <a href="/shipping-integrations" className="underline font-semibold hover:text-amber-900" onClick={() => setShowBulkShipModal(false)}>
+                      Cliquez ici pour configurer
+                    </a>
+                  </span>
+                </div>
+              )}
+
+              {/* ── Account selector ── */}
+              {!loadingCarrierAccounts && (activeCarrierAccounts?.length ?? 0) > 0 && (
+                <>
+                  <Select
+                    value={bulkShipAccountId ? String(bulkShipAccountId) : ""}
+                    onValueChange={v => {
+                      const acct = activeCarrierAccounts?.find((a: any) => String(a.id) === v);
+                      if (acct) {
+                        setBulkShipAccountId(acct.id);
+                        setBulkShipProvider(acct.carrierName);
+                      }
+                      setShipValidation(null);
+                    }}
+                  >
+                    <SelectTrigger className="bg-white dark:bg-card" data-testid="all-select-bulk-ship-provider">
+                      <SelectValue placeholder="Sélectionner un compte transporteur..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {activeCarrierAccounts?.map((acct: any) => {
+                        const logo = getCarrierLogo(acct.carrierName);
+                        return (
+                          <SelectItem key={acct.id} value={String(acct.id)} data-testid={`ship-account-${acct.id}`}>
+                            <span className="flex items-center gap-2">
+                              {logo && <img src={logo} alt={acct.carrierName} style={{ height: 18, maxWidth: 50 }} className="object-contain shrink-0" />}
+                              <span className="capitalize font-medium">{acct.carrierName}</span>
+                              {acct.connectionName && acct.connectionName !== acct.carrierName && (
+                                <span className="text-muted-foreground text-[11px]">— {acct.connectionName}</span>
+                              )}
+                              {acct.isDefault === 1 && (
+                                <span className="text-[10px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">défaut</span>
+                              )}
+                            </span>
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+
+                  {/* Selected account preview */}
+                  {bulkShipAccountId && (() => {
+                    const acct = activeCarrierAccounts?.find((a: any) => a.id === bulkShipAccountId);
+                    if (!acct) return null;
+                    const logo = getCarrierLogo(acct.carrierName);
                     return (
-                      <SelectItem key={si.provider} value={si.provider}>
-                        <span className="flex items-center gap-2">
-                          {logo && <img src={logo} alt={si.provider} style={{ height: 18, maxWidth: 50 }} className="object-contain shrink-0" />}
-                          <span className="capitalize">{si.provider}</span>
-                        </span>
-                      </SelectItem>
+                      <div className="flex items-center gap-3 mt-2 p-2.5 rounded-lg bg-muted/50 border border-border">
+                        {logo && <img src={logo} alt={acct.carrierName} style={{ height: 32, maxWidth: 90 }} className="object-contain shrink-0" />}
+                        <div>
+                          <p className="text-sm font-semibold capitalize">{acct.carrierName}</p>
+                          <p className="text-[11px] text-muted-foreground">{acct.connectionName}</p>
+                        </div>
+                      </div>
                     );
-                  })}
-                </SelectContent>
-              </Select>
-              {bulkShipProvider && (() => {
-                const logo = getCarrierLogo(bulkShipProvider);
-                return logo ? (
-                  <div className="flex items-center gap-3 mt-2 p-2.5 rounded-lg bg-muted/50 border border-border">
-                    <img src={logo} alt={bulkShipProvider} style={{ height: 32, maxWidth: 90 }} className="object-contain" />
-                    <span className="text-sm font-medium text-foreground capitalize">{bulkShipProvider}</span>
-                  </div>
-                ) : null;
-              })()}
+                  })()}
+                </>
+              )}
             </div>
 
             {bulkShipProvider && !bulkCarrierData && (
@@ -959,7 +1024,7 @@ export default function AllOrders() {
           </div>
 
           <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => { setShowBulkShipModal(false); setBulkShipProvider(""); setShipValidation(null); }}>Annuler</Button>
+            <Button variant="outline" onClick={() => { setShowBulkShipModal(false); resetBulkShipModal(); }}>Annuler</Button>
             {shipValidation && shipValidation.invalid.length > 0 && shipValidation.valid.length > 0 && (
               <Button
                 variant="outline"
@@ -976,7 +1041,7 @@ export default function AllOrders() {
             )}
             <Button
               onClick={handleBulkShip}
-              disabled={!bulkShipProvider || bulkShip.isPending || (shipValidation !== null && shipValidation.invalid.length > 0 && shipValidation.valid.length === 0)}
+              disabled={!bulkShipAccountId || bulkShip.isPending || (shipValidation !== null && shipValidation.invalid.length > 0 && shipValidation.valid.length === 0)}
               className="bg-indigo-500 hover:bg-indigo-600 text-white"
               data-testid="all-button-confirm-bulk-ship"
             >

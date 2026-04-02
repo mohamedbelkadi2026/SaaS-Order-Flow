@@ -923,15 +923,25 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Les agents ne peuvent pas expédier en masse" });
       }
 
-      const { orderIds, provider } = req.body;
+      const { orderIds, provider, accountId } = req.body;
       if (!Array.isArray(orderIds) || orderIds.length === 0 || !provider) {
         return res.status(400).json({ message: "orderIds (tableau) et provider sont obligatoires" });
       }
 
       const storeId = user.storeId!;
 
+      // ── If user explicitly selected an account, pin all orders to it ──────
+      let pinnedCreds: { apiKey: string; apiSecret?: string; apiUrl?: string } | null = null;
+      if (accountId) {
+        const pinned = await storage.getCarrierAccount(Number(accountId));
+        if (pinned && pinned.storeId === storeId && pinned.isActive === 1) {
+          pinnedCreds = { apiKey: pinned.apiKey, apiSecret: pinned.apiSecret ?? undefined, apiUrl: pinned.apiUrl ?? undefined };
+          console.log(`[BulkShip] Using pinned account id=${accountId} (${pinned.connectionName}) for all orders`);
+        }
+      }
+
       // Smart dispatch: try carrier accounts first, fall back to legacy storeIntegrations
-      const defaultCreds = await storage.getAccountForShipping(storeId, provider);
+      const defaultCreds = pinnedCreds ?? await storage.getAccountForShipping(storeId, provider);
       if (!defaultCreds) {
         return res.status(400).json({ message: `Transporteur ${provider} non connecté. Ajoutez un compte dans Intégrations → Sociétés de Livraison.` });
       }
@@ -959,8 +969,10 @@ export async function registerRoutes(
       const allCarrierAccounts = await storage.getCarrierAccounts(storeId, provider);
       const activeAccounts = allCarrierAccounts.filter((a: any) => a.isActive === 1);
 
-      // Resolve credentials per-order (city routing or default)
+      // Resolve credentials per-order:
+      // if user pinned an account → always use it; otherwise use city routing
       const getCredsForOrder = (city: string): Record<string, string> => {
+        if (pinnedCreds) return pinnedCreds as Record<string, string>;
         // 1. Try city-specific account
         const cityAcct = activeAccounts.find((a: any) => {
           if (a.assignmentRule !== 'city') return false;

@@ -639,8 +639,8 @@ export function useBulkAssign() {
 export function useBulkShip() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ orderIds, provider }: { orderIds: number[]; provider: string }) => {
-      const res = await apiRequest("POST", "/api/orders/bulk-ship", { orderIds, provider });
+    mutationFn: async ({ orderIds, provider, accountId }: { orderIds: number[]; provider: string; accountId?: number | null }) => {
+      const res = await apiRequest("POST", "/api/orders/bulk-ship", { orderIds, provider, accountId: accountId ?? undefined });
       return res.json();
     },
     onSuccess: () => {
