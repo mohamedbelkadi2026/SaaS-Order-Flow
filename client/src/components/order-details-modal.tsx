@@ -199,9 +199,17 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
 
-  // ── Carrier city list ─────────────────────────────────────────────
+  // ── Carrier city list — filtered by the order's assigned carrier ──
+  const orderCarrier = (order as any)?.carrierName || order?.shippingProvider || null;
   const { data: carrierData } = useQuery<{ provider: string | null; cities: string[]; isCarrierSpecific: boolean }>({
-    queryKey: ["/api/carriers/cities"],
+    queryKey: ["/api/carriers/cities", orderCarrier],
+    queryFn: () =>
+      fetch(
+        orderCarrier
+          ? `/api/carriers/cities?provider=${encodeURIComponent(orderCarrier)}`
+          : `/api/carriers/cities`,
+        { credentials: "include" }
+      ).then(r => r.json()),
     staleTime: 5 * 60 * 1000,
   });
   const carrierCities = carrierData?.cities ?? MOROCCAN_CITIES;

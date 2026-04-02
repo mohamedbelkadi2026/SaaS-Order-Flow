@@ -1533,9 +1533,44 @@ export async function registerRoutes(
     // Mask apiKey in list view — return first 8 + stars
     const masked = accounts.map(a => ({
       ...a,
-      apiKeyMasked: a.apiKey.slice(0, 8) + "•".repeat(Math.max(0, a.apiKey.length - 8)),
+      apiKeyMasked: (a.apiKey || '').slice(0, 8) + "•".repeat(Math.max(0, (a.apiKey || '').length - 8)),
     }));
     res.json(masked);
+  });
+
+  /**
+   * GET /api/shipping/active-accounts
+   * Returns only active carrier accounts for the current store.
+   * Never exposes the raw API key — safe to call from the frontend.
+   * Used by the "Expédier les commandes" modal to build the carrier list.
+   */
+  app.get("/api/shipping/active-accounts", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const all = await storage.getCarrierAccounts(storeId);
+
+      // Normalise is_active — DB returns integer 1/0; guard against booleans too
+      const active = all.filter((a: any) => a.isActive === 1 || a.isActive === true);
+
+      console.log(
+        `[DEBUG-SHIPPING]: Carriers found in DB for store ${storeId}:`,
+        active.length,
+        active.map((a: any) => `${a.carrierName}/${a.connectionName}(id:${a.id})`)
+      );
+
+      // Return safe subset — no raw API key
+      res.json(active.map((a: any) => ({
+        id:             a.id,
+        carrierName:    a.carrierName,
+        connectionName: a.connectionName,
+        isDefault:      a.isDefault,
+        isActive:       a.isActive,
+        assignmentRule: a.assignmentRule,
+      })));
+    } catch (err: any) {
+      console.error('[SHIPPING-ACCOUNTS] Error:', err.message);
+      res.status(500).json({ message: err.message });
+    }
   });
 
   app.post("/api/carrier-accounts", requireAuth, async (req, res) => {

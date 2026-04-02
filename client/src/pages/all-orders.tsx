@@ -189,12 +189,27 @@ export default function AllOrders() {
   });
 
   const { data: activeCarrierAccounts, isLoading: loadingCarrierAccounts } = useQuery<any[]>({
-    queryKey: ["/api/carrier-accounts"],
-    queryFn: () => fetch("/api/carrier-accounts", { credentials: "include" }).then(r => r.json()),
+    queryKey: ["/api/shipping/active-accounts"],
+    queryFn: () =>
+      fetch("/api/shipping/active-accounts", { credentials: "include" })
+        .then(r => r.json())
+        .then(data => {
+          console.log("[DEBUG-SHIPPING]: Carriers received on frontend:", data?.length, data);
+          return Array.isArray(data) ? data : [];
+        }),
     enabled: showBulkShipModal,
-    staleTime: 30 * 1000,
-    select: (data) => data.filter((a: any) => a.isActive === 1),
+    staleTime: 0,
   });
+
+  // Auto-select the only account when there's exactly one
+  useEffect(() => {
+    if (!showBulkShipModal) return;
+    if (activeCarrierAccounts?.length === 1 && !bulkShipAccountId) {
+      const acct = activeCarrierAccounts[0];
+      setBulkShipAccountId(acct.id);
+      setBulkShipProvider(acct.carrierName);
+    }
+  }, [activeCarrierAccounts, showBulkShipModal]);
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());

@@ -167,6 +167,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts"] });
+      qc.invalidateQueries({ queryKey: ["/api/shipping/active-accounts"] });
       toast({
         title: existingAccount ? "Mis à jour ✅" : "Connecté ✅",
         description: `${providerName} ${existingAccount ? "mis à jour" : "ajouté"} avec succès`,
@@ -375,7 +376,10 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
       apiRequest("PATCH", `/api/carrier-accounts/${acct.id}`, {
         isActive: acct.isActive === 1 ? 0 : 1,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
+      qc.invalidateQueries({ queryKey: ["/api/shipping/active-accounts"] });
+    },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
@@ -384,6 +388,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts"] });
+      qc.invalidateQueries({ queryKey: ["/api/shipping/active-accounts"] });
       setConfirmDeleteId(null);
       setActiveTab(0);
       toast({ title: "Supprimé" });
