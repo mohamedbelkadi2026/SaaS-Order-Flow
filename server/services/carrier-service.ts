@@ -268,11 +268,33 @@ export async function shipOrderToCarrier(
   }
 
   // ── 3. Auth headers ──────────────────────────────────────────────
-  const apiKey    = creds.apiKey?.trim()    || "";
-  const apiSecret = creds.apiSecret?.trim() || "";
+  /**
+   * Strip ALL whitespace variants + ASCII control characters from the token.
+   * Node.js throws "Invalid character in header content" when the value
+   * contains \n, \r, \t or any other control char (Unicode < 0x20 / 0x7F).
+   * This is the mandatory fix for tokens copy-pasted with hidden newlines.
+   */
+  const sanitizeToken = (raw: string | undefined | null): string => {
+    if (!raw) return "";
+    // Remove carriage returns, newlines, tabs and any other ASCII control chars
+    const cleaned = raw
+      .replace(/[\r\n\t]/g, "")        // explicit line endings & tabs
+      .replace(/[\x00-\x1F\x7F]/g, "") // all remaining ASCII control chars
+      .trim();                           // leading / trailing spaces
+
+    // Warn if non-ASCII characters remain (e.g. invisible Unicode spaces)
+    if (/[^\x20-\x7E]/.test(cleaned)) {
+      console.error(`[AUTH-ERROR]: Token contains illegal non-ASCII characters — this will cause header errors. Please re-copy the token from the carrier dashboard.`);
+    }
+
+    return cleaned;
+  };
+
+  const apiKey    = sanitizeToken(creds.apiKey);
+  const apiSecret = sanitizeToken(creds.apiSecret);
 
   // Log key resolution for Digylog/EcoTrack (first 5 chars only for security)
-  if (providerKey.includes("digylog") || providerKey.includes("ecotrack")) {
+  if (providerKey.includes("digylog") || providerKey.includes("ecotrack") || providerKey.includes("cathedis")) {
     if (apiKey) {
       const preview = apiKey.slice(0, 5) + "*".repeat(Math.max(0, apiKey.length - 5));
       console.log(`${tag} [KEY-CHECK] API key resolved ✅ — starts with: "${preview.slice(0, 5)}..." (length: ${apiKey.length})`);
@@ -375,12 +397,21 @@ export async function shipOrderToCarrier(
       err?.message?.toLowerCase().includes("fetch failed") ||
       err?.message?.toLowerCase().includes("network");
 
+    // Detect "Invalid character in header" — caused by \n or control chars in token
+    const isInvalidHeader =
+      err?.message?.toLowerCase().includes("invalid character") ||
+      err?.message?.toLowerCase().includes("invalid header") ||
+      err?.message?.toLowerCase().includes("header content");
+
     // ── Detailed diagnostic log ───────────────────────────────────
     console.error(`\n${"─".repeat(70)}`);
-    console.error(`${tag} ❌ SHIPPING NETWORK ERROR`);
+    console.error(`${tag} ❌ SHIPPING ${isInvalidHeader ? "HEADER" : "NETWORK"} ERROR`);
     console.error(`[SHIPPING-ERROR] URL attempted: ${apiUrl}`);
     console.error(`[SHIPPING-ERROR] Error code:    ${err?.code || "(no code)"}`);
     console.error(`[SHIPPING-ERROR] Error message: ${err?.message || String(err)}`);
+    if (isInvalidHeader) {
+      console.error(`[AUTH-ERROR]: Token contains illegal characters (newline/control char). Go to Shipping Integrations and re-paste the API token.`);
+    }
     if (err?.response) {
       console.error(`[SHIPPING-ERROR] HTTP status:   ${err.response.status}`);
       console.error(`[SHIPPING-ERROR] HTTP body:     ${JSON.stringify(err.response.data)}`);
@@ -391,7 +422,9 @@ export async function shipOrderToCarrier(
     // ── User-facing error string ──────────────────────────────────
     let errMsg: string;
 
-    if (isTimeout) {
+    if (isInvalidHeader) {
+      errMsg = `⚠️ خطأ في رمز الربط (Token): يرجى التأكد من نسخه ولصقه بشكل صحيح بدون فراغات أو أسطر إضافية. اذهب إلى إعدادات التكامل وأعد لصق المفتاح.`;
+    } else if (isTimeout) {
       errMsg = `⚠️ سيرفر شركة الشحن لا يستجيب حالياً (timeout ${TIMEOUT_MS / 1000}s). حاول مجدداً بعد قليل.`;
     } else if (isFetchFailed) {
       errMsg = `⚠️ تعذّر الاتصال بسيرفر شركة الشحن (${err?.code || "fetch failed"}). تحقق من رابط API في إعدادات التكامل.`;

@@ -1584,10 +1584,16 @@ export async function registerRoutes(
   app.post("/api/carrier-accounts", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const { carrierName, connectionName, apiKey, apiSecret, apiUrl, storeName, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
-      if (!carrierName || !apiKey) {
+      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
+      if (!carrierName || !rawApiKey) {
         return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
       }
+      // Strip control chars / newlines from token before persisting
+      const cleanKey = (s: string | undefined | null) =>
+        (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+      const apiKey    = cleanKey(rawApiKey);
+      const apiSecret = cleanKey(rawApiSecret) || null;
+
       const { randomUUID } = await import("crypto");
       const webhookToken = `${carrierName}-${storeId}-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 
@@ -1600,7 +1606,7 @@ export async function registerRoutes(
         carrierName,
         connectionName: name,
         apiKey,
-        apiSecret: apiSecret || null,
+        apiSecret,
         apiUrl: apiUrl || null,
         webhookToken,
         storeName: storeName || null,
@@ -1638,11 +1644,13 @@ export async function registerRoutes(
       const acct = await storage.getCarrierAccount(id);
       if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
 
-      const { connectionName, apiKey, apiSecret, apiUrl, storeName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
+      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
+      const cleanKey = (s: string | undefined | null) =>
+        (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
       const updated = await storage.updateCarrierAccount(id, {
         ...(connectionName !== undefined && { connectionName }),
-        ...(apiKey !== undefined && apiKey !== "" && { apiKey }),
-        ...(apiSecret !== undefined && { apiSecret }),
+        ...(rawPatchKey !== undefined && rawPatchKey !== "" && { apiKey: cleanKey(rawPatchKey) }),
+        ...(rawPatchSecret !== undefined && { apiSecret: cleanKey(rawPatchSecret) || null }),
         ...(apiUrl !== undefined && { apiUrl }),
         ...(storeName !== undefined && { storeName }),
         ...(assignmentRule !== undefined && { assignmentRule }),
