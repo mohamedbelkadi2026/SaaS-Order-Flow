@@ -18,6 +18,7 @@ import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
+import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
 
 const ALL_STATUSES = [
   { value: '', label: 'Tous les statuts' },
@@ -290,16 +291,23 @@ export default function AllOrders() {
     });
   }, [filteredOrders]);
 
-  // Pre-shipping validation
+  // Pre-shipping validation — runs immediately using client-side city lists,
+  // then upgrades to server-side list when bulkCarrierData arrives.
   useEffect(() => {
-    if (!bulkShipProvider || !showBulkShipModal || !bulkCarrierData) { setShipValidation(null); return; }
+    if (!bulkShipProvider || !showBulkShipModal) { setShipValidation(null); return; }
     const selectedOrders = filteredOrders.filter((o: any) => selectedIds.has(o.id));
     if (selectedOrders.length === 0) { setShipValidation(null); return; }
-    const results = validateOrdersBatch(selectedOrders, bulkCarrierData.cities ?? [], bulkCarrierData.isCarrierSpecific ?? false);
+
+    // Use server cities if available; otherwise fall back to the client-side list instantly
+    const cities         = bulkCarrierData?.cities         ?? getDefaultCitiesForCarrier(bulkShipProvider);
+    const isCarrierSpec  = bulkCarrierData?.isCarrierSpecific
+      ?? (getDefaultCitiesForCarrier(bulkShipProvider).length < 700); // not the generic list
+
+    const results = validateOrdersBatch(selectedOrders, cities, isCarrierSpec);
     setShipValidation({
-      invalid: results.filter(r => !r.valid),
+      invalid:     results.filter(r => !r.valid),
       suggestOnly: results.filter(r => r.valid && r.suggestedCity),
-      valid: results.filter(r => r.valid),
+      valid:       results.filter(r => r.valid),
     });
   }, [bulkShipProvider, bulkCarrierData, selectedIds, filteredOrders, showBulkShipModal]);
 

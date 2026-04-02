@@ -23,6 +23,7 @@ import { DateRangePicker } from "@/components/date-range-picker";
 import { useRealtime } from "@/hooks/use-realtime";
 import { apiRequest } from "@/lib/queryClient";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
+import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
 
 function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
@@ -447,16 +448,18 @@ export default function Orders() {
     return () => es.close();
   }, [shipProgress?.active]);
 
-  // ── Pre-shipping validation: run whenever carrier or selection changes ──
+  // ── Pre-shipping validation: runs immediately with client-side city list,
+  //    upgrades to server list when bulkCarrierData arrives ──
   useEffect(() => {
-    if (!bulkShipProvider || !showBulkShipModal) {
-      setShipValidation(null);
-      return;
-    }
-    if (!bulkCarrierData) return;
+    if (!bulkShipProvider || !showBulkShipModal) { setShipValidation(null); return; }
     const selectedOrders = filteredOrders.filter((o: any) => selectedIds.has(o.id));
     if (selectedOrders.length === 0) { setShipValidation(null); return; }
-    const results = validateOrdersBatch(selectedOrders, bulkCarrierData.cities ?? [], bulkCarrierData.isCarrierSpecific ?? false);
+
+    const cities        = bulkCarrierData?.cities         ?? getDefaultCitiesForCarrier(bulkShipProvider);
+    const isCarrierSpec = bulkCarrierData?.isCarrierSpecific
+      ?? (getDefaultCitiesForCarrier(bulkShipProvider).length < 700);
+
+    const results = validateOrdersBatch(selectedOrders, cities, isCarrierSpec);
     const invalid = results.filter(r => !r.valid);
     const suggestOnly = results.filter(r => r.valid && r.suggestedCity);
     const valid = results.filter(r => r.valid);

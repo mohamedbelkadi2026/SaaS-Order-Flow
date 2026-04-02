@@ -1,0 +1,24 @@
+"I am launching TajerGrow.com and I need the Shipping Integration to be 100% professional and bug-free. Currently, connected carriers don't appear in the dispatch menu, and cities are not filtered. Please implement this final logic:
+1. UI Alignment: Credentials View (Refer to Screenshot):
+Update the 'Credentials' sub-page for each carrier. It must look exactly like the provided image:
+Connection Tabs: (e.g., 'Connection 1').
+Connection Information Table: Store Name, Status (Active), Created At.
+Credentials Table: 'Authorization' | [Value] | Copy Icon.
+Actions: Edit button, Delete button, and an 'Active' toggle switch.
+Logic: Ensure this data is pulled directly from the carrier_accounts table in PostgreSQL.
+2. Functional Dispatch Loop (The Bridge):
+In the 'Expédier les commandes' modal:
+Action: Dynamically fetch all carriers from carrier_accounts where store_id = current_user.store_id.
+Dropdown: The 'TRANSPORTEUR' list must ONLY show the carriers I have successfully connected.
+Requirement: When I select a carrier, the system must use its specific auth_token for the API call to Digylog/Cathedis.
+3. Dynamic City Logic (Carrier-Specific):
+The Rule: Each shipping company in Morocco has its own city list.
+Implementation:
+When a carrier is selected in the dispatch modal or order details, the 'Ville' dropdown must instantly filter to show only the cities that this specific carrier supports.
+Use the nomenclature of each carrier (e.g., Digylog cities vs Cathedis cities).
+If an order has a city that doesn't match the carrier's list, show a Red Alert: '⚠️ هذه المدينة غير مدعومة من طرف هذه الشركة، يرجى التصحيح'.
+4. Deployment & Stability:
+Ensure all these changes are production-ready for Railway.
+Use Socket.io to ensure the 'Connected' status updates on the dashboard without a page refresh.
+Make the phone number and address fields mandatory before allowing the 'Expédier' action.
+Technical Goal: Create a 'Seamless Ecosystem'. If a user connects Digylog, they should only see Digylog cities and be able to ship to Digylog with one click. No empty menus, no manual city errors."

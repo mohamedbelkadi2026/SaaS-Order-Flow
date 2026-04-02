@@ -10,8 +10,9 @@ import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { CityCombobox } from "@/components/city-combobox";
-import { MOROCCAN_CITIES } from "@/lib/carrier-cities";
+import { MOROCCAN_CITIES, getDefaultCitiesForCarrier, findBestCityMatch } from "@/lib/carrier-cities";
 import { ProductCombobox, type ProductOption } from "@/components/product-combobox";
+import { AlertTriangle } from "lucide-react";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
@@ -498,6 +499,35 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   data-testid="select-city"
                   className="w-full"
                 />
+                {/* ── Carrier city mismatch alert ─────────────────────── */}
+                {(() => {
+                  const city = (fields.customerCity || "").trim();
+                  if (!city || !isCarrierSpecific || carrierCities.length === 0) return null;
+                  const norm = (s: string) =>
+                    s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+                  const exact = carrierCities.some(c => norm(c) === norm(city));
+                  if (exact) return null;
+                  const suggestion = findBestCityMatch(city, carrierCities);
+                  return (
+                    <div className="mt-1.5 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-red-500" />
+                      <div>
+                        <p className="font-medium text-[13px]">
+                          ⚠️ هذه المدينة غير مدعومة من طرف هذه الشركة، يرجى التصحيح
+                        </p>
+                        {suggestion && (
+                          <button
+                            type="button"
+                            className="mt-1 text-[11px] underline text-red-600 hover:text-red-800"
+                            onClick={() => set("customerCity", suggestion)}
+                          >
+                            اقتراح: استخدم «{suggestion}»
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </Field>
 
               <Field label="Adresse">
