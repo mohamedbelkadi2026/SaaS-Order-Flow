@@ -135,9 +135,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [submitError,   setSubmitError]   = useState<string | null>(null);
 
   const domain = getWebhookDomain();
-  const webhookUrl = existingAccount?.webhookToken
-    ? `${domain}/api/webhook/carrier/${existingAccount.webhookToken}`
-    : `${domain}/api/webhooks/shipping/${providerId}`;
+  // Permanent webhook URL — based on storeId + carrierName, never changes
+  // even if the token or API key is updated.
+  const resolvedStoreId = existingAccount?.storeId || selectedStoreId;
+  const webhookUrl = resolvedStoreId
+    ? `${domain}/api/webhooks/carrier/${resolvedStoreId}/${providerId}`
+    : `${domain}/api/webhooks/carrier/{STORE_ID}/${providerId}`;
 
   /* Resolve display name for the selected store */
   const selectedStore = stores.find((s: any) => s.id?.toString() === selectedStoreId);
@@ -304,9 +307,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             )}
           </div>
 
-          {/* ── WebHook URL ── */}
+          {/* ── WebHook URL (permanent) ── */}
           <div className="space-y-1.5">
-            <Label className="font-semibold text-sm">WebHook URL</Label>
+            <Label className="font-semibold text-sm flex items-center gap-1.5">
+              WebHook URL
+              <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Permanente</span>
+            </Label>
             <div className="flex items-center gap-2 p-2.5 rounded-xl border bg-muted/30">
               <code className="flex-1 text-[11px] font-mono truncate text-foreground">
                 {webhookUrl}
@@ -326,8 +332,8 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
               </button>
             </div>
-            <p className="text-[10px] text-muted-foreground">
-              Collez cette URL dans les paramètres webhook du transporteur.
+            <p className="text-[10px] text-muted-foreground leading-relaxed">
+              Cette URL est <strong>permanente</strong> — elle ne change jamais, même si vous mettez à jour le token ou les paramètres. Collez-la dans les réglages webhook du transporteur.
             </p>
           </div>
 

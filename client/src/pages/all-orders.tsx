@@ -421,7 +421,11 @@ export default function AllOrders() {
     }
     bulkShip.mutate({ orderIds: Array.from(selectedIds), provider: bulkShipProvider, accountId: bulkShipAccountId }, {
       onSuccess: (data) => {
-        toast({ title: "Envoi réussi", description: `${data.shipped} commandes expédiées` });
+        if (data.queued) {
+          toast({ title: "Expédition lancée ✅", description: `${data.total} commande(s) en cours d'envoi en arrière-plan.` });
+        } else {
+          toast({ title: "Envoi réussi", description: `${data.shipped} commandes expédiées` });
+        }
         setShowBulkShipModal(false);
         setSelectedIds(new Set());
         resetBulkShipModal();

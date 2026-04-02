@@ -460,13 +460,20 @@ export default function Orders() {
         const d = JSON.parse(e.data);
         setShipProgress(prev => prev ? {
           ...prev,
-          done: d.done ?? prev.done,
-          total: d.total ?? prev.total,
+          done:    d.done    ?? prev.done,
+          total:   d.total   ?? prev.total,
           shipped: d.shipped ?? prev.shipped,
-          failed: d.failed ?? prev.failed,
-          active: !d.complete,
+          failed:  d.failed  ?? prev.failed,
+          results: d.results ?? (prev as any).results,
+          active:  !d.complete,
         } : null);
-        if (d.complete) es.close();
+        if (d.complete) {
+          es.close();
+          // Invalidate order cache so the updated statuses appear immediately
+          queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+        }
       } catch {}
     });
     es.onerror = () => { /* keep alive — server may not be streaming yet */ };
@@ -608,22 +615,29 @@ export default function Orders() {
 
     bulkShip.mutate({ orderIds, provider, accountId }, {
       onSuccess: (data) => {
-        // SSE may have already set active:false via the `complete` flag,
-        // but always sync final numbers + per-order results from the HTTP response
-        setShipProgress(prev => prev ? {
-          ...prev,
-          active: false,
-          shipped: data.shipped ?? prev.shipped,
-          failed: data.failed ?? prev.failed,
-          done: data.total ?? prev.done,
-          results: data.results ?? [],
-        } : null);
-        setSelectedIds(new Set());
-        setBulkShipProvider("");
-        setBulkShipAccountId(null);
-        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+        if (data.queued) {
+          // Background processing — keep progress bar active; SSE events will
+          // update the counts and set active:false when complete.
+          setSelectedIds(new Set());
+          setBulkShipProvider("");
+          setBulkShipAccountId(null);
+        } else {
+          // Synchronous result (legacy) — finalize immediately
+          setShipProgress(prev => prev ? {
+            ...prev,
+            active: false,
+            shipped: data.shipped ?? prev.shipped,
+            failed: data.failed ?? prev.failed,
+            done: data.total ?? prev.done,
+            results: data.results ?? [],
+          } : null);
+          setSelectedIds(new Set());
+          setBulkShipProvider("");
+          setBulkShipAccountId(null);
+          queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+        }
       },
       onError: (err: any) => {
         const msg = String(err.message || "").replace(/^\d{3}:\s*/, "");

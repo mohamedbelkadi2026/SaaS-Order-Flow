@@ -951,137 +951,142 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Aucune commande éligible (statut 'confirme' requis)" });
       }
 
+      // ── Pre-load everything needed for the background job ────────
       type ShipResult = { orderId: number; orderNumber?: string; trackingNumber?: string; labelLink?: string; status: 'shipped' | 'failed'; error?: string };
-      const results: ShipResult[] = [];
       const total = eligible.length;
-      let done = 0;
-      let shippedCount = 0;
-      let failedCount  = 0;
-
-      // ── Helpers ─────────────────────────────────────────────────
-      const getProductName = (order: any) =>
-        order.rawProductName ||
-        (order.items?.length > 0
-          ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
-          : 'Produit');
 
       // Pre-load all active carrier accounts for smart city-based dispatch
       const allCarrierAccounts = await storage.getCarrierAccounts(storeId, provider);
       const activeAccounts = allCarrierAccounts.filter((a: any) => a.isActive === 1);
 
-      // Resolve credentials per-order:
-      // if user pinned an account → always use it; otherwise use city routing
-      const getCredsForOrder = (city: string): Record<string, string> => {
-        if (pinnedCreds) return pinnedCreds as Record<string, string>;
-        // 1. Try city-specific account
-        const cityAcct = activeAccounts.find((a: any) => {
-          if (a.assignmentRule !== 'city') return false;
-          try {
-            const cities: string[] = JSON.parse(a.assignmentData || '[]');
-            return cities.some((c: string) => c.toLowerCase() === city.toLowerCase());
-          } catch { return false; }
-        });
-        if (cityAcct) return { apiKey: cityAcct.apiKey, apiSecret: cityAcct.apiSecret || '', apiUrl: cityAcct.apiUrl || '' };
-        // 2. Default account
-        const def = activeAccounts.find((a: any) => a.isDefault === 1) || activeAccounts[0];
-        if (def) return { apiKey: def.apiKey, apiSecret: def.apiSecret || '', apiUrl: def.apiUrl || '' };
-        // 3. Fall back to the pre-validated defaultCreds
-        return defaultCreds as Record<string, string>;
-      };
+      // ── Reply IMMEDIATELY — processing continues in background ───
+      res.status(202).json({ queued: true, total });
 
-      // Pre-load carrier city list for auto-matching
-      const bulkCityList: string[] = getDefaultCitiesForProvider(provider);
+      // ── Background processing ─────────────────────────────────────
+      setImmediate(async () => {
+        const results: ShipResult[] = [];
+        let done = 0;
+        let shippedCount = 0;
+        let failedCount  = 0;
 
-      const getResolvedCity = (order: any): string => {
-        const raw = ((order as any).customerCity || '').trim();
-        const matched = autoMatchCity(raw, bulkCityList);
-        if (matched && matched !== raw) {
-          console.log(`[BulkShip] City auto-corrected: "${raw}" → "${matched}" (#${(order as any).orderNumber})`);
-        }
-        return matched || raw;
-      };
+        // ── Helpers ─────────────────────────────────────────────────
+        const getProductName = (order: any) =>
+          order.rawProductName ||
+          (order.items?.length > 0
+            ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
+            : 'Produit');
 
-      const broadcastProgress = () => broadcastToStore(storeId, 'shipping_progress', {
-        done, total, shipped: shippedCount, failed: failedCount,
-      });
+        // Resolve credentials per-order:
+        // if user pinned an account → always use it; otherwise use city routing
+        const getCredsForOrder = (city: string): Record<string, string> => {
+          if (pinnedCreds) return pinnedCreds as Record<string, string>;
+          const cityAcct = activeAccounts.find((a: any) => {
+            if (a.assignmentRule !== 'city') return false;
+            try {
+              const cities: string[] = JSON.parse(a.assignmentData || '[]');
+              return cities.some((c: string) => c.toLowerCase() === city.toLowerCase());
+            } catch { return false; }
+          });
+          if (cityAcct) return { apiKey: cityAcct.apiKey, apiSecret: cityAcct.apiSecret || '', apiUrl: cityAcct.apiUrl || '' };
+          const def = activeAccounts.find((a: any) => a.isDefault === 1) || activeAccounts[0];
+          if (def) return { apiKey: def.apiKey, apiSecret: def.apiSecret || '', apiUrl: def.apiUrl || '' };
+          return defaultCreds as Record<string, string>;
+        };
 
-      // ── Batch processing (5 simultaneous, no sequential blocking) ─
-      const BATCH_SIZE = 5;
-      for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
-        const batch = eligible.slice(i, i + BATCH_SIZE);
+        // Pre-load carrier city list for auto-matching
+        const bulkCityList: string[] = getDefaultCitiesForProvider(provider);
 
-        // Fire all requests in this batch simultaneously
-        const settled = await Promise.allSettled(
-          batch.map(order => {
-            const resolvedCity = getResolvedCity(order);
-            const orderCreds = getCredsForOrder(resolvedCity);
-            return shipOrderToCarrier(provider, orderCreds, {
-              customerName: order.customerName,
-              phone:        order.customerPhone,
-              city:         resolvedCity,
-              address:      (order as any).customerAddress || (order as any).customerCity || '',
-              totalPrice:   order.totalPrice,
-              productName:  getProductName(order),
-              canOpen:      (order as any).canOpen === 1,
-              orderNumber:  (order as any).orderNumber || String(order.id),
-              orderId:      order.id,
-              storeId,
-            });
-          })
-        );
-
-        // ── Classify results ───────────────────────────────────────
-        const dbUpdates: Promise<unknown>[] = [];
-        const logUpdates: Promise<unknown>[] = [];
-
-        settled.forEach((outcome, idx) => {
-          const order = batch[idx];
-          const ref   = (order as any).orderNumber || order.id;
-
-          if (outcome.status === 'fulfilled' && outcome.value.success) {
-            const { trackingNumber, labelUrl } = outcome.value;
-            console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber}`);
-            // Queue DB writes — run them in parallel after classifying
-            dbUpdates.push(
-              storage.updateOrderShipping(order.id, trackingNumber!, labelUrl!, provider),
-              storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
-            );
-            logUpdates.push(storage.createIntegrationLog({
-              storeId, integrationId: null, provider,
-              action: 'shipping_sent', status: 'success',
-              message: `✅ Commande #${ref} envoyée. Tracking: ${trackingNumber}`,
-            }));
-            results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, trackingNumber, labelLink: labelUrl, status: 'shipped' });
-            shippedCount++;
-          } else {
-            const errMsg =
-              outcome.status === 'rejected'
-                ? String(outcome.reason?.message || outcome.reason || 'Erreur inconnue')
-                : (outcome.value?.error || 'Erreur inconnue');
-            const httpCode = outcome.status === 'fulfilled' ? (outcome.value?.httpStatus ?? '?') : '?';
-            console.error(`[SHIPPING-LOG]: ❌ Order #${ref} failed — HTTP ${httpCode}: ${errMsg}`);
-            logUpdates.push(storage.createIntegrationLog({
-              storeId, integrationId: null, provider,
-              action: 'shipping_sent', status: 'fail',
-              message: `❌ Commande #${ref} refusée (HTTP ${httpCode}): ${errMsg}`,
-            }));
-            results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'failed', error: errMsg });
-            failedCount++;
+        const getResolvedCity = (order: any): string => {
+          const raw = ((order as any).customerCity || '').trim();
+          const matched = autoMatchCity(raw, bulkCityList);
+          if (matched && matched !== raw) {
+            console.log(`[BulkShip] City auto-corrected: "${raw}" → "${matched}" (#${(order as any).orderNumber})`);
           }
+          return matched || raw;
+        };
+
+        const broadcastProgress = () => broadcastToStore(storeId, 'shipping_progress', {
+          done, total, shipped: shippedCount, failed: failedCount,
         });
 
-        // ── Flush DB writes in parallel before moving to next batch ─
-        await Promise.all([...dbUpdates, ...logUpdates]);
-        done += batch.length;
+        try {
+          // ── Batch processing (5 simultaneous, no sequential blocking) ─
+          const BATCH_SIZE = 5;
+          for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
+            const batch = eligible.slice(i, i + BATCH_SIZE);
 
-        // ── Broadcast progress via SSE ─────────────────────────────
-        broadcastProgress();
-      }
+            const settled = await Promise.allSettled(
+              batch.map(order => {
+                const resolvedCity = getResolvedCity(order);
+                const orderCreds = getCredsForOrder(resolvedCity);
+                return shipOrderToCarrier(provider, orderCreds, {
+                  customerName: order.customerName,
+                  phone:        order.customerPhone,
+                  city:         resolvedCity,
+                  address:      (order as any).customerAddress || (order as any).customerCity || '',
+                  totalPrice:   order.totalPrice,
+                  productName:  getProductName(order),
+                  canOpen:      (order as any).canOpen === 1,
+                  orderNumber:  (order as any).orderNumber || String(order.id),
+                  orderId:      order.id,
+                  storeId,
+                });
+              })
+            );
 
-      // Final broadcast — ensures frontend always receives 100%
-      broadcastToStore(storeId, 'shipping_progress', { done: total, total, shipped: shippedCount, failed: failedCount, complete: true });
+            const dbUpdates: Promise<unknown>[] = [];
+            const logUpdates: Promise<unknown>[] = [];
 
-      res.json({ shipped: shippedCount, failed: failedCount, total: results.length, results });
+            settled.forEach((outcome, idx) => {
+              const order = batch[idx];
+              const ref   = (order as any).orderNumber || order.id;
+
+              if (outcome.status === 'fulfilled' && outcome.value.success) {
+                const { trackingNumber, labelUrl } = outcome.value;
+                console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber}`);
+                dbUpdates.push(
+                  storage.updateOrderShipping(order.id, trackingNumber!, labelUrl!, provider),
+                  storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
+                );
+                logUpdates.push(storage.createIntegrationLog({
+                  storeId, integrationId: null, provider,
+                  action: 'shipping_sent', status: 'success',
+                  message: `✅ Commande #${ref} envoyée. Tracking: ${trackingNumber}`,
+                }));
+                results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, trackingNumber, labelLink: labelUrl, status: 'shipped' });
+                shippedCount++;
+              } else {
+                const errMsg =
+                  outcome.status === 'rejected'
+                    ? String(outcome.reason?.message || outcome.reason || 'Erreur inconnue')
+                    : (outcome.value?.error || 'Erreur inconnue');
+                const httpCode = outcome.status === 'fulfilled' ? (outcome.value?.httpStatus ?? '?') : '?';
+                console.error(`[SHIPPING-LOG]: ❌ Order #${ref} failed — HTTP ${httpCode}: ${errMsg}`);
+                logUpdates.push(storage.createIntegrationLog({
+                  storeId, integrationId: null, provider,
+                  action: 'shipping_sent', status: 'fail',
+                  message: `❌ Commande #${ref} refusée (HTTP ${httpCode}): ${errMsg}`,
+                }));
+                results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'failed', error: errMsg });
+                failedCount++;
+              }
+            });
+
+            await Promise.all([...dbUpdates, ...logUpdates]);
+            done += batch.length;
+            broadcastProgress();
+          }
+        } catch (bgErr) {
+          console.error("[BULK-SHIP:BG] Unexpected error in background job:", bgErr);
+        } finally {
+          // Final broadcast — always sent, even on partial failure
+          broadcastToStore(storeId, 'shipping_progress', {
+            done: total, total, shipped: shippedCount, failed: failedCount,
+            complete: true, results,
+          });
+          console.log(`[BULK-SHIP:BG] Done — ${shippedCount} shipped, ${failedCount} failed out of ${total}`);
+        }
+      });
     } catch (err) {
       console.error("[BULK-SHIP] Unexpected error:", err);
       res.status(500).json({ message: "Erreur inattendue lors de l'expédition en masse" });
@@ -1676,6 +1681,62 @@ export async function registerRoutes(
     } catch (error: any) {
       console.error('[DB-ERROR] DELETE /api/carrier-accounts:', error?.message || error);
       res.status(500).json({ message: error?.message || 'Erreur serveur lors de la suppression du compte' });
+    }
+  });
+
+  // ── Permanent webhook URL: /api/webhooks/carrier/:storeId/:carrierName ─────
+  // This URL never changes — based on storeId (permanent) + carrier name.
+  // Use this in your carrier's webhook settings instead of the token-based URL.
+  app.post("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+    try {
+      const storeId     = Number(req.params.storeId);
+      const carrierName = req.params.carrierName.toLowerCase();
+      if (!storeId || isNaN(storeId)) return res.status(400).json({ message: "storeId invalide" });
+
+      const { db } = await import("./db");
+      const { carrierAccounts: tbl } = await import("@shared/schema");
+      const { eq, and } = await import("drizzle-orm");
+
+      // Pick the default/active account for this store+carrier
+      const rows = await db.select().from(tbl).where(
+        and(eq(tbl.storeId, storeId), eq(tbl.isActive, 1))
+      );
+      const account = rows.find(r => r.carrierName.toLowerCase() === carrierName)
+        || rows.find(r => r.isDefault === 1)
+        || rows[0];
+
+      if (!account) {
+        return res.status(404).json({ message: "Aucun compte transporteur trouvé pour ce magasin" });
+      }
+
+      const body = req.body;
+      const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
+      const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
+
+      let newStatus: string | null = null;
+      if (rawStatus.includes("livr")) newStatus = "Livré";
+      else if (rawStatus.includes("retour")) newStatus = "Retour";
+      else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev")) newStatus = "Attente De Ramassage";
+
+      if (trackingNumber && newStatus) {
+        const order = await storage.getOrderByTrackingNumber(storeId, trackingNumber);
+        if (order) {
+          await storage.updateOrderStatus(order.id, newStatus);
+          console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} → ${newStatus}`);
+        }
+      }
+
+      await storage.createIntegrationLog({
+        storeId, integrationId: null, provider: account.carrierName,
+        action: 'webhook_received', status: 'success',
+        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}`,
+        payload: JSON.stringify(body).slice(0, 500),
+      });
+
+      res.json({ received: true });
+    } catch (err: any) {
+      console.error("[Webhook:carrier:permanent]", err);
+      res.status(500).json({ message: "Erreur webhook" });
     }
   });
 
