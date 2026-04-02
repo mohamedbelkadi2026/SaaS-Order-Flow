@@ -1040,13 +1040,14 @@ export async function registerRoutes(
 
           if (outcome.status === 'fulfilled' && outcome.value.success) {
             const { trackingNumber, labelUrl } = outcome.value;
+            console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber}`);
             // Queue DB writes — run them in parallel after classifying
             dbUpdates.push(
               storage.updateOrderShipping(order.id, trackingNumber!, labelUrl!, provider),
               storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
             );
             logUpdates.push(storage.createIntegrationLog({
-              storeId, integrationId: integration.id, provider,
+              storeId, integrationId: null, provider,
               action: 'shipping_sent', status: 'success',
               message: `✅ Commande #${ref} envoyée. Tracking: ${trackingNumber}`,
             }));
@@ -1058,8 +1059,9 @@ export async function registerRoutes(
                 ? String(outcome.reason?.message || outcome.reason || 'Erreur inconnue')
                 : (outcome.value?.error || 'Erreur inconnue');
             const httpCode = outcome.status === 'fulfilled' ? (outcome.value?.httpStatus ?? '?') : '?';
+            console.error(`[SHIPPING-LOG]: ❌ Order #${ref} failed — HTTP ${httpCode}: ${errMsg}`);
             logUpdates.push(storage.createIntegrationLog({
-              storeId, integrationId: integration.id, provider,
+              storeId, integrationId: null, provider,
               action: 'shipping_sent', status: 'fail',
               message: `❌ Commande #${ref} refusée (HTTP ${httpCode}): ${errMsg}`,
             }));
@@ -3333,8 +3335,9 @@ export async function registerRoutes(
 
       if (!shipResult.success) {
         // ── Carrier rejected — keep order status as 'confirme' ──────
+        console.error(`[SHIPPING-LOG]: ❌ Order #${order.orderNumber} rejected by ${provider} (HTTP ${shipResult.httpStatus ?? '?'}): ${shipResult.error}`);
         await storage.createIntegrationLog({
-          storeId, integrationId: integration.id, provider,
+          storeId, integrationId: null, provider,
           action: 'shipping_sent', status: 'fail',
           message: `❌ Commande #${order.orderNumber} refusée par ${provider} (HTTP ${shipResult.httpStatus ?? '?'}): ${shipResult.error}`,
         });
@@ -3348,11 +3351,12 @@ export async function registerRoutes(
 
       // ── Success — update DB only after carrier confirms ───────────
       const { trackingNumber, labelUrl } = shipResult;
+      console.log(`[SHIPPING-LOG]: ✅ Order #${order.orderNumber} dispatched via ${provider} — tracking: ${trackingNumber}`);
       await storage.updateOrderShipping(orderId, trackingNumber!, labelUrl!, provider);
       await storage.updateOrderStatus(orderId, 'Attente De Ramassage');
 
       await storage.createIntegrationLog({
-        storeId, integrationId: integration.id, provider,
+        storeId, integrationId: null, provider,
         action: 'shipping_sent', status: 'success',
         message: `✅ Commande #${order.orderNumber} envoyée via ${provider}. Tracking: ${trackingNumber}`,
       });
