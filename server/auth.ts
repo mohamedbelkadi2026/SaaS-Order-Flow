@@ -129,7 +129,7 @@ export function setupAuth(app: Express) {
 
   app.post("/api/auth/signup", async (req, res, next) => {
     try {
-      const { storeName, username, email, password, language } = req.body;
+      const { storeName, username, email, password, language, phone } = req.body;
 
       if (!storeName || !username || !email || !password) {
         return res.status(400).json({ message: "Tous les champs sont requis" });
@@ -146,6 +146,7 @@ export function setupAuth(app: Express) {
       const user = await storage.createUser({
         username,
         email,
+        phone: phone || null,
         password: hashedPassword,
         role: "owner",
         storeId: store.id,
