@@ -256,14 +256,27 @@ export async function shipOrderToCarrier(
     return { success: false, error: validationError, carrierMessage: validationError };
   }
 
-  // ── 2. Resolve URL ───────────────────────────────────────────────
+  // ── 2. Resolve & sanitize URL ────────────────────────────────────
   const providerKey = provider.toLowerCase().replace(/\s+/g, "");
   const defaultUrl  = CARRIER_ENDPOINTS[providerKey];
-  const apiUrl      = creds.apiUrl?.trim() || defaultUrl;
+
+  // Strip control chars, newlines, and spaces that cause ENOTFOUND / ECONNREFUSED
+  const sanitizeUrl = (raw: string | undefined | null): string =>
+    (raw || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+
+  const apiUrl = sanitizeUrl(creds.apiUrl) || defaultUrl || "";
 
   if (!apiUrl) {
     const err = `Aucune URL API configurée pour "${provider}". Ajoutez l'URL dans Intégrations → Transporteurs.`;
     console.error(`${tag} ❌ ${err}`);
+    return { success: false, error: err };
+  }
+
+  // Validate that the URL actually looks like an HTTP(S) URL
+  const urlLooksValid = /^https?:\/\/.+/i.test(apiUrl);
+  if (!urlLooksValid) {
+    const err = `⚠️ الرابط الخاص بشركة الشحن غير صحيح: "${apiUrl}". يجب أن يبدأ بـ https://`;
+    console.error(`${tag} ❌ Bad URL format: "${apiUrl}"`);
     return { success: false, error: err };
   }
 
@@ -323,6 +336,7 @@ export async function shipOrderToCarrier(
 
   console.log(`\n${"═".repeat(70)}`);
   console.log(`${tag} 🚀 SENDING ORDER TO CARRIER`);
+  console.log(`[DEBUG-SHIPPING]: Attempting to hit URL: ${apiUrl}`);
   console.log(`${tag} URL:            ${apiUrl}`);
   console.log(`${tag} PHONE SANITIZE: "${input.phone}" → "${sanitizedPhone}"`);
   console.log(`${tag} CITY:           "${input.city}"   ADDRESS: "${input.address}"`);
@@ -331,17 +345,38 @@ export async function shipOrderToCarrier(
   console.log(`${"═".repeat(70)}\n`);
 
   // ── 5. HTTP request via axios (20s timeout, SSL bypass) ──────────
+  // Inner helper — runs one attempt and throws on network error
+  const attempt = () => axios.post(apiUrl, payload, {
+    headers,
+    timeout: TIMEOUT_MS,
+    httpsAgent: SSL_AGENT,
+    validateStatus: () => true, // Don't throw on 4xx/5xx — handled below
+  });
+
   let httpStatus = 0;
   let rawBody: unknown;
 
   try {
-    const response = await axios.post(apiUrl, payload, {
-      headers,
-      timeout: TIMEOUT_MS,
-      httpsAgent: SSL_AGENT,
-      // Don't throw on 4xx/5xx — handle manually for better error messages
-      validateStatus: () => true,
-    });
+    let response: Awaited<ReturnType<typeof attempt>>;
+
+    try {
+      response = await attempt();
+    } catch (firstErr: any) {
+      // ── Retry once for transient DNS / network glitches (ENOTFOUND, ECONNRESET) ──
+      const isTransient =
+        firstErr?.code === "ENOTFOUND"   ||
+        firstErr?.code === "ECONNRESET"  ||
+        firstErr?.code === "ECONNREFUSED";
+
+      if (isTransient) {
+        console.warn(`${tag} ⚠️ Transient network error (${firstErr.code}) — retrying in 1.5s...`);
+        console.warn(`[DEBUG-SHIPPING]: Retry attempt for URL: ${apiUrl}`);
+        await new Promise(r => setTimeout(r, 1500));
+        response = await attempt(); // second attempt — let it throw if it fails again
+      } else {
+        throw firstErr;
+      }
+    }
 
     httpStatus = response.status;
     rawBody    = response.data;
@@ -383,17 +418,24 @@ export async function shipOrderToCarrier(
     return { success: true, trackingNumber, labelUrl, httpStatus, rawResponse: rawBody };
 
   } catch (err: any) {
-    // ── Network / timeout / SSL errors ────────────────────────────
+    // ── Classify the error ─────────────────────────────────────────
     const isTimeout =
       err?.code === "ECONNABORTED" ||
       err?.code === "ETIMEDOUT"    ||
       axios.isCancel(err)          ||
       err?.message?.toLowerCase().includes("timeout");
 
+    // DNS resolution failure — almost always a bad/typo'd URL or pasted garbage
+    const isDnsError =
+      err?.code === "ENOTFOUND" ||
+      err?.message?.toLowerCase().includes("enotfound");
+
+    const isConnRefused = err?.code === "ECONNREFUSED";
+    const isConnReset   = err?.code === "ECONNRESET";
+
     const isFetchFailed =
-      err?.code === "ECONNREFUSED" ||
-      err?.code === "ENOTFOUND"    ||
-      err?.code === "ECONNRESET"   ||
+      isConnRefused ||
+      isConnReset   ||
       err?.message?.toLowerCase().includes("fetch failed") ||
       err?.message?.toLowerCase().includes("network");
 
@@ -405,12 +447,15 @@ export async function shipOrderToCarrier(
 
     // ── Detailed diagnostic log ───────────────────────────────────
     console.error(`\n${"─".repeat(70)}`);
-    console.error(`${tag} ❌ SHIPPING ${isInvalidHeader ? "HEADER" : "NETWORK"} ERROR`);
+    console.error(`${tag} ❌ SHIPPING ${isInvalidHeader ? "HEADER" : isDnsError ? "DNS" : "NETWORK"} ERROR`);
     console.error(`[SHIPPING-ERROR] URL attempted: ${apiUrl}`);
     console.error(`[SHIPPING-ERROR] Error code:    ${err?.code || "(no code)"}`);
     console.error(`[SHIPPING-ERROR] Error message: ${err?.message || String(err)}`);
+    if (isDnsError) {
+      console.error(`[DEBUG-SHIPPING]: ENOTFOUND — DNS cannot resolve "${apiUrl}". Check the URL in Shipping Integrations.`);
+    }
     if (isInvalidHeader) {
-      console.error(`[AUTH-ERROR]: Token contains illegal characters (newline/control char). Go to Shipping Integrations and re-paste the API token.`);
+      console.error(`[AUTH-ERROR]: Token contains illegal characters (newline/control char). Re-paste the API token in Shipping Integrations.`);
     }
     if (err?.response) {
       console.error(`[SHIPPING-ERROR] HTTP status:   ${err.response.status}`);
@@ -422,7 +467,9 @@ export async function shipOrderToCarrier(
     // ── User-facing error string ──────────────────────────────────
     let errMsg: string;
 
-    if (isInvalidHeader) {
+    if (isDnsError) {
+      errMsg = `⚠️ الرابط الخاص بشركة الشحن غير صحيح أو لا يمكن الوصول إليه (ENOTFOUND): "${apiUrl}". يرجى التأكد من الرابط في إعدادات التكامل.`;
+    } else if (isInvalidHeader) {
       errMsg = `⚠️ خطأ في رمز الربط (Token): يرجى التأكد من نسخه ولصقه بشكل صحيح بدون فراغات أو أسطر إضافية. اذهب إلى إعدادات التكامل وأعد لصق المفتاح.`;
     } else if (isTimeout) {
       errMsg = `⚠️ سيرفر شركة الشحن لا يستجيب حالياً (timeout ${TIMEOUT_MS / 1000}s). حاول مجدداً بعد قليل.`;
