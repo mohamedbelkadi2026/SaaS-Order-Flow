@@ -1,13 +1,21 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation } from "wouter";
-import { Loader2, Store, Lock, Mail, User, ShieldAlert, Crown, Check, Globe } from "lucide-react";
+import { Loader2, Store, Lock, Mail, User, ShieldAlert, Crown, Check } from "lucide-react";
 import { setLanguage } from "@/i18n";
 
 const NAVY = "#1e1b4b";
 const GOLD = "#C5A059";
 
+const LANGS: { code: "fr" | "ar" | "en"; label: string; flag: string }[] = [
+  { code: "fr", label: "Français", flag: "🇫🇷" },
+  { code: "en", label: "English", flag: "🇬🇧" },
+  { code: "ar", label: "العربية", flag: "🇲🇦" },
+];
+
 export default function AuthPage({ initialTab = "login" }: { initialTab?: "login" | "register" }) {
+  const { t, i18n } = useTranslation();
   const [isLogin, setIsLogin] = useState(initialTab === "login");
   const { login, signup, loginMutation, signupMutation } = useAuth();
   const [, setLocation] = useLocation();
@@ -21,16 +29,12 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
     (localStorage.getItem("tajer_lang") as "fr" | "ar" | "en") || "fr"
   );
 
-  const LANGS: { code: "fr" | "ar" | "en"; label: string; flag: string }[] = [
-    { code: "fr", label: "Français", flag: "🇫🇷" },
-    { code: "ar", label: "العربية", flag: "🇲🇦" },
-    { code: "en", label: "English", flag: "🇬🇧" },
-  ];
+  const isRtl = selectedLang === "ar";
+  const isArabic = selectedLang === "ar";
 
-  const handleLangChange = (lang: "fr" | "ar" | "en") => {
-    setSelectedLang(lang);
-    setLanguage(lang);
-  };
+  const fontFamily = isArabic
+    ? "'Cairo', 'Playfair Display', sans-serif"
+    : "'Playfair Display', serif";
 
   useEffect(() => {
     const msg = localStorage.getItem("suspended_message");
@@ -40,6 +44,11 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
     }
   }, []);
 
+  const handleLangChange = (lang: "fr" | "ar" | "en") => {
+    setSelectedLang(lang);
+    setLanguage(lang);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -48,7 +57,6 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
         setLocation("/");
       } else {
         await signup(storeName, username, email, password, selectedLang);
-        console.log("User registered, redirecting to verification page...");
         setLocation("/verify-email");
       }
     } catch {}
@@ -56,17 +64,30 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
 
   const isPending = loginMutation.isPending || signupMutation.isPending;
 
+  const labelClass = "block text-xs font-bold mb-1.5 uppercase tracking-wide";
+
   const inputClass = `
-    w-full pl-10 pr-4 h-12 rounded-xl border text-sm font-medium
+    w-full h-12 rounded-xl border text-sm font-medium
     bg-slate-50 border-slate-200 text-slate-800 placeholder-slate-400
     focus:outline-none focus:ring-2 focus:border-transparent transition-all
+    ltr:pl-10 ltr:pr-4 rtl:pr-10 rtl:pl-4
   `;
+
+  const heroFeatures = [
+    t("auth.heroF1"),
+    t("auth.heroF2"),
+    t("auth.heroF3"),
+    t("auth.heroF4"),
+    t("auth.heroF5"),
+  ];
 
   return (
     <div
+      dir={isRtl ? "rtl" : "ltr"}
       className="min-h-screen flex items-center justify-center p-4"
       style={{
         background: `radial-gradient(ellipse at center, ${NAVY} 0%, #0f0d2a 100%)`,
+        fontFamily: isArabic ? "'Cairo', sans-serif" : undefined,
       }}
     >
       {/* Background grid */}
@@ -78,16 +99,20 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
         }}
       />
 
+      {/* Two-column layout — columns flip automatically in RTL */}
       <div className="relative w-full max-w-5xl grid grid-cols-1 lg:grid-cols-2 gap-10 items-center">
 
-        {/* ── Left Panel (desktop only) ─────────────────────── */}
+        {/* ── Panel A: Features (desktop) ─────────────────── */}
         <div className="hidden lg:flex flex-col gap-8 px-4">
           {/* Logo */}
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: GOLD }}>
               <Crown className="w-5 h-5 text-white" />
             </div>
-            <span className="text-2xl font-black text-white" style={{ fontFamily: "'Playfair Display', serif" }}>
+            <span
+              className="text-2xl font-black text-white"
+              style={{ fontFamily }}
+            >
               TajerGrow
             </span>
           </div>
@@ -96,28 +121,25 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
           <div className="space-y-3">
             <h1
               className="text-4xl xl:text-5xl font-black text-white leading-tight"
-              style={{ fontFamily: "'Playfair Display', serif" }}
+              style={{ fontFamily }}
             >
-              Gérez vos commandes
+              {t("auth.heroHeadline1")}
               <br />
-              <span style={{ color: GOLD }}>comme un pro.</span>
+              <span style={{ color: GOLD }}>{t("auth.heroHeadline2")}</span>
             </h1>
             <p className="text-base leading-relaxed" style={{ color: "rgba(255,255,255,0.55)" }}>
-              La première plateforme SaaS marocaine avec tracking UTM avancé et expédition automatisée pour le COD.
+              {t("auth.heroSub")}
             </p>
           </div>
 
           {/* Feature list */}
           <div className="space-y-3">
-            {[
-              "Calcul de bénéfice net en temps réel",
-              "Confirmation WhatsApp & Appel intégrés",
-              "Tracking UTM par media buyer",
-              "Intégration directe Digylog & transporteurs",
-              "60 premières commandes gratuites",
-            ].map((f) => (
+            {heroFeatures.map((f) => (
               <div key={f} className="flex items-center gap-3">
-                <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "rgba(197,160,89,0.2)", border: `1px solid ${GOLD}` }}>
+                <div
+                  className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                  style={{ background: "rgba(197,160,89,0.2)", border: `1px solid ${GOLD}` }}
+                >
                   <Check className="w-3 h-3" style={{ color: GOLD }} />
                 </div>
                 <span className="text-sm" style={{ color: "rgba(255,255,255,0.65)" }}>{f}</span>
@@ -125,13 +147,13 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
             ))}
           </div>
 
-          {/* Domain */}
+          {/* Footer */}
           <p className="text-xs" style={{ color: "rgba(255,255,255,0.25)" }}>
-            tajergrow.com · Conçu au Maroc 🇲🇦
+            {t("auth.heroFooter")}
           </p>
         </div>
 
-        {/* ── Right Panel — Form ────────────────────────────── */}
+        {/* ── Panel B: Auth Form ────────────────────────── */}
         <div className="flex flex-col gap-4 w-full">
           {/* Suspension alert */}
           {suspendedMsg && (
@@ -145,17 +167,20 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
             </div>
           )}
 
-          {/* Mobile logo (only visible on mobile) */}
+          {/* Mobile logo */}
           <div className="flex lg:hidden items-center justify-center gap-3 mb-2">
             <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: GOLD }}>
               <Crown className="w-4 h-4 text-white" />
             </div>
-            <span className="text-xl font-black text-white" style={{ fontFamily: "'Playfair Display', serif" }}>
+            <span
+              className="text-xl font-black text-white"
+              style={{ fontFamily }}
+            >
               TajerGrow
             </span>
           </div>
 
-          {/* Card */}
+          {/* Auth card */}
           <div
             className="rounded-2xl overflow-hidden"
             style={{
@@ -164,56 +189,60 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
             }}
             data-testid="auth-card"
           >
-            {/* Card header band */}
-            <div className="h-1.5" style={{ background: `linear-gradient(90deg, ${NAVY}, ${GOLD})` }} />
+            {/* Accent band */}
+            <div className="h-1.5" style={{ background: `linear-gradient(${isRtl ? "270deg" : "90deg"}, ${NAVY}, ${GOLD})` }} />
 
             <div className="p-8">
               {/* Title */}
               <div className="text-center mb-7">
                 <h2
                   className="text-2xl font-black mb-1"
-                  style={{ color: NAVY, fontFamily: "'Playfair Display', serif" }}
+                  style={{ color: NAVY, fontFamily }}
                   data-testid="auth-title"
                 >
-                  {isLogin ? "Connexion" : "Créer un compte"}
+                  {isLogin ? t("auth.loginTitle") : t("auth.registerTitle")}
                 </h2>
                 <p className="text-sm" style={{ color: "#94a3b8" }}>
-                  {isLogin
-                    ? "Bienvenue ! Connectez-vous à votre espace."
-                    : "Lancez votre business en quelques secondes."}
+                  {isLogin ? t("auth.loginSubtitle") : t("auth.registerSubtitle")}
                 </p>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-4">
+                {/* Register-only fields */}
                 {!isLogin && (
                   <>
+                    {/* Store name */}
                     <div>
-                      <label className="block text-xs font-bold mb-1.5 uppercase tracking-wide" style={{ color: NAVY }}>
-                        Nom de la boutique
+                      <label className={labelClass} style={{ color: NAVY }}>
+                        {t("auth.storeName")}
                       </label>
                       <div className="relative">
-                        <Store className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                        <Store
+                          className="absolute top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 ltr:left-3 rtl:right-3"
+                        />
                         <input
                           data-testid="input-store-name"
-                          placeholder="Ma Boutique"
+                          placeholder={t("auth.storeNamePlaceholder")}
                           value={storeName}
                           onChange={(e) => setStoreName(e.target.value)}
                           className={inputClass}
-                          style={{ "--tw-ring-color": GOLD } as React.CSSProperties}
                           required
                         />
                       </div>
                     </div>
 
+                    {/* Full name */}
                     <div>
-                      <label className="block text-xs font-bold mb-1.5 uppercase tracking-wide" style={{ color: NAVY }}>
-                        Nom complet
+                      <label className={labelClass} style={{ color: NAVY }}>
+                        {t("auth.fullName")}
                       </label>
                       <div className="relative">
-                        <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                        <User
+                          className="absolute top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 ltr:left-3 rtl:right-3"
+                        />
                         <input
                           data-testid="input-username"
-                          placeholder="Mohamed"
+                          placeholder={t("auth.fullNamePlaceholder")}
                           value={username}
                           onChange={(e) => setUsername(e.target.value)}
                           className={inputClass}
@@ -221,41 +250,18 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
                         />
                       </div>
                     </div>
-
-                    {/* Language selector */}
-                    <div>
-                      <label className="block text-xs font-bold mb-1.5 uppercase tracking-wide flex items-center gap-1.5" style={{ color: NAVY }}>
-                        <Globe className="w-3.5 h-3.5" /> Langue de l'interface
-                      </label>
-                      <div className="flex gap-2" data-testid="language-selector">
-                        {LANGS.map(({ code, label, flag }) => (
-                          <button
-                            key={code}
-                            type="button"
-                            onClick={() => handleLangChange(code)}
-                            data-testid={`lang-option-${code}`}
-                            className="flex-1 flex items-center justify-center gap-1.5 h-10 rounded-xl border-2 text-xs font-semibold transition-all"
-                            style={{
-                              borderColor: selectedLang === code ? GOLD : "#e5e7eb",
-                              background: selectedLang === code ? `rgba(197,160,89,0.08)` : "#f9fafb",
-                              color: selectedLang === code ? NAVY : "#6b7280",
-                            }}
-                          >
-                            <span>{flag}</span>
-                            <span>{label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                   </>
                 )}
 
+                {/* Email */}
                 <div>
-                  <label className="block text-xs font-bold mb-1.5 uppercase tracking-wide" style={{ color: NAVY }}>
-                    Email
+                  <label className={labelClass} style={{ color: NAVY }}>
+                    {t("auth.email")}
                   </label>
                   <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <Mail
+                      className="absolute top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 ltr:left-3 rtl:right-3"
+                    />
                     <input
                       data-testid="input-email"
                       type="email"
@@ -268,16 +274,19 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
                   </div>
                 </div>
 
+                {/* Password */}
                 <div>
-                  <label className="block text-xs font-bold mb-1.5 uppercase tracking-wide" style={{ color: NAVY }}>
-                    Mot de passe
+                  <label className={labelClass} style={{ color: NAVY }}>
+                    {t("auth.password")}
                   </label>
                   <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <Lock
+                      className="absolute top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 ltr:left-3 rtl:right-3"
+                    />
                     <input
                       data-testid="input-password"
                       type="password"
-                      placeholder="••••••••"
+                      placeholder={t("auth.passwordPlaceholder")}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       className={inputClass}
@@ -287,6 +296,7 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
                   </div>
                 </div>
 
+                {/* Submit */}
                 <button
                   data-testid="button-submit"
                   type="submit"
@@ -295,13 +305,15 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
                   style={{
                     background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`,
                     boxShadow: `0 8px 24px rgba(197,160,89,0.4)`,
+                    fontFamily: isArabic ? "'Cairo', sans-serif" : undefined,
                   }}
                 >
                   {isPending && <Loader2 className="w-4 h-4 animate-spin" />}
-                  {isLogin ? "Se connecter" : "Créer mon compte"}
+                  {isLogin ? t("auth.loginBtn") : t("auth.registerBtn")}
                 </button>
               </form>
 
+              {/* Toggle login/register */}
               <div className="mt-5 text-center">
                 <button
                   data-testid="button-toggle-auth"
@@ -310,17 +322,47 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
                   className="text-sm font-semibold transition-colors hover:opacity-80"
                   style={{ color: GOLD }}
                 >
-                  {isLogin
-                    ? "Pas encore de compte ? Inscrivez-vous"
-                    : "Déjà un compte ? Connectez-vous"}
+                  {isLogin ? t("auth.noAccount") : t("auth.hasAccount")}
                 </button>
               </div>
 
-              <p className="text-center text-xs mt-5" style={{ color: "#cbd5e1" }}>
-                En continuant, vous acceptez les{" "}
-                <span style={{ color: GOLD }} className="cursor-pointer hover:underline">conditions d'utilisation</span>
-                {" "}de TajerGrow.com
+              {/* Terms */}
+              <p className="text-center text-xs mt-4" style={{ color: "#cbd5e1" }}>
+                {t("auth.terms")}{" "}
+                <span style={{ color: GOLD }} className="cursor-pointer hover:underline">
+                  {t("auth.termsLink")}
+                </span>{" "}
+                {t("auth.termsEnd")}
               </p>
+
+              {/* ── Language Switcher ── */}
+              <div className="mt-5 pt-4 border-t border-slate-100 flex items-center justify-center gap-1 flex-wrap">
+                <span className="text-xs text-slate-400 ltr:mr-1 rtl:ml-1">
+                  {t("auth.switchLang")}
+                </span>
+                {LANGS.map(({ code, label }, idx) => (
+                  <span key={code} className="flex items-center">
+                    <button
+                      type="button"
+                      onClick={() => handleLangChange(code)}
+                      data-testid={`lang-btn-${code}`}
+                      className="text-xs font-semibold transition-all px-1 py-0.5 rounded"
+                      style={{
+                        color: selectedLang === code ? NAVY : "#94a3b8",
+                        fontWeight: selectedLang === code ? 800 : 600,
+                        textDecoration: selectedLang === code ? "underline" : "none",
+                        textUnderlineOffset: "3px",
+                        fontFamily: code === "ar" ? "'Cairo', sans-serif" : undefined,
+                      }}
+                    >
+                      {label}
+                    </button>
+                    {idx < LANGS.length - 1 && (
+                      <span className="text-slate-200 text-xs mx-0.5">|</span>
+                    )}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         </div>

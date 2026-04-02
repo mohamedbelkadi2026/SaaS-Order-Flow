@@ -8,7 +8,7 @@ TajerGrow is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on 
 - **Backend**: Express 5 + Passport.js (session-based auth) + Drizzle ORM
 - **Database**: PostgreSQL (Replit built-in)
 - **Currency**: MAD (Moroccan Dirham), all prices stored in cents
-- **Language**: French UI throughout
+- **Language**: Multi-language UI (FR/AR/EN) via i18next with RTL support for Arabic
 
 ## Smart Product Naming (Variant-Aware)
 Products are displayed everywhere as **"Product Name - Variant"** (e.g., "Mocassins ANAKIO - 43") when a variant exists.
