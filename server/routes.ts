@@ -1030,6 +1030,7 @@ export async function registerRoutes(
                   orderNumber:  (order as any).orderNumber || String(order.id),
                   orderId:      order.id,
                   storeId,
+                  note:         (order as any).comment || "",
                 });
               })
             );
@@ -3400,6 +3401,7 @@ export async function registerRoutes(
         orderNumber:  order.orderNumber || String(orderId),
         orderId,
         storeId,
+        note:         (order as any).comment || "",
       });
 
       if (!shipResult.success) {

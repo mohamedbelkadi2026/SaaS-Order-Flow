@@ -21,9 +21,9 @@ import https from "https";
 const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
 
 // ── Carrier API base URLs ─────────────────────────────────────────────────────
-// Always use verified .ma domains for Moroccan carriers.
 const CARRIER_ENDPOINTS: Record<string, string> = {
-  digylog:        "https://api.digylog.ma/v1/orders",    // ✅ correct .ma domain
+  // Digylog V2.4 official endpoint (verified from API docs)
+  digylog:        "https://api.digylog.com/api/v2/seller/orders",
   ecotrack:       "https://app.ecotrack.ma/api/v1/orders",
   "eco-track":    "https://app.ecotrack.ma/api/v1/orders",
   cathedis:       "https://app.cathedis.ma/api/v1/parcels",
@@ -40,13 +40,20 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
 };
 
 // ── Known bad-URL corrections (auto-applied before every request) ──────────
-// Maps patterns that appear in user-pasted URLs to the correct replacement.
+// Maps patterns in user-pasted URLs to the correct replacement domain/path.
 const URL_CORRECTIONS: Array<{ match: RegExp; replace: string; hint: string }> = [
+  // Digylog: any old domain pattern → api.digylog.com
   {
     match:   /app\.digylog\.com/gi,
-    replace: "api.digylog.ma",
-    hint:    "app.digylog.com → api.digylog.ma",
+    replace: "api.digylog.com",
+    hint:    "app.digylog.com → api.digylog.com",
   },
+  {
+    match:   /api\.digylog\.ma/gi,
+    replace: "api.digylog.com",
+    hint:    "api.digylog.ma → api.digylog.com (V2 official domain)",
+  },
+  // Cathedis
   {
     match:   /app\.cathedis\.com/gi,
     replace: "app.cathedis.ma",
@@ -100,6 +107,8 @@ export interface CarrierShipInput {
   orderNumber: string;
   orderId: number;
   storeId: number;
+  note?: string;        // optional admin comment / note for carrier
+  quantity?: number;    // product quantity (defaults to 1)
 }
 
 export interface CarrierShipResult {
@@ -133,16 +142,57 @@ function sanitizePhone(raw: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Payload builder
+// Payload builders — one per carrier format, dispatched by providerKey
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildPayload(input: CarrierShipInput): Record<string, unknown> {
+/**
+ * Digylog API V2.4 — exact payload structure from official docs.
+ * POST https://api.digylog.com/api/v2/seller/orders
+ */
+function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone   = sanitizePhone(input.phone);
   const priceDH = +(input.totalPrice / 100).toFixed(2);
-  const addr    = input.address.trim() || input.city.trim();
+  const addr    = (input.address || "").trim() || input.city.trim();
+  const qty     = input.quantity ?? 1;
 
   return {
-    // Primary field names (Digylog / Eco-Track standard)
+    network: 1,          // 1 = standard network
+    store:   "TajerGrow",
+    mode:    1,          // 1 = COD
+    status:  1,          // 1 = active
+    orders: [
+      {
+        num:         input.orderNumber,
+        name:        input.customerName.trim(),
+        phone:       phone,
+        address:     addr,
+        city:        input.city.trim(),
+        price:       priceDH,
+        refs: [
+          {
+            designation: (input.productName || "Produit").trim(),
+            quantity:    qty,
+          },
+        ],
+        openproduct: input.canOpen ? 1 : 0,
+        port:        1,   // 1 = delivery fees on customer (COD default)
+        note:        input.note || "",
+      },
+    ],
+  };
+}
+
+/**
+ * Generic payload — covers Eco-Track, Cathedis, and other Moroccan carriers
+ * that use a flat-field JSON structure.
+ */
+function buildGenericPayload(input: CarrierShipInput): Record<string, unknown> {
+  const phone   = sanitizePhone(input.phone);
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+  const addr    = (input.address || "").trim() || input.city.trim();
+
+  return {
+    // Primary field names (Eco-Track / standard Moroccan format)
     nom_complet:     input.customerName.trim(),
     telephone:       phone,
     ville:           input.city.trim(),
@@ -151,6 +201,7 @@ function buildPayload(input: CarrierShipInput): Record<string, unknown> {
     produit:         input.productName.trim(),
     ouverture_colis: input.canOpen ? 1 : 0,
     reference:       input.orderNumber,
+    note:            input.note || "",
 
     // Aliases accepted by some carriers
     cod:             priceDH,
@@ -165,12 +216,38 @@ function buildPayload(input: CarrierShipInput): Record<string, unknown> {
   };
 }
 
+/** Dispatch to the correct builder based on the carrier. */
+function buildPayload(input: CarrierShipInput, providerKey: string): Record<string, unknown> {
+  if (providerKey === "digylog") return buildDigylogPayload(input);
+  return buildGenericPayload(input);
+}
+
+// ── Carrier-specific extra headers ─────────────────────────────────────────
+function getExtraHeaders(providerKey: string): Record<string, string> {
+  if (providerKey === "digylog") {
+    return {
+      // CRITICAL: Digylog V2.4 rejects requests without this exact Referer header
+      "Referer": "https://apiseller.digylog.com",
+      "Origin":  "https://apiseller.digylog.com",
+    };
+  }
+  return {};
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Response helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractTracking(body: any): string | undefined {
   if (!body || typeof body !== "object") return undefined;
+
+  // ── Digylog V2.4 response: { orders: [{ barcode, num, ... }] }
+  if (Array.isArray(body.orders) && body.orders.length > 0) {
+    const first = body.orders[0];
+    const t = first.barcode || first.tracking_number || first.code_suivi || first.num;
+    if (t) return String(t);
+  }
+
   return (
     body.tracking_number        ||
     body.trackingNumber         ||
@@ -183,6 +260,8 @@ function extractTracking(body: any): string | undefined {
     body.data?.code_suivi       ||
     body.result?.tracking_number ||
     body.result?.barcode        ||
+    // Digylog V2 nested in data array
+    (Array.isArray(body.data) && body.data[0]?.barcode) ||
     undefined
   );
 }
@@ -381,8 +460,15 @@ export async function shipOrderToCarrier(
     headers["X-API-SECRET"] = apiSecret;
   }
 
+  // Inject carrier-specific extra headers (e.g. Referer for Digylog)
+  const extraHeaders = getExtraHeaders(providerKey);
+  Object.assign(headers, extraHeaders);
+  if (Object.keys(extraHeaders).length > 0) {
+    console.log(`${tag} [HEADERS+] Extra headers injected: ${Object.keys(extraHeaders).join(", ")}`);
+  }
+
   // ── 4. Build payload & log everything ───────────────────────────
-  const payload        = buildPayload(input);
+  const payload        = buildPayload(input, providerKey);
   const sanitizedPhone = sanitizePhone(input.phone);
 
   console.log(`\n${"═".repeat(70)}`);
