@@ -126,6 +126,8 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   );
   const [apiKey,        setApiKey]        = useState("");
   const [showKey,       setShowKey]       = useState(false);
+  const [apiUrl,        setApiUrl]        = useState<string>(existingAccount?.apiUrl || "");
+  const [showAdvanced,  setShowAdvanced]  = useState(false);
   const [rule,          setRule]          = useState<"default" | "city" | "product">(
     existingAccount?.assignmentRule || "default"
   );
@@ -147,6 +149,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       if (existingAccount) {
         const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
         if (apiKey.trim()) body.apiKey = apiKey;
+        if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
         const res = await apiRequest("PATCH", `/api/carrier-accounts/${existingAccount.id}`, body);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
@@ -155,6 +158,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         const res = await apiRequest("POST", "/api/carrier-accounts", {
           carrierName: providerId,
           apiKey,
+          apiUrl: apiUrl.trim() || undefined,
           storeName: resolvedStoreName,
           assignmentRule: rule,
           isDefault: rule === "default" ? 1 : 0,
@@ -264,6 +268,40 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
+          </div>
+
+          {/* ── Advanced: API Base URL ── */}
+          <div className="space-y-1.5">
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowAdvanced(v => !v)}
+              data-testid="button-toggle-advanced-url"
+            >
+              <span>{showAdvanced ? "▾" : "▸"}</span>
+              <span>Paramètres avancés (URL API personnalisée)</span>
+            </button>
+            {showAdvanced && (
+              <div className="space-y-1.5 pt-1">
+                <Label className="font-semibold text-sm">
+                  URL API Base{" "}
+                  <span className="text-muted-foreground font-normal text-xs">
+                    (optionnel — remplace l'URL par défaut)
+                  </span>
+                </Label>
+                <Input
+                  data-testid="input-carrier-apiurl"
+                  type="url"
+                  placeholder="ex: https://api.digylog.ma/v1/orders"
+                  value={apiUrl}
+                  onChange={e => setApiUrl(e.target.value)}
+                  className="font-mono text-xs"
+                />
+                <p className="text-[10px] text-muted-foreground leading-relaxed">
+                  Laisser vide pour utiliser l'URL par défaut. Utilisez uniquement si Digylog vous a fourni un URL différent (ex: api2.digylog.ma).
+                </p>
+              </div>
+            )}
           </div>
 
           {/* ── WebHook URL ── */}

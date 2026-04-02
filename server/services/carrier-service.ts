@@ -74,7 +74,20 @@ function autoCorrectUrl(raw: string): { url: string; corrected: boolean; hints: 
 }
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
-const TIMEOUT_MS = 20_000; // 20 seconds
+const TIMEOUT_MS = 30_000; // 30 seconds — Moroccan carrier APIs can be slow
+
+// ── Transient error codes that trigger an automatic retry ────────────────────
+const TRANSIENT_CODES = new Set([
+  "ENOTFOUND",    // DNS resolution failure (bad/unreachable host)
+  "EAI_AGAIN",    // DNS temporary failure (common on Railway)
+  "ECONNRESET",   // Connection dropped mid-flight
+  "ECONNREFUSED", // Server not accepting connections
+  "ETIMEDOUT",    // TCP-level timeout
+  "ECONNABORTED", // axios timeout
+]);
+
+const MAX_ATTEMPTS   = 3;   // 1 initial + 2 retries
+const RETRY_DELAY_MS = 2000; // 2 s between each attempt
 
 export interface CarrierShipInput {
   customerName: string;
@@ -397,24 +410,40 @@ export async function shipOrderToCarrier(
   try {
     let response: Awaited<ReturnType<typeof attempt>>;
 
-    try {
-      response = await attempt();
-    } catch (firstErr: any) {
-      // ── Retry once for transient DNS / network glitches (ENOTFOUND, ECONNRESET) ──
-      const isTransient =
-        firstErr?.code === "ENOTFOUND"   ||
-        firstErr?.code === "ECONNRESET"  ||
-        firstErr?.code === "ECONNREFUSED";
+    // ── Retry loop: up to MAX_ATTEMPTS (3) with RETRY_DELAY_MS (2s) between ──
+    let lastErr: any;
+    let succeeded = false;
 
-      if (isTransient) {
-        console.warn(`${tag} ⚠️ Transient network error (${firstErr.code}) — retrying in 1.5s...`);
-        console.warn(`[API-DEBUG]: Retry attempt for URL: ${apiUrl}`);
-        await new Promise(r => setTimeout(r, 1500));
-        response = await attempt(); // second attempt — let it throw if it fails again
-      } else {
-        throw firstErr;
+    for (let attempt_n = 1; attempt_n <= MAX_ATTEMPTS; attempt_n++) {
+      try {
+        response = await attempt();
+        succeeded = true;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        const code = err?.code as string | undefined;
+        const isTransient =
+          TRANSIENT_CODES.has(code ?? "") ||
+          err?.message?.toLowerCase().includes("eai_again") ||
+          err?.message?.toLowerCase().includes("enotfound");
+
+        if (isTransient && attempt_n < MAX_ATTEMPTS) {
+          console.warn(`${tag} ⚠️ Transient network error [${code}] — attempt ${attempt_n}/${MAX_ATTEMPTS}. Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+          console.warn(`[API-DEBUG]: Retry attempt ${attempt_n + 1} for URL: ${apiUrl}`);
+          await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+        } else if (isTransient && attempt_n === MAX_ATTEMPTS) {
+          // All retries exhausted for a transient error — throw with friendly message
+          const exhausted = new Error(`EAI_AGAIN_EXHAUSTED:${code || "TRANSIENT"}`);
+          (exhausted as any).code = code;
+          (exhausted as any).isExhausted = true;
+          throw exhausted;
+        } else {
+          throw err; // non-transient — fail immediately
+        }
       }
     }
+
+    if (!succeeded) throw lastErr;
 
     httpStatus = response.status;
     rawBody    = response.data;
@@ -463,10 +492,14 @@ export async function shipOrderToCarrier(
       axios.isCancel(err)          ||
       err?.message?.toLowerCase().includes("timeout");
 
-    // DNS resolution failure — almost always a bad/typo'd URL or pasted garbage
+    // DNS resolution failure or all-retries-exhausted transient error
     const isDnsError =
-      err?.code === "ENOTFOUND" ||
-      err?.message?.toLowerCase().includes("enotfound");
+      err?.code === "ENOTFOUND"  ||
+      err?.code === "EAI_AGAIN"  ||
+      err?.isExhausted === true  ||
+      err?.message?.toLowerCase().includes("enotfound") ||
+      err?.message?.toLowerCase().includes("eai_again") ||
+      err?.message?.startsWith("EAI_AGAIN_EXHAUSTED");
 
     const isConnRefused = err?.code === "ECONNREFUSED";
     const isConnReset   = err?.code === "ECONNRESET";
@@ -506,7 +539,10 @@ export async function shipOrderToCarrier(
     let errMsg: string;
 
     if (isDnsError) {
-      errMsg = `⚠️ رابط شركة الشحن غير صحيح. يرجى التأكد من استعمال رابط ينتهي بـ .ma (مثال: api.digylog.ma). الرابط المستخدم: "${apiUrl}".`;
+      const exhausted = err?.isExhausted || err?.message?.startsWith("EAI_AGAIN_EXHAUSTED");
+      errMsg = exhausted
+        ? `⚠️ مشكل في الاتصال: سيرفر شركة الشحن مستغرق وقتاً طويلاً للاستجابة (${MAX_ATTEMPTS} محاولات فاشلة). يرجى المحاولة بعد قليل.`
+        : `⚠️ رابط شركة الشحن غير صحيح. يرجى التأكد من استعمال رابط ينتهي بـ .ma (مثال: api.digylog.ma). الرابط المستخدم: "${apiUrl}".`;
     } else if (isInvalidHeader) {
       errMsg = `⚠️ خطأ في رمز الربط (Token): يرجى التأكد من نسخه ولصقه بشكل صحيح بدون فراغات أو أسطر إضافية. اذهب إلى إعدادات التكامل وأعد لصق المفتاح.`;
     } else if (isTimeout) {
