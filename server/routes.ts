@@ -1564,11 +1564,14 @@ export async function registerRoutes(
       res.json(acct);
     } catch (error: any) {
       console.error('[DB-ERROR] POST /api/carrier-accounts:', error?.message || error);
+      console.error('[DB-ERROR] Code:', error?.code);
+      console.error('[DB-ERROR] Detail:', error?.detail);
       console.error('[DB-ERROR] Stack:', error?.stack);
       res.status(500).json({
-        message: error?.message?.includes('relation') || error?.message?.includes('does not exist')
-          ? 'Table carrier_accounts introuvable — contactez le support'
-          : error?.message || 'Erreur serveur lors de la création du compte transporteur',
+        message: error?.message || 'Erreur serveur lors de la création du compte transporteur',
+        pgCode: error?.code,
+        pgDetail: error?.detail,
+        hint: 'Consultez les logs Railway pour le détail complet.',
       });
     }
   });

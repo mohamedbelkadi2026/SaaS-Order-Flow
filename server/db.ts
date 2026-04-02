@@ -58,12 +58,14 @@ pool.on("error", (err) => {
   console.error("[DB] Pool error:", err.message);
 });
 
-// Log which DB we're connecting to (host only, no credentials)
+// Log full connection target (no password) so Railway logs confirm the right DB
 try {
   const parsed = new URL(process.env.DATABASE_URL ?? "");
-  console.log(`[DB] Connecting to ${parsed.hostname} (SSL: ${useSSL})`);
+  const safeUrl = `${parsed.protocol}//${parsed.username}:***@${parsed.hostname}:${parsed.port || 5432}${parsed.pathname}`;
+  console.log(`[DB] Target: ${safeUrl}`);
+  console.log(`[DB] SSL: ${useSSL} | rejectUnauthorized: false | pool max: 20`);
 } catch {
-  console.log("[DB] DATABASE_URL could not be parsed");
+  console.log("[DB] DATABASE_URL could not be parsed — check Railway Variables");
 }
 
 export const db = drizzle(pool, { schema });
@@ -79,13 +81,25 @@ export const db = drizzle(pool, { schema });
 export async function initializeDatabase(): Promise<void> {
   const client = await pool.connect();
   try {
+    // ── 0. Verify live connection and confirm which DB we're actually on ──
+    const connCheck = await client.query("SELECT current_database(), current_user, version()");
+    const { current_database, current_user } = connCheck.rows[0];
+    console.log(`[DB] Connected ✅ — database: "${current_database}", user: "${current_user}"`);
+
+    // ── 1. Verify carrier_accounts is visible via to_regclass (schema check) ──
+    const regCheck = await client.query(`SELECT to_regclass('public.carrier_accounts') AS tbl`);
+    const tableExists = regCheck.rows[0]?.tbl !== null;
+    console.log(`[DB] to_regclass('public.carrier_accounts'): ${tableExists ? "EXISTS ✅" : "NOT FOUND — will create now"}`);
+
+    // ── 2. CREATE TABLE using explicit public. prefix ─────────────────────────
+    // NOTE: keeping SERIAL integer IDs — do NOT change to UUID, that breaks the ORM.
     await client.query(`
-      CREATE TABLE IF NOT EXISTS carrier_accounts (
+      CREATE TABLE IF NOT EXISTS public.carrier_accounts (
         id               SERIAL PRIMARY KEY,
         store_id         INTEGER NOT NULL,
-        carrier_name     TEXT NOT NULL,
+        carrier_name     TEXT NOT NULL DEFAULT '',
         connection_name  TEXT NOT NULL DEFAULT 'Connection 1',
-        api_key          TEXT NOT NULL,
+        api_key          TEXT NOT NULL DEFAULT '',
         api_secret       TEXT,
         api_url          TEXT,
         webhook_token    TEXT NOT NULL DEFAULT '',
@@ -100,11 +114,9 @@ export async function initializeDatabase(): Promise<void> {
       );
     `);
 
-    // Ensure EVERY column exists even if the table was created manually / partially
-    // carrier_name and api_key are NOT NULL in the Drizzle schema but must use a default
-    // here so that ADD COLUMN works when the table already has rows.
+    // ── 3. Ensure EVERY column exists (handles tables created manually/partially) ──
     await client.query(`
-      ALTER TABLE carrier_accounts
+      ALTER TABLE public.carrier_accounts
         ADD COLUMN IF NOT EXISTS carrier_name     TEXT NOT NULL DEFAULT '',
         ADD COLUMN IF NOT EXISTS api_key          TEXT NOT NULL DEFAULT '',
         ADD COLUMN IF NOT EXISTS connection_name  TEXT NOT NULL DEFAULT 'Connection 1',
@@ -121,19 +133,21 @@ export async function initializeDatabase(): Promise<void> {
         ADD COLUMN IF NOT EXISTS updated_at       TIMESTAMP DEFAULT NOW();
     `);
 
-    console.log("[DATABASE]: carrier_accounts table verified/created — all columns ensured.");
+    // ── 4. Confirm table is now accessible ────────────────────────────────────
+    const finalCheck = await client.query(`SELECT to_regclass('public.carrier_accounts') AS tbl`);
+    console.log(`[DB] carrier_accounts final check: ${finalCheck.rows[0]?.tbl ? "READY ✅" : "STILL MISSING ⚠️"}`);
 
-    // Ensure orders table has carrier tracking columns
+    // ── 5. orders: add carrier tracking columns ───────────────────────────────
     await client.query(`
-      ALTER TABLE orders
+      ALTER TABLE public.orders
         ADD COLUMN IF NOT EXISTS carrier_name TEXT,
         ADD COLUMN IF NOT EXISTS carrier_id   INTEGER;
     `);
     console.log("[DATABASE]: orders.carrier_name + carrier_id columns ensured.");
 
-    // email_verification_codes — required for the signup OTP flow
+    // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
-      CREATE TABLE IF NOT EXISTS email_verification_codes (
+      CREATE TABLE IF NOT EXISTS public.email_verification_codes (
         id         SERIAL PRIMARY KEY,
         user_id    INTEGER NOT NULL,
         code       TEXT NOT NULL,
@@ -143,14 +157,16 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: email_verification_codes table verified/created.");
 
-    // preferred_language — added for multi-language onboarding support
+    // ── 7. users.preferred_language ───────────────────────────────────────────
     await client.query(`
-      ALTER TABLE users
+      ALTER TABLE public.users
         ADD COLUMN IF NOT EXISTS preferred_language TEXT DEFAULT 'fr';
     `);
     console.log("[DATABASE]: users.preferred_language column verified/created.");
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
+    console.error("[DATABASE] Full error:", err);
   } finally {
     client.release();
   }
