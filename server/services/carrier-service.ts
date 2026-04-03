@@ -81,7 +81,10 @@ function autoCorrectUrl(raw: string): { url: string; corrected: boolean; hints: 
 }
 
 // ── Timeout ───────────────────────────────────────────────────────────────────
-const TIMEOUT_MS = 30_000; // 30 seconds — Moroccan carrier APIs can be slow
+// 15 s total per attempt — gives carriers fair time without blocking the UI.
+// Worst case: 2 attempts × 15 s + 1 delay × 2 s = 32 s max before the user
+// sees an error. Never hang for 90 s.
+const TIMEOUT_MS = 15_000;
 
 // ── Transient error codes that trigger an automatic retry ────────────────────
 const TRANSIENT_CODES = new Set([
@@ -90,10 +93,10 @@ const TRANSIENT_CODES = new Set([
   "ECONNRESET",   // Connection dropped mid-flight
   "ECONNREFUSED", // Server not accepting connections
   "ETIMEDOUT",    // TCP-level timeout
-  "ECONNABORTED", // axios timeout
+  "ECONNABORTED", // axios timeout / AbortSignal
 ]);
 
-const MAX_ATTEMPTS   = 3;   // 1 initial + 2 retries
+const MAX_ATTEMPTS   = 2;    // 1 initial + 1 retry — fail fast, report clearly
 const RETRY_DELAY_MS = 2000; // 2 s between each attempt
 
 export interface CarrierShipInput {
@@ -494,6 +497,15 @@ export async function shipOrderToCarrier(
   console.log(`${tag} PHONE SANITIZE: "${input.phone}" → "${sanitizedPhone}"`);
   console.log(`${tag} CITY:           "${input.city}"   ADDRESS: "${input.address}"`);
   console.log(`${tag} PRICE:          ${input.totalPrice} centimes → ${+(input.totalPrice / 100).toFixed(2)} DH`);
+
+  // ── Digylog-specific pre-flight log ─────────────────────────────
+  if (providerKey === "digylog") {
+    const digylogStore = (payload as any).store || "(missing)";
+    console.log(`[DIGYLOG-SEND]: Sending order ${input.orderId} (ref: ${input.orderNumber}) to store "${digylogStore}" via ${apiUrl}`);
+    console.log(`[DIGYLOG-SEND]: network=${(payload as any).network}  mode=${(payload as any).mode}  status=${(payload as any).status}`);
+    console.log(`[DIGYLOG-SEND]: Timeout=${TIMEOUT_MS / 1000}s  MaxAttempts=${MAX_ATTEMPTS}`);
+  }
+
   console.log(`${tag} PAYLOAD:\n${JSON.stringify(payload, null, 2)}`);
   console.log(`${"═".repeat(70)}\n`);
 
@@ -552,6 +564,9 @@ export async function shipOrderToCarrier(
 
     console.log(`${tag} Response: HTTP ${httpStatus}`);
     console.log(`${tag} Body: ${JSON.stringify(rawBody)}`);
+    if (providerKey === "digylog") {
+      console.log(`[DIGYLOG-RESP]: HTTP ${httpStatus} — ${JSON.stringify(rawBody).slice(0, 500)}`);
+    }
 
     // ── 5a. 4xx / 5xx ────────────────────────────────────────────
     if (httpStatus >= 400) {
@@ -648,7 +663,7 @@ export async function shipOrderToCarrier(
     } else if (isInvalidHeader) {
       errMsg = `⚠️ خطأ في رمز الربط (Token): يرجى التأكد من نسخه ولصقه بشكل صحيح بدون فراغات أو أسطر إضافية. اذهب إلى إعدادات التكامل وأعد لصق المفتاح.`;
     } else if (isTimeout) {
-      errMsg = `⚠️ سيرفر شركة الشحن لا يستجيب حالياً (timeout ${TIMEOUT_MS / 1000}s). حاول مجدداً بعد قليل.`;
+      errMsg = `⚠️ سيرفر شركة الشحن ثقيل جداً (لم يستجب خلال ${TIMEOUT_MS / 1000} ثانية). حاول مجدداً بعد قليل.`;
     } else if (isFetchFailed) {
       errMsg = `⚠️ تعذّر الاتصال بسيرفر شركة الشحن (${err?.code || "fetch failed"}). تحقق من رابط API في إعدادات التكامل.`;
     } else {
