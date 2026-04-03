@@ -17,7 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   Link2, CheckCircle, Loader2, Eye, EyeOff,
   MapPin, Video, Home, ChevronRight,
-  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw,
+  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw, ShieldCheck,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -125,6 +125,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       : ""
   );
   const [apiKey,           setApiKey]           = useState("");
+  const [isEditingToken,   setIsEditingToken]   = useState(false);
   const [showKey,          setShowKey]           = useState(false);
   const [apiUrl,           setApiUrl]            = useState<string>(existingAccount?.apiUrl || "");
   const [showAdvanced,     setShowAdvanced]      = useState(false);
@@ -141,16 +142,21 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [isFetchingStores,  setIsFetchingStores] = useState(false);
 
   const fetchDigylogStores = async () => {
-    const tokenToUse = apiKey.trim() || (existingAccount ? "__existing__" : "");
-    if (!tokenToUse && !existingAccount) {
+    const hasToken = apiKey.trim() || existingAccount?.hasApiKey;
+    if (!hasToken) {
       toast({ title: "Token requis", description: "Entrez votre token Digylog avant de charger les magasins.", variant: "destructive" });
       return;
     }
     setIsFetchingStores(true);
     try {
       const params = new URLSearchParams();
-      if (apiKey.trim()) params.set("token", apiKey.trim());
-      else if (existingAccount?.apiKey) params.set("token", existingAccount.apiKey);
+      if (apiKey.trim()) {
+        // User typed a new token — send it directly
+        params.set("token", apiKey.trim());
+      } else if (existingAccount?.id) {
+        // Editing an existing account — let backend look up the key securely by ID
+        params.set("accountId", String(existingAccount.id));
+      }
       if (apiUrl.trim()) params.set("apiUrl", apiUrl.trim());
       const res = await fetch(`/api/carrier-accounts/digylog/stores?${params}`);
       const data = await res.json();
@@ -208,14 +214,28 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         return data;
       }
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", providerId] });
       qc.invalidateQueries({ queryKey: ["/api/carrier-accounts"] });
       qc.invalidateQueries({ queryKey: ["/api/shipping/active-accounts"] });
-      toast({
-        title: existingAccount ? "Mis à jour ✅" : "Connecté ✅",
-        description: `${providerName} ${existingAccount ? "mis à jour" : "ajouté"} avec succès`,
-      });
+      if (existingAccount) {
+        if (data?.tokenUpdated) {
+          toast({
+            title: "Token mis à jour et sauvegardé ✅",
+            description: "Votre nouveau token Digylog a été enregistré de façon permanente.",
+          });
+        } else {
+          toast({
+            title: "Paramètres mis à jour ✅",
+            description: `${providerName} a été mis à jour avec succès.`,
+          });
+        }
+      } else {
+        toast({
+          title: "Connecté ✅",
+          description: `${providerName} ajouté avec succès.`,
+        });
+      }
       onClose();
     },
     onError: (e: any) => {
@@ -274,30 +294,69 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   Clé API
                 </span>
               </div>
-              <div className="relative">
-                <Input
-                  id="carrier_token_input"
-                  name="carrier_token_input"
-                  data-testid="input-carrier-apikey"
-                  data-lpignore="true"
-                  data-form-type="other"
-                  autoComplete="new-password"
-                  type={showKey ? "text" : "password"}
-                  placeholder="Laissez vide pour conserver le token actuel"
-                  value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
-                  className="pr-10 h-11 text-sm font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 placeholder:text-muted-foreground/60"
-                />
-                <button
-                  type="button"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                  onClick={() => setShowKey(v => !v)}
-                >
-                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
+
+              {/* Token status — shows current saved token (masked) when not editing */}
+              {existingAccount?.hasApiKey && !isEditingToken ? (
+                <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-green-200 bg-green-50">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
+                    <span className="text-[12px] font-semibold text-green-700">Token actuel enregistré</span>
+                    <code className="text-[11px] font-mono text-gray-500 truncate ml-1">
+                      {existingAccount.apiKeyMasked}
+                    </code>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="button-edit-token"
+                    onClick={() => { setIsEditingToken(true); setApiKey(""); }}
+                    className="shrink-0 text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline underline-offset-2 transition-colors"
+                  >
+                    Modifier
+                  </button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <Input
+                    id="carrier_token_input"
+                    name="carrier_token_input"
+                    data-testid="input-carrier-apikey"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showKey ? "text" : "password"}
+                    placeholder={existingAccount?.hasApiKey ? "Entrez un nouveau token pour remplacer l'actuel" : "Coller votre token API ici"}
+                    value={apiKey}
+                    onChange={e => { setApiKey(e.target.value); setIsEditingToken(true); }}
+                    className="pr-20 h-11 text-sm font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 placeholder:text-muted-foreground/60"
+                    autoFocus={isEditingToken}
+                  />
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    {existingAccount?.hasApiKey && (
+                      <button
+                        type="button"
+                        onClick={() => { setIsEditingToken(false); setApiKey(""); }}
+                        className="text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded border border-border/50 transition-colors"
+                        title="Annuler la modification"
+                      >
+                        ✕
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setShowKey(v => !v)}
+                    >
+                      {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Il s'agit de votre <strong>clé API transporteur</strong>, pas de votre mot de passe. Laissez vide pour conserver le token actuel.
+                {isEditingToken || !existingAccount?.hasApiKey
+                  ? <>Entrez votre <strong>clé API transporteur</strong>. Laissez vide pour conserver le token actuel.</>
+                  : <>Token sauvegardé de façon permanente. Cliquez sur <strong>Modifier</strong> pour le remplacer.</>
+                }
               </p>
             </div>
 

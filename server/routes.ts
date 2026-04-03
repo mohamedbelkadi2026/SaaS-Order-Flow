@@ -1564,10 +1564,13 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     const provider = req.query.provider as string | undefined;
     const accounts = await storage.getCarrierAccounts(storeId, provider);
-    // Mask apiKey in list view — return first 8 + stars
-    const masked = accounts.map(a => ({
-      ...a,
-      apiKeyMasked: (a.apiKey || '').slice(0, 8) + "•".repeat(Math.max(0, (a.apiKey || '').length - 8)),
+    // Never expose the raw apiKey to the frontend — return mask + presence flag only
+    const masked = accounts.map(({ apiKey, apiSecret, ...rest }) => ({
+      ...rest,
+      hasApiKey:    !!(apiKey && apiKey.length > 0),
+      apiKeyMasked: apiKey
+        ? (apiKey.slice(0, 4) + "•".repeat(Math.max(0, apiKey.length - 4)))
+        : "",
     }));
     res.json(masked);
   });
@@ -1680,9 +1683,10 @@ export async function registerRoutes(
       const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
       const cleanKey = (s: string | undefined | null) =>
         (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+      const tokenUpdated = !!(rawPatchKey && rawPatchKey !== "");
       const updated = await storage.updateCarrierAccount(id, {
         ...(connectionName    !== undefined && { connectionName }),
-        ...(rawPatchKey       !== undefined && rawPatchKey !== "" && { apiKey: cleanKey(rawPatchKey) }),
+        ...(tokenUpdated                    && { apiKey: cleanKey(rawPatchKey) }),
         ...(rawPatchSecret    !== undefined && { apiSecret: cleanKey(rawPatchSecret) || null }),
         ...(apiUrl            !== undefined && { apiUrl }),
         ...(storeName         !== undefined && { storeName }),
@@ -1692,7 +1696,12 @@ export async function registerRoutes(
         ...(isActive          !== undefined && { isActive: isActive ? 1 : 0 }),
         ...(assignmentData    !== undefined && { assignmentData }),
       });
-      res.json(updated);
+      if (tokenUpdated) {
+        console.log(`[CARRIER-UPDATE] Token updated for account #${id} (store ${storeId}) — new length: ${cleanKey(rawPatchKey).length}`);
+      } else {
+        console.log(`[CARRIER-UPDATE] Account #${id} updated (no token change) — fields: ${Object.keys(req.body).join(', ')}`);
+      }
+      res.json({ ...updated, tokenUpdated });
     } catch (error: any) {
       console.error('[DB-ERROR] PATCH /api/carrier-accounts:', error?.message || error);
       res.status(500).json({ message: error?.message || 'Erreur serveur lors de la mise à jour du compte' });
@@ -1715,14 +1724,28 @@ export async function registerRoutes(
 
   // ── Digylog: fetch available stores for the given token ──────────────────
   app.get("/api/carrier-accounts/digylog/stores", requireAuth, async (req, res) => {
-    const { token, apiUrl } = req.query as { token?: string; apiUrl?: string };
-    if (!token) return res.status(400).json({ message: "token requis" });
+    const { token, apiUrl, accountId } = req.query as { token?: string; apiUrl?: string; accountId?: string };
+
+    // Allow passing accountId instead of raw token (secure: backend looks up the key)
+    let resolvedToken = token;
+    let resolvedApiUrl = apiUrl;
+    if (accountId && !resolvedToken) {
+      const storeId = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(Number(accountId));
+      if (!acct || acct.storeId !== storeId) {
+        return res.status(404).json({ message: "Compte introuvable" });
+      }
+      resolvedToken = acct.apiKey;
+      if (!resolvedApiUrl && acct.apiUrl) resolvedApiUrl = acct.apiUrl;
+    }
+
+    if (!resolvedToken) return res.status(400).json({ message: "token requis" });
 
     const sanitize = (s: string) => s.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
-    const cleanToken = sanitize(token);
+    const cleanToken = sanitize(resolvedToken);
 
     // Determine base URL (custom override or official Digylog endpoint root)
-    const rawBase = (apiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
+    const rawBase = (resolvedApiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
     // Swap any known bad domains
     const baseUrl = rawBase.replace(/api\.digylog\.ma/i, "api.digylog.com")
                            .replace(/app\.digylog\.com/i, "api.digylog.com");
