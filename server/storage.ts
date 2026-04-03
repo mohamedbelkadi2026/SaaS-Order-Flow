@@ -808,9 +808,16 @@ export class DatabaseStorage implements IStorage {
     storeId: number,
     provider: string,
     city?: string,
-  ): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string } | null> {
+  ): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string } | null> {
     const accounts = await this.getCarrierAccounts(storeId, provider);
     const active   = accounts.filter(a => a.isActive === 1);
+
+    const pickFields = (a: typeof active[0]) => ({
+      apiKey:           a.apiKey,
+      apiSecret:        a.apiSecret       ?? undefined,
+      apiUrl:           a.apiUrl          ?? undefined,
+      carrierStoreName: (a as any).carrierStoreName ?? undefined,
+    });
 
     // 1. Try city-based routing
     if (city && active.length > 0) {
@@ -821,14 +828,12 @@ export class DatabaseStorage implements IStorage {
           return cities.some(c => c.toLowerCase() === city.toLowerCase());
         } catch { return false; }
       });
-      if (cityAcct) return { apiKey: cityAcct.apiKey, apiSecret: cityAcct.apiSecret ?? undefined, apiUrl: cityAcct.apiUrl ?? undefined };
+      if (cityAcct) return pickFields(cityAcct);
     }
 
     // 2. Default account
     const defaultAcct = active.find(a => a.isDefault === 1) || active.find(a => a.assignmentRule === 'default') || active[0];
-    if (defaultAcct) {
-      return { apiKey: defaultAcct.apiKey, apiSecret: defaultAcct.apiSecret ?? undefined, apiUrl: defaultAcct.apiUrl ?? undefined };
-    }
+    if (defaultAcct) return pickFields(defaultAcct);
 
     // 3. Fallback to legacy storeIntegrations
     const legacy = await this.getIntegrationByProvider(storeId, provider);

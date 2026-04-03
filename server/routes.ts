@@ -1020,17 +1020,18 @@ export async function registerRoutes(
                 const resolvedCity = getResolvedCity(order);
                 const orderCreds = getCredsForOrder(resolvedCity);
                 return shipOrderToCarrier(provider, orderCreds, {
-                  customerName: order.customerName,
-                  phone:        order.customerPhone,
-                  city:         resolvedCity,
-                  address:      (order as any).customerAddress || (order as any).customerCity || '',
-                  totalPrice:   order.totalPrice,
-                  productName:  getProductName(order),
-                  canOpen:      (order as any).canOpen === 1,
-                  orderNumber:  (order as any).orderNumber || String(order.id),
-                  orderId:      order.id,
+                  customerName:     order.customerName,
+                  phone:            order.customerPhone,
+                  city:             resolvedCity,
+                  address:          (order as any).customerAddress || (order as any).customerCity || '',
+                  totalPrice:       order.totalPrice,
+                  productName:      getProductName(order),
+                  canOpen:          (order as any).canOpen === 1,
+                  orderNumber:      (order as any).orderNumber || String(order.id),
+                  orderId:          order.id,
                   storeId,
-                  note:         (order as any).comment || "",
+                  note:             (order as any).comment || "",
+                  carrierStoreName: (orderCreds as any).carrierStoreName || "",
                 });
               })
             );
@@ -1590,7 +1591,7 @@ export async function registerRoutes(
   app.post("/api/carrier-accounts", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
+      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, carrierStoreName, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
       if (!carrierName || !rawApiKey) {
         return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
       }
@@ -1615,7 +1616,8 @@ export async function registerRoutes(
         apiSecret,
         apiUrl: apiUrl || null,
         webhookToken,
-        storeName: storeName || null,
+        storeName:        storeName        || null,
+        carrierStoreName: carrierStoreName || null,
         isDefault: isDefault ? 1 : (existing.length === 0 ? 1 : 0),
         isActive: 1,
         assignmentRule: assignmentRule || "default",
@@ -1650,19 +1652,20 @@ export async function registerRoutes(
       const acct = await storage.getCarrierAccount(id);
       if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
 
-      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
+      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
       const cleanKey = (s: string | undefined | null) =>
         (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
       const updated = await storage.updateCarrierAccount(id, {
-        ...(connectionName !== undefined && { connectionName }),
-        ...(rawPatchKey !== undefined && rawPatchKey !== "" && { apiKey: cleanKey(rawPatchKey) }),
-        ...(rawPatchSecret !== undefined && { apiSecret: cleanKey(rawPatchSecret) || null }),
-        ...(apiUrl !== undefined && { apiUrl }),
-        ...(storeName !== undefined && { storeName }),
-        ...(assignmentRule !== undefined && { assignmentRule }),
-        ...(isDefault !== undefined && { isDefault: isDefault ? 1 : 0 }),
-        ...(isActive !== undefined && { isActive: isActive ? 1 : 0 }),
-        ...(assignmentData !== undefined && { assignmentData }),
+        ...(connectionName    !== undefined && { connectionName }),
+        ...(rawPatchKey       !== undefined && rawPatchKey !== "" && { apiKey: cleanKey(rawPatchKey) }),
+        ...(rawPatchSecret    !== undefined && { apiSecret: cleanKey(rawPatchSecret) || null }),
+        ...(apiUrl            !== undefined && { apiUrl }),
+        ...(storeName         !== undefined && { storeName }),
+        ...(carrierStoreName  !== undefined && { carrierStoreName: carrierStoreName || null }),
+        ...(assignmentRule    !== undefined && { assignmentRule }),
+        ...(isDefault         !== undefined && { isDefault: isDefault ? 1 : 0 }),
+        ...(isActive          !== undefined && { isActive: isActive ? 1 : 0 }),
+        ...(assignmentData    !== undefined && { assignmentData }),
       });
       res.json(updated);
     } catch (error: any) {
@@ -1682,6 +1685,55 @@ export async function registerRoutes(
     } catch (error: any) {
       console.error('[DB-ERROR] DELETE /api/carrier-accounts:', error?.message || error);
       res.status(500).json({ message: error?.message || 'Erreur serveur lors de la suppression du compte' });
+    }
+  });
+
+  // ── Digylog: fetch available stores for the given token ──────────────────
+  app.get("/api/carrier-accounts/digylog/stores", requireAuth, async (req, res) => {
+    const { token, apiUrl } = req.query as { token?: string; apiUrl?: string };
+    if (!token) return res.status(400).json({ message: "token requis" });
+
+    const sanitize = (s: string) => s.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+    const cleanToken = sanitize(token);
+
+    // Determine base URL (custom override or official Digylog endpoint root)
+    const rawBase = (apiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
+    // Swap any known bad domains
+    const baseUrl = rawBase.replace(/api\.digylog\.ma/i, "api.digylog.com")
+                           .replace(/app\.digylog\.com/i, "api.digylog.com");
+    const storesUrl = `${baseUrl}/stores`;
+
+    try {
+      const axiosLib = (await import("axios")).default;
+      const resp = await axiosLib.get(storesUrl, {
+        headers: {
+          Authorization: `Bearer ${cleanToken}`,
+          Accept: "application/json",
+          Referer: "https://apiseller.digylog.com",
+          Origin: "https://apiseller.digylog.com",
+        },
+        timeout: 15_000,
+        validateStatus: () => true,
+      });
+
+      if (resp.status !== 200) {
+        console.error(`[Digylog/stores] HTTP ${resp.status}:`, JSON.stringify(resp.data).slice(0, 200));
+        return res.status(resp.status).json({ message: `Digylog a répondu avec HTTP ${resp.status}`, raw: resp.data });
+      }
+
+      // Digylog returns either an array or { data: [...] }
+      const raw = resp.data;
+      const list: Array<{ id: number | string; name: string }> =
+        Array.isArray(raw) ? raw :
+        Array.isArray(raw?.data) ? raw.data :
+        Array.isArray(raw?.stores) ? raw.stores : [];
+
+      const stores = list.map((s: any) => ({ id: s.id, name: s.name || s.store_name || String(s.id) }));
+      console.log(`[Digylog/stores] Fetched ${stores.length} stores for token …${cleanToken.slice(-6)}`);
+      res.json({ stores });
+    } catch (err: any) {
+      console.error("[Digylog/stores] Network error:", err?.message);
+      res.status(502).json({ message: "Impossible de contacter Digylog. Vérifiez votre token et réessayez." });
     }
   });
 
@@ -3391,17 +3443,18 @@ export async function registerRoutes(
 
       // ── Call carrier API ──────────────────────────────────────────
       const shipResult = await shipOrderToCarrier(provider, creds, {
-        customerName: order.customerName,
-        phone:        order.customerPhone,
-        city:         matchedCity,
-        address:      order.customerAddress || order.customerCity || '',
-        totalPrice:   order.totalPrice,
+        customerName:     order.customerName,
+        phone:            order.customerPhone,
+        city:             matchedCity,
+        address:          order.customerAddress || order.customerCity || '',
+        totalPrice:       order.totalPrice,
         productName,
-        canOpen:      order.canOpen === 1,
-        orderNumber:  order.orderNumber || String(orderId),
+        canOpen:          order.canOpen === 1,
+        orderNumber:      order.orderNumber || String(orderId),
         orderId,
         storeId,
-        note:         (order as any).comment || "",
+        note:             (order as any).comment || "",
+        carrierStoreName: (creds as any).carrierStoreName || "",
       });
 
       if (!shipResult.success) {

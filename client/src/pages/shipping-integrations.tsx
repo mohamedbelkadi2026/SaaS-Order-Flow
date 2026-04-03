@@ -17,7 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   Link2, CheckCircle, Loader2, Eye, EyeOff,
   MapPin, Video, Home, ChevronRight,
-  Plus, Copy, Check, Trash2, Pencil, AlertCircle,
+  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -124,15 +124,50 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       ? stores.find((s: any) => s.name === existingAccount.storeName)?.id?.toString() || "__manual__"
       : ""
   );
-  const [apiKey,        setApiKey]        = useState("");
-  const [showKey,       setShowKey]       = useState(false);
-  const [apiUrl,        setApiUrl]        = useState<string>(existingAccount?.apiUrl || "");
-  const [showAdvanced,  setShowAdvanced]  = useState(false);
-  const [rule,          setRule]          = useState<"default" | "city" | "product">(
+  const [apiKey,           setApiKey]           = useState("");
+  const [showKey,          setShowKey]           = useState(false);
+  const [apiUrl,           setApiUrl]            = useState<string>(existingAccount?.apiUrl || "");
+  const [showAdvanced,     setShowAdvanced]      = useState(false);
+  const [rule,             setRule]              = useState<"default" | "city" | "product">(
     existingAccount?.assignmentRule || "default"
   );
-  const [webhookCopied, setWebhookCopied] = useState(false);
-  const [submitError,   setSubmitError]   = useState<string | null>(null);
+  const [webhookCopied,    setWebhookCopied]     = useState(false);
+  const [submitError,      setSubmitError]       = useState<string | null>(null);
+
+  // ── Digylog store picker ──────────────────────────────────────────────────
+  const isDigylog = providerId === "digylog";
+  const [digylogStores,     setDigylogStores]    = useState<Array<{ id: number | string; name: string }>>([]);
+  const [carrierStoreName,  setCarrierStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
+  const [isFetchingStores,  setIsFetchingStores] = useState(false);
+
+  const fetchDigylogStores = async () => {
+    const tokenToUse = apiKey.trim() || (existingAccount ? "__existing__" : "");
+    if (!tokenToUse && !existingAccount) {
+      toast({ title: "Token requis", description: "Entrez votre token Digylog avant de charger les magasins.", variant: "destructive" });
+      return;
+    }
+    setIsFetchingStores(true);
+    try {
+      const params = new URLSearchParams();
+      if (apiKey.trim()) params.set("token", apiKey.trim());
+      else if (existingAccount?.apiKey) params.set("token", existingAccount.apiKey);
+      if (apiUrl.trim()) params.set("apiUrl", apiUrl.trim());
+      const res = await fetch(`/api/carrier-accounts/digylog/stores?${params}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+      const list: Array<{ id: number | string; name: string }> = data.stores || [];
+      setDigylogStores(list);
+      if (list.length === 0) {
+        toast({ title: "Aucun magasin trouvé", description: "Aucun magasin trouvé pour ce token Digylog.", variant: "destructive" });
+      } else {
+        toast({ title: `${list.length} magasin(s) chargé(s) ✅`, description: "Sélectionnez votre magasin Digylog ci-dessous." });
+      }
+    } catch (e: any) {
+      toast({ title: "Erreur Digylog", description: e?.message || "Impossible de charger les magasins.", variant: "destructive" });
+    } finally {
+      setIsFetchingStores(false);
+    }
+  };
 
   const domain = getWebhookDomain();
   // Permanent webhook URL — based on storeId + carrierName, never changes
@@ -153,6 +188,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
         if (apiKey.trim()) body.apiKey = apiKey;
         if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
+        if (carrierStoreName) body.carrierStoreName = carrierStoreName;
         const res = await apiRequest("PATCH", `/api/carrier-accounts/${existingAccount.id}`, body);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
@@ -161,8 +197,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         const res = await apiRequest("POST", "/api/carrier-accounts", {
           carrierName: providerId,
           apiKey,
-          apiUrl: apiUrl.trim() || undefined,
-          storeName: resolvedStoreName,
+          apiUrl:           apiUrl.trim() || undefined,
+          storeName:        resolvedStoreName,
+          carrierStoreName: carrierStoreName || undefined,
           assignmentRule: rule,
           isDefault: rule === "default" ? 1 : 0,
         });
@@ -196,6 +233,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     }
     if (!existingAccount && !selectedStoreId) {
       setSubmitError("Veuillez sélectionner une boutique.");
+      return;
+    }
+    if (isDigylog && !carrierStoreName.trim()) {
+      const msg = "⚠️ خطأ: اسم المتجر غير متطابق مع حساب Digylog. يرجى إعادة ضبط الإعدادات.";
+      setSubmitError(msg);
+      toast({ title: "Magasin Digylog requis", description: "Chargez et sélectionnez votre magasin Digylog.", variant: "destructive" });
       return;
     }
     mutation.mutate();
@@ -272,6 +315,61 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </button>
             </div>
           </div>
+
+          {/* ── Digylog: store picker ── */}
+          {isDigylog && (
+            <div className="space-y-2">
+              <Label className="font-semibold text-sm">
+                Magasin Digylog <span className="text-red-500">*</span>
+              </Label>
+
+              {/* Show current value if already saved */}
+              {existingAccount?.carrierStoreName && !digylogStores.length && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 text-sm text-green-800 dark:text-green-300">
+                  <Check className="w-3.5 h-3.5 shrink-0" />
+                  <span>Magasin actuel : <strong>{existingAccount.carrierStoreName}</strong></span>
+                </div>
+              )}
+
+              {digylogStores.length > 0 ? (
+                <Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
+                  <SelectTrigger data-testid="select-digylog-store" className="w-full">
+                    <SelectValue placeholder="Sélectionnez votre magasin Digylog..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {digylogStores.map(s => (
+                      <SelectItem key={String(s.id)} value={s.name}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="button-fetch-digylog-stores"
+                  onClick={fetchDigylogStores}
+                  disabled={isFetchingStores}
+                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-dashed border-blue-400 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors disabled:opacity-50 w-full justify-center"
+                >
+                  {isFetchingStores
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement...</>
+                    : <><RefreshCw className="w-3.5 h-3.5" /> Charger les magasins Digylog</>}
+                </button>
+              )}
+
+              {digylogStores.length > 0 && (
+                <button
+                  type="button"
+                  onClick={fetchDigylogStores}
+                  disabled={isFetchingStores}
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3" /> Rafraîchir la liste
+                </button>
+              )}
+            </div>
+          )}
 
           {/* ── Advanced: API Base URL ── */}
           <div className="space-y-1.5">
@@ -515,6 +613,8 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     <div className="divide-y divide-border/30">
                       {[
                         ["Boutique",  acct.storeName || "—"],
+                        ...(acct.carrierName === "digylog" && acct.carrierStoreName
+                          ? [["Magasin Digylog", acct.carrierStoreName]] : []),
                         ["Statut",    acct.isActive === 1 ? "Active" : "Inactive"],
                         ["Règle",     acct.assignmentRule === "city" ? "Par Ville" : acct.assignmentRule === "product" ? "Par Produit" : "Défaut"],
                         ["Créé le",   new Date(acct.createdAt).toLocaleDateString("fr-FR")],

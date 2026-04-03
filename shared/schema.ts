@@ -176,6 +176,7 @@ export const carrierAccounts = pgTable("carrier_accounts", {
   apiUrl: text("api_url"),                             // optional override
   webhookToken: text("webhook_token").notNull(),        // unique slug for webhook URL
   storeName: text("store_name"),                       // user's label (boutique name)
+  carrierStoreName: text("carrier_store_name"),         // carrier-side store name (e.g. Digylog store slug)
   isDefault: integer("is_default").default(0),
   isActive: integer("is_active").default(1),
   assignmentRule: text("assignment_rule").default("default"), // "default"|"city"|"product"

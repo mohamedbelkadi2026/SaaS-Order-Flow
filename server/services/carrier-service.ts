@@ -101,14 +101,15 @@ export interface CarrierShipInput {
   phone: string;
   city: string;
   address: string;
-  totalPrice: number;   // in centimes — converted to DH before sending
+  totalPrice: number;      // in centimes — converted to DH before sending
   productName: string;
   canOpen: boolean;
   orderNumber: string;
   orderId: number;
   storeId: number;
-  note?: string;        // optional admin comment / note for carrier
-  quantity?: number;    // product quantity (defaults to 1)
+  note?: string;           // optional admin comment / note for carrier
+  quantity?: number;       // product quantity (defaults to 1)
+  carrierStoreName?: string; // Digylog-side store name (required for Digylog dispatch)
 }
 
 export interface CarrierShipResult {
@@ -155,9 +156,17 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const addr    = (input.address || "").trim() || input.city.trim();
   const qty     = input.quantity ?? 1;
 
+  const storeName = (input.carrierStoreName || "").trim();
+  if (!storeName) {
+    throw Object.assign(
+      new Error("⚠️ خطأ: اسم المتجر غير متطابق مع حساب Digylog. يرجى إعادة ضبط الإعدادات."),
+      { code: "DIGYLOG_NO_STORE", httpStatus: 422 },
+    );
+  }
+
   return {
     network: 1,          // 1 = standard network
-    store:   "TajerGrow",
+    store:   storeName,
     mode:    1,          // 1 = COD
     status:  1,          // 1 = active
     orders: [
@@ -468,7 +477,14 @@ export async function shipOrderToCarrier(
   }
 
   // ── 4. Build payload & log everything ───────────────────────────
-  const payload        = buildPayload(input, providerKey);
+  let payload: Record<string, unknown>;
+  try {
+    payload = buildPayload(input, providerKey);
+  } catch (payloadErr: any) {
+    const errMsg = payloadErr?.message || String(payloadErr);
+    console.error(`${tag} ❌ Payload build failed: ${errMsg}`);
+    return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: payloadErr?.httpStatus ?? 422 };
+  }
   const sanitizedPhone = sanitizePhone(input.phone);
 
   console.log(`\n${"═".repeat(70)}`);
