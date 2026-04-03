@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, payments, emailVerificationCodes,
-  carrierAccounts,
+  carrierAccounts, carrierCities,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -70,6 +70,8 @@ export interface IStorage {
   createCarrierAccount(data: InsertCarrierAccount): Promise<CarrierAccount>;
   updateCarrierAccount(id: number, data: Partial<InsertCarrierAccount>): Promise<CarrierAccount | undefined>;
   deleteCarrierAccount(id: number): Promise<void>;
+  getCarrierCities(storeId: number, carrierName: string): Promise<string[]>;
+  upsertCarrierCities(storeId: number, carrierName: string, accountId: number | null, cities: string[]): Promise<void>;
   getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string } | null>;
 
   getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]>;
@@ -795,6 +797,39 @@ export class DatabaseStorage implements IStorage {
 
   async deleteCarrierAccount(id: number): Promise<void> {
     await db.delete(carrierAccounts).where(eq(carrierAccounts.id, id));
+  }
+
+  // ── Carrier city cache ───────────────────────────────────────────────────
+
+  async getCarrierCities(storeId: number, carrierName: string): Promise<string[]> {
+    const rows = await db.select().from(carrierCities)
+      .where(and(eq(carrierCities.storeId, storeId), eq(carrierCities.carrierName, carrierName.toLowerCase())))
+      .limit(1);
+    if (!rows.length) return [];
+    const raw = rows[0].cities;
+    return Array.isArray(raw) ? (raw as string[]) : [];
+  }
+
+  async upsertCarrierCities(storeId: number, carrierName: string, accountId: number | null, cities: string[]): Promise<void> {
+    const name = carrierName.toLowerCase();
+    const existing = await db.select({ id: carrierCities.id }).from(carrierCities)
+      .where(and(eq(carrierCities.storeId, storeId), eq(carrierCities.carrierName, name)))
+      .limit(1);
+
+    if (existing.length > 0) {
+      await db.update(carrierCities)
+        .set({ cities: cities as any, cityCount: cities.length, accountId, syncedAt: new Date() })
+        .where(and(eq(carrierCities.storeId, storeId), eq(carrierCities.carrierName, name)));
+    } else {
+      await db.insert(carrierCities).values({
+        storeId,
+        carrierName: name,
+        accountId,
+        cities: cities as any,
+        cityCount: cities.length,
+        syncedAt: new Date(),
+      });
+    }
   }
 
   /**

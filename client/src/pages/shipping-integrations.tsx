@@ -538,6 +538,22 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
+  const syncCitiesMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("POST", `/api/carrier-accounts/${id}/sync-cities`, {}),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["/api/carriers/cities"] });
+      toast({
+        title: "✅ Villes synchronisées",
+        description: `${data?.count ?? "?"} villes importées depuis ${providerName}.`,
+      });
+    },
+    onError: (e: any) => toast({
+      title: "Échec de la synchronisation",
+      description: e.message,
+      variant: "destructive",
+    }),
+  });
+
   const safeTab = Math.min(activeTab, Math.max(0, accounts.length - 1));
   const acct = accounts[safeTab] || null;
 
@@ -642,6 +658,20 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     <Button size="sm" variant="outline" className="border-red-200 text-red-600 hover:bg-red-50"
                       onClick={() => setConfirmDeleteId(acct.id)} data-testid={`button-delete-account-${acct.id}`}>
                       <Trash2 className="w-3.5 h-3.5 mr-1" /> Supprimer
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-amber-200 hover:bg-amber-50 font-semibold"
+                      style={{ color: GOLD, borderColor: GOLD + "55" }}
+                      onClick={() => syncCitiesMutation.mutate(acct.id)}
+                      disabled={syncCitiesMutation.isPending}
+                      data-testid={`button-sync-cities-${acct.id}`}
+                    >
+                      {syncCitiesMutation.isPending
+                        ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                        : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                      Synchroniser les villes
                     </Button>
                     <div className="flex items-center gap-2 ml-auto">
                       <Switch

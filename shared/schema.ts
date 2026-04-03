@@ -186,6 +186,18 @@ export const carrierAccounts = pgTable("carrier_accounts", {
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
+// ─── Carrier city cache (synced from carrier API) ───────────────────────────
+// One row per store+carrier. Populated by "Synchroniser les villes" action.
+export const carrierCities = pgTable("carrier_cities", {
+  id:          serial("id").primaryKey(),
+  storeId:     integer("store_id").notNull(),
+  carrierName: text("carrier_name").notNull(),   // e.g. "digylog"
+  accountId:   integer("account_id"),             // which carrier_accounts row was used
+  cities:      jsonb("cities").notNull().default([]),
+  cityCount:   integer("city_count").default(0),
+  syncedAt:    timestamp("synced_at").defaultNow(),
+});
+
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),

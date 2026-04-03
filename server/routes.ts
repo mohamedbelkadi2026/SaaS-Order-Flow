@@ -1739,6 +1739,77 @@ export async function registerRoutes(
     }
   });
 
+  // ── Sync carrier cities from live API → carrier_cities table ────────────────
+  app.post("/api/carrier-accounts/:id/sync-cities", requireAuth, async (req, res) => {
+    try {
+      const accountId = Number(req.params.id);
+      const storeId   = req.user!.storeId!;
+
+      const acct = await storage.getCarrierAccount(accountId);
+      if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
+
+      const sanitize = (s: string) => s.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+      const apiKey = sanitize(acct.apiKey);
+      if (!apiKey) return res.status(400).json({ message: "Token API manquant sur ce compte" });
+
+      // Build cities URL — base is api.digylog.com/api/v2/seller, endpoint is /cities
+      const rawBase = (acct.apiUrl || "").replace(/\/orders\s*$/i, "").replace(/\/+$/, "");
+      const base = (rawBase || "https://api.digylog.com/api/v2/seller")
+        .replace(/api\.digylog\.ma/i, "api.digylog.com")
+        .replace(/app\.digylog\.com/i, "api.digylog.com");
+      const citiesUrl = `${base}/cities`;
+
+      console.log(`[CitiesSync] Fetching cities for account #${accountId} (${acct.carrierName}) from ${citiesUrl}`);
+
+      const axiosLib = (await import("axios")).default;
+      const resp = await axiosLib.get(citiesUrl, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept:        "application/json",
+          Referer:       "https://apiseller.digylog.com",
+          Origin:        "https://apiseller.digylog.com",
+        },
+        timeout: 20_000,
+        httpsAgent: new (await import("https")).default.Agent({ rejectUnauthorized: false }),
+        validateStatus: () => true,
+      });
+
+      if (resp.status !== 200) {
+        console.error(`[CitiesSync] HTTP ${resp.status}:`, JSON.stringify(resp.data).slice(0, 300));
+        return res.status(resp.status).json({
+          message: `L'API Digylog a répondu avec HTTP ${resp.status}`,
+          raw: resp.data,
+        });
+      }
+
+      // Normalise various response shapes: array, { data: [] }, { cities: [] }, { data: { cities: [] } }
+      const raw = resp.data;
+      let cityList: any[] =
+        Array.isArray(raw)               ? raw :
+        Array.isArray(raw?.data)         ? raw.data :
+        Array.isArray(raw?.cities)       ? raw.cities :
+        Array.isArray(raw?.data?.cities) ? raw.data.cities : [];
+
+      // Extract string name from object entries or use the string directly
+      const cities: string[] = cityList
+        .map((c: any) => (typeof c === "string" ? c : (c?.name || c?.city_name || c?.label || "")).trim())
+        .filter(Boolean)
+        .sort();
+
+      if (!cities.length) {
+        return res.status(422).json({ message: "Aucune ville reçue de Digylog. Vérifiez votre token et réessayez." });
+      }
+
+      await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, cities);
+
+      console.log(`[CitiesSync] ✅ Saved ${cities.length} cities for ${acct.carrierName} (storeId=${storeId})`);
+      res.json({ count: cities.length, cities, syncedAt: new Date().toISOString() });
+    } catch (err: any) {
+      console.error("[CitiesSync] Error:", err?.message);
+      res.status(502).json({ message: `Impossible de contacter Digylog: ${err?.message || "erreur réseau"}` });
+    }
+  });
+
   // ── Permanent webhook URL: /api/webhooks/carrier/:storeId/:carrierName ─────
   // This URL never changes — based on storeId (permanent) + carrier name.
   // Use this in your carrier's webhook settings instead of the token-based URL.
@@ -3508,29 +3579,66 @@ export async function registerRoutes(
   app.get("/api/carriers/cities", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const provider = req.query.provider as string | undefined;
+      const provider = (req.query.provider as string | undefined)?.toLowerCase().trim();
 
+      // ── 1. Check DB-synced city cache (carrier_cities table) ─────────────
+      // If the admin ran "Synchroniser les villes", this is the live list.
+      if (provider) {
+        const dbCities = await storage.getCarrierCities(storeId, provider);
+        if (dbCities.length > 0) {
+          return res.json({
+            provider,
+            cities: dbCities,
+            isCarrierSpecific: true,
+            source: "synced",
+            count: dbCities.length,
+          });
+        }
+      } else {
+        // No provider given — try to find the default active carrier account
+        const activeAccounts = await storage.getCarrierAccounts(storeId);
+        const defaultAcct = activeAccounts.find(a => a.isActive === 1 && a.isDefault === 1)
+          || activeAccounts.find(a => a.isActive === 1);
+        if (defaultAcct) {
+          const dbCities = await storage.getCarrierCities(storeId, defaultAcct.carrierName);
+          if (dbCities.length > 0) {
+            return res.json({
+              provider: defaultAcct.carrierName,
+              cities: dbCities,
+              isCarrierSpecific: true,
+              source: "synced",
+              count: dbCities.length,
+            });
+          }
+        }
+      }
+
+      // ── 2. Fall back: legacy storeIntegrations credentials cityList ───────
       const integrations = await storage.getIntegrationsByStore(storeId, "shipping");
 
       if (!integrations.length) {
+        // ── 3. Final fallback: static default list ───────────────────────────
+        const staticCities = provider ? getDefaultCitiesForProvider(provider) : MOROCCAN_CITIES_DEFAULT;
+        const isSpecific = provider ? staticCities !== MOROCCAN_CITIES_DEFAULT : false;
         return res.json({
-          provider: null,
-          cities: MOROCCAN_CITIES_DEFAULT,
-          isCarrierSpecific: false,
-          source: "generic",
+          provider: provider || null,
+          cities: staticCities,
+          isCarrierSpecific: isSpecific,
+          source: "default",
         });
       }
 
       const target = provider
-        ? integrations.find(i => i.provider.toLowerCase() === provider.toLowerCase())
+        ? integrations.find(i => i.provider.toLowerCase() === provider)
         : integrations.find(i => i.isActive === 1) || integrations[0];
 
       if (!target) {
+        const staticCities = provider ? getDefaultCitiesForProvider(provider) : MOROCCAN_CITIES_DEFAULT;
         return res.json({
           provider: provider || null,
-          cities: MOROCCAN_CITIES_DEFAULT,
-          isCarrierSpecific: false,
-          source: "generic",
+          cities: staticCities,
+          isCarrierSpecific: !!provider,
+          source: "default",
         });
       }
 

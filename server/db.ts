@@ -175,7 +175,22 @@ export async function initializeDatabase(): Promise<void> {
     const finalIdType = finalColCheck.rows.find((c: any) => c.column_name === 'id')?.data_type;
     console.log(`[DB] carrier_accounts READY ✅ — id type: ${finalIdType ?? 'unknown'} (expected: integer)`);
 
-    // ── 5. orders: add carrier tracking columns ───────────────────────────────
+    // ── 5. carrier_cities — live city cache synced from carrier API ───────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.carrier_cities (
+        id           SERIAL PRIMARY KEY,
+        store_id     INTEGER NOT NULL,
+        carrier_name TEXT NOT NULL,
+        account_id   INTEGER,
+        cities       JSONB NOT NULL DEFAULT '[]',
+        city_count   INTEGER DEFAULT 0,
+        synced_at    TIMESTAMP DEFAULT NOW(),
+        UNIQUE(store_id, carrier_name)
+      );
+    `);
+    console.log("[DATABASE]: carrier_cities table verified/created.");
+
+    // ── 6. orders: add carrier tracking columns ───────────────────────────────
     await client.query(`
       ALTER TABLE public.orders
         ADD COLUMN IF NOT EXISTS carrier_name TEXT,
