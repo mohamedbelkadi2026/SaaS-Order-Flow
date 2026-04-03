@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from "react";
-import { Check, ChevronsUpDown, AlertTriangle } from "lucide-react";
+import { Check, ChevronsUpDown, AlertTriangle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface CityComboboxProps {
@@ -9,6 +9,7 @@ interface CityComboboxProps {
   isCarrierSpecific?: boolean;
   carrierLogo?: string | null;
   disabled?: boolean;
+  isLoading?: boolean;
   placeholder?: string;
   className?: string;
   "data-testid"?: string;
@@ -27,6 +28,7 @@ export function CityCombobox({
   isCarrierSpecific = false,
   carrierLogo,
   disabled = false,
+  isLoading = false,
   placeholder = "Sélectionner une ville...",
   className,
   "data-testid": testId,
@@ -102,10 +104,10 @@ export function CityCombobox({
           type="text"
           value={open ? search : value}
           onChange={handleInputChange}
-          onFocus={() => { setOpen(true); setSearch(""); }}
+          onFocus={() => { if (!isLoading) { setOpen(true); setSearch(""); } }}
           onKeyDown={handleKeyDown}
-          disabled={disabled}
-          placeholder={disabled ? "Choisir un transporteur d'abord" : placeholder}
+          disabled={disabled || isLoading}
+          placeholder={isLoading ? "Chargement المتوفرة..." : disabled ? "Choisir un transporteur d'abord" : placeholder}
           data-testid={testId}
           className={cn(
             "w-full h-9 rounded-md border text-sm outline-none transition-colors",
@@ -121,10 +123,11 @@ export function CityCombobox({
           )}
         />
         <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none flex items-center gap-1">
-          {isUnmatched && !disabled && (
+          {isLoading && <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />}
+          {isUnmatched && !disabled && !isLoading && (
             <AlertTriangle className="w-3.5 h-3.5 text-orange-500" />
           )}
-          <ChevronsUpDown className="w-3.5 h-3.5 text-muted-foreground" />
+          {!isLoading && <ChevronsUpDown className="w-3.5 h-3.5 text-muted-foreground" />}
         </div>
       </div>
 

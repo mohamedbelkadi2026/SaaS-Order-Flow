@@ -216,6 +216,29 @@ function getDefaultCitiesForProvider(provider: string): string[] {
   return MOROCCAN_CITIES_DEFAULT;
 }
 
+const CARRIER_LOGOS_SERVER: Record<string, string> = {
+  digylog: '/carriers/digylog.svg',
+  onessta: '/carriers/onessta.svg',
+  ozoneexpress: '/carriers/ozon.svg',
+  'ozone express': '/carriers/ozon.svg',
+  ozon: '/carriers/ozon.svg',
+  sendit: '/carriers/sendit.svg',
+  ameex: '/carriers/ameex.svg',
+  cathedis: '/carriers/cathidis.svg',
+  cathidis: '/carriers/cathidis.svg',
+  speedex: '/carriers/speedx.png',
+  speedx: '/carriers/speedx.png',
+  kargoexpress: '/carriers/cargo.svg',
+  'kargo express': '/carriers/cargo.svg',
+  cargo: '/carriers/cargo.svg',
+  forcelog: '/carriers/forcelog.png',
+  livo: '/carriers/ol.svg',
+  ol: '/carriers/ol.svg',
+  quicklivraison: '/carriers/ql.svg',
+  'quick livraison': '/carriers/ql.svg',
+  ql: '/carriers/ql.svg',
+};
+
 /** Auto-match a raw city name against a carrier's city list. Returns best match or null. */
 function autoMatchCity(raw: string, cities: string[]): string | null {
   if (!raw || !cities.length) return null;
@@ -1802,7 +1825,8 @@ export async function registerRoutes(
 
       await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, cities);
 
-      console.log(`[CitiesSync] ✅ Saved ${cities.length} cities for ${acct.carrierName} (storeId=${storeId})`);
+      console.log(`[CITY-SYNC]: Received ${cities.length} cities from ${acct.carrierName} API (storeId=${storeId})`);
+      console.log(`[CITY-SYNC]: Sample cities — ${cities.slice(0, 5).join(", ")}`);
       res.json({ count: cities.length, cities, syncedAt: new Date().toISOString() });
     } catch (err: any) {
       console.error("[CitiesSync] Error:", err?.message);
@@ -3662,23 +3686,63 @@ export async function registerRoutes(
   /**
    * GET /api/carriers/cities/all
    * Returns all active shipping integrations with their city lists.
+   * Priority per carrier: DB-synced carrier_cities → storeIntegrations credentials → static default.
    */
   app.get("/api/carriers/cities/all", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
+
+      // ── 1. New system: carrier_accounts ──────────────────────────────────
+      const accounts = await storage.getCarrierAccounts(storeId);
+      if (accounts.length > 0) {
+        const result = await Promise.all(
+          accounts.map(async (acct) => {
+            // Check DB-synced city cache first
+            const dbCities = await storage.getCarrierCities(storeId, acct.carrierName);
+            const cities = dbCities.length > 0
+              ? dbCities
+              : getDefaultCitiesForProvider(acct.carrierName);
+            const logo = CARRIER_LOGOS_SERVER[acct.carrierName.toLowerCase()] ?? null;
+            return {
+              id: acct.id,
+              provider: acct.carrierName,
+              isActive: acct.isActive,
+              cities,
+              logo,
+              source: dbCities.length > 0 ? "synced" : "default",
+              cityCount: cities.length,
+            };
+          })
+        );
+        return res.json(result);
+      }
+
+      // ── 2. Legacy system: storeIntegrations ───────────────────────────────
       const integrations = await storage.getIntegrationsByStore(storeId, "shipping");
+
+      if (!integrations.length) {
+        // ── 3. Absolute fallback: Moroccan city list as a single "default" entry
+        return res.json([{
+          id: null, provider: "default", isActive: 1,
+          cities: MOROCCAN_CITIES_DEFAULT, logo: null, source: "default", cityCount: MOROCCAN_CITIES_DEFAULT.length,
+        }]);
+      }
 
       const result = integrations.map(i => {
         const creds = JSON.parse(i.credentials || "{}");
         const storedList: string[] | undefined = creds.cityList;
+        const cities = Array.isArray(storedList) && storedList.length > 0
+          ? storedList
+          : getDefaultCitiesForProvider(i.provider);
+        const logo = CARRIER_LOGOS_SERVER[i.provider.toLowerCase()] ?? null;
         return {
           id: i.id,
           provider: i.provider,
           isActive: i.isActive,
-          cities: Array.isArray(storedList) && storedList.length > 0
-            ? storedList
-            : getDefaultCitiesForProvider(i.provider),
+          cities,
+          logo,
           source: Array.isArray(storedList) && storedList.length > 0 ? "stored" : "default",
+          cityCount: cities.length,
         };
       });
 

@@ -78,23 +78,29 @@ export default function NewOrderAdd() {
   const [items, setItems] = useState<LineItem[]>([newItem()]);
 
   // ── Carrier city lists ─────────────────────────────────────────────
-  const { data: allCarriers = [] } = useQuery<{ id: number; provider: string; isActive: number; cities: string[] }[]>({
+  const { data: allCarriers = [], isLoading: citiesLoading } = useQuery<{
+    id: number; provider: string; isActive: number; cities: string[]; logo: string | null; source: string;
+  }[]>({
     queryKey: ["/api/carriers/cities/all"],
-    staleTime: 5 * 60 * 1000,
+    staleTime: 3 * 60 * 1000,
   });
 
   const activeCarriers = useMemo(() => (allCarriers as any[]).filter((c: any) => c.isActive === 1), [allCarriers]);
 
-  const activeCities = useMemo(() => {
-    if (!selectedCarrierProvider) {
-      const primary = activeCarriers[0];
-      return primary ? primary.cities as string[] : MOROCCAN_CITIES;
-    }
-    const found = (allCarriers as any[]).find((c: any) => c.provider === selectedCarrierProvider);
-    return found ? found.cities as string[] : MOROCCAN_CITIES;
+  const activeCarrier = useMemo(() => {
+    if (selectedCarrierProvider)
+      return (allCarriers as any[]).find((c: any) => c.provider === selectedCarrierProvider) ?? null;
+    return activeCarriers[0] ?? null;
   }, [selectedCarrierProvider, allCarriers, activeCarriers]);
 
-  const isCarrierSpecific = activeCities !== MOROCCAN_CITIES && activeCities.length > 0;
+  const activeCities = useMemo(() => {
+    if (!activeCarrier) return MOROCCAN_CITIES;
+    const list = activeCarrier.cities as string[];
+    return list && list.length > 0 ? list : MOROCCAN_CITIES;
+  }, [activeCarrier]);
+
+  const activeCarrierLogo: string | null = (activeCarrier as any)?.logo ?? null;
+  const isCarrierSpecific = !!activeCarrier && activeCities !== MOROCCAN_CITIES && activeCities.length > 0;
 
   const updateItem = (id: string, field: keyof LineItem, value: any) => {
     setItems(prev => prev.map(it => {
@@ -262,7 +268,8 @@ export default function NewOrderAdd() {
                 onChange={setCustomerCity}
                 cities={activeCities}
                 isCarrierSpecific={isCarrierSpecific}
-                disabled={activeCarriers.length > 1 && !selectedCarrierProvider && false}
+                carrierLogo={activeCarrierLogo}
+                isLoading={citiesLoading}
                 data-testid="select-city"
               />
             </div>

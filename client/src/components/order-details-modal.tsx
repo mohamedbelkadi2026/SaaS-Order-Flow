@@ -206,7 +206,9 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
 
   // ── Carrier city list — filtered by the order's assigned carrier ──
   const orderCarrier = (order as any)?.carrierName || order?.shippingProvider || null;
-  const { data: carrierData } = useQuery<{ provider: string | null; cities: string[]; isCarrierSpecific: boolean }>({
+  const { data: carrierData, isLoading: citiesLoading } = useQuery<{
+    provider: string | null; cities: string[]; isCarrierSpecific: boolean; source?: string;
+  }>({
     queryKey: ["/api/carriers/cities", orderCarrier],
     queryFn: () =>
       fetch(
@@ -215,9 +217,12 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
           : `/api/carriers/cities`,
         { credentials: "include" }
       ).then(r => r.json()),
-    staleTime: 5 * 60 * 1000,
+    staleTime: 3 * 60 * 1000,
   });
-  const carrierCities = carrierData?.cities ?? MOROCCAN_CITIES;
+  // Fallback to MOROCCAN_CITIES if API fails or returns empty
+  const carrierCities = (carrierData?.cities && carrierData.cities.length > 0)
+    ? carrierData.cities
+    : MOROCCAN_CITIES;
   const isCarrierSpecific = carrierData?.isCarrierSpecific ?? false;
 
   const { data: stockProducts = [] } = useQuery<ProductOption[]>({
@@ -525,7 +530,8 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   onChange={v => set("customerCity", v)}
                   cities={carrierCities}
                   isCarrierSpecific={isCarrierSpecific}
-                  carrierLogo={getCarrierLogo(carrierData?.provider)}
+                  carrierLogo={getCarrierLogo(carrierData?.provider ?? orderCarrier)}
+                  isLoading={citiesLoading}
                   data-testid="select-city"
                   className="w-full"
                 />
