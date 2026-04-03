@@ -1,0 +1,72 @@
+
+I have the official Digylog API V2.4 documentation. After comparing it with our current payload in `server/services/carrier-service.ts`, I found 3 critical mismatches that are causing orders to be rejected.
+
+Fix the `buildDigylogPayload` function in `server/services/carrier-service.ts`:
+
+---
+
+**Bug 1 — `mode` field is wrong**
+Current code sends: `mode: 1` (we assumed 1 = COD)
+API docs say: `mode` means → 1 = Standard order, 2 = FC order
+The field that means COD is NOT `mode`. Remove the incorrect comment.
+Keep `mode: 1` (Standard order) — this is correct, but fix the comment.
+
+---
+
+**Bug 2 — `store` field is hardcoded as "TajerGrow"**
+Current code: `store: "TajerGrow"`
+API docs say: `store` must be the **name of the store** fetched from Digylog's `/stores` endpoint — it must match exactly what Digylog has on their side.
+
+Fix: Add a `digylogStoreName` optional field to the `CarrierShipInput` interface.
+In `buildDigylogPayload`, use: `store: input.digylogStoreName || "TajerGrow"`
+
+Then in `server/routes.ts`, wherever `shipOrderToCarrier` is called for Digylog, try to pass the store name from the carrier account credentials. Check if `creds.storeName` exists and pass it as `digylogStoreName`.
+
+---
+
+**Bug 3 — Missing required `type` field inside each order object**
+Current code: the order object inside the `orders` array is missing the `type` field.
+API docs say: `type` is **required** — integer 1 or 2 or 3 → 1 = Normal delivery, 2 = Exchange.
+
+Fix: Add `type: 1` (Normal delivery) to each order object in `buildDigylogPayload`:
+```javascript
+orders: [
+  {
+    type: 1,        // ADD THIS — required by API
+    num: input.orderNumber,
+    name: ...,
+    ...
+  }
+]
+```
+
+---
+
+**Bug 4 — Add `checkDuplicate: 1` to prevent duplicate orders**
+The API docs mention a `checkDuplicate` parameter (added in v2.3) that prevents creating duplicate orders with the same number.
+
+Add `checkDuplicate: 1` to the root of the payload (same level as `network`, `store`, `orders`):
+```javascript
+{
+  mode: 1,
+  network: ...,
+  store: ...,
+  checkDuplicate: 1,   // ADD THIS
+  status: 1,
+  orders: [...]
+}
+```
+
+---
+
+**Bug 5 — `network` is hardcoded as `1`**
+The API requires the network id from `/networks` endpoint. Currently it's hardcoded as `1`.
+
+Fix: Add an optional `digylogNetwork` field (integer) to `CarrierShipInput`.
+In `buildDigylogPayload`, use: `network: input.digylogNetwork ?? 1`
+
+In the carrier account settings (wherever `creds` are stored), check if `creds.networkId` exists and pass it as `digylogNetwork` when calling `shipOrderToCarrier`.
+
+---
+
+Do not change anything else. Do not break existing functionality for other carriers.

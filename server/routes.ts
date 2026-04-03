@@ -1032,6 +1032,8 @@ export async function registerRoutes(
                   storeId,
                   note:             (order as any).comment || "",
                   carrierStoreName: (orderCreds as any).carrierStoreName || "",
+                  digylogStoreName: (orderCreds as any).carrierStoreName || "",
+                  digylogNetwork:   (orderCreds as any).networkId ? Number((orderCreds as any).networkId) : undefined,
                 });
               })
             );
@@ -3455,6 +3457,8 @@ export async function registerRoutes(
         storeId,
         note:             (order as any).comment || "",
         carrierStoreName: (creds as any).carrierStoreName || "",
+        digylogStoreName: (creds as any).carrierStoreName || "",
+        digylogNetwork:   (creds as any).networkId ? Number((creds as any).networkId) : undefined,
       });
 
       if (!shipResult.success) {

@@ -110,9 +110,11 @@ export interface CarrierShipInput {
   orderNumber: string;
   orderId: number;
   storeId: number;
-  note?: string;           // optional admin comment / note for carrier
-  quantity?: number;       // product quantity (defaults to 1)
+  note?: string;             // optional admin comment / note for carrier
+  quantity?: number;         // product quantity (defaults to 1)
   carrierStoreName?: string; // Digylog-side store name (required for Digylog dispatch)
+  digylogStoreName?: string; // alias — same as carrierStoreName, checked first
+  digylogNetwork?: number;   // Digylog network ID (from /networks endpoint); defaults to 1
 }
 
 export interface CarrierShipResult {
@@ -152,6 +154,13 @@ function sanitizePhone(raw: string): string {
 /**
  * Digylog API V2.4 — exact payload structure from official docs.
  * POST https://api.digylog.com/api/v2/seller/orders
+ *
+ * Fixes applied vs. initial implementation:
+ *   Bug 1 — `mode` comment corrected: 1 = Standard order (not COD)
+ *   Bug 2 — `store` now uses the Digylog-side store name from credentials
+ *   Bug 3 — `type: 1` (Normal delivery) added to each order object (required)
+ *   Bug 4 — `checkDuplicate: 1` added at root to prevent duplicate orders
+ *   Bug 5 — `network` now reads from `input.digylogNetwork` (defaults to 1)
  */
 function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone   = sanitizePhone(input.phone);
@@ -159,7 +168,8 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const addr    = (input.address || "").trim() || input.city.trim();
   const qty     = input.quantity ?? 1;
 
-  const storeName = (input.carrierStoreName || "").trim();
+  // Bug 2: resolve store name — digylogStoreName takes precedence, then carrierStoreName
+  const storeName = (input.digylogStoreName || input.carrierStoreName || "").trim();
   if (!storeName) {
     throw Object.assign(
       new Error("⚠️ خطأ: اسم المتجر غير متطابق مع حساب Digylog. يرجى إعادة ضبط الإعدادات."),
@@ -167,13 +177,18 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
     );
   }
 
+  // Bug 5: network ID — from carrier account settings; defaults to 1 (standard)
+  const networkId = input.digylogNetwork ?? 1;
+
   return {
-    network: 1,          // 1 = standard network
-    store:   storeName,
-    mode:    1,          // 1 = COD
-    status:  1,          // 1 = active
+    network:        networkId,   // Bug 5 — integer from /networks; defaults to 1
+    store:          storeName,   // Bug 2 — exact store name from Digylog /stores
+    mode:           1,           // Bug 1 — 1 = Standard order (not COD; COD is handled by `port`)
+    status:         1,           // 1 = send immediately
+    checkDuplicate: 1,           // Bug 4 — prevent duplicate orders (v2.3+)
     orders: [
       {
+        type:        1,           // Bug 3 — required: 1 = Normal delivery, 2 = Exchange
         num:         input.orderNumber,
         name:        input.customerName.trim(),
         phone:       phone,
@@ -187,7 +202,7 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
           },
         ],
         openproduct: input.canOpen ? 1 : 0,
-        port:        1,   // 1 = delivery fees on customer (COD default)
+        port:        1,           // 1 = delivery fees charged to customer (COD default)
         note:        input.note || "",
       },
     ],
