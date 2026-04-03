@@ -244,20 +244,132 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     mutation.mutate();
   };
 
+  // ── EDIT MODE: simplified focused view ────────────────────────────────────
+  if (existingAccount) {
+    return (
+      <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
+        <DialogContent className="sm:max-w-md rounded-2xl bg-white">
+          <DialogHeader className="pb-2">
+            <DialogTitle style={{ color: NAVY }} className="text-lg font-bold">
+              Modifier — {existingAccount.connectionName}
+            </DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              Mettez à jour le token ou copiez l'URL WebHook de ce compte.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-2">
+
+            {/* ── Authorization Token ── */}
+            <div className="space-y-2">
+              <Label className="font-semibold text-sm" style={{ color: NAVY }}>
+                Authorization Token{" "}
+                <span className="text-muted-foreground font-normal text-xs">
+                  (laisser vide pour conserver)
+                </span>
+              </Label>
+              <div className="relative">
+                <Input
+                  data-testid="input-carrier-apikey"
+                  type={showKey ? "text" : "password"}
+                  placeholder="••••••••••••••••••••••••"
+                  value={apiKey}
+                  onChange={e => setApiKey(e.target.value)}
+                  className="pr-10 h-11 text-sm font-mono border-border/70"
+                />
+                <button
+                  type="button"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setShowKey(v => !v)}
+                >
+                  {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* ── WebHook URL (permanent) ── */}
+            <div className="space-y-2">
+              <Label className="font-semibold text-sm flex items-center gap-2" style={{ color: NAVY }}>
+                WebHook URL
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-200">
+                  Permanente
+                </span>
+              </Label>
+              <div className="flex items-center gap-2 px-3 py-3 rounded-xl border-2 border-border/50 bg-gray-50">
+                <code className="flex-1 text-[11px] font-mono text-gray-700 break-all leading-relaxed">
+                  {webhookUrl}
+                </code>
+                <button
+                  type="button"
+                  data-testid="button-copy-webhook"
+                  onClick={() => {
+                    navigator.clipboard.writeText(webhookUrl);
+                    setWebhookCopied(true);
+                    setTimeout(() => setWebhookCopied(false), 2000);
+                  }}
+                  className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    webhookCopied
+                      ? "bg-green-100 text-green-700 border border-green-300"
+                      : "bg-white text-gray-600 border border-gray-200 hover:border-gray-400 hover:text-gray-900"
+                  }`}
+                >
+                  {webhookCopied
+                    ? <><Check className="w-3.5 h-3.5" /> Copié!</>
+                    : <><Copy className="w-3.5 h-3.5" /> Copier</>}
+                </button>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-relaxed">
+                URL permanente — ne change jamais même si vous mettez à jour le token. Collez-la dans les réglages webhook du transporteur.
+              </p>
+            </div>
+
+            {/* ── Error banner ── */}
+            {submitError && (
+              <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <p className="text-sm">{submitError}</p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between gap-3 pt-2">
+            <Button
+              variant="outline"
+              onClick={onClose}
+              disabled={mutation.isPending}
+              data-testid="button-cancel-connect"
+              className="flex-1"
+            >
+              Annuler
+            </Button>
+            <Button
+              onClick={handleSubmit}
+              disabled={mutation.isPending}
+              className="flex-1 text-white font-bold"
+              style={{ background: `linear-gradient(135deg,${GOLD},#b8904a)` }}
+              data-testid="button-confirm-connect"
+            >
+              {mutation.isPending
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Enregistrement...</>
+                : <><Check className="w-4 h-4 mr-2" /> Enregistrer</>}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  // ── CREATE MODE: full form ─────────────────────────────────────────────────
   return (
     <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
       <DialogContent className="sm:max-w-md rounded-2xl">
         <DialogHeader>
           <DialogTitle style={{ color: NAVY }}>
-            {existingAccount
-              ? `Modifier — ${existingAccount.connectionName}`
-              : `Connexion avec ${providerName}`}
+            Connexion avec {providerName}
           </DialogTitle>
-          {!existingAccount && (
-            <DialogDescription className="text-sm text-muted-foreground">
-              Liez un compte <strong>{providerName}</strong> à l'une de vos boutiques.
-            </DialogDescription>
-          )}
+          <DialogDescription className="text-sm text-muted-foreground">
+            Liez un compte <strong>{providerName}</strong> à l'une de vos boutiques.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5 py-2">
@@ -290,12 +402,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           {/* ── Authorization token ── */}
           <div className="space-y-1.5">
             <Label className="font-semibold text-sm">
-              Authorization Token{" "}
-              {existingAccount && (
-                <span className="text-muted-foreground font-normal text-xs">
-                  (laisser vide pour conserver)
-                </span>
-              )}
+              Authorization Token <span className="text-red-500">*</span>
             </Label>
             <div className="relative">
               <Input
@@ -304,7 +411,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 placeholder="Entrez votre token d'autorisation..."
                 value={apiKey}
                 onChange={e => setApiKey(e.target.value)}
-                className={!existingAccount && !apiKey.trim() && submitError ? "border-red-400" : ""}
+                className={!apiKey.trim() && submitError ? "border-red-400" : ""}
               />
               <button
                 type="button"
@@ -322,14 +429,6 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               <Label className="font-semibold text-sm">
                 Magasin Digylog <span className="text-red-500">*</span>
               </Label>
-
-              {/* Show current value if already saved */}
-              {existingAccount?.carrierStoreName && !digylogStores.length && (
-                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 text-sm text-green-800 dark:text-green-300">
-                  <Check className="w-3.5 h-3.5 shrink-0" />
-                  <span>Magasin actuel : <strong>{existingAccount.carrierStoreName}</strong></span>
-                </div>
-              )}
 
               {digylogStores.length > 0 ? (
                 <Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
@@ -350,7 +449,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   data-testid="button-fetch-digylog-stores"
                   onClick={fetchDigylogStores}
                   disabled={isFetchingStores}
-                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-dashed border-blue-400 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors disabled:opacity-50 w-full justify-center"
+                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-dashed border-blue-400 text-blue-600 hover:bg-blue-50 transition-colors disabled:opacity-50 w-full justify-center"
                 >
                   {isFetchingStores
                     ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement...</>
@@ -399,7 +498,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   className="font-mono text-xs"
                 />
                 <p className="text-[10px] text-muted-foreground leading-relaxed">
-                  Laisser vide pour utiliser l'URL par défaut. Utilisez uniquement si Digylog vous a fourni un URL différent (ex: api2.digylog.ma).
+                  Laisser vide pour utiliser l'URL par défaut.
                 </p>
               </div>
             )}
@@ -431,7 +530,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground leading-relaxed">
-              Cette URL est <strong>permanente</strong> — elle ne change jamais, même si vous mettez à jour le token ou les paramètres. Collez-la dans les réglages webhook du transporteur.
+              Cette URL est <strong>permanente</strong> — elle ne change jamais. Collez-la dans les réglages webhook du transporteur.
             </p>
           </div>
 
@@ -478,7 +577,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             {mutation.isPending ? (
               <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Connexion...</>
             ) : (
-              <><Link2 className="w-4 h-4 mr-2" />{existingAccount ? "Enregistrer" : "Connecter"}</>
+              <><Link2 className="w-4 h-4 mr-2" /> Connecter</>
             )}
           </Button>
         </div>
