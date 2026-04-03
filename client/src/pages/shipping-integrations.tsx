@@ -260,22 +260,33 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
 
           <div className="space-y-6 py-2">
 
-            {/* ── Authorization Token ── */}
+            {/* ── Authorization Token (API Key — not a login password) ── */}
             <div className="space-y-2">
-              <Label className="font-semibold text-sm" style={{ color: NAVY }}>
-                Authorization Token{" "}
-                <span className="text-muted-foreground font-normal text-xs">
-                  (laisser vide pour conserver)
+              <div className="flex items-center justify-between">
+                <Label
+                  htmlFor="carrier_token_input"
+                  className="font-semibold text-sm"
+                  style={{ color: NAVY }}
+                >
+                  Authorization Token
+                </Label>
+                <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
+                  Clé API
                 </span>
-              </Label>
+              </div>
               <div className="relative">
                 <Input
+                  id="carrier_token_input"
+                  name="carrier_token_input"
                   data-testid="input-carrier-apikey"
+                  data-lpignore="true"
+                  data-form-type="other"
+                  autoComplete="new-password"
                   type={showKey ? "text" : "password"}
-                  placeholder="••••••••••••••••••••••••"
+                  placeholder="Laissez vide pour conserver le token actuel"
                   value={apiKey}
                   onChange={e => setApiKey(e.target.value)}
-                  className="pr-10 h-11 text-sm font-mono border-border/70"
+                  className="pr-10 h-11 text-sm font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 placeholder:text-muted-foreground/60"
                 />
                 <button
                   type="button"
@@ -285,6 +296,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Il s'agit de votre <strong>clé API transporteur</strong>, pas de votre mot de passe. Laissez vide pour conserver le token actuel.
+              </p>
             </div>
 
             {/* ── WebHook URL (permanent) ── */}
@@ -399,19 +413,29 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             )}
           </div>
 
-          {/* ── Authorization token ── */}
+          {/* ── Authorization token (API Key — not a login password) ── */}
           <div className="space-y-1.5">
-            <Label className="font-semibold text-sm">
-              Authorization Token <span className="text-red-500">*</span>
-            </Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="carrier_token_create" className="font-semibold text-sm">
+                Authorization Token <span className="text-red-500">*</span>
+              </Label>
+              <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
+                Clé API
+              </span>
+            </div>
             <div className="relative">
               <Input
+                id="carrier_token_create"
+                name="carrier_token_create"
                 data-testid="input-carrier-apikey"
+                data-lpignore="true"
+                data-form-type="other"
+                autoComplete="new-password"
                 type={showKey ? "text" : "password"}
                 placeholder="Entrez votre token d'autorisation..."
                 value={apiKey}
                 onChange={e => setApiKey(e.target.value)}
-                className={!apiKey.trim() && submitError ? "border-red-400" : ""}
+                className={`font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
               />
               <button
                 type="button"
