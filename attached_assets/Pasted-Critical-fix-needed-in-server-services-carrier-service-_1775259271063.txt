@@ -1,0 +1,60 @@
+Critical fix needed in `server/services/carrier-service.ts`.
+
+The `store` field in `buildDigylogPayload` is hardcoded as `"TajerGrow"`. 
+
+According to the Digylog API docs, `store` must be the name of the SELLER's store as registered in their own Digylog account (fetched from GET /stores on Digylog's API). It has nothing to do with our platform name.
+
+Each of our clients has their own Digylog account with their own store name. We must let them enter it.
+
+---
+
+**Fix 1 — carrier_accounts table**
+
+In `shared/schema.ts`, find the `carrierAccounts` table and add:
+storeName: text("store_name"),
+Then run db:push.
+
+---
+
+**Fix 2 — Shipping integrations UI**
+
+In `client/src/pages/shipping-integrations.tsx`, find the Digylog account form (where user enters API key). Add a new required input field:
+
+- Label: **"Nom de votre magasin Digylog"**
+- Placeholder: `"Ex: Mon Magasin"`  
+- Helper text: `"Copiez exactement le nom depuis votre compte Digylog → Magasins"`
+- Field name: `storeName`
+
+---
+
+**Fix 3 — Save storeName when creating/updating carrier account**
+
+Find the API route that creates or updates a carrier account (`POST /api/carrier-accounts` or similar in `server/routes.ts`). Make sure `storeName` is included in the data saved to the database.
+
+---
+
+**Fix 4 — Use storeName in payload**
+
+In `server/services/carrier-service.ts`, update `CarrierShipInput` interface:
+```typescript
+digylogStoreName?: string;
+```
+
+In `buildDigylogPayload`:
+```typescript
+store: input.digylogStoreName || "default",
+```
+
+In `server/routes.ts`, wherever `shipOrderToCarrier` is called with provider "digylog", pass the store name from creds:
+```typescript
+digylogStoreName: creds.storeName || undefined,
+```
+
+---
+
+**Fix 5 — Validate before sending**
+
+In `buildDigylogPayload`, if `input.digylogStoreName` is empty or undefined, throw an error BEFORE calling the API:
+"⚠️ Nom du magasin Digylog manquant. Allez dans Intégrations → Sociétés de Livraison → Digylog et ajoutez le nom de votre magasin."
+
+Do not touch any other carrier. Do not change any other logic.

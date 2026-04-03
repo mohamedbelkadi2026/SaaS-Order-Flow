@@ -172,7 +172,10 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const storeName = (input.digylogStoreName || input.carrierStoreName || "").trim();
   if (!storeName) {
     throw Object.assign(
-      new Error("⚠️ خطأ: اسم المتجر غير متطابق مع حساب Digylog. يرجى إعادة ضبط الإعدادات."),
+      new Error(
+        "⚠️ Nom du magasin Digylog manquant. " +
+        "Allez dans Intégrations → Sociétés de Livraison → Digylog et ajoutez le nom de votre magasin.",
+      ),
       { code: "DIGYLOG_NO_STORE", httpStatus: 422 },
     );
   }

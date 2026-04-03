@@ -256,9 +256,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       return;
     }
     if (isDigylog && !carrierStoreName.trim()) {
-      const msg = "⚠️ خطأ: اسم المتجر غير متطابق مع حساب Digylog. يرجى إعادة ضبط الإعدادات.";
+      const msg = "⚠️ Nom du magasin Digylog manquant. Entrez ou sélectionnez le nom de votre magasin avant d'enregistrer.";
       setSubmitError(msg);
-      toast({ title: "Magasin Digylog requis", description: "Chargez et sélectionnez votre magasin Digylog.", variant: "destructive" });
+      toast({ title: "Magasin Digylog requis", description: "Entrez le nom exact de votre magasin tel qu'il apparaît dans votre compte Digylog → Magasins.", variant: "destructive" });
       return;
     }
     mutation.mutate();
@@ -274,7 +274,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               Modifier — {existingAccount.connectionName}
             </DialogTitle>
             <DialogDescription className="text-sm text-muted-foreground">
-              Mettez à jour le token ou copiez l'URL WebHook de ce compte.
+              Mettez à jour le token, le nom du magasin Digylog ou copiez l'URL WebHook.
             </DialogDescription>
           </DialogHeader>
 
@@ -395,6 +395,67 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 URL permanente — ne change jamais même si vous mettez à jour le token. Collez-la dans les réglages webhook du transporteur.
               </p>
             </div>
+
+            {/* ── Digylog store name (edit mode) ── */}
+            {isDigylog && (
+              <div className="space-y-2">
+                <Label
+                  htmlFor="carrier_store_name_edit"
+                  className="font-semibold text-sm flex items-center gap-1.5"
+                  style={{ color: NAVY }}
+                >
+                  Nom de votre magasin Digylog
+                  <span className="text-red-500">*</span>
+                </Label>
+
+                {/* Manual text input — always visible so user can type/paste directly */}
+                <Input
+                  id="carrier_store_name_edit"
+                  data-testid="input-digylog-store-name"
+                  placeholder="Ex: Mon Magasin"
+                  value={carrierStoreName}
+                  onChange={e => setCarrierStoreName(e.target.value)}
+                  className="h-11 text-sm"
+                />
+
+                {/* Store picker — fetch from Digylog to populate the dropdown */}
+                <div className="space-y-2">
+                  {digylogStores.length > 0 ? (
+                    <Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
+                      <SelectTrigger className="h-11 text-sm">
+                        <SelectValue placeholder="Sélectionnez votre magasin Digylog..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {digylogStores.map(s => (
+                          <SelectItem key={String(s.id)} value={s.name}>{s.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <button
+                      type="button"
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors"
+                      onClick={fetchDigylogStores}
+                      disabled={isFetchingStores}
+                    >
+                      {isFetchingStores
+                        ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des magasins...</>
+                        : <><RefreshCw className="w-3.5 h-3.5" /> Charger les magasins depuis Digylog</>}
+                    </button>
+                  )}
+                  {digylogStores.length > 0 && (
+                    <button type="button" className="text-[11px] text-blue-500 hover:underline" onClick={fetchDigylogStores} disabled={isFetchingStores}>
+                      {isFetchingStores ? "Actualisation…" : "↺ Actualiser la liste"}
+                    </button>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Copiez exactement le nom depuis votre compte Digylog <strong>→ Magasins</strong>.
+                  Ce champ est obligatoire pour l'expédition.
+                </p>
+              </div>
+            )}
 
             {/* ── Error banner ── */}
             {submitError && (
