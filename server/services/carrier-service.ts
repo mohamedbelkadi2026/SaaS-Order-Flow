@@ -269,12 +269,22 @@ function getExtraHeaders(providerKey: string): Record<string, string> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractTracking(body: any): string | undefined {
-  if (!body || typeof body !== "object") return undefined;
+  if (!body) return undefined;
 
-  // ── Digylog V2.4 response: { orders: [{ barcode, num, ... }] }
+  // ── Digylog V2.4 — array response: [{ tracking, barcode, num, ... }]
+  // This is the success format when Digylog returns a plain array (not wrapped in .orders)
+  if (Array.isArray(body) && body.length > 0) {
+    const first = body[0];
+    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.num;
+    if (t) return String(t);
+  }
+
+  if (typeof body !== "object") return undefined;
+
+  // ── Digylog V2.4 — wrapped: { orders: [{ barcode, tracking, num, ... }] }
   if (Array.isArray(body.orders) && body.orders.length > 0) {
     const first = body.orders[0];
-    const t = first.barcode || first.tracking_number || first.code_suivi || first.num;
+    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.num;
     if (t) return String(t);
   }
 
@@ -282,16 +292,19 @@ function extractTracking(body: any): string | undefined {
     body.tracking_number        ||
     body.trackingNumber         ||
     body.barcode                ||
+    body.tracking               ||
     body.code_suivi             ||
     body.numero_suivi           ||
     body.id                     ||
     body.data?.tracking_number  ||
     body.data?.barcode          ||
+    body.data?.tracking         ||
     body.data?.code_suivi       ||
     body.result?.tracking_number ||
     body.result?.barcode        ||
+    body.result?.tracking       ||
     // Digylog V2 nested in data array
-    (Array.isArray(body.data) && body.data[0]?.barcode) ||
+    (Array.isArray(body.data) && (body.data[0]?.barcode || body.data[0]?.tracking)) ||
     undefined
   );
 }
@@ -334,6 +347,50 @@ function extractCarrierErrorMsg(body: any): string | null {
   if (!msg) return null;
   if (typeof msg === "object") return JSON.stringify(msg).slice(0, 400);
   return String(msg).slice(0, 400);
+}
+
+/**
+ * Digylog-specific error detection.
+ *
+ * Digylog does NOT follow the generic { success: false } pattern.
+ * It returns errors in several shapes:
+ *   1. Plain array:  [{ num, error: "msg" }]           — per-order error
+ *   2. Wrapped:      { orders: [{ num, error: "msg" }]} — per-order wrapped
+ *   3. Validation:   { message: "...", errors: { field: ["msg"] } }
+ *
+ * Returns the error string if found, null if response looks healthy.
+ */
+function detectDigylogError(body: any): string | null {
+  if (!body) return null;
+
+  // Shape 1 — plain array of order results
+  if (Array.isArray(body)) {
+    const failed = body.filter((item: any) => item.error || item.errors || item.message);
+    if (failed.length > 0) {
+      const msg = failed
+        .map((e: any) => e.error || e.message || JSON.stringify(e))
+        .join(", ");
+      return msg;
+    }
+    // Array is present but no error fields — looks like success
+    return null;
+  }
+
+  // Shape 2 — wrapped in { orders: [...] }
+  if (Array.isArray(body.orders)) {
+    const failed = body.orders.filter((item: any) => item.error || item.errors);
+    if (failed.length > 0) {
+      return failed.map((e: any) => e.error || JSON.stringify(e)).join(", ");
+    }
+  }
+
+  // Shape 3 — validation object: { message, errors: { field: ["msg", ...] } }
+  if (body.message && body.errors && typeof body.errors === "object") {
+    const fieldErrors = (Object.values(body.errors) as string[][]).flat().join(", ");
+    return `${body.message}: ${fieldErrors}`;
+  }
+
+  return null;
 }
 
 /**
@@ -581,9 +638,12 @@ export async function shipOrderToCarrier(
     rawBody    = response.data;
 
     console.log(`${tag} Response: HTTP ${httpStatus}`);
-    console.log(`${tag} Body: ${JSON.stringify(rawBody)}`);
     if (providerKey === "digylog") {
-      console.log(`[DIGYLOG-RESP]: HTTP ${httpStatus} — ${JSON.stringify(rawBody).slice(0, 500)}`);
+      // Full pretty-printed body so we can see exactly what Digylog returns
+      console.log(`[DIGYLOG-RESP]: HTTP ${httpStatus}`);
+      console.log(`[DIGYLOG-RESP-FULL]: ${JSON.stringify(rawBody, null, 2)}`);
+    } else {
+      console.log(`${tag} Body: ${JSON.stringify(rawBody)}`);
     }
 
     // ── 5a. 4xx / 5xx ────────────────────────────────────────────
@@ -599,7 +659,23 @@ export async function shipOrderToCarrier(
       };
     }
 
-    // ── 5b. 2xx with logical error ────────────────────────────────
+    // ── 5b. Digylog-specific error check (before generic) ─────────
+    // Digylog uses its own response shapes — must be checked first.
+    if (providerKey === "digylog") {
+      const digylogError = detectDigylogError(rawBody);
+      if (digylogError) {
+        console.error(`${tag} ❌ Digylog order error: ${digylogError}`);
+        return {
+          success: false,
+          httpStatus,
+          rawResponse: rawBody,
+          error: digylogError,
+          carrierMessage: digylogError,
+        };
+      }
+    }
+
+    // ── 5c. Generic: 2xx with logical error ───────────────────────
     const logicalError = detectLogicalError(rawBody);
     if (logicalError) {
       console.error(`${tag} ❌ Carrier logical error (HTTP ${httpStatus}): ${logicalError}`);
@@ -612,7 +688,7 @@ export async function shipOrderToCarrier(
       };
     }
 
-    // ── 5c. Success ───────────────────────────────────────────────
+    // ── 5d. Success ───────────────────────────────────────────────
     const trackingNumber = extractTracking(rawBody) || `${provider.toUpperCase()}-${Date.now()}-${input.orderId}`;
     const labelUrl       = extractLabelUrl(rawBody)  || `/api/labels/${trackingNumber}.pdf`;
 

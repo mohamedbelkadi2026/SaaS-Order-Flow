@@ -1,0 +1,106 @@
+الآن فهمت المشكلة الحقيقية! 🎯
+Digylog كيرجع response بشكل خاص — مشي { success: false } ولا { status: "error" } — هاد detectLogicalError ما كيتعرفوش. خاص نشوف شكل الـ response الحقيقي ديال Digylog عند الخطأ.
+هاد الـ prompt لـ Replit:
+
+The Digylog API is rejecting our orders but the error is not being detected properly. The `detectLogicalError` function doesn't recognize Digylog's error response format.
+
+I need to:
+1. Log the FULL raw response from Digylog so we can see exactly what they return
+2. Handle Digylog's specific error response format
+
+---
+
+**Fix 1 — Better logging of Digylog raw response**
+
+In `server/services/carrier-service.ts`, find the section after receiving the HTTP response (around the line with `[DIGYLOG-RESP]` log). Replace:
+```typescript
+if (providerKey === "digylog") {
+  console.log(`[DIGYLOG-RESP]: HTTP ${httpStatus} — ${JSON.stringify(rawBody).slice(0, 500)}`);
+}
+```
+
+With:
+```typescript
+if (providerKey === "digylog") {
+  console.log(`[DIGYLOG-RESP]: HTTP ${httpStatus}`);
+  console.log(`[DIGYLOG-RESP-FULL]: ${JSON.stringify(rawBody, null, 2)}`);
+}
+```
+
+---
+
+**Fix 2 — Handle Digylog's specific error format**
+
+Digylog returns errors in this format when something is wrong:
+```json
+[{ "num": "order-ref", "error": "some error message" }]
+```
+OR:
+```json
+{ "message": "...", "errors": {...} }
+```
+
+Add a new function `detectDigylogError` BEFORE `detectLogicalError` is called, specifically for Digylog:
+```typescript
+function detectDigylogError(body: any): string | null {
+  if (!body) return null;
+  
+  // Digylog returns array of order results — check each for errors
+  if (Array.isArray(body)) {
+    const errors = body.filter((item: any) => item.error || item.errors || item.message);
+    if (errors.length > 0) {
+      const msg = errors.map((e: any) => e.error || e.message || JSON.stringify(e)).join(", ");
+      return msg;
+    }
+    return null;
+  }
+  
+  // Digylog sometimes wraps in { orders: [...] } with errors inside
+  if (Array.isArray(body.orders)) {
+    const errors = body.orders.filter((item: any) => item.error || item.errors);
+    if (errors.length > 0) {
+      return errors.map((e: any) => e.error || JSON.stringify(e)).join(", ");
+    }
+  }
+  
+  // Digylog validation errors: { message: "...", errors: { field: ["msg"] } }
+  if (body.message && body.errors) {
+    const fieldErrors = Object.values(body.errors).flat().join(", ");
+    return `${body.message}: ${fieldErrors}`;
+  }
+  
+  return null;
+}
+```
+
+Then in the response handling section, for Digylog specifically, call this BEFORE `detectLogicalError`:
+```typescript
+if (providerKey === "digylog") {
+  const digylogError = detectDigylogError(rawBody);
+  if (digylogError) {
+    console.error(`${tag} ❌ Digylog error: ${digylogError}`);
+    return {
+      success: false,
+      httpStatus,
+      rawResponse: rawBody,
+      error: digylogError,
+      carrierMessage: digylogError,
+    };
+  }
+}
+```
+
+---
+
+**Fix 3 — Also check for success in Digylog response**
+
+Digylog returns the created orders as an array on success:
+```json
+[{ "num": "your-ref", "tracking": "S1036052CA", ... }]
+```
+
+Update `extractTracking` to handle this case (it might already handle it, but make sure):
+- If `body` is an array and `body[0].tracking` exists → return `body[0].tracking`
+- If `body` is an array and `body[0].barcode` exists → return `body[0].barcode`
+
+Do not change any other carrier logic.
