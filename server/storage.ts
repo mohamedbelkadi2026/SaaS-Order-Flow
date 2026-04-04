@@ -849,11 +849,10 @@ export class DatabaseStorage implements IStorage {
 
     const pickFields = (a: typeof active[0]) => ({
       apiKey:           a.apiKey,
-      apiSecret:        a.apiSecret       ?? undefined,
-      apiUrl:           a.apiUrl          ?? undefined,
-      carrierStoreName: (a as any).carrierStoreName ?? undefined,
-      networkId:        (a.settings as any)?.networkId ?? undefined,
-      settings:         (a.settings as any) ?? {},
+      apiSecret:        a.apiSecret        ?? undefined,
+      apiUrl:           a.apiUrl           ?? undefined,
+      carrierStoreName: a.carrierStoreName ?? undefined,
+      networkId:        (a.settings as any)?.networkId ? Number((a.settings as any).networkId) : undefined,
     });
 
     // 1. Try city-based routing

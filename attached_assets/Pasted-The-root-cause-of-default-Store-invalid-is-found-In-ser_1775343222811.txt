@@ -1,0 +1,69 @@
+The root cause of "default Store invalid" is found. In `server/storage.ts`, the `pickFields` function inside `getAccountForShipping` uses `(a as any).carrierStoreName` which works at runtime — BUT the interface on line 75 declares the return type without `carrierStoreName`, so TypeScript may be stripping it in some build configurations.
+
+Make these exact changes:
+
+**Fix 1 — `server/storage.ts` line 75, update the interface:**
+Find:
+```typescript
+getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string } | null>;
+```
+Replace with:
+```typescript
+getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string; networkId?: number } | null>;
+```
+
+**Fix 2 — `server/storage.ts`, in `pickFields` inside `getAccountForShipping`, stop using `(a as any)`:**
+Find:
+```typescript
+const pickFields = (a: typeof active[0]) => ({
+  apiKey:           a.apiKey,
+  apiSecret:        a.apiSecret       ?? undefined,
+  apiUrl:           a.apiUrl          ?? undefined,
+  carrierStoreName: (a as any).carrierStoreName ?? undefined,
+});
+```
+Replace with:
+```typescript
+const pickFields = (a: typeof active[0]) => ({
+  apiKey:           a.apiKey,
+  apiSecret:        a.apiSecret        ?? undefined,
+  apiUrl:           a.apiUrl           ?? undefined,
+  carrierStoreName: a.carrierStoreName ?? undefined,
+  networkId:        (a.settings as any)?.networkId ? Number((a.settings as any).networkId) : undefined,
+});
+```
+
+**Fix 3 — `server/services/carrier-service.ts`, remove the "default" fallback that hides the real problem:**
+Find:
+```typescript
+const resolvedStore = storeName || "default";
+if (!storeName) {
+  console.warn(`[DIGYLOG] ⚠️ carrierStoreName is empty...`);
+}
+```
+Replace with:
+```typescript
+if (!storeName) {
+  return { success: false, error: "⚠️ Nom du magasin Digylog manquant. Modifiez votre compte Digylog dans Intégrations → Sociétés de Livraison et sélectionnez votre magasin.", carrierMessage: "Store name missing" };
+}
+const resolvedStore = storeName;
+```
+
+Wait — `buildDigylogPayload` cannot return a result directly. Instead throw:
+```typescript
+if (!storeName) {
+  throw Object.assign(
+    new Error("⚠️ Nom du magasin Digylog manquant. Allez dans Intégrations → Sociétés de Livraison → Digylog, cliquez Modifier, chargez vos magasins et sélectionnez-en un."),
+    { code: "DIGYLOG_NO_STORE", httpStatus: 422 }
+  );
+}
+const resolvedStore = storeName;
+```
+
+**Fix 4 — Add one log to confirm the value is arriving:**
+In `server/routes.ts`, in the bulk-ship `setImmediate` block, right before calling `shipOrderToCarrier`, add:
+```typescript
+console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).carrierStoreName}" network=${(orderCreds as any).networkId}`);
+```
+
+Do not change anything else.

@@ -170,10 +170,13 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
 
   // Bug 2: resolve store name — digylogStoreName takes precedence, then carrierStoreName
   const storeName    = (input.digylogStoreName || input.carrierStoreName || "").trim();
-  const resolvedStore = storeName || "default"; // fallback so request reaches Digylog — their error is more informative
   if (!storeName) {
-    console.warn(`[DIGYLOG] ⚠️ carrierStoreName is empty — sending store="default" to see Digylog's real error response`);
+    throw Object.assign(
+      new Error("⚠️ Nom du magasin Digylog manquant. Allez dans Intégrations → Sociétés de Livraison → Digylog, cliquez Modifier, chargez vos magasins et sélectionnez-en un."),
+      { code: "DIGYLOG_NO_STORE", httpStatus: 422 }
+    );
   }
+  const resolvedStore = storeName;
 
   // Bug 5: network ID — from carrier account settings; defaults to 1 (standard)
   const networkId = input.digylogNetwork ?? 1;

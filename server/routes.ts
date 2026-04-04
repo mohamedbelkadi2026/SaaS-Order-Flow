@@ -1044,6 +1044,7 @@ export async function registerRoutes(
                 const orderCreds = getCredsForOrder(resolvedCity);
                 console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
+                console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).carrierStoreName}" network=${(orderCreds as any).networkId}`);
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
