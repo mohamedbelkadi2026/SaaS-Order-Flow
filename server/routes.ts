@@ -1044,7 +1044,7 @@ export async function registerRoutes(
                 const orderCreds = getCredsForOrder(resolvedCity);
                 console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
-                console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).carrierStoreName}" network=${(orderCreds as any).networkId}`);
+                console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId}`);
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -1058,8 +1058,8 @@ export async function registerRoutes(
                   storeId,
                   note:             (order as any).comment || "",
                   carrierStoreName: (orderCreds as any).carrierStoreName || "",
-                  digylogStoreName: (orderCreds as any).carrierStoreName || "",
-                  digylogNetwork:   (orderCreds as any).networkId ? Number((orderCreds as any).networkId) : undefined,
+                  digylogStoreName: (orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName || "",
+                  digylogNetworkId: (orderCreds as any).digylogNetworkId || 1,
                 });
               })
             );
@@ -1840,6 +1840,69 @@ export async function registerRoutes(
       console.error("[Digylog/networks] Network error:", err?.message);
       res.status(502).json({ message: "Impossible de contacter Digylog. Vérifiez votre token et réessayez." });
     }
+  });
+
+  // ── Digylog convenience endpoints (uses the active account's stored token) ──
+
+  app.get("/api/digylog/networks", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+    const active = accounts.find((a: any) => a.isActive === 1);
+    if (!active?.apiKey) return res.status(400).json({ message: "Compte Digylog non configuré" });
+    const token = active.apiKey.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+    const axiosLib = (await import("axios")).default;
+    try {
+      const resp = await axiosLib.get("https://api.digylog.com/api/v2/seller/networks", {
+        headers: { Authorization: `Bearer ${token}`, Referer: "https://apiseller.digylog.com", Accept: "application/json" },
+        timeout: 10_000,
+        validateStatus: () => true,
+      });
+      if (resp.status !== 200) return res.status(resp.status).json({ message: `Digylog HTTP ${resp.status}`, raw: resp.data });
+      const list = Array.isArray(resp.data) ? resp.data : (resp.data?.data || []);
+      res.json(list.map((n: any) => ({ id: n.id, name: n.name })));
+    } catch (e: any) {
+      res.status(502).json({ message: "Impossible de contacter Digylog" });
+    }
+  });
+
+  app.get("/api/digylog/stores", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+    const active = accounts.find((a: any) => a.isActive === 1);
+    if (!active?.apiKey) return res.status(400).json({ message: "Compte Digylog non configuré" });
+    const token = active.apiKey.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+    const axiosLib = (await import("axios")).default;
+    try {
+      const resp = await axiosLib.get("https://api.digylog.com/api/v2/seller/stores", {
+        headers: { Authorization: `Bearer ${token}`, Referer: "https://apiseller.digylog.com", Accept: "application/json" },
+        timeout: 10_000,
+        validateStatus: () => true,
+      });
+      if (resp.status !== 200) return res.status(resp.status).json({ message: `Digylog HTTP ${resp.status}`, raw: resp.data });
+      const list = Array.isArray(resp.data) ? resp.data : (resp.data?.data || []);
+      res.json(list.map((s: any) => ({ id: s.id, name: s.name || s.store_name })));
+    } catch (e: any) {
+      res.status(502).json({ message: "Impossible de contacter Digylog" });
+    }
+  });
+
+  app.patch("/api/digylog/preferences", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { digylogStoreName, digylogNetworkId } = req.body;
+    if (!digylogStoreName || !digylogNetworkId) {
+      return res.status(400).json({ message: "digylogStoreName et digylogNetworkId sont requis" });
+    }
+    const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+    const active = accounts.find((a: any) => a.isActive === 1);
+    if (!active) return res.status(404).json({ message: "Compte Digylog introuvable" });
+    const newSettings = {
+      ...((active.settings as object) || {}),
+      digylogStoreName,
+      digylogNetworkId: Number(digylogNetworkId),
+    };
+    await storage.updateCarrierAccount(active.id, { settings: newSettings });
+    console.log(`[DIGYLOG-PREFS] store="${digylogStoreName}" networkId=${digylogNetworkId} saved for storeId=${storeId}`);
+    res.json({ success: true });
   });
 
   // ── Sync carrier cities from live API → carrier_cities table ────────────────
@@ -3620,7 +3683,7 @@ export async function registerRoutes(
       }
 
       // ── Call carrier API ──────────────────────────────────────────
-      console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(creds as any).carrierStoreName}"`);
+      console.log(`[DIGYLOG-FINAL] order=${orderId} store="${(creds as any).digylogStoreName || (creds as any).carrierStoreName}" network=${(creds as any).digylogNetworkId}`);
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -3634,8 +3697,8 @@ export async function registerRoutes(
         storeId,
         note:             (order as any).comment || "",
         carrierStoreName: (creds as any).carrierStoreName || "",
-        digylogStoreName: (creds as any).carrierStoreName || "",
-        digylogNetwork:   (creds as any).networkId ? Number((creds as any).networkId) : undefined,
+        digylogStoreName: (creds as any).digylogStoreName || (creds as any).carrierStoreName || "",
+        digylogNetworkId: (creds as any).digylogNetworkId || 1,
       });
 
       if (!shipResult.success) {

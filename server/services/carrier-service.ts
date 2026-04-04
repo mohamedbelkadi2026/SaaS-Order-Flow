@@ -112,9 +112,10 @@ export interface CarrierShipInput {
   storeId: number;
   note?: string;             // optional admin comment / note for carrier
   quantity?: number;         // product quantity (defaults to 1)
-  carrierStoreName?: string; // Digylog-side store name (required for Digylog dispatch)
-  digylogStoreName?: string; // alias — same as carrierStoreName, checked first
-  digylogNetwork?: number;   // Digylog network ID (from /networks endpoint); defaults to 1
+  carrierStoreName?: string; // Digylog-side store name (legacy field)
+  digylogStoreName?: string; // Digylog store name from settings.digylogStoreName
+  digylogNetworkId?: number; // Digylog network ID from settings.digylogNetworkId
+  digylogNetwork?: number;   // legacy alias for digylogNetworkId
 }
 
 export interface CarrierShipResult {
@@ -154,13 +155,6 @@ function sanitizePhone(raw: string): string {
 /**
  * Digylog API V2.4 — exact payload structure from official docs.
  * POST https://api.digylog.com/api/v2/seller/orders
- *
- * Fixes applied vs. initial implementation:
- *   Bug 1 — `mode` comment corrected: 1 = Standard order (not COD)
- *   Bug 2 — `store` now uses the Digylog-side store name from credentials
- *   Bug 3 — `type: 1` (Normal delivery) added to each order object (required)
- *   Bug 4 — `checkDuplicate: 1` added at root to prevent duplicate orders
- *   Bug 5 — `network` now reads from `input.digylogNetwork` (defaults to 1)
  */
 function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone   = sanitizePhone(input.phone);
@@ -168,45 +162,40 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const addr    = (input.address || "").trim() || input.city.trim();
   const qty     = input.quantity ?? 1;
 
-  // Bug 2: resolve store name — digylogStoreName takes precedence, then carrierStoreName
-  const storeName    = (input.digylogStoreName || input.carrierStoreName || "").trim();
+  // Store name: from settings.digylogStoreName (preferred) or legacy carrierStoreName
+  const storeName = (input.digylogStoreName || input.carrierStoreName || "").trim();
   if (!storeName) {
     throw Object.assign(
-      new Error("⚠️ Nom du magasin Digylog manquant. Allez dans Intégrations → Sociétés de Livraison → Digylog, cliquez Modifier, chargez vos magasins et sélectionnez-en un."),
+      new Error("⚠️ Nom du magasin Digylog manquant. Allez dans Intégrations → Digylog → Préférences et configurez votre magasin."),
       { code: "DIGYLOG_NO_STORE", httpStatus: 422 }
     );
   }
-  const resolvedStore = storeName;
 
-  // Bug 5: network ID — from carrier account settings; defaults to 1 (standard)
-  const networkId = input.digylogNetwork ?? 1;
+  // Network ID: from settings.digylogNetworkId (preferred) or legacy digylogNetwork
+  const networkId = input.digylogNetworkId ?? input.digylogNetwork ?? 1;
 
   return {
-    network:        networkId,    // Bug 5 — integer from /networks; defaults to 1
-    store:          resolvedStore, // Bug 2 — exact store name from Digylog /stores (falls back to "default" if not set)
-    mode:           1,           // Bug 1 — 1 = Standard order (not COD; COD is handled by `port`)
-    status:         1,           // 1 = send immediately
-    checkDuplicate: 1,           // Bug 4 — prevent duplicate orders (v2.3+)
-    orders: [
-      {
-        type:        1,           // Bug 3 — required: 1 = Normal delivery, 2 = Exchange
-        num:         input.orderNumber,
-        name:        input.customerName.trim(),
-        phone:       phone,
-        address:     addr,
-        city:        input.city.trim(),
-        price:       priceDH,
-        refs: [
-          {
-            designation: (input.productName || "Produit").trim(),
-            quantity:    qty,
-          },
-        ],
-        openproduct: input.canOpen ? 1 : 0,
-        port:        1,           // 1 = delivery fees charged to customer (COD default)
-        note:        input.note || "",
-      },
-    ],
+    mode:           1,
+    network:        networkId,
+    store:          storeName,
+    status:         1,
+    checkDuplicate: 1,
+    orders: [{
+      type:        1,
+      num:         input.orderNumber,
+      name:        input.customerName.trim(),
+      phone,
+      address:     addr,
+      city:        input.city.trim(),
+      price:       priceDH,
+      openproduct: input.canOpen ? 1 : 0,
+      port:        1,
+      note:        input.note || "",
+      refs: [{
+        designation: (input.productName || "Produit").trim(),
+        quantity:    qty,
+      }],
+    }],
   };
 }
 
@@ -657,19 +646,38 @@ export async function shipOrderToCarrier(
       };
     }
 
-    // ── 5b. Digylog-specific error check (before generic) ─────────
-    // Digylog uses its own response shapes — must be checked first.
+    // ── 5b. Digylog-specific response handling ────────────────────
     if (providerKey === "digylog") {
+      console.log(`[DIGYLOG-RAW-RESPONSE] HTTP ${httpStatus}: ${JSON.stringify(rawBody)}`);
+
+      // Success: array of orders with tracking number
+      if (Array.isArray(rawBody) && rawBody[0]?.tracking) {
+        const tracking = rawBody[0].tracking || rawBody[0].barcode;
+        console.log(`[DIGYLOG] ✅ Success! tracking=${tracking}`);
+        return { success: true, trackingNumber: tracking, labelUrl: `/api/labels/${tracking}.pdf`, httpStatus, rawResponse: rawBody };
+      }
+
+      // Error: array with per-order error field
+      if (Array.isArray(rawBody) && rawBody[0]?.error) {
+        const errMsg = rawBody[0].error;
+        console.error(`[DIGYLOG] ❌ Order error: ${errMsg}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
+      }
+
+      // Error: object with message / validation errors
+      if (rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) && (rawBody as any).message) {
+        const body = rawBody as any;
+        const fieldErrors = body.errors ? Object.values(body.errors).flat().join(", ") : "";
+        const errMsg = fieldErrors ? `${body.message}: ${fieldErrors}` : body.message;
+        console.error(`[DIGYLOG] ❌ API error: ${errMsg}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
+      }
+
+      // Fallback: try generic tracking extraction
       const digylogError = detectDigylogError(rawBody);
       if (digylogError) {
         console.error(`${tag} ❌ Digylog order error: ${digylogError}`);
-        return {
-          success: false,
-          httpStatus,
-          rawResponse: rawBody,
-          error: digylogError,
-          carrierMessage: digylogError,
-        };
+        return { success: false, httpStatus, rawResponse: rawBody, error: digylogError, carrierMessage: digylogError };
       }
     }
 

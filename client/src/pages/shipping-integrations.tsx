@@ -900,6 +900,134 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   );
 }
 
+/* ─── DigylogPrefsModal ──────────────────────────────────────── */
+function DigylogPrefsModal({ open, onClose, initialStoreName, initialNetworkId }: {
+  open: boolean;
+  onClose: () => void;
+  initialStoreName?: string;
+  initialNetworkId?: number;
+}) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [stores, setStores]           = useState<{ id: number; name: string }[]>([]);
+  const [networks, setNetworks]       = useState<{ id: number; name: string }[]>([]);
+  const [selectedStore, setSelectedStore]   = useState("");
+  const [selectedNetwork, setSelectedNetwork] = useState("");
+  const [loadingStores, setLoadingStores]   = useState(false);
+  const [loadingNetworks, setLoadingNetworks] = useState(false);
+  const [saving, setSaving]           = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setSelectedStore(initialStoreName || "");
+    setSelectedNetwork(initialNetworkId ? String(initialNetworkId) : "");
+    setLoadingStores(true);
+    setLoadingNetworks(true);
+    fetch("/api/digylog/stores")
+      .then(r => r.json())
+      .then(d => setStores(Array.isArray(d) ? d : []))
+      .finally(() => setLoadingStores(false));
+    fetch("/api/digylog/networks")
+      .then(r => r.json())
+      .then(d => setNetworks(Array.isArray(d) ? d : []))
+      .finally(() => setLoadingNetworks(false));
+  }, [open]);
+
+  const save = async () => {
+    if (!selectedStore || !selectedNetwork) {
+      toast({ title: "Champs requis", description: "Sélectionnez un magasin et un réseau.", variant: "destructive" });
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiRequest("PATCH", "/api/digylog/preferences", {
+        digylogStoreName: selectedStore,
+        digylogNetworkId: Number(selectedNetwork),
+      });
+      qc.invalidateQueries({ queryKey: ["/api/carrier-accounts", "digylog"] });
+      toast({ title: "Préférences sauvegardées ✅" });
+      onClose();
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message || "Échec de la sauvegarde", variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Préférences Digylog</DialogTitle>
+          <DialogDescription>
+            Configurez le magasin et le réseau de livraison utilisés pour vos expéditions.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-1.5">
+            <Label>Magasin</Label>
+            {loadingStores ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-1">
+                <Loader2 className="w-4 h-4 animate-spin" /> Chargement des magasins…
+              </div>
+            ) : stores.length === 0 ? (
+              <p className="text-sm text-red-500">Aucun magasin trouvé. Vérifiez votre token Digylog.</p>
+            ) : (
+              <Select value={selectedStore} onValueChange={setSelectedStore}>
+                <SelectTrigger data-testid="select-digylog-store">
+                  <SelectValue placeholder="Choisir un magasin" />
+                </SelectTrigger>
+                <SelectContent>
+                  {stores.map(s => (
+                    <SelectItem key={s.id} value={s.name}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Réseau de livraison</Label>
+            {loadingNetworks ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-1">
+                <Loader2 className="w-4 h-4 animate-spin" /> Chargement des réseaux…
+              </div>
+            ) : networks.length === 0 ? (
+              <p className="text-sm text-red-500">Aucun réseau trouvé. Vérifiez votre token Digylog.</p>
+            ) : (
+              <Select value={selectedNetwork} onValueChange={setSelectedNetwork}>
+                <SelectTrigger data-testid="select-digylog-network">
+                  <SelectValue placeholder="Choisir un réseau" />
+                </SelectTrigger>
+                <SelectContent>
+                  {networks.map(n => (
+                    <SelectItem key={n.id} value={String(n.id)}>{n.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button variant="outline" onClick={onClose} disabled={saving}>Annuler</Button>
+          <Button
+            onClick={save}
+            disabled={saving || loadingStores || loadingNetworks}
+            className="text-white font-bold px-6"
+            style={{ background: GOLD }}
+            data-testid="button-save-digylog-prefs"
+          >
+            {saving && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
+            Enregistrer
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ─── CredentialsModal ───────────────────────────────────────── */
 interface CredentialsModalProps {
   providerId: string;
@@ -912,10 +1040,12 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
   const qc = useQueryClient();
   const { data: accounts = [], isLoading } = useCarrierAccounts(providerId);
 
-  const [activeTab,       setActiveTab]       = useState(0);
-  const [editAccount,     setEditAccount]     = useState<any>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
-  const [copiedKey,       setCopiedKey]       = useState<string | null>(null);
+  const [activeTab,         setActiveTab]         = useState(0);
+  const [editAccount,       setEditAccount]       = useState<any>(null);
+  const [confirmDeleteId,   setConfirmDeleteId]   = useState<number | null>(null);
+  const [copiedKey,         setCopiedKey]         = useState<string | null>(null);
+  const [digylogPrefsOpen,  setDigylogPrefsOpen]  = useState(false);
+  const [digylogPrefsAcct,  setDigylogPrefsAcct]  = useState<any>(null);
 
   const domain = getWebhookDomain();
 
@@ -1072,6 +1202,18 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                       onClick={() => setConfirmDeleteId(acct.id)} data-testid={`button-delete-account-${acct.id}`}>
                       <Trash2 className="w-3.5 h-3.5 mr-1" /> Supprimer
                     </Button>
+                    {providerId === "digylog" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-amber-300 font-semibold"
+                        style={{ color: NAVY, borderColor: GOLD + "88" }}
+                        onClick={() => { setDigylogPrefsAcct(acct); setDigylogPrefsOpen(true); }}
+                        data-testid={`button-digylog-prefs-${acct.id}`}
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 mr-1" /> Préférences
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="outline"
@@ -1201,6 +1343,13 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
           </DialogContent>
         </Dialog>
       )}
+
+      <DigylogPrefsModal
+        open={digylogPrefsOpen}
+        onClose={() => { setDigylogPrefsOpen(false); setDigylogPrefsAcct(null); }}
+        initialStoreName={digylogPrefsAcct?.settings?.digylogStoreName || digylogPrefsAcct?.carrierStoreName}
+        initialNetworkId={digylogPrefsAcct?.settings?.digylogNetworkId}
+      />
     </>
   );
 }

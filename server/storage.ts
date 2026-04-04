@@ -72,7 +72,14 @@ export interface IStorage {
   deleteCarrierAccount(id: number): Promise<void>;
   getCarrierCities(storeId: number, carrierName: string): Promise<string[]>;
   upsertCarrierCities(storeId: number, carrierName: string, accountId: number | null, cities: string[]): Promise<void>;
-  getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string; networkId?: string | number; settings?: Record<string, any> } | null>;
+  getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
+    apiKey: string;
+    apiSecret?: string;
+    apiUrl?: string;
+    carrierStoreName?: string;
+    digylogStoreName?: string;
+    digylogNetworkId?: number;
+  } | null>;
 
   getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]>;
   getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]>;
@@ -843,17 +850,21 @@ export class DatabaseStorage implements IStorage {
     storeId: number,
     provider: string,
     city?: string,
-  ): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string; networkId?: string | number; settings?: Record<string, any> } | null> {
+  ): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string; digylogStoreName?: string; digylogNetworkId?: number } | null> {
     const accounts = await this.getCarrierAccounts(storeId, provider);
     const active   = accounts.filter(a => a.isActive === 1);
 
-    const pickFields = (a: typeof active[0]) => ({
-      apiKey:           a.apiKey,
-      apiSecret:        a.apiSecret        ?? undefined,
-      apiUrl:           a.apiUrl           ?? undefined,
-      carrierStoreName: a.carrierStoreName ?? undefined,
-      networkId:        (a.settings as any)?.networkId ? Number((a.settings as any).networkId) : undefined,
-    });
+    const pickFields = (a: typeof active[0]) => {
+      const s = (a.settings as any) || {};
+      return {
+        apiKey:           a.apiKey,
+        apiSecret:        a.apiSecret        ?? undefined,
+        apiUrl:           a.apiUrl           ?? undefined,
+        carrierStoreName: a.carrierStoreName  ?? s.digylogStoreName ?? undefined,
+        digylogStoreName: s.digylogStoreName  ?? a.carrierStoreName ?? undefined,
+        digylogNetworkId: s.digylogNetworkId  ? Number(s.digylogNetworkId) : 1,
+      };
+    };
 
     // 1. Try city-based routing
     if (city && active.length > 0) {

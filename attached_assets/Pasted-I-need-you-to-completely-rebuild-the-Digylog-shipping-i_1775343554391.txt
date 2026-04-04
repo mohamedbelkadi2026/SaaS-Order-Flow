@@ -1,0 +1,308 @@
+I need you to completely rebuild the Digylog shipping integration from scratch. Delete all existing Digylog-specific code and replace it with a clean, correct implementation based on the official Digylog API V2.4 docs.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DIGYLOG API REFERENCE (V2.4)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Base URL: https://api.digylog.com/api/v2/seller
+
+Required HTTP Headers for ALL requests:
+  Authorization: Bearer <token>
+  Referer: https://apiseller.digylog.com
+  Content-Type: application/json
+
+GET /networks       → returns [{ id, name }]
+GET /stores         → returns [{ id, name }]
+GET /cities         → returns [{ name }]
+
+POST /orders  → create order, returns [{ num, tracking, ... }]
+
+POST /orders payload:
+{
+  "mode": 1,              // always 1 (Standard)
+  "network": <integer>,   // id from GET /networks
+  "store": "<string>",    // name from GET /stores
+  "status": 1,            // 1 = send immediately
+  "checkDuplicate": 1,    // prevent duplicates
+  "orders": [
+    {
+      "type": 1,          // 1 = Normal delivery
+      "num": "<order_ref>",
+      "name": "<customer_name>",
+      "phone": "<0XXXXXXXXX>",
+      "address": "<address>",
+      "city": "<city_name>",
+      "price": <decimal_DH>,
+      "openproduct": 0,
+      "port": 1,          // 1 = customer pays shipping
+      "note": "",
+      "refs": [
+        {
+          "designation": "<product_name>",
+          "quantity": <integer>
+        }
+      ]
+    }
+  ]
+}
+
+Success response: [ { "num": "ref", "tracking": "S1036052CA" } ]
+Error response: { "message": "...", "errors": { ... } }
+  OR: [ { "num": "ref", "error": "..." } ]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 1 — DATABASE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The `carrier_accounts` table already has these columns (do NOT recreate):
+- api_key, api_url, carrier_store_name, settings (JSONB), store_name, etc.
+
+We will use `settings` JSONB column to store Digylog-specific config:
+```json
+{
+  "digylogStoreName": "My Store",
+  "digylogNetworkId": 1
+}
+```
+
+In `server/db.ts`, inside `initializeDatabase()`, make sure this migration runs:
+```sql
+ALTER TABLE carrier_accounts ADD COLUMN IF NOT EXISTS carrier_store_name TEXT;
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 2 — BACKEND HELPER ENDPOINTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add these 2 GET endpoints in `server/routes.ts`:
+
+**A) GET /api/digylog/networks**
+Fetches networks from Digylog using the stored token.
+```typescript
+app.get("/api/digylog/networks", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const account = await storage.getCarrierAccounts(storeId, "digylog");
+  const active = account.find(a => a.isActive === 1);
+  if (!active?.apiKey) return res.status(400).json({ message: "Compte Digylog non configuré" });
+
+  const token = active.apiKey.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+  const axios = (await import("axios")).default;
+  try {
+    const resp = await axios.get("https://api.digylog.com/api/v2/seller/networks", {
+      headers: { Authorization: `Bearer ${token}`, Referer: "https://apiseller.digylog.com" },
+      timeout: 10000,
+      validateStatus: () => true,
+    });
+    if (resp.status !== 200) return res.status(resp.status).json({ message: `Digylog HTTP ${resp.status}`, raw: resp.data });
+    const list = Array.isArray(resp.data) ? resp.data : (resp.data?.data || []);
+    res.json(list.map((n: any) => ({ id: n.id, name: n.name })));
+  } catch (e: any) {
+    res.status(502).json({ message: "Impossible de contacter Digylog" });
+  }
+});
+```
+
+**B) GET /api/digylog/stores**
+Same pattern but calls `/stores` endpoint:
+```typescript
+app.get("/api/digylog/stores", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const account = await storage.getCarrierAccounts(storeId, "digylog");
+  const active = account.find(a => a.isActive === 1);
+  if (!active?.apiKey) return res.status(400).json({ message: "Compte Digylog non configuré" });
+
+  const token = active.apiKey.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+  const axios = (await import("axios")).default;
+  try {
+    const resp = await axios.get("https://api.digylog.com/api/v2/seller/stores", {
+      headers: { Authorization: `Bearer ${token}`, Referer: "https://apiseller.digylog.com" },
+      timeout: 10000,
+      validateStatus: () => true,
+    });
+    if (resp.status !== 200) return res.status(resp.status).json({ message: `Digylog HTTP ${resp.status}`, raw: resp.data });
+    const list = Array.isArray(resp.data) ? resp.data : (resp.data?.data || []);
+    res.json(list.map((s: any) => ({ id: s.id, name: s.name || s.store_name })));
+  } catch (e: any) {
+    res.status(502).json({ message: "Impossible de contacter Digylog" });
+  }
+});
+```
+
+**C) PATCH /api/digylog/preferences**
+Saves the selected store name and network id into `settings` JSONB:
+```typescript
+app.patch("/api/digylog/preferences", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const { digylogStoreName, digylogNetworkId } = req.body;
+  if (!digylogStoreName || !digylogNetworkId) {
+    return res.status(400).json({ message: "digylogStoreName et digylogNetworkId sont requis" });
+  }
+  const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+  const active = accounts.find(a => a.isActive === 1);
+  if (!active) return res.status(404).json({ message: "Compte Digylog introuvable" });
+
+  const newSettings = {
+    ...(active.settings as object || {}),
+    digylogStoreName,
+    digylogNetworkId: Number(digylogNetworkId),
+  };
+  await storage.updateCarrierAccount(active.id, { settings: newSettings });
+  res.json({ success: true });
+});
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 3 — CARRIER SERVICE (clean rebuild)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In `server/services/carrier-service.ts`, completely replace `buildDigylogPayload` with this clean version:
+```typescript
+function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
+  const phone = sanitizePhone(input.phone);
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+  const addr = (input.address || "").trim() || input.city.trim();
+  const qty = input.quantity ?? 1;
+
+  // Get store name and network id from input (passed from creds.settings)
+  const storeName = (input.digylogStoreName || "").trim();
+  const networkId = input.digylogNetworkId ?? 1;
+
+  if (!storeName) {
+    throw Object.assign(
+      new Error("⚠️ Nom du magasin Digylog manquant. Allez dans Intégrations → Digylog → Préférences et configurez votre magasin."),
+      { code: "DIGYLOG_NO_STORE", httpStatus: 422 }
+    );
+  }
+
+  return {
+    mode:           1,
+    network:        networkId,
+    store:          storeName,
+    status:         1,
+    checkDuplicate: 1,
+    orders: [{
+      type:        1,
+      num:         input.orderNumber,
+      name:        input.customerName.trim(),
+      phone,
+      address:     addr,
+      city:        input.city.trim(),
+      price:       priceDH,
+      openproduct: input.canOpen ? 1 : 0,
+      port:        1,
+      note:        input.note || "",
+      refs: [{
+        designation: (input.productName || "Produit").trim(),
+        quantity:    qty,
+      }],
+    }],
+  };
+}
+```
+
+Also update `CarrierShipInput` interface to add:
+```typescript
+digylogStoreName?: string;
+digylogNetworkId?: number;
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 4 — READ settings WHEN SHIPPING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In `server/storage.ts`, update `getAccountForShipping` `pickFields` function to read from `settings`:
+```typescript
+const pickFields = (a: typeof active[0]) => {
+  const s = (a.settings as any) || {};
+  return {
+    apiKey:            a.apiKey,
+    apiSecret:         a.apiSecret        ?? undefined,
+    apiUrl:            a.apiUrl           ?? undefined,
+    carrierStoreName:  a.carrierStoreName ?? s.digylogStoreName ?? undefined,
+    digylogStoreName:  s.digylogStoreName ?? a.carrierStoreName ?? undefined,
+    digylogNetworkId:  s.digylogNetworkId  ? Number(s.digylogNetworkId) : 1,
+  };
+};
+```
+
+Also update the return type in the interface (line ~75):
+```typescript
+getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
+  apiKey: string;
+  apiSecret?: string;
+  apiUrl?: string;
+  carrierStoreName?: string;
+  digylogStoreName?: string;
+  digylogNetworkId?: number;
+} | null>;
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 5 — PASS FIELDS WHEN CALLING shipOrderToCarrier
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In `server/routes.ts`, in ALL places where `shipOrderToCarrier` is called, make sure these fields are passed:
+```typescript
+digylogStoreName: (creds as any).digylogStoreName || (creds as any).carrierStoreName || "",
+digylogNetworkId: (creds as any).digylogNetworkId || 1,
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 6 — FRONTEND PREFERENCES UI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In `client/src/pages/shipping-integrations.tsx`, for the Digylog carrier card, add a "Préférences" button that opens a modal with:
+
+1. A dropdown "Magasin" — populated from GET /api/digylog/stores
+2. A dropdown "Réseau" — populated from GET /api/digylog/networks  
+3. A "Enregistrer" button that calls PATCH /api/digylog/preferences
+
+Show the current saved values if they exist (from `account.settings`).
+
+The modal should auto-load stores and networks when opened.
+
+After saving, show a success toast: "Préférences Digylog sauvegardées ✅"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PART 7 — HANDLE DIGYLOG RESPONSE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In `server/services/carrier-service.ts`, add Digylog-specific response handling after receiving the HTTP response:
+```typescript
+if (providerKey === "digylog") {
+  console.log(`[DIGYLOG-RAW-RESPONSE] HTTP ${httpStatus}: ${JSON.stringify(rawBody)}`);
+  
+  // Success: array of orders with tracking
+  if (Array.isArray(rawBody) && rawBody[0]?.tracking) {
+    const tracking = rawBody[0].tracking || rawBody[0].barcode;
+    console.log(`[DIGYLOG] ✅ Success! tracking=${tracking}`);
+    return { success: true, trackingNumber: tracking, labelUrl: `/api/labels/${tracking}.pdf`, httpStatus, rawResponse: rawBody };
+  }
+  
+  // Error: array with error field
+  if (Array.isArray(rawBody) && rawBody[0]?.error) {
+    const errMsg = rawBody[0].error;
+    console.error(`[DIGYLOG] ❌ Order error: ${errMsg}`);
+    return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
+  }
+  
+  // Error: object with message/errors
+  if (rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) && (rawBody as any).message) {
+    const body = rawBody as any;
+    const fieldErrors = body.errors ? Object.values(body.errors).flat().join(", ") : "";
+    const errMsg = fieldErrors ? `${body.message}: ${fieldErrors}` : body.message;
+    console.error(`[DIGYLOG] ❌ API error: ${errMsg}`);
+    return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
+  }
+}
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Do NOT touch any other carrier (ecotrack, cathedis, etc.)
+- Do NOT change the existing carrier_accounts table structure
+- Do NOT remove existing columns from schema
+- The `settings` JSONB column already exists — just use it
+- Keep all existing error handling for non-Digylog carriers intact
