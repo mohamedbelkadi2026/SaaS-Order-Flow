@@ -217,6 +217,13 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: users.preferred_language column verified/created.");
 
+    // ── 8. carrier_accounts.carrier_store_name ────────────────────────────────
+    await client.query(`
+      ALTER TABLE public.carrier_accounts
+        ADD COLUMN IF NOT EXISTS carrier_store_name TEXT;
+    `);
+    console.log("[Migration] carrier_store_name column ensured ✅");
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);

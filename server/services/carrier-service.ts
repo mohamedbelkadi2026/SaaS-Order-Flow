@@ -169,23 +169,18 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
   const qty     = input.quantity ?? 1;
 
   // Bug 2: resolve store name — digylogStoreName takes precedence, then carrierStoreName
-  const storeName = (input.digylogStoreName || input.carrierStoreName || "").trim();
+  const storeName    = (input.digylogStoreName || input.carrierStoreName || "").trim();
+  const resolvedStore = storeName || "default"; // fallback so request reaches Digylog — their error is more informative
   if (!storeName) {
-    throw Object.assign(
-      new Error(
-        "⚠️ Nom du magasin Digylog manquant. " +
-        "Allez dans Intégrations → Sociétés de Livraison → Digylog et ajoutez le nom de votre magasin.",
-      ),
-      { code: "DIGYLOG_NO_STORE", httpStatus: 422 },
-    );
+    console.warn(`[DIGYLOG] ⚠️ carrierStoreName is empty — sending store="default" to see Digylog's real error response`);
   }
 
   // Bug 5: network ID — from carrier account settings; defaults to 1 (standard)
   const networkId = input.digylogNetwork ?? 1;
 
   return {
-    network:        networkId,   // Bug 5 — integer from /networks; defaults to 1
-    store:          storeName,   // Bug 2 — exact store name from Digylog /stores
+    network:        networkId,    // Bug 5 — integer from /networks; defaults to 1
+    store:          resolvedStore, // Bug 2 — exact store name from Digylog /stores (falls back to "default" if not set)
     mode:           1,           // Bug 1 — 1 = Standard order (not COD; COD is handled by `port`)
     status:         1,           // 1 = send immediately
     checkDuplicate: 1,           // Bug 4 — prevent duplicate orders (v2.3+)

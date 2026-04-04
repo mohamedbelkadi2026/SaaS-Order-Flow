@@ -1042,6 +1042,7 @@ export async function registerRoutes(
               batch.map(order => {
                 const resolvedCity = getResolvedCity(order);
                 const orderCreds = getCredsForOrder(resolvedCity);
+                console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -3562,6 +3563,7 @@ export async function registerRoutes(
       }
 
       // ── Call carrier API ──────────────────────────────────────────
+      console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(creds as any).carrierStoreName}"`);
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
