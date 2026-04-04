@@ -1042,6 +1042,7 @@ export async function registerRoutes(
               batch.map(order => {
                 const resolvedCity = getResolvedCity(order);
                 const orderCreds = getCredsForOrder(resolvedCity);
+                console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
@@ -3543,6 +3544,7 @@ export async function registerRoutes(
       // Smart dispatch: carrier accounts first, then legacy storeIntegrations
       const rawOrderCityForDispatch = (order.customerCity || '').trim();
       const creds = await storage.getAccountForShipping(storeId, provider, rawOrderCityForDispatch);
+      console.log(`[CREDS-DEBUG] provider=${provider} carrierStoreName="${(creds as any)?.carrierStoreName}" keys=${JSON.stringify(Object.keys(creds || {}))}`);
       if (!creds) {
         return res.status(400).json({ message: `Transporteur ${provider} non connecté. Ajoutez un compte dans Intégrations → Sociétés de Livraison.` });
       }
