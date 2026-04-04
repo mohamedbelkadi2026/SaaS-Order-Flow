@@ -1,0 +1,67 @@
+Make these exact surgical changes — nothing else:
+
+**Change 1 — server/storage.ts**
+
+Find this exact block (around line 846):
+```typescript
+  ): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string } | null> {
+    const accounts = await this.getCarrierAccounts(storeId, provider);
+    const active   = accounts.filter(a => a.isActive === 1);
+
+    const pickFields = (a: typeof active[0]) => ({
+      apiKey:           a.apiKey,
+      apiSecret:        a.apiSecret       ?? undefined,
+      apiUrl:           a.apiUrl          ?? undefined,
+      carrierStoreName: (a as any).carrierStoreName ?? undefined,
+    });
+```
+
+Replace with:
+```typescript
+  ): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string; digylogStoreName?: string; digylogNetworkId?: number } | null> {
+    const accounts = await this.getCarrierAccounts(storeId, provider);
+    const active   = accounts.filter(a => a.isActive === 1);
+
+    const pickFields = (a: typeof active[0]) => {
+      const s = (a.settings as any) || {};
+      return {
+        apiKey:           a.apiKey,
+        apiSecret:        a.apiSecret        ?? undefined,
+        apiUrl:           a.apiUrl           ?? undefined,
+        carrierStoreName: a.carrierStoreName  ?? s.digylogStoreName ?? undefined,
+        digylogStoreName: s.digylogStoreName  ?? a.carrierStoreName ?? undefined,
+        digylogNetworkId: s.digylogNetworkId  ? Number(s.digylogNetworkId) : 1,
+      };
+    };
+```
+
+Also find the interface declaration (around line 75) that says:
+```typescript
+getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string } | null>;
+```
+Replace with:
+```typescript
+getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string; digylogStoreName?: string; digylogNetworkId?: number } | null>;
+```
+
+---
+
+**Change 2 — server/routes.ts**
+
+Find ALL calls to `shipOrderToCarrier` (there are 2: one in bulk-ship, one in single ship).
+
+In EACH call, make sure these two fields are included in the input object:
+```typescript
+digylogStoreName: (creds as any).digylogStoreName || (creds as any).carrierStoreName || "",
+digylogNetworkId: (creds as any).digylogNetworkId || 1,
+```
+
+For bulk-ship, replace `orderCreds` references the same way:
+```typescript
+digylogStoreName: (orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName || "",
+digylogNetworkId: (orderCreds as any).digylogNetworkId || 1,
+```
+
+---
+
+Do not change anything else. These are the only 2 files to edit.
