@@ -1,0 +1,74 @@
+if (carrierStoreName) body.carrierStoreName = carrierStoreName;
+```
+
+لكن المشكلة الأكبر: **المستخدم كيختار المتجر من الـ Select، لكن `setCarrierStoreName` ما كيتوقفش على الاسم الصح** — كيبقى على القيمة القديمة من `existingAccount?.carrierStoreName` اللي هي فارغة أو `null` في DB.
+
+هاد الـ prompt المحدد:
+
+---
+```
+In `client/src/pages/shipping-integrations.tsx`, there are two bugs causing `carrierStoreName` to never be saved correctly:
+
+---
+
+**Bug 1 — Select value is the store NAME but onValueChange receives the NAME correctly — verify the Select**
+
+Find the Digylog store Select component (around line 335):
+```tsx
+<Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
+  {digylogStores.map(s => (
+    <SelectItem key={s.id} value={s.name}>{s.name}</SelectItem>
+  ))}
+</Select>
+```
+
+Make sure `value={s.name}` and NOT `value={s.id}` — the Digylog API expects the store NAME not the ID. If it's using `s.id`, change it to `s.name`.
+
+---
+
+**Bug 2 — Auto-select on load doesn't work for existing accounts**
+
+When editing an existing account, `digylogStores` is empty (not loaded yet), so the Select shows nothing. The user sees "Magasin actuel: X" but the state `carrierStoreName` is already set from `existingAccount?.carrierStoreName`.
+
+The problem: when saving an EXISTING account, the code only sends `carrierStoreName` if it's truthy:
+```typescript
+if (carrierStoreName) body.carrierStoreName = carrierStoreName;
+```
+
+Change this to ALWAYS send it:
+```typescript
+body.carrierStoreName = carrierStoreName || null;
+```
+
+---
+
+**Bug 3 — Auto-fetch stores on modal open for existing Digylog accounts**
+
+When editing an existing Digylog account, call `fetchDigylogStores()` automatically on mount so the dropdown is populated and the user can re-select if needed.
+
+Add this useEffect:
+```typescript
+useEffect(() => {
+  if (isDigylog && existingAccount) {
+    fetchDigylogStores();
+  }
+}, []);
+```
+
+---
+
+**Bug 4 — Auto-select store if name matches existing**
+
+After `fetchDigylogStores()` succeeds and list is loaded, if `existingAccount?.carrierStoreName` matches one of the fetched stores, auto-select it:
+
+In `fetchDigylogStores`, after `setDigylogStores(list)`, add:
+```typescript
+if (list.length === 1) {
+  setCarrierStoreName(list[0].name);
+} else if (existingAccount?.carrierStoreName) {
+  const match = list.find(s => s.name === existingAccount.carrierStoreName);
+  if (match) setCarrierStoreName(match.name);
+}
+```
+
+Do not change anything else.

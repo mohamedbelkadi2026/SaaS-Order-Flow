@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -141,10 +141,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [carrierStoreName,  setCarrierStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
   const [isFetchingStores,  setIsFetchingStores] = useState(false);
 
-  const fetchDigylogStores = async () => {
+  const fetchDigylogStores = async (silent = false) => {
     const hasToken = apiKey.trim() || existingAccount?.hasApiKey;
     if (!hasToken) {
-      toast({ title: "Token requis", description: "Entrez votre token Digylog avant de charger les magasins.", variant: "destructive" });
+      if (!silent) toast({ title: "Token requis", description: "Entrez votre token Digylog avant de charger les magasins.", variant: "destructive" });
       return;
     }
     setIsFetchingStores(true);
@@ -163,17 +163,35 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
       const list: Array<{ id: number | string; name: string }> = data.stores || [];
       setDigylogStores(list);
-      if (list.length === 0) {
-        toast({ title: "Aucun magasin trouvé", description: "Aucun magasin trouvé pour ce token Digylog.", variant: "destructive" });
-      } else {
-        toast({ title: `${list.length} magasin(s) chargé(s) ✅`, description: "Sélectionnez votre magasin Digylog ci-dessous." });
+
+      // Bug 4 — Auto-select the store that matches the saved carrierStoreName
+      if (list.length === 1) {
+        setCarrierStoreName(list[0].name);
+      } else if (existingAccount?.carrierStoreName) {
+        const match = list.find(s => s.name === existingAccount.carrierStoreName);
+        if (match) setCarrierStoreName(match.name);
+      }
+
+      if (!silent) {
+        if (list.length === 0) {
+          toast({ title: "Aucun magasin trouvé", description: "Aucun magasin trouvé pour ce token Digylog.", variant: "destructive" });
+        } else {
+          toast({ title: `${list.length} magasin(s) chargé(s) ✅`, description: "Sélectionnez votre magasin Digylog ci-dessous." });
+        }
       }
     } catch (e: any) {
-      toast({ title: "Erreur Digylog", description: e?.message || "Impossible de charger les magasins.", variant: "destructive" });
+      if (!silent) toast({ title: "Erreur Digylog", description: e?.message || "Impossible de charger les magasins.", variant: "destructive" });
     } finally {
       setIsFetchingStores(false);
     }
   };
+
+  // Bug 3 — Auto-fetch stores on open when editing an existing Digylog account
+  useEffect(() => {
+    if (isDigylog && existingAccount) {
+      fetchDigylogStores(true); // silent = no toast on auto-load
+    }
+  }, []);
 
   const domain = getWebhookDomain();
   // Permanent webhook URL — based on storeId + carrierName, never changes
@@ -194,7 +212,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
         if (apiKey.trim()) body.apiKey = apiKey;
         if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
-        if (carrierStoreName) body.carrierStoreName = carrierStoreName;
+        body.carrierStoreName = carrierStoreName || null; // always send — null clears, string saves
         const res = await apiRequest("PATCH", `/api/carrier-accounts/${existingAccount.id}`, body);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
