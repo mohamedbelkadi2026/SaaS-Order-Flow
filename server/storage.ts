@@ -72,7 +72,7 @@ export interface IStorage {
   deleteCarrierAccount(id: number): Promise<void>;
   getCarrierCities(storeId: number, carrierName: string): Promise<string[]>;
   upsertCarrierCities(storeId: number, carrierName: string, accountId: number | null, cities: string[]): Promise<void>;
-  getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string } | null>;
+  getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{ apiKey: string; apiSecret?: string; apiUrl?: string; carrierStoreName?: string; networkId?: string | number } | null>;
 
   getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]>;
   getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]>;
