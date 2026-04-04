@@ -256,9 +256,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       return;
     }
     if (isDigylog && !carrierStoreName.trim()) {
-      const msg = "⚠️ Nom du magasin Digylog manquant. Entrez ou sélectionnez le nom de votre magasin avant d'enregistrer.";
+      const msg = "Le nom du magasin Digylog est obligatoire";
       setSubmitError(msg);
-      toast({ title: "Magasin Digylog requis", description: "Entrez le nom exact de votre magasin tel qu'il apparaît dans votre compte Digylog → Magasins.", variant: "destructive" });
+      toast({ title: "Champ requis", description: "Copiez exactement le nom depuis votre compte Digylog → onglet Magasins.", variant: "destructive" });
       return;
     }
     mutation.mutate();
@@ -404,7 +404,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   className="font-semibold text-sm flex items-center gap-1.5"
                   style={{ color: NAVY }}
                 >
-                  Nom de votre magasin Digylog
+                  Nom du magasin (Digylog)
                   <span className="text-red-500">*</span>
                 </Label>
 
@@ -412,7 +412,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 <Input
                   id="carrier_store_name_edit"
                   data-testid="input-digylog-store-name"
-                  placeholder="Ex: Mon Magasin"
+                  placeholder="Ex: Boutique Atlas"
                   value={carrierStoreName}
                   onChange={e => setCarrierStoreName(e.target.value)}
                   className="h-11 text-sm"
@@ -567,50 +567,66 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             </div>
           </div>
 
-          {/* ── Digylog: store picker ── */}
+          {/* ── Digylog: store name ── */}
           {isDigylog && (
             <div className="space-y-2">
-              <Label className="font-semibold text-sm">
-                Magasin Digylog <span className="text-red-500">*</span>
+              <Label htmlFor="carrier_store_name_create" className="font-semibold text-sm flex items-center gap-1.5">
+                Nom du magasin (Digylog) <span className="text-red-500">*</span>
               </Label>
 
-              {digylogStores.length > 0 ? (
-                <Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
-                  <SelectTrigger data-testid="select-digylog-store" className="w-full">
-                    <SelectValue placeholder="Sélectionnez votre magasin Digylog..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {digylogStores.map(s => (
-                      <SelectItem key={String(s.id)} value={s.name}>
-                        {s.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <button
-                  type="button"
-                  data-testid="button-fetch-digylog-stores"
-                  onClick={fetchDigylogStores}
-                  disabled={isFetchingStores}
-                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-dashed border-blue-400 text-blue-600 hover:bg-blue-50 transition-colors disabled:opacity-50 w-full justify-center"
-                >
-                  {isFetchingStores
-                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement...</>
-                    : <><RefreshCw className="w-3.5 h-3.5" /> Charger les magasins Digylog</>}
-                </button>
-              )}
+              {/* Text input — always visible for direct typing/pasting */}
+              <Input
+                id="carrier_store_name_create"
+                data-testid="input-digylog-store-name"
+                placeholder="Ex: Boutique Atlas"
+                value={carrierStoreName}
+                onChange={e => setCarrierStoreName(e.target.value)}
+                className="h-11 text-sm"
+              />
 
-              {digylogStores.length > 0 && (
-                <button
-                  type="button"
-                  onClick={fetchDigylogStores}
-                  disabled={isFetchingStores}
-                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
-                >
-                  <RefreshCw className="w-3 h-3" /> Rafraîchir la liste
-                </button>
-              )}
+              {/* Optional store picker — loads live list from Digylog API */}
+              <div className="space-y-2">
+                {digylogStores.length > 0 ? (
+                  <Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
+                    <SelectTrigger data-testid="select-digylog-store" className="w-full">
+                      <SelectValue placeholder="Ou sélectionnez depuis Digylog..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {digylogStores.map(s => (
+                        <SelectItem key={String(s.id)} value={s.name}>
+                          {s.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="button-fetch-digylog-stores"
+                    onClick={fetchDigylogStores}
+                    disabled={isFetchingStores}
+                    className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-dashed border-border text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors disabled:opacity-50 w-full justify-center"
+                  >
+                    {isFetchingStores
+                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement...</>
+                      : <><RefreshCw className="w-3.5 h-3.5" /> Charger la liste depuis Digylog</>}
+                  </button>
+                )}
+                {digylogStores.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={fetchDigylogStores}
+                    disabled={isFetchingStores}
+                    className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Rafraîchir la liste
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Copiez exactement le nom depuis votre compte Digylog <strong>→ onglet Magasins</strong>.
+              </p>
             </div>
           )}
 
