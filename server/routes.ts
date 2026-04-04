@@ -1621,7 +1621,7 @@ export async function registerRoutes(
   app.post("/api/carrier-accounts", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, carrierStoreName, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
+      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, carrierStoreName, networkId, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
       if (!carrierName || !rawApiKey) {
         return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
       }
@@ -1651,6 +1651,7 @@ export async function registerRoutes(
         isDefault: isDefault ? 1 : (existing.length === 0 ? 1 : 0),
         isActive: 1,
         assignmentRule: assignmentRule || "default",
+        settings: networkId !== undefined ? { networkId: Number(networkId) } : {},
       });
 
       // Log creation (non-blocking — failure won't affect the response)
@@ -1682,7 +1683,7 @@ export async function registerRoutes(
       const acct = await storage.getCarrierAccount(id);
       if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
 
-      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, assignmentRule, isDefault, isActive, assignmentData } = req.body;
+      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, networkId, assignmentRule, isDefault, isActive, assignmentData } = req.body;
       const cleanKey = (s: string | undefined | null) =>
         (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
       const tokenUpdated = !!(rawPatchKey && rawPatchKey !== "");
@@ -1697,6 +1698,7 @@ export async function registerRoutes(
         ...(isDefault         !== undefined && { isDefault: isDefault ? 1 : 0 }),
         ...(isActive          !== undefined && { isActive: isActive ? 1 : 0 }),
         ...(assignmentData    !== undefined && { assignmentData }),
+        ...(networkId !== undefined && { settings: { ...(acct.settings as any || {}), networkId: Number(networkId) } }),
       });
       if (tokenUpdated) {
         console.log(`[CARRIER-UPDATE] Token updated for account #${id} (store ${storeId}) — new length: ${cleanKey(rawPatchKey).length}`);
@@ -1783,6 +1785,58 @@ export async function registerRoutes(
       res.json({ stores });
     } catch (err: any) {
       console.error("[Digylog/stores] Network error:", err?.message);
+      res.status(502).json({ message: "Impossible de contacter Digylog. Vérifiez votre token et réessayez." });
+    }
+  });
+
+  // ── Digylog: fetch available networks (pickup hubs) ─────────────────────────
+  app.get("/api/carrier-accounts/digylog/networks", requireAuth, async (req, res) => {
+    const { token, apiUrl, accountId } = req.query as { token?: string; apiUrl?: string; accountId?: string };
+
+    let resolvedToken = token;
+    let resolvedApiUrl = apiUrl;
+    if (accountId && !resolvedToken) {
+      const storeId = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(Number(accountId));
+      if (!acct || acct.storeId !== storeId) {
+        return res.status(404).json({ message: "Compte introuvable" });
+      }
+      resolvedToken = acct.apiKey;
+      if (!resolvedApiUrl && acct.apiUrl) resolvedApiUrl = acct.apiUrl;
+    }
+
+    if (!resolvedToken) return res.status(400).json({ message: "token requis" });
+
+    const cleanToken = resolvedToken.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+    const rawBase = (resolvedApiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
+    const baseUrl = rawBase.replace(/api\.digylog\.ma/i, "api.digylog.com")
+                           .replace(/app\.digylog\.com/i, "api.digylog.com");
+
+    try {
+      const axiosLib = (await import("axios")).default;
+      const resp = await axiosLib.get(`${baseUrl}/networks`, {
+        headers: {
+          Authorization: `Bearer ${cleanToken}`,
+          Accept: "application/json",
+          Referer: "https://apiseller.digylog.com",
+          Origin: "https://apiseller.digylog.com",
+        },
+        timeout: 15_000,
+        validateStatus: () => true,
+      });
+
+      if (resp.status !== 200) {
+        console.error(`[Digylog/networks] HTTP ${resp.status}:`, JSON.stringify(resp.data).slice(0, 200));
+        return res.status(resp.status).json({ message: `Digylog a répondu avec HTTP ${resp.status}`, raw: resp.data });
+      }
+
+      const raw = resp.data;
+      const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
+      const networks = list.map((n: any) => ({ id: n.id, name: n.name || String(n.id) }));
+      console.log(`[Digylog/networks] Fetched ${networks.length} networks for token …${cleanToken.slice(-6)}`);
+      res.json({ networks });
+    } catch (err: any) {
+      console.error("[Digylog/networks] Network error:", err?.message);
       res.status(502).json({ message: "Impossible de contacter Digylog. Vérifiez votre token et réessayez." });
     }
   });

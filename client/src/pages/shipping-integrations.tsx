@@ -135,11 +135,14 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [webhookCopied,    setWebhookCopied]     = useState(false);
   const [submitError,      setSubmitError]       = useState<string | null>(null);
 
-  // ── Digylog store picker ──────────────────────────────────────────────────
+  // ── Digylog store + network pickers ──────────────────────────────────────
   const isDigylog = providerId === "digylog";
   const [digylogStores,     setDigylogStores]    = useState<Array<{ id: number | string; name: string }>>([]);
   const [carrierStoreName,  setCarrierStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
   const [isFetchingStores,  setIsFetchingStores] = useState(false);
+  const [digylogNetworks,   setDigylogNetworks]  = useState<Array<{ id: number | string; name: string }>>([]);
+  const [networkId,         setNetworkId]        = useState<string>(String(existingAccount?.settings?.networkId ?? ""));
+  const [isFetchingNetworks,setIsFetchingNetworks] = useState(false);
 
   const fetchDigylogStores = async (silent = false) => {
     const hasToken = apiKey.trim() || existingAccount?.hasApiKey;
@@ -186,10 +189,55 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     }
   };
 
-  // Bug 3 — Auto-fetch stores on open when editing an existing Digylog account
+  const fetchDigylogNetworks = async (silent = false) => {
+    const hasToken = apiKey.trim() || existingAccount?.hasApiKey;
+    if (!hasToken) {
+      if (!silent) toast({ title: "Token requis", description: "Entrez votre token Digylog avant de charger les réseaux.", variant: "destructive" });
+      return;
+    }
+    setIsFetchingNetworks(true);
+    try {
+      const params = new URLSearchParams();
+      if (apiKey.trim()) {
+        params.set("token", apiKey.trim());
+      } else if (existingAccount?.id) {
+        params.set("accountId", String(existingAccount.id));
+      }
+      if (apiUrl.trim()) params.set("apiUrl", apiUrl.trim());
+      const res = await fetch(`/api/carrier-accounts/digylog/networks?${params}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+      const list: Array<{ id: number | string; name: string }> = data.networks || [];
+      setDigylogNetworks(list);
+
+      // Auto-select the network that matches the saved networkId
+      if (list.length === 1) {
+        setNetworkId(String(list[0].id));
+      } else if (existingAccount?.settings?.networkId) {
+        const saved = String(existingAccount.settings.networkId);
+        const match = list.find(n => String(n.id) === saved);
+        if (match) setNetworkId(String(match.id));
+      }
+
+      if (!silent) {
+        if (list.length === 0) {
+          toast({ title: "Aucun réseau trouvé", description: "Aucun réseau trouvé pour ce token Digylog.", variant: "destructive" });
+        } else {
+          toast({ title: `${list.length} réseau(x) chargé(s) ✅`, description: "Sélectionnez votre point de collecte Digylog." });
+        }
+      }
+    } catch (e: any) {
+      if (!silent) toast({ title: "Erreur Digylog", description: e?.message || "Impossible de charger les réseaux.", variant: "destructive" });
+    } finally {
+      setIsFetchingNetworks(false);
+    }
+  };
+
+  // Auto-fetch stores + networks on open when editing an existing Digylog account
   useEffect(() => {
     if (isDigylog && existingAccount) {
-      fetchDigylogStores(true); // silent = no toast on auto-load
+      fetchDigylogStores(true);
+      fetchDigylogNetworks(true);
     }
   }, []);
 
@@ -213,6 +261,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         if (apiKey.trim()) body.apiKey = apiKey;
         if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
         body.carrierStoreName = carrierStoreName || null; // always send — null clears, string saves
+        if (isDigylog && networkId) body.networkId = Number(networkId);
         const res = await apiRequest("PATCH", `/api/carrier-accounts/${existingAccount.id}`, body);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
@@ -224,6 +273,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           apiUrl:           apiUrl.trim() || undefined,
           storeName:        resolvedStoreName,
           carrierStoreName: carrierStoreName || undefined,
+          ...(isDigylog && networkId ? { networkId: Number(networkId) } : {}),
           assignmentRule: rule,
           isDefault: rule === "default" ? 1 : 0,
         });
@@ -475,6 +525,46 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </div>
             )}
 
+            {/* ── Digylog: network (point de collecte) ── */}
+            {isDigylog && (
+              <div className="space-y-2">
+                <Label className="font-semibold text-sm flex items-center gap-1.5" style={{ color: NAVY }}>
+                  Point de collecte (Réseau Digylog)
+                </Label>
+                {digylogNetworks.length > 0 ? (
+                  <Select value={networkId} onValueChange={setNetworkId}>
+                    <SelectTrigger data-testid="select-digylog-network-edit" className="h-11 text-sm">
+                      <SelectValue placeholder="Sélectionnez votre réseau Digylog..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {digylogNetworks.map(n => (
+                        <SelectItem key={String(n.id)} value={String(n.id)}>{n.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <button
+                    type="button"
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors"
+                    onClick={() => fetchDigylogNetworks()}
+                    disabled={isFetchingNetworks}
+                  >
+                    {isFetchingNetworks
+                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des réseaux...</>
+                      : <><RefreshCw className="w-3.5 h-3.5" /> Charger les réseaux depuis Digylog</>}
+                  </button>
+                )}
+                {digylogNetworks.length > 0 && (
+                  <button type="button" className="text-[11px] text-blue-500 hover:underline" onClick={() => fetchDigylogNetworks()} disabled={isFetchingNetworks}>
+                    {isFetchingNetworks ? "Actualisation…" : "↺ Actualiser la liste"}
+                  </button>
+                )}
+                {networkId && (
+                  <p className="text-[11px] text-muted-foreground">Réseau sélectionné : <strong>{digylogNetworks.find(n => String(n.id) === networkId)?.name || `#${networkId}`}</strong></p>
+                )}
+              </div>
+            )}
+
             {/* ── Error banner ── */}
             {submitError && (
               <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700">
@@ -645,6 +735,52 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               <p className="text-[11px] text-muted-foreground leading-relaxed">
                 Copiez exactement le nom depuis votre compte Digylog <strong>→ onglet Magasins</strong>.
               </p>
+            </div>
+          )}
+
+          {/* ── Digylog: network (point de collecte) ── */}
+          {isDigylog && (
+            <div className="space-y-2">
+              <Label className="font-semibold text-sm flex items-center gap-1.5">
+                Point de collecte (Réseau Digylog)
+              </Label>
+              {digylogNetworks.length > 0 ? (
+                <Select value={networkId} onValueChange={setNetworkId}>
+                  <SelectTrigger data-testid="select-digylog-network-create" className="w-full">
+                    <SelectValue placeholder="Sélectionnez votre réseau Digylog..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {digylogNetworks.map(n => (
+                      <SelectItem key={String(n.id)} value={String(n.id)}>{n.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="button-fetch-digylog-networks"
+                  onClick={() => fetchDigylogNetworks()}
+                  disabled={isFetchingNetworks}
+                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-dashed border-border text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors disabled:opacity-50 w-full justify-center"
+                >
+                  {isFetchingNetworks
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des réseaux...</>
+                    : <><RefreshCw className="w-3.5 h-3.5" /> Charger les réseaux depuis Digylog</>}
+                </button>
+              )}
+              {digylogNetworks.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => fetchDigylogNetworks()}
+                  disabled={isFetchingNetworks}
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3" /> Rafraîchir la liste
+                </button>
+              )}
+              {networkId && (
+                <p className="text-[11px] text-muted-foreground">Réseau sélectionné : <strong>{digylogNetworks.find(n => String(n.id) === networkId)?.name || `#${networkId}`}</strong></p>
+              )}
             </div>
           )}
 

@@ -1,0 +1,91 @@
+The Digylog API requires additional fields in the order payload that we are not sending.
+
+Looking at the Digylog seller dashboard "Preferences Configuration", orders need:
+- Store (already handled via carrierStoreName)
+- Pickup Point (agence/hub where Digylog picks up parcels)
+- Storage Point / Fulfilment Center (FC id)
+
+These correspond to Digylog API fields:
+- `network` = the network/hub id (Pickup Point → GET /networks)
+- `fc` = fulfilment center id (Storage Point → GET /fc) — only needed if mode=2
+
+The real issue: our payload sends `network: 1` hardcoded, but the user's actual network ID from their Digylog account may be different.
+
+---
+
+**Fix 1 — Add network picker to shipping integrations UI**
+
+In `client/src/pages/shipping-integrations.tsx`, for Digylog accounts, add a button "Charger les réseaux" that calls `GET /api/carrier-accounts/digylog/networks?token=...` and shows a dropdown to select the network.
+
+Save the selected network id as `networkId` in the carrier account settings field.
+
+---
+
+**Fix 2 — Add server endpoint to fetch Digylog networks**
+
+In `server/routes.ts`, add:
+```typescript
+app.get("/api/carrier-accounts/digylog/networks", requireAuth, async (req, res) => {
+  const { token, apiUrl } = req.query as { token?: string; apiUrl?: string };
+  if (!token) return res.status(400).json({ message: "token requis" });
+  
+  const cleanToken = token.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+  const baseUrl = (apiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
+  
+  try {
+    const axiosLib = (await import("axios")).default;
+    const resp = await axiosLib.get(`${baseUrl}/networks`, {
+      headers: {
+        Authorization: `Bearer ${cleanToken}`,
+        Accept: "application/json",
+        Referer: "https://apiseller.digylog.com",
+        Origin: "https://apiseller.digylog.com",
+      },
+      timeout: 15_000,
+      validateStatus: () => true,
+    });
+    if (resp.status !== 200) return res.status(resp.status).json({ message: `Digylog HTTP ${resp.status}`, raw: resp.data });
+    const raw = resp.data;
+    const list = Array.isArray(raw) ? raw : (raw?.data || []);
+    res.json({ networks: list.map((n: any) => ({ id: n.id, name: n.name })) });
+  } catch (err: any) {
+    res.status(502).json({ message: "Impossible de contacter Digylog." });
+  }
+});
+```
+
+---
+
+**Fix 3 — Save networkId in carrier account settings**
+
+In `shared/schema.ts`, the `settings` column is already a JSONB field on `carrier_accounts`. Use it to store `networkId`.
+
+In `server/routes.ts` POST/PATCH `/api/carrier-accounts`, when `networkId` is in the request body, save it inside `settings`:
+```typescript
+const settings = { ...(acct?.settings || {}), networkId: req.body.networkId };
+```
+
+---
+
+**Fix 4 — Use networkId from settings in payload**
+
+In `server/routes.ts`, wherever `shipOrderToCarrier` is called, read networkId from settings:
+```typescript
+digylogNetwork: (creds as any).networkId 
+  ? Number((creds as any).networkId) 
+  : ((creds as any).settings?.networkId ? Number((creds as any).settings.networkId) : 1),
+```
+
+Also update `getAccountForShipping` in `server/storage.ts` to include `settings` in the returned object:
+```typescript
+const pickFields = (a: typeof active[0]) => ({
+  apiKey:           a.apiKey,
+  apiSecret:        a.apiSecret       ?? undefined,
+  apiUrl:           a.apiUrl          ?? undefined,
+  carrierStoreName: a.carrierStoreName ?? undefined,
+  networkId:        (a.settings as any)?.networkId ?? undefined,
+  settings:         a.settings        ?? {},
+});
+```
+
+Do not change any other carrier logic.
