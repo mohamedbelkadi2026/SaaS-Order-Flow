@@ -954,12 +954,22 @@ export async function registerRoutes(
       const storeId = user.storeId!;
 
       // ── If user explicitly selected an account, pin all orders to it ──────
-      let pinnedCreds: { apiKey: string; apiSecret?: string; apiUrl?: string } | null = null;
+      let pinnedCreds: Record<string, any> | null = null;
       if (accountId) {
         const pinned = await storage.getCarrierAccount(Number(accountId));
         if (pinned && pinned.storeId === storeId && pinned.isActive === 1) {
-          pinnedCreds = { apiKey: pinned.apiKey, apiSecret: pinned.apiSecret ?? undefined, apiUrl: pinned.apiUrl ?? undefined };
-          console.log(`[BulkShip] Using pinned account id=${accountId} (${pinned.connectionName}) for all orders`);
+          const ps = (pinned.settings as any) || {};
+          pinnedCreds = {
+            apiKey:           pinned.apiKey,
+            apiSecret:        pinned.apiSecret        ?? undefined,
+            apiUrl:           pinned.apiUrl           ?? undefined,
+            carrierStoreName: pinned.carrierStoreName  ?? ps.digylogStoreName ?? undefined,
+            digylogStoreName: ps.digylogStoreName      ?? pinned.carrierStoreName ?? undefined,
+            digylogNetworkId: ps.digylogNetworkId
+              ? Number(ps.digylogNetworkId)
+              : ps.networkId ? Number(ps.networkId) : 1,
+          };
+          console.log(`[BulkShip] Using pinned account id=${accountId} (${pinned.connectionName}) digylogStore="${pinnedCreds.digylogStoreName}" network=${pinnedCreds.digylogNetworkId}`);
         }
       }
 
@@ -1001,8 +1011,22 @@ export async function registerRoutes(
 
         // Resolve credentials per-order:
         // if user pinned an account → always use it; otherwise use city routing
-        const getCredsForOrder = (city: string): Record<string, string> => {
-          if (pinnedCreds) return pinnedCreds as Record<string, string>;
+        const extractAcctCreds = (a: any): Record<string, any> => {
+          const s = (a.settings as any) || {};
+          return {
+            apiKey:           a.apiKey,
+            apiSecret:        a.apiSecret        || '',
+            apiUrl:           a.apiUrl           || '',
+            carrierStoreName: a.carrierStoreName  ?? s.digylogStoreName ?? '',
+            digylogStoreName: s.digylogStoreName  ?? a.carrierStoreName ?? '',
+            digylogNetworkId: s.digylogNetworkId
+              ? Number(s.digylogNetworkId)
+              : s.networkId ? Number(s.networkId) : 1,
+          };
+        };
+
+        const getCredsForOrder = (city: string): Record<string, any> => {
+          if (pinnedCreds) return pinnedCreds;
           const cityAcct = activeAccounts.find((a: any) => {
             if (a.assignmentRule !== 'city') return false;
             try {
@@ -1010,10 +1034,10 @@ export async function registerRoutes(
               return cities.some((c: string) => c.toLowerCase() === city.toLowerCase());
             } catch { return false; }
           });
-          if (cityAcct) return { apiKey: cityAcct.apiKey, apiSecret: cityAcct.apiSecret || '', apiUrl: cityAcct.apiUrl || '' };
+          if (cityAcct) return extractAcctCreds(cityAcct);
           const def = activeAccounts.find((a: any) => a.isDefault === 1) || activeAccounts[0];
-          if (def) return { apiKey: def.apiKey, apiSecret: def.apiSecret || '', apiUrl: def.apiUrl || '' };
-          return defaultCreds as Record<string, string>;
+          if (def) return extractAcctCreds(def);
+          return defaultCreds as Record<string, any>;
         };
 
         // Pre-load carrier city list for auto-matching
@@ -1699,7 +1723,15 @@ export async function registerRoutes(
         ...(isDefault         !== undefined && { isDefault: isDefault ? 1 : 0 }),
         ...(isActive          !== undefined && { isActive: isActive ? 1 : 0 }),
         ...(assignmentData    !== undefined && { assignmentData }),
-        ...(networkId !== undefined && { settings: { ...(acct.settings as any || {}), networkId: Number(networkId) } }),
+        // Write networkId under BOTH the legacy key (networkId) and the canonical key (digylogNetworkId)
+        // so that pickFields in getAccountForShipping always finds it regardless of which key was written first.
+        ...(networkId !== undefined && {
+          settings: {
+            ...(acct.settings as any || {}),
+            networkId:        Number(networkId),
+            digylogNetworkId: Number(networkId),
+          },
+        }),
       });
       if (tokenUpdated) {
         console.log(`[CARRIER-UPDATE] Token updated for account #${id} (store ${storeId}) — new length: ${cleanKey(rawPatchKey).length}`);

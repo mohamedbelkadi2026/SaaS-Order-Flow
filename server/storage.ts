@@ -856,13 +856,23 @@ export class DatabaseStorage implements IStorage {
 
     const pickFields = (a: typeof active[0]) => {
       const s = (a.settings as any) || {};
+      // Debug: log exactly what's in settings so we can trace any disconnect
+      console.log(`[DIGYLOG-SETTINGS] account #${a.id} settings=${JSON.stringify(s)} carrierStoreName="${a.carrierStoreName ?? ''}"`);
+      // digylogNetworkId: prefer new key, fall back to old key written by ConnectModal
+      const resolvedNetworkId = s.digylogNetworkId
+        ? Number(s.digylogNetworkId)
+        : s.networkId
+          ? Number(s.networkId)
+          : 1;
+      // digylogStoreName: prefer settings key, fall back to DB column
+      const resolvedDigylogStore = s.digylogStoreName ?? a.carrierStoreName ?? undefined;
       return {
         apiKey:           a.apiKey,
         apiSecret:        a.apiSecret        ?? undefined,
         apiUrl:           a.apiUrl           ?? undefined,
         carrierStoreName: a.carrierStoreName  ?? s.digylogStoreName ?? undefined,
-        digylogStoreName: s.digylogStoreName  ?? a.carrierStoreName ?? undefined,
-        digylogNetworkId: s.digylogNetworkId  ? Number(s.digylogNetworkId) : 1,
+        digylogStoreName: resolvedDigylogStore,
+        digylogNetworkId: resolvedNetworkId,
       };
     };
 

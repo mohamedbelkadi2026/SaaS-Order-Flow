@@ -141,7 +141,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [carrierStoreName,  setCarrierStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
   const [isFetchingStores,  setIsFetchingStores] = useState(false);
   const [digylogNetworks,   setDigylogNetworks]  = useState<Array<{ id: number | string; name: string }>>([]);
-  const [networkId,         setNetworkId]        = useState<string>(String(existingAccount?.settings?.networkId ?? ""));
+  const [networkId,         setNetworkId]        = useState<string>(
+    String(existingAccount?.settings?.digylogNetworkId ?? existingAccount?.settings?.networkId ?? "")
+  );
   const [isFetchingNetworks,setIsFetchingNetworks] = useState(false);
 
   const fetchDigylogStores = async (silent = false) => {
@@ -210,13 +212,17 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       const list: Array<{ id: number | string; name: string }> = data.networks || [];
       setDigylogNetworks(list);
 
-      // Auto-select the network that matches the saved networkId
+      // Auto-select the network that matches the saved networkId (check both key names)
       if (list.length === 1) {
         setNetworkId(String(list[0].id));
-      } else if (existingAccount?.settings?.networkId) {
-        const saved = String(existingAccount.settings.networkId);
-        const match = list.find(n => String(n.id) === saved);
-        if (match) setNetworkId(String(match.id));
+      } else {
+        const saved = String(
+          existingAccount?.settings?.digylogNetworkId ?? existingAccount?.settings?.networkId ?? ""
+        );
+        if (saved) {
+          const match = list.find(n => String(n.id) === saved);
+          if (match) setNetworkId(String(match.id));
+        }
       }
 
       if (!silent) {
