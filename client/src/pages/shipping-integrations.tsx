@@ -436,13 +436,19 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
 
             {/* ── WebHook URL (permanent) ── */}
             <div className="space-y-2">
+              <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2.5">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <p className="text-[11px] font-semibold text-amber-800 leading-snug">
+                  ⚠️ Copiez cette URL dans vos paramètres API Digylog pour activer le tracking en temps réel.
+                </p>
+              </div>
               <Label className="font-semibold text-sm flex items-center gap-2" style={{ color: NAVY }}>
                 WebHook URL
                 <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 border border-green-200">
                   Permanente
                 </span>
               </Label>
-              <div className="flex items-center gap-2 px-3 py-3 rounded-xl border-2 border-border/50 bg-gray-50">
+              <div className="flex items-center gap-2 px-3 py-3 rounded-xl border-2 border-amber-200 bg-amber-50/50">
                 <code className="flex-1 text-[11px] font-mono text-gray-700 break-all leading-relaxed">
                   {webhookUrl}
                 </code>
@@ -454,10 +460,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     setWebhookCopied(true);
                     setTimeout(() => setWebhookCopied(false), 2000);
                   }}
-                  className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  className={`shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
                     webhookCopied
                       ? "bg-green-100 text-green-700 border border-green-300"
-                      : "bg-white text-gray-600 border border-gray-200 hover:border-gray-400 hover:text-gray-900"
+                      : "bg-amber-500 text-white border border-amber-600 hover:bg-amber-600 shadow-sm"
                   }`}
                 >
                   {webhookCopied
@@ -466,7 +472,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 </button>
               </div>
               <p className="text-[10px] text-muted-foreground leading-relaxed">
-                URL permanente — ne change jamais même si vous mettez à jour le token. Collez-la dans les réglages webhook du transporteur.
+                URL permanente — ne change jamais même si vous mettez à jour le token. Collez-la dans les réglages webhook Digylog.
               </p>
             </div>
 
@@ -826,11 +832,17 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
 
           {/* ── WebHook URL (permanent) ── */}
           <div className="space-y-1.5">
+            <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <p className="text-[11px] font-semibold text-amber-800 leading-snug">
+                ⚠️ Copiez cette URL dans vos paramètres API Digylog pour activer le tracking en temps réel.
+              </p>
+            </div>
             <Label className="font-semibold text-sm flex items-center gap-1.5">
               WebHook URL
               <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Permanente</span>
             </Label>
-            <div className="flex items-center gap-2 p-2.5 rounded-xl border bg-muted/30">
+            <div className="flex items-center gap-2 p-2.5 rounded-xl border-2 border-amber-200 bg-amber-50/40">
               <code className="flex-1 text-[11px] font-mono truncate text-foreground">
                 {webhookUrl}
               </code>
@@ -842,15 +854,19 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   setWebhookCopied(true);
                   setTimeout(() => setWebhookCopied(false), 2000);
                 }}
-                className="p-1.5 rounded-lg hover:bg-border/60 transition-colors shrink-0"
+                className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  webhookCopied
+                    ? "bg-green-100 text-green-700 border border-green-300"
+                    : "bg-amber-500 text-white border border-amber-600 hover:bg-amber-600 shadow-sm"
+                }`}
               >
                 {webhookCopied
-                  ? <Check className="w-3.5 h-3.5 text-green-500" />
-                  : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                  ? <><Check className="w-3.5 h-3.5" /> Copié!</>
+                  : <><Copy className="w-3.5 h-3.5" /> Copier</>}
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground leading-relaxed">
-              Cette URL est <strong>permanente</strong> — elle ne change jamais. Collez-la dans les réglages webhook du transporteur.
+              Cette URL est <strong>permanente</strong> — elle ne change jamais. Collez-la dans les réglages webhook Digylog.
             </p>
           </div>
 

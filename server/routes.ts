@@ -2106,16 +2106,30 @@ export async function registerRoutes(
   // This URL never changes — based on storeId (permanent) + carrier name.
   // Use this in your carrier's webhook settings instead of the token-based URL.
   app.post("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+    // ── STEP 0: Log every hit immediately — even before validation ────────
+    console.log(`[DEBUG-WEBHOOK]: Incoming payload from carrier (permanent URL):`, req.body);
+    console.log(`[DEBUG-WEBHOOK]: Params — storeId=${req.params.storeId} carrier=${req.params.carrierName}`);
+
+    const storeId     = Number(req.params.storeId);
+    const carrierName = req.params.carrierName.toLowerCase();
+
+    // Ping log — written even if the rest fails, so it appears in the Logs tab
+    if (storeId && !isNaN(storeId)) {
+      storage.createIntegrationLog({
+        storeId, integrationId: null, provider: carrierName || 'carrier',
+        action: 'webhook_ping', status: 'success',
+        message: `📡 Ping reçu sur l'URL permanente — carrier: ${carrierName}`,
+        payload: JSON.stringify(req.body).slice(0, 500),
+      }).catch(e => console.error("[Webhook:ping-log]", e));
+    }
+
     try {
-      const storeId     = Number(req.params.storeId);
-      const carrierName = req.params.carrierName.toLowerCase();
       if (!storeId || isNaN(storeId)) return res.status(400).json({ message: "storeId invalide" });
 
       const { db } = await import("./db");
       const { carrierAccounts: tbl } = await import("@shared/schema");
       const { eq, and } = await import("drizzle-orm");
 
-      // Pick the default/active account for this store+carrier
       const rows = await db.select().from(tbl).where(
         and(eq(tbl.storeId, storeId), eq(tbl.isActive, 1))
       );
@@ -2124,6 +2138,13 @@ export async function registerRoutes(
         || rows[0];
 
       if (!account) {
+        console.warn(`[DEBUG-WEBHOOK]: No carrier account found for storeId=${storeId} carrier=${carrierName}`);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: carrierName,
+          action: 'webhook_ping', status: 'fail',
+          message: `⚠️ Aucun compte transporteur actif trouvé pour ce magasin (carrier: ${carrierName})`,
+          payload: JSON.stringify(req.body).slice(0, 500),
+        });
         return res.status(404).json({ message: "Aucun compte transporteur trouvé pour ce magasin" });
       }
 
@@ -2131,12 +2152,24 @@ export async function registerRoutes(
       const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
       const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
 
-      const result = await processCarrierWebhook(storeId, account.carrierName, body);
+      let result: { tracked: boolean; orderId?: number; newStatus?: string };
+      try {
+        result = await processCarrierWebhook(storeId, account.carrierName, body);
+      } catch (procErr: any) {
+        console.error("[DEBUG-WEBHOOK]: processCarrierWebhook threw:", procErr);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: account.carrierName,
+          action: 'webhook_received', status: 'fail',
+          message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
+          payload: JSON.stringify(body).slice(0, 500),
+        });
+        return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
+      }
 
       await storage.createIntegrationLog({
         storeId, integrationId: null, provider: account.carrierName,
         action: 'webhook_received', status: 'success',
-        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}${result.tracked ? ` → ${result.newStatus}` : ' (non traité)'}`,
+        message: `✅ Webhook traité — tracking: ${trackingNumber || '?'} statut: "${rawStatus}"${result.tracked ? ` → ${result.newStatus}` : ' (statut non mappé)'}`,
         payload: JSON.stringify(body).slice(0, 500),
       });
 
@@ -2149,6 +2182,10 @@ export async function registerRoutes(
 
   // Webhook endpoint keyed to the unique webhookToken per account
   app.post("/api/webhook/carrier/:token", async (req, res) => {
+    // ── STEP 0: Log every hit immediately — even before validation ────────
+    console.log(`[DEBUG-WEBHOOK]: Incoming payload from carrier (token URL):`, req.body);
+    console.log(`[DEBUG-WEBHOOK]: Token param = ${req.params.token}`);
+
     try {
       const token = req.params.token;
       const { db } = await import("./db");
@@ -2157,19 +2194,40 @@ export async function registerRoutes(
       const [account] = await db.select().from(tbl).where(eq(tbl.webhookToken, token));
 
       if (!account) {
+        console.warn(`[DEBUG-WEBHOOK]: Token not found: ${token}`);
         return res.status(404).json({ message: "Webhook token invalide" });
       }
+
+      // Ping log — written immediately after account is identified
+      await storage.createIntegrationLog({
+        storeId: account.storeId, integrationId: null, provider: account.carrierName,
+        action: 'webhook_ping', status: 'success',
+        message: `📡 Ping reçu via token — carrier: ${account.carrierName}`,
+        payload: JSON.stringify(req.body).slice(0, 500),
+      });
 
       const body = req.body;
       const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
       const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
 
-      const result = await processCarrierWebhook(account.storeId, account.carrierName, body);
+      let result: { tracked: boolean; orderId?: number; newStatus?: string };
+      try {
+        result = await processCarrierWebhook(account.storeId, account.carrierName, body);
+      } catch (procErr: any) {
+        console.error("[DEBUG-WEBHOOK]: processCarrierWebhook threw:", procErr);
+        await storage.createIntegrationLog({
+          storeId: account.storeId, integrationId: null, provider: account.carrierName,
+          action: 'webhook_received', status: 'fail',
+          message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
+          payload: JSON.stringify(body).slice(0, 500),
+        });
+        return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
+      }
 
       await storage.createIntegrationLog({
         storeId: account.storeId, integrationId: null, provider: account.carrierName,
         action: 'webhook_received', status: 'success',
-        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}${result.tracked ? ` → ${result.newStatus}` : ' (non traité)'}`,
+        message: `✅ Webhook traité — tracking: ${trackingNumber || '?'} statut: "${rawStatus}"${result.tracked ? ` → ${result.newStatus}` : ' (statut non mappé)'}`,
         payload: JSON.stringify(body).slice(0, 500),
       });
 
