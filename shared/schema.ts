@@ -26,6 +26,10 @@ export const stores = pgTable("stores", {
   whatsappShippingEnabled: integer("whatsapp_shipping_enabled").default(0),
   webhookKey: text("webhook_key"),
   packagingCost: integer("packaging_cost").default(0),
+  agentIds: jsonb("agent_ids").$type<number[]>().default([]),
+  services: jsonb("services").$type<string[]>().default([]),
+  linkedCarriers: jsonb("linked_carriers").$type<string[]>().default([]),
+  linkedPlatforms: jsonb("linked_platforms").$type<string[]>().default([]),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

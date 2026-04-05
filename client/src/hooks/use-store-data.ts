@@ -474,6 +474,18 @@ export function useSetAgentProducts() {
   });
 }
 
+export function useActiveCarrierAccounts() {
+  return useQuery({
+    queryKey: ["/api/carrier-accounts", "all-active"],
+    queryFn: async () => {
+      const res = await fetch("/api/carrier-accounts", { credentials: "include" });
+      if (!res.ok) return [];
+      const all = await res.json();
+      return (Array.isArray(all) ? all : []).filter((a: any) => a.isActive === 1);
+    },
+  });
+}
+
 export function useMagasins() {
   return useQuery({
     queryKey: ["/api/magasins"],

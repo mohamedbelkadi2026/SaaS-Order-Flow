@@ -224,6 +224,16 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] carrier_store_name column ensured ✅");
 
+    // ── 9. stores: magasin multi-select metadata columns ─────────────────────
+    await client.query(`
+      ALTER TABLE public.stores
+        ADD COLUMN IF NOT EXISTS agent_ids       JSONB DEFAULT '[]',
+        ADD COLUMN IF NOT EXISTS services        JSONB DEFAULT '[]',
+        ADD COLUMN IF NOT EXISTS linked_carriers JSONB DEFAULT '[]',
+        ADD COLUMN IF NOT EXISTS linked_platforms JSONB DEFAULT '[]';
+    `);
+    console.log("[Migration] stores multi-select columns ensured ✅");
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);

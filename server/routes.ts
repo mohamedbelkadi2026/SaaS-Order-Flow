@@ -3461,13 +3461,15 @@ export async function registerRoutes(
   });
 
   app.post("/api/magasins", requireAdmin, async (req, res) => {
-    const { name, phone, website, facebook, instagram, logoUrl, canOpen, isStock, isRamassage, whatsappTemplate } = req.body;
+    const { name, phone, website, facebook, instagram, logoUrl, canOpen, isStock, isRamassage, whatsappTemplate, agentIds, services, linkedCarriers, linkedPlatforms } = req.body;
     if (!name) return res.status(400).json({ message: "Nom requis" });
     const newStore = await storage.createStore({
       name, ownerId: req.user!.id,
       phone: phone || null, website: website || null, facebook: facebook || null,
       instagram: instagram || null, logoUrl: logoUrl || null, canOpen: canOpen ?? 1,
       isStock: isStock ?? 0, isRamassage: isRamassage ?? 0, whatsappTemplate: whatsappTemplate || null,
+      agentIds: agentIds || [], services: services || [],
+      linkedCarriers: linkedCarriers || [], linkedPlatforms: linkedPlatforms || [],
     });
     await storage.createSubscription({ storeId: newStore.id, plan: 'starter', monthlyLimit: 1500, pricePerMonth: 20000, currentMonthOrders: 0, isActive: 1 });
     res.json(newStore);
@@ -3480,7 +3482,11 @@ export async function registerRoutes(
     if (store.ownerId !== req.user!.id && storeId !== req.user!.storeId) {
       return res.status(403).json({ message: "Accès refusé" });
     }
-    const allowedFields = ['name', 'phone', 'website', 'facebook', 'instagram', 'logoUrl', 'canOpen', 'isStock', 'isRamassage', 'whatsappTemplate', 'packagingCost'];
+    const allowedFields = [
+      'name', 'phone', 'website', 'facebook', 'instagram', 'logoUrl',
+      'canOpen', 'isStock', 'isRamassage', 'whatsappTemplate', 'packagingCost',
+      'agentIds', 'services', 'linkedCarriers', 'linkedPlatforms',
+    ];
     const updateData: any = {};
     for (const key of allowedFields) {
       if (req.body[key] !== undefined) updateData[key] = req.body[key];

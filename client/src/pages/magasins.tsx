@@ -1,11 +1,11 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  useAgents, useIntegrations, useStore, useMagasins, useCreateMagasin,
+  useAgents, useStore, useMagasins, useCreateMagasin,
   useUpdateMagasin, useDeleteMagasin, useUploadLogo,
-  useAgentStoreSettings, useUpsertAgentStoreSetting,
+  useActiveCarrierAccounts, useIntegrations,
 } from "@/hooks/use-store-data";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,11 +13,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Store, User, CheckCircle2, Truck, Globe, Plus, Pencil, Save, Loader2,
-  X, Home, Users, MessageCircle, Tag, Trash2, Package, Percent, ChevronDown,
+  Store, User, Truck, Globe, Plus, Pencil, Loader2,
+  X, Home, Users, Tag, Trash2, Package, ChevronDown,
 } from "lucide-react";
 import { SiWhatsapp } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
@@ -61,13 +60,7 @@ const defaultForm: StoreForm = {
 
 // ---- Reusable inline multi-select dropdown ----
 function InlineMultiSelect({
-  placeholder,
-  items,
-  selected,
-  onToggle,
-  getLabel,
-  getId,
-  searchable = true,
+  placeholder, items, selected, onToggle, getLabel, getId, searchable = true,
 }: {
   placeholder: string;
   items: any[];
@@ -159,7 +152,6 @@ function WhatsAppPreview({ storeName, message }: { storeName: string; message: s
             <p className="font-semibold text-sm text-white">{storeName || "Boutique"}</p>
             <p className="text-xs text-green-300">en ligne</p>
           </div>
-          <svg className="w-5 h-5 text-white/70" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
         </div>
         <div className="p-3 min-h-[120px]">
           {(message || "Hello 👋") && (
@@ -178,7 +170,12 @@ function WhatsAppPreview({ storeName, message }: { storeName: string; message: s
 // ---- Store Modal ----
 function StoreModal({
   isOpen, onClose, title, form, setForm, onSave, isPending,
-  agents, shippingIntegrations, storeIntegrationsList, logoUrl, onLogoUpload, isUploadingLogo,
+  agents, carrierAccounts, storeIntegrationsList,
+  logoUrl, onLogoUpload, isUploadingLogo,
+  selectedAgentIds, setSelectedAgentIds,
+  selectedServices, setSelectedServices,
+  selectedCarriers, setSelectedCarriers,
+  selectedPlatforms, setSelectedPlatforms,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -188,36 +185,54 @@ function StoreModal({
   onSave: () => void;
   isPending: boolean;
   agents: any[];
-  shippingIntegrations: any[];
+  carrierAccounts: any[];
   storeIntegrationsList: any[];
   logoUrl?: string | null;
   onLogoUpload?: (base64: string) => void;
   isUploadingLogo?: boolean;
+  selectedAgentIds: number[];
+  setSelectedAgentIds: (v: number[]) => void;
+  selectedServices: string[];
+  setSelectedServices: (v: string[]) => void;
+  selectedCarriers: string[];
+  setSelectedCarriers: (v: string[]) => void;
+  selectedPlatforms: string[];
+  setSelectedPlatforms: (v: string[]) => void;
 }) {
   const templateRef = useRef<HTMLTextAreaElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
-  // Local state for team/delivery multi-selects
-  const [selectedAgentIds, setSelectedAgentIds] = useState<number[]>([]);
-  const [selectedServices, setSelectedServices] = useState<string[]>([]);
-  const [selectedCarriers, setSelectedCarriers] = useState<string[]>([]);
-  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
-
   const toggleAgent = (id: string | number) => {
     const nid = Number(id);
-    setSelectedAgentIds(prev => prev.includes(nid) ? prev.filter(x => x !== nid) : [...prev, nid]);
+    setSelectedAgentIds(
+      selectedAgentIds.includes(nid)
+        ? selectedAgentIds.filter(x => x !== nid)
+        : [...selectedAgentIds, nid]
+    );
   };
   const toggleService = (v: string | number) => {
     const val = String(v);
-    setSelectedServices(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val]);
+    setSelectedServices(
+      selectedServices.includes(val)
+        ? selectedServices.filter(x => x !== val)
+        : [...selectedServices, val]
+    );
   };
   const toggleCarrier = (v: string | number) => {
     const val = String(v);
-    setSelectedCarriers(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val]);
+    setSelectedCarriers(
+      selectedCarriers.includes(val)
+        ? selectedCarriers.filter(x => x !== val)
+        : [...selectedCarriers, val]
+    );
   };
   const togglePlatform = (v: string | number) => {
     const val = String(v);
-    setSelectedPlatforms(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val]);
+    setSelectedPlatforms(
+      selectedPlatforms.includes(val)
+        ? selectedPlatforms.filter(x => x !== val)
+        : [...selectedPlatforms, val]
+    );
   };
 
   const handleLogoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -247,8 +262,23 @@ function StoreModal({
   };
 
   const agentItems = (agents || []).filter((a: any) => a.role === 'agent');
-  const carrierItems = shippingIntegrations.map((s: any) => ({ value: s.provider, label: s.provider }));
-  const platformItems = storeIntegrationsList.map((s: any) => ({ value: s.provider, label: s.provider }));
+
+  // Carrier accounts: build items from actual carrier_accounts (isActive = 1)
+  const carrierItems = (carrierAccounts || []).map((acc: any) => ({
+    value: acc.carrierName,
+    label: acc.connectionName
+      ? `${acc.connectionName} (${acc.carrierName})`
+      : acc.carrierName,
+  }));
+  // Deduplicate by value
+  const uniqueCarrierItems = carrierItems.filter(
+    (c, i, arr) => arr.findIndex(x => x.value === c.value) === i
+  );
+
+  const platformItems = (storeIntegrationsList || []).map((s: any) => ({
+    value: s.provider,
+    label: s.provider,
+  }));
 
   const isCreate = !title.includes("Modifier");
 
@@ -404,20 +434,26 @@ function StoreModal({
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Société de livraison</Label>
-                  <InlineMultiSelect
-                    placeholder="Choisir une ou plusieurs sociétés"
-                    items={carrierItems.length > 0 ? carrierItems : []}
-                    selected={selectedCarriers}
-                    onToggle={toggleCarrier}
-                    getId={(s: any) => s.value}
-                    getLabel={(s: any) => s.label}
-                  />
+                  {uniqueCarrierItems.length === 0 ? (
+                    <p className="text-xs text-muted-foreground italic py-2">
+                      Aucune société active. Connectez-en une dans Intégrations → Transporteurs.
+                    </p>
+                  ) : (
+                    <InlineMultiSelect
+                      placeholder="Choisir une ou plusieurs sociétés"
+                      items={uniqueCarrierItems}
+                      selected={selectedCarriers}
+                      onToggle={toggleCarrier}
+                      getId={(s: any) => s.value}
+                      getLabel={(s: any) => s.label}
+                    />
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Choisir la plateforme</Label>
                   <InlineMultiSelect
                     placeholder="Choisir une ou plusieurs plateformes"
-                    items={platformItems.length > 0 ? platformItems : []}
+                    items={platformItems}
                     selected={selectedPlatforms}
                     onToggle={togglePlatform}
                     getId={(s: any) => s.value}
@@ -492,9 +528,9 @@ export default function Magasins() {
   const { user } = useAuth();
   const { data: agents } = useAgents();
   const { data: storeIntegrations } = useIntegrations("store");
-  const { data: shippingIntegrations } = useIntegrations("shipping");
   const { data: storeData } = useStore();
   const { data: magasins } = useMagasins();
+  const { data: activeCarrierAccounts = [] } = useActiveCarrierAccounts();
   const createMagasin = useCreateMagasin();
   const updateMagasin = useUpdateMagasin();
   const deleteMagasin = useDeleteMagasin();
@@ -506,7 +542,23 @@ export default function Magasins() {
   const [form, setForm] = useState<StoreForm>({ ...defaultForm });
   const [newLogoPreview, setNewLogoPreview] = useState<string | null>(null);
 
-  const resetForm = () => setForm({ ...defaultForm });
+  // ── Multi-select state lifted to parent so it persists across modal opens ──
+  const [selectedAgentIds, setSelectedAgentIds]   = useState<number[]>([]);
+  const [selectedServices, setSelectedServices]   = useState<string[]>([]);
+  const [selectedCarriers, setSelectedCarriers]   = useState<string[]>([]);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
+
+  const resetSelections = () => {
+    setSelectedAgentIds([]);
+    setSelectedServices([]);
+    setSelectedCarriers([]);
+    setSelectedPlatforms([]);
+  };
+
+  const resetForm = () => {
+    setForm({ ...defaultForm });
+    resetSelections();
+  };
 
   const storeToForm = (store: any): StoreForm => ({
     name: store.name || "",
@@ -521,7 +573,8 @@ export default function Magasins() {
     packagingCost: Math.round((store.packagingCost || 0) / 100),
   });
 
-  const formToPayload = (f: StoreForm) => ({
+  // Build payload including multi-select state
+  const buildPayload = (f: StoreForm) => ({
     name: f.name,
     phone: f.phone || null,
     website: f.website || null,
@@ -532,6 +585,10 @@ export default function Magasins() {
     isRamassage: f.isRamassage ? 1 : 0,
     whatsappTemplate: f.whatsappTemplate || null,
     packagingCost: Math.round((f.packagingCost || 0) * 100),
+    agentIds: selectedAgentIds,
+    services: selectedServices,
+    linkedCarriers: selectedCarriers,
+    linkedPlatforms: selectedPlatforms,
   });
 
   const handleLogoUpload = async (storeId: number, base64: string) => {
@@ -550,7 +607,7 @@ export default function Magasins() {
       return;
     }
     try {
-      const newStore = await createMagasin.mutateAsync(formToPayload(form));
+      const newStore = await createMagasin.mutateAsync(buildPayload(form));
       if (newLogoPreview && newStore?.id) {
         try { await uploadLogo.mutateAsync({ id: newStore.id, logoData: newLogoPreview }); } catch {}
       }
@@ -566,7 +623,7 @@ export default function Magasins() {
   const handleUpdate = async () => {
     if (!editStore || !form.name.trim()) return;
     try {
-      await updateMagasin.mutateAsync({ id: editStore.id, ...formToPayload(form) });
+      await updateMagasin.mutateAsync({ id: editStore.id, ...buildPayload(form) });
       toast({ title: "Mis à jour", description: "Magasin modifié avec succès" });
       setEditStore(null);
       resetForm();
@@ -589,15 +646,29 @@ export default function Magasins() {
     }
   };
 
+  // ── openEdit: populate form AND multi-select state from store data ──
   const openEdit = (store: any) => {
     setEditStore(store);
     setForm(storeToForm(store));
+    setSelectedAgentIds(Array.isArray(store.agentIds) ? store.agentIds.map(Number) : []);
+    setSelectedServices(Array.isArray(store.services) ? store.services : []);
+    setSelectedCarriers(Array.isArray(store.linkedCarriers) ? store.linkedCarriers : []);
+    setSelectedPlatforms(Array.isArray(store.linkedPlatforms) ? store.linkedPlatforms : []);
     setNewLogoPreview(null);
   };
 
   const agentList = agents || [];
-  const shippingList = shippingIntegrations || [];
   const platformList = storeIntegrations || [];
+
+  const sharedModalProps = {
+    agents: agentList,
+    carrierAccounts: activeCarrierAccounts,
+    storeIntegrationsList: platformList,
+    selectedAgentIds, setSelectedAgentIds,
+    selectedServices, setSelectedServices,
+    selectedCarriers, setSelectedCarriers,
+    selectedPlatforms, setSelectedPlatforms,
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -624,94 +695,110 @@ export default function Magasins() {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {magasins.map((store: any) => (
-            <Card key={store.id} className="p-5 border-border/50 shadow-sm hover:shadow-md transition-shadow">
-              <div className="flex justify-between items-start mb-3">
-                <div className="flex items-center gap-3">
-                  {store.logoUrl ? (
-                    <img src={store.logoUrl} alt={store.name} className="w-10 h-10 rounded-lg object-cover" />
-                  ) : (
-                    <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-                      <Store className="w-5 h-5 text-primary" />
-                    </div>
-                  )}
-                  <div>
-                    <p className="font-bold text-base" data-testid="text-store-name">{store.name}</p>
-                    {storeData?.id === store.id && (
-                      <Badge className="text-[10px] bg-primary/10 text-primary border-none mt-0.5">Boutique active</Badge>
+          {magasins.map((store: any) => {
+            // Resolve agent names from saved agentIds
+            const storeAgentNames = (Array.isArray(store.agentIds) ? store.agentIds : [])
+              .map((id: number) => agentList.find((a: any) => a.id === id)?.username)
+              .filter(Boolean);
+
+            return (
+              <Card key={store.id} className="p-5 border-border/50 shadow-sm hover:shadow-md transition-shadow">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="flex items-center gap-3">
+                    {store.logoUrl ? (
+                      <img src={store.logoUrl} alt={store.name} className="w-10 h-10 rounded-lg object-cover" />
+                    ) : (
+                      <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
+                        <Store className="w-5 h-5 text-primary" />
+                      </div>
                     )}
+                    <div>
+                      <p className="font-bold text-base" data-testid="text-store-name">{store.name}</p>
+                      {storeData?.id === store.id && (
+                        <Badge className="text-[10px] bg-primary/10 text-primary border-none mt-0.5">Boutique active</Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="icon" className="w-8 h-8 hover:bg-muted" onClick={() => openEdit(store)} data-testid={`button-edit-store-${store.id}`}>
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => handleDelete(store)} data-testid={`button-delete-store-${store.id}`}>
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
                   </div>
                 </div>
-                <div className="flex gap-1">
-                  <Button variant="ghost" size="icon" className="w-8 h-8 hover:bg-muted" onClick={() => openEdit(store)} data-testid={`button-edit-store-${store.id}`}>
-                    <Pencil className="w-4 h-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => handleDelete(store)} data-testid={`button-delete-store-${store.id}`}>
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+
+                <div className="text-xs text-muted-foreground space-y-1">
+                  {store.phone && <p>📞 {store.phone}</p>}
+                  {store.website && <p>🌐 <a href={store.website} target="_blank" className="hover:text-primary">{store.website}</a></p>}
                 </div>
-              </div>
 
-              <div className="text-xs text-muted-foreground space-y-1">
-                {store.phone && <p>📞 {store.phone}</p>}
-                {store.website && <p>🌐 <a href={store.website} target="_blank" className="hover:text-primary">{store.website}</a></p>}
-              </div>
+                <div className="flex gap-2 flex-wrap mt-3">
+                  <Badge variant="outline" className={cn("text-[10px]", store.canOpen ? "bg-green-50 text-green-700 border-green-200" : "bg-red-50 text-red-600 border-red-200")}>
+                    {store.canOpen ? "Ouvert" : "Fermé"}
+                  </Badge>
+                  {store.isRamassage ? (
+                    <Badge variant="outline" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200">Ramassage</Badge>
+                  ) : store.isStock ? (
+                    <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200">Stock</Badge>
+                  ) : null}
+                  {Array.isArray(store.linkedCarriers) && store.linkedCarriers.length > 0 && (
+                    <Badge variant="outline" className="text-[10px] bg-purple-50 text-purple-700 border-purple-200">
+                      <Truck className="w-2.5 h-2.5 mr-1" />
+                      {store.linkedCarriers.join(", ")}
+                    </Badge>
+                  )}
+                </div>
 
-              <div className="flex gap-2 flex-wrap mt-3">
-                <Badge variant="outline" className={cn("text-[10px]", store.canOpen ? "bg-green-50 text-green-700 border-green-200" : "bg-red-50 text-red-600 border-red-200")}>
-                  {store.canOpen ? "Ouvert" : "Fermé"}
-                </Badge>
-                {store.isRamassage ? (
-                  <Badge variant="outline" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200">Ramassage</Badge>
-                ) : store.isStock ? (
-                  <Badge variant="outline" className="text-[10px] bg-amber-50 text-amber-700 border-amber-200">Stock</Badge>
-                ) : null}
-              </div>
+                <div className="mt-3 text-xs text-muted-foreground">
+                  <span className="font-semibold">Agents:</span>{" "}
+                  <span data-testid="text-agent-list">
+                    {storeAgentNames.length > 0 ? storeAgentNames.join(", ") : "Aucun agent"}
+                  </span>
+                </div>
 
-              <div className="mt-3 text-xs text-muted-foreground">
-                <span className="font-semibold">Agents:</span>{" "}
-                <span data-testid="text-agent-list">
-                  {agentList.length > 0 ? agentList.map((a: any) => a.username).join(", ") : "Aucun agent"}
-                </span>
-              </div>
-            </Card>
-          ))}
+                {Array.isArray(store.services) && store.services.length > 0 && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    <span className="font-semibold">Services:</span>{" "}
+                    {store.services.join(", ")}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
         </div>
       )}
 
       {/* Create Modal */}
       <StoreModal
         isOpen={addOpen}
-        onClose={() => setAddOpen(false)}
+        onClose={() => { setAddOpen(false); resetSelections(); }}
         title="Ajouter un nouveau business"
         form={form}
         setForm={setForm}
         onSave={handleCreate}
         isPending={createMagasin.isPending}
-        agents={agentList}
-        shippingIntegrations={shippingList}
-        storeIntegrationsList={platformList}
         logoUrl={newLogoPreview}
-        onLogoUpload={setNewLogoPreview}
+        onLogoUpload={(b64) => setNewLogoPreview(b64)}
         isUploadingLogo={uploadLogo.isPending}
+        {...sharedModalProps}
       />
 
       {/* Edit Modal */}
       {editStore && (
         <StoreModal
           isOpen={!!editStore}
-          onClose={() => { setEditStore(null); resetForm(); }}
-          title={`Modifier: ${editStore.name}`}
+          onClose={() => { setEditStore(null); resetSelections(); }}
+          title={`Modifier — ${editStore.name}`}
           form={form}
           setForm={setForm}
           onSave={handleUpdate}
           isPending={updateMagasin.isPending}
-          agents={agentList}
-          shippingIntegrations={shippingList}
-          storeIntegrationsList={platformList}
-          logoUrl={editStore.logoUrl || newLogoPreview}
-          onLogoUpload={async (base64) => { await handleLogoUpload(editStore.id, base64); }}
+          logoUrl={newLogoPreview || editStore.logoUrl}
+          onLogoUpload={(b64) => handleLogoUpload(editStore.id, b64)}
           isUploadingLogo={uploadLogo.isPending}
+          {...sharedModalProps}
         />
       )}
     </div>
