@@ -2016,6 +2016,91 @@ export async function registerRoutes(
     }
   });
 
+  // ── Shared carrier webhook processor ────────────────────────────────────────
+  // Maps Digylog/carrier raw status strings to internal system statuses,
+  // captures driver info into the follow-up journal, updates commentStatus,
+  // and broadcasts real-time events to the store's connected clients.
+  async function processCarrierWebhook(
+    storeId: number,
+    carrierName: string,
+    body: Record<string, any>,
+  ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string }> {
+    const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id || body.colis_id;
+    const rawStatus      = (body.status || body.etat || body.statut || body.etat_libelle || "").toLowerCase();
+    const carrierMessage = body.message || body.etat_libelle || body.status || body.etat || "";
+
+    // ── Map raw carrier status → internal status ──────────────────────────
+    let newStatus: string | null = null;
+    if (rawStatus.includes("livr") || rawStatus === "delivered") {
+      newStatus = "delivered";
+    } else if (rawStatus.includes("refus") || rawStatus === "refused") {
+      newStatus = "refused";
+    } else if (rawStatus.includes("retour")) {
+      newStatus = "retourné";
+    } else if (rawStatus.includes("injoignable") || rawStatus.includes("unreachable")) {
+      newStatus = "Injoignable";
+    } else if (
+      rawStatus.includes("en cours") || rawStatus.includes("distribution") ||
+      rawStatus.includes("in_transit") || rawStatus === "shipped" || rawStatus === "in progress"
+    ) {
+      newStatus = "in_progress";
+    } else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev") || rawStatus.includes("pickup")) {
+      newStatus = "Attente De Ramassage";
+    } else if (rawStatus.includes("expédi") || rawStatus.includes("expedie")) {
+      newStatus = "expédié";
+    }
+
+    if (!trackingNumber || !newStatus) {
+      return { tracked: false };
+    }
+
+    const order = await storage.getOrderByTrackingNumber(storeId, trackingNumber);
+    if (!order) return { tracked: false };
+
+    // ── Update order status ───────────────────────────────────────────────
+    await storage.updateOrderStatus(order.id, newStatus);
+    console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} → ${newStatus}`);
+
+    // ── Update commentStatus with latest carrier message ──────────────────
+    if (carrierMessage) {
+      await storage.updateOrder(order.id, { commentStatus: carrierMessage });
+    }
+
+    // ── Capture driver info into follow-up journal ────────────────────────
+    const driverName  = body.livreur_name  || body.driver_name  || body.livreur || body.courier_name  || "";
+    const driverPhone = body.livreur_tel   || body.driver_phone || body.livreur_tel || body.courier_phone || "";
+    if (driverName || driverPhone) {
+      const parts: string[] = [];
+      if (driverName)  parts.push(driverName);
+      if (driverPhone) parts.push(driverPhone);
+      const note = `🚴 Livreur: ${parts.join(" — ")} (mis à jour par ${carrierName})`;
+      await storage.createOrderFollowUpLog({ orderId: order.id, agentId: null, agentName: carrierName, note });
+    }
+
+    // ── Also log the status update itself in the journal ──────────────────
+    const statusLabels: Record<string, string> = {
+      delivered: "Livrée",
+      refused: "Refusée",
+      retourné: "Retournée",
+      Injoignable: "Injoignable",
+      in_progress: "En cours / Mise en distribution",
+      "Attente De Ramassage": "Attente de ramassage",
+      expédié: "Expédiée",
+    };
+    const statusLabel = statusLabels[newStatus] || newStatus;
+    await storage.createOrderFollowUpLog({
+      orderId: order.id,
+      agentId: null,
+      agentName: carrierName,
+      note: `📦 Statut mis à jour: ${statusLabel}${carrierMessage ? ` — "${carrierMessage}"` : ""}`,
+    });
+
+    // ── Broadcast real-time update to the store ───────────────────────────
+    broadcastToStore(storeId, "order_updated", { orderId: order.id, status: newStatus });
+
+    return { tracked: true, orderId: order.id, newStatus };
+  }
+
   // ── Permanent webhook URL: /api/webhooks/carrier/:storeId/:carrierName ─────
   // This URL never changes — based on storeId (permanent) + carrier name.
   // Use this in your carrier's webhook settings instead of the token-based URL.
@@ -2045,27 +2130,16 @@ export async function registerRoutes(
       const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
       const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
 
-      let newStatus: string | null = null;
-      if (rawStatus.includes("livr")) newStatus = "Livré";
-      else if (rawStatus.includes("retour")) newStatus = "Retour";
-      else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev")) newStatus = "Attente De Ramassage";
-
-      if (trackingNumber && newStatus) {
-        const order = await storage.getOrderByTrackingNumber(storeId, trackingNumber);
-        if (order) {
-          await storage.updateOrderStatus(order.id, newStatus);
-          console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} → ${newStatus}`);
-        }
-      }
+      const result = await processCarrierWebhook(storeId, account.carrierName, body);
 
       await storage.createIntegrationLog({
         storeId, integrationId: null, provider: account.carrierName,
         action: 'webhook_received', status: 'success',
-        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}`,
+        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}${result.tracked ? ` → ${result.newStatus}` : ' (non traité)'}`,
         payload: JSON.stringify(body).slice(0, 500),
       });
 
-      res.json({ received: true });
+      res.json({ received: true, tracked: result.tracked });
     } catch (err: any) {
       console.error("[Webhook:carrier:permanent]", err);
       res.status(500).json({ message: "Erreur webhook" });
@@ -2076,9 +2150,6 @@ export async function registerRoutes(
   app.post("/api/webhook/carrier/:token", async (req, res) => {
     try {
       const token = req.params.token;
-      // Find the account by webhook token
-      const allStores = await storage.getAllActiveIntegrationsByProvider("*").catch(() => []);
-      // We can't easily look up by token without a query — use a DB call
       const { db } = await import("./db");
       const { carrierAccounts: tbl } = await import("@shared/schema");
       const { eq } = await import("drizzle-orm");
@@ -2092,27 +2163,16 @@ export async function registerRoutes(
       const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
       const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
 
-      let newStatus: string | null = null;
-      if (rawStatus.includes("livr")) newStatus = "Livré";
-      else if (rawStatus.includes("retour")) newStatus = "Retour";
-      else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev")) newStatus = "Attente De Ramassage";
-
-      if (trackingNumber && newStatus) {
-        const order = await storage.getOrderByTrackingNumber(account.storeId, trackingNumber);
-        if (order) {
-          await storage.updateOrderStatus(order.id, newStatus);
-          console.log(`[Webhook:${account.carrierName}] #${order.id} → ${newStatus}`);
-        }
-      }
+      const result = await processCarrierWebhook(account.storeId, account.carrierName, body);
 
       await storage.createIntegrationLog({
         storeId: account.storeId, integrationId: null, provider: account.carrierName,
         action: 'webhook_received', status: 'success',
-        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}`,
+        message: `Webhook reçu — tracking: ${trackingNumber || '?'} statut: ${rawStatus}${result.tracked ? ` → ${result.newStatus}` : ' (non traité)'}`,
         payload: JSON.stringify(body).slice(0, 500),
       });
 
-      res.json({ received: true });
+      res.json({ received: true, tracked: result.tracked });
     } catch (err: any) {
       console.error("[Webhook:carrier]", err);
       res.status(500).json({ message: "Erreur webhook" });
