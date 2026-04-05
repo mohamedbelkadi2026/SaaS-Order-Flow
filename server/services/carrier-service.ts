@@ -650,18 +650,28 @@ export async function shipOrderToCarrier(
     if (providerKey === "digylog") {
       console.log(`[DIGYLOG-RAW-RESPONSE] HTTP ${httpStatus}: ${JSON.stringify(rawBody)}`);
 
-      // Success: array of orders with tracking number
-      if (Array.isArray(rawBody) && rawBody[0]?.tracking) {
-        const tracking = rawBody[0].tracking || rawBody[0].barcode;
-        console.log(`[DIGYLOG] ✅ Success! tracking=${tracking}`);
-        return { success: true, trackingNumber: tracking, labelUrl: `/api/labels/${tracking}.pdf`, httpStatus, rawResponse: rawBody };
-      }
+      // Digylog returns an array — check for error first, then tracking
+      if (Array.isArray(rawBody)) {
+        const first = rawBody[0];
 
-      // Error: array with per-order error field
-      if (Array.isArray(rawBody) && rawBody[0]?.error) {
-        const errMsg = rawBody[0].error;
-        console.error(`[DIGYLOG] ❌ Order error: ${errMsg}`);
-        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
+        // Per-order error field takes priority (e.g. duplicate, invalid address, etc.)
+        if (first?.error) {
+          const errMsg = String(first.error);
+          console.error(`[DIGYLOG] ❌ Order error: ${errMsg}`);
+          return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
+        }
+
+        // Use extractTracking() which checks tracking, barcode, num, code_suivi, tracking_number
+        const tracking = extractTracking(rawBody);
+        if (tracking) {
+          console.log(`[DIGYLOG] ✅ Success! tracking=${tracking}`);
+          return { success: true, trackingNumber: tracking, labelUrl: `/api/labels/${tracking}.pdf`, httpStatus, rawResponse: rawBody };
+        }
+
+        // Array returned but no error field AND no tracking number — fail loudly
+        console.error(`[DIGYLOG] ❌ No tracking number in Digylog response. Raw body: ${JSON.stringify(rawBody)}`);
+        const noTrackMsg = "Digylog n'a pas retourné de numéro de suivi. La commande n'a pas été créée chez Digylog.";
+        return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus, rawResponse: rawBody };
       }
 
       // Error: object with message / validation errors
@@ -673,12 +683,17 @@ export async function shipOrderToCarrier(
         return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
       }
 
-      // Fallback: try generic tracking extraction
+      // Generic Digylog error detection (handles other shapes)
       const digylogError = detectDigylogError(rawBody);
       if (digylogError) {
         console.error(`${tag} ❌ Digylog order error: ${digylogError}`);
         return { success: false, httpStatus, rawResponse: rawBody, error: digylogError, carrierMessage: digylogError };
       }
+
+      // Unrecognized Digylog response format — never silently succeed
+      console.error(`[DIGYLOG] ❌ Unexpected response format (no array, no message, no error). Raw body: ${JSON.stringify(rawBody)}`);
+      const unexpectedMsg = "Réponse Digylog inattendue. Aucun numéro de suivi retourné. La commande reste Confirmée.";
+      return { success: false, error: unexpectedMsg, carrierMessage: unexpectedMsg, httpStatus, rawResponse: rawBody };
     }
 
     // ── 5c. Generic: 2xx with logical error ───────────────────────
@@ -694,9 +709,16 @@ export async function shipOrderToCarrier(
       };
     }
 
-    // ── 5d. Success ───────────────────────────────────────────────
-    const trackingNumber = extractTracking(rawBody) || `${provider.toUpperCase()}-${Date.now()}-${input.orderId}`;
-    const labelUrl       = extractLabelUrl(rawBody)  || `/api/labels/${trackingNumber}.pdf`;
+    // ── 5d. Generic success — must have a real tracking number ────
+    // NEVER generate a fake tracking number. If the carrier didn't return one,
+    // treat it as a failure so the order stays as 'Confirme' in the dashboard.
+    const trackingNumber = extractTracking(rawBody);
+    if (!trackingNumber) {
+      console.error(`${tag} ❌ No tracking number in carrier response. Raw body: ${JSON.stringify(rawBody)}`);
+      const noTrackMsg = `${provider} n'a pas retourné de numéro de suivi. La commande reste Confirmée — vérifiez le portail ${provider}.`;
+      return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus, rawResponse: rawBody };
+    }
+    const labelUrl = extractLabelUrl(rawBody) || `/api/labels/${trackingNumber}.pdf`;
 
     console.log(`${tag} ✅ SUCCESS! Tracking: ${trackingNumber}`);
     return { success: true, trackingNumber, labelUrl, httpStatus, rawResponse: rawBody };
