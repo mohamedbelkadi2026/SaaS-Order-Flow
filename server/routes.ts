@@ -2024,25 +2024,71 @@ export async function registerRoutes(
     storeId: number,
     carrierName: string,
     body: Record<string, any>,
-  ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string }> {
-    const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id || body.colis_id;
-    // rawText preserves the original carrier casing — this is what gets shown in the UI
-    const rawText   = body.last_event || body.etat_libelle || body.status || body.etat || body.statut || "";
-    // rawStatus is lowercased only for fuzzy matching
-    const rawStatus = rawText.toLowerCase();
+  ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string }> {
+    const rawPayload = JSON.stringify(body);
 
-    if (!trackingNumber) return { tracked: false };
+    console.log(`[WEBHOOK-INCOMING]: Received from ${carrierName} (store ${storeId}) — keys: ${Object.keys(body).join(', ')}`);
+    console.log(`[WEBHOOK-INCOMING]: Full payload: ${rawPayload}`);
 
-    const order = await storage.getOrderByTrackingNumber(storeId, trackingNumber);
-    if (!order) return { tracked: false };
+    // ── Extract all possible identifiers from the payload ─────────────────
+    // Carriers differ: some send tracking IDs, some send our order reference
+    const trackingNumber = (
+      body.tracking_number || body.barcode || body.code_suivi ||
+      body.track_number   || body.colis_id || body.tracking   ||
+      body.colis          || body.id       || ""
+    ).toString().trim();
+
+    const orderNumber = (
+      body.order_number || body.reference || body.num ||
+      body.ref          || body.order_id  || body.numero_commande || ""
+    ).toString().trim();
+
+    // rawText preserves original carrier casing — displayed in the Suivi tab
+    const rawText   = (body.last_event || body.etat_libelle || body.status || body.etat || body.statut || "").trim();
+    // rawStatus is normalised (lowercased + trimmed) for fuzzy matching only
+    const rawStatus = rawText.toLowerCase().trim();
+
+    console.log(`[WEBHOOK-MATCH]: Looking for tracking="${trackingNumber}" or order="${orderNumber}" — status="${rawText}"`);
+
+    if (!trackingNumber && !orderNumber) {
+      console.warn(`[WEBHOOK-RESULT]: No identifier found in payload — cannot match any order`);
+      return { tracked: false };
+    }
+
+    // ── Double-match: tracking number first, order number as fallback ─────
+    let order: Awaited<ReturnType<typeof storage.getOrderByTrackingNumber>> = undefined;
+    let matchedBy = "";
+
+    if (trackingNumber) {
+      order = await storage.getOrderByTrackingNumber(storeId, trackingNumber);
+      if (order) matchedBy = `tracking_number="${trackingNumber}"`;
+    }
+
+    if (!order && orderNumber) {
+      order = await storage.getOrderByNumber(storeId, orderNumber);
+      if (order) matchedBy = `order_number="${orderNumber}"`;
+    }
+
+    if (!order) {
+      console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" order="${orderNumber}"`);
+      // Log the miss so it's visible in the Journal
+      await storage.createIntegrationLog({
+        storeId, integrationId: null, provider: carrierName,
+        action: 'webhook_no_match', status: 'fail',
+        message: `⚠️ Commande introuvable — tracking: "${trackingNumber}" | ref: "${orderNumber}" | statut: "${rawText}"`,
+        payload: rawPayload.slice(0, 1000),
+      });
+      return { tracked: false };
+    }
+
+    console.log(`[WEBHOOK-RESULT]: Order found — id=${order.id} orderNumber=${(order as any).orderNumber} (matched by ${matchedBy})`);
 
     // ── Always save the exact carrier text into commentStatus ─────────────
-    // This is displayed as the primary label in the Suivi des Colis tab.
     if (rawText) {
       await storage.updateOrder(order.id, { commentStatus: rawText });
     }
 
-    // ── Fuzzy-map raw text → internal status (for backend logic) ─────────
+    // ── Case-insensitive fuzzy-map → internal status ──────────────────────
     let newStatus: string | null = null;
     if (rawStatus.includes("livr") || rawStatus === "delivered") {
       newStatus = "delivered";
@@ -2050,30 +2096,30 @@ export async function registerRoutes(
       newStatus = "refused";
     } else if (rawStatus.includes("retour")) {
       newStatus = "retourné";
-    } else if (rawStatus.includes("injoignable") || rawStatus.includes("unreachable")) {
+    } else if (rawStatus.includes("injoignable") || rawStatus.includes("unreachable") || rawStatus.includes("pas de réponse")) {
       newStatus = "Injoignable";
     } else if (
       rawStatus.includes("en cours") || rawStatus.includes("distribution") ||
-      rawStatus.includes("in_transit") || rawStatus === "shipped" || rawStatus === "in progress"
+      rawStatus.includes("in_transit") || rawStatus.includes("voyage") ||
+      rawStatus === "shipped"         || rawStatus === "in progress"
     ) {
       newStatus = "in_progress";
-    } else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev") || rawStatus.includes("pickup")) {
+    } else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev") || rawStatus.includes("pickup") || rawStatus.includes("préparer")) {
       newStatus = "Attente De Ramassage";
     } else if (rawStatus.includes("expédi") || rawStatus.includes("expedie")) {
       newStatus = "expédié";
     }
 
-    // Only update the internal status field when a fuzzy match succeeds
     if (newStatus) {
       await storage.updateOrderStatus(order.id, newStatus);
-      console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} → ${newStatus} (raw: "${rawText}")`);
+      console.log(`[WEBHOOK-RESULT]: Status updated → ${newStatus} (raw: "${rawText}")`);
     } else {
-      console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} commentStatus="${rawText}" (no internal mapping)`);
+      console.log(`[WEBHOOK-RESULT]: No internal mapping for "${rawText}" — commentStatus saved only`);
     }
 
     // ── Capture driver info into follow-up journal ────────────────────────
-    const driverName  = body.livreur_name  || body.driver_name  || body.livreur || body.courier_name  || "";
-    const driverPhone = body.livreur_tel   || body.driver_phone || body.courier_phone || "";
+    const driverName  = body.livreur_name || body.driver_name  || body.livreur || body.courier_name  || "";
+    const driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || "";
     if (driverName || driverPhone) {
       const parts: string[] = [];
       if (driverName)  parts.push(driverName);
@@ -2084,12 +2130,10 @@ export async function registerRoutes(
       });
     }
 
-    // ── Log the status update in the journal ──────────────────────────────
+    // ── Log the status update in the follow-up journal ────────────────────
     await storage.createOrderFollowUpLog({
-      orderId: order.id,
-      agentId: null,
-      agentName: carrierName,
-      note: `📦 Statut transporteur: "${rawText || rawStatus}"`,
+      orderId: order.id, agentId: null, agentName: carrierName,
+      note: `📦 Statut transporteur: "${rawText}"${newStatus ? ` → interne: ${newStatus}` : " (non mappé)"}`,
     });
 
     // ── Broadcast real-time update to the store ───────────────────────────
@@ -2099,7 +2143,7 @@ export async function registerRoutes(
       commentStatus: rawText,
     });
 
-    return { tracked: true, orderId: order.id, newStatus: newStatus || undefined };
+    return { tracked: true, orderId: order.id, newStatus: newStatus || undefined, matchedBy };
   }
 
   // ── Permanent webhook URL: /api/webhooks/carrier/:storeId/:carrierName ─────
@@ -2143,16 +2187,15 @@ export async function registerRoutes(
           storeId, integrationId: null, provider: carrierName,
           action: 'webhook_ping', status: 'fail',
           message: `⚠️ Aucun compte transporteur actif trouvé pour ce magasin (carrier: ${carrierName})`,
-          payload: JSON.stringify(req.body).slice(0, 500),
+          payload: JSON.stringify(req.body).slice(0, 1000),
         });
         return res.status(404).json({ message: "Aucun compte transporteur trouvé pour ce magasin" });
       }
 
       const body = req.body;
-      const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
-      const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
+      const rawStatus = (body.status || body.etat || body.statut || body.etat_libelle || "").trim();
 
-      let result: { tracked: boolean; orderId?: number; newStatus?: string };
+      let result: { tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string };
       try {
         result = await processCarrierWebhook(storeId, account.carrierName, body);
       } catch (procErr: any) {
@@ -2161,16 +2204,18 @@ export async function registerRoutes(
           storeId, integrationId: null, provider: account.carrierName,
           action: 'webhook_received', status: 'fail',
           message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
-          payload: JSON.stringify(body).slice(0, 500),
+          payload: JSON.stringify(body).slice(0, 1000),
         });
         return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
       }
 
       await storage.createIntegrationLog({
         storeId, integrationId: null, provider: account.carrierName,
-        action: 'webhook_received', status: 'success',
-        message: `✅ Webhook traité — tracking: ${trackingNumber || '?'} statut: "${rawStatus}"${result.tracked ? ` → ${result.newStatus}` : ' (statut non mappé)'}`,
-        payload: JSON.stringify(body).slice(0, 500),
+        action: 'webhook_received', status: result.tracked ? 'success' : 'fail',
+        message: result.tracked
+          ? `✅ Commande #${result.orderId} mise à jour via ${result.matchedBy} — statut: "${rawStatus}" → ${result.newStatus || 'commentStatus uniquement'}`
+          : `⚠️ Webhook reçu mais aucune commande trouvée — statut: "${rawStatus}"`,
+        payload: JSON.stringify(body).slice(0, 1000),
       });
 
       res.json({ received: true, tracked: result.tracked });
@@ -2203,14 +2248,13 @@ export async function registerRoutes(
         storeId: account.storeId, integrationId: null, provider: account.carrierName,
         action: 'webhook_ping', status: 'success',
         message: `📡 Ping reçu via token — carrier: ${account.carrierName}`,
-        payload: JSON.stringify(req.body).slice(0, 500),
+        payload: JSON.stringify(req.body).slice(0, 1000),
       });
 
       const body = req.body;
-      const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id;
-      const rawStatus      = (body.status || body.etat || body.statut || "").toLowerCase();
+      const rawStatus = (body.status || body.etat || body.statut || body.etat_libelle || "").trim();
 
-      let result: { tracked: boolean; orderId?: number; newStatus?: string };
+      let result: { tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string };
       try {
         result = await processCarrierWebhook(account.storeId, account.carrierName, body);
       } catch (procErr: any) {
@@ -2219,16 +2263,18 @@ export async function registerRoutes(
           storeId: account.storeId, integrationId: null, provider: account.carrierName,
           action: 'webhook_received', status: 'fail',
           message: `❌ Erreur traitement webhook — ${procErr?.message || procErr}`,
-          payload: JSON.stringify(body).slice(0, 500),
+          payload: JSON.stringify(body).slice(0, 1000),
         });
         return res.status(500).json({ message: "Erreur traitement webhook", error: procErr?.message });
       }
 
       await storage.createIntegrationLog({
         storeId: account.storeId, integrationId: null, provider: account.carrierName,
-        action: 'webhook_received', status: 'success',
-        message: `✅ Webhook traité — tracking: ${trackingNumber || '?'} statut: "${rawStatus}"${result.tracked ? ` → ${result.newStatus}` : ' (statut non mappé)'}`,
-        payload: JSON.stringify(body).slice(0, 500),
+        action: 'webhook_received', status: result.tracked ? 'success' : 'fail',
+        message: result.tracked
+          ? `✅ Commande #${result.orderId} mise à jour via ${result.matchedBy} — statut: "${rawStatus}" → ${result.newStatus || 'commentStatus uniquement'}`
+          : `⚠️ Webhook reçu mais aucune commande trouvée — statut: "${rawStatus}"`,
+        payload: JSON.stringify(body).slice(0, 1000),
       });
 
       res.json({ received: true, tracked: result.tracked });
