@@ -1066,9 +1066,15 @@ export async function registerRoutes(
               batch.map(order => {
                 const resolvedCity = getResolvedCity(order);
                 const orderCreds = getCredsForOrder(resolvedCity);
+                const bulkQty: number =
+                  (order as any).rawQuantity
+                    ? Number((order as any).rawQuantity)
+                    : Array.isArray((order as any).items) && (order as any).items.length > 0
+                      ? ((order as any).items as any[]).reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0)
+                      : 1;
                 console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
-                console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId}`);
+                console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId} qty=${bulkQty}`);
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -1076,6 +1082,7 @@ export async function registerRoutes(
                   address:          (order as any).customerAddress || (order as any).customerCity || '',
                   totalPrice:       order.totalPrice,
                   productName:      getProductName(order),
+                  quantity:         bulkQty,
                   canOpen:          (order as any).canOpen === 1,
                   orderNumber:      (order as any).orderNumber || String(order.id),
                   orderId:          order.id,
@@ -3720,8 +3727,16 @@ export async function registerRoutes(
         console.log(`[Ship] City auto-corrected: "${rawOrderCity}" → "${matchedCity}" for carrier ${provider}`);
       }
 
+      // ── Calculate total quantity ──────────────────────────────────
+      const orderQuantity: number =
+        (order as any).rawQuantity
+          ? Number((order as any).rawQuantity)
+          : Array.isArray(order.items) && order.items.length > 0
+            ? (order.items as any[]).reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0)
+            : 1;
+
       // ── Call carrier API ──────────────────────────────────────────
-      console.log(`[DIGYLOG-FINAL] order=${orderId} store="${(creds as any).digylogStoreName || (creds as any).carrierStoreName}" network=${(creds as any).digylogNetworkId}`);
+      console.log(`[DIGYLOG-FINAL] order=${orderId} store="${(creds as any).digylogStoreName || (creds as any).carrierStoreName}" network=${(creds as any).digylogNetworkId} qty=${orderQuantity}`);
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -3729,6 +3744,7 @@ export async function registerRoutes(
         address:          order.customerAddress || order.customerCity || '',
         totalPrice:       order.totalPrice,
         productName,
+        quantity:         orderQuantity,
         canOpen:          order.canOpen === 1,
         orderNumber:      order.orderNumber || String(orderId),
         orderId,
