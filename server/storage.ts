@@ -449,7 +449,20 @@ export class DatabaseStorage implements IStorage {
       if (filters.status === 'annule_group') {
         conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
       } else if (filters.status === 'suivi_group') {
-        conditions.push(inArray(orders.status, ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage']));
+        // Primary: any order that has been shipped (has a tracking number) and isn't in a terminal state.
+        // This catches orders whose carrier sent a custom status not in our internal status list.
+        // Secondary fallback: keep the old status-based list for orders shipped without a tracking number.
+        conditions.push(
+          or(
+            and(
+              sql`${orders.trackNumber} IS NOT NULL`,
+              sql`${orders.trackNumber} != ''`,
+              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'delivered', 'refused')`,
+              sql`${orders.status} NOT LIKE 'Annulé%'`
+            ),
+            inArray(orders.status, ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage'])
+          )
+        );
       } else {
         conditions.push(eq(orders.status, filters.status));
       }

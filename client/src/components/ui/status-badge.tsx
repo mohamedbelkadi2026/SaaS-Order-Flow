@@ -29,8 +29,20 @@ export const SUIVI_STATUSES = ['in_progress', 'expédié', 'retourné', 'Attente
 
 const STATUS_MAP = Object.fromEntries(ORDER_STATUSES.map(s => [s.value, s]));
 
+// Colors for custom carrier statuses that don't match any internal status.
+// Uses blue-slate to visually distinguish "carrier text" from our own internal labels.
+const CARRIER_DYNAMIC_COLOR = 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border-blue-200 dark:border-blue-700';
+
 export function StatusBadge({ status, displayText, className }: { status: string, displayText?: string, className?: string }) {
-  const config = STATUS_MAP[status] || { label: displayText || status, color: 'bg-slate-100 text-slate-600 dark:bg-slate-800/50 dark:text-slate-400 border-slate-200 dark:border-slate-700' };
+  const knownConfig = STATUS_MAP[status];
+  const label = displayText || status || "—";
+
+  // If it's a known internal status, use its configured color.
+  // If it's unknown (raw carrier text like "En Voyage", "À préparer", "Ramassé"),
+  // render it in the carrier-dynamic blue color so it's visually distinct.
+  const config = knownConfig
+    ? knownConfig
+    : { label, color: CARRIER_DYNAMIC_COLOR };
 
   return (
     <Badge variant="outline" className={cn("font-medium px-2.5 py-0.5 rounded-md whitespace-nowrap", config.color, className)}>

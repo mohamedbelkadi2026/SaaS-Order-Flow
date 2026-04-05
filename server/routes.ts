@@ -2082,14 +2082,20 @@ export async function registerRoutes(
     }
 
     console.log(`[WEBHOOK-RESULT]: Order found — id=${order.id} orderNumber=${(order as any).orderNumber} (matched by ${matchedBy})`);
+    console.log(`[WEBHOOK-RAW]: Received status "${rawText}" for Order ${order.id}`);
 
     // ── Always save the exact carrier text into commentStatus ─────────────
+    // This is the mirror of whatever Digylog shows — displayed verbatim in the Suivi tab.
     if (rawText) {
       await storage.updateOrder(order.id, { commentStatus: rawText });
     }
 
-    // ── Case-insensitive fuzzy-map → internal status ──────────────────────
-    let newStatus: string | null = null;
+    // ── Map raw text → internal status ────────────────────────────────────
+    // TERMINAL statuses (livré / retourné / refusé) change the internal status.
+    // ALL other carrier statuses → keep as 'in_progress' so the order stays
+    // visible in the Suivi tab regardless of what custom text Digylog sends.
+    let newStatus: string = "in_progress"; // default: keep in Suivi
+
     if (rawStatus.includes("livr") || rawStatus === "delivered") {
       newStatus = "delivered";
     } else if (rawStatus.includes("refus") || rawStatus === "refused") {
@@ -2098,24 +2104,16 @@ export async function registerRoutes(
       newStatus = "retourné";
     } else if (rawStatus.includes("injoignable") || rawStatus.includes("unreachable") || rawStatus.includes("pas de réponse")) {
       newStatus = "Injoignable";
-    } else if (
-      rawStatus.includes("en cours") || rawStatus.includes("distribution") ||
-      rawStatus.includes("in_transit") || rawStatus.includes("voyage") ||
-      rawStatus === "shipped"         || rawStatus === "in progress"
-    ) {
-      newStatus = "in_progress";
-    } else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev") || rawStatus.includes("pickup") || rawStatus.includes("préparer")) {
+    } else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev") || rawStatus.includes("pickup")) {
       newStatus = "Attente De Ramassage";
     } else if (rawStatus.includes("expédi") || rawStatus.includes("expedie")) {
       newStatus = "expédié";
     }
+    // Anything else (e.g. "En Voyage", "À préparer", "Ramassé", custom text)
+    // stays as 'in_progress' — the commentStatus column carries the real display text.
 
-    if (newStatus) {
-      await storage.updateOrderStatus(order.id, newStatus);
-      console.log(`[WEBHOOK-RESULT]: Status updated → ${newStatus} (raw: "${rawText}")`);
-    } else {
-      console.log(`[WEBHOOK-RESULT]: No internal mapping for "${rawText}" — commentStatus saved only`);
-    }
+    await storage.updateOrderStatus(order.id, newStatus);
+    console.log(`[WEBHOOK-RAW]: Internal status → ${newStatus} (commentStatus="${rawText}")`);
 
     // ── Capture driver info into follow-up journal ────────────────────────
     const driverName  = body.livreur_name || body.driver_name  || body.livreur || body.courier_name  || "";
