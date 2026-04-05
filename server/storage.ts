@@ -449,7 +449,7 @@ export class DatabaseStorage implements IStorage {
       if (filters.status === 'annule_group') {
         conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
       } else if (filters.status === 'suivi_group') {
-        conditions.push(inArray(orders.status, ['in_progress', 'expédié', 'retourné']));
+        conditions.push(inArray(orders.status, ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage']));
       } else {
         conditions.push(eq(orders.status, filters.status));
       }
