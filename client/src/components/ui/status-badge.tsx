@@ -29,8 +29,8 @@ export const SUIVI_STATUSES = ['in_progress', 'expédié', 'retourné', 'Attente
 
 const STATUS_MAP = Object.fromEntries(ORDER_STATUSES.map(s => [s.value, s]));
 
-export function StatusBadge({ status, className }: { status: string, className?: string }) {
-  const config = STATUS_MAP[status] || { label: status, color: 'bg-muted text-muted-foreground' };
+export function StatusBadge({ status, displayText, className }: { status: string, displayText?: string, className?: string }) {
+  const config = STATUS_MAP[status] || { label: displayText || status, color: 'bg-slate-100 text-slate-600 dark:bg-slate-800/50 dark:text-slate-400 border-slate-200 dark:border-slate-700' };
 
   return (
     <Badge variant="outline" className={cn("font-medium px-2.5 py-0.5 rounded-md whitespace-nowrap", config.color, className)}>

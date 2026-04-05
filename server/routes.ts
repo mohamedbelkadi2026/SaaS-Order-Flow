@@ -2026,10 +2026,23 @@ export async function registerRoutes(
     body: Record<string, any>,
   ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string }> {
     const trackingNumber = body.tracking_number || body.barcode || body.code_suivi || body.id || body.colis_id;
-    const rawStatus      = (body.status || body.etat || body.statut || body.etat_libelle || "").toLowerCase();
-    const carrierMessage = body.message || body.etat_libelle || body.status || body.etat || "";
+    // rawText preserves the original carrier casing — this is what gets shown in the UI
+    const rawText   = body.last_event || body.etat_libelle || body.status || body.etat || body.statut || "";
+    // rawStatus is lowercased only for fuzzy matching
+    const rawStatus = rawText.toLowerCase();
 
-    // ── Map raw carrier status → internal status ──────────────────────────
+    if (!trackingNumber) return { tracked: false };
+
+    const order = await storage.getOrderByTrackingNumber(storeId, trackingNumber);
+    if (!order) return { tracked: false };
+
+    // ── Always save the exact carrier text into commentStatus ─────────────
+    // This is displayed as the primary label in the Suivi des Colis tab.
+    if (rawText) {
+      await storage.updateOrder(order.id, { commentStatus: rawText });
+    }
+
+    // ── Fuzzy-map raw text → internal status (for backend logic) ─────────
     let newStatus: string | null = null;
     if (rawStatus.includes("livr") || rawStatus === "delivered") {
       newStatus = "delivered";
@@ -2050,55 +2063,43 @@ export async function registerRoutes(
       newStatus = "expédié";
     }
 
-    if (!trackingNumber || !newStatus) {
-      return { tracked: false };
-    }
-
-    const order = await storage.getOrderByTrackingNumber(storeId, trackingNumber);
-    if (!order) return { tracked: false };
-
-    // ── Update order status ───────────────────────────────────────────────
-    await storage.updateOrderStatus(order.id, newStatus);
-    console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} → ${newStatus}`);
-
-    // ── Update commentStatus with latest carrier message ──────────────────
-    if (carrierMessage) {
-      await storage.updateOrder(order.id, { commentStatus: carrierMessage });
+    // Only update the internal status field when a fuzzy match succeeds
+    if (newStatus) {
+      await storage.updateOrderStatus(order.id, newStatus);
+      console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} → ${newStatus} (raw: "${rawText}")`);
+    } else {
+      console.log(`[Webhook:${carrierName}@store${storeId}] #${order.id} commentStatus="${rawText}" (no internal mapping)`);
     }
 
     // ── Capture driver info into follow-up journal ────────────────────────
     const driverName  = body.livreur_name  || body.driver_name  || body.livreur || body.courier_name  || "";
-    const driverPhone = body.livreur_tel   || body.driver_phone || body.livreur_tel || body.courier_phone || "";
+    const driverPhone = body.livreur_tel   || body.driver_phone || body.courier_phone || "";
     if (driverName || driverPhone) {
       const parts: string[] = [];
       if (driverName)  parts.push(driverName);
       if (driverPhone) parts.push(driverPhone);
-      const note = `🚴 Livreur: ${parts.join(" — ")} (mis à jour par ${carrierName})`;
-      await storage.createOrderFollowUpLog({ orderId: order.id, agentId: null, agentName: carrierName, note });
+      await storage.createOrderFollowUpLog({
+        orderId: order.id, agentId: null, agentName: carrierName,
+        note: `🚴 Livreur: ${parts.join(" — ")} (mis à jour par ${carrierName})`,
+      });
     }
 
-    // ── Also log the status update itself in the journal ──────────────────
-    const statusLabels: Record<string, string> = {
-      delivered: "Livrée",
-      refused: "Refusée",
-      retourné: "Retournée",
-      Injoignable: "Injoignable",
-      in_progress: "En cours / Mise en distribution",
-      "Attente De Ramassage": "Attente de ramassage",
-      expédié: "Expédiée",
-    };
-    const statusLabel = statusLabels[newStatus] || newStatus;
+    // ── Log the status update in the journal ──────────────────────────────
     await storage.createOrderFollowUpLog({
       orderId: order.id,
       agentId: null,
       agentName: carrierName,
-      note: `📦 Statut mis à jour: ${statusLabel}${carrierMessage ? ` — "${carrierMessage}"` : ""}`,
+      note: `📦 Statut transporteur: "${rawText || rawStatus}"`,
     });
 
     // ── Broadcast real-time update to the store ───────────────────────────
-    broadcastToStore(storeId, "order_updated", { orderId: order.id, status: newStatus });
+    broadcastToStore(storeId, "order_updated", {
+      orderId: order.id,
+      status: newStatus || order.status,
+      commentStatus: rawText,
+    });
 
-    return { tracked: true, orderId: order.id, newStatus };
+    return { tracked: true, orderId: order.id, newStatus: newStatus || undefined };
   }
 
   // ── Permanent webhook URL: /api/webhooks/carrier/:storeId/:carrierName ─────
