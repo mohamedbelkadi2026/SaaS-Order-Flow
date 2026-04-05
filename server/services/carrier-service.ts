@@ -178,7 +178,7 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
     mode:           1,
     network:        networkId,
     store:          storeName,
-    status:         1,
+    status:         0,
     checkDuplicate: 1,
     orders: [{
       type:        1,
