@@ -94,6 +94,7 @@ export interface IStorage {
 
   updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined>;
   getOrderByNumber(storeId: number, orderNumber: string): Promise<Order | undefined>;
+  getOrderByTrackingNumber(storeId: number, trackingNumber: string): Promise<Order | undefined>;
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
@@ -995,6 +996,12 @@ export class DatabaseStorage implements IStorage {
   async getOrderByNumber(storeId: number, orderNumber: string): Promise<Order | undefined> {
     const [order] = await db.select().from(orders)
       .where(and(eq(orders.storeId, storeId), eq(orders.orderNumber, orderNumber)));
+    return order;
+  }
+
+  async getOrderByTrackingNumber(storeId: number, trackingNumber: string): Promise<Order | undefined> {
+    const [order] = await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), eq(orders.trackNumber, trackingNumber)));
     return order;
   }
 

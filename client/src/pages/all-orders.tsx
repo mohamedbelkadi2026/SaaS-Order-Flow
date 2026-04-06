@@ -276,7 +276,7 @@ export default function AllOrders() {
     let visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
     if (!Object.values(colFilters).some(v => v)) return visible;
     return visible.filter((o: any) => {
-      if (colFilters.code && !o.orderNumber?.toLowerCase().includes(colFilters.code.toLowerCase())) return false;
+      if (colFilters.code && !((o as any).trackNumber || o.orderNumber || '').toLowerCase().includes(colFilters.code.toLowerCase())) return false;
       if (colFilters.destinataire && !o.customerName?.toLowerCase().includes(colFilters.destinataire.toLowerCase())) return false;
       if (colFilters.telephone) {
         const ns = normalizePhone(colFilters.telephone);
@@ -674,7 +674,14 @@ export default function AllOrders() {
                       <TableCell className="px-2" onClick={e => e.stopPropagation()}>
                         <Checkbox checked={selectedIds.has(order.id)} onCheckedChange={() => toggleSelect(order.id)} data-testid={`all-checkbox-order-${order.id}`} />
                       </TableCell>
-                      {isColVisible('code') && <TableCell className="whitespace-nowrap text-muted-foreground font-mono text-[10px]">{order.orderNumber || 'N/D'}</TableCell>}
+                      {isColVisible('code') && (
+                        <TableCell className="whitespace-nowrap font-mono text-[10px]">
+                          {(order as any).trackNumber
+                            ? <span className="text-blue-600 dark:text-blue-400 font-semibold" title={`Tracking: ${(order as any).trackNumber}`}>{(order as any).trackNumber}</span>
+                            : <span className="text-muted-foreground">{order.orderNumber || 'N/D'}</span>
+                          }
+                        </TableCell>
+                      )}
                       {isColVisible('destinataire') && <TableCell className="whitespace-nowrap font-medium">{cleanCustomerName(order.customerName)}</TableCell>}
                       {isColVisible('telephone') && (
                         <TableCell className="whitespace-nowrap">
