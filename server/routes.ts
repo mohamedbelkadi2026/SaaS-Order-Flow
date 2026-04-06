@@ -851,12 +851,31 @@ export async function registerRoutes(
     const user = req.user!;
     const status = req.query.status as string | undefined;
 
+    // Status group constants (mirrors status-badge.tsx)
+    const SUIVI_GROUP = [
+      'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
+      'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+      'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+    ];
+    const REFUSED_GROUP = [
+      'refused',
+      'Client intéressé', 'Remboursé', 'Adresse inconnue', 'Retour en route',
+      'Incompatibilité avec les attentes', 'Article retourné', "Erreur d'expédition",
+      'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
+      'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
+    ];
+
     if (user.role === 'agent') {
       const ordersList = await storage.getOrdersByAgent(user.id);
       if (status === 'annule_group') {
         res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
       } else if (status === 'suivi_group') {
-        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage'].includes(o.status)));
+        res.json(ordersList.filter(o =>
+          SUIVI_GROUP.includes(o.status) ||
+          (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
+        ));
+      } else if (status === 'refused') {
+        res.json(ordersList.filter(o => REFUSED_GROUP.includes(o.status)));
       } else {
         res.json(status ? ordersList.filter(o => o.status === status) : ordersList);
       }
@@ -866,7 +885,13 @@ export async function registerRoutes(
         res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
       } else if (status === 'suivi_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
-        res.json(ordersList.filter(o => ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage'].includes(o.status)));
+        res.json(ordersList.filter(o =>
+          SUIVI_GROUP.includes(o.status) ||
+          (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
+        ));
+      } else if (status === 'refused') {
+        const ordersList = await storage.getOrdersByStore(user.storeId!);
+        res.json(ordersList.filter(o => REFUSED_GROUP.includes(o.status)));
       } else {
         const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
         res.json(ordersList);

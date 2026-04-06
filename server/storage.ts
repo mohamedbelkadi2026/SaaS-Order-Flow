@@ -453,7 +453,7 @@ export class DatabaseStorage implements IStorage {
       } else if (filters.status === 'suivi_group') {
         // Primary: any order that has been shipped (has a tracking number) and isn't in a terminal state.
         // This catches orders whose carrier sent a custom status not in our internal status list.
-        // Secondary fallback: keep the old status-based list for orders shipped without a tracking number.
+        // Secondary fallback: explicit list that also covers Moroccan carrier in-transit statuses.
         conditions.push(
           or(
             and(
@@ -462,9 +462,23 @@ export class DatabaseStorage implements IStorage {
               sql`${orders.status} NOT IN ('nouveau', 'confirme', 'delivered', 'refused')`,
               sql`${orders.status} NOT LIKE 'Annulé%'`
             ),
-            inArray(orders.status, ['in_progress', 'expédié', 'retourné', 'Attente De Ramassage'])
+            inArray(orders.status, [
+              'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
+              // Moroccan carrier in-transit statuses
+              'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+              'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+            ])
           )
         );
+      } else if (filters.status === 'refused') {
+        // Expand the refused filter to include all carrier issue/refused statuses
+        conditions.push(inArray(orders.status, [
+          'refused',
+          'Client intéressé', 'Remboursé', 'Adresse inconnue', 'Retour en route',
+          'Incompatibilité avec les attentes', 'Article retourné', "Erreur d'expédition",
+          'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
+          'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
+        ]));
       } else {
         conditions.push(eq(orders.status, filters.status));
       }
