@@ -93,23 +93,38 @@ function isDelivered(statusVal: string): boolean {
 }
 
 /* ─── Types ─────────────────────────────────────────── */
-interface ColMap { product: string; qty: string; cod: string; status: string }
+interface ColMap {
+  product: string;
+  qty: string;
+  cod: string;
+  status: string;
+  shipping: string; // "Shipping cost" column from file
+}
 
 interface ProductSummary {
   name: string;
   totalQty: number;
-  totalRevenue: number;
+  totalRevenue: number;   // sum of Price column (CA Brut)
+  totalShipping: number;  // sum of Shipping cost column (from file)
   rowCount: number;
-  buyingCost: string;
-  shippingFee: string;
-  adSpend: string;
+  buyingCost: string;       // manual: prix d'achat / unité
+  confirmationFee: string;  // manual: frais confirmation / unité
+  adSpend: string;          // manual: pub (global or specific)
   suggestedPrice?: number;
 }
 
 interface ProfitResult {
-  name: string; qty: number; revenue: number;
-  cogs: number; shipping: number; adSpend: number;
-  totalCost: number; netProfit: number; roi: number;
+  name: string;
+  qty: number;
+  caBrut: number;       // Price from file (total)
+  shippingFromFile: number; // Shipping cost from file (total)
+  caNet: number;        // caBrut - shippingFromFile
+  cogs: number;         // buyingCost × qty
+  confirmation: number; // confirmationFee × qty
+  adSpend: number;
+  totalCost: number;
+  netProfit: number;
+  roi: number;
 }
 
 /* ─── Step indicator ─────────────────────────────────── */
@@ -179,7 +194,7 @@ export default function ProfitAnalyzer() {
   const [rawHeaders, setRawHeaders] = useState<string[]>([]);
   const [rawDataRows, setRawDataRows] = useState<any[][]>([]);
 
-  const [colMap, setColMap] = useState<ColMap>({ product: "", qty: "", cod: "", status: "" });
+  const [colMap, setColMap] = useState<ColMap>({ product: "", qty: "", cod: "", status: "", shipping: "" });
   const [previewProducts, setPreviewProducts] = useState<ProductSummary[]>([]);
   const [previewMeta, setPreviewMeta] = useState({ totalRows: 0, filteredRows: 0, noStatusFilter: false });
   const [hasParsed, setHasParsed] = useState(false);
@@ -209,18 +224,20 @@ export default function ProfitAnalyzer() {
     headers: string[],
     map: ColMap,
   ): { ok: boolean; error?: string } {
-    const pIdx = headers.indexOf(map.product);
-    const qIdx = headers.indexOf(map.qty);
-    const cIdx = headers.indexOf(map.cod);
-    const sIdx = headers.indexOf(map.status);
+    const pIdx   = headers.indexOf(map.product);
+    const qIdx   = headers.indexOf(map.qty);
+    const cIdx   = headers.indexOf(map.cod);
+    const sIdx   = headers.indexOf(map.status);
+    const shIdx  = headers.indexOf(map.shipping); // Shipping cost column
 
     if (pIdx === -1) {
       return { ok: false, error: "⚠️ Impossible de détecter la colonne Produit. Sélectionnez-la manuellement." };
     }
 
-    const hasStatus = sIdx !== -1;
-    const hasQty = qIdx !== -1;
-    const hasCod = cIdx !== -1;
+    const hasStatus   = sIdx  !== -1;
+    const hasQty      = qIdx  !== -1;
+    const hasCod      = cIdx  !== -1;
+    const hasShipping = shIdx !== -1;
 
     const totalRows = dataRows.filter(r => {
       const n = cleanProductName(String(r[pIdx] ?? "").trim());
@@ -231,7 +248,7 @@ export default function ProfitAnalyzer() {
     const relevantRows = dataRows.filter(r => {
       const name = cleanProductName(String(r[pIdx] ?? "").trim());
       if (!name) return false;
-      if (!hasStatus) return true; // no status col → include all
+      if (!hasStatus) return true;
       return isDelivered(String(r[sIdx] ?? ""));
     });
 
@@ -242,17 +259,21 @@ export default function ProfitAnalyzer() {
       };
     }
 
-    /* Group by product — strip carrier-specific prefixes from name values */
-    const groupMap: Record<string, { qty: number; rev: number; count: number; displayName: string }> = {};
+    /* Group by product — strip carrier-specific prefixes, sum revenue + shipping */
+    const groupMap: Record<string, {
+      qty: number; rev: number; ship: number; count: number; displayName: string;
+    }> = {};
+
     for (const row of relevantRows) {
       const rawVal = String(row[pIdx] ?? "").trim();
       if (!rawVal) continue;
-      const name = cleanProductName(rawVal);   // strips "Designation : " etc.
+      const name = cleanProductName(rawVal);
       if (!name) continue;
       const key = norm(name);
-      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, count: 0, displayName: name };
-      groupMap[key].qty += hasQty ? (parseNum(row[qIdx]) || 1) : 1;
-      groupMap[key].rev += hasCod ? parseNum(row[cIdx]) : 0;
+      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: name };
+      groupMap[key].qty  += hasQty      ? (parseNum(row[qIdx])  || 1) : 1;
+      groupMap[key].rev  += hasCod      ? parseNum(row[cIdx])         : 0;
+      groupMap[key].ship += hasShipping ? parseNum(row[shIdx])        : 0;
       groupMap[key].count++;
     }
 
@@ -260,19 +281,17 @@ export default function ProfitAnalyzer() {
       return { ok: false, error: "⚠️ Aucun produit valide trouvé. Vérifiez le format du fichier." };
     }
 
-    const summaries: ProductSummary[] = Object.entries(groupMap).map(([key, d]) => {
-      const cleanName = d.displayName;
-      return {
-        name: cleanName,
-        totalQty: d.qty,
-        totalRevenue: d.rev,
-        rowCount: d.count,
-        buyingCost: "",
-        shippingFee: "40",
-        adSpend: "0",
-        suggestedPrice: getSuggestedPrice(cleanName),
-      };
-    }).sort((a, b) => b.totalQty - a.totalQty);
+    const summaries: ProductSummary[] = Object.entries(groupMap).map(([, d]) => ({
+      name: d.displayName,
+      totalQty: d.qty,
+      totalRevenue: d.rev,
+      totalShipping: d.ship,
+      rowCount: d.count,
+      buyingCost: "",
+      confirmationFee: "",
+      adSpend: "0",
+      suggestedPrice: getSuggestedPrice(d.displayName),
+    })).sort((a, b) => b.totalQty - a.totalQty);
 
     setPreviewProducts(summaries);
     setPreviewMeta({
@@ -323,6 +342,10 @@ export default function ProfitAnalyzer() {
         ]),
         status: detectCol(headers, [
           "statut", "status", "etat", "livraison", "situation",
+        ]),
+        shipping: detectCol(headers, [
+          "shipping cost", "frais livr", "frais exp", "cout livr",
+          "shipping", "frais port", "frais transport", "delivery cost",
         ]),
       };
 
@@ -394,21 +417,33 @@ export default function ProfitAnalyzer() {
       return;
     }
 
-    const totalRev = products.reduce((s, p) => s + p.totalRevenue, 0);
-    const globalAd = adMode === "global" ? toNum(globalAdSpend) : 0;
+    const totalRevAll = products.reduce((s, p) => s + p.totalRevenue, 0);
+    const globalAd    = adMode === "global" ? toNum(globalAdSpend) : 0;
 
     const res: ProfitResult[] = products.map(p => {
-      const rev = p.totalRevenue;
-      const qty = p.totalQty;
-      const cogs = toNum(p.buyingCost) * qty;
-      const ship = toNum(p.shippingFee) * qty;
-      const adS = adMode === "specific"
+      const caBrut          = p.totalRevenue;
+      const shippingFromFile = p.totalShipping;      // from file, already summed
+      const caNet            = caBrut - shippingFromFile;
+      const qty              = p.totalQty;
+      const cogs             = toNum(p.buyingCost) * qty;
+      const confirmation     = toNum(p.confirmationFee) * qty;
+      const adS              = adMode === "specific"
         ? toNum(p.adSpend)
-        : totalRev > 0 ? globalAd * (rev / totalRev) : globalAd / products.length;
-      const totalCost = cogs + ship + adS;
-      const net = rev - totalCost;
-      const roi = cogs > 0 ? (net / cogs) * 100 : 0;
-      return { name: p.name, qty, revenue: rev, cogs, shipping: ship, adSpend: adS, totalCost, netProfit: net, roi };
+        : totalRevAll > 0
+          ? globalAd * (caBrut / totalRevAll)
+          : globalAd / products.length;
+
+      // Net Profit = Price - ShippingFile - BuyingCost×Qty - ConfirmFee×Qty - AdSpend
+      const totalCost = shippingFromFile + cogs + confirmation + adS;
+      const netProfit = caBrut - totalCost;
+      const roi       = cogs > 0 ? (netProfit / cogs) * 100 : 0;
+
+      return {
+        name: p.name, qty,
+        caBrut, shippingFromFile, caNet,
+        cogs, confirmation, adSpend: adS,
+        totalCost, netProfit, roi,
+      };
     });
 
     setResults(res);
@@ -418,7 +453,8 @@ export default function ProfitAnalyzer() {
   /* ── Reset ── */
   function reset() {
     setStep(1); setHasParsed(false); setParseError(null); setFileName("");
-    setRawHeaders([]); setRawDataRows([]); setColMap({ product: "", qty: "", cod: "", status: "" });
+    setRawHeaders([]); setRawDataRows([]);
+    setColMap({ product: "", qty: "", cod: "", status: "", shipping: "" });
     setPreviewProducts([]); setProducts([]); setResults([]);
     setGlobalAdSpend("0"); setAdMode("global");
     if (fileRef.current) fileRef.current.value = "";
@@ -429,24 +465,27 @@ export default function ProfitAnalyzer() {
   }
 
   /* ── Report aggregates ── */
-  const totalRev  = results.reduce((s, r) => s + r.revenue, 0);
-  const totalCost = results.reduce((s, r) => s + r.totalCost, 0);
-  const totalNet  = results.reduce((s, r) => s + r.netProfit, 0);
-  const totalCOGS = results.reduce((s, r) => s + r.cogs, 0);
-  const totalShip = results.reduce((s, r) => s + r.shipping, 0);
-  const totalAd   = results.reduce((s, r) => s + r.adSpend, 0);
-  const globalROI = totalCOGS > 0 ? (totalNet / totalCOGS) * 100 : 0;
-  const barData   = results.map(r => ({
+  const totalCaBrut   = results.reduce((s, r) => s + r.caBrut, 0);
+  const totalShipFile = results.reduce((s, r) => s + r.shippingFromFile, 0);
+  const totalCaNet    = results.reduce((s, r) => s + r.caNet, 0);
+  const totalCost     = results.reduce((s, r) => s + r.totalCost, 0);
+  const totalNet      = results.reduce((s, r) => s + r.netProfit, 0);
+  const totalCOGS     = results.reduce((s, r) => s + r.cogs, 0);
+  const totalConfirm  = results.reduce((s, r) => s + r.confirmation, 0);
+  const totalAd       = results.reduce((s, r) => s + r.adSpend, 0);
+  const globalROI     = totalCOGS > 0 ? (totalNet / totalCOGS) * 100 : 0;
+  const barData = results.map(r => ({
     name:   r.name.length > 14 ? r.name.slice(0, 14) + "…" : r.name,
-    Revenu: Math.round(r.revenue),
-    Coûts:  Math.round(r.totalCost),
-    Profit: Math.round(r.netProfit),
+    "CA Brut": Math.round(r.caBrut),
+    "CA Net":  Math.round(r.caNet),
+    "Profit":  Math.round(r.netProfit),
   }));
   const pieData = [
-    { name: "Achat",      value: Math.round(totalCOGS), color: "#3b82f6" },
-    { name: "Livraison",  value: Math.round(totalShip), color: "#f59e0b" },
-    { name: "Publicité",  value: Math.round(totalAd),   color: "#8b5cf6" },
-    { name: "Profit net", value: Math.max(0, Math.round(totalNet)), color: "#10b981" },
+    { name: "Sourcing",     value: Math.round(totalCOGS),    color: "#3b82f6" },
+    { name: "Livraison",    value: Math.round(totalShipFile), color: "#f59e0b" },
+    { name: "Confirmation", value: Math.round(totalConfirm),  color: "#06b6d4" },
+    { name: "Publicité",    value: Math.round(totalAd),       color: "#8b5cf6" },
+    { name: "Profit net",   value: Math.max(0, Math.round(totalNet)), color: "#10b981" },
   ].filter(d => d.value > 0);
 
   /* ─────────────────────────────────────────────────────── */
@@ -563,13 +602,14 @@ export default function ProfitAnalyzer() {
                   </p>
                 </CardHeader>
                 <CardContent className="pb-4">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {(["product", "qty", "cod", "status"] as const).map(field => {
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    {(["product", "qty", "cod", "status", "shipping"] as const).map(field => {
                       const labels: Record<string, string> = {
                         product: "Produit *",
                         qty: "Quantité",
-                        cod: "Montant COD",
+                        cod: "Prix / COD",
                         status: "Statut (optionnel)",
+                        shipping: "Frais livr. (fichier)",
                       };
                       return (
                         <div key={field} className="flex flex-col gap-1.5">
@@ -633,32 +673,37 @@ export default function ProfitAnalyzer() {
                     <TableHeader>
                       <TableRow className="border-white/10 hover:bg-transparent">
                         <TableHead className="text-slate-500 text-xs font-semibold">Produit</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-center">Qté totale</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-right">Revenu COD</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-center">Statut</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center">Qté</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right">CA Brut</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right">Frais Livr.</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right">CA Net</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {previewProducts.map((p, i) => (
-                        <TableRow key={i} className="border-white/8 hover:bg-white/4"
-                                  data-testid={`row-parsed-product-${i}`}>
-                          <TableCell className="text-white font-medium text-sm py-2.5">{p.name}</TableCell>
-                          <TableCell className="text-center py-2.5">
-                            <Badge variant="outline"
-                                   className="border-amber-500/35 text-amber-300 bg-amber-500/8 text-xs">
-                              {p.totalQty}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right text-emerald-300 font-semibold text-sm py-2.5">
-                            {p.totalRevenue > 0 ? fmtDH(p.totalRevenue) : <span className="text-slate-500 text-xs">—</span>}
-                          </TableCell>
-                          <TableCell className="text-center py-2.5">
-                            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/20 text-[10px]">
-                              LIVRÉ
-                            </Badge>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {previewProducts.map((p, i) => {
+                        const caNet = p.totalRevenue - p.totalShipping;
+                        return (
+                          <TableRow key={i} className="border-white/8 hover:bg-white/4"
+                                    data-testid={`row-parsed-product-${i}`}>
+                            <TableCell className="text-white font-medium text-sm py-2.5">{p.name}</TableCell>
+                            <TableCell className="text-center py-2.5">
+                              <Badge variant="outline"
+                                     className="border-amber-500/35 text-amber-300 bg-amber-500/8 text-xs">
+                                {p.totalQty}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right text-emerald-300 font-semibold text-sm py-2.5">
+                              {p.totalRevenue > 0 ? fmtDH(p.totalRevenue) : <span className="text-slate-500 text-xs">—</span>}
+                            </TableCell>
+                            <TableCell className="text-right text-amber-300 text-sm py-2.5">
+                              {p.totalShipping > 0 ? <span className="text-red-400">−{fmtDH(p.totalShipping)}</span> : <span className="text-slate-500 text-xs">—</span>}
+                            </TableCell>
+                            <TableCell className="text-right font-bold text-sm py-2.5">
+                              <span className={caNet >= 0 ? "text-emerald-400" : "text-red-400"}>{fmtDH(caNet)}</span>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </CardContent>
@@ -760,10 +805,11 @@ export default function ProfitAnalyzer() {
               <CardHeader className="pb-2 pt-4">
                 <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
                            style={{ color: GOLD }}>
-                  <Package className="w-3.5 h-3.5" /> Coûts par produit
+                  <Package className="w-3.5 h-3.5" /> Coûts à saisir par produit
                 </CardTitle>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Prix d'achat obligatoire. Frais de livraison par défaut : 40 DH.
+                  Les frais de livraison sont récupérés automatiquement depuis le fichier.
+                  Entrez uniquement votre prix d'achat et vos frais de confirmation.
                 </p>
               </CardHeader>
               <CardContent className="p-0">
@@ -773,78 +819,89 @@ export default function ProfitAnalyzer() {
                       <TableRow className="border-white/10 hover:bg-transparent">
                         <TableHead className="text-slate-500 text-xs font-semibold min-w-[180px]">Produit</TableHead>
                         <TableHead className="text-slate-500 text-xs font-semibold text-center">Qté</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-right">Revenu</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[150px]">
-                          Prix d'achat (DH) <span className="text-red-400">*</span>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right">CA Net</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right text-amber-400/80">Frais livr. (fichier)</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[140px]">
+                          Prix d'achat / unité <span className="text-red-400">*</span>
                         </TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[130px]">
-                          Frais livr. (DH)
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[140px]">
+                          Frais confirm. / unité
                         </TableHead>
                         {adMode === "specific" && (
-                          <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[120px]">
-                            Pub (DH)
+                          <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[110px]">
+                            Pub (DH total)
                           </TableHead>
                         )}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {products.map((p, i) => (
-                        <TableRow key={i} className="border-white/8 hover:bg-white/4"
-                                  data-testid={`row-cost-product-${i}`}>
-                          <TableCell className="py-3">
-                            <p className="text-white font-semibold text-sm">{p.name}</p>
-                            {p.suggestedPrice != null && (
-                              <button
-                                onClick={() => updateProduct(i, "buyingCost", String(p.suggestedPrice))}
-                                className="text-[10px] text-amber-400/60 hover:text-amber-400 flex items-center gap-0.5 mt-0.5 transition-colors"
-                                data-testid={`button-suggest-price-${i}`}>
-                                <Sparkles className="w-2.5 h-2.5" /> Inventaire: {p.suggestedPrice} DH
-                              </button>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-center py-3">
-                            <Badge variant="outline"
-                                   className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">
-                              {p.totalQty}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right text-emerald-300 font-semibold text-sm py-3">
-                            {p.totalRevenue > 0 ? fmtDH(p.totalRevenue) : <span className="text-slate-500">—</span>}
-                          </TableCell>
-                          <TableCell className="text-center py-3">
-                            <Input
-                              type="number" min={0}
-                              value={p.buyingCost}
-                              onChange={e => updateProduct(i, "buyingCost", e.target.value)}
-                              className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[120px] mx-auto"
-                              placeholder="Ex: 85"
-                              data-testid={`input-buying-cost-${i}`}
-                            />
-                          </TableCell>
-                          <TableCell className="text-center py-3">
-                            <Input
-                              type="number" min={0}
-                              value={p.shippingFee}
-                              onChange={e => updateProduct(i, "shippingFee", e.target.value)}
-                              className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[100px] mx-auto"
-                              placeholder="40"
-                              data-testid={`input-shipping-fee-${i}`}
-                            />
-                          </TableCell>
-                          {adMode === "specific" && (
+                      {products.map((p, i) => {
+                        const caNet = p.totalRevenue - p.totalShipping;
+                        return (
+                          <TableRow key={i} className="border-white/8 hover:bg-white/4"
+                                    data-testid={`row-cost-product-${i}`}>
+                            <TableCell className="py-3">
+                              <p className="text-white font-semibold text-sm">{p.name}</p>
+                              {p.suggestedPrice != null && (
+                                <button
+                                  onClick={() => updateProduct(i, "buyingCost", String(p.suggestedPrice))}
+                                  className="text-[10px] text-amber-400/60 hover:text-amber-400 flex items-center gap-0.5 mt-0.5 transition-colors"
+                                  data-testid={`button-suggest-price-${i}`}>
+                                  <Sparkles className="w-2.5 h-2.5" /> Inventaire: {p.suggestedPrice} DH
+                                </button>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-center py-3">
+                              <Badge variant="outline"
+                                     className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">
+                                {p.totalQty}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right py-3">
+                              <span className={caNet >= 0 ? "text-emerald-300 font-semibold text-sm" : "text-red-400 font-semibold text-sm"}>
+                                {fmtDH(caNet)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right py-3">
+                              {p.totalShipping > 0
+                                ? <span className="text-red-400 text-sm">−{fmtDH(p.totalShipping)}</span>
+                                : <span className="text-slate-500 text-xs">Du fichier</span>}
+                            </TableCell>
                             <TableCell className="text-center py-3">
                               <Input
                                 type="number" min={0}
-                                value={p.adSpend}
-                                onChange={e => updateProduct(i, "adSpend", e.target.value)}
-                                className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[100px] mx-auto"
-                                placeholder="0"
-                                data-testid={`input-ad-spend-${i}`}
+                                value={p.buyingCost}
+                                onChange={e => updateProduct(i, "buyingCost", e.target.value)}
+                                className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[110px] mx-auto"
+                                placeholder="Ex: 85"
+                                data-testid={`input-buying-cost-${i}`}
                               />
                             </TableCell>
-                          )}
-                        </TableRow>
-                      ))}
+                            <TableCell className="text-center py-3">
+                              <Input
+                                type="number" min={0}
+                                value={p.confirmationFee}
+                                onChange={e => updateProduct(i, "confirmationFee", e.target.value)}
+                                className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[110px] mx-auto"
+                                placeholder="Ex: 10"
+                                data-testid={`input-confirmation-fee-${i}`}
+                              />
+                            </TableCell>
+                            {adMode === "specific" && (
+                              <TableCell className="text-center py-3">
+                                <Input
+                                  type="number" min={0}
+                                  value={p.adSpend}
+                                  onChange={e => updateProduct(i, "adSpend", e.target.value)}
+                                  className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[100px] mx-auto"
+                                  placeholder="0"
+                                  data-testid={`input-ad-spend-${i}`}
+                                />
+                              </TableCell>
+                            )}
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>
@@ -873,25 +930,28 @@ export default function ProfitAnalyzer() {
         {step === 3 && results.length > 0 && (
           <div className="space-y-5">
 
-            {/* KPIs */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <KpiCard label="Revenu total" value={fmtDH(totalRev)}
-                sub={`${results.reduce((s, r) => s + r.qty, 0)} unités`}
+            {/* ── KPI row ── */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <KpiCard label="CA Brut (Price)" value={fmtDH(totalCaBrut)}
+                sub={`${results.reduce((s, r) => s + r.qty, 0)} unités livrées`}
                 color="#10b981" icon={<DollarSign className="w-5 h-5" />} />
-              <KpiCard label="Coûts totaux" value={fmtDH(totalCost)}
-                sub="Achat + livraison + pub"
+              <KpiCard label="Frais livr. (fichier)" value={fmtDH(totalShipFile)}
+                sub="Déduit automatiquement"
                 color="#f59e0b" icon={<Truck className="w-5 h-5" />} />
+              <KpiCard label="CA Net" value={fmtDH(totalCaNet)}
+                sub="Prix − Frais livr."
+                color="#06b6d4" icon={<TrendingUp className="w-5 h-5" />} />
               <KpiCard label="Bénéfice net" value={fmtDH(totalNet)}
-                sub={totalNet >= 0 ? "✅ En bénéfice" : "🔴 En déficit"}
+                sub={totalNet >= 0 ? "En bénéfice" : "En déficit"}
                 color={totalNet >= 0 ? "#10b981" : "#ef4444"}
-                icon={<TrendingUp className="w-5 h-5" />} />
-              <KpiCard label="ROI Global" value={`${globalROI.toFixed(1)}%`}
-                sub="vs coût d'achat"
-                color={globalROI >= 30 ? "#10b981" : globalROI >= 0 ? "#f59e0b" : "#ef4444"}
                 icon={<Target className="w-5 h-5" />} />
+              <KpiCard label="ROI Global" value={`${globalROI.toFixed(1)}%`}
+                sub="vs coût sourcing"
+                color={globalROI >= 30 ? "#10b981" : globalROI >= 0 ? "#f59e0b" : "#ef4444"}
+                icon={<BarChart3 className="w-5 h-5" />} />
             </div>
 
-            {/* Per-product table */}
+            {/* ── Per-product detail table ── */}
             <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
               <CardHeader className="pb-2 pt-4">
                 <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
@@ -904,43 +964,67 @@ export default function ProfitAnalyzer() {
                   <Table>
                     <TableHeader>
                       <TableRow className="border-white/10 hover:bg-transparent">
-                        {["Produit","Qté","Revenu","Coût achat","Livraison","Pub","Profit net","ROI"].map(h => (
-                          <TableHead key={h} className="text-slate-500 text-xs font-semibold">{h}</TableHead>
+                        {[
+                          { label: "Produit",           cls: "" },
+                          { label: "Qté",               cls: "text-center" },
+                          { label: "CA Brut",           cls: "text-right text-emerald-400/80" },
+                          { label: "Frais Livr.",       cls: "text-right text-amber-400/80" },
+                          { label: "CA Net",            cls: "text-right text-cyan-400/80" },
+                          { label: "Coût Sourcing",     cls: "text-right" },
+                          { label: "Confirmation",      cls: "text-right" },
+                          { label: "Pub",               cls: "text-right" },
+                          { label: "Bénéfice Net",      cls: "text-right" },
+                          { label: "ROI",               cls: "text-right" },
+                        ].map(({ label, cls }) => (
+                          <TableHead key={label} className={`text-slate-500 text-xs font-semibold whitespace-nowrap ${cls}`}>{label}</TableHead>
                         ))}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {results.map((r, i) => {
-                        const pc = r.roi >= 50 ? "text-emerald-400" : r.roi >= 20 ? "text-amber-400" : "text-red-400";
-                        const nc = r.netProfit >= 0 ? "text-emerald-400" : "text-red-400";
+                        const roiCls  = r.roi >= 50 ? "text-emerald-400" : r.roi >= 20 ? "text-amber-400" : "text-red-400";
+                        const profCls = r.netProfit >= 0 ? "text-emerald-400 font-extrabold" : "text-red-400 font-extrabold";
                         return (
-                          <TableRow key={i} className="border-white/8 hover:bg-white/4"
-                                    data-testid={`row-result-${i}`}>
-                            <TableCell className="text-white font-semibold text-sm py-3">{r.name}</TableCell>
+                          <TableRow key={i} className="border-white/8 hover:bg-white/4" data-testid={`row-result-${i}`}>
+                            <TableCell className="text-white font-semibold text-sm py-3 max-w-[180px]">{r.name}</TableCell>
                             <TableCell className="text-center py-3">
                               <Badge variant="outline" className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">{r.qty}</Badge>
                             </TableCell>
-                            <TableCell className="text-right text-emerald-300 font-semibold text-sm py-3">{fmtDH(r.revenue)}</TableCell>
-                            <TableCell className="text-right text-slate-300 text-sm py-3">{fmtDH(r.cogs)}</TableCell>
-                            <TableCell className="text-right text-slate-300 text-sm py-3">{fmtDH(r.shipping)}</TableCell>
-                            <TableCell className="text-right text-slate-300 text-sm py-3">{fmtDH(r.adSpend)}</TableCell>
-                            <TableCell className={`text-right font-extrabold text-sm py-3 ${nc}`}>{fmtDH(r.netProfit)}</TableCell>
-                            <TableCell className={`text-right font-bold text-sm py-3 ${pc}`}>{r.roi.toFixed(1)}%</TableCell>
+                            <TableCell className="text-right text-emerald-300 font-semibold text-sm py-3">{fmtDH(r.caBrut)}</TableCell>
+                            <TableCell className="text-right text-red-400 text-sm py-3">−{fmtDH(r.shippingFromFile)}</TableCell>
+                            <TableCell className="text-right text-cyan-300 font-semibold text-sm py-3">{fmtDH(r.caNet)}</TableCell>
+                            <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtDH(r.cogs)}</TableCell>
+                            <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtDH(r.confirmation)}</TableCell>
+                            <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtDH(r.adSpend)}</TableCell>
+                            <TableCell className={`text-right text-sm py-3 ${profCls}`}>{fmtDH(r.netProfit)}</TableCell>
+                            <TableCell className={`text-right font-bold text-sm py-3 ${roiCls}`}>{r.roi.toFixed(1)}%</TableCell>
                           </TableRow>
                         );
                       })}
+                      {/* Totals row */}
+                      <TableRow className="border-t-2 border-white/20 bg-white/5">
+                        <TableCell className="text-white font-extrabold text-sm py-3" colSpan={2}>TOTAL</TableCell>
+                        <TableCell className="text-right text-emerald-300 font-bold text-sm py-3">{fmtDH(totalCaBrut)}</TableCell>
+                        <TableCell className="text-right text-red-400 font-bold text-sm py-3">−{fmtDH(totalShipFile)}</TableCell>
+                        <TableCell className="text-right text-cyan-300 font-bold text-sm py-3">{fmtDH(totalCaNet)}</TableCell>
+                        <TableCell className="text-right text-slate-300 font-bold text-sm py-3">−{fmtDH(totalCOGS)}</TableCell>
+                        <TableCell className="text-right text-slate-300 font-bold text-sm py-3">−{fmtDH(totalConfirm)}</TableCell>
+                        <TableCell className="text-right text-slate-300 font-bold text-sm py-3">−{fmtDH(totalAd)}</TableCell>
+                        <TableCell className={`text-right font-extrabold text-sm py-3 ${totalNet >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtDH(totalNet)}</TableCell>
+                        <TableCell className="text-right text-slate-400 text-sm py-3">{globalROI.toFixed(1)}%</TableCell>
+                      </TableRow>
                     </TableBody>
                   </Table>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Charts */}
+            {/* ── Charts ── */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
               <Card className="border-white/10 bg-white/5 text-white col-span-1 lg:col-span-3">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs font-bold uppercase tracking-widest" style={{ color: GOLD }}>
-                    Revenu · Coûts · Profit
+                    CA Brut · CA Net · Bénéfice par produit
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
@@ -954,9 +1038,9 @@ export default function ProfitAnalyzer() {
                         formatter={(val: number) => fmtDH(val)}
                       />
                       <Legend wrapperStyle={{ fontSize: 11, color: "#64748b" }} />
-                      <Bar dataKey="Revenu" fill="#10b981" radius={[3,3,0,0]} />
-                      <Bar dataKey="Coûts"  fill="#f59e0b" radius={[3,3,0,0]} />
-                      <Bar dataKey="Profit" fill={GOLD}    radius={[3,3,0,0]} />
+                      <Bar dataKey="CA Brut" fill="#10b981" radius={[3,3,0,0]} />
+                      <Bar dataKey="CA Net"  fill="#06b6d4" radius={[3,3,0,0]} />
+                      <Bar dataKey="Profit"  fill={GOLD}    radius={[3,3,0,0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -971,7 +1055,7 @@ export default function ProfitAnalyzer() {
                 <CardContent>
                   <ResponsiveContainer width="100%" height={240}>
                     <PieChart>
-                      <Pie data={pieData} cx="50%" cy="43%" innerRadius={50} outerRadius={85}
+                      <Pie data={pieData} cx="50%" cy="43%" innerRadius={50} outerRadius={80}
                            dataKey="value" stroke="none">
                         {pieData.map((e, idx) => <Cell key={idx} fill={e.color} />)}
                       </Pie>
@@ -979,31 +1063,31 @@ export default function ProfitAnalyzer() {
                         contentStyle={{ background: NAVY_MID, border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#fff", fontSize: 11 }}
                         formatter={(val: number) => fmtDH(val)}
                       />
-                      <Legend verticalAlign="bottom" height={32} iconType="circle" wrapperStyle={{ fontSize: 10, color: "#64748b" }} />
+                      <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: 10, color: "#64748b" }} />
                     </PieChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
             </div>
 
-            {/* Cost breakdown bars */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {/* ── Cost breakdown bars ── */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
-                { label: "Coût d'achat", val: totalCOGS, color: "#3b82f6" },
-                { label: "Frais livraison", val: totalShip, color: "#f59e0b" },
-                { label: "Dépenses pub",  val: totalAd,   color: "#8b5cf6" },
+                { label: "Sourcing",          val: totalCOGS,    color: "#3b82f6" },
+                { label: "Livraison (fichier)",val: totalShipFile, color: "#f59e0b" },
+                { label: "Confirmation",       val: totalConfirm,  color: "#06b6d4" },
+                { label: "Publicité",          val: totalAd,       color: "#8b5cf6" },
               ].map(item => {
                 const pct = totalCost > 0 ? (item.val / totalCost) * 100 : 0;
                 return (
                   <div key={item.label} className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-400 font-semibold">{item.label}</span>
-                      <span className="text-xs font-bold" style={{ color: item.color }}>{pct.toFixed(1)}%</span>
+                      <span className="text-[11px] text-slate-400 font-semibold leading-tight">{item.label}</span>
+                      <span className="text-xs font-bold shrink-0 ml-1" style={{ color: item.color }}>{pct.toFixed(1)}%</span>
                     </div>
-                    <p className="text-lg font-extrabold text-white">{fmtDH(item.val)}</p>
+                    <p className="text-base font-extrabold text-white">{fmtDH(item.val)}</p>
                     <div className="w-full bg-white/10 rounded-full h-1.5">
-                      <div className="h-1.5 rounded-full transition-all"
-                           style={{ width: `${Math.min(pct, 100)}%`, background: item.color }} />
+                      <div className="h-1.5 rounded-full" style={{ width: `${Math.min(pct, 100)}%`, background: item.color }} />
                     </div>
                   </div>
                 );
