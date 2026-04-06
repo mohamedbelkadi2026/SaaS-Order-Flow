@@ -2046,18 +2046,51 @@ export async function registerRoutes(
     // ── Extract all possible identifiers from the payload ─────────────────
     // Carriers differ: some send tracking IDs, some send our order reference
     const trackingNumber = (
-      body.tracking_number || body.barcode || body.code_suivi ||
-      body.track_number   || body.colis_id || body.tracking   ||
-      body.colis          || body.id       || ""
+      body.tracking_number || body.barcode   || body.code_suivi ||
+      body.track_number   || body.colis_id  || body.tracking   ||
+      body.colis          || body.id        || ""
     ).toString().trim();
 
     const orderNumber = (
-      body.order_number || body.reference || body.num ||
+      body.order_number || body.reference || body.num       ||
       body.ref          || body.order_id  || body.numero_commande || ""
     ).toString().trim();
 
-    // rawText preserves original carrier casing — displayed in the Suivi tab
-    const rawText   = (body.last_event || body.etat_libelle || body.status || body.etat || body.statut || "").trim();
+    // ── Extract raw status — cover every field name carriers use ──────────
+    // Digylog and other Moroccan carriers vary widely: status, etat, libelle,
+    // label, last_event, statut_libelle, description, etc.
+    // If none of the known fields are present, scan ALL body string values
+    // as a last resort — so we NEVER miss the carrier text.
+    const rawText = (
+      body.last_event       ||
+      body.etat_libelle     ||
+      body.statut_libelle   ||
+      body.libelle          ||
+      body.label            ||
+      body.last_status      ||
+      body.current_status   ||
+      body.event_label      ||
+      body.event            ||
+      body.status           ||
+      body.etat             ||
+      body.statut           ||
+      body.description      ||
+      body.data?.status     ||
+      body.data?.etat       ||
+      body.data?.last_event ||
+      body.data?.libelle    ||
+      // Last-resort: first string value in body that looks like a status phrase
+      // (not the tracking number, not a URL, not a short code)
+      Object.values(body).find((v): v is string =>
+        typeof v === 'string' &&
+        v.length > 3 &&
+        !v.startsWith('http') &&
+        v !== trackingNumber &&
+        v !== orderNumber
+      ) ||
+      ""
+    ).trim();
+
     // rawStatus is normalised (lowercased + trimmed) for fuzzy matching only
     const rawStatus = rawText.toLowerCase().trim();
 
@@ -2098,18 +2131,19 @@ export async function registerRoutes(
     console.log(`[WEBHOOK-RAW]: Received status "${rawText}" for Order ${order.id}`);
 
     // ── Always save the exact carrier text into commentStatus ─────────────
-    // This is the mirror of whatever Digylog shows — displayed verbatim in the Suivi tab.
-    if (rawText) {
-      await storage.updateOrder(order.id, { commentStatus: rawText });
-    }
+    // Mirror whatever the carrier says — displayed verbatim in the Suivi tab.
+    // Write unconditionally: even an empty string clears a stale value.
+    await storage.updateOrder(order.id, { commentStatus: rawText });
 
     // ── Map raw carrier text → internal status ────────────────────────────
-    // Mapping rules (case-insensitive, trimmed):
-    //   DELIVERED  → "delivered"       : livr, distribu
-    //   REFUSED    → "refused"         : refus, retour, annul
-    //   UNREACHABLE→ "Injoignable"     : injoignable, unreachable, pas de réponse
-    //   IN_TRANSIT → "in_progress"     : ramass, voyage, transit, en cours, enlev, pickup, expédi, distribution
-    //   DEFAULT    → "in_progress"     : anything else → stays in Suivi tab, commentStatus shows the real text
+    // Mapping rules (case-insensitive):
+    //   DELIVERED   → "delivered"     : livr, distribu
+    //   REFUSED     → "refused"       : refus, retour, annul
+    //   UNREACHABLE → "Injoignable"   : injoignable, unreachable, pas de réponse
+    //   IN_TRANSIT  → "in_progress"   : réception, network, ramassé, ramass, enlev,
+    //                                   voyage, transit, en cours, pickup, expédi,
+    //                                   distribution, prép, enregistr
+    //   DEFAULT     → "in_progress"   : anything else — commentStatus shows the real text
     let newStatus: string = "in_progress"; // safe default — keeps order in Suivi
 
     if (rawStatus.includes("livr") || rawStatus.includes("distribu") || rawStatus === "delivered") {
@@ -2125,11 +2159,14 @@ export async function registerRoutes(
     ) {
       newStatus = "Injoignable";
     } else if (
-      rawStatus.includes("ramass")  || rawStatus.includes("voyage")  ||
-      rawStatus.includes("transit") || rawStatus.includes("en cours") ||
-      rawStatus.includes("enlev")   || rawStatus.includes("pickup")  ||
-      rawStatus.includes("expédi")  || rawStatus.includes("expedie") ||
-      rawStatus.includes("distribution")
+      rawStatus.includes("réception")   || rawStatus.includes("reception")   ||
+      rawStatus.includes("network")     || rawStatus.includes("ramassé")     ||
+      rawStatus.includes("ramass")      || rawStatus.includes("voyage")      ||
+      rawStatus.includes("transit")     || rawStatus.includes("en cours")    ||
+      rawStatus.includes("enlev")       || rawStatus.includes("pickup")      ||
+      rawStatus.includes("expédi")      || rawStatus.includes("expedie")     ||
+      rawStatus.includes("distribution")|| rawStatus.includes("prép")        ||
+      rawStatus.includes("enregistr")
     ) {
       newStatus = "in_progress";
     }
