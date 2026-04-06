@@ -451,6 +451,31 @@ export default function Orders() {
     setHiddenOrderIds(new Set());
   }, [urlStatus]);
 
+  // ── SSE listener for real-time carrier status updates (persistent) ──
+  // Listens for order_updated events broadcast by the webhook handler
+  // and immediately refreshes the order list without requiring a page reload.
+  useEffect(() => {
+    const es = new EventSource("/api/automation/events", { withCredentials: true });
+
+    es.addEventListener("order_updated", (e: MessageEvent) => {
+      try {
+        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+      } catch {}
+    });
+
+    es.addEventListener("new_order", () => {
+      try {
+        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      } catch {}
+    });
+
+    es.onerror = () => { /* keep alive — reconnects automatically */ };
+    return () => es.close();
+  }, []);
+
   // ── SSE listener for real-time shipping progress ──────────────────
   useEffect(() => {
     if (!shipProgress?.active) return;

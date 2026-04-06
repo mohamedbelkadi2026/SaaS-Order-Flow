@@ -2103,27 +2103,38 @@ export async function registerRoutes(
       await storage.updateOrder(order.id, { commentStatus: rawText });
     }
 
-    // ── Map raw text → internal status ────────────────────────────────────
-    // TERMINAL statuses (livré / retourné / refusé) change the internal status.
-    // ALL other carrier statuses → keep as 'in_progress' so the order stays
-    // visible in the Suivi tab regardless of what custom text Digylog sends.
-    let newStatus: string = "in_progress"; // default: keep in Suivi
+    // ── Map raw carrier text → internal status ────────────────────────────
+    // Mapping rules (case-insensitive, trimmed):
+    //   DELIVERED  → "delivered"       : livr, distribu
+    //   REFUSED    → "refused"         : refus, retour, annul
+    //   UNREACHABLE→ "Injoignable"     : injoignable, unreachable, pas de réponse
+    //   IN_TRANSIT → "in_progress"     : ramass, voyage, transit, en cours, enlev, pickup, expédi, distribution
+    //   DEFAULT    → "in_progress"     : anything else → stays in Suivi tab, commentStatus shows the real text
+    let newStatus: string = "in_progress"; // safe default — keeps order in Suivi
 
-    if (rawStatus.includes("livr") || rawStatus === "delivered") {
+    if (rawStatus.includes("livr") || rawStatus.includes("distribu") || rawStatus === "delivered") {
       newStatus = "delivered";
-    } else if (rawStatus.includes("refus") || rawStatus === "refused") {
+    } else if (
+      rawStatus.includes("refus") || rawStatus.includes("retour") ||
+      rawStatus.includes("annul") || rawStatus === "refused"
+    ) {
       newStatus = "refused";
-    } else if (rawStatus.includes("retour")) {
-      newStatus = "retourné";
-    } else if (rawStatus.includes("injoignable") || rawStatus.includes("unreachable") || rawStatus.includes("pas de réponse")) {
+    } else if (
+      rawStatus.includes("injoignable") || rawStatus.includes("unreachable") ||
+      rawStatus.includes("pas de réponse")
+    ) {
       newStatus = "Injoignable";
-    } else if (rawStatus.includes("ramassage") || rawStatus.includes("enlev") || rawStatus.includes("pickup")) {
-      newStatus = "Attente De Ramassage";
-    } else if (rawStatus.includes("expédi") || rawStatus.includes("expedie")) {
-      newStatus = "expédié";
+    } else if (
+      rawStatus.includes("ramass")  || rawStatus.includes("voyage")  ||
+      rawStatus.includes("transit") || rawStatus.includes("en cours") ||
+      rawStatus.includes("enlev")   || rawStatus.includes("pickup")  ||
+      rawStatus.includes("expédi")  || rawStatus.includes("expedie") ||
+      rawStatus.includes("distribution")
+    ) {
+      newStatus = "in_progress";
     }
-    // Anything else (e.g. "En Voyage", "À préparer", "Ramassé", custom text)
-    // stays as 'in_progress' — the commentStatus column carries the real display text.
+    // Anything else also falls through to "in_progress" (the default above).
+    // The commentStatus column carries the real display text shown in the Suivi tab.
 
     await storage.updateOrderStatus(order.id, newStatus);
     console.log(`[WEBHOOK-RAW]: Internal status → ${newStatus} (commentStatus="${rawText}")`);
@@ -2147,10 +2158,22 @@ export async function registerRoutes(
       note: `📦 Statut transporteur: "${rawText}"${newStatus ? ` → interne: ${newStatus}` : " (non mappé)"}`,
     });
 
-    // ── Broadcast real-time update to the store ───────────────────────────
+    // ── Dedicated integration_log for every successful webhook update ─────
+    // Visible in the Journal tab so users can audit every carrier sync.
+    await storage.createIntegrationLog({
+      storeId,
+      integrationId: null,
+      provider: carrierName,
+      action: 'status_update',
+      status: 'success',
+      message: `✅ Commande #${(order as any).orderNumber || order.id} → "${rawText}" (statut interne: ${newStatus}) [${matchedBy}]`,
+      payload: JSON.stringify({ orderId: order.id, rawText, newStatus, matchedBy }),
+    });
+
+    // ── Broadcast real-time update to the store (SSE → frontend refresh) ──
     broadcastToStore(storeId, "order_updated", {
       orderId: order.id,
-      status: newStatus || order.status,
+      status: newStatus,
       commentStatus: rawText,
     });
 
