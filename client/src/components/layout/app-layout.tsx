@@ -42,6 +42,7 @@ import {
   Rocket,
   CalendarX,
   Bot,
+  BarChart3,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { setLanguage } from "@/i18n";
@@ -72,6 +73,7 @@ const ADMIN_NAV = [
   { name: "Advanced Profitability", href: "/profitability", icon: Calculator      },
   { name: "Publicités",             href: "/publicites",    icon: Receipt         },
   { name: "Calculateur de Marge",   href: "/calculator",    icon: PieChart        },
+  { name: "Profit Analyzer Pro",    href: "/profit-analyzer", icon: BarChart3     },
   { name: "Automation & AI",        href: "/automation",    icon: Bot             },
   { name: "Integration",            href: "/integrations",  icon: Plug,           hasSubmenu: true  },
 ] as const;
@@ -122,6 +124,7 @@ const NAV_KEYS: Record<string, string> = {
   "Advanced Profitability": "nav.profitability",
   "Publicités":             "nav.ads",
   "Calculateur de Marge":   "nav.calculator",
+  "Profit Analyzer Pro":    "nav.profitAnalyzer",
   "Integration":            "nav.integrations",
   "Super Admin":            "nav.superAdmin",
   "Mes Dépenses":           "nav.expenses",

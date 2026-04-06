@@ -43,6 +43,7 @@ import MesDepenses from "@/pages/mes-depenses";
 import Publicites from "@/pages/publicites";
 import Profile from "@/pages/profile";
 import Calculator from "@/pages/calculator";
+import ProfitAnalyzer from "@/pages/profit-analyzer";
 import CheckoutPage from "@/pages/checkout";
 import AutomationPage from "@/pages/automation";
 import VerifyEmailPage from "@/pages/verify-email";
@@ -65,7 +66,7 @@ const PRIVATE_PREFIXES = [
   "/orders", "/inventory", "/team", "/clients", "/magasins",
   "/invoices", "/billing", "/profitability", "/integrations",
   "/admin", "/media-buyers", "/mes-depenses", "/publicites",
-  "/profile", "/calculator", "/checkout", "/automation",
+  "/profile", "/calculator", "/checkout", "/automation", "/profit-analyzer",
 ];
 
 function isPrivatePath(path: string) {
@@ -224,6 +225,7 @@ function ProtectedRoutes() {
             <Route path="/publicites" component={Publicites} />
             <Route path="/profile" component={Profile} />
             <Route path="/calculator" component={Calculator} />
+            <Route path="/profit-analyzer" component={ProfitAnalyzer} />
             <Route path="/checkout" component={CheckoutPage} />
             <Route path="/automation" component={AutomationPage} />
             <Route component={NotFound} />
