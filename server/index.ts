@@ -212,6 +212,117 @@ app.use((req, res, next) => {
     res.json({ received: true, keys: Object.keys(req.body || {}), body: req.body });
   });
 
+  // ── Simplified public Digylog webhook — /api/webhook/digylog/public ─────────
+  // No auth, no token, no storeId required. Always returns 200.
+  // Use this URL in Digylog webhook settings:
+  //   https://<your-domain>/api/webhook/digylog/public
+  app.post("/api/webhook/digylog/public", async (req: Request, res: Response) => {
+    const rawBody  = JSON.stringify(req.body);
+    const bodyKeys = Object.keys(req.body || {}).join(', ') || '(empty)';
+
+    console.log('=== DIGYLOG PUBLIC WEBHOOK ===');
+    console.log('Keys:', bodyKeys);
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+
+    // Respond immediately so Digylog doesn't time out
+    res.json({ received: true });
+
+    // ── Step 1: Write immediate log (storeId=1 as placeholder) ───────────
+    const { storage: st } = await import("./storage");
+    try {
+      await st.createIntegrationLog({
+        storeId: 1, integrationId: null, provider: 'digylog',
+        action: 'webhook_received', status: 'success',
+        message: `🔔 RAW HIT FROM DIGYLOG — keys: ${bodyKeys}`,
+        payload: rawBody.slice(0, 1000),
+      });
+    } catch (e) {
+      console.error('[DigylogPublic:log1-error]', e);
+    }
+
+    // ── Step 2: Extract identifiers ───────────────────────────────────────
+    const b = req.body || {};
+    const incomingTracking = (
+      b.tracking || b.barcode || b.tracking_number || b.code_suivi ||
+      b.track_number || b.colis_id || b.colis || ""
+    ).toString().trim();
+
+    const rawText = (
+      b.last_event || b.etat_libelle || b.statut_libelle || b.libelle ||
+      b.label      || b.last_status  || b.current_status || b.event_label ||
+      b.event      || b.status       || b.etat            || b.statut ||
+      b.description || ""
+    ).trim() || (
+      // body-scan fallback: first string value that looks like a status phrase
+      Object.values(b).find((v): v is string =>
+        typeof v === 'string' && v.length > 3 &&
+        !v.startsWith('http') && v !== incomingTracking
+      ) || ""
+    );
+
+    if (!incomingTracking) {
+      console.warn('[DigylogPublic]: No tracking number found in payload');
+      return;
+    }
+
+    // ── Step 3: Find order — cross-store, case-insensitive ────────────────
+    let order: any;
+    try {
+      order = await st.getOrderByTrackingNumberAnyStore(incomingTracking);
+    } catch (e) {
+      console.error('[DigylogPublic:match-error]', e);
+      return;
+    }
+
+    if (!order) {
+      console.warn(`[DigylogPublic]: No order found for tracking="${incomingTracking}"`);
+      try {
+        await st.createIntegrationLog({
+          storeId: 1, integrationId: null, provider: 'digylog',
+          action: 'webhook_no_match', status: 'fail',
+          message: `⚠️ Commande introuvable — tracking: "${incomingTracking}" | statut: "${rawText}"`,
+          payload: rawBody.slice(0, 1000),
+        });
+      } catch (_) {}
+      return;
+    }
+
+    // ── Step 4: Map status ────────────────────────────────────────────────
+    const rawLow = rawText.toLowerCase();
+    let newStatus = "in_progress";
+    if (rawLow.includes("livr") || rawLow.includes("distribu")) newStatus = "delivered";
+    else if (rawLow.includes("refus") || rawLow.includes("retour") || rawLow.includes("annul")) newStatus = "refused";
+    else if (rawLow.includes("injoignable") || rawLow.includes("pas de réponse")) newStatus = "Injoignable";
+
+    // ── Step 5: Update order ──────────────────────────────────────────────
+    try {
+      await st.updateOrder(order.id, { commentStatus: rawText || incomingTracking });
+      await st.updateOrderStatus(order.id, newStatus);
+    } catch (e) {
+      console.error('[DigylogPublic:update-error]', e);
+      return;
+    }
+
+    console.log(`[WEBHOOK-SUCCESS]: Updated Order ID ${order.id} (${order.orderNumber}) → status="${newStatus}" commentStatus="${rawText}" tracking="${incomingTracking}"`);
+
+    // ── Step 6: Journal entry + real-time broadcast ───────────────────────
+    try {
+      await st.createIntegrationLog({
+        storeId: order.storeId, integrationId: null, provider: 'digylog',
+        action: 'status_update', status: 'success',
+        message: `✅ Commande #${order.orderNumber} → "${rawText}" (statut: ${newStatus}) [tracking: ${incomingTracking}]`,
+        payload: rawBody.slice(0, 1000),
+      });
+    } catch (_) {}
+
+    try {
+      const { broadcastToStore } = await import("./sse");
+      broadcastToStore(order.storeId, "order_updated", {
+        orderId: order.id, status: newStatus, commentStatus: rawText,
+      });
+    } catch (_) {}
+  });
+
   // Early carrier webhook logger — fires BEFORE any route handler in routes.ts.
   // Writes an immediate DB log entry so it appears in the Journal tab even if
   // the order-matching logic later fails. Calls next() to hand off to routes.ts.
