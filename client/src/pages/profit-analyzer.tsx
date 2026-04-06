@@ -35,28 +35,40 @@ function norm(s: string): string {
     .trim();
 }
 
-/** Find the header that best matches any keyword (substring, accent-insensitive) */
+/**
+ * Find the header that best matches any keyword.
+ * Strategy: exact normalized match first, then substring match.
+ * Skips empty-string headers (preserved for index alignment).
+ */
 function detectCol(headers: string[], keywords: string[]): string {
+  // Pass 1 — exact match (accent-insensitive)
   for (const kw of keywords) {
-    const idx = headers.findIndex(h => norm(h).includes(norm(kw)));
+    const nkw = norm(kw);
+    const idx = headers.findIndex(h => h !== "" && norm(h) === nkw);
+    if (idx !== -1) return headers[idx];
+  }
+  // Pass 2 — substring match
+  for (const kw of keywords) {
+    const nkw = norm(kw);
+    const idx = headers.findIndex(h => h !== "" && norm(h).includes(nkw));
     if (idx !== -1) return headers[idx];
   }
   return "";
 }
 
 /**
- * Scan data rows to find a column whose VALUES contain "Designation".
- * Handles files where the product column is named "Ref" but values look like
- * "Designation : Product Name" — common in Moroccan carrier exports.
+ * Scan data rows to find a column whose VALUES contain "Designation :".
+ * Handles Digylog/Cathedis/Onessta files where the "Ref" column stores
+ * values like "Designation : Product Name".
  */
 function detectProductColFromData(headers: string[], dataRows: any[][]): string {
-  const sample = dataRows.slice(0, 30);
+  const sample = dataRows.slice(0, 40);
   let bestCol = "";
   let bestScore = 0;
   for (let ci = 0; ci < headers.length; ci++) {
     const hits = sample.filter(r => {
       const v = norm(String(r[ci] ?? ""));
-      return v.includes("designat") || v.startsWith("ref");
+      return v.includes("designat") || v.includes("designation :") || v.startsWith("ref :");
     }).length;
     if (hits > bestScore) { bestScore = hits; bestCol = headers[ci]; }
   }
@@ -65,7 +77,8 @@ function detectProductColFromData(headers: string[], dataRows: any[][]): string 
 
 /**
  * Strip common carrier-export prefixes from product name values.
- * e.g. "Designation : Chaussures Homme" → "Chaussures Homme"
+ * "Designation : Chaussures Homme" → "Chaussures Homme"
+ * "Ref : 12345" → "12345"
  */
 function cleanProductName(raw: string): string {
   return raw
@@ -77,19 +90,22 @@ function cleanProductName(raw: string): string {
 /** Parse a number from mixed-format cells (French: "1 234,56" / US: "1,234.56") */
 function parseNum(val: any): number {
   if (val == null || val === "") return 0;
-  // If already a number (from XLSX numeric cell), return directly
   if (typeof val === "number") return val;
   const s = String(val)
-    .replace(/\s/g, "")          // remove spaces
-    .replace(/[^\d.,-]/g, "")   // keep digits, dot, comma, minus
-    .replace(/,(\d{1,2})$/, ".$1"); // trailing comma = decimal sep
+    .replace(/\s/g, "")
+    .replace(/[^\d.,-]/g, "")
+    .replace(/,(\d{1,2})$/, ".$1");
   return parseFloat(s) || 0;
 }
 
-/** "Livré" / "livrée" / "delivered" etc. */
+/**
+ * "Livrée" / "Livre" / "Livré" / "delivered" / "done" → true.
+ * Accent-insensitive, handles all Digylog/Cathedis status spellings.
+ */
 function isDelivered(statusVal: string): boolean {
   const n = norm(statusVal);
-  return n.includes("livr") || n.includes("deliver") || n === "done" || n === "complete";
+  // "livre", "livree", "livré", "livrée" all normalize to "livre" or "livree"
+  return n.includes("livre") || n.includes("deliver") || n === "done" || n === "complete";
 }
 
 /* ─── Types ─────────────────────────────────────────── */
@@ -324,37 +340,58 @@ export default function ProfitAnalyzer() {
         return;
       }
 
-      const headers = raw[0].map((h: any) => String(h ?? "").trim()).filter(Boolean);
+      /*
+       * CRITICAL: Do NOT filter(Boolean) here.
+       * Carrier files (Digylog, Onessta, Cathedis) often have blank column
+       * headers between named ones (e.g. columns A-E named, F empty, G named…).
+       * Filtering removes those gaps and shifts every subsequent column index,
+       * causing all data reads to land on the wrong cell.
+       * We preserve empty strings so `headers[i]` always matches `row[i]`.
+       */
+      const headers = raw[0].map((h: any) => String(h ?? "").trim());
       const dataRows = raw.slice(1);
 
-      /* Auto-detect columns — header-based first */
+      /*
+       * Auto-detect columns.
+       * detectCol() skips empty-string headers and tries exact match first,
+       * then substring — so "Ref" ≡ keyword "ref", "Price" ≡ "price", etc.
+       * Keyword order = priority (most specific / most common first).
+       */
       const detected: ColMap = {
+        // Product — Digylog/Onessta uses header "Ref" with values like "Designation : …"
         product: detectCol(headers, [
-          "produit", "designation", "article", "libelle", "nom produit",
-          "product", "name", "description", "ref",
+          "ref",           // ← exact match for Digylog/Onessta "Ref" column
+          "designation", "produit", "article", "libelle", "nom produit",
+          "product", "name", "description",
         ]),
+        // Quantity — "Qté" (accent-stripped → "qte"), "Qty", "Quantity"
         qty: detectCol(headers, [
-          "quantite", "quantity", "qte", "qty", "nbre", "nombre", "nbr colis",
+          "qte", "qty", "quantite", "quantity", "nbre", "nombre", "nbr colis",
         ]),
+        // COD / Price — "Price" is the exact Digylog header
         cod: detectCol(headers, [
+          "price",         // ← exact match for Digylog/Onessta "Price" column
           "cod", "montant cod", "prix", "montant", "amount", "valeur",
-          "revenue", "total", "tarif", "price",
+          "revenue", "total", "tarif",
         ]),
+        // Status — "Status" is the exact Digylog header
         status: detectCol(headers, [
-          "statut", "status", "etat", "livraison", "situation",
+          "status",        // ← exact match for Digylog/Onessta "Status" column
+          "statut", "etat", "livraison", "situation",
         ]),
+        // Shipping cost — "Shipping cost" is the exact Digylog header (column L)
         shipping: detectCol(headers, [
-          "shipping cost", "frais livr", "frais exp", "cout livr",
+          "shipping cost", // ← exact match for Digylog/Onessta "Shipping cost" column
+          "frais livr", "frais exp", "cout livr",
           "shipping", "frais port", "frais transport", "delivery cost",
         ]),
       };
 
       /*
        * Fallback for product column: if header-based detection failed,
-       * scan the actual cell VALUES in the first 30 rows looking for a
-       * column whose values contain "Designation" (e.g. a "Ref" column
-       * in carrier exports like Cathedis/Digylog that stores
-       * "Designation : Product Name" in each cell).
+       * scan cell VALUES looking for "Designation :" pattern.
+       * This catches the case where the "Ref" keyword is present in the header
+       * but empty cells before it shifted our detection.
        */
       if (!detected.product) {
         detected.product = detectProductColFromData(headers, dataRows);
@@ -626,7 +663,7 @@ export default function ProfitAnalyzer() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="__none__">(aucune)</SelectItem>
-                              {rawHeaders.map(h => (
+                              {rawHeaders.filter(h => h !== "").map(h => (
                                 <SelectItem key={h} value={h}>{h}</SelectItem>
                               ))}
                             </SelectContent>
