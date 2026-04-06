@@ -542,128 +542,156 @@ export default function AllOrders() {
       </div>
 
       <Card className="rounded-xl border border-border/60 shadow-sm bg-card" data-testid="all-card-filter-bar">
-        <div className="px-3 py-2.5 flex flex-wrap gap-2 items-center">
+        <div className="px-4 py-3 flex flex-wrap items-end gap-3">
 
-          {/* ── Page size ── */}
-          <Select value={String(filters.limit)} onValueChange={(v) => updateFilter('limit', Number(v))}>
-            <SelectTrigger className="w-[68px] h-9 text-xs bg-background border-border/70 shrink-0" data-testid="all-filter-page-size">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="10">10</SelectItem>
-              <SelectItem value="25">25</SelectItem>
-              <SelectItem value="50">50</SelectItem>
-              <SelectItem value="100">100</SelectItem>
-            </SelectContent>
-          </Select>
-
-          {/* ── Search ── */}
-          <div className="relative min-w-[160px] flex-1 max-w-[240px]">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
-            <Input
-              data-testid="all-input-search-orders"
-              placeholder="Rechercher nom, tél, ref..."
-              value={filters.search}
-              onChange={(e) => updateFilter('search', e.target.value)}
-              className="pl-8 h-9 text-xs bg-background border-border/70 w-full"
-            />
+          {/* ── Menu (page size) ── */}
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Menu</span>
+            <Select value={String(filters.limit)} onValueChange={(v) => updateFilter('limit', Number(v))}>
+              <SelectTrigger className="w-[72px] h-9 text-xs bg-background border-border/60" data-testid="all-filter-page-size">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10</SelectItem>
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
-          {/* ── Status ── */}
-          <Select value={filters.status || 'all'} onValueChange={(v) => updateFilter('status', v === 'all' ? '' : v)}>
-            <SelectTrigger className="h-9 text-xs bg-background border-border/70 min-w-[155px] max-w-[210px]" data-testid="all-filter-status">
-              <SelectValue placeholder="Tous les statuts" />
-            </SelectTrigger>
-            <SelectContent>
-              {ALL_STATUSES.map(s => (
-                <SelectItem key={s.value || 'all'} value={s.value || 'all'}>{s.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* ── Rechercher ── */}
+          <div className="flex flex-col min-w-[180px] flex-1 max-w-[260px]">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Rechercher</span>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+              <Input
+                data-testid="all-input-search-orders"
+                placeholder="Nom, tél, référence..."
+                value={filters.search}
+                onChange={(e) => updateFilter('search', e.target.value)}
+                className="pl-8 h-9 text-xs bg-background border-border/60 w-full"
+              />
+            </div>
+          </div>
 
-          {/* ── Agent ── */}
-          <Select value={filters.agentId || 'all'} onValueChange={(v) => updateFilter('agentId', v === 'all' ? '' : v)}>
-            <SelectTrigger className="h-9 text-xs bg-background border-border/70 min-w-[135px]" data-testid="all-filter-equipe">
-              <SelectValue placeholder="Tous les agents" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Tous les agents</SelectItem>
-              {agents?.map((a: any) => (
-                <SelectItem key={a.id} value={a.id.toString()}>{a.username}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* ── Statut ── */}
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Statut</span>
+            <Select value={filters.status || 'all'} onValueChange={(v) => updateFilter('status', v === 'all' ? '' : v)}>
+              <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[160px]" data-testid="all-filter-status">
+                <SelectValue placeholder="Tous statuts" />
+              </SelectTrigger>
+              <SelectContent>
+                {ALL_STATUSES.map(s => (
+                  <SelectItem key={s.value || 'all'} value={s.value || 'all'}>{s.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          {/* ── Source ── */}
-          <Select value={filters.source || 'all'} onValueChange={(v) => updateFilter('source', v === 'all' ? '' : v)}>
-            <SelectTrigger className="h-9 text-xs bg-background border-border/70 min-w-[120px]" data-testid="all-filter-source">
-              <SelectValue placeholder="Toutes Sources" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Toutes Sources</SelectItem>
-              <SelectItem value="manual">Manuel</SelectItem>
-              <SelectItem value="shopify">Shopify</SelectItem>
-              <SelectItem value="youcan">YouCan</SelectItem>
-              <SelectItem value="woocommerce">WooCommerce</SelectItem>
-            </SelectContent>
-          </Select>
+          {/* ── Équipe ── */}
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Équipe</span>
+            <Select value={filters.agentId || 'all'} onValueChange={(v) => updateFilter('agentId', v === 'all' ? '' : v)}>
+              <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[140px]" data-testid="all-filter-equipe">
+                <SelectValue placeholder="Tous" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tous les agents</SelectItem>
+                {agents?.map((a: any) => (
+                  <SelectItem key={a.id} value={a.id.toString()}>{a.username}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* ── Type service ── */}
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Type service</span>
+            <Select value={filters.source || 'all'} onValueChange={(v) => updateFilter('source', v === 'all' ? '' : v)}>
+              <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[130px]" data-testid="all-filter-source">
+                <SelectValue placeholder="Toutes" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Toutes sources</SelectItem>
+                <SelectItem value="manual">Manuel</SelectItem>
+                <SelectItem value="shopify">Shopify</SelectItem>
+                <SelectItem value="youcan">YouCan</SelectItem>
+                <SelectItem value="woocommerce">WooCommerce</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
 
           {/* ── UTM Source ── */}
-          <Select value={filters.utmSource || 'all'} onValueChange={(v) => updateFilter('utmSource', v === 'all' ? '' : v)}>
-            <SelectTrigger className="h-9 text-xs bg-background border-border/70 min-w-[130px]" data-testid="all-filter-utm-source">
-              <SelectValue placeholder="UTM Source" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">UTM Source</SelectItem>
-              {filterOptions?.utmSources?.map((s: string) => (
-                <SelectItem key={s} value={s}>{s}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">UTM Source</span>
+            <Select value={filters.utmSource || 'all'} onValueChange={(v) => updateFilter('utmSource', v === 'all' ? '' : v)}>
+              <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[130px]" data-testid="all-filter-utm-source">
+                <SelectValue placeholder="Toutes" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">UTM Source</SelectItem>
+                {filterOptions?.utmSources?.map((s: string) => (
+                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          {/* ── UTM Campaign ── */}
-          <Select value={filters.utmCampaign || 'all'} onValueChange={(v) => updateFilter('utmCampaign', v === 'all' ? '' : v)}>
-            <SelectTrigger className="h-9 text-xs bg-background border-border/70 min-w-[140px]" data-testid="all-filter-utm-campaign">
-              <SelectValue placeholder="UTM Campagne" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">UTM Campagne</SelectItem>
-              {filterOptions?.utmCampaigns?.map((c: string) => (
-                <SelectItem key={c} value={c}>{c}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* ── Campagne ── */}
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Campagne</span>
+            <Select value={filters.utmCampaign || 'all'} onValueChange={(v) => updateFilter('utmCampaign', v === 'all' ? '' : v)}>
+              <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[140px]" data-testid="all-filter-utm-campaign">
+                <SelectValue placeholder="Toutes" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">UTM Campagne</SelectItem>
+                {filterOptions?.utmCampaigns?.map((c: string) => (
+                  <SelectItem key={c} value={c}>{c}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-          {/* ── Date Range ── */}
-          <div className="flex items-center gap-1.5">
+          {/* ── Date ── */}
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Date de début</span>
             <Input
               type="date"
               value={filters.dateFrom}
               onChange={(e) => updateFilter('dateFrom', e.target.value)}
-              className="w-[130px] h-9 text-xs bg-background border-border/70"
+              className="w-[135px] h-9 text-xs bg-background border-border/60"
               data-testid="all-filter-date-from"
             />
-            <span className="text-muted-foreground text-xs shrink-0">→</span>
+          </div>
+
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Date de fin</span>
             <Input
               type="date"
               value={filters.dateTo}
               onChange={(e) => updateFilter('dateTo', e.target.value)}
-              className="w-[130px] h-9 text-xs bg-background border-border/70"
+              className="w-[135px] h-9 text-xs bg-background border-border/60"
               data-testid="all-filter-date-to"
             />
           </div>
 
-          {/* ── Reset button — appears only when filters are active ── */}
+          {/* ── Reset — appears only when filters are active ── */}
           {hasActiveFilters && (
-            <button
-              onClick={resetFilters}
-              data-testid="all-button-reset-filters"
-              className="h-9 px-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 text-xs font-medium flex items-center gap-1.5 transition-colors hover:bg-red-100 dark:hover:bg-red-950/60 shrink-0"
-              title="Réinitialiser tous les filtres"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Réinitialiser
-            </button>
+            <div className="flex flex-col shrink-0">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-transparent mb-1">·</span>
+              <button
+                onClick={resetFilters}
+                data-testid="all-button-reset-filters"
+                className="h-9 px-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 text-xs font-medium flex items-center gap-1.5 transition-colors hover:bg-red-100 dark:hover:bg-red-950/60 whitespace-nowrap"
+                title="Réinitialiser tous les filtres"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Réinitialiser
+              </button>
+            </div>
           )}
 
         </div>
