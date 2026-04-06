@@ -723,7 +723,7 @@ export default function AllOrders() {
                           {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
                         </TableCell>
                       )}
-                      {isColVisible('status') && <TableCell><StatusBadge status={order.status} /></TableCell>}
+                      {isColVisible('status') && <TableCell><StatusBadge status={(order as any).trackNumber && order.commentStatus ? order.commentStatus : order.status} /></TableCell>}
                       {isColVisible('prix') && <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>}
                       {isColVisible('adresse') && <TableCell className="max-w-[140px] truncate text-muted-foreground text-[11px]">{order.customerAddress || "-"}</TableCell>}
                       {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}
@@ -803,7 +803,7 @@ export default function AllOrders() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <span className="font-medium text-sm truncate">{order.customerName}</span>
-                    <StatusBadge status={order.status} className="text-[10px] shrink-0" />
+                    <StatusBadge status={(order as any).trackNumber && order.commentStatus ? order.commentStatus : order.status} className="text-[10px] shrink-0" />
                   </div>
                   <div className="flex items-center gap-1.5 mb-1.5">
                     <span className="font-mono text-xs text-muted-foreground">{order.customerPhone}</span>

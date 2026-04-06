@@ -1002,7 +1002,7 @@ export default function Orders() {
                       {isColVisible('status') && (
                         <TableCell onClick={e => e.stopPropagation()}>
                           {isMediaBuyer ? (
-                            <StatusBadge status={filterKey === 'suivi' && order.commentStatus ? order.commentStatus : order.status} />
+                            <StatusBadge status={(order as any).trackNumber && order.commentStatus ? order.commentStatus : order.status} />
                           ) : (
                             <Select
                               value={order.status}
@@ -1012,7 +1012,7 @@ export default function Orders() {
                               }}
                             >
                               <SelectTrigger className="h-7 text-[11px] border-0 bg-transparent p-0 shadow-none focus:ring-0 w-auto gap-1" data-testid={`status-select-${order.id}`}>
-                                <StatusBadge status={filterKey === 'suivi' && order.commentStatus ? order.commentStatus : order.status} className="cursor-pointer" />
+                                <StatusBadge status={(order as any).trackNumber && order.commentStatus ? order.commentStatus : order.status} className="cursor-pointer" />
                               </SelectTrigger>
                               <SelectContent>
                                 {ORDER_STATUSES.map(s => (
@@ -1214,7 +1214,7 @@ export default function Orders() {
                         </a>
                       </>
                     )}
-                    <StatusBadge status={filterKey === 'suivi' && order.commentStatus ? order.commentStatus : order.status} className="text-[10px] shrink-0 ml-1" />
+                    <StatusBadge status={(order as any).trackNumber && order.commentStatus ? order.commentStatus : order.status} className="text-[10px] shrink-0 ml-1" />
                   </div>
 
                   {/* ── MIDDLE: customer name, city, store, carrier ── */}
