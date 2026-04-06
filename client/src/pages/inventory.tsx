@@ -329,20 +329,21 @@ export default function Inventory() {
               <TableHead className="text-right">Prix Coûtant</TableHead>
               <TableHead className="text-right">Prix de Vente</TableHead>
               <TableHead className="text-center">Reçu</TableHead>
-              <TableHead className="text-center">Sortie</TableHead>
+              <TableHead className="text-center">Sortie (Livrées)</TableHead>
+              <TableHead className="text-center">En Cours</TableHead>
               <TableHead className="text-center">Disponible</TableHead>
               <TableHead className="text-center">Conf. %</TableHead>
-              <TableHead className="text-center">Livr. %</TableHead>
+              <TableHead className="text-center">Taux de Livr. %</TableHead>
               <TableHead>Statut</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {statsLoading ? (
-              <TableRow><TableCell colSpan={12} className="h-32 text-center text-muted-foreground">Chargement...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={13} className="h-32 text-center text-muted-foreground">Chargement...</TableCell></TableRow>
             ) : filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12} className="h-48 text-center text-muted-foreground">
+                <TableCell colSpan={13} className="h-48 text-center text-muted-foreground">
                   <Package className="w-8 h-8 mx-auto mb-2 opacity-50" />
                   Aucun produit trouvé.
                 </TableCell>
@@ -372,17 +373,39 @@ export default function Inventory() {
                   <TableCell className="text-right text-sm">{formatCurrency(product.costPrice)}</TableCell>
                   <TableCell className="text-right text-sm font-medium">{formatCurrency(product.sellingPrice)}</TableCell>
                   <TableCell className="text-center text-sm">{product.recu}</TableCell>
-                  <TableCell className="text-center text-sm">{product.sortie}</TableCell>
+                  <TableCell className="text-center">
+                    <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">{product.sortie}</span>
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {product.inTransit > 0 ? (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-sky-600 dark:text-sky-400 bg-sky-50 dark:bg-sky-900/30 border border-sky-200 dark:border-sky-700 px-2 py-0.5 rounded-full">
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse" />
+                        {product.inTransit}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell className="text-center font-semibold text-sm">{product.available}</TableCell>
                   <TableCell className="text-center">
                     <span className={`text-sm font-medium ${product.confirmRate >= 50 ? 'text-green-600' : product.confirmRate >= 25 ? 'text-amber-600' : 'text-red-500'}`}>
                       {product.confirmRate}%
                     </span>
                   </TableCell>
-                  <TableCell className="text-center">
-                    <span className={`text-sm font-medium ${product.deliverRate >= 50 ? 'text-green-600' : product.deliverRate >= 25 ? 'text-amber-600' : 'text-red-500'}`}>
-                      {product.deliverRate}%
-                    </span>
+                  <TableCell className="text-center min-w-[110px]">
+                    {(() => {
+                      const rate = product.deliverRate ?? 0;
+                      const color = rate >= 60 ? 'text-emerald-600' : rate >= 40 ? 'text-amber-500' : 'text-red-500';
+                      const barColor = rate >= 60 ? 'bg-emerald-500' : rate >= 40 ? 'bg-amber-400' : 'bg-red-400';
+                      return (
+                        <div className="flex flex-col items-center gap-1">
+                          <span className={`font-bold text-sm ${color}`}>{rate}%</span>
+                          <div className="w-16 bg-muted rounded-full h-1.5">
+                            <div className={`${barColor} h-1.5 rounded-full transition-all`} style={{ width: `${Math.min(rate, 100)}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </TableCell>
                   <TableCell>
                     {product.stock > 10 ? (

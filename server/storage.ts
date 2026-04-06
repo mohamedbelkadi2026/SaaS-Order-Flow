@@ -1117,6 +1117,15 @@ export class DatabaseStorage implements IStorage {
           eq(orders.status, 'delivered')
         ));
 
+      const inTransitItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orderItems.productId, p.id),
+          eq(orders.storeId, storeId),
+          inArray(orders.status, ['in_progress', 'expédié', 'Attente De Ramassage'])
+        ));
+
       const totalOrderItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
@@ -1127,11 +1136,14 @@ export class DatabaseStorage implements IStorage {
 
       // sortie = only delivered quantities (stock deducted on delivery, not on confirme)
       const sortie = Number(deliveredItems[0]?.qty || 0);
+      const inTransit = Number(inTransitItems[0]?.qty || 0);
       const totalOrdered = Number(totalOrderItems[0]?.qty || 0);
+      const totalConfirmedQty = Number(confirmedItems[0]?.qty || 0);
       const available = totalStock; // live stock = initial minus all deliveries plus all returns
       const initialStock = available + sortie;
-      const confirmRate = totalOrdered > 0 ? Math.round(Number(confirmedItems[0]?.qty || 0) / totalOrdered * 100) : 0;
-      const deliverRate = totalOrdered > 0 ? Math.round(Number(deliveredItems[0]?.qty || 0) / totalOrdered * 100) : 0;
+      const confirmRate = totalOrdered > 0 ? Math.round(totalConfirmedQty / totalOrdered * 100) : 0;
+      // deliverRate = Delivered / Confirmed (not total) — correct carrier-delivery formula
+      const deliverRate = totalConfirmedQty > 0 ? Math.round(sortie / totalConfirmedQty * 100) : 0;
 
       productStats.push({
         id: p.id,
@@ -1148,12 +1160,13 @@ export class DatabaseStorage implements IStorage {
         variantCount: variants.length || 1,
         recu: initialStock,
         sortie,
+        inTransit,
         available,
         confirmRate,
         deliverRate,
         totalOrdered,
-        totalConfirmed: Number(confirmedItems[0]?.qty || 0),
-        totalDelivered: Number(deliveredItems[0]?.qty || 0),
+        totalConfirmed: totalConfirmedQty,
+        totalDelivered: sortie,
         stockReel: available * p.costPrice,
         stockTotal: available * p.sellingPrice,
         storeName: '',
@@ -1328,7 +1341,7 @@ export class DatabaseStorage implements IStorage {
       if (!productMap[displayKey]) productMap[displayKey] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
       productMap[displayKey].total++;
       if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[displayKey].confirmed++;
-      if (item.orderStatus === 'in_progress') productMap[displayKey].inProgress++;
+      if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(item.orderStatus)) productMap[displayKey].inProgress++;
       if (item.orderStatus === DELIVERED_STATUS) productMap[displayKey].delivered++;
     }
     const products = Object.entries(productMap)
