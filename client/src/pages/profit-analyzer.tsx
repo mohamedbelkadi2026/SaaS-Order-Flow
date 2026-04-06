@@ -803,14 +803,33 @@ export default function ProfitAnalyzer() {
             {/* Per-product table */}
             <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
               <CardHeader className="pb-2 pt-4">
-                <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
-                           style={{ color: GOLD }}>
-                  <Package className="w-3.5 h-3.5" /> Coûts à saisir par produit
-                </CardTitle>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Les frais de livraison sont récupérés automatiquement depuis le fichier.
-                  Entrez uniquement votre prix d'achat et vos frais de confirmation.
-                </p>
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div>
+                    <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
+                               style={{ color: GOLD }}>
+                      <Package className="w-3.5 h-3.5" /> Coûts à saisir par produit
+                    </CardTitle>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Frais de livraison extraits automatiquement du fichier.
+                      Entrez vos coûts <strong className="text-slate-300">par unité</strong> — le total est calculé live.
+                    </p>
+                  </div>
+                  {/* Summary badge */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="rounded-lg px-3 py-1.5 text-center" style={{ background: `${GOLD}15`, border: `1px solid ${GOLD}30` }}>
+                      <p className="text-[10px] text-slate-400 uppercase tracking-wide">Total unités</p>
+                      <p className="text-base font-extrabold" style={{ color: GOLD }}>
+                        {products.reduce((s, p) => s + p.totalQty, 0)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg px-3 py-1.5 text-center bg-emerald-500/10 border border-emerald-500/20">
+                      <p className="text-[10px] text-slate-400 uppercase tracking-wide">CA Net total</p>
+                      <p className="text-base font-extrabold text-emerald-300">
+                        {fmtDH(products.reduce((s, p) => s + (p.totalRevenue - p.totalShipping), 0))}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
@@ -818,30 +837,43 @@ export default function ProfitAnalyzer() {
                     <TableHeader>
                       <TableRow className="border-white/10 hover:bg-transparent">
                         <TableHead className="text-slate-500 text-xs font-semibold min-w-[180px]">Produit</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-center">Qté</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-right">CA Net</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-right text-amber-400/80">Frais livr. (fichier)</TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[140px]">
-                          Prix d'achat / unité <span className="text-red-400">*</span>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center whitespace-nowrap">
+                          Total<br/>Unités
                         </TableHead>
-                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[140px]">
-                          Frais confirm. / unité
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right whitespace-nowrap">
+                          CA Net<br/><span className="text-[9px] text-slate-600 font-normal normal-case">(du fichier)</span>
+                        </TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right text-amber-400/70 whitespace-nowrap">
+                          Livraison<br/><span className="text-[9px] text-slate-600 font-normal normal-case">(du fichier)</span>
+                        </TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[155px] whitespace-nowrap">
+                          Prix achat / unité <span className="text-red-400">*</span><br/>
+                          <span className="text-[9px] text-slate-600 font-normal normal-case">→ total = prix × unités</span>
+                        </TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[155px] whitespace-nowrap">
+                          Confirmation / unité<br/>
+                          <span className="text-[9px] text-slate-600 font-normal normal-case">→ total = confirm. × unités</span>
                         </TableHead>
                         {adMode === "specific" && (
                           <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[110px]">
-                            Pub (DH total)
+                            Pub (total DH)
                           </TableHead>
                         )}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {products.map((p, i) => {
-                        const caNet = p.totalRevenue - p.totalShipping;
+                        const caNet        = p.totalRevenue - p.totalShipping;
+                        const buyNum       = parseFloat(p.buyingCost) || 0;
+                        const confirmNum   = parseFloat(p.confirmationFee) || 0;
+                        const totalBuy     = buyNum * p.totalQty;
+                        const totalConfirm = confirmNum * p.totalQty;
                         return (
                           <TableRow key={i} className="border-white/8 hover:bg-white/4"
                                     data-testid={`row-cost-product-${i}`}>
+                            {/* Product name */}
                             <TableCell className="py-3">
-                              <p className="text-white font-semibold text-sm">{p.name}</p>
+                              <p className="text-white font-semibold text-sm leading-tight">{p.name}</p>
                               {p.suggestedPrice != null && (
                                 <button
                                   onClick={() => updateProduct(i, "buyingCost", String(p.suggestedPrice))}
@@ -851,32 +883,42 @@ export default function ProfitAnalyzer() {
                                 </button>
                               )}
                             </TableCell>
+                            {/* Total units — prominent badge */}
                             <TableCell className="text-center py-3">
-                              <Badge variant="outline"
-                                     className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">
-                                {p.totalQty}
-                              </Badge>
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="text-lg font-extrabold" style={{ color: GOLD }}>{p.totalQty}</span>
+                                <span className="text-[9px] text-slate-500">unités</span>
+                              </div>
                             </TableCell>
+                            {/* CA Net */}
                             <TableCell className="text-right py-3">
                               <span className={caNet >= 0 ? "text-emerald-300 font-semibold text-sm" : "text-red-400 font-semibold text-sm"}>
                                 {fmtDH(caNet)}
                               </span>
                             </TableCell>
+                            {/* Shipping from file */}
                             <TableCell className="text-right py-3">
                               {p.totalShipping > 0
-                                ? <span className="text-red-400 text-sm">−{fmtDH(p.totalShipping)}</span>
-                                : <span className="text-slate-500 text-xs">Du fichier</span>}
+                                ? <span className="text-amber-400 text-sm">{fmtDH(p.totalShipping)}</span>
+                                : <span className="text-slate-600 text-xs">—</span>}
                             </TableCell>
+                            {/* Buying cost input + live total */}
                             <TableCell className="text-center py-3">
                               <Input
                                 type="number" min={0}
                                 value={p.buyingCost}
                                 onChange={e => updateProduct(i, "buyingCost", e.target.value)}
                                 className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[110px] mx-auto"
-                                placeholder="Ex: 85"
+                                placeholder="Ex: 80"
                                 data-testid={`input-buying-cost-${i}`}
                               />
+                              {buyNum > 0 && (
+                                <p className="text-[10px] text-blue-400 mt-1 text-center">
+                                  = <strong>{fmtDH(totalBuy)}</strong> total
+                                </p>
+                              )}
                             </TableCell>
+                            {/* Confirmation fee input + live total */}
                             <TableCell className="text-center py-3">
                               <Input
                                 type="number" min={0}
@@ -886,6 +928,11 @@ export default function ProfitAnalyzer() {
                                 placeholder="Ex: 10"
                                 data-testid={`input-confirmation-fee-${i}`}
                               />
+                              {confirmNum > 0 && (
+                                <p className="text-[10px] text-cyan-400 mt-1 text-center">
+                                  = <strong>{fmtDH(totalConfirm)}</strong> total
+                                </p>
+                              )}
                             </TableCell>
                             {adMode === "specific" && (
                               <TableCell className="text-center py-3">
@@ -930,6 +977,43 @@ export default function ProfitAnalyzer() {
         {step === 3 && results.length > 0 && (
           <div className="space-y-5">
 
+            {/* ── Total Units Sold banner ── */}
+            {(() => {
+              const totalUnits    = results.reduce((s, r) => s + r.qty, 0);
+              const uniqueProds   = results.length;
+              return (
+                <div className="rounded-xl border flex flex-col sm:flex-row items-center gap-4 sm:gap-8 px-6 py-4"
+                     style={{ background: `linear-gradient(135deg, ${GOLD}12 0%, rgba(255,255,255,0.03) 100%)`, borderColor: `${GOLD}35` }}>
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: `${GOLD}20` }}>
+                      <Package className="w-5 h-5" style={{ color: GOLD }} />
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold">Total unités vendues (Livrée)</p>
+                      <p className="text-3xl font-extrabold leading-none" style={{ color: GOLD }}>{totalUnits.toLocaleString()}</p>
+                    </div>
+                  </div>
+                  <div className="hidden sm:block w-px h-10 bg-white/10" />
+                  <div className="flex items-center gap-6 text-center">
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest">Produits uniques</p>
+                      <p className="text-xl font-bold text-white">{uniqueProds}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-500 uppercase tracking-widest">Moy. unités / produit</p>
+                      <p className="text-xl font-bold text-white">{uniqueProds > 0 ? (totalUnits / uniqueProds).toFixed(1) : "—"}</p>
+                    </div>
+                  </div>
+                  <div className="sm:ml-auto text-center sm:text-right">
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest">Formule appliquée</p>
+                    <p className="text-[11px] text-slate-300 mt-0.5 font-mono">
+                      Bénéf. = CA Brut − Livr. − (Achat × Qté) − (Confirm. × Qté) − Pub
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* ── KPI row ── */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               <KpiCard label="CA Brut (Price)" value={fmtDH(totalCaBrut)}
@@ -965,18 +1049,21 @@ export default function ProfitAnalyzer() {
                     <TableHeader>
                       <TableRow className="border-white/10 hover:bg-transparent">
                         {[
-                          { label: "Produit",           cls: "" },
-                          { label: "Qté",               cls: "text-center" },
-                          { label: "CA Brut",           cls: "text-right text-emerald-400/80" },
-                          { label: "Frais Livr.",       cls: "text-right text-amber-400/80" },
-                          { label: "CA Net",            cls: "text-right text-cyan-400/80" },
-                          { label: "Coût Sourcing",     cls: "text-right" },
-                          { label: "Confirmation",      cls: "text-right" },
-                          { label: "Pub",               cls: "text-right" },
-                          { label: "Bénéfice Net",      cls: "text-right" },
-                          { label: "ROI",               cls: "text-right" },
-                        ].map(({ label, cls }) => (
-                          <TableHead key={label} className={`text-slate-500 text-xs font-semibold whitespace-nowrap ${cls}`}>{label}</TableHead>
+                          { label: "Produit",                            sub: "",                      cls: "" },
+                          { label: "Total Unités",                       sub: "",                      cls: "text-center" },
+                          { label: "CA Brut",                            sub: "price total",           cls: "text-right text-emerald-400/80" },
+                          { label: "Frais Livr.",                        sub: "du fichier",            cls: "text-right text-amber-400/70" },
+                          { label: "CA Net",                             sub: "brut − livr.",          cls: "text-right text-cyan-400/80" },
+                          { label: "Sourcing Total",                     sub: "achat × unités",        cls: "text-right" },
+                          { label: "Commissions",                        sub: "confirm. × unités",     cls: "text-right" },
+                          { label: "Pub",                                sub: "",                      cls: "text-right" },
+                          { label: "Bénéfice Net",                       sub: "",                      cls: "text-right" },
+                          { label: "ROI",                                sub: "",                      cls: "text-right" },
+                        ].map(({ label, sub, cls }) => (
+                          <TableHead key={label} className={`text-slate-500 text-xs font-semibold whitespace-nowrap ${cls}`}>
+                            {label}
+                            {sub && <><br/><span className="text-[9px] text-slate-600 font-normal normal-case">{sub}</span></>}
+                          </TableHead>
                         ))}
                       </TableRow>
                     </TableHeader>
