@@ -190,6 +190,59 @@ app.use((req, res, next) => {
   //    we do it explicitly so req.login() never fails with "relation not found".
   await ensureSessionTable();
 
+  // ── PUBLIC WEBHOOK ROUTES — registered BEFORE setupAuth/session middleware ──
+  // These routes must be reachable by carrier servers (Digylog, etc.) without
+  // any authentication or session cookie. Registering them here guarantees
+  // passport.session() and requireAuth are NEVER applied to them.
+
+  // Test endpoint: POST /api/debug-webhook — returns 200 with echo of body.
+  // Use this to confirm Digylog can reach the server at all.
+  app.post("/api/debug-webhook", async (req: Request, res: Response) => {
+    const payload = JSON.stringify(req.body, null, 2);
+    console.log('[DEBUG-WEBHOOK-TEST]: Hit! Body:', payload);
+    try {
+      const { storage: st } = await import("./storage");
+      await st.createIntegrationLog({
+        storeId: 1, integrationId: null, provider: 'debug',
+        action: 'webhook_hit', status: 'success',
+        message: `🔔 DEBUG-WEBHOOK-TEST reçu — keys: ${Object.keys(req.body || {}).join(', ')}`,
+        payload: payload.slice(0, 500),
+      });
+    } catch (_) { /* non-fatal */ }
+    res.json({ received: true, keys: Object.keys(req.body || {}), body: req.body });
+  });
+
+  // Early carrier webhook logger — fires BEFORE any route handler in routes.ts.
+  // Writes an immediate DB log entry so it appears in the Journal tab even if
+  // the order-matching logic later fails. Calls next() to hand off to routes.ts.
+  app.post("/api/webhooks/carrier/:storeId/:carrierName", async (req: Request, res: Response, next: NextFunction) => {
+    console.log('=== CARRIER WEBHOOK EARLY HANDLER ===');
+    console.log('Params:', req.params);
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+
+    const storeId = Number(req.params.storeId);
+    const carrier = req.params.carrierName || 'unknown';
+    const keys    = Object.keys(req.body || {}).join(', ') || '(empty)';
+
+    if (!isNaN(storeId) && storeId > 0) {
+      try {
+        const { storage: st } = await import("./storage");
+        await st.createIntegrationLog({
+          storeId, integrationId: null, provider: carrier,
+          action: 'webhook_hit', status: 'success',
+          message: `🔔 DEBUG: Webhook Hit — carrier: ${carrier} — keys: ${keys}`,
+          payload: JSON.stringify(req.body).slice(0, 500),
+        });
+      } catch (e) {
+        console.error('[EarlyWebhook:log-error]', e);
+      }
+    } else {
+      console.warn('[EarlyWebhook]: storeId invalide ou manquant:', req.params.storeId);
+    }
+
+    next(); // pass to the real handler registered in routes.ts
+  });
+
   // 0b. Debug/diagnostic endpoint — useful for Railway log inspection
   app.get("/api/debug", async (_req, res) => {
     try {

@@ -2115,6 +2115,19 @@ export async function registerRoutes(
       if (order) matchedBy = `order_number="${orderNumber}"`;
     }
 
+    // ── Cross-store fallback: URL may have wrong storeId ─────────────────
+    // If no order was found in the specified store, search ALL stores.
+    // Digylog may be using a webhook URL that was configured with the wrong storeId.
+    if (!order && trackingNumber) {
+      console.warn(`[WEBHOOK-FLEXIBLE]: Not found in store ${storeId} — trying cross-store search for tracking="${trackingNumber}"`);
+      const crossOrder = await storage.getOrderByTrackingNumberAnyStore(trackingNumber);
+      if (crossOrder) {
+        console.warn(`[WEBHOOK-FLEXIBLE]: Found in store ${(crossOrder as any).storeId} — URL storeId=${storeId} was wrong`);
+        order = crossOrder;
+        matchedBy = `tracking_number="${trackingNumber}" (cross-store, URL had storeId=${storeId})`;
+      }
+    }
+
     if (!order) {
       console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" order="${orderNumber}"`);
       // Log the miss so it's visible in the Journal
@@ -2208,7 +2221,8 @@ export async function registerRoutes(
     });
 
     // ── Broadcast real-time update to the store (SSE → frontend refresh) ──
-    broadcastToStore(storeId, "order_updated", {
+    console.log(`[WEBHOOK-SUCCESS]: Updated Order ID ${order.id} (${(order as any).orderNumber}) → status="${newStatus}" commentStatus="${rawText}" — matched by: ${matchedBy}`);
+    broadcastToStore((order as any).storeId ?? storeId, "order_updated", {
       orderId: order.id,
       status: newStatus,
       commentStatus: rawText,

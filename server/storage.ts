@@ -95,6 +95,7 @@ export interface IStorage {
   updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined>;
   getOrderByNumber(storeId: number, orderNumber: string): Promise<Order | undefined>;
   getOrderByTrackingNumber(storeId: number, trackingNumber: string): Promise<Order | undefined>;
+  getOrderByTrackingNumberAnyStore(trackingNumber: string): Promise<Order | undefined>;
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
@@ -1006,6 +1007,14 @@ export class DatabaseStorage implements IStorage {
         eq(orders.storeId, storeId),
         sql`lower(${orders.trackNumber}) = lower(${trackingNumber})`
       ));
+    return order;
+  }
+
+  async getOrderByTrackingNumberAnyStore(trackingNumber: string): Promise<Order | undefined> {
+    // Cross-store fallback: used when the webhook URL has the wrong storeId.
+    // Searches ALL stores — case-insensitive on track_number.
+    const [order] = await db.select().from(orders)
+      .where(sql`lower(${orders.trackNumber}) = lower(${trackingNumber})`);
     return order;
   }
 
