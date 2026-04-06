@@ -2222,7 +2222,8 @@ export async function registerRoutes(
   // Use this in your carrier's webhook settings instead of the token-based URL.
   app.post("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
     // ── STEP 0: Log every hit immediately — even before validation ────────
-    console.log(`[DEBUG-WEBHOOK]: Incoming payload from carrier (permanent URL):`, req.body);
+    console.log('--- INCOMING WEBHOOK DATA ---');
+    console.log(JSON.stringify(req.body, null, 2));
     console.log(`[DEBUG-WEBHOOK]: Params — storeId=${req.params.storeId} carrier=${req.params.carrierName}`);
 
     const storeId     = Number(req.params.storeId);

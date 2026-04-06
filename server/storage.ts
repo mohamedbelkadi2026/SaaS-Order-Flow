@@ -1000,8 +1000,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getOrderByTrackingNumber(storeId: number, trackingNumber: string): Promise<Order | undefined> {
+    // Case-insensitive match: Digylog may send 'saf014eat' when stored as 'SAF014EAT'
     const [order] = await db.select().from(orders)
-      .where(and(eq(orders.storeId, storeId), eq(orders.trackNumber, trackingNumber)));
+      .where(and(
+        eq(orders.storeId, storeId),
+        sql`lower(${orders.trackNumber}) = lower(${trackingNumber})`
+      ));
     return order;
   }
 
