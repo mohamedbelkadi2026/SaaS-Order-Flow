@@ -249,6 +249,58 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       });
     }
   }, [trialRemaining, isTrial]);
+  // ── Global real-time SSE listener ────────────────────────────────────────
+  // Active for the entire session (not just the orders page).
+  // Keeps the sidebar badge and all order lists fresh without any manual refresh.
+  useEffect(() => {
+    if (!user) return; // only connect when logged in
+
+    // Soft ping using Web Audio API — no external file needed
+    const playPing = () => {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
+        gain.gain.setValueAtTime(0.35, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.4);
+        osc.onended = () => ctx.close();
+      } catch (_) { /* AudioContext not available */ }
+    };
+
+    const es = new EventSource("/api/automation/events", { withCredentials: true });
+
+    es.addEventListener("new_order", (e: MessageEvent) => {
+      try {
+        // Invalidate order lists and sidebar badge count
+        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+        // Play ping only for automated sources (Shopify, YouCan, WooCommerce)
+        const data = JSON.parse(e.data || "{}");
+        if (data.source && data.source !== "manual") playPing();
+      } catch {}
+    });
+
+    es.addEventListener("order_updated", () => {
+      try {
+        // Refresh order lists and sidebar badge wherever the user currently is
+        queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+      } catch {}
+    });
+
+    es.onerror = () => { /* auto-reconnects */ };
+    return () => es.close();
+  }, [user?.id]);
+
   const isMediaBuyer = user?.role === 'media_buyer';
 
   const { data: agentSettingsData } = useQuery<any[]>({

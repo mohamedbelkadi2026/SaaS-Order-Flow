@@ -54,7 +54,7 @@ export function emitNewOrder(storeId: number, order: any) {
   io.to(`store:${storeId}`).emit("new_order", order);
 }
 
-export function emitOrderUpdated(storeId: number, orderId: number, status: string) {
+export function emitOrderUpdated(storeId: number, orderId: number, status: string, commentStatus?: string) {
   if (!io) return;
-  io.to(`store:${storeId}`).emit("order_updated", { orderId, status });
+  io.to(`store:${storeId}`).emit("order_updated", { orderId, status, commentStatus });
 }

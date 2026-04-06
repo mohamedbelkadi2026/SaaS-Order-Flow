@@ -1288,8 +1288,9 @@ export async function registerRoutes(
         });
       }
       // Real-time: notify all connected clients of this store
-      emitOrderUpdated(order.storeId, orderId, status);
-      broadcastToStore(order.storeId, "order_updated", { orderId, status });
+      const cs = updated?.commentStatus ?? undefined;
+      emitOrderUpdated(order.storeId, orderId, status, cs);
+      broadcastToStore(order.storeId, "order_updated", { orderId, status, commentStatus: cs });
       res.json(updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
