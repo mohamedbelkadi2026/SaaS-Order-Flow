@@ -44,6 +44,36 @@ function detectCol(headers: string[], keywords: string[]): string {
   return "";
 }
 
+/**
+ * Scan data rows to find a column whose VALUES contain "Designation".
+ * Handles files where the product column is named "Ref" but values look like
+ * "Designation : Product Name" — common in Moroccan carrier exports.
+ */
+function detectProductColFromData(headers: string[], dataRows: any[][]): string {
+  const sample = dataRows.slice(0, 30);
+  let bestCol = "";
+  let bestScore = 0;
+  for (let ci = 0; ci < headers.length; ci++) {
+    const hits = sample.filter(r => {
+      const v = norm(String(r[ci] ?? ""));
+      return v.includes("designat") || v.startsWith("ref");
+    }).length;
+    if (hits > bestScore) { bestScore = hits; bestCol = headers[ci]; }
+  }
+  return bestScore >= 1 ? bestCol : "";
+}
+
+/**
+ * Strip common carrier-export prefixes from product name values.
+ * e.g. "Designation : Chaussures Homme" → "Chaussures Homme"
+ */
+function cleanProductName(raw: string): string {
+  return raw
+    .replace(/^designation\s*:\s*/i, "")
+    .replace(/^ref\s*:\s*/i, "")
+    .trim();
+}
+
 /** Parse a number from mixed-format cells (French: "1 234,56" / US: "1,234.56") */
 function parseNum(val: any): number {
   if (val == null || val === "") return 0;
@@ -192,11 +222,14 @@ export default function ProfitAnalyzer() {
     const hasQty = qIdx !== -1;
     const hasCod = cIdx !== -1;
 
-    const totalRows = dataRows.filter(r => String(r[pIdx] ?? "").trim() !== "").length;
+    const totalRows = dataRows.filter(r => {
+      const n = cleanProductName(String(r[pIdx] ?? "").trim());
+      return n !== "";
+    }).length;
 
     /* Filter by delivered status */
     const relevantRows = dataRows.filter(r => {
-      const name = String(r[pIdx] ?? "").trim();
+      const name = cleanProductName(String(r[pIdx] ?? "").trim());
       if (!name) return false;
       if (!hasStatus) return true; // no status col → include all
       return isDelivered(String(r[sIdx] ?? ""));
@@ -209,13 +242,15 @@ export default function ProfitAnalyzer() {
       };
     }
 
-    /* Group by product */
-    const groupMap: Record<string, { qty: number; rev: number; count: number }> = {};
+    /* Group by product — strip carrier-specific prefixes from name values */
+    const groupMap: Record<string, { qty: number; rev: number; count: number; displayName: string }> = {};
     for (const row of relevantRows) {
-      const name = String(row[pIdx] ?? "").trim();
+      const rawVal = String(row[pIdx] ?? "").trim();
+      if (!rawVal) continue;
+      const name = cleanProductName(rawVal);   // strips "Designation : " etc.
       if (!name) continue;
       const key = norm(name);
-      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, count: 0 };
+      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, count: 0, displayName: name };
       groupMap[key].qty += hasQty ? (parseNum(row[qIdx]) || 1) : 1;
       groupMap[key].rev += hasCod ? parseNum(row[cIdx]) : 0;
       groupMap[key].count++;
@@ -226,8 +261,7 @@ export default function ProfitAnalyzer() {
     }
 
     const summaries: ProductSummary[] = Object.entries(groupMap).map(([key, d]) => {
-      const rawName = relevantRows.find(r => norm(String(r[pIdx] ?? "")) === key)?.[pIdx] ?? key;
-      const cleanName = String(rawName).trim();
+      const cleanName = d.displayName;
       return {
         name: cleanName,
         totalQty: d.qty,
@@ -274,13 +308,34 @@ export default function ProfitAnalyzer() {
       const headers = raw[0].map((h: any) => String(h ?? "").trim()).filter(Boolean);
       const dataRows = raw.slice(1);
 
-      /* Auto-detect columns */
+      /* Auto-detect columns — header-based first */
       const detected: ColMap = {
-        product: detectCol(headers, ["produit", "designation", "article", "libelle", "nom produit", "product", "name", "description"]),
-        qty:     detectCol(headers, ["quantite", "quantity", "qte", "qty", "nbre", "nombre", "nbr colis"]),
-        cod:     detectCol(headers, ["cod", "montant cod", "prix", "montant", "amount", "valeur", "revenue", "total", "tarif"]),
-        status:  detectCol(headers, ["statut", "status", "etat", "livraison", "situation"]),
+        product: detectCol(headers, [
+          "produit", "designation", "article", "libelle", "nom produit",
+          "product", "name", "description", "ref",
+        ]),
+        qty: detectCol(headers, [
+          "quantite", "quantity", "qte", "qty", "nbre", "nombre", "nbr colis",
+        ]),
+        cod: detectCol(headers, [
+          "cod", "montant cod", "prix", "montant", "amount", "valeur",
+          "revenue", "total", "tarif", "price",
+        ]),
+        status: detectCol(headers, [
+          "statut", "status", "etat", "livraison", "situation",
+        ]),
       };
+
+      /*
+       * Fallback for product column: if header-based detection failed,
+       * scan the actual cell VALUES in the first 30 rows looking for a
+       * column whose values contain "Designation" (e.g. a "Ref" column
+       * in carrier exports like Cathedis/Digylog that stores
+       * "Designation : Product Name" in each cell).
+       */
+      if (!detected.product) {
+        detected.product = detectProductColFromData(headers, dataRows);
+      }
 
       setRawHeaders(headers);
       setRawDataRows(dataRows);
