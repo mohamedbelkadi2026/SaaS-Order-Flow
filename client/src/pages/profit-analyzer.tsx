@@ -1,10 +1,9 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -16,9 +15,9 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell, Legend,
 } from "recharts";
 import {
-  Upload, FileSpreadsheet, CheckCircle2, ChevronRight, RotateCcw,
-  TrendingUp, Package, Truck, Megaphone, DollarSign, Target,
-  AlertCircle, Sparkles, ArrowRight, BarChart3, Globe, Settings2,
+  Upload, CheckCircle2, RotateCcw, TrendingUp, Package, Truck,
+  Megaphone, DollarSign, Target, Sparkles, ArrowRight, BarChart3,
+  Globe, Settings2, AlertTriangle, Info,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -26,91 +25,88 @@ const GOLD = "#C5A059";
 const NAVY = "#0F1F3D";
 const NAVY_MID = "#1A2F4E";
 
-/* ─── Types ─────────────────────────────────────────── */
-interface ParsedRow {
-  productName: string;
-  quantity: number;
-  codAmount: number;
-  status?: string;
+/* ─── Helpers ───────────────────────────────────────── */
+/** Strip diacritics and lowercase — makes matching locale-agnostic */
+function norm(s: string): string {
+  return String(s ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .trim();
 }
+
+/** Find the header that best matches any keyword (substring, accent-insensitive) */
+function detectCol(headers: string[], keywords: string[]): string {
+  for (const kw of keywords) {
+    const idx = headers.findIndex(h => norm(h).includes(norm(kw)));
+    if (idx !== -1) return headers[idx];
+  }
+  return "";
+}
+
+/** Parse a number from mixed-format cells (French: "1 234,56" / US: "1,234.56") */
+function parseNum(val: any): number {
+  if (val == null || val === "") return 0;
+  // If already a number (from XLSX numeric cell), return directly
+  if (typeof val === "number") return val;
+  const s = String(val)
+    .replace(/\s/g, "")          // remove spaces
+    .replace(/[^\d.,-]/g, "")   // keep digits, dot, comma, minus
+    .replace(/,(\d{1,2})$/, ".$1"); // trailing comma = decimal sep
+  return parseFloat(s) || 0;
+}
+
+/** "Livré" / "livrée" / "delivered" etc. */
+function isDelivered(statusVal: string): boolean {
+  const n = norm(statusVal);
+  return n.includes("livr") || n.includes("deliver") || n === "done" || n === "complete";
+}
+
+/* ─── Types ─────────────────────────────────────────── */
+interface ColMap { product: string; qty: string; cod: string; status: string }
 
 interface ProductSummary {
   name: string;
   totalQty: number;
   totalRevenue: number;
+  rowCount: number;
   buyingCost: string;
   shippingFee: string;
   adSpend: string;
   suggestedPrice?: number;
 }
 
-interface ParseResult {
-  rows: ParsedRow[];
-  products: ProductSummary[];
-  rawHeaders: string[];
-  detectedColumns: { product: string; qty: string; cod: string; status: string };
-  sheetNames: string[];
-  totalRows: number;
-}
-
 interface ProfitResult {
-  name: string;
-  qty: number;
-  revenue: number;
-  cogs: number;
-  shipping: number;
-  adSpend: number;
-  totalCost: number;
-  netProfit: number;
-  roi: number;
+  name: string; qty: number; revenue: number;
+  cogs: number; shipping: number; adSpend: number;
+  totalCost: number; netProfit: number; roi: number;
 }
 
-/* ─── Column detection ───────────────────────────────── */
-function detectColumn(headers: string[], keywords: string[]): string {
-  const h = headers.map(h => String(h).toLowerCase().trim());
-  for (const kw of keywords) {
-    const idx = h.findIndex(c => c.includes(kw));
-    if (idx !== -1) return headers[idx];
-  }
-  return "";
-}
-
-function parseNumeric(val: any): number {
-  if (val == null || val === "") return 0;
-  const s = String(val).replace(/[^\d.,\-]/g, "").replace(",", ".");
-  const n = parseFloat(s);
-  return isNaN(n) ? 0 : n;
-}
-
-/* ─── Step Indicator ─────────────────────────────────── */
-function StepIndicator({ current }: { current: number }) {
+/* ─── Step indicator ─────────────────────────────────── */
+function StepBar({ current }: { current: number }) {
   const steps = [
     { n: 1, label: "Import fichier" },
     { n: 2, label: "Saisie des coûts" },
     { n: 3, label: "Rapport final" },
   ];
   return (
-    <div className="flex items-center gap-0">
+    <div className="flex items-center">
       {steps.map((s, i) => (
         <div key={s.n} className="flex items-center">
           <div className="flex flex-col items-center gap-1">
-            <div
-              className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all ${
-                current > s.n
-                  ? "border-amber-500 bg-amber-500 text-white"
-                  : current === s.n
-                  ? "border-amber-400 bg-amber-400 text-slate-900"
-                  : "border-slate-600 bg-slate-800/60 text-slate-400"
-              }`}
-            >
-              {current > s.n ? <CheckCircle2 className="w-4 h-4" /> : s.n}
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all ${
+              current > s.n ? "border-amber-500 bg-amber-500 text-white"
+              : current === s.n ? "border-amber-400 bg-amber-400/20 text-amber-300"
+              : "border-slate-600 bg-slate-800/50 text-slate-500"
+            }`}>
+              {current > s.n ? <CheckCircle2 className="w-3.5 h-3.5" /> : s.n}
             </div>
-            <span className={`text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap ${
-              current === s.n ? "text-amber-400" : current > s.n ? "text-amber-500/70" : "text-slate-500"
+            <span className={`text-[9px] font-bold uppercase tracking-wide whitespace-nowrap ${
+              current === s.n ? "text-amber-400" : current > s.n ? "text-amber-600" : "text-slate-600"
             }`}>{s.label}</span>
           </div>
           {i < steps.length - 1 && (
-            <div className={`w-16 h-0.5 mb-4 mx-1 ${current > s.n ? "bg-amber-500" : "bg-slate-700"}`} />
+            <div className={`w-12 h-px mx-1 mb-4 ${current > s.n ? "bg-amber-500" : "bg-slate-700"}`} />
           )}
         </div>
       ))}
@@ -118,188 +114,209 @@ function StepIndicator({ current }: { current: number }) {
   );
 }
 
-/* ─── Stat Card ──────────────────────────────────────── */
-function StatCard({ label, value, sub, color, icon }: {
+/* ─── KPI card ───────────────────────────────────────── */
+function KpiCard({ label, value, sub, color, icon }: {
   label: string; value: string; sub?: string; color: string; icon: React.ReactNode;
 }) {
   return (
-    <div className="rounded-xl p-4 border border-white/10 bg-white/5 backdrop-blur-sm flex items-start gap-3">
-      <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0`} style={{ background: `${color}22` }}>
+    <div className="rounded-xl p-4 border border-white/10 bg-white/5 flex items-start gap-3">
+      <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+           style={{ background: `${color}22` }}>
         <span style={{ color }}>{icon}</span>
       </div>
       <div className="min-w-0">
-        <p className="text-[11px] text-slate-400 uppercase tracking-wide font-semibold">{label}</p>
-        <p className="text-xl font-extrabold text-white leading-none mt-0.5">{value}</p>
+        <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">{label}</p>
+        <p className="text-xl font-extrabold text-white leading-tight mt-0.5">{value}</p>
         {sub && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
       </div>
     </div>
   );
 }
 
-/* ─── Main component ─────────────────────────────────── */
+/* ─── Main page ──────────────────────────────────────── */
 export default function ProfitAnalyzer() {
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
 
+  /* state */
   const [step, setStep] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
-  const [parseResult, setParseResult] = useState<ParseResult | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [fileName, setFileName] = useState("");
+
+  /* raw data stored so remapping works without re-reading the file */
+  const [rawHeaders, setRawHeaders] = useState<string[]>([]);
+  const [rawDataRows, setRawDataRows] = useState<any[][]>([]);
+
+  const [colMap, setColMap] = useState<ColMap>({ product: "", qty: "", cod: "", status: "" });
+  const [previewProducts, setPreviewProducts] = useState<ProductSummary[]>([]);
+  const [previewMeta, setPreviewMeta] = useState({ totalRows: 0, filteredRows: 0, noStatusFilter: false });
+  const [hasParsed, setHasParsed] = useState(false);
+
+  /* step-2 editable products */
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [adMode, setAdMode] = useState<"global" | "specific">("global");
   const [globalAdSpend, setGlobalAdSpend] = useState("0");
-  const [colMap, setColMap] = useState({ product: "", qty: "", cod: "", status: "" });
-  const [results, setResults] = useState<ProfitResult[]>([]);
-  const [fileName, setFileName] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
 
-  /* fetch product selling prices as suggestions */
+  /* step-3 results */
+  const [results, setResults] = useState<ProfitResult[]>([]);
+
+  /* ── Inventory price suggestions ── */
   const { data: inventoryStats } = useQuery<any>({
     queryKey: ["/api/inventory/stats"],
     retry: false,
   });
-  const priceMap = Object.fromEntries(
-    (inventoryStats?.productStats || []).map((p: any) => [
-      p.name.toLowerCase().trim(),
-      p.sellingPrice,
-    ])
-  );
+  function getSuggestedPrice(productName: string): number | undefined {
+    const stats: any[] = inventoryStats?.productStats ?? [];
+    const found = stats.find(p => norm(p.name) === norm(productName));
+    return found ? found.sellingPrice / 100 : undefined;
+  }
 
-  /* ── Parse file ── */
+  /* ── Core: build product summaries from raw rows + colMap ── */
+  function buildProducts(
+    dataRows: any[][],
+    headers: string[],
+    map: ColMap,
+  ): { ok: boolean; error?: string } {
+    const pIdx = headers.indexOf(map.product);
+    const qIdx = headers.indexOf(map.qty);
+    const cIdx = headers.indexOf(map.cod);
+    const sIdx = headers.indexOf(map.status);
+
+    if (pIdx === -1) {
+      return { ok: false, error: "⚠️ Impossible de détecter la colonne Produit. Sélectionnez-la manuellement." };
+    }
+
+    const hasStatus = sIdx !== -1;
+    const hasQty = qIdx !== -1;
+    const hasCod = cIdx !== -1;
+
+    const totalRows = dataRows.filter(r => String(r[pIdx] ?? "").trim() !== "").length;
+
+    /* Filter by delivered status */
+    const relevantRows = dataRows.filter(r => {
+      const name = String(r[pIdx] ?? "").trim();
+      if (!name) return false;
+      if (!hasStatus) return true; // no status col → include all
+      return isDelivered(String(r[sIdx] ?? ""));
+    });
+
+    if (totalRows > 0 && relevantRows.length === 0 && hasStatus) {
+      return {
+        ok: false,
+        error: `⚠️ Aucune ligne avec statut "Livré/Livrée/Delivered" trouvée dans ${totalRows} lignes. Vérifiez la colonne Statut ou sélectionnez "(aucune)" pour tout inclure.`,
+      };
+    }
+
+    /* Group by product */
+    const groupMap: Record<string, { qty: number; rev: number; count: number }> = {};
+    for (const row of relevantRows) {
+      const name = String(row[pIdx] ?? "").trim();
+      if (!name) continue;
+      const key = norm(name);
+      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, count: 0 };
+      groupMap[key].qty += hasQty ? (parseNum(row[qIdx]) || 1) : 1;
+      groupMap[key].rev += hasCod ? parseNum(row[cIdx]) : 0;
+      groupMap[key].count++;
+    }
+
+    if (Object.keys(groupMap).length === 0) {
+      return { ok: false, error: "⚠️ Aucun produit valide trouvé. Vérifiez le format du fichier." };
+    }
+
+    const summaries: ProductSummary[] = Object.entries(groupMap).map(([key, d]) => {
+      const rawName = relevantRows.find(r => norm(String(r[pIdx] ?? "")) === key)?.[pIdx] ?? key;
+      const cleanName = String(rawName).trim();
+      return {
+        name: cleanName,
+        totalQty: d.qty,
+        totalRevenue: d.rev,
+        rowCount: d.count,
+        buyingCost: "",
+        shippingFee: "40",
+        adSpend: "0",
+        suggestedPrice: getSuggestedPrice(cleanName),
+      };
+    }).sort((a, b) => b.totalQty - a.totalQty);
+
+    setPreviewProducts(summaries);
+    setPreviewMeta({
+      totalRows,
+      filteredRows: relevantRows.length,
+      noStatusFilter: !hasStatus,
+    });
+    setParseError(null);
+    return { ok: true };
+  }
+
+  /* ── File parsing ── */
   async function processFile(file: File) {
     setIsLoading(true);
+    setParseError(null);
+    setHasParsed(false);
     setFileName(file.name);
+    setPreviewProducts([]);
+
     try {
       const buffer = await file.arrayBuffer();
       const XLSX = await import("xlsx");
       const wb = XLSX.read(buffer, { type: "array" });
-      const wsName = wb.SheetNames[0];
-      const ws = wb.Sheets[wsName];
-      const rawRows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as any[][];
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const raw: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as any[][];
 
-      if (rawRows.length < 2) {
-        toast({ title: "Fichier vide", description: "Le fichier ne contient pas assez de données.", variant: "destructive" });
+      if (raw.length < 2) {
+        setParseError("⚠️ Le fichier semble vide (moins de 2 lignes).");
         setIsLoading(false);
         return;
       }
 
-      const headers: string[] = rawRows[0].map((h: any) => String(h).trim());
-      const dataRows = rawRows.slice(1);
+      const headers = raw[0].map((h: any) => String(h ?? "").trim()).filter(Boolean);
+      const dataRows = raw.slice(1);
 
       /* Auto-detect columns */
-      const detected = {
-        product: detectColumn(headers, ["produit", "product", "article", "désignation", "designation", "nom", "libellé", "libelle", "description"]),
-        qty:     detectColumn(headers, ["quantit", "qty", "qte", "qté", "nbre", "nombre", "unités", "units"]),
-        cod:     detectColumn(headers, ["cod", "montant", "prix", "total", "valeur", "revenue", "ca", "chiffre", "tarif", "amount"]),
-        status:  detectColumn(headers, ["statut", "status", "état", "etat", "livré", "livre"]),
+      const detected: ColMap = {
+        product: detectCol(headers, ["produit", "designation", "article", "libelle", "nom produit", "product", "name", "description"]),
+        qty:     detectCol(headers, ["quantite", "quantity", "qte", "qty", "nbre", "nombre", "nbr colis"]),
+        cod:     detectCol(headers, ["cod", "montant cod", "prix", "montant", "amount", "valeur", "revenue", "total", "tarif"]),
+        status:  detectCol(headers, ["statut", "status", "etat", "livraison", "situation"]),
       };
+
+      setRawHeaders(headers);
+      setRawDataRows(dataRows);
       setColMap(detected);
 
-      buildProducts(dataRows, headers, detected, wb.SheetNames);
+      const result = buildProducts(dataRows, headers, detected);
+      if (!result.ok) {
+        setParseError(result.error ?? "Erreur inconnue.");
+      } else {
+        setHasParsed(true);
+      }
     } catch (e: any) {
-      toast({ title: "Erreur de lecture", description: e?.message || "Impossible de lire ce fichier.", variant: "destructive" });
+      setParseError(`⚠️ Impossible de lire ce fichier : ${e?.message || "format non supporté"}`);
     } finally {
       setIsLoading(false);
     }
   }
 
-  function buildProducts(
-    dataRows: any[][],
-    headers: string[],
-    map: typeof colMap,
-    sheetNames: string[]
-  ) {
-    const pIdx = headers.indexOf(map.product);
-    const qIdx = headers.indexOf(map.qty);
-    const cIdx = headers.indexOf(map.cod);
-    const sIdx = map.status ? headers.indexOf(map.status) : -1;
-
-    const parsedRows: ParsedRow[] = [];
-    dataRows.forEach(row => {
-      if (!row[pIdx]) return;
-      const statusVal = sIdx >= 0 ? String(row[sIdx] || "").toLowerCase() : "";
-      parsedRows.push({
-        productName: String(row[pIdx] || "").trim(),
-        quantity: pIdx >= 0 ? parseNumeric(row[qIdx]) || 1 : 1,
-        codAmount: cIdx >= 0 ? parseNumeric(row[cIdx]) : 0,
-        status: statusVal,
-      });
-    });
-
-    /* Group by product name */
-    const map2: Record<string, { qty: number; rev: number }> = {};
-    parsedRows.forEach(r => {
-      const key = r.productName.toLowerCase().trim();
-      if (!map2[key]) map2[key] = { qty: 0, rev: 0 };
-      map2[key].qty += r.quantity || 1;
-      map2[key].rev += r.codAmount;
-    });
-
-    const summaries: ProductSummary[] = Object.entries(map2).map(([key, d]) => {
-      const rawName = parsedRows.find(r => r.productName.toLowerCase().trim() === key)?.productName || key;
-      const suggested = priceMap[key] ?? priceMap[rawName.toLowerCase()] ?? 0;
-      return {
-        name: rawName,
-        totalQty: d.qty,
-        totalRevenue: d.rev,
-        buyingCost: "",
-        shippingFee: "40",
-        adSpend: "0",
-        suggestedPrice: suggested > 0 ? suggested / 100 : undefined,
-      };
-    });
-
-    setParseResult({
-      rows: parsedRows,
-      products: summaries,
-      rawHeaders: headers,
-      detectedColumns: map,
-      sheetNames,
-      totalRows: parsedRows.length,
-    });
-    setProducts(summaries);
-    setStep(1); /* stay on step 1 to show summary */
-  }
-
-  /* ── Drag & drop handlers ── */
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) processFile(file);
-  }, [priceMap]);
-
-  const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) processFile(file);
-  };
-
-  /* ── Re-map columns when user changes dropdown ── */
-  function remapCol(field: keyof typeof colMap, val: string) {
-    if (!parseResult) return;
-    const newMap = { ...colMap, [field]: val };
+  /* ── Remap column + rebuild immediately ── */
+  function remapCol(field: keyof ColMap, val: string) {
+    const newMap: ColMap = { ...colMap, [field]: val === "__none__" ? "" : val };
     setColMap(newMap);
-    const XLSX_sync = { read: null as any };
-    /* Re-derive from cached raw rows — re-read headers and rebuild */
-    const headers = parseResult.rawHeaders;
-    const pIdx = headers.indexOf(newMap.product);
-    const qIdx = headers.indexOf(newMap.qty);
-    const cIdx = headers.indexOf(newMap.cod);
-    const sIdx = newMap.status ? headers.indexOf(newMap.status) : -1;
-
-    /* We already have parsed rows — re-group with new indices only if indices are valid */
-    const map2: Record<string, { qty: number; rev: number }> = {};
-    parseResult.rows.forEach(r => {
-      const key = r.productName.toLowerCase().trim();
-      if (!map2[key]) map2[key] = { qty: 0, rev: 0 };
-      map2[key].qty += r.quantity || 1;
-      map2[key].rev += r.codAmount;
-    });
-    /* Overwrite product/rev with remapped values would require re-reading raw data —
-       for now just update column map and let user know to re-upload if wrong */
-    setParseResult({ ...parseResult, detectedColumns: newMap });
+    if (rawDataRows.length > 0) {
+      const result = buildProducts(rawDataRows, rawHeaders, newMap);
+      if (result.ok) setHasParsed(true);
+      else { setHasParsed(false); setParseError(result.error ?? null); }
+    }
   }
 
-  /* ── Update a product cost field ── */
+  /* ── Advance to step 2 ── */
+  function goToStep2() {
+    setProducts(previewProducts.map(p => ({ ...p })));
+    setStep(2);
+  }
+
+  /* ── Update cost field in step 2 ── */
   function updateProduct(idx: number, field: keyof ProductSummary, val: string) {
     setProducts(prev => {
       const next = [...prev];
@@ -308,30 +325,31 @@ export default function ProfitAnalyzer() {
     });
   }
 
-  function n(v: string) {
-    const x = parseFloat(v);
-    return isNaN(x) ? 0 : x;
-  }
+  function toNum(v: string) { const x = parseFloat(v); return isNaN(x) ? 0 : x; }
 
-  /* ── Calculate profit ── */
+  /* ── Calculate ── */
   function calculate() {
-    const missing = products.filter(p => p.buyingCost === "" || p.buyingCost === "0");
+    const missing = products.filter(p => !p.buyingCost || p.buyingCost === "0");
     if (missing.length > 0) {
-      toast({ title: "Coûts manquants", description: `Entrez le prix d'achat pour : ${missing.map(m => m.name).join(", ")}`, variant: "destructive" });
+      toast({
+        title: "Coûts manquants",
+        description: `Prix d'achat requis pour : ${missing.map(m => m.name).join(", ")}`,
+        variant: "destructive",
+      });
       return;
     }
 
-    const totalAdGlobal = adMode === "global" ? n(globalAdSpend) : 0;
-    const totalRevenue = products.reduce((s, p) => s + p.totalRevenue, 0);
+    const totalRev = products.reduce((s, p) => s + p.totalRevenue, 0);
+    const globalAd = adMode === "global" ? toNum(globalAdSpend) : 0;
 
-    const res: ProfitResult[] = products.map((p, i) => {
+    const res: ProfitResult[] = products.map(p => {
       const rev = p.totalRevenue;
       const qty = p.totalQty;
-      const cogs = n(p.buyingCost) * qty;
-      const ship = n(p.shippingFee) * qty;
+      const cogs = toNum(p.buyingCost) * qty;
+      const ship = toNum(p.shippingFee) * qty;
       const adS = adMode === "specific"
-        ? n(p.adSpend)
-        : totalRevenue > 0 ? totalAdGlobal * (rev / totalRevenue) : totalAdGlobal / products.length;
+        ? toNum(p.adSpend)
+        : totalRev > 0 ? globalAd * (rev / totalRev) : globalAd / products.length;
       const totalCost = cogs + ship + adS;
       const net = rev - totalCost;
       const roi = cogs > 0 ? (net / cogs) * 100 : 0;
@@ -342,14 +360,12 @@ export default function ProfitAnalyzer() {
     setStep(3);
   }
 
+  /* ── Reset ── */
   function reset() {
-    setStep(1);
-    setParseResult(null);
-    setProducts([]);
-    setResults([]);
-    setFileName("");
-    setGlobalAdSpend("0");
-    setAdMode("global");
+    setStep(1); setHasParsed(false); setParseError(null); setFileName("");
+    setRawHeaders([]); setRawDataRows([]); setColMap({ product: "", qty: "", cod: "", status: "" });
+    setPreviewProducts([]); setProducts([]); setResults([]);
+    setGlobalAdSpend("0"); setAdMode("global");
     if (fileRef.current) fileRef.current.value = "";
   }
 
@@ -357,331 +373,416 @@ export default function ProfitAnalyzer() {
     return `${v.toLocaleString("fr-MA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH`;
   }
 
-  /* ── Charts data ── */
-  const barData = results.map(r => ({
-    name: r.name.length > 16 ? r.name.slice(0, 16) + "…" : r.name,
+  /* ── Report aggregates ── */
+  const totalRev  = results.reduce((s, r) => s + r.revenue, 0);
+  const totalCost = results.reduce((s, r) => s + r.totalCost, 0);
+  const totalNet  = results.reduce((s, r) => s + r.netProfit, 0);
+  const totalCOGS = results.reduce((s, r) => s + r.cogs, 0);
+  const totalShip = results.reduce((s, r) => s + r.shipping, 0);
+  const totalAd   = results.reduce((s, r) => s + r.adSpend, 0);
+  const globalROI = totalCOGS > 0 ? (totalNet / totalCOGS) * 100 : 0;
+  const barData   = results.map(r => ({
+    name:   r.name.length > 14 ? r.name.slice(0, 14) + "…" : r.name,
     Revenu: Math.round(r.revenue),
     Coûts:  Math.round(r.totalCost),
     Profit: Math.round(r.netProfit),
   }));
-
-  const totalRev = results.reduce((s, r) => s + r.revenue, 0);
-  const totalCosts = results.reduce((s, r) => s + r.totalCost, 0);
-  const totalNet = results.reduce((s, r) => s + r.netProfit, 0);
-  const totalCOGS = results.reduce((s, r) => s + r.cogs, 0);
-  const totalShip = results.reduce((s, r) => s + r.shipping, 0);
-  const totalAd = results.reduce((s, r) => s + r.adSpend, 0);
-  const globalROI = totalCOGS > 0 ? (totalNet / totalCOGS) * 100 : 0;
-
   const pieData = [
-    { name: "Achat produit", value: Math.round(totalCOGS), color: "#3b82f6" },
-    { name: "Livraison", value: Math.round(totalShip), color: "#f59e0b" },
-    { name: "Publicité", value: Math.round(totalAd), color: "#8b5cf6" },
+    { name: "Achat",      value: Math.round(totalCOGS), color: "#3b82f6" },
+    { name: "Livraison",  value: Math.round(totalShip), color: "#f59e0b" },
+    { name: "Publicité",  value: Math.round(totalAd),   color: "#8b5cf6" },
     { name: "Profit net", value: Math.max(0, Math.round(totalNet)), color: "#10b981" },
   ].filter(d => d.value > 0);
 
-  /* ─────────────────────────────────────────────────── */
+  /* ─────────────────────────────────────────────────────── */
   return (
-    <div className="min-h-screen" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #152645 60%, #1e3560 100%)` }}>
-      {/* ── Header ── */}
-      <div className="border-b border-white/10 px-6 py-4">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+    <div className="min-h-screen" style={{ background: `linear-gradient(145deg, ${NAVY} 0%, #152645 55%, #1a3060 100%)` }}>
+
+      {/* Header */}
+      <div className="border-b border-white/10 px-6 py-4 sticky top-0 z-10 backdrop-blur-md bg-black/20">
+        <div className="max-w-5xl mx-auto flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `${GOLD}22`, border: `1px solid ${GOLD}44` }}>
-              <BarChart3 className="w-5 h-5" style={{ color: GOLD }} />
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                 style={{ background: `${GOLD}20`, border: `1px solid ${GOLD}40` }}>
+              <BarChart3 className="w-4.5 h-4.5" style={{ color: GOLD }} />
             </div>
             <div>
-              <h1 className="text-xl font-extrabold text-white tracking-tight">Profit Analyzer Pro</h1>
-              <p className="text-xs text-slate-400">Importez votre fichier transporteur · Calculez votre bénéfice net en 3 étapes</p>
+              <h1 className="text-base font-extrabold text-white tracking-tight leading-none">Profit Analyzer Pro</h1>
+              <p className="text-[10px] text-slate-400 mt-0.5">Importez votre rapport transporteur · Profit net en 3 étapes</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <StepIndicator current={step} />
-            {parseResult && (
-              <button onClick={reset} className="ml-4 text-slate-400 hover:text-white flex items-center gap-1.5 text-xs font-medium transition-colors" data-testid="button-reset-analyzer">
-                <RotateCcw className="w-3.5 h-3.5" /> Recommencer
+          <div className="flex items-center gap-4">
+            <StepBar current={step} />
+            {(hasParsed || step > 1) && (
+              <button onClick={reset} data-testid="button-reset-analyzer"
+                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors ml-2">
+                <RotateCcw className="w-3 h-3" /> Reset
               </button>
             )}
           </div>
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-6 py-6 space-y-6">
+      <div className="max-w-5xl mx-auto px-6 py-6 space-y-5">
 
-        {/* ══════════════════════════════════════════════
-            STEP 1 — File import
-        ══════════════════════════════════════════════ */}
+        {/* ═══════════════════════════════════════════
+            STEP 1 — Upload + Preview
+        ═══════════════════════════════════════════ */}
         {step === 1 && (
           <div className="space-y-5">
+
             {/* Drop zone */}
             <div
               data-testid="dropzone-file-upload"
               onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
-              onDrop={onDrop}
-              onClick={() => fileRef.current?.click()}
-              className={`relative rounded-2xl border-2 border-dashed cursor-pointer transition-all flex flex-col items-center justify-center py-14 gap-4 ${
-                isDragging ? "border-amber-400 bg-amber-400/10" : "border-slate-600 hover:border-amber-500/60 bg-white/3"
+              onDrop={e => { e.preventDefault(); setIsDragging(false); const f = e.dataTransfer.files[0]; if (f) processFile(f); }}
+              onClick={() => !isLoading && fileRef.current?.click()}
+              className={`rounded-2xl border-2 border-dashed cursor-pointer transition-all flex flex-col items-center justify-center py-12 gap-4 ${
+                isDragging ? "border-amber-400 bg-amber-400/8" : "border-slate-600/70 hover:border-amber-500/50 bg-white/3"
               }`}
             >
-              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={onFileChange} data-testid="input-file-upload" />
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                     onChange={e => { const f = e.target.files?.[0]; if (f) processFile(f); }}
+                     data-testid="input-file-upload" />
+
               {isLoading ? (
                 <div className="flex flex-col items-center gap-3">
                   <div className="w-10 h-10 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
-                  <p className="text-slate-300 font-medium">Analyse en cours…</p>
+                  <p className="text-slate-300 font-semibold">Analyse du fichier en cours…</p>
+                  <p className="text-xs text-slate-500">Détection des colonnes et extraction des données</p>
                 </div>
-              ) : parseResult ? (
-                <div className="flex flex-col items-center gap-2">
-                  <CheckCircle2 className="w-12 h-12 text-emerald-400" />
-                  <p className="text-white font-semibold text-lg">{fileName}</p>
-                  <p className="text-slate-400 text-sm">{parseResult.totalRows} lignes · {parseResult.products.length} produit(s) trouvé(s)</p>
-                  <p className="text-amber-400 text-xs mt-1">Cliquez pour changer de fichier</p>
+              ) : hasParsed ? (
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <CheckCircle2 className="w-10 h-10 text-emerald-400" />
+                  <p className="text-white font-bold">{fileName}</p>
+                  <p className="text-slate-400 text-sm">
+                    {previewMeta.filteredRows} ligne(s) livrée(s) · {previewProducts.length} produit(s) unique(s)
+                    {previewMeta.noStatusFilter && <span className="text-amber-400"> (toutes lignes incluses)</span>}
+                  </p>
+                  <p className="text-amber-400/70 text-xs">Cliquez pour changer de fichier</p>
                 </div>
               ) : (
                 <>
-                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: `${GOLD}15`, border: `1px solid ${GOLD}30` }}>
-                    <Upload className="w-8 h-8" style={{ color: GOLD }} />
+                  <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
+                       style={{ background: `${GOLD}12`, border: `1px solid ${GOLD}25` }}>
+                    <Upload className="w-7 h-7" style={{ color: GOLD }} />
                   </div>
                   <div className="text-center">
-                    <p className="text-white font-semibold text-lg">Glissez votre fichier ici</p>
+                    <p className="text-white font-bold text-lg">Glissez votre fichier ici</p>
                     <p className="text-slate-400 text-sm mt-1">ou cliquez pour sélectionner</p>
-                    <p className="text-slate-500 text-xs mt-2">Formats supportés : <span className="text-amber-400 font-mono">XLSX · XLS · CSV</span></p>
+                    <p className="text-slate-500 text-xs mt-2">
+                      Formats : <span className="text-amber-400 font-mono">XLSX · XLS · CSV</span>
+                      <span className="mx-2 text-slate-700">·</span>
+                      Rapports : Digylog, Cathedis, EcoTrack, Amana…
+                    </p>
                   </div>
                 </>
               )}
             </div>
 
-            {/* Column mapping */}
-            {parseResult && (
-              <Card className="border-white/10 bg-white/5 backdrop-blur-sm text-white">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-bold uppercase tracking-wide flex items-center gap-2" style={{ color: GOLD }}>
-                    <Settings2 className="w-4 h-4" /> Mappage des colonnes
+            {/* Error */}
+            {parseError && !isLoading && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 flex gap-3 items-start">
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-red-300 font-semibold text-sm">{parseError}</p>
+                  <p className="text-red-400/70 text-xs mt-1">
+                    Utilisez les menus ci-dessous pour mapper manuellement les colonnes.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Column mapping — visible once file is loaded (even on error) */}
+            {rawHeaders.length > 0 && !isLoading && (
+              <Card className="border-white/10 bg-white/5 text-white">
+                <CardHeader className="pb-3 pt-4">
+                  <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
+                             style={{ color: GOLD }}>
+                    <Settings2 className="w-3.5 h-3.5" /> Mappage des colonnes
                   </CardTitle>
-                  <p className="text-xs text-slate-400">Vérifiez que chaque champ pointe vers la bonne colonne de votre fichier.</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    La détection est automatique. Corrigez si besoin.
+                    Seules les lignes avec statut "Livré / Livrée / Delivered" sont comptées.
+                  </p>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {(["product", "qty", "cod", "status"] as const).map(field => (
-                      <div key={field} className="flex flex-col gap-1.5">
-                        <label className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                          {field === "product" ? "Produit" : field === "qty" ? "Quantité" : field === "cod" ? "Montant COD" : "Statut"}
-                        </label>
-                        <Select value={colMap[field] || "__none__"} onValueChange={v => setColMap(c => ({ ...c, [field]: v === "__none__" ? "" : v }))}>
-                          <SelectTrigger className="h-8 text-xs bg-white/10 border-white/20 text-white" data-testid={`select-col-${field}`}>
-                            <SelectValue placeholder="(aucune)" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__none__">(aucune)</SelectItem>
-                            {parseResult.rawHeaders.map(h => (
-                              <SelectItem key={h} value={h}>{h}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {colMap[field] && (
-                          <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3" /> Détecté
-                          </span>
-                        )}
-                      </div>
-                    ))}
+                <CardContent className="pb-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {(["product", "qty", "cod", "status"] as const).map(field => {
+                      const labels: Record<string, string> = {
+                        product: "Produit *",
+                        qty: "Quantité",
+                        cod: "Montant COD",
+                        status: "Statut (optionnel)",
+                      };
+                      return (
+                        <div key={field} className="flex flex-col gap-1.5">
+                          <label className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            {labels[field]}
+                          </label>
+                          <Select
+                            value={colMap[field] || "__none__"}
+                            onValueChange={v => remapCol(field, v)}
+                          >
+                            <SelectTrigger className="h-8 text-xs bg-white/10 border-white/15 text-white"
+                                           data-testid={`select-col-${field}`}>
+                              <SelectValue placeholder="(aucune)" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">(aucune)</SelectItem>
+                              {rawHeaders.map(h => (
+                                <SelectItem key={h} value={h}>{h}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {colMap[field] ? (
+                            <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-2.5 h-2.5" /> {colMap[field]}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-600">Non mappé</span>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </CardContent>
               </Card>
             )}
 
-            {/* Products found */}
-            {parseResult && parseResult.products.length > 0 && (
-              <Card className="border-white/10 bg-white/5 backdrop-blur-sm text-white overflow-hidden">
-                <CardHeader className="pb-3">
+            {/* Products preview */}
+            {hasParsed && previewProducts.length > 0 && (
+              <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
+                <CardHeader className="pb-2 pt-4">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-bold uppercase tracking-wide flex items-center gap-2" style={{ color: GOLD }}>
-                      <Package className="w-4 h-4" /> Produits détectés — {parseResult.products.length}
+                    <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
+                               style={{ color: GOLD }}>
+                      <Package className="w-3.5 h-3.5" />
+                      {previewProducts.length} produit(s) identifié(s)
                     </CardTitle>
-                    <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30 text-xs">
-                      {parseResult.totalRows} lignes analysées
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      {previewMeta.noStatusFilter && (
+                        <span className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2 py-0.5 rounded-full">
+                          <Info className="w-3 h-3" /> Toutes lignes (pas de colonne statut)
+                        </span>
+                      )}
+                      <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/25 text-xs">
+                        {previewMeta.filteredRows} / {previewMeta.totalRows} lignes
+                      </Badge>
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="border-white/10 hover:bg-transparent">
-                          <TableHead className="text-slate-400 text-xs">Produit</TableHead>
-                          <TableHead className="text-slate-400 text-xs text-center">Quantité</TableHead>
-                          <TableHead className="text-slate-400 text-xs text-right">Revenu Total (COD)</TableHead>
-                          <TableHead className="text-slate-400 text-xs text-center">Statut</TableHead>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-white/10 hover:bg-transparent">
+                        <TableHead className="text-slate-500 text-xs font-semibold">Produit</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center">Qté totale</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right">Revenu COD</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center">Statut</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {previewProducts.map((p, i) => (
+                        <TableRow key={i} className="border-white/8 hover:bg-white/4"
+                                  data-testid={`row-parsed-product-${i}`}>
+                          <TableCell className="text-white font-medium text-sm py-2.5">{p.name}</TableCell>
+                          <TableCell className="text-center py-2.5">
+                            <Badge variant="outline"
+                                   className="border-amber-500/35 text-amber-300 bg-amber-500/8 text-xs">
+                              {p.totalQty}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right text-emerald-300 font-semibold text-sm py-2.5">
+                            {p.totalRevenue > 0 ? fmtDH(p.totalRevenue) : <span className="text-slate-500 text-xs">—</span>}
+                          </TableCell>
+                          <TableCell className="text-center py-2.5">
+                            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/20 text-[10px]">
+                              LIVRÉ
+                            </Badge>
+                          </TableCell>
                         </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {parseResult.products.map((p, i) => (
-                          <TableRow key={i} className="border-white/10 hover:bg-white/5" data-testid={`row-parsed-product-${i}`}>
-                            <TableCell className="text-white font-medium text-sm">{p.name}</TableCell>
-                            <TableCell className="text-center">
-                              <Badge variant="outline" className="border-amber-500/40 text-amber-300 bg-amber-500/10">{p.totalQty}</Badge>
-                            </TableCell>
-                            <TableCell className="text-right text-emerald-300 font-semibold text-sm">{fmtDH(p.totalRevenue)}</TableCell>
-                            <TableCell className="text-center">
-                              <Badge className="bg-emerald-500/20 text-emerald-300 border-emerald-500/30 text-xs">LIVRÉ</Badge>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </CardContent>
               </Card>
             )}
 
-            {parseResult && (
+            {/* CTA */}
+            {hasParsed && previewProducts.length > 0 && (
               <div className="flex justify-end">
-                <Button
-                  onClick={() => setStep(2)}
-                  className="gap-2 font-bold px-6"
-                  style={{ background: GOLD, color: NAVY }}
-                  data-testid="button-next-step-2"
-                >
+                <Button onClick={goToStep2}
+                        className="gap-2 font-bold px-7"
+                        style={{ background: GOLD, color: NAVY }}
+                        data-testid="button-next-step-2">
                   Saisir les coûts <ArrowRight className="w-4 h-4" />
                 </Button>
+              </div>
+            )}
+
+            {/* Feature hints (shown when no file yet) */}
+            {!hasParsed && !parseError && rawHeaders.length === 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+                {[
+                  { icon: <Settings2 className="w-5 h-5" />, title: "Détection auto",
+                    desc: "Colonnes Produit, Quantité et COD détectées automatiquement. Corrigez si besoin." },
+                  { icon: <Package className="w-5 h-5" />, title: "Filtrage intelligent",
+                    desc: "Seules les lignes \"Livré / Livrée / Delivered\" sont comptées." },
+                  { icon: <BarChart3 className="w-5 h-5" />, title: "Rapport visuel",
+                    desc: "Profit net, ROI et graphiques générés instantanément après vos coûts." },
+                ].map((c, i) => (
+                  <div key={i} className="rounded-xl border border-white/8 bg-white/4 p-4 flex gap-3">
+                    <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                         style={{ background: `${GOLD}12`, color: GOLD }}>{c.icon}</div>
+                    <div>
+                      <p className="text-white font-semibold text-sm">{c.title}</p>
+                      <p className="text-slate-500 text-xs mt-0.5">{c.desc}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
         )}
 
-        {/* ══════════════════════════════════════════════
+        {/* ═══════════════════════════════════════════
             STEP 2 — Cost inputs
-        ══════════════════════════════════════════════ */}
+        ═══════════════════════════════════════════ */}
         {step === 2 && (
           <div className="space-y-5">
-            {/* Ad spend mode toggle */}
-            <Card className="border-white/10 bg-white/5 backdrop-blur-sm text-white">
+
+            {/* Ad spend mode */}
+            <Card className="border-white/10 bg-white/5 text-white">
               <CardContent className="py-4">
-                <div className="flex items-center gap-6 flex-wrap">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex items-center gap-2 shrink-0">
                     <Megaphone className="w-4 h-4" style={{ color: GOLD }} />
-                    <span className="text-sm font-bold text-white">Mode dépenses pub :</span>
+                    <span className="text-sm font-bold">Mode dépenses pub :</span>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <button
                       onClick={() => setAdMode("global")}
                       data-testid="button-ad-mode-global"
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-semibold transition-all ${
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all ${
                         adMode === "global"
                           ? "border-amber-400 text-amber-400 bg-amber-400/10"
-                          : "border-white/20 text-slate-400 hover:border-white/40"
-                      }`}
-                    >
-                      <Globe className="w-3.5 h-3.5" /> Total global
+                          : "border-white/15 text-slate-400 hover:border-white/30"
+                      }`}>
+                      <Globe className="w-3.5 h-3.5" /> Global total
                     </button>
                     <button
                       onClick={() => setAdMode("specific")}
                       data-testid="button-ad-mode-specific"
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-semibold transition-all ${
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all ${
                         adMode === "specific"
                           ? "border-amber-400 text-amber-400 bg-amber-400/10"
-                          : "border-white/20 text-slate-400 hover:border-white/40"
-                      }`}
-                    >
+                          : "border-white/15 text-slate-400 hover:border-white/30"
+                      }`}>
                       <Target className="w-3.5 h-3.5" /> Par produit
                     </button>
                   </div>
                   {adMode === "global" && (
                     <div className="flex items-center gap-2 ml-auto">
-                      <Label className="text-xs text-slate-400 whitespace-nowrap">Dépenses pub totales (DH)</Label>
-                      <div className="relative">
-                        <Input
-                          type="number"
-                          min={0}
-                          value={globalAdSpend}
-                          onChange={e => setGlobalAdSpend(e.target.value)}
-                          className="w-36 h-9 text-sm bg-white/10 border-white/20 text-white"
-                          placeholder="0"
-                          data-testid="input-global-ad-spend"
-                        />
-                      </div>
+                      <label className="text-xs text-slate-400 whitespace-nowrap">Total pub (DH) :</label>
+                      <Input
+                        type="number" min={0}
+                        value={globalAdSpend}
+                        onChange={e => setGlobalAdSpend(e.target.value)}
+                        className="w-32 h-8 text-sm text-center bg-white/10 border-white/15 text-white"
+                        placeholder="0"
+                        data-testid="input-global-ad-spend"
+                      />
                     </div>
                   )}
                 </div>
               </CardContent>
             </Card>
 
-            {/* Per-product cost table */}
-            <Card className="border-white/10 bg-white/5 backdrop-blur-sm text-white overflow-hidden">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-bold uppercase tracking-wide flex items-center gap-2" style={{ color: GOLD }}>
-                  <Package className="w-4 h-4" /> Coûts par produit
+            {/* Per-product table */}
+            <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
+              <CardHeader className="pb-2 pt-4">
+                <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
+                           style={{ color: GOLD }}>
+                  <Package className="w-3.5 h-3.5" /> Coûts par produit
                 </CardTitle>
-                <p className="text-xs text-slate-400">Remplissez les coûts pour chaque produit. Les prix suggérés viennent de votre inventaire.</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Prix d'achat obligatoire. Frais de livraison par défaut : 40 DH.
+                </p>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow className="border-white/10 hover:bg-transparent">
-                        <TableHead className="text-slate-400 text-xs min-w-[200px]">Produit</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-center">Qté</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-right">Revenu</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-center min-w-[160px]">
+                        <TableHead className="text-slate-500 text-xs font-semibold min-w-[180px]">Produit</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center">Qté</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-right">Revenu</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[150px]">
                           Prix d'achat (DH) <span className="text-red-400">*</span>
                         </TableHead>
-                        <TableHead className="text-slate-400 text-xs text-center min-w-[130px]">Frais livraison (DH)</TableHead>
+                        <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[130px]">
+                          Frais livr. (DH)
+                        </TableHead>
                         {adMode === "specific" && (
-                          <TableHead className="text-slate-400 text-xs text-center min-w-[130px]">Dép. pub (DH)</TableHead>
+                          <TableHead className="text-slate-500 text-xs font-semibold text-center min-w-[120px]">
+                            Pub (DH)
+                          </TableHead>
                         )}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {products.map((p, i) => (
-                        <TableRow key={i} className="border-white/10 hover:bg-white/5" data-testid={`row-cost-product-${i}`}>
-                          <TableCell>
-                            <div>
-                              <p className="text-white font-semibold text-sm">{p.name}</p>
-                              {p.suggestedPrice != null && (
-                                <button
-                                  onClick={() => updateProduct(i, "buyingCost", String(p.suggestedPrice))}
-                                  className="text-[10px] text-amber-400/70 hover:text-amber-400 transition-colors flex items-center gap-0.5 mt-0.5"
-                                  data-testid={`button-suggest-price-${i}`}
-                                >
-                                  <Sparkles className="w-2.5 h-2.5" /> Prix inventaire : {p.suggestedPrice} DH
-                                </button>
-                              )}
-                            </div>
+                        <TableRow key={i} className="border-white/8 hover:bg-white/4"
+                                  data-testid={`row-cost-product-${i}`}>
+                          <TableCell className="py-3">
+                            <p className="text-white font-semibold text-sm">{p.name}</p>
+                            {p.suggestedPrice != null && (
+                              <button
+                                onClick={() => updateProduct(i, "buyingCost", String(p.suggestedPrice))}
+                                className="text-[10px] text-amber-400/60 hover:text-amber-400 flex items-center gap-0.5 mt-0.5 transition-colors"
+                                data-testid={`button-suggest-price-${i}`}>
+                                <Sparkles className="w-2.5 h-2.5" /> Inventaire: {p.suggestedPrice} DH
+                              </button>
+                            )}
                           </TableCell>
-                          <TableCell className="text-center">
-                            <Badge variant="outline" className="border-amber-500/40 text-amber-300 bg-amber-500/10">{p.totalQty}</Badge>
+                          <TableCell className="text-center py-3">
+                            <Badge variant="outline"
+                                   className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">
+                              {p.totalQty}
+                            </Badge>
                           </TableCell>
-                          <TableCell className="text-right text-emerald-300 font-semibold text-sm">{fmtDH(p.totalRevenue)}</TableCell>
-                          <TableCell className="text-center">
+                          <TableCell className="text-right text-emerald-300 font-semibold text-sm py-3">
+                            {p.totalRevenue > 0 ? fmtDH(p.totalRevenue) : <span className="text-slate-500">—</span>}
+                          </TableCell>
+                          <TableCell className="text-center py-3">
                             <Input
-                              type="number"
-                              min={0}
+                              type="number" min={0}
                               value={p.buyingCost}
                               onChange={e => updateProduct(i, "buyingCost", e.target.value)}
-                              className="h-8 text-xs text-center bg-white/10 border-white/20 text-white w-full max-w-[130px] mx-auto"
+                              className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[120px] mx-auto"
                               placeholder="Ex: 85"
                               data-testid={`input-buying-cost-${i}`}
                             />
                           </TableCell>
-                          <TableCell className="text-center">
+                          <TableCell className="text-center py-3">
                             <Input
-                              type="number"
-                              min={0}
+                              type="number" min={0}
                               value={p.shippingFee}
                               onChange={e => updateProduct(i, "shippingFee", e.target.value)}
-                              className="h-8 text-xs text-center bg-white/10 border-white/20 text-white w-full max-w-[110px] mx-auto"
+                              className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[100px] mx-auto"
                               placeholder="40"
                               data-testid={`input-shipping-fee-${i}`}
                             />
                           </TableCell>
                           {adMode === "specific" && (
-                            <TableCell className="text-center">
+                            <TableCell className="text-center py-3">
                               <Input
-                                type="number"
-                                min={0}
+                                type="number" min={0}
                                 value={p.adSpend}
                                 onChange={e => updateProduct(i, "adSpend", e.target.value)}
-                                className="h-8 text-xs text-center bg-white/10 border-white/20 text-white w-full max-w-[110px] mx-auto"
+                                className="h-8 text-xs text-center bg-white/10 border-white/15 text-white max-w-[100px] mx-auto"
                                 placeholder="0"
                                 data-testid={`input-ad-spend-${i}`}
                               />
@@ -696,63 +797,51 @@ export default function ProfitAnalyzer() {
             </Card>
 
             <div className="flex items-center justify-between">
-              <Button variant="outline" onClick={() => setStep(1)} className="border-white/20 text-slate-300 hover:bg-white/10 hover:text-white gap-2" data-testid="button-back-step-1">
+              <Button variant="outline" onClick={() => setStep(1)}
+                      className="border-white/20 text-slate-300 hover:bg-white/8 hover:text-white"
+                      data-testid="button-back-step-1">
                 ← Retour
               </Button>
-              <Button
-                onClick={calculate}
-                className="gap-2 font-bold px-8 py-2.5 text-base"
-                style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #e8b96a 100%)`, color: NAVY }}
-                data-testid="button-calculate"
-              >
-                <BarChart3 className="w-5 h-5" /> Calculer le profit
+              <Button onClick={calculate}
+                      className="gap-2 font-bold px-8 text-sm"
+                      style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #e8b56a 100%)`, color: NAVY }}
+                      data-testid="button-calculate">
+                <BarChart3 className="w-4 h-4" /> Calculer le profit
               </Button>
             </div>
           </div>
         )}
 
-        {/* ══════════════════════════════════════════════
+        {/* ═══════════════════════════════════════════
             STEP 3 — Report
-        ══════════════════════════════════════════════ */}
+        ═══════════════════════════════════════════ */}
         {step === 3 && results.length > 0 && (
-          <div className="space-y-6">
-            {/* Global KPIs */}
+          <div className="space-y-5">
+
+            {/* KPIs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <StatCard
-                label="Revenu total"
-                value={fmtDH(totalRev)}
-                sub={`${results.reduce((s, r) => s + r.qty, 0)} unités livrées`}
-                color="#10b981"
-                icon={<DollarSign className="w-5 h-5" />}
-              />
-              <StatCard
-                label="Coûts totaux"
-                value={fmtDH(totalCosts)}
-                sub={`Achat + livr. + pub`}
-                color="#f59e0b"
-                icon={<Truck className="w-5 h-5" />}
-              />
-              <StatCard
-                label="Bénéfice net"
-                value={fmtDH(totalNet)}
-                sub={totalNet >= 0 ? "💚 Positif !" : "🔴 Déficit"}
+              <KpiCard label="Revenu total" value={fmtDH(totalRev)}
+                sub={`${results.reduce((s, r) => s + r.qty, 0)} unités`}
+                color="#10b981" icon={<DollarSign className="w-5 h-5" />} />
+              <KpiCard label="Coûts totaux" value={fmtDH(totalCost)}
+                sub="Achat + livraison + pub"
+                color="#f59e0b" icon={<Truck className="w-5 h-5" />} />
+              <KpiCard label="Bénéfice net" value={fmtDH(totalNet)}
+                sub={totalNet >= 0 ? "✅ En bénéfice" : "🔴 En déficit"}
                 color={totalNet >= 0 ? "#10b981" : "#ef4444"}
-                icon={<TrendingUp className="w-5 h-5" />}
-              />
-              <StatCard
-                label="ROI Global"
-                value={`${globalROI.toFixed(1)}%`}
+                icon={<TrendingUp className="w-5 h-5" />} />
+              <KpiCard label="ROI Global" value={`${globalROI.toFixed(1)}%`}
                 sub="vs coût d'achat"
                 color={globalROI >= 30 ? "#10b981" : globalROI >= 0 ? "#f59e0b" : "#ef4444"}
-                icon={<Target className="w-5 h-5" />}
-              />
+                icon={<Target className="w-5 h-5" />} />
             </div>
 
-            {/* Per-product breakdown table */}
-            <Card className="border-white/10 bg-white/5 backdrop-blur-sm text-white overflow-hidden">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-bold uppercase tracking-wide flex items-center gap-2" style={{ color: GOLD }}>
-                  <Package className="w-4 h-4" /> Détail par produit
+            {/* Per-product table */}
+            <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
+              <CardHeader className="pb-2 pt-4">
+                <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2"
+                           style={{ color: GOLD }}>
+                  <Package className="w-3.5 h-3.5" /> Détail par produit
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-0">
@@ -760,32 +849,28 @@ export default function ProfitAnalyzer() {
                   <Table>
                     <TableHeader>
                       <TableRow className="border-white/10 hover:bg-transparent">
-                        <TableHead className="text-slate-400 text-xs">Produit</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-center">Qté</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-right">Revenu</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-right">Coût achat</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-right">Livraison</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-right">Pub</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-right">Profit net</TableHead>
-                        <TableHead className="text-slate-400 text-xs text-right">ROI</TableHead>
+                        {["Produit","Qté","Revenu","Coût achat","Livraison","Pub","Profit net","ROI"].map(h => (
+                          <TableHead key={h} className="text-slate-500 text-xs font-semibold">{h}</TableHead>
+                        ))}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {results.map((r, i) => {
-                        const roiColor = r.roi >= 50 ? "text-emerald-400" : r.roi >= 20 ? "text-amber-400" : "text-red-400";
-                        const profitColor = r.netProfit >= 0 ? "text-emerald-400" : "text-red-400";
+                        const pc = r.roi >= 50 ? "text-emerald-400" : r.roi >= 20 ? "text-amber-400" : "text-red-400";
+                        const nc = r.netProfit >= 0 ? "text-emerald-400" : "text-red-400";
                         return (
-                          <TableRow key={i} className="border-white/10 hover:bg-white/5" data-testid={`row-result-${i}`}>
-                            <TableCell className="text-white font-medium text-sm">{r.name}</TableCell>
-                            <TableCell className="text-center">
-                              <Badge variant="outline" className="border-amber-500/40 text-amber-300 bg-amber-500/10">{r.qty}</Badge>
+                          <TableRow key={i} className="border-white/8 hover:bg-white/4"
+                                    data-testid={`row-result-${i}`}>
+                            <TableCell className="text-white font-semibold text-sm py-3">{r.name}</TableCell>
+                            <TableCell className="text-center py-3">
+                              <Badge variant="outline" className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">{r.qty}</Badge>
                             </TableCell>
-                            <TableCell className="text-right text-emerald-300 font-semibold text-sm">{fmtDH(r.revenue)}</TableCell>
-                            <TableCell className="text-right text-slate-300 text-sm">{fmtDH(r.cogs)}</TableCell>
-                            <TableCell className="text-right text-slate-300 text-sm">{fmtDH(r.shipping)}</TableCell>
-                            <TableCell className="text-right text-slate-300 text-sm">{fmtDH(r.adSpend)}</TableCell>
-                            <TableCell className={`text-right font-extrabold text-sm ${profitColor}`}>{fmtDH(r.netProfit)}</TableCell>
-                            <TableCell className={`text-right font-bold text-sm ${roiColor}`}>{r.roi.toFixed(1)}%</TableCell>
+                            <TableCell className="text-right text-emerald-300 font-semibold text-sm py-3">{fmtDH(r.revenue)}</TableCell>
+                            <TableCell className="text-right text-slate-300 text-sm py-3">{fmtDH(r.cogs)}</TableCell>
+                            <TableCell className="text-right text-slate-300 text-sm py-3">{fmtDH(r.shipping)}</TableCell>
+                            <TableCell className="text-right text-slate-300 text-sm py-3">{fmtDH(r.adSpend)}</TableCell>
+                            <TableCell className={`text-right font-extrabold text-sm py-3 ${nc}`}>{fmtDH(r.netProfit)}</TableCell>
+                            <TableCell className={`text-right font-bold text-sm py-3 ${pc}`}>{r.roi.toFixed(1)}%</TableCell>
                           </TableRow>
                         );
                       })}
@@ -797,110 +882,91 @@ export default function ProfitAnalyzer() {
 
             {/* Charts */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
-              {/* Bar chart */}
-              <Card className="border-white/10 bg-white/5 backdrop-blur-sm text-white col-span-1 lg:col-span-3">
+              <Card className="border-white/10 bg-white/5 text-white col-span-1 lg:col-span-3">
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-bold uppercase tracking-wide" style={{ color: GOLD }}>Revenu vs Coûts vs Profit</CardTitle>
+                  <CardTitle className="text-xs font-bold uppercase tracking-widest" style={{ color: GOLD }}>
+                    Revenu · Coûts · Profit
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={barData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
-                      <XAxis dataKey="name" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                      <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={barData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+                      <XAxis dataKey="name" tick={{ fill: "#64748b", fontSize: 10 }} />
+                      <YAxis tick={{ fill: "#64748b", fontSize: 10 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
                       <RechartsTooltip
-                        contentStyle={{ background: NAVY_MID, border: `1px solid rgba(255,255,255,0.15)`, borderRadius: 8, color: "#fff", fontSize: 12 }}
+                        contentStyle={{ background: NAVY_MID, border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#fff", fontSize: 11 }}
                         formatter={(val: number) => fmtDH(val)}
                       />
-                      <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} />
-                      <Bar dataKey="Revenu" fill="#10b981" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="Coûts" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="Profit" fill={GOLD} radius={[4, 4, 0, 0]} />
+                      <Legend wrapperStyle={{ fontSize: 11, color: "#64748b" }} />
+                      <Bar dataKey="Revenu" fill="#10b981" radius={[3,3,0,0]} />
+                      <Bar dataKey="Coûts"  fill="#f59e0b" radius={[3,3,0,0]} />
+                      <Bar dataKey="Profit" fill={GOLD}    radius={[3,3,0,0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
 
-              {/* Pie chart */}
-              <Card className="border-white/10 bg-white/5 backdrop-blur-sm text-white col-span-1 lg:col-span-2">
+              <Card className="border-white/10 bg-white/5 text-white col-span-1 lg:col-span-2">
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-bold uppercase tracking-wide" style={{ color: GOLD }}>Répartition des coûts</CardTitle>
+                  <CardTitle className="text-xs font-bold uppercase tracking-widest" style={{ color: GOLD }}>
+                    Répartition des coûts
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <ResponsiveContainer width="100%" height={260}>
+                  <ResponsiveContainer width="100%" height={240}>
                     <PieChart>
-                      <Pie
-                        data={pieData}
-                        cx="50%" cy="45%"
-                        innerRadius={55}
-                        outerRadius={90}
-                        dataKey="value"
-                        stroke="none"
-                      >
-                        {pieData.map((entry, idx) => (
-                          <Cell key={idx} fill={entry.color} />
-                        ))}
+                      <Pie data={pieData} cx="50%" cy="43%" innerRadius={50} outerRadius={85}
+                           dataKey="value" stroke="none">
+                        {pieData.map((e, idx) => <Cell key={idx} fill={e.color} />)}
                       </Pie>
                       <RechartsTooltip
-                        contentStyle={{ background: NAVY_MID, border: `1px solid rgba(255,255,255,0.15)`, borderRadius: 8, color: "#fff", fontSize: 12 }}
+                        contentStyle={{ background: NAVY_MID, border: "1px solid rgba(255,255,255,0.12)", borderRadius: 8, color: "#fff", fontSize: 11 }}
                         formatter={(val: number) => fmtDH(val)}
                       />
-                      <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} />
+                      <Legend verticalAlign="bottom" height={32} iconType="circle" wrapperStyle={{ fontSize: 10, color: "#64748b" }} />
                     </PieChart>
                   </ResponsiveContainer>
                 </CardContent>
               </Card>
             </div>
 
-            {/* Cost breakdown summary */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Cost breakdown bars */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {[
-                { label: "Coût d'achat total", val: totalCOGS, color: "#3b82f6", pct: totalCosts > 0 ? (totalCOGS / totalCosts * 100) : 0 },
-                { label: "Frais de livraison", val: totalShip, color: "#f59e0b", pct: totalCosts > 0 ? (totalShip / totalCosts * 100) : 0 },
-                { label: "Dépenses pub", val: totalAd, color: "#8b5cf6", pct: totalCosts > 0 ? (totalAd / totalCosts * 100) : 0 },
-              ].map(item => (
-                <div key={item.label} className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-400 font-semibold">{item.label}</span>
-                    <span className="text-xs font-bold" style={{ color: item.color }}>{item.pct.toFixed(1)}%</span>
+                { label: "Coût d'achat", val: totalCOGS, color: "#3b82f6" },
+                { label: "Frais livraison", val: totalShip, color: "#f59e0b" },
+                { label: "Dépenses pub",  val: totalAd,   color: "#8b5cf6" },
+              ].map(item => {
+                const pct = totalCost > 0 ? (item.val / totalCost) * 100 : 0;
+                return (
+                  <div key={item.label} className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-400 font-semibold">{item.label}</span>
+                      <span className="text-xs font-bold" style={{ color: item.color }}>{pct.toFixed(1)}%</span>
+                    </div>
+                    <p className="text-lg font-extrabold text-white">{fmtDH(item.val)}</p>
+                    <div className="w-full bg-white/10 rounded-full h-1.5">
+                      <div className="h-1.5 rounded-full transition-all"
+                           style={{ width: `${Math.min(pct, 100)}%`, background: item.color }} />
+                    </div>
                   </div>
-                  <p className="text-lg font-extrabold text-white">{fmtDH(item.val)}</p>
-                  <div className="w-full bg-white/10 rounded-full h-1.5">
-                    <div className="h-1.5 rounded-full transition-all" style={{ width: `${Math.min(item.pct, 100)}%`, background: item.color }} />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="flex items-center justify-between">
-              <Button variant="outline" onClick={() => setStep(2)} className="border-white/20 text-slate-300 hover:bg-white/10 hover:text-white gap-2" data-testid="button-back-step-2">
+              <Button variant="outline" onClick={() => setStep(2)}
+                      className="border-white/20 text-slate-300 hover:bg-white/8 hover:text-white"
+                      data-testid="button-back-step-2">
                 ← Modifier les coûts
               </Button>
-              <Button onClick={reset} variant="outline" className="border-amber-500/40 text-amber-400 hover:bg-amber-500/10 gap-2" data-testid="button-new-analysis">
-                <RotateCcw className="w-4 h-4" /> Nouvelle analyse
+              <Button variant="outline" onClick={reset}
+                      className="border-amber-500/35 text-amber-400 hover:bg-amber-500/10"
+                      data-testid="button-new-analysis">
+                <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Nouvelle analyse
               </Button>
             </div>
-          </div>
-        )}
-
-        {/* Empty state — no file yet */}
-        {step === 1 && !parseResult && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {[
-              { icon: <FileSpreadsheet className="w-6 h-6" />, title: "Import intelligent", desc: "Détection automatique des colonnes Produit, Quantité et Montant COD." },
-              { icon: <Settings2 className="w-6 h-6" />, title: "Coûts flexibles", desc: "Frais d'achat, livraison et pub par produit ou global en un clic." },
-              { icon: <BarChart3 className="w-6 h-6" />, title: "Rapport visuel", desc: "Profit net, ROI et graphiques par produit générés instantanément." },
-            ].map((card, i) => (
-              <div key={i} className="rounded-xl border border-white/10 bg-white/5 p-5 flex flex-col gap-3">
-                <div className="w-10 h-10 rounded-lg flex items-center justify-center" style={{ background: `${GOLD}15`, color: GOLD }}>
-                  {card.icon}
-                </div>
-                <div>
-                  <p className="text-white font-semibold text-sm">{card.title}</p>
-                  <p className="text-slate-400 text-xs mt-1">{card.desc}</p>
-                </div>
-              </div>
-            ))}
           </div>
         )}
       </div>
