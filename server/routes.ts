@@ -1104,9 +1104,21 @@ export async function registerRoutes(
 
               if (outcome.status === 'fulfilled' && outcome.value.success) {
                 const { trackingNumber, labelUrl } = outcome.value;
-                console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber}`);
+
+                // Hard guard: never save undefined as the tracking number
+                if (!trackingNumber) {
+                  console.error(`[SHIPPING-LOG]: ❌ Order #${ref} — carrier returned success but no tracking number. Skipping DB save.`);
+                  logUpdates.push(storage.createIntegrationLog({
+                    storeId, integrationId: null, provider,
+                    action: 'shipping_sent', status: 'fail',
+                    message: `❌ Commande #${ref}: ${provider} a confirmé mais sans numéro de suivi. Commande reste Confirmée.`,
+                  }));
+                  results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'failed', error: 'Pas de numéro de suivi retourné' });
+                  failedCount++;
+                } else {
+                console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber} (saved to track_number column)`);
                 dbUpdates.push(
-                  storage.updateOrderShipping(order.id, trackingNumber!, labelUrl!, provider),
+                  storage.updateOrderShipping(order.id, trackingNumber, labelUrl!, provider),
                   storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
                 );
                 logUpdates.push(storage.createIntegrationLog({
@@ -1116,6 +1128,7 @@ export async function registerRoutes(
                 }));
                 results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, trackingNumber, labelLink: labelUrl, status: 'shipped' });
                 shippedCount++;
+                }
               } else {
                 const errMsg =
                   outcome.status === 'rejected'
@@ -3936,8 +3949,22 @@ export async function registerRoutes(
 
       // ── Success — update DB only after carrier confirms ───────────
       const { trackingNumber, labelUrl } = shipResult;
-      console.log(`[SHIPPING-LOG]: ✅ Order #${order.orderNumber} dispatched via ${provider} — tracking: ${trackingNumber}`);
-      await storage.updateOrderShipping(orderId, trackingNumber!, labelUrl!, provider);
+
+      // Hard guard: never save undefined/empty as the tracking number
+      if (!trackingNumber) {
+        console.error(`[SHIPPING-LOG]: ❌ Carrier returned success=true but trackingNumber is missing for order #${order.orderNumber}. Aborting DB save.`);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider,
+          action: 'shipping_sent', status: 'fail',
+          message: `❌ Commande #${order.orderNumber}: ${provider} a confirmé mais n'a pas retourné de numéro de suivi. La commande reste Confirmée.`,
+        });
+        return res.status(422).json({
+          message: `${provider} n'a pas retourné de numéro de suivi. La commande reste Confirmée — vérifiez le portail ${provider}.`,
+        });
+      }
+
+      console.log(`[SHIPPING-LOG]: ✅ Order #${order.orderNumber} dispatched via ${provider} — tracking: ${trackingNumber} (saved to track_number column)`);
+      await storage.updateOrderShipping(orderId, trackingNumber, labelUrl!, provider);
       await storage.updateOrderStatus(orderId, 'Attente De Ramassage');
 
       await storage.createIntegrationLog({

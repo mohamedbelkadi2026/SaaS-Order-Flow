@@ -259,30 +259,59 @@ function extractTracking(body: any): string | undefined {
   if (!body) return undefined;
 
   // ── Digylog V2.4 — array response: [{ tracking, barcode, num, ... }]
-  // This is the success format when Digylog returns a plain array (not wrapped in .orders)
+  // IMPORTANT: `num` is our OWN order reference echoed back by Digylog — NOT a tracking number.
+  // We must NEVER use `num` as the tracking number or we'll store fake references.
+  // Only use `tracking` or `barcode` — these are the real Digylog barcodes.
   if (Array.isArray(body) && body.length > 0) {
     const first = body[0];
-    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.num;
-    if (t) return String(t);
+    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi;
+    // Explicitly exclude first.num — it is always our own order reference, not a carrier barcode
+    if (t) {
+      console.log(`[TRACK-EXTRACT]: Digylog array → field used: ${
+        first.tracking ? "tracking" :
+        first.barcode  ? "barcode"  :
+        first.tracking_number ? "tracking_number" : "code_suivi"
+      } = "${t}"`);
+      return String(t);
+    }
+    // Log if only num is present so we know the carrier didn't return a real barcode
+    if (first.num) {
+      console.warn(`[TRACK-EXTRACT]: ⚠️ Digylog returned only "num"="${first.num}" — this is the order reference, NOT a barcode. Treating as no tracking number.`);
+    }
+    return undefined;
   }
 
   if (typeof body !== "object") return undefined;
 
   // ── Digylog V2.4 — wrapped: { orders: [{ barcode, tracking, num, ... }] }
+  // Same rule: skip `num` — it is our own reference echoed back.
   if (Array.isArray(body.orders) && body.orders.length > 0) {
     const first = body.orders[0];
-    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.num;
-    if (t) return String(t);
+    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi;
+    if (t) {
+      console.log(`[TRACK-EXTRACT]: Digylog orders[] → field used: ${
+        first.tracking ? "tracking" :
+        first.barcode  ? "barcode"  :
+        first.tracking_number ? "tracking_number" : "code_suivi"
+      } = "${t}"`);
+      return String(t);
+    }
+    if (first.num) {
+      console.warn(`[TRACK-EXTRACT]: ⚠️ Digylog orders[] returned only "num"="${first.num}" — skipping (order reference, not barcode).`);
+    }
+    return undefined;
   }
 
-  return (
+  // ── Generic flat response ──────────────────────────────────────────────────
+  // For non-Digylog carriers, `id` is also excluded — it's typically the
+  // carrier's internal DB id, not the customer-facing tracking code.
+  const t =
     body.tracking_number        ||
     body.trackingNumber         ||
     body.barcode                ||
     body.tracking               ||
     body.code_suivi             ||
     body.numero_suivi           ||
-    body.id                     ||
     body.data?.tracking_number  ||
     body.data?.barcode          ||
     body.data?.tracking         ||
@@ -290,10 +319,14 @@ function extractTracking(body: any): string | undefined {
     body.result?.tracking_number ||
     body.result?.barcode        ||
     body.result?.tracking       ||
-    // Digylog V2 nested in data array
+    // Nested data array (some carriers)
     (Array.isArray(body.data) && (body.data[0]?.barcode || body.data[0]?.tracking)) ||
-    undefined
-  );
+    undefined;
+
+  if (t) {
+    console.log(`[TRACK-EXTRACT]: Generic → tracking = "${t}"`);
+  }
+  return t;
 }
 
 function extractLabelUrl(body: any): string | undefined {
