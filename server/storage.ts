@@ -219,6 +219,24 @@ export interface IStorage {
   getAbandonedLeadsForRecovery(storeId: number, waitMinutes: number): Promise<any[]>;
   getRecoveryStats(storeId: number): Promise<{ total: number; recovered: number; revenueRecovered: number }>;
   getAllStoresWithRecoveryEnabled(): Promise<import("@shared/schema").RecoverySetting[]>;
+
+  // ── Landing Pages ──────────────────────────────────────────────────────────
+  getLandingPages(storeId: number): Promise<import("@shared/schema").LandingPage[]>;
+  getLandingPage(id: number, storeId: number): Promise<import("@shared/schema").LandingPage | undefined>;
+  getLandingPageBySlug(slug: string): Promise<import("@shared/schema").LandingPage | undefined>;
+  slugExists(slug: string, excludeId?: number): Promise<boolean>;
+  createLandingPage(storeId: number, data: {
+    slug: string; productName: string; priceDH: number; description?: string;
+    heroImageUrl?: string; featuresImageUrl?: string; proofImageUrl?: string;
+    copy?: any; theme?: string; customColor?: string;
+  }): Promise<import("@shared/schema").LandingPage>;
+  updateLandingPage(id: number, storeId: number, data: Partial<{
+    slug: string; productName: string; priceDH: number; description: string;
+    heroImageUrl: string; featuresImageUrl: string; proofImageUrl: string;
+    copy: any; theme: string; customColor: string; isActive: number;
+  }>): Promise<import("@shared/schema").LandingPage | undefined>;
+  deleteLandingPage(id: number, storeId: number): Promise<void>;
+  incrementLandingPageOrderCount(id: number): Promise<void>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -2805,6 +2823,87 @@ export class DatabaseStorage implements IStorage {
   async getAllStoresWithRecoveryEnabled() {
     const { recoverySettings } = await import("@shared/schema");
     return db.select().from(recoverySettings).where(eq(recoverySettings.enabled, 1));
+  }
+
+  // ── Landing Pages ─────────────────────────────────────────────────────────
+
+  async getLandingPages(storeId: number) {
+    const { landingPages } = await import("@shared/schema");
+    return db.select().from(landingPages)
+      .where(eq(landingPages.storeId, storeId))
+      .orderBy(desc(landingPages.createdAt));
+  }
+
+  async getLandingPage(id: number, storeId: number) {
+    const { landingPages } = await import("@shared/schema");
+    const [row] = await db.select().from(landingPages)
+      .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+    return row;
+  }
+
+  async getLandingPageBySlug(slug: string) {
+    const { landingPages } = await import("@shared/schema");
+    const [row] = await db.select().from(landingPages)
+      .where(and(eq(landingPages.slug, slug), eq(landingPages.isActive, 1)));
+    return row;
+  }
+
+  async slugExists(slug: string, excludeId?: number) {
+    const { landingPages } = await import("@shared/schema");
+    const rows = await db.select({ id: landingPages.id }).from(landingPages)
+      .where(eq(landingPages.slug, slug));
+    if (excludeId) return rows.some(r => r.id !== excludeId);
+    return rows.length > 0;
+  }
+
+  async createLandingPage(storeId: number, data: {
+    slug: string; productName: string; priceDH: number; description?: string;
+    heroImageUrl?: string; featuresImageUrl?: string; proofImageUrl?: string;
+    copy?: any; theme?: string; customColor?: string;
+  }) {
+    const { landingPages } = await import("@shared/schema");
+    const [row] = await db.insert(landingPages).values({
+      storeId,
+      slug: data.slug,
+      productName: data.productName,
+      priceDH: Math.round(data.priceDH),
+      description: data.description ?? "",
+      heroImageUrl: data.heroImageUrl ?? "",
+      featuresImageUrl: data.featuresImageUrl ?? "",
+      proofImageUrl: data.proofImageUrl ?? "",
+      copy: data.copy ?? {},
+      theme: data.theme ?? "navy",
+      customColor: data.customColor ?? "",
+      isActive: 1,
+      orderCount: 0,
+    }).returning();
+    return row;
+  }
+
+  async updateLandingPage(id: number, storeId: number, data: Partial<{
+    slug: string; productName: string; priceDH: number; description: string;
+    heroImageUrl: string; featuresImageUrl: string; proofImageUrl: string;
+    copy: any; theme: string; customColor: string; isActive: number;
+  }>) {
+    const { landingPages } = await import("@shared/schema");
+    const [row] = await db.update(landingPages)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)))
+      .returning();
+    return row;
+  }
+
+  async deleteLandingPage(id: number, storeId: number) {
+    const { landingPages } = await import("@shared/schema");
+    await db.delete(landingPages)
+      .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+  }
+
+  async incrementLandingPageOrderCount(id: number) {
+    // Use raw SQL increment to avoid race conditions
+    await db.execute(
+      sql`UPDATE landing_pages SET order_count = COALESCE(order_count, 0) + 1 WHERE id = ${id}`
+    );
   }
 }
 

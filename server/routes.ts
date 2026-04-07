@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
-import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, landingPages } from "@shared/schema";
+import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations } from "@shared/schema";
 import { eq, and, gte, lt, count, desc } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -5614,8 +5614,7 @@ Generate ONLY a valid JSON object (no markdown, no backticks, no extra text) wit
     try {
       const storeId = req.user!.storeId!;
       const id = parseInt(req.params.id);
-      const [page] = await db.select().from(landingPages)
-        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+      const page = await storage.getLandingPage(id, storeId);
       if (!page) return res.status(404).json({ message: "Page introuvable." });
 
       const copy: any = page.copy || {};
@@ -5880,20 +5879,10 @@ function submitOrder(e){
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
 
-      // Check slug uniqueness
-      const existing = await db.select().from(landingPages).where(eq(landingPages.slug, data.slug));
-      if (existing.length > 0) {
-        return res.status(409).json({ message: "Ce lien est déjà pris. Choisissez un autre slug." });
-      }
+      const taken = await storage.slugExists(data.slug);
+      if (taken) return res.status(409).json({ message: "Ce lien est déjà pris. Choisissez un autre slug." });
 
-      const [page] = await db.insert(landingPages).values({
-        storeId, slug: data.slug, productName: data.productName,
-        priceDH: Math.round(data.priceDH), description: data.description,
-        heroImageUrl: data.heroImageUrl, featuresImageUrl: data.featuresImageUrl,
-        proofImageUrl: data.proofImageUrl, copy: data.copy,
-        theme: data.theme, customColor: data.customColor,
-        isActive: 1, orderCount: 0,
-      }).returning();
+      const page = await storage.createLandingPage(storeId, data);
       res.json(page);
     } catch (err: any) {
       console.error("[LP Builder] create page error:", err.message);
@@ -5905,9 +5894,7 @@ function submitOrder(e){
   app.get("/api/lp-builder/pages", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const pages = await db.select().from(landingPages)
-        .where(eq(landingPages.storeId, storeId))
-        .orderBy(desc(landingPages.createdAt));
+      const pages = await storage.getLandingPages(storeId);
       res.json(pages);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -5919,8 +5906,7 @@ function submitOrder(e){
     try {
       const storeId = req.user!.storeId!;
       const id = parseInt(req.params.id);
-      const [page] = await db.select().from(landingPages)
-        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+      const page = await storage.getLandingPage(id, storeId);
       if (!page) return res.status(404).json({ message: "Page introuvable." });
       res.json(page);
     } catch (err: any) {
@@ -5933,11 +5919,7 @@ function submitOrder(e){
     try {
       const storeId = req.user!.storeId!;
       const id = parseInt(req.params.id);
-      const data = req.body;
-      const [updated] = await db.update(landingPages)
-        .set({ ...data, updatedAt: new Date() })
-        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)))
-        .returning();
+      const updated = await storage.updateLandingPage(id, storeId, req.body);
       if (!updated) return res.status(404).json({ message: "Page introuvable." });
       res.json(updated);
     } catch (err: any) {
@@ -5950,8 +5932,7 @@ function submitOrder(e){
     try {
       const storeId = req.user!.storeId!;
       const id = parseInt(req.params.id);
-      await db.delete(landingPages)
-        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+      await storage.deleteLandingPage(id, storeId);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
@@ -5965,8 +5946,7 @@ function submitOrder(e){
   // Get public landing page data by slug
   app.get("/api/lp/:slug", async (req, res) => {
     try {
-      const [page] = await db.select().from(landingPages)
-        .where(and(eq(landingPages.slug, req.params.slug), eq(landingPages.isActive, 1)));
+      const page = await storage.getLandingPageBySlug(req.params.slug);
       if (!page) return res.status(404).json({ message: "Page introuvable." });
       res.json(page);
     } catch (err: any) {
@@ -5986,8 +5966,7 @@ function submitOrder(e){
       });
       const data = schema.parse(req.body);
 
-      const [page] = await db.select().from(landingPages)
-        .where(and(eq(landingPages.slug, req.params.slug), eq(landingPages.isActive, 1)));
+      const page = await storage.getLandingPageBySlug(req.params.slug);
       if (!page) return res.status(404).json({ message: "Page introuvable." });
 
       const orderNumber = `LP-${Date.now()}`;
@@ -6019,10 +5998,8 @@ function submitOrder(e){
         price: totalPriceCents,
       });
 
-      // Increment landing page order count
-      await db.update(landingPages)
-        .set({ orderCount: (page.orderCount || 0) + 1 })
-        .where(eq(landingPages.id, page.id));
+      // Increment landing page order count (atomic)
+      await storage.incrementLandingPageOrderCount(page.id);
 
       // Broadcast the new order in real-time
       try { broadcastToStore(page.storeId, { type: "new_order", order }); } catch (_) {}
