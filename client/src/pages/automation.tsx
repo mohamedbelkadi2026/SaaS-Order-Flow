@@ -1131,7 +1131,7 @@ function AiConfirmationTab() {
   const [orKeyInput, setOrKeyInput] = useState("");
   const [showOrKey, setShowOrKey] = useState(false);
   const [clearingOrKey, setClearingOrKey] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("openai/gpt-4o-mini");
+  const [selectedModel, setSelectedModel] = useState("anthropic/claude-3.5-sonnet");
   const [showModelDropdown, setShowModelDropdown] = useState(false);
 
   const saveSettingsMutation = useMutation({
@@ -1182,10 +1182,10 @@ function AiConfirmationTab() {
   const hasOrKey = s?.hasOpenRouterKey;
 
   const MODEL_OPTIONS = [
-    { value: "openai/gpt-4o",               label: "GPT-4o",            badge: "Le plus puissant" },
-    { value: "openai/gpt-4o-mini",          label: "GPT-4o Mini",       badge: "Rapide & économique" },
-    { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", badge: "Meilleure qualité" },
-    { value: "deepseek/deepseek-chat",      label: "DeepSeek Chat",     badge: "Excellent Darija" },
+    { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", badge: "Best for Design" },
+    { value: "openai/gpt-4o",               label: "GPT-4o",            badge: "Best for Sales Copy" },
+    { value: "openai/gpt-4o-mini",          label: "GPT-4o Mini",       badge: "Fast & economical" },
+    { value: "deepseek/deepseek-chat",      label: "DeepSeek V3",       badge: "Best for Darija" },
   ];
   const currentModel = MODEL_OPTIONS.find(m => m.value === selectedModel) ?? MODEL_OPTIONS[0];
 

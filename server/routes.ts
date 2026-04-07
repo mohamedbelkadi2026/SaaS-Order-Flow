@@ -5568,42 +5568,55 @@ export async function registerRoutes(
       };
       const langInstruction = langInstructions[language] || langInstructions.darija;
 
-      const prompt = `You are an expert direct-response copywriter for COD (Cash On Delivery) e-commerce infographics.
-${langInstruction}
+      const systemPrompt = `You are a world-class direct-response copywriter and creative director specializing in high-conversion COD (Cash On Delivery) e-commerce marketing for the Moroccan market. Your copy is used inside a premium AI-designed infographic — think Apple-level clarity meets aggressive direct-response persuasion.
 
-Product: ${productName}
+STRICT RULES:
+- NO emojis anywhere in the output. Use clean, professional language only.
+- Headlines must be bold, punchy, and under 8 words. No filler words.
+- Before/after items must be sharp and emotionally resonant — max 7 words each.
+- Expert quote must sound authoritative and clinical — not generic.
+- Feature titles: 2-3 words maximum. Feature descriptions: one crisp sentence.
+- Steps: action-oriented, specific, confidence-building.
+- CTA: commanding and urgent — not passive.
+- Scarcity line: specific and believable — never fake.
+- ${langInstruction}`;
+
+      const prompt = `Product: ${productName}
 Price: ${priceDH} DH
-Description: ${description || "Premium quality product"}
+Description: ${description || "Premium quality product for the Moroccan market"}
 
-Generate ONLY a valid JSON object (no markdown, no backticks, no extra text) with this EXACT structure:
+Generate ONLY a valid JSON object (no markdown, no code blocks, no extra text) with this EXACT structure:
 {
-  "headline": "Short punchy headline max 7 words — grabs attention instantly",
-  "subheadline": "One sentence: the single biggest transformation this product delivers",
-  "before": ["Pain point 1 (short, max 6 words)", "Pain point 2", "Pain point 3"],
-  "after": ["Positive outcome 1 (short, max 6 words)", "Positive outcome 2", "Positive outcome 3"],
+  "headline": "Bold hook headline — max 8 words, no emojis",
+  "subheadline": "One powerful sentence: the single biggest transformation this product delivers",
+  "before": ["Sharp pain point 1 (max 7 words)", "Sharp pain point 2 (max 7 words)", "Sharp pain point 3 (max 7 words)"],
+  "after": ["Specific positive outcome 1 (max 7 words)", "Specific positive outcome 2 (max 7 words)", "Specific positive outcome 3 (max 7 words)"],
   "expertName": "Dr. [Moroccan name]",
-  "expertTitle": "Short professional title relevant to the product (e.g. Nutritionist, Dermatologist, Fitness Coach)",
-  "expertQuote": "One powerful 2-sentence endorsement quote from the expert — authoritative, trust-building",
+  "expertTitle": "Specific professional credential relevant to the product category",
+  "expertQuote": "Two authoritative, trust-building sentences. Clinical and confident tone — no emojis.",
   "features": [
-    {"icon": "⚡", "title": "Feature 1 (2-3 words)", "desc": "One sentence benefit description"},
-    {"icon": "🎯", "title": "Feature 2 (2-3 words)", "desc": "One sentence benefit description"},
-    {"icon": "✅", "title": "Feature 3 (2-3 words)", "desc": "One sentence benefit description"}
+    {"icon": "zap",    "title": "2-3 word title", "desc": "One crisp benefit sentence with no emoji"},
+    {"icon": "leaf",   "title": "2-3 word title", "desc": "One crisp benefit sentence with no emoji"},
+    {"icon": "shield", "title": "2-3 word title", "desc": "One crisp benefit sentence with no emoji"}
   ],
   "steps": [
-    {"title": "Step 1 title", "desc": "Short action description"},
-    {"title": "Step 2 title", "desc": "Short action description"},
-    {"title": "Step 3 title", "desc": "Short action description"}
+    {"title": "Action-oriented step title", "desc": "Specific, reassuring description — max 12 words"},
+    {"title": "Action-oriented step title", "desc": "Specific, reassuring description — max 12 words"},
+    {"title": "Action-oriented step title", "desc": "Specific, reassuring description — max 12 words"}
   ],
-  "cta": "CTA button text (e.g. Commander Maintenant / اطلب الآن)",
-  "scarcity": "Short urgency line (max 8 words)",
-  "guarantee": "Short guarantee/trust line (delivery + satisfaction, max 10 words)"
+  "cta": "Commanding CTA text — 2 to 4 words maximum",
+  "scarcity": "Specific, believable urgency line — max 8 words, no emoji",
+  "guarantee": "Trust line covering delivery speed and satisfaction guarantee — max 10 words"
 }`;
 
       const completion = await client.chat.completions.create({
-        model: "openai/gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.8,
-        max_tokens: 1200,
+        model: "anthropic/claude-3.5-sonnet",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user",   content: prompt },
+        ],
+        temperature: 0.75,
+        max_tokens: 1400,
       });
 
       const raw = completion.choices[0]?.message?.content?.trim() || "{}";
