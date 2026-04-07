@@ -13,13 +13,14 @@ const OPENROUTER_HEADERS = {
   "HTTP-Referer": "https://tajergrow.com",
   "X-Title": "TajerGrow",
 };
-const DEFAULT_MODEL = "anthropic/claude-3.5-sonnet";
+const DEFAULT_MODEL = "anthropic/claude-3.7-sonnet";
 
 export const AI_MODELS: Record<string, { label: string; provider: string }> = {
-  "anthropic/claude-3.5-sonnet":  { label: "Claude 3.5 Sonnet — Best for Design",  provider: "OpenRouter" },
-  "openai/gpt-4o":                { label: "GPT-4o — Best for Sales Copy",          provider: "OpenRouter" },
-  "openai/gpt-4o-mini":           { label: "GPT-4o Mini — Fast & economical",       provider: "OpenRouter" },
-  "deepseek/deepseek-chat":       { label: "DeepSeek V3 — Best for Darija",         provider: "OpenRouter" },
+  "anthropic/claude-3.7-sonnet":  { label: "Claude 3.7 Sonnet — NEW Hybrid Reasoning", provider: "OpenRouter" },
+  "anthropic/claude-3.5-sonnet":  { label: "Claude 3.5 Sonnet — Best for Design",      provider: "OpenRouter" },
+  "openai/gpt-4o":                { label: "GPT-4o — Best for Sales Copy",              provider: "OpenRouter" },
+  "openai/gpt-4o-mini":           { label: "GPT-4o Mini — Fast & economical",           provider: "OpenRouter" },
+  "deepseek/deepseek-chat":       { label: "DeepSeek V3 — Best for Darija",             provider: "OpenRouter" },
 };
 
 interface ResolvedClient { client: OpenAI; model: string; provider: string; }

@@ -1131,7 +1131,7 @@ function AiConfirmationTab() {
   const [orKeyInput, setOrKeyInput] = useState("");
   const [showOrKey, setShowOrKey] = useState(false);
   const [clearingOrKey, setClearingOrKey] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("anthropic/claude-3.5-sonnet");
+  const [selectedModel, setSelectedModel] = useState("anthropic/claude-3.7-sonnet");
   const [showModelDropdown, setShowModelDropdown] = useState(false);
 
   const saveSettingsMutation = useMutation({
@@ -1182,10 +1182,11 @@ function AiConfirmationTab() {
   const hasOrKey = s?.hasOpenRouterKey;
 
   const MODEL_OPTIONS = [
-    { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", badge: "Best for Design" },
-    { value: "openai/gpt-4o",               label: "GPT-4o",            badge: "Best for Sales Copy" },
-    { value: "openai/gpt-4o-mini",          label: "GPT-4o Mini",       badge: "Fast & economical" },
-    { value: "deepseek/deepseek-chat",      label: "DeepSeek V3",       badge: "Best for Darija" },
+    { value: "anthropic/claude-3.7-sonnet", label: "Claude 3.7 Sonnet", badge: "★ Premium — Hybrid Reasoning", premium: true },
+    { value: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", badge: "Best for Design",               premium: false },
+    { value: "openai/gpt-4o",               label: "GPT-4o",            badge: "Best for Sales Copy",            premium: false },
+    { value: "openai/gpt-4o-mini",          label: "GPT-4o Mini",       badge: "Fast & economical",              premium: false },
+    { value: "deepseek/deepseek-chat",      label: "DeepSeek V3",       badge: "Best for Darija",                premium: false },
   ];
   const currentModel = MODEL_OPTIONS.find(m => m.value === selectedModel) ?? MODEL_OPTIONS[0];
 
@@ -1291,7 +1292,12 @@ function AiConfirmationTab() {
                 >
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-zinc-800">{currentModel.label}</span>
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-200">{currentModel.badge}</span>
+                    <span className={cn(
+                      "text-[10px] font-bold px-2 py-0.5 rounded-full border",
+                      currentModel.premium
+                        ? "bg-amber-50 text-amber-700 border-amber-300"
+                        : "bg-violet-50 text-violet-600 border-violet-200"
+                    )}>{currentModel.badge}</span>
                   </div>
                   <svg className={cn("w-4 h-4 text-zinc-400 transition-transform", showModelDropdown && "rotate-180")} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                 </button>
@@ -1311,11 +1317,18 @@ function AiConfirmationTab() {
                         data-testid={`model-option-${opt.value}`}
                       >
                         <div className="flex items-center gap-2">
-                          {selectedModel === opt.value && <Check className="w-3.5 h-3.5 text-violet-600" />}
+                          {selectedModel === opt.value && <Check className={cn("w-3.5 h-3.5", opt.premium ? "text-amber-500" : "text-violet-600")} />}
                           {selectedModel !== opt.value && <span className="w-3.5 h-3.5" />}
-                          <span className={cn("font-medium", selectedModel === opt.value ? "text-violet-700" : "text-zinc-700")}>{opt.label}</span>
+                          <span className={cn("font-medium", selectedModel === opt.value ? (opt.premium ? "text-amber-700" : "text-violet-700") : "text-zinc-700")}>
+                            {opt.label}
+                          </span>
                         </div>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-500">{opt.badge}</span>
+                        <span className={cn(
+                          "text-[10px] font-bold px-2 py-0.5 rounded-full",
+                          opt.premium
+                            ? "bg-amber-50 text-amber-700 border border-amber-300"
+                            : "bg-zinc-100 text-zinc-500"
+                        )}>{opt.badge}</span>
                       </button>
                     ))}
                   </div>
