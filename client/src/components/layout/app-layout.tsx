@@ -74,6 +74,7 @@ const ADMIN_NAV = [
   { name: "Publicités",             href: "/publicites",    icon: Receipt         },
   { name: "Calculateur de Marge",   href: "/calculator",    icon: PieChart        },
   { name: "Profit Analyzer Pro",    href: "/profit-analyzer", icon: BarChart3     },
+  { name: "LP Builder",             href: "/lp-builder",    icon: Zap             },
   { name: "Automation & AI",        href: "/automation",    icon: Bot             },
   { name: "Integration",            href: "/integrations",  icon: Plug,           hasSubmenu: true  },
 ] as const;

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
-import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations } from "@shared/schema";
+import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, landingPages } from "@shared/schema";
 import { eq, and, gte, lt, count, desc } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -41,6 +41,26 @@ const receiptUpload = multer({
 // Product image upload — saves to uploads/products/ (persistent between restarts)
 const PRODUCT_IMG_DIR = path.join(UPLOADS_BASE, "products");
 if (!fs.existsSync(PRODUCT_IMG_DIR)) fs.mkdirSync(PRODUCT_IMG_DIR, { recursive: true });
+
+// LP builder image upload — saves to uploads/lp-images/
+const LP_IMG_DIR = path.join(UPLOADS_BASE, "lp-images");
+if (!fs.existsSync(LP_IMG_DIR)) fs.mkdirSync(LP_IMG_DIR, { recursive: true });
+
+const lpImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: LP_IMG_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+      cb(null, `lp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Seuls les fichiers image (JPG, PNG, WEBP) sont acceptés."));
+  },
+});
 
 const productImageUpload = multer({
   storage: multer.diskStorage({
@@ -5475,6 +5495,252 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[OpenRetour] create-return error:", err.message);
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     LP BUILDER — authenticated management routes
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  // Upload an image for a landing page
+  app.post("/api/lp-builder/upload-image", requireAuth, lpImageUpload.single("image"), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: "Aucune image reçue." });
+    const url = `/uploads/lp-images/${req.file.filename}`;
+    res.json({ url });
+  });
+
+  // AI-powered copy generation in Darija/French
+  app.post("/api/lp-builder/generate-copy", requireAuth, async (req, res) => {
+    try {
+      const { productName, priceDH, description } = z.object({
+        productName: z.string().min(1),
+        priceDH: z.number(),
+        description: z.string().default(""),
+      }).parse(req.body);
+
+      const storeId = req.user!.storeId!;
+      const orKey = process.env.OPENROUTER_API_KEY?.trim();
+      const oaiKey = process.env.OPENAI_API_KEY?.trim();
+      if (!orKey && !oaiKey) {
+        return res.status(400).json({ message: "Clé API OpenRouter/OpenAI non configurée." });
+      }
+
+      const OpenAI = (await import("openai")).default;
+      const client = orKey
+        ? new OpenAI({ apiKey: orKey, baseURL: "https://openrouter.ai/api/v1", defaultHeaders: { "HTTP-Referer": "https://tajergrow.com", "X-Title": "TajerGrow" } })
+        : new OpenAI({ apiKey: oaiKey });
+
+      const prompt = `Tu es un expert en copywriting pour e-commerce marocain COD (Cash On Delivery). Génère une copy de vente ultra-convaincante pour ce produit en mélange Français et Darija marocaine (comme on parle vraiment au Maroc).
+
+Produit: ${productName}
+Prix: ${priceDH} DH
+Description: ${description || "Produit de qualité premium"}
+
+Génère UNIQUEMENT un JSON valide avec cette structure exacte (sans markdown, sans backticks):
+{
+  "headline": "Titre principal court et accrocheur (max 8 mots, en Darija ou Français)",
+  "subheadline": "Sous-titre qui explique le bénéfice principal (1 phrase)",
+  "hook": "Phrase d'accroche qui touche la douleur du client (1-2 phrases percutantes)",
+  "problem": "Description du problème que le produit résout (2-3 phrases empathiques)",
+  "solution": ["Bénéfice 1 en Darija/Français", "Bénéfice 2", "Bénéfice 3", "Bénéfice 4"],
+  "scarcity": "Message d'urgence/rareté court (ex: 'Stock limité - Dernières pièces!')",
+  "cta": "Texte du bouton CTA (ex: 'Commander Maintenant')",
+  "guarantee": "Message de garantie court (ex: 'Livraison rapide + Remboursé si non satisfait')",
+  "testimonials": [
+    {"name": "Fatima Z.", "city": "Casablanca", "rating": 5, "text": "Témoignage authentique en Darija/Français (2-3 phrases)"},
+    {"name": "Ahmed B.", "city": "Marrakech", "rating": 5, "text": "Témoignage authentique"},
+    {"name": "Sara M.", "city": "Rabat", "rating": 5, "text": "Témoignage authentique"}
+  ]
+}`;
+
+      const completion = await client.chat.completions.create({
+        model: "openai/gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.8,
+        max_tokens: 1200,
+      });
+
+      const raw = completion.choices[0]?.message?.content?.trim() || "{}";
+      // Strip markdown code fences if present
+      const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
+      const copy = JSON.parse(cleaned);
+      res.json(copy);
+    } catch (err: any) {
+      console.error("[LP Builder] generate-copy error:", err.message);
+      res.status(500).json({ message: err.message || "Erreur lors de la génération." });
+    }
+  });
+
+  // Create a new landing page
+  app.post("/api/lp-builder/pages", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        slug: z.string().min(3).max(80).regex(/^[a-z0-9-]+$/, "Slug invalide (lettres minuscules, chiffres, tirets)"),
+        productName: z.string().min(1),
+        priceDH: z.number().min(0),
+        description: z.string().default(""),
+        heroImageUrl: z.string().default(""),
+        featuresImageUrl: z.string().default(""),
+        proofImageUrl: z.string().default(""),
+        copy: z.any().default({}),
+        theme: z.string().default("navy"),
+        customColor: z.string().default(""),
+      });
+      const data = schema.parse(req.body);
+      const storeId = req.user!.storeId!;
+
+      // Check slug uniqueness
+      const existing = await db.select().from(landingPages).where(eq(landingPages.slug, data.slug));
+      if (existing.length > 0) {
+        return res.status(409).json({ message: "Ce lien est déjà pris. Choisissez un autre slug." });
+      }
+
+      const [page] = await db.insert(landingPages).values({
+        storeId, slug: data.slug, productName: data.productName,
+        priceDH: Math.round(data.priceDH), description: data.description,
+        heroImageUrl: data.heroImageUrl, featuresImageUrl: data.featuresImageUrl,
+        proofImageUrl: data.proofImageUrl, copy: data.copy,
+        theme: data.theme, customColor: data.customColor,
+        isActive: 1, orderCount: 0,
+      }).returning();
+      res.json(page);
+    } catch (err: any) {
+      console.error("[LP Builder] create page error:", err.message);
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  // List all landing pages for the store
+  app.get("/api/lp-builder/pages", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const pages = await db.select().from(landingPages)
+        .where(eq(landingPages.storeId, storeId))
+        .orderBy(desc(landingPages.createdAt));
+      res.json(pages);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Get a single landing page by ID (auth)
+  app.get("/api/lp-builder/pages/:id", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = parseInt(req.params.id);
+      const [page] = await db.select().from(landingPages)
+        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+      if (!page) return res.status(404).json({ message: "Page introuvable." });
+      res.json(page);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Update a landing page
+  app.patch("/api/lp-builder/pages/:id", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = parseInt(req.params.id);
+      const data = req.body;
+      const [updated] = await db.update(landingPages)
+        .set({ ...data, updatedAt: new Date() })
+        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)))
+        .returning();
+      if (!updated) return res.status(404).json({ message: "Page introuvable." });
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Delete a landing page
+  app.delete("/api/lp-builder/pages/:id", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = parseInt(req.params.id);
+      await db.delete(landingPages)
+        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     LP BUILDER — public routes (NO auth required)
+  ═══════════════════════════════════════════════════════════════════════ */
+
+  // Get public landing page data by slug
+  app.get("/api/lp/:slug", async (req, res) => {
+    try {
+      const [page] = await db.select().from(landingPages)
+        .where(and(eq(landingPages.slug, req.params.slug), eq(landingPages.isActive, 1)));
+      if (!page) return res.status(404).json({ message: "Page introuvable." });
+      res.json(page);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Submit an order from a public landing page
+  app.post("/api/lp/:slug/order", async (req, res) => {
+    try {
+      const schema = z.object({
+        customerName: z.string().min(1),
+        customerPhone: z.string().min(6),
+        customerCity: z.string().default(""),
+        customerAddress: z.string().default(""),
+        quantity: z.number().min(1).default(1),
+      });
+      const data = schema.parse(req.body);
+
+      const [page] = await db.select().from(landingPages)
+        .where(and(eq(landingPages.slug, req.params.slug), eq(landingPages.isActive, 1)));
+      if (!page) return res.status(404).json({ message: "Page introuvable." });
+
+      const orderNumber = `LP-${Date.now()}`;
+      const totalPriceCents = page.priceDH * data.quantity * 100;
+
+      const [order] = await db.insert(orders).values({
+        storeId: page.storeId,
+        orderNumber,
+        customerName: data.customerName,
+        customerPhone: data.customerPhone,
+        customerCity: data.customerCity,
+        customerAddress: data.customerAddress,
+        status: "nouveau",
+        totalPrice: totalPriceCents,
+        productCost: 0,
+        shippingCost: 0,
+        adSpend: 0,
+        source: "landing_page",
+        rawProductName: page.productName,
+        rawQuantity: data.quantity,
+        canOpen: 1,
+      }).returning();
+
+      // Insert order item
+      await db.insert(orderItems).values({
+        orderId: order.id,
+        rawProductName: page.productName,
+        quantity: data.quantity,
+        price: totalPriceCents,
+      });
+
+      // Increment landing page order count
+      await db.update(landingPages)
+        .set({ orderCount: (page.orderCount || 0) + 1 })
+        .where(eq(landingPages.id, page.id));
+
+      // Broadcast the new order in real-time
+      try { broadcastToStore(page.storeId, { type: "new_order", order }); } catch (_) {}
+      try { emitNewOrder(page.storeId, order); } catch (_) {}
+
+      res.json({ success: true, orderId: order.id, orderNumber });
+    } catch (err: any) {
+      console.error("[LP public order]", err.message);
+      res.status(400).json({ message: err.message });
     }
   });
 

@@ -1,7 +1,18 @@
 # TajerGrow OMS - Order Management System + WhatsApp AI Automation
 
 ## Overview
-TajerGrow is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on Delivery) e-commerce market with AI Recovery System. Built with React+Vite frontend, Node.js/Express backend, and PostgreSQL database.
+TajerGrow is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on Delivery) e-commerce market with AI Recovery System, Profit Analyzer Pro, and LP Builder. Built with React+Vite frontend, Node.js/Express backend, and PostgreSQL database.
+
+## LP Builder Module
+Create mobile-first COD landing pages in a 3-step wizard:
+- **Step 1**: Product info (name, price, description) + 3 image upload slots (Hero / Features / Proof)
+- **Step 2**: AI-powered copy generation in Darija/French (via OpenRouter/OpenAI) — editable headline, hook, benefits, testimonials
+- **Step 3**: Theme (Navy & Gold / Gold & Navy / Custom) + slug → Publish
+- **Public route**: `/lp/:slug` — no auth, full mobile-first landing page with countdown timer, order form (COD), floating CTA
+- **API**: `/api/lp-builder/` (auth) and `/api/lp/:slug` (public)
+- **DB table**: `landing_pages`
+- **Image storage**: `uploads/lp-images/` (multer, 10MB limit, JPG/PNG/WEBP)
+- Orders from LPs are created with `source: "landing_page"`, `status: "nouveau"`, and trigger real-time SSE broadcasts
 
 ## Architecture
 - **Frontend**: React 18 + Vite + TailwindCSS + shadcn/ui + Recharts + wouter routing

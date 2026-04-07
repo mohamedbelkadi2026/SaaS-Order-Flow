@@ -653,6 +653,27 @@ export const aiSettings = pgTable("ai_settings", {
 });
 export type AiSetting = typeof aiSettings.$inferSelect;
 
+// ─── Landing Page Builder ───────────────────────────────────────────────────
+export const landingPages = pgTable("landing_pages", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  slug: text("slug").notNull(),
+  productName: text("product_name").notNull(),
+  priceDH: integer("price_dh").notNull().default(0),
+  description: text("description").default(""),
+  heroImageUrl: text("hero_image_url").default(""),
+  featuresImageUrl: text("features_image_url").default(""),
+  proofImageUrl: text("proof_image_url").default(""),
+  copy: jsonb("copy").default({}),
+  theme: text("theme").default("navy"),
+  customColor: text("custom_color").default(""),
+  isActive: integer("is_active").default(1),
+  orderCount: integer("order_count").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+export type LandingPage = typeof landingPages.$inferSelect;
+
 // ─── AI Recovery Settings per Store ────────────────────────────────────────
 export const recoverySettings = pgTable("recovery_settings", {
   id: serial("id").primaryKey(),
