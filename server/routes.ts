@@ -5522,19 +5522,17 @@ export async function registerRoutes(
     }
   });
 
-  // Save OpenRouter API key for LP Builder (stored in aiSettings per store)
+  // Save OpenRouter API key for LP Builder (stored in aiSettings per store via upsert)
   app.post("/api/lp-builder/settings", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
       const { openrouterApiKey } = z.object({ openrouterApiKey: z.string() }).parse(req.body);
-      const existing = await storage.getAiSettings(storeId);
-      if (existing) {
-        await storage.updateAiSettings(storeId, { openrouterApiKey: openrouterApiKey.trim() || null } as any);
-      } else {
-        await storage.createAiSettings({ storeId, openrouterApiKey: openrouterApiKey.trim() || null } as any);
-      }
+      await storage.upsertAiSettings(storeId, {
+        openrouterApiKey: openrouterApiKey.trim() || null,
+      });
       res.json({ success: true });
     } catch (err: any) {
+      console.error("[LP Builder] save settings error:", err.message);
       res.status(500).json({ message: err.message });
     }
   });
