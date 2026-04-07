@@ -10,6 +10,7 @@ import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConver
 import { eq, and, gte, lt, count, desc } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
+import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 import { shipOrderToCarrier } from "./services/carrier-service";
@@ -5509,20 +5510,51 @@ export async function registerRoutes(
     res.json({ url });
   });
 
-  // AI-powered copy generation in Darija/French
+  // Get LP Builder API key status for the current store
+  app.get("/api/lp-builder/settings", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const settings = await storage.getAiSettings(storeId);
+      const hasKey = !!(settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim() || settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim());
+      res.json({ hasKey, hasStoreKey: !!(settings?.openrouterApiKey?.trim()) });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Save OpenRouter API key for LP Builder (stored in aiSettings per store)
+  app.post("/api/lp-builder/settings", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { openrouterApiKey } = z.object({ openrouterApiKey: z.string() }).parse(req.body);
+      const existing = await storage.getAiSettings(storeId);
+      if (existing) {
+        await storage.updateAiSettings(storeId, { openrouterApiKey: openrouterApiKey.trim() || null } as any);
+      } else {
+        await storage.createAiSettings({ storeId, openrouterApiKey: openrouterApiKey.trim() || null } as any);
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // AI-powered copy generation — uses store's API key from aiSettings, with language support
   app.post("/api/lp-builder/generate-copy", requireAuth, async (req, res) => {
     try {
-      const { productName, priceDH, description } = z.object({
+      const { productName, priceDH, description, language } = z.object({
         productName: z.string().min(1),
         priceDH: z.number(),
         description: z.string().default(""),
+        language: z.enum(["darija", "french", "arabic", "english"]).default("darija"),
       }).parse(req.body);
 
       const storeId = req.user!.storeId!;
-      const orKey = process.env.OPENROUTER_API_KEY?.trim();
-      const oaiKey = process.env.OPENAI_API_KEY?.trim();
+      const settings = await storage.getAiSettings(storeId);
+      const orKey  = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
+      const oaiKey = settings?.openaiApiKey?.trim()     || process.env.OPENAI_API_KEY?.trim();
       if (!orKey && !oaiKey) {
-        return res.status(400).json({ message: "Clé API OpenRouter/OpenAI non configurée." });
+        return res.status(400).json({ message: "Clé API non configurée. Veuillez ajouter votre clé OpenRouter dans les paramètres du LP Builder." });
       }
 
       const OpenAI = (await import("openai")).default;
@@ -5530,26 +5562,35 @@ export async function registerRoutes(
         ? new OpenAI({ apiKey: orKey, baseURL: "https://openrouter.ai/api/v1", defaultHeaders: { "HTTP-Referer": "https://tajergrow.com", "X-Title": "TajerGrow" } })
         : new OpenAI({ apiKey: oaiKey });
 
-      const prompt = `Tu es un expert en copywriting pour e-commerce marocain COD (Cash On Delivery). Génère une copy de vente ultra-convaincante pour ce produit en mélange Français et Darija marocaine (comme on parle vraiment au Maroc).
+      const langInstructions: Record<string, string> = {
+        darija:  "Écris TOUT le contenu en Darija marocaine (dialecte marocain authentique, comme on parle vraiment — mélange Darija + quelques mots français courants). Utilise un ton jeune, chaleureux et persuasif.",
+        french:  "Écris TOUT le contenu en Français standard, professionnel mais accessible. Ton persuasif et moderne adapté au marché marocain.",
+        arabic:  "اكتب كل المحتوى باللغة العربية الفصحى المبسطة. نبرة مقنعة وحديثة تناسب التجارة الإلكترونية المغربية.",
+        english: "Write ALL content in English. Use a persuasive, modern, direct-response copywriting style.",
+      };
+      const langInstruction = langInstructions[language] || langInstructions.darija;
 
-Produit: ${productName}
-Prix: ${priceDH} DH
-Description: ${description || "Produit de qualité premium"}
+      const prompt = `You are an expert direct-response copywriter for Moroccan COD (Cash On Delivery) e-commerce.
+${langInstruction}
 
-Génère UNIQUEMENT un JSON valide avec cette structure exacte (sans markdown, sans backticks):
+Product: ${productName}
+Price: ${priceDH} DH
+Description: ${description || "Premium quality product"}
+
+Generate ONLY a valid JSON object (no markdown, no backticks, no extra text) with this EXACT structure:
 {
-  "headline": "Titre principal court et accrocheur (max 8 mots, en Darija ou Français)",
-  "subheadline": "Sous-titre qui explique le bénéfice principal (1 phrase)",
-  "hook": "Phrase d'accroche qui touche la douleur du client (1-2 phrases percutantes)",
-  "problem": "Description du problème que le produit résout (2-3 phrases empathiques)",
-  "solution": ["Bénéfice 1 en Darija/Français", "Bénéfice 2", "Bénéfice 3", "Bénéfice 4"],
-  "scarcity": "Message d'urgence/rareté court (ex: 'Stock limité - Dernières pièces!')",
-  "cta": "Texte du bouton CTA (ex: 'Commander Maintenant')",
-  "guarantee": "Message de garantie court (ex: 'Livraison rapide + Remboursé si non satisfait')",
+  "headline": "Short punchy headline (max 8 words)",
+  "subheadline": "One sentence explaining the main benefit",
+  "hook": "Opening hook that hits the customer's pain point (1-2 powerful sentences)",
+  "problem": "Empathetic problem description (2-3 sentences)",
+  "solution": ["Benefit 1", "Benefit 2", "Benefit 3", "Benefit 4"],
+  "scarcity": "Short urgency/scarcity message",
+  "cta": "CTA button text (e.g. Order Now / Commander Maintenant)",
+  "guarantee": "Short guarantee message (fast delivery + satisfaction)",
   "testimonials": [
-    {"name": "Fatima Z.", "city": "Casablanca", "rating": 5, "text": "Témoignage authentique en Darija/Français (2-3 phrases)"},
-    {"name": "Ahmed B.", "city": "Marrakech", "rating": 5, "text": "Témoignage authentique"},
-    {"name": "Sara M.", "city": "Rabat", "rating": 5, "text": "Témoignage authentique"}
+    {"name": "Fatima Z.", "city": "Casablanca", "rating": 5, "text": "Authentic testimonial (2-3 sentences)"},
+    {"name": "Ahmed B.", "city": "Marrakech", "rating": 5, "text": "Authentic testimonial"},
+    {"name": "Sara M.", "city": "Rabat", "rating": 5, "text": "Authentic testimonial"}
   ]
 }`;
 
@@ -5557,17 +5598,269 @@ Génère UNIQUEMENT un JSON valide avec cette structure exacte (sans markdown, s
         model: "openai/gpt-4o-mini",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.8,
-        max_tokens: 1200,
+        max_tokens: 1400,
       });
 
       const raw = completion.choices[0]?.message?.content?.trim() || "{}";
-      // Strip markdown code fences if present
       const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/, "").trim();
       const copy = JSON.parse(cleaned);
       res.json(copy);
     } catch (err: any) {
       console.error("[LP Builder] generate-copy error:", err.message);
       res.status(500).json({ message: err.message || "Erreur lors de la génération." });
+    }
+  });
+
+  // Export landing page as a standalone ZIP (index.html + images/)
+  app.get("/api/lp-builder/pages/:id/export", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = parseInt(req.params.id);
+      const [page] = await db.select().from(landingPages)
+        .where(and(eq(landingPages.id, id), eq(landingPages.storeId, storeId)));
+      if (!page) return res.status(404).json({ message: "Page introuvable." });
+
+      const copy: any = page.copy || {};
+      const theme = page.theme || "navy";
+      const customColor = page.customColor || "";
+
+      // Theme colors
+      const themes: Record<string, { bg: string; accent: string; btn: string; btnTxt: string; text: string; muted: string }> = {
+        navy:   { bg: "#0F1F3D", accent: "#C5A059", btn: "#C5A059", btnTxt: "#0F1F3D", text: "#ffffff", muted: "rgba(255,255,255,0.7)" },
+        gold:   { bg: "#C5A059", accent: "#0F1F3D", btn: "#0F1F3D", btnTxt: "#ffffff", text: "#0F1F3D", muted: "rgba(15,31,61,0.65)" },
+        custom: { bg: customColor || "#6d28d9", accent: "#ffffff", btn: "#ffffff", btnTxt: customColor || "#6d28d9", text: "#ffffff", muted: "rgba(255,255,255,0.7)" },
+      };
+      const T = themes[theme] || themes.navy;
+
+      // Map image URLs to local file paths and export names
+      const imageMap: { url: string; exportName: string }[] = [];
+      function mapImg(url: string, name: string) {
+        if (!url) return "";
+        const file = path.basename(url);
+        imageMap.push({ url, exportName: name });
+        return `images/${name}`;
+      }
+      const heroRef     = page.heroImageUrl     ? mapImg(page.heroImageUrl,     `hero${path.extname(page.heroImageUrl) || ".jpg"}`)     : "";
+      const featuresRef = page.featuresImageUrl ? mapImg(page.featuresImageUrl, `features${path.extname(page.featuresImageUrl) || ".jpg"}`) : "";
+      const proofRef    = page.proofImageUrl    ? mapImg(page.proofImageUrl,    `proof${path.extname(page.proofImageUrl) || ".jpg"}`)    : "";
+
+      const headline    = copy.headline    || page.productName;
+      const subheadline = copy.subheadline || "";
+      const hook        = copy.hook        || "";
+      const problem     = copy.problem     || "";
+      const solution    = (copy.solution   || []) as string[];
+      const scarcity    = copy.scarcity    || "Stock limité!";
+      const cta         = copy.cta         || "Commander Maintenant";
+      const guarantee   = copy.guarantee   || "Livraison rapide · Paiement à la livraison";
+      const testimonials = (copy.testimonials || []) as any[];
+
+      const benefitRows = solution.map((b, i) => {
+        const icons = ["✅", "⚡", "💪", "🎯", "🔥", "💎"];
+        return `<div class="benefit-card"><span class="b-icon">${icons[i % 6]}</span><span>${b}</span></div>`;
+      }).join("");
+
+      const testimonialRows = testimonials.map(t => `
+        <div class="testimonial-card">
+          <div class="testi-header">
+            <div class="testi-avatar">${(t.name || "C")[0].toUpperCase()}</div>
+            <div class="testi-info"><strong>${t.name || ""}</strong><br><small>${t.city || ""}</small></div>
+            <div class="testi-stars">${"★".repeat(t.rating || 5)}</div>
+          </div>
+          <p class="testi-text">"${t.text || ""}"</p>
+        </div>`).join("");
+
+      const html = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${page.productName} — ${page.priceDH} DH</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:${T.bg};color:${T.text};min-height:100vh;overflow-x:hidden}
+section{min-height:100vh;position:relative;display:flex;flex-direction:column;justify-content:flex-end}
+.reel-bg{position:absolute;inset:0;overflow:hidden}
+.reel-bg img{width:100%;height:100%;object-fit:cover}
+.reel-overlay{position:absolute;inset:0;background:linear-gradient(to bottom,transparent 20%,${T.bg}cc 60%,${T.bg} 100%)}
+.reel-content{position:relative;padding:24px 20px 40px;max-width:480px;margin:0 auto;width:100%}
+.badge{display:inline-block;background:${T.accent};color:${T.btnTxt};padding:6px 14px;border-radius:100px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;margin-bottom:16px}
+h1{font-size:clamp(28px,8vw,44px);font-weight:900;line-height:1.1;margin-bottom:12px}
+.sub{font-size:17px;line-height:1.5;opacity:.85;margin-bottom:14px}
+.hook-text{font-style:italic;font-size:15px;opacity:.8;margin-bottom:20px;line-height:1.6}
+.price-row{margin-bottom:22px}
+.price{color:${T.accent};font-size:38px;font-weight:900}
+.price-orig{opacity:.5;text-decoration:line-through;font-size:15px;margin-left:8px}
+.cta-btn{display:block;width:100%;padding:18px;background:${T.btn};color:${T.btnTxt};border:none;border-radius:14px;font-size:18px;font-weight:900;text-align:center;text-transform:uppercase;letter-spacing:.06em;cursor:pointer;text-decoration:none;margin-bottom:10px}
+.guarantee{text-align:center;font-size:12px;opacity:.6;margin-top:8px}
+
+.benefits-section{background:${T.bg === "#C5A059" ? "#b8934e" : "#1A2F4E"};padding:48px 20px}
+.benefits-section h2,.testimonials-section h2,.order-section h2{color:${T.accent};font-size:22px;font-weight:800;margin-bottom:20px}
+.benefit-card{display:flex;align-items:flex-start;gap:12px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.b-icon{font-size:22px;flex-shrink:0}
+.problem-text{opacity:.85;font-size:15px;line-height:1.7;margin-bottom:28px}
+
+.testimonials-section{padding:48px 20px}
+.testimonial-card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:16px;margin-bottom:14px}
+.testi-header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.testi-avatar{width:40px;height:40px;border-radius:50%;background:${T.accent};color:${T.btnTxt};display:flex;align-items:center;justify-content:center;font-weight:900;font-size:16px;flex-shrink:0}
+.testi-stars{color:#f59e0b;margin-left:auto;font-size:14px}
+.testi-text{font-style:italic;font-size:14px;line-height:1.6;opacity:.9}
+
+.scarcity-banner{background:linear-gradient(135deg,#ef4444,#dc2626);border-radius:14px;padding:16px 20px;text-align:center;margin-bottom:28px}
+.countdown{display:flex;justify-content:center;gap:12px;margin-bottom:32px}
+.cd-box{text-align:center}
+.cd-num{background:${T.accent};color:${T.btnTxt};border-radius:12px;padding:14px 18px;font-size:32px;font-weight:900;min-width:64px;line-height:1}
+.cd-label{font-size:10px;opacity:.6;margin-top:4px;text-transform:uppercase;letter-spacing:.1em}
+
+.order-section{padding:48px 20px 100px;background:${T.bg === "#C5A059" ? "#b8934e" : "#1A2F4E"}}
+.order-card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:20px;padding:24px}
+.qty-btns{display:flex;gap:8px;margin-bottom:16px}
+.qty-btn{flex:1;padding:10px;border-radius:10px;border:2px solid rgba(255,255,255,.15);background:transparent;color:${T.text};font-weight:700;font-size:15px;cursor:pointer}
+.qty-btn.active{border-color:${T.accent};background:${T.accent}22;color:${T.accent}}
+.price-preview{background:${T.accent}18;border:1px solid ${T.accent}40;border-radius:12px;padding:12px 16px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
+.total-price{color:${T.accent};font-size:22px;font-weight:900}
+.form-label{display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;opacity:.55;margin-bottom:6px}
+.form-input{width:100%;padding:14px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08);color:${T.text};font-size:15px;margin-bottom:14px;outline:none}
+.form-input:focus{border-color:${T.accent}88}
+.success-box{background:rgba(16,185,129,.12);border:2px solid #10b981;border-radius:20px;padding:32px;text-align:center;display:none}
+
+.floating-cta{position:fixed;bottom:0;left:0;right:0;z-index:999;padding:12px 16px;background:rgba(0,0,0,.85);backdrop-filter:blur(10px);border-top:2px solid ${T.accent}}
+
+@media(min-width:600px){.reel-content,.benefits-section>*,.testimonials-section>*,.order-section>*{max-width:480px;margin-left:auto;margin-right:auto}}
+</style>
+</head>
+<body>
+
+<!-- HERO REEL -->
+<section>
+  ${heroRef ? `<div class="reel-bg"><img src="${heroRef}" alt="${page.productName}" loading="lazy"><div class="reel-overlay"></div></div>` : `<div style="position:absolute;inset:0;background:linear-gradient(135deg,${T.bg},${T.accent}22)"></div>`}
+  <div class="reel-content">
+    <div class="badge">🔥 Offre Limitée</div>
+    <h1>${headline}</h1>
+    ${subheadline ? `<p class="sub">${subheadline}</p>` : ""}
+    ${hook ? `<p class="hook-text">"${hook}"</p>` : ""}
+    <div class="price-row">
+      <span class="price">${page.priceDH} DH</span>
+      <span class="price-orig">${Math.round(page.priceDH * 1.4)} DH</span>
+    </div>
+    <a href="#order" class="cta-btn">🛒 ${cta}</a>
+    <p class="guarantee">🚚 ${guarantee}</p>
+  </div>
+</section>
+
+<!-- FEATURES REEL -->
+${problem || solution.length > 0 ? `
+<section class="benefits-section">
+  ${featuresRef ? `<div class="reel-bg" style="opacity:.25"><img src="${featuresRef}" alt=""><div class="reel-overlay"></div></div>` : ""}
+  <div class="reel-content" style="position:relative">
+    ${problem ? `<p class="problem-text">${problem}</p>` : ""}
+    ${solution.length > 0 ? `<h2 style="color:${T.accent};font-size:22px;font-weight:800;margin-bottom:20px">Pourquoi choisir ce produit ?</h2>${benefitRows}` : ""}
+  </div>
+</section>` : ""}
+
+<!-- PROOF REEL -->
+${proofRef || testimonials.length > 0 ? `
+<section class="testimonials-section" style="min-height:auto;padding:48px 20px">
+  ${proofRef ? `<div style="border-radius:16px;overflow:hidden;margin-bottom:28px;max-width:480px;margin-left:auto;margin-right:auto"><img src="${proofRef}" style="width:100%;display:block;max-height:300px;object-fit:cover" alt="Preuve"></div>` : ""}
+  ${testimonials.length > 0 ? `<div style="max-width:480px;margin:0 auto"><h2 style="color:${T.accent};font-size:22px;font-weight:800;margin-bottom:20px">Ce que disent nos clients 🌟</h2>${testimonialRows}</div>` : ""}
+</section>` : ""}
+
+<!-- ORDER SECTION -->
+<section id="order" class="order-section" style="min-height:auto">
+  <div style="max-width:480px;margin:0 auto;width:100%">
+    <div class="scarcity-banner">
+      <p style="color:#fff;font-weight:800;font-size:15px;margin-bottom:4px">⚠️ ${scarcity}</p>
+      <p style="color:rgba(255,255,255,.8);font-size:13px">L'offre expire dans :</p>
+    </div>
+    <div class="countdown">
+      <div class="cd-box"><div class="cd-num" id="cd-h">23</div><div class="cd-label">HH</div></div>
+      <div class="cd-box"><div class="cd-num" id="cd-m">59</div><div class="cd-label">MM</div></div>
+      <div class="cd-box"><div class="cd-num" id="cd-s">59</div><div class="cd-label">SS</div></div>
+    </div>
+    <div class="order-card">
+      <h2 style="color:${T.text};font-size:20px;font-weight:800;margin-bottom:6px">🛒 Commander Maintenant</h2>
+      <p style="opacity:.55;font-size:13px;margin-bottom:20px">Livraison 48–72h partout au Maroc</p>
+      <div>
+        <p style="font-size:12px;opacity:.55;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Quantité</p>
+        <div class="qty-btns">
+          <button class="qty-btn active" onclick="setQty(1,this)">1</button>
+          <button class="qty-btn" onclick="setQty(2,this)">2</button>
+          <button class="qty-btn" onclick="setQty(3,this)">3</button>
+        </div>
+        <div class="price-preview">
+          <span id="qty-label" style="opacity:.55;font-size:14px">1 × ${page.priceDH} DH</span>
+          <span class="total-price" id="total-price">${page.priceDH} DH</span>
+        </div>
+      </div>
+      <form id="orderForm" onsubmit="submitOrder(event)">
+        <label class="form-label">Prénom et Nom *</label>
+        <input class="form-input" id="f-name" type="text" placeholder="Ex: Ahmed Benali" required>
+        <label class="form-label">Téléphone / WhatsApp *</label>
+        <input class="form-input" id="f-phone" type="tel" placeholder="Ex: 0612345678" required>
+        <label class="form-label">Ville</label>
+        <input class="form-input" id="f-city" type="text" placeholder="Ex: Casablanca">
+        <label class="form-label">Adresse (optionnel)</label>
+        <input class="form-input" id="f-addr" type="text" placeholder="Ex: Rue Hassan II, Appt 5">
+        <p id="errMsg" style="color:#ef4444;font-size:13px;margin-bottom:10px;display:none"></p>
+        <button type="submit" id="submitBtn" class="cta-btn" style="border:none">✅ Confirmer ma commande — <span id="btn-price">${page.priceDH}</span> DH</button>
+        <p style="text-align:center;font-size:12px;opacity:.5;margin-top:8px">🔒 Paiement à la livraison · Satisfait ou remboursé</p>
+      </form>
+      <div class="success-box" id="successBox">
+        <div style="font-size:56px;margin-bottom:16px">🎉</div>
+        <h3 style="color:#10b981;font-size:22px;font-weight:900;margin-bottom:8px">Commande Confirmée !</h3>
+        <p>Shukran bzzaf ! Notre équipe va vous contacter sur WhatsApp pour confirmer la livraison.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="floating-cta">
+  <a href="#order" class="cta-btn" style="margin:0">🛒 ${cta}</a>
+</div>
+
+<script>
+var unitPrice=${page.priceDH},qty=1;
+var endTs=Date.now()+24*3600*1000;
+function setQty(n,btn){qty=n;document.querySelectorAll('.qty-btn').forEach(function(b){b.classList.remove('active')});btn.classList.add('active');document.getElementById('qty-label').textContent=n+' × ${page.priceDH} DH';document.getElementById('total-price').textContent=(n*unitPrice)+' DH';document.getElementById('btn-price').textContent=(n*unitPrice);}
+function pad(n){return String(n).padStart(2,'0');}
+function tick(){var diff=Math.max(0,endTs-Date.now());document.getElementById('cd-h').textContent=pad(Math.floor(diff/3600000));document.getElementById('cd-m').textContent=pad(Math.floor(diff%3600000/60000));document.getElementById('cd-s').textContent=pad(Math.floor(diff%60000/1000));}
+setInterval(tick,1000);tick();
+function submitOrder(e){
+  e.preventDefault();
+  var btn=document.getElementById('submitBtn');
+  btn.textContent='⏳ Envoi en cours...';btn.disabled=true;
+  var body={customerName:document.getElementById('f-name').value,customerPhone:document.getElementById('f-phone').value,customerCity:document.getElementById('f-city').value,customerAddress:document.getElementById('f-addr').value,quantity:qty};
+  fetch('/api/lp/${page.slug}/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(function(r){return r.json();})
+  .then(function(j){
+    if(j.success){document.getElementById('orderForm').style.display='none';document.getElementById('successBox').style.display='block';}
+    else{document.getElementById('errMsg').textContent=j.message||'Erreur';document.getElementById('errMsg').style.display='block';btn.textContent='✅ Confirmer ma commande';btn.disabled=false;}
+  }).catch(function(){btn.textContent='✅ Confirmer ma commande';btn.disabled=false;});
+}
+</script>
+</body>
+</html>`;
+
+      // Build ZIP
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="lp-${page.slug}.zip"`);
+
+      const archive = archiver("zip", { zlib: { level: 9 } });
+      archive.pipe(res);
+      archive.append(html, { name: "index.html" });
+
+      // Append images from disk
+      for (const { url, exportName } of imageMap) {
+        const localPath = path.join(process.cwd(), "uploads", url.replace(/^\/uploads\//, ""));
+        if (fs.existsSync(localPath)) {
+          archive.file(localPath, { name: `images/${exportName}` });
+        }
+      }
+
+      await archive.finalize();
+    } catch (err: any) {
+      console.error("[LP Builder] export error:", err.message);
+      if (!res.headersSent) res.status(500).json({ message: err.message });
     }
   });
 
