@@ -5552,7 +5552,7 @@ export async function registerRoutes(
       const orKey  = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
       const oaiKey = settings?.openaiApiKey?.trim()     || process.env.OPENAI_API_KEY?.trim();
       if (!orKey && !oaiKey) {
-        return res.status(400).json({ message: "Clé API non configurée. Veuillez ajouter votre clé OpenRouter dans les paramètres du LP Builder." });
+        return res.status(400).json({ message: "Clé API non configurée. Veuillez ajouter votre clé OpenRouter dans les paramètres." });
       }
 
       const OpenAI = (await import("openai")).default;
@@ -5561,14 +5561,14 @@ export async function registerRoutes(
         : new OpenAI({ apiKey: oaiKey });
 
       const langInstructions: Record<string, string> = {
-        darija:  "Écris TOUT le contenu en Darija marocaine (dialecte marocain authentique, comme on parle vraiment — mélange Darija + quelques mots français courants). Utilise un ton jeune, chaleureux et persuasif.",
-        french:  "Écris TOUT le contenu en Français standard, professionnel mais accessible. Ton persuasif et moderne adapté au marché marocain.",
-        arabic:  "اكتب كل المحتوى باللغة العربية الفصحى المبسطة. نبرة مقنعة وحديثة تناسب التجارة الإلكترونية المغربية.",
-        english: "Write ALL content in English. Use a persuasive, modern, direct-response copywriting style.",
+        darija:  "Write ALL text in Moroccan Darija (authentic dialect, mix of Arabic + French words as Moroccans actually speak). Young, warm, persuasive tone.",
+        french:  "Write ALL text in standard French, professional but accessible. Persuasive modern tone adapted to the Moroccan market.",
+        arabic:  "اكتب كل المحتوى باللغة العربية الفصحى المبسطة. نبرة مقنعة وحديثة تناسب التجارة الإلكترونية.",
+        english: "Write ALL content in English. Use punchy, benefit-driven direct-response copywriting style.",
       };
       const langInstruction = langInstructions[language] || langInstructions.darija;
 
-      const prompt = `You are an expert direct-response copywriter for Moroccan COD (Cash On Delivery) e-commerce.
+      const prompt = `You are an expert direct-response copywriter for COD (Cash On Delivery) e-commerce infographics.
 ${langInstruction}
 
 Product: ${productName}
@@ -5577,26 +5577,33 @@ Description: ${description || "Premium quality product"}
 
 Generate ONLY a valid JSON object (no markdown, no backticks, no extra text) with this EXACT structure:
 {
-  "headline": "Short punchy headline (max 8 words)",
-  "subheadline": "One sentence explaining the main benefit",
-  "hook": "Opening hook that hits the customer's pain point (1-2 powerful sentences)",
-  "problem": "Empathetic problem description (2-3 sentences)",
-  "solution": ["Benefit 1", "Benefit 2", "Benefit 3", "Benefit 4"],
-  "scarcity": "Short urgency/scarcity message",
-  "cta": "CTA button text (e.g. Order Now / Commander Maintenant)",
-  "guarantee": "Short guarantee message (fast delivery + satisfaction)",
-  "testimonials": [
-    {"name": "Fatima Z.", "city": "Casablanca", "rating": 5, "text": "Authentic testimonial (2-3 sentences)"},
-    {"name": "Ahmed B.", "city": "Marrakech", "rating": 5, "text": "Authentic testimonial"},
-    {"name": "Sara M.", "city": "Rabat", "rating": 5, "text": "Authentic testimonial"}
-  ]
+  "headline": "Short punchy headline max 7 words — grabs attention instantly",
+  "subheadline": "One sentence: the single biggest transformation this product delivers",
+  "before": ["Pain point 1 (short, max 6 words)", "Pain point 2", "Pain point 3"],
+  "after": ["Positive outcome 1 (short, max 6 words)", "Positive outcome 2", "Positive outcome 3"],
+  "expertName": "Dr. [Moroccan name]",
+  "expertTitle": "Short professional title relevant to the product (e.g. Nutritionist, Dermatologist, Fitness Coach)",
+  "expertQuote": "One powerful 2-sentence endorsement quote from the expert — authoritative, trust-building",
+  "features": [
+    {"icon": "⚡", "title": "Feature 1 (2-3 words)", "desc": "One sentence benefit description"},
+    {"icon": "🎯", "title": "Feature 2 (2-3 words)", "desc": "One sentence benefit description"},
+    {"icon": "✅", "title": "Feature 3 (2-3 words)", "desc": "One sentence benefit description"}
+  ],
+  "steps": [
+    {"title": "Step 1 title", "desc": "Short action description"},
+    {"title": "Step 2 title", "desc": "Short action description"},
+    {"title": "Step 3 title", "desc": "Short action description"}
+  ],
+  "cta": "CTA button text (e.g. Commander Maintenant / اطلب الآن)",
+  "scarcity": "Short urgency line (max 8 words)",
+  "guarantee": "Short guarantee/trust line (delivery + satisfaction, max 10 words)"
 }`;
 
       const completion = await client.chat.completions.create({
         model: "openai/gpt-4o-mini",
         messages: [{ role: "user", content: prompt }],
         temperature: 0.8,
-        max_tokens: 1400,
+        max_tokens: 1200,
       });
 
       const raw = completion.choices[0]?.message?.content?.trim() || "{}";
