@@ -5588,32 +5588,38 @@ COPY RULES:
 - Scarcity: believable and specific — never manufactured urgency.
 - ${langInstruction}`;
 
-      const prompt = `Product: ${productName}
+      const prompt = `Follow the AIDA framework strictly (Attention → Interest → Desire → Action).
+
+Product: ${productName}
 Price: ${priceDH} DH
 Description: ${description || "Premium quality product for the Moroccan market"}
 
 Generate ONLY a valid JSON object (no markdown, no code blocks, no extra text) with this EXACT structure:
 {
-  "headline": "Bold hook headline — max 8 words, no emojis",
-  "subheadline": "One powerful sentence: the single biggest transformation this product delivers",
-  "before": ["Sharp pain point 1 (max 7 words)", "Sharp pain point 2 (max 7 words)", "Sharp pain point 3 (max 7 words)"],
-  "after": ["Specific positive outcome 1 (max 7 words)", "Specific positive outcome 2 (max 7 words)", "Specific positive outcome 3 (max 7 words)"],
-  "expertName": "Dr. [Moroccan name]",
-  "expertTitle": "Specific professional credential relevant to the product category",
-  "expertQuote": "Two authoritative, trust-building sentences. Clinical and confident tone — no emojis.",
+  "headline": "ATTENTION: Bold hook — max 8 words, no emojis, grabs instantly",
+  "subheadline": "ATTENTION: One sentence — the single biggest transformation this product delivers",
+  "before": ["INTEREST: Specific pain point 1 (max 7 words)", "Pain point 2 (max 7 words)", "Pain point 3 (max 7 words)"],
+  "after": ["DESIRE: Specific positive outcome 1 (max 7 words)", "Outcome 2 (max 7 words)", "Outcome 3 (max 7 words)"],
+  "expertName": "Dr. [Authentic Moroccan name]",
+  "expertTitle": "Precise credential matching the product category (e.g. Médecin Nutritionniste, Dermatologue Clinique)",
+  "expertQuote": "DESIRE: Two authoritative sentences. Specific clinical language. Zero emojis. Sounds like a real specialist.",
   "features": [
-    {"icon": "zap",    "title": "2-3 word title", "desc": "One crisp benefit sentence with no emoji"},
-    {"icon": "leaf",   "title": "2-3 word title", "desc": "One crisp benefit sentence with no emoji"},
-    {"icon": "shield", "title": "2-3 word title", "desc": "One crisp benefit sentence with no emoji"}
+    {"icon": "zap",    "title": "DESIRE: 2-3 word benefit title", "desc": "One precise, benefit-driven sentence — no emoji"},
+    {"icon": "leaf",   "title": "DESIRE: 2-3 word benefit title", "desc": "One precise, benefit-driven sentence — no emoji"},
+    {"icon": "shield", "title": "DESIRE: 2-3 word benefit title", "desc": "One precise, benefit-driven sentence — no emoji"}
   ],
   "steps": [
-    {"title": "Action-oriented step title", "desc": "Specific, reassuring description — max 12 words"},
-    {"title": "Action-oriented step title", "desc": "Specific, reassuring description — max 12 words"},
-    {"title": "Action-oriented step title", "desc": "Specific, reassuring description — max 12 words"}
+    {"title": "ACTION: Step 1 — action verb title", "desc": "Specific, confidence-building — max 12 words"},
+    {"title": "ACTION: Step 2 — action verb title", "desc": "Specific, confidence-building — max 12 words"},
+    {"title": "ACTION: Step 3 — action verb title", "desc": "Specific, confidence-building — max 12 words"}
   ],
-  "cta": "Commanding CTA text — 2 to 4 words maximum",
-  "scarcity": "Specific, believable urgency line — max 8 words, no emoji",
-  "guarantee": "Trust line covering delivery speed and satisfaction guarantee — max 10 words"
+  "cta": "ACTION: Commanding CTA — 2 to 4 words max",
+  "scarcity": "ACTION: Believable urgency — max 8 words, no emoji",
+  "guarantee": "Delivery + satisfaction trust line — max 10 words",
+  "lifestyleLine": "One evocative sentence describing the ideal life after using this product — poetic, aspirational",
+  "heroImagePrompt": "Flux 1 Pro prompt in English: hyper-realistic 4K studio product photography of [${productName}]. Perfect white infinity background, professional 3-point lighting, ultra-sharp focus, luxury retail aesthetic, shot on Hasselblad medium format, no text, no watermark, photorealistic --ar 4:5",
+  "lifestyleImagePrompt": "Flux 1 Pro prompt in English: cinematic lifestyle photography, elegant Moroccan interior setting, warm golden hour light, [${productName}] being used naturally by a confident stylish person, luxury magazine editorial style, shallow depth of field, authentic moment, no text, photorealistic --ar 4:5",
+  "expertImagePrompt": "Flux 1 Pro prompt in English: professional portrait photograph of a distinguished Moroccan medical doctor or specialist, 45 years old, white lab coat, confident warm expression, studio lighting, light background, hyperrealistic, ultra detailed face, DSLR portrait photography --ar 1:1"
 }`;
 
       const completion = await client.chat.completions.create({
@@ -5633,6 +5639,60 @@ Generate ONLY a valid JSON object (no markdown, no code blocks, no extra text) w
     } catch (err: any) {
       console.error("[LP Builder] generate-copy error:", err.message);
       res.status(500).json({ message: err.message || "Erreur lors de la génération." });
+    }
+  });
+
+  // ── Flux 1 Pro image generation ─────────────────────────────────────────
+  app.post("/api/lp-builder/generate-image", requireAuth, async (req, res) => {
+    try {
+      const { prompt, type } = z.object({
+        prompt: z.string().min(1),
+        type: z.enum(["hero", "lifestyle", "avatar"]).default("hero"),
+      }).parse(req.body);
+
+      const storeId = req.user!.storeId!;
+      const settings = await storage.getAiSettings(storeId);
+      const orKey = settings?.openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim();
+      if (!orKey) return res.status(400).json({ message: "Clé API OpenRouter requise pour la génération d'images." });
+
+      const isAvatar = type === "avatar";
+      const size = isAvatar ? "1024x1024" : "1024x1024";
+
+      const apiRes = await fetch("https://openrouter.ai/api/v1/images/generations", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${orKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://tajergrow.com",
+          "X-Title": "TajerGrow",
+        },
+        body: JSON.stringify({ model: "black-forest-labs/flux-1-pro", prompt, n: 1, size }),
+        signal: AbortSignal.timeout(90_000),
+      });
+
+      if (!apiRes.ok) {
+        const errBody = await apiRes.json().catch(() => ({}));
+        throw new Error((errBody as any)?.error?.message || `Flux API error ${apiRes.status}`);
+      }
+
+      const apiData = await apiRes.json() as any;
+      const remoteUrl = apiData?.data?.[0]?.url || apiData?.data?.[0]?.b64_json;
+      if (!remoteUrl) throw new Error("Aucune image reçue de Flux 1 Pro.");
+
+      // Download and save locally to guarantee same-origin for html-to-image
+      const downRes = await fetch(remoteUrl, { signal: AbortSignal.timeout(60_000) });
+      if (!downRes.ok) throw new Error(`Failed to download Flux image: ${downRes.status}`);
+      const buffer = Buffer.from(await downRes.arrayBuffer());
+
+      const lpDir = path.join(UPLOADS_BASE, "lp-images");
+      if (!fs.existsSync(lpDir)) fs.mkdirSync(lpDir, { recursive: true });
+      const filename = `flux-${type}-${Date.now()}.jpg`;
+      await fs.promises.writeFile(path.join(lpDir, filename), buffer);
+
+      res.json({ url: `/uploads/lp-images/${filename}`, type });
+    } catch (err: any) {
+      console.error("[Flux] generate-image error:", err.message);
+      res.status(500).json({ message: err.message || "Erreur génération image Flux." });
     }
   });
 

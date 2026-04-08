@@ -1,0 +1,25 @@
+"I want to implement the 'Ultimate UGC-Style Infographic Engine' strictly within the 'Infographie IA' module. This must be an isolated upgrade: do not change any other part of the platform (Orders, CRM, or Dashboard).
+Technical Specifications for the Engine:
+Architecture - 'Structured Template Injection':
+Instead of letting the AI guess the layout, create a hardcoded, high-end vertical HTML/Tailwind CSS template.
+The template must feature: Glassmorphism cards, Wave/Slanted section dividers, and Premium Typography (using 'Cairo' for Arabic and 'Playfair Display' for titles).
+Use CSS Variables (--primary-brand) for the entire design.
+AI Art Direction (Claude 3.7 + Flux.1 Pro):
+Use Claude 3.7 Sonnet as the 'Architect' to generate the AIDA sales copy (Moroccan Darija) and 3 highly detailed visual prompts.
+Use black-forest-labs/flux-1-pro (via OpenRouter) to execute those prompts and generate:
+Hero Image: A 4k professional studio product shot.
+Lifestyle Image: The product being used in a luxury Moroccan setting.
+Authority Avatar: A realistic, professional expert/doctor character.
+Smart Color Extraction:
+Once the Flux images are generated, implement a simple Javascript logic to pick the dominant color from the Hero image and set it as the --primary-brand color for the whole infographic.
+The Vertical 'Reel' Layout (MANDATORY SECTIONS):
+Top Header: Bold Hook + Floating Product Image.
+Transformation: 'Sans ce produit' (Red/Grey) vs 'Avec ce produit' (Brand Color).
+Features Card: 3 minimalist icons with high-ticket sales descriptions.
+Expert Review: A Glassmorphism card with the AI-generated expert avatar.
+Final Offer: Large Price + Pulsing 'Commander' button.
+High-Resolution Export:
+Use the html-to-image library with a pixelRatio: 3 setting.
+When the user clicks 'Générer l'Infographie', it should show a step-by-step progress: 'Copywriting...' -> 'Generating HD Visuals...' -> 'Finalizing Design...'.
+Trigger an automatic download of the final high-res vertical image (JPG).
+Goal: Transform the 'IA Infographie' tab into a pro-level designer tool that produces a single, long, seamless marketing poster ready for Shopify/YouCan descriptions."
