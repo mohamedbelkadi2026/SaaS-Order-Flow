@@ -922,141 +922,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── Agent Performance Charts ─────────────────────────────────── */}
-      {isAgent && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <BarChart3 className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-bold text-foreground uppercase tracking-wide">Statistiques de Performance</h2>
-            <span className="text-xs text-muted-foreground">— 15 derniers jours</span>
-          </div>
-
-          <div className="flex flex-col lg:flex-row gap-4">
-
-            {/* ── Line Chart: Évolution des commandes (70% width on desktop) */}
-            <Card className="flex-1 lg:w-[70%] rounded-xl shadow-sm border border-border/50" data-testid="card-agent-daily-chart">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4 text-sky-500" />
-                  Évolution des commandes
-                </CardTitle>
-                <p className="text-xs text-muted-foreground">Nombre de commandes traitées par jour</p>
-              </CardHeader>
-              <CardContent className="px-2 pb-4">
-                {agentStatsLoading ? (
-                  <div className="h-[200px] flex items-center justify-center">
-                    <Skeleton className="w-full h-full rounded-lg" />
-                  </div>
-                ) : !agentMyStats?.daily?.length ? (
-                  <div className="h-[200px] flex items-center justify-center text-muted-foreground text-sm">
-                    Aucune donnée disponible
-                  </div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={200}>
-                    <LineChart data={agentMyStats.daily} margin={{ top: 8, right: 16, left: -16, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <XAxis
-                        dataKey="date"
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-                        dy={6}
-                        interval={Math.max(0, Math.floor((agentMyStats.daily.length - 1) / 6))}
-                      />
-                      <YAxis
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
-                        allowDecimals={false}
-                        width={28}
-                      />
-                      <RechartsTooltip
-                        contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
-                        formatter={(v: number) => [v, 'Commandes']}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="orders"
-                        stroke="#0ea5e9"
-                        strokeWidth={2.5}
-                        dot={{ fill: '#0ea5e9', r: 3, strokeWidth: 0 }}
-                        activeDot={{ r: 5, fill: '#0ea5e9' }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* ── Donut Chart: Répartition des statuts (30% width on desktop) */}
-            <Card className="lg:w-[30%] rounded-xl shadow-sm border border-border/50" data-testid="card-agent-status-chart">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 text-emerald-500" />
-                  Répartition des statuts
-                </CardTitle>
-                <p className="text-xs text-muted-foreground">
-                  {agentMyStats?.totalOrders ?? 0} commandes au total
-                </p>
-              </CardHeader>
-              <CardContent className="px-2 pb-4">
-                {agentStatsLoading ? (
-                  <div className="h-[200px] flex items-center justify-center">
-                    <Skeleton className="w-full h-full rounded-lg" />
-                  </div>
-                ) : !agentMyStats?.byStatus?.length ? (
-                  <div className="h-[200px] flex items-center justify-center text-muted-foreground text-sm">
-                    Aucune donnée disponible
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-3">
-                    <ResponsiveContainer width="100%" height={160}>
-                      <PieChart>
-                        <Pie
-                          data={agentMyStats.byStatus}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={45}
-                          outerRadius={72}
-                          paddingAngle={2}
-                          dataKey="value"
-                        >
-                          {agentMyStats.byStatus.map((entry, i) => (
-                            <Cell key={`cell-${i}`} fill={entry.color} />
-                          ))}
-                        </Pie>
-                        <RechartsTooltip
-                          contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
-                          formatter={(v: number, name: string) => [v, name]}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    {/* Legend */}
-                    <div className="w-full space-y-1.5 px-2">
-                      {agentMyStats.byStatus.map((s) => {
-                        const pct = agentMyStats.totalOrders > 0
-                          ? ((s.value / agentMyStats.totalOrders) * 100).toFixed(0)
-                          : '0';
-                        return (
-                          <div key={s.name} className="flex items-center justify-between text-xs">
-                            <div className="flex items-center gap-1.5">
-                              <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }} />
-                              <span className="text-muted-foreground">{s.name}</span>
-                            </div>
-                            <span className="font-semibold tabular-nums">{s.value} <span className="text-muted-foreground font-normal">({pct}%)</span></span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-          </div>
-        </div>
-      )}
-
       {!isAgent && totalCommissionsOwed > 0 && (
         <Card className="rounded-xl border-0 shadow-md overflow-hidden" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 100%)' }} data-testid="card-commissions-summary">
           <CardContent className="p-4 flex items-center justify-between flex-wrap gap-3">
@@ -1151,6 +1016,147 @@ export default function Dashboard() {
       </div>
 
       {/* TOTAL COÛTS, COMMISSIONS AGENTS, DÉPENSES PUB cards hidden by request */}
+
+      {/* ── Agent Performance Charts — placed below all status cards ── */}
+      {isAgent && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="w-4 h-4 text-muted-foreground" />
+            <h2 className="text-sm font-bold text-foreground uppercase tracking-wide">Statistiques de Performance</h2>
+            <span className="text-xs text-muted-foreground">— 15 derniers jours</span>
+          </div>
+
+          <div className="flex flex-col lg:flex-row gap-4">
+
+            {/* Line Chart — Évolution des commandes (70 % on desktop) */}
+            <Card className="flex-1 lg:basis-[70%] rounded-xl shadow-sm border border-border/50" data-testid="card-agent-daily-chart">
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4" style={{ color: STATUS_COLORS.confirme }} />
+                  Évolution des commandes
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">Commandes traitées par jour (15 derniers jours)</p>
+              </CardHeader>
+              <CardContent className="px-2 pb-4">
+                {agentStatsLoading ? (
+                  <div className="h-[220px] flex items-center justify-center">
+                    <Skeleton className="w-full h-full rounded-lg" />
+                  </div>
+                ) : !agentMyStats?.daily?.length ? (
+                  <div className="h-[220px] flex items-center justify-center text-muted-foreground text-sm">
+                    Aucune donnée disponible
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart data={agentMyStats.daily} margin={{ top: 10, right: 20, left: -12, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                      <XAxis
+                        dataKey="date"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
+                        dy={6}
+                        interval={Math.max(0, Math.floor((agentMyStats.daily.length - 1) / 6))}
+                      />
+                      <YAxis
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
+                        allowDecimals={false}
+                        width={30}
+                      />
+                      <RechartsTooltip
+                        contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
+                        formatter={(v: number) => [v, 'Commandes']}
+                        labelStyle={{ color: 'hsl(var(--foreground))', fontWeight: 600 }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="orders"
+                        stroke={STATUS_COLORS.confirme}
+                        strokeWidth={2.5}
+                        dot={{ fill: STATUS_COLORS.confirme, r: 3, strokeWidth: 0 }}
+                        activeDot={{ r: 5, fill: STATUS_COLORS.confirme, strokeWidth: 0 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Donut Chart — Répartition des statuts (30 % on desktop) */}
+            <Card className="lg:basis-[30%] rounded-xl shadow-sm border border-border/50" data-testid="card-agent-status-chart">
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4" style={{ color: STATUS_COLORS.delivered }} />
+                  Répartition des statuts
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  {agentMyStats?.totalOrders ?? 0} commande{(agentMyStats?.totalOrders ?? 0) !== 1 ? 's' : ''} au total
+                </p>
+              </CardHeader>
+              <CardContent className="px-3 pb-5">
+                {agentStatsLoading ? (
+                  <div className="h-[220px] flex items-center justify-center">
+                    <Skeleton className="w-full h-full rounded-lg" />
+                  </div>
+                ) : !agentMyStats?.byStatus?.length ? (
+                  <div className="h-[220px] flex items-center justify-center text-muted-foreground text-sm">
+                    Aucune donnée disponible
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-4">
+                    <ResponsiveContainer width="100%" height={150}>
+                      <PieChart>
+                        <Pie
+                          data={agentMyStats.byStatus}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={42}
+                          outerRadius={68}
+                          paddingAngle={3}
+                          dataKey="value"
+                          stroke="none"
+                        >
+                          {agentMyStats.byStatus.map((entry, i) => (
+                            <Cell key={`cell-${i}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <RechartsTooltip
+                          contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
+                          formatter={(v: number, name: string) => [`${v} commandes`, name]}
+                          labelStyle={{ display: 'none' }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    {/* Legend */}
+                    <div className="w-full space-y-2">
+                      {agentMyStats.byStatus.map((s) => {
+                        const pct = agentMyStats.totalOrders > 0
+                          ? ((s.value / agentMyStats.totalOrders) * 100).toFixed(1)
+                          : '0';
+                        return (
+                          <div key={s.name} className="flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 rounded-sm shrink-0" style={{ background: s.color }} />
+                              <span className="text-foreground font-medium">{s.name}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 tabular-nums">
+                              <span className="font-bold">{s.value}</span>
+                              <span className="text-muted-foreground text-[10px]">({pct}%)</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+          </div>
+        </div>
+      )}
 
       {filters.productId !== 'all' && (
         <Card className="rounded-xl border-primary/30 bg-primary/5 shadow-sm" data-testid="card-product-drilldown">

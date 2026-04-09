@@ -3728,31 +3728,42 @@ export async function registerRoutes(
       const daily = Array.from(dayMap.entries()).map(([date, orders]) => ({ date, orders }));
 
       // ── Status distribution (pie chart) ───────────────────────────
+      // Exact same classification as the dashboard stat cards
       const buckets: Record<string, number> = {
-        delivered: 0,
-        confirme: 0,
-        nouveau: 0,
-        cancelled: 0,
-        refused: 0,
-        other: 0,
+        confirme:   0, // Confirmées  — sky blue  #0ea5e9
+        delivered:  0, // Livrées     — emerald   #10b981
+        en_cours:   0, // En cours    — slate     #64748b
+        cancelled:  0, // Annulées    — rose red  #e11d48
+        refused:    0, // Refusées    — orange    #f97316
       };
-      const REFUSED = ["refusé", "refused", "annulé faux numéro", "annulé double", "annulé fake", "boite vocale"];
+      const REFUSED_STATUSES = new Set([
+        "refused", "refusé", "refusee", "refusée",
+        "annulé faux numéro", "annulé double", "annulé fake",
+        "boite vocale", "faux numéro",
+      ]);
       for (const o of agentOrders) {
-        const s = (o.status ?? "").toLowerCase();
-        if (s === "delivered") buckets.delivered++;
-        else if (s === "confirme" || s === "in_progress" || s === "confirmé" || s === "inprogress") buckets.confirme++;
-        else if (s === "nouveau" || s === "new") buckets.nouveau++;
-        else if (s.startsWith("annulé") || s === "cancelled") buckets.cancelled++;
-        else if (REFUSED.includes(s)) buckets.refused++;
-        else buckets.other++;
+        const s = (o.status ?? "").toLowerCase().trim();
+        if (s === "delivered" || s === "livré" || s === "livrée") {
+          buckets.delivered++;
+        } else if (s === "confirme" || s === "confirmé" || s === "confirmed") {
+          buckets.confirme++;
+        } else if (s === "in_progress" || s === "inprogress" || s === "en cours") {
+          buckets.en_cours++;
+        } else if (REFUSED_STATUSES.has(s)) {
+          buckets.refused++;
+        } else if (s === "cancelled" || s.startsWith("annulé") || s.startsWith("annule")) {
+          buckets.cancelled++;
+        } else {
+          // Any unrecognised status falls to cancelled to avoid data loss
+          buckets.cancelled++;
+        }
       }
       const byStatus = [
-        { name: "Livrées",     value: buckets.delivered, color: "#10b981" },
-        { name: "Confirmées",  value: buckets.confirme,  color: "#0ea5e9" },
-        { name: "Nouvelles",   value: buckets.nouveau,   color: "#f59e0b" },
-        { name: "Annulées",    value: buckets.cancelled, color: "#e11d48" },
-        { name: "Refusées",    value: buckets.refused,   color: "#f97316" },
-        { name: "Autres",      value: buckets.other,     color: "#94a3b8" },
+        { name: "Confirmées", value: buckets.confirme,  color: "#0ea5e9" },
+        { name: "Livrées",    value: buckets.delivered, color: "#10b981" },
+        { name: "En cours",   value: buckets.en_cours,  color: "#64748b" },
+        { name: "Annulées",   value: buckets.cancelled, color: "#e11d48" },
+        { name: "Refusées",   value: buckets.refused,   color: "#f97316" },
       ].filter(b => b.value > 0);
 
       res.json({ daily, byStatus, totalOrders: agentOrders.length });
