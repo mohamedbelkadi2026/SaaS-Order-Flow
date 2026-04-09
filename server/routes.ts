@@ -1353,12 +1353,15 @@ export async function registerRoutes(
     try {
       const data = api.agents.create.input.parse(req.body);
       const storeId = req.user!.storeId!;
-      const existingUser = await storage.getUserByEmail(data.email);
-      if (existingUser) return res.status(400).json({ message: "Cet email est déjà utilisé" });
+      const emailVal = data.email && data.email.trim() !== '' ? data.email.trim() : null;
+      if (emailVal) {
+        const existingUser = await storage.getUserByEmail(emailVal);
+        if (existingUser) return res.status(400).json({ message: "Cet email est déjà utilisé" });
+      }
       const userRole = data.role || "agent";
       const hashedPassword = await hashPassword(data.password);
       const user = await storage.createUser({
-        username: data.username, email: data.email, phone: data.phone || null,
+        username: data.username, email: emailVal, phone: data.phone || null,
         password: hashedPassword, role: userRole, storeId,
         paymentType: data.paymentType || "commission",
         paymentAmount: data.paymentAmount || 0,

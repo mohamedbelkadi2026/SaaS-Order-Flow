@@ -92,7 +92,7 @@ export const api = {
       path: '/api/agents' as const,
       input: z.object({
         username: z.string().min(1),
-        email: z.string().email(),
+        email: z.string().email().optional().or(z.literal('')),
         phone: z.string().optional(),
         password: z.string().min(4),
         paymentType: z.string().optional(),

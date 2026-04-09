@@ -90,7 +90,10 @@ export default function MediaBuyersPage() {
       setShowAddModal(false);
       setForm({ username: '', email: '', password: '', buyerCode: '' });
     },
-    onError: () => toast({ title: "Erreur", description: "Impossible de créer le media buyer.", variant: "destructive" }),
+    onError: (err: any) => {
+      const msg = err?.message || err?.response?.data?.message || "Impossible de créer le media buyer.";
+      toast({ title: "Erreur", description: msg, variant: "destructive" });
+    },
   });
 
   const updateMutation = useMutation({
