@@ -3686,6 +3686,82 @@ export async function registerRoutes(
     res.json(wallet);
   });
 
+  /* GET /api/agents/my-stats — performance charts for the logged-in agent */
+  app.get("/api/agents/my-stats", requireAuth, async (req: any, res: any) => {
+    try {
+      const user = req.user!;
+      const storeId = user.storeId!;
+      const agentId = user.id;
+
+      // Fetch all orders assigned to this agent in the last 15 days
+      const now = new Date();
+      const cutoff = new Date(now);
+      cutoff.setDate(cutoff.getDate() - 14); // 15 days including today
+      cutoff.setHours(0, 0, 0, 0);
+
+      const { orders: ordersTable } = await import("@shared/schema");
+      const { and, gte, eq: drEq } = await import("drizzle-orm");
+
+      const agentOrders = await db
+        .select()
+        .from(ordersTable)
+        .where(and(
+          drEq(ordersTable.storeId, storeId),
+          drEq(ordersTable.assignedToId, agentId),
+          gte(ordersTable.createdAt, cutoff),
+        ));
+
+      // ── Daily counts (line chart) ──────────────────────────────────
+      const dayMap = new Map<string, number>();
+      for (let i = 14; i >= 0; i--) {
+        const d = new Date(now);
+        d.setDate(d.getDate() - i);
+        const key = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+        dayMap.set(key, 0);
+      }
+      for (const o of agentOrders) {
+        if (!o.createdAt) continue;
+        const d = new Date(o.createdAt);
+        const key = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+        if (dayMap.has(key)) dayMap.set(key, dayMap.get(key)! + 1);
+      }
+      const daily = Array.from(dayMap.entries()).map(([date, orders]) => ({ date, orders }));
+
+      // ── Status distribution (pie chart) ───────────────────────────
+      const buckets: Record<string, number> = {
+        delivered: 0,
+        confirme: 0,
+        nouveau: 0,
+        cancelled: 0,
+        refused: 0,
+        other: 0,
+      };
+      const REFUSED = ["refusé", "refused", "annulé faux numéro", "annulé double", "annulé fake", "boite vocale"];
+      for (const o of agentOrders) {
+        const s = (o.status ?? "").toLowerCase();
+        if (s === "delivered") buckets.delivered++;
+        else if (s === "confirme" || s === "in_progress" || s === "confirmé" || s === "inprogress") buckets.confirme++;
+        else if (s === "nouveau" || s === "new") buckets.nouveau++;
+        else if (s.startsWith("annulé") || s === "cancelled") buckets.cancelled++;
+        else if (REFUSED.includes(s)) buckets.refused++;
+        else buckets.other++;
+      }
+      const byStatus = [
+        { name: "Livrées",     value: buckets.delivered, color: "#10b981" },
+        { name: "Confirmées",  value: buckets.confirme,  color: "#0ea5e9" },
+        { name: "Nouvelles",   value: buckets.nouveau,   color: "#f59e0b" },
+        { name: "Annulées",    value: buckets.cancelled, color: "#e11d48" },
+        { name: "Refusées",    value: buckets.refused,   color: "#f97316" },
+        { name: "Autres",      value: buckets.other,     color: "#94a3b8" },
+      ].filter(b => b.value > 0);
+
+      res.json({ daily, byStatus, totalOrders: agentOrders.length });
+    } catch (err: any) {
+      console.error("[/api/agents/my-stats]", err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.get("/api/stats/commissions-summary", requireAdmin, async (req, res) => {
     const storeId = req.user!.storeId!;
     const summary = await storage.getCommissionsSummary(storeId);
