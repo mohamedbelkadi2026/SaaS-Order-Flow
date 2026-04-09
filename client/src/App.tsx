@@ -9,7 +9,15 @@ import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ActiveStoreProvider } from "@/hooks/use-active-store";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { useEffect } from "react";
+import { useEffect, Suspense } from "react";
+
+function FullPageSpinner() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <Loader2 className="w-8 h-8 animate-spin text-primary" />
+    </div>
+  );
+}
 
 import AuthPage from "@/pages/auth-page";
 import SuperAdminPage from "@/pages/super-admin";
@@ -176,13 +184,7 @@ function ProtectedRoutes() {
     }
   }, [needsVerification]);
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
+  if (isLoading) return <FullPageSpinner />;
 
   // ── Not logged in ─────────────────────────────────────────────────────────
   if (!user) {
@@ -194,46 +196,50 @@ function ProtectedRoutes() {
   }
 
   // ── Logged in — handle special pages first ────────────────────────────────
-  if (location === "/auth" || location === "/login" || location === "/register") return null; // useEffect handles redirect
+  // Spinner instead of null while the useEffect fires the redirect
+  if (location === "/auth" || location === "/login" || location === "/register") return <FullPageSpinner />;
   // Unverified owners: ONLY the verify page is allowed — useEffect redirects everything else
   if (location === "/verify-email") return <VerifyEmailPage />;
-  if (needsVerification) return null; // briefly null while useEffect fires the redirect
+  // Spinner instead of null while the useEffect fires the redirect to /verify-email
+  if (needsVerification) return <FullPageSpinner />;
 
   // ── Verified user → full app ──────────────────────────────────────────────
   return (
     <ActiveStoreProvider>
       <AppLayout>
         <AgentGuard>
-          <Switch>
-            <Route path="/" component={Dashboard} />
-            <Route path="/orders/all" component={AllOrders} />
-            <Route path="/orders/add" component={NewOrderAdd} />
-            <Route path="/orders/import" component={NewOrderImport} />
-            <Route path="/orders/new" component={NewOrder} />
-            <Route path="/orders" component={Orders} />
-            <Route path="/orders/:filter" component={Orders} />
-            <Route path="/inventory" component={Inventory} />
-            <Route path="/team" component={Team} />
-            <Route path="/clients" component={Clients} />
-            <Route path="/magasins" component={Magasins} />
-            <Route path="/invoices" component={Invoices} />
-            <Route path="/billing" component={Billing} />
-            <Route path="/profitability" component={Profitability} />
-            <Route path="/integrations" component={Integrations} />
-            <Route path="/integrations/shipping" component={ShippingIntegrations} />
-            <Route path="/integrations/logs" component={IntegrationLogs} />
-            <Route path="/admin" component={Admin} />
-            <Route path="/media-buyers" component={MediaBuyersPage} />
-            <Route path="/mes-depenses" component={MesDepenses} />
-            <Route path="/publicites" component={Publicites} />
-            <Route path="/profile" component={Profile} />
-            <Route path="/calculator" component={Calculator} />
-            <Route path="/profit-analyzer" component={ProfitAnalyzer} />
-            <Route path="/lp-builder" component={LpBuilder} />
-            <Route path="/checkout" component={CheckoutPage} />
-            <Route path="/automation" component={AutomationPage} />
-            <Route component={NotFound} />
-          </Switch>
+          <Suspense fallback={<FullPageSpinner />}>
+            <Switch>
+              <Route path="/" component={Dashboard} />
+              <Route path="/orders/all" component={AllOrders} />
+              <Route path="/orders/add" component={NewOrderAdd} />
+              <Route path="/orders/import" component={NewOrderImport} />
+              <Route path="/orders/new" component={NewOrder} />
+              <Route path="/orders" component={Orders} />
+              <Route path="/orders/:filter" component={Orders} />
+              <Route path="/inventory" component={Inventory} />
+              <Route path="/team" component={Team} />
+              <Route path="/clients" component={Clients} />
+              <Route path="/magasins" component={Magasins} />
+              <Route path="/invoices" component={Invoices} />
+              <Route path="/billing" component={Billing} />
+              <Route path="/profitability" component={Profitability} />
+              <Route path="/integrations" component={Integrations} />
+              <Route path="/integrations/shipping" component={ShippingIntegrations} />
+              <Route path="/integrations/logs" component={IntegrationLogs} />
+              <Route path="/admin" component={Admin} />
+              <Route path="/media-buyers" component={MediaBuyersPage} />
+              <Route path="/mes-depenses" component={MesDepenses} />
+              <Route path="/publicites" component={Publicites} />
+              <Route path="/profile" component={Profile} />
+              <Route path="/calculator" component={Calculator} />
+              <Route path="/profit-analyzer" component={ProfitAnalyzer} />
+              <Route path="/lp-builder" component={LpBuilder} />
+              <Route path="/checkout" component={CheckoutPage} />
+              <Route path="/automation" component={AutomationPage} />
+              <Route component={NotFound} />
+            </Switch>
+          </Suspense>
         </AgentGuard>
       </AppLayout>
     </ActiveStoreProvider>

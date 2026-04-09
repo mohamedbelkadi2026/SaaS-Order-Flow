@@ -392,8 +392,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         <span className="text-[10px] font-bold tracking-[0.15em] uppercase" style={{ color: 'rgba(255,255,255,0.45)' }}>{t('nav.menu')}</span>
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 px-3 pb-3 overflow-y-auto space-y-0.5">
+      {/* Nav — event delegation: closes mobile drawer the instant any link (<a>) is tapped */}
+      <nav
+        className="flex-1 px-3 pb-3 overflow-y-auto space-y-0.5"
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest("a")) onClose?.();
+        }}
+      >
         {navItems.map((item) => {
           const isOrdersMenu = item.name === "Mes Commandes";
           const isIntegrationMenu = item.name === "Integration";

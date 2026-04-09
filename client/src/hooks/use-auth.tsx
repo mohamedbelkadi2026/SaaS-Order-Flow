@@ -66,7 +66,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["/api/user"], data);
-      queryClient.invalidateQueries();
+      // Hard navigation guarantees a clean state and eliminates any white-screen flash
+      // that soft routing causes when the auth page briefly renders null during redirect.
+      const dest =
+        data?.role === "owner" && !data?.isEmailVerified ? "/verify-email" : "/";
+      window.location.replace(dest);
     },
     onError: (err: Error) => {
       toast({ title: "Erreur de connexion", description: err.message.replace(/^\d+:\s*/, ''), variant: "destructive" });
@@ -80,7 +84,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["/api/user"], data);
-      queryClient.invalidateQueries();
+      const dest =
+        data?.role === "owner" && !data?.isEmailVerified ? "/verify-email" : "/";
+      window.location.replace(dest);
     },
     onError: (err: Error) => {
       toast({ title: "Erreur d'inscription", description: err.message.replace(/^\d+:\s*/, ''), variant: "destructive" });
