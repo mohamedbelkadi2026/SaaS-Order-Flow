@@ -1909,12 +1909,21 @@ function WhatsappTab() {
             {/* Try again */}
             <div className="flex justify-center">
               <button
-                onClick={() => { setPairingCode(null); setPairingPhone(""); setWaState("idle"); resetMutation.mutate(); }}
-                disabled={resetMutation.isPending}
+                onClick={() => {
+                  setPairingCode(null);
+                  setPairingPhone("");
+                  setPairingError(null);
+                  setWaState("idle");
+                  setQrUrl(null);
+                  // Disconnect (teardown only, no auto-reconnect) so the user
+                  // can re-enter their number and get a fresh code
+                  disconnectMutation.mutate();
+                }}
+                disabled={disconnectMutation.isPending}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium transition-colors disabled:opacity-50"
                 style={{ color: GOLD, border: `1.5px solid ${GOLD}`, background: "rgba(197,160,89,0.06)" }}
               >
-                {resetMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                {disconnectMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                 Redemander un nouveau code
               </button>
             </div>
