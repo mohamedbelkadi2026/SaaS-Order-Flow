@@ -606,8 +606,9 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
     },
 
     async requestPairingCode(phoneNumber: string): Promise<string> {
+      // Strip +, spaces, dashes — Baileys requires pure digits
       const clean = phoneNumber.replace(/\D/g, "");
-      if (!clean) throw new Error("Numéro de téléphone invalide");
+      if (clean.length < 7) throw new Error("Numéro de téléphone invalide (trop court)");
 
       if (_waState === "connected") throw new Error("Déjà connecté à WhatsApp");
 

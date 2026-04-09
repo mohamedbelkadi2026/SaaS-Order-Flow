@@ -1552,10 +1552,12 @@ function WhatsappTab() {
   const [qrUrl, setQrUrl]           = useState<string | null>(null);
   const [sseOk, setSseOk]           = useState(false);
 
-  /* ── Pairing code method toggle ─────────────────────────────── */
-  const [connMethod, setConnMethod] = useState<"qr" | "phone">("qr");
+  /* ── Pairing code method toggle (phone is primary) ─────────── */
+  const [connMethod, setConnMethod]     = useState<"qr" | "phone">("phone");
   const [pairingPhone, setPairingPhone] = useState("");
   const [pairingCode, setPairingCode]   = useState<string | null>(null);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  const [codeCopied, setCodeCopied]     = useState(false);
 
   /* Subscribe to SSE for instant QR / status updates */
   useEffect(() => {
@@ -1647,22 +1649,29 @@ function WhatsappTab() {
   });
 
   const pairingMutation = useMutation({
-    mutationFn: (phone: string) =>
-      fetch("/api/automation/whatsapp/pairing-code", {
+    mutationFn: async (rawPhone: string) => {
+      const r = await fetch("/api/automation/whatsapp/pairing-code", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone }),
-      }).then(r => r.json()),
+        body: JSON.stringify({ phone: rawPhone }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message ?? "Échec de la génération du code");
+      return data;
+    },
     onSuccess: (data) => {
+      setPairingError(null);
       if (data.code) {
         setPairingCode(data.code);
         setWaState("connecting");
       } else {
-        toast({ title: "Erreur", description: data.message ?? "Code non reçu", variant: "destructive" });
+        setPairingError(data.message ?? "Code non reçu — réessayez");
       }
     },
-    onError: () => toast({ title: "Erreur de connexion", description: "Impossible de générer le code.", variant: "destructive" }),
+    onError: (err: Error) => {
+      setPairingError(err.message ?? "Impossible de générer le code. Vérifiez le numéro et réessayez.");
+    },
   });
 
   /* ── Force Restart button (available in all non-connected states) */
@@ -1689,44 +1698,95 @@ function WhatsappTab() {
   if (waState === "idle") {
     return (
       <div className="max-w-md mx-auto space-y-4">
-        <div className="bg-white rounded-2xl border border-zinc-100 p-6 sm:p-8 space-y-5">
+        <div className="bg-white rounded-2xl border border-zinc-100 p-5 sm:p-7 space-y-5">
 
-          {/* Icon */}
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full flex items-center justify-center" style={{ background: "rgba(30,27,75,0.06)", border: `2px dashed rgba(30,27,75,0.2)` }}>
-              <Wifi className="w-8 h-8 sm:w-9 sm:h-9" style={{ color: NAVY, opacity: 0.4 }} />
+          {/* Header */}
+          <div className="flex flex-col items-center gap-2 text-center">
+            <div className="w-14 h-14 rounded-full flex items-center justify-center" style={{ background: "rgba(30,27,75,0.06)", border: `2px dashed rgba(30,27,75,0.2)` }}>
+              <Wifi className="w-7 h-7" style={{ color: NAVY, opacity: 0.4 }} />
             </div>
-            <div className="text-center">
-              <h2 className="text-base sm:text-lg font-bold text-zinc-800 mb-1">WhatsApp non connecté</h2>
-              <p className="text-xs sm:text-sm text-zinc-400">Choisissez votre méthode de connexion</p>
-            </div>
+            <h2 className="text-base font-bold text-zinc-800">Connecter WhatsApp</h2>
+            <p className="text-xs text-zinc-400">Choisissez comment lier votre compte</p>
           </div>
 
-          {/* Method toggle */}
-          <div className="flex rounded-xl overflow-hidden border border-zinc-200 text-sm font-semibold">
+          {/* Method toggle — phone is primary (left = recommended) */}
+          <div className="flex rounded-xl overflow-hidden border border-zinc-200 text-xs font-semibold">
             <button
-              onClick={() => setConnMethod("qr")}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 transition-all"
-              style={connMethod === "qr" ? { background: NAVY, color: "#fff" } : { background: "#fff", color: "#52525b" }}
-              data-testid="button-method-qr"
-            >
-              <Smartphone className="w-4 h-4" /> QR Code
-            </button>
-            <button
-              onClick={() => { setConnMethod("phone"); setPairingCode(null); }}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 border-l border-zinc-200 transition-all"
+              onClick={() => { setConnMethod("phone"); setPairingCode(null); setPairingError(null); }}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 transition-all"
               style={connMethod === "phone" ? { background: NAVY, color: "#fff" } : { background: "#fff", color: "#52525b" }}
               data-testid="button-method-phone"
             >
-              <Phone className="w-4 h-4" /> Par téléphone
+              <Phone className="w-3.5 h-3.5" />
+              Par numéro
+              {connMethod === "phone" && <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold" style={{ background: GOLD }}>✓ Recommandé</span>}
+            </button>
+            <button
+              onClick={() => setConnMethod("qr")}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 border-l border-zinc-200 transition-all"
+              style={connMethod === "qr" ? { background: NAVY, color: "#fff" } : { background: "#fff", color: "#52525b" }}
+              data-testid="button-method-qr"
+            >
+              <Smartphone className="w-3.5 h-3.5" /> QR Code
             </button>
           </div>
 
-          {/* QR method */}
+          {/* ── PHONE PAIRING (primary method) ── */}
+          {connMethod === "phone" && (
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-zinc-600">Numéro WhatsApp (format international)</label>
+                <div className="relative">
+                  <input
+                    type="tel"
+                    value={pairingPhone}
+                    onChange={e => {
+                      setPairingError(null);
+                      setPairingPhone(e.target.value.replace(/[^\d+\s\-]/g, ""));
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" && pairingPhone.replace(/\D/g, "").length >= 9) {
+                        pairingMutation.mutate(pairingPhone);
+                      }
+                    }}
+                    placeholder="+212 6 00 00 00 00"
+                    className="w-full border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-offset-0 transition-all"
+                    style={{ "--tw-ring-color": GOLD, focusRingColor: GOLD } as any}
+                    data-testid="input-pairing-phone"
+                    disabled={pairingMutation.isPending}
+                    autoComplete="tel"
+                  />
+                </div>
+                <p className="text-[11px] text-zinc-400">Ex: +212 6 12 34 56 78 · +33 6 12 34 56 78</p>
+              </div>
+
+              {/* Error message */}
+              {pairingError && (
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-100" data-testid="error-pairing">
+                  <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-600 font-medium">{pairingError}</p>
+                </div>
+              )}
+
+              <button
+                onClick={() => { setPairingError(null); pairingMutation.mutate(pairingPhone); }}
+                disabled={pairingMutation.isPending || pairingPhone.replace(/\D/g, "").length < 9}
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-bold text-sm transition-all hover:opacity-90 active:scale-[.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ background: `linear-gradient(135deg, ${NAVY}, #2d2970)` }}
+                data-testid="button-get-pairing-code"
+              >
+                {pairingMutation.isPending
+                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Génération du code en cours...</>
+                  : <><Phone className="w-4 h-4" /> Générer le code de liaison</>}
+              </button>
+            </div>
+          )}
+
+          {/* ── QR CODE (backup method) ── */}
           {connMethod === "qr" && (
             <div className="space-y-3 text-center">
               <p className="text-xs text-zinc-400">
-                Ouvrez WhatsApp → Appareils connectés → Ajouter un appareil, puis scannez le QR.
+                Ouvrez WhatsApp → <strong>Appareils connectés</strong> → <strong>Lier un appareil</strong>, puis scannez le QR Code affiché.
               </p>
               <button
                 onClick={() => connectMutation.mutate()}
@@ -1737,42 +1797,12 @@ function WhatsappTab() {
               >
                 {connectMutation.isPending
                   ? <><Loader2 className="w-4 h-4 animate-spin" /> Initialisation...</>
-                  : <><Wifi className="w-4 h-4" /> Générer QR Code</>}
+                  : <><Wifi className="w-4 h-4" /> Générer le QR Code</>}
               </button>
             </div>
           )}
 
-          {/* Phone pairing method */}
-          {connMethod === "phone" && (
-            <div className="space-y-3">
-              <p className="text-xs text-zinc-400 text-center">
-                Entrez votre numéro WhatsApp en format international (ex: <strong>212612345678</strong>). Un code à 8 chiffres sera généré.
-              </p>
-              <input
-                type="tel"
-                value={pairingPhone}
-                onChange={e => setPairingPhone(e.target.value.replace(/[^\d+]/g, ""))}
-                placeholder="Ex: 212612345678"
-                className="w-full border border-zinc-200 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:border-transparent"
-                style={{ "--tw-ring-color": GOLD } as any}
-                data-testid="input-pairing-phone"
-                disabled={pairingMutation.isPending}
-              />
-              <button
-                onClick={() => pairingMutation.mutate(pairingPhone)}
-                disabled={pairingMutation.isPending || pairingPhone.replace(/\D/g, "").length < 9}
-                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-white font-bold text-sm transition-opacity hover:opacity-90 disabled:opacity-50"
-                style={{ background: GOLD }}
-                data-testid="button-get-pairing-code"
-              >
-                {pairingMutation.isPending
-                  ? <><Loader2 className="w-4 h-4 animate-spin" /> Génération du code...</>
-                  : <><Phone className="w-4 h-4" /> Obtenir le code</>}
-              </button>
-            </div>
-          )}
-
-          <div className="flex justify-center pt-1">
+          <div className="flex justify-center">
             <ForceRestartBtn />
           </div>
         </div>
@@ -1787,57 +1817,94 @@ function WhatsappTab() {
 
   /* ── CONNECTING — loading spinner OR pairing code display ──── */
   if (waState === "connecting") {
-    /* Show pairing code prominently if we have one */
+    /* ── Pairing code received — show it prominently ─────────── */
     if (pairingCode) {
+      const handleCopy = () => {
+        navigator.clipboard.writeText(pairingCode.replace(/-/g, "")).then(() => {
+          setCodeCopied(true);
+          setTimeout(() => setCodeCopied(false), 2500);
+        });
+      };
+
       return (
         <div className="max-w-md mx-auto space-y-4">
-          <div className="bg-white rounded-2xl border-2 p-6 sm:p-8 text-center space-y-5" style={{ borderColor: GOLD }}>
-            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(197,160,89,0.12)", border: `3px solid ${GOLD}` }}>
-              <Phone className="w-8 h-8 sm:w-9 sm:h-9" style={{ color: GOLD }} />
-            </div>
-            <div>
-              <h2 className="text-base sm:text-lg font-bold text-zinc-800 mb-1">Votre code de couplage</h2>
-              <p className="text-xs sm:text-sm text-zinc-400">
-                Ouvrez WhatsApp → Paramètres → Appareils connectés →<br />
-                <strong>Coupler avec un numéro de téléphone</strong>, puis entrez ce code :
-              </p>
+
+          {/* ── Main code card ── */}
+          <div className="bg-white rounded-2xl border-2 p-5 sm:p-7 space-y-5" style={{ borderColor: GOLD }}>
+
+            {/* Status badge */}
+            <div className="flex items-center justify-center gap-2">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold" style={{ background: "rgba(197,160,89,0.12)", color: GOLD }}>
+                <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: GOLD }} />
+                En attente de votre confirmation...
+              </div>
             </div>
 
-            {/* The 8-char code */}
+            <div className="text-center space-y-1">
+              <h2 className="text-base sm:text-lg font-bold text-zinc-800">Votre code de liaison</h2>
+              <p className="text-xs text-zinc-400">Entrez ce code dans WhatsApp pour lier votre compte</p>
+            </div>
+
+            {/* The code — big, copyable, full width */}
             <div
-              className="inline-flex items-center gap-2 px-6 py-4 rounded-2xl select-all cursor-text"
-              style={{ background: "rgba(30,27,75,0.05)", border: `2px dashed ${NAVY}` }}
+              className="w-full flex flex-col items-center gap-3 py-5 px-4 rounded-2xl cursor-pointer select-all"
+              style={{ background: "rgba(30,27,75,0.04)", border: `2.5px dashed ${NAVY}` }}
+              onClick={handleCopy}
+              title="Cliquez pour copier"
               data-testid="text-pairing-code"
             >
-              <span className="font-mono text-3xl sm:text-4xl font-extrabold tracking-widest" style={{ color: NAVY }}>
+              <span
+                className="font-mono font-black tracking-[0.25em] leading-none"
+                style={{ color: NAVY, fontSize: "clamp(2rem, 10vw, 3rem)" }}
+              >
                 {pairingCode}
               </span>
+              <button
+                onClick={e => { e.stopPropagation(); handleCopy(); }}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition-all"
+                style={codeCopied
+                  ? { background: "rgba(34,197,94,0.12)", color: "#16a34a" }
+                  : { background: "rgba(30,27,75,0.07)", color: NAVY }}
+                data-testid="button-copy-code"
+              >
+                {codeCopied
+                  ? <><Check className="w-3.5 h-3.5" /> Copié !</>
+                  : <><Copy className="w-3.5 h-3.5" /> Copier le code</>}
+              </button>
             </div>
 
-            <div className="space-y-1">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold" style={{ background: "rgba(197,160,89,0.12)", color: GOLD }}>
-                <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: GOLD }} />
-                En attente de confirmation...
-              </div>
-              <p className="text-xs text-zinc-400">Le code est valide environ 60 secondes</p>
-            </div>
+            <p className="text-center text-[11px] text-zinc-400">⏱ Valide environ 60 secondes — ne fermez pas cette page</p>
 
-            <button
-              onClick={() => { setPairingCode(null); setPairingPhone(""); setWaState("idle"); resetMutation.mutate(); }}
-              className="flex items-center gap-2 mx-auto px-4 py-2 rounded-xl text-xs font-medium transition-colors"
-              style={{ color: GOLD, border: `1.5px solid ${GOLD}`, background: "rgba(197,160,89,0.06)" }}
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Redemander un code
-            </button>
+            {/* Try again */}
+            <div className="flex justify-center">
+              <button
+                onClick={() => { setPairingCode(null); setPairingPhone(""); setWaState("idle"); resetMutation.mutate(); }}
+                disabled={resetMutation.isPending}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-medium transition-colors disabled:opacity-50"
+                style={{ color: GOLD, border: `1.5px solid ${GOLD}`, background: "rgba(197,160,89,0.06)" }}
+              >
+                {resetMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                Redemander un nouveau code
+              </button>
+            </div>
           </div>
 
-          <div className="bg-white rounded-2xl border border-zinc-100 p-4 text-xs" style={{ borderLeft: `3px solid ${GOLD}` }}>
-            <p className="font-bold text-zinc-700 mb-2">Instructions :</p>
-            <ol className="space-y-1.5 text-zinc-500 list-decimal list-inside">
-              <li>Ouvrez <strong>WhatsApp</strong> sur votre téléphone</li>
-              <li>Allez dans <strong>Paramètres → Appareils connectés</strong></li>
-              <li>Appuyez sur <strong>"Coupler avec un numéro de téléphone"</strong></li>
-              <li>Entrez le code <strong>{pairingCode}</strong></li>
+          {/* ── Step-by-step instructions ── */}
+          <div className="bg-white rounded-2xl border border-zinc-100 p-5" style={{ borderLeft: `4px solid ${GOLD}` }}>
+            <p className="text-xs font-bold text-zinc-700 mb-3 uppercase tracking-wide">Comment entrer le code :</p>
+            <ol className="space-y-3">
+              {[
+                { n: 1, text: <>Ouvrez <strong>WhatsApp</strong> sur votre téléphone</> },
+                { n: 2, text: <>Appuyez sur <strong>⋮ Plus d'options</strong> (Android) ou <strong>Réglages</strong> (iPhone)</> },
+                { n: 3, text: <>Allez dans <strong>Appareils connectés</strong> → <strong>Lier un appareil</strong></> },
+                { n: 4, text: <>Appuyez sur <strong>"Utiliser le numéro de téléphone"</strong> ou <strong>"Lier avec un numéro"</strong></> },
+                { n: 5, text: <>Entrez le code <strong className="font-mono" style={{ color: NAVY }}>{pairingCode}</strong> affiché ci-dessus</> },
+              ].map(({ n, text }) => (
+                <li key={n} className="flex items-start gap-3">
+                  <span className="shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white mt-0.5" style={{ background: NAVY }}>{n}</span>
+                  <span className="text-xs text-zinc-500 leading-relaxed">{text}</span>
+                </li>
+              ))}
             </ol>
           </div>
         </div>
