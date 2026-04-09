@@ -14,7 +14,10 @@ interface DateRangePickerProps {
 }
 
 const DAYS = ["Di", "Lu", "Ma", "Me", "Je", "Ve", "Sa"];
-const MONTHS_FR = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
+const MONTHS_FR = [
+  "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+  "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
+];
 
 function toDateStr(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -74,36 +77,34 @@ function applyPreset(preset: string): DateRange {
       return { from: toDateStr(first), to: toDateStr(last) };
     }
     case "allTime": return { from: "", to: "" };
-    case "custom": return { from: "", to: "" };
     default: return { from: "", to: "" };
   }
 }
 
 const PRESETS = [
-  { key: "today", label: "Aujourd'hui" },
+  { key: "today",     label: "Aujourd'hui" },
   { key: "yesterday", label: "Hier" },
-  { key: "last7", label: "7 derniers jours" },
-  { key: "last30", label: "30 derniers jours" },
+  { key: "last7",     label: "7 jours" },
+  { key: "last30",    label: "30 jours" },
   { key: "thisMonth", label: "Ce mois" },
   { key: "lastMonth", label: "Mois dernier" },
-  { key: "allTime", label: "Toute la vie" },
-  { key: "custom", label: "Custom Range" },
+  { key: "allTime",   label: "Tout" },
 ];
 
 function CalendarMonth({
   year, month, tempStart, tempEnd, hoverDate,
-  onDayClick, onDayHover,
+  onDayClick, onDayHover, compact = false,
 }: {
   year: number; month: number;
   tempStart: string; tempEnd: string; hoverDate: string;
   onDayClick: (d: string) => void;
   onDayHover: (d: string) => void;
+  compact?: boolean;
 }) {
   const daysInMonth = getDaysInMonth(year, month);
   const firstDay = getFirstDayOfMonth(year, month);
 
   const effectiveEnd = tempEnd || hoverDate;
-
   const rangeStart = tempStart && effectiveEnd
     ? (tempStart <= effectiveEnd ? tempStart : effectiveEnd)
     : tempStart;
@@ -123,14 +124,18 @@ function CalendarMonth({
     weeks.push(current);
   }
 
+  const cellSize = compact ? "w-7 h-7" : "w-8 h-8";
+  const dayFontSize = compact ? "text-[11px]" : "text-xs";
+  const headerFontSize = compact ? "text-[10px]" : "text-[11px]";
+
   return (
-    <div className="min-w-[224px]">
-      <div className="text-center font-bold text-sm mb-3 text-foreground">
+    <div className={compact ? "w-full" : "min-w-[224px]"}>
+      <div className={`text-center font-bold mb-3 text-foreground ${compact ? "text-xs" : "text-sm"}`}>
         {MONTHS_FR[month]} {year}
       </div>
       <div className="grid grid-cols-7 mb-1">
         {DAYS.map(d => (
-          <div key={d} className="text-center text-[11px] font-semibold text-muted-foreground py-1">{d}</div>
+          <div key={d} className={`text-center font-semibold text-muted-foreground py-1 ${headerFontSize}`}>{d}</div>
         ))}
       </div>
       {weeks.map((week, wi) => (
@@ -158,7 +163,7 @@ function CalendarMonth({
                 onMouseEnter={() => onDayHover(dateStr)}
               >
                 <div className={[
-                  "w-8 h-8 flex items-center justify-center text-xs font-medium rounded-full transition-colors",
+                  `${cellSize} flex items-center justify-center ${dayFontSize} font-medium rounded-full transition-colors`,
                   isSelectedEndpoint ? "bg-blue-600 text-white font-bold" : "",
                   !isSelectedEndpoint && isInRange ? "text-blue-800 dark:text-blue-300" : "",
                   !isSelectedEndpoint && !isInRange ? "hover:bg-muted text-foreground" : "",
@@ -176,6 +181,7 @@ function CalendarMonth({
 
 export function DateRangePicker({ value, onChange, placeholder = "Sélectionner une période" }: DateRangePickerProps) {
   const [open, setOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const now = new Date();
   const [leftYear, setLeftYear] = useState(now.getFullYear());
   const [leftMonth, setLeftMonth] = useState(now.getMonth());
@@ -188,14 +194,21 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
   const right = addMonths(leftYear, leftMonth, 1);
 
   useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
+  useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         setOpen(false);
       }
     }
-    if (open) document.addEventListener("mousedown", handleClick);
+    if (open && !isMobile) document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
+  }, [open, isMobile]);
 
   function handleDayClick(dateStr: string) {
     if (!tempStart || (tempStart && tempEnd)) {
@@ -218,9 +231,11 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
     setTempStart(range.from);
     setTempEnd(range.to);
     setActivePreset(key);
-    const d = parseDateStr(range.from);
-    setLeftYear(d.getFullYear());
-    setLeftMonth(d.getMonth());
+    if (range.from) {
+      const d = parseDateStr(range.from);
+      setLeftYear(d.getFullYear());
+      setLeftMonth(d.getMonth());
+    }
   }
 
   function handleApply() {
@@ -250,8 +265,12 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
       ? formatDisplay(value.from)
       : null;
 
+  const prevMonth = () => { const p = addMonths(leftYear, leftMonth, -1); setLeftYear(p.year); setLeftMonth(p.month); };
+  const nextMonth = () => { const n = addMonths(leftYear, leftMonth, 1); setLeftYear(n.year); setLeftMonth(n.month); };
+
   return (
     <div className="relative" ref={ref}>
+      {/* Trigger button */}
       <button
         type="button"
         onClick={() => {
@@ -267,7 +286,9 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
         data-testid="button-date-range-picker"
       >
         <CalendarDays className="w-4 h-4 text-muted-foreground shrink-0" />
-        <span className="min-w-[140px] text-left">{displayText || placeholder}</span>
+        <span className="min-w-[120px] sm:min-w-[140px] text-left text-xs sm:text-sm truncate">
+          {displayText || placeholder}
+        </span>
         {displayText && (
           <span
             className="ml-1 text-muted-foreground hover:text-foreground"
@@ -278,8 +299,105 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
         )}
       </button>
 
-      {open && (
-        <div className="absolute z-50 top-11 right-0 bg-white dark:bg-card border border-border shadow-2xl rounded-2xl overflow-hidden flex" style={{ minWidth: 560 }}>
+      {/* ── MOBILE: bottom-sheet overlay ─────────────────────────── */}
+      {open && isMobile && (
+        <>
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+            onClick={handleCancel}
+          />
+          {/* Sheet */}
+          <div className="fixed inset-x-0 bottom-0 z-50 bg-white dark:bg-card rounded-t-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]">
+            {/* Sheet handle */}
+            <div className="flex justify-center pt-3 pb-1 shrink-0">
+              <div className="w-10 h-1 rounded-full bg-muted-foreground/30" />
+            </div>
+
+            {/* Horizontal preset chips */}
+            <div className="flex items-center gap-2 px-4 py-2 overflow-x-auto scrollbar-none shrink-0">
+              {PRESETS.map(p => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => handlePreset(p.key)}
+                  className={[
+                    "shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap",
+                    activePreset === p.key
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-muted/50 text-foreground border-border hover:border-blue-400",
+                  ].join(" ")}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Single calendar with nav arrows */}
+            <div className="flex-1 overflow-y-auto px-4 pt-2 pb-3">
+              <div className="flex items-center justify-between mb-3">
+                <button
+                  type="button"
+                  onClick={prevMonth}
+                  className="p-2 rounded-xl hover:bg-muted active:scale-95 transition-all"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="text-sm font-bold">{MONTHS_FR[leftMonth]} {leftYear}</span>
+                <button
+                  type="button"
+                  onClick={nextMonth}
+                  className="p-2 rounded-xl hover:bg-muted active:scale-95 transition-all"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+              <CalendarMonth
+                year={leftYear} month={leftMonth}
+                tempStart={tempStart} tempEnd={tempEnd} hoverDate={hoverDate}
+                onDayClick={handleDayClick} onDayHover={setHoverDate}
+                compact
+              />
+            </div>
+
+            {/* Selection summary */}
+            <div className="px-4 py-2 border-t border-border/40 bg-muted/10 shrink-0">
+              <p className="text-xs text-muted-foreground font-mono text-center">
+                {tempStart ? formatDisplay(tempStart) : "—"}
+                {" → "}
+                {tempEnd ? formatDisplay(tempEnd) : (tempStart ? formatDisplay(tempStart) : "—")}
+              </p>
+            </div>
+
+            {/* Full-width action buttons */}
+            <div className="flex gap-3 px-4 py-4 shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCancel}
+                className="flex-1 h-11 text-sm font-semibold rounded-xl"
+              >
+                Annuler
+              </Button>
+              <Button
+                type="button"
+                onClick={handleApply}
+                disabled={!tempStart}
+                className="flex-1 h-11 text-sm font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Appliquer
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ── DESKTOP: dropdown ────────────────────────────────────── */}
+      {open && !isMobile && (
+        <div
+          className="absolute z-50 top-11 right-0 bg-white dark:bg-card border border-border shadow-2xl rounded-2xl overflow-hidden flex"
+          style={{ minWidth: 560 }}
+        >
           {/* Preset sidebar */}
           <div className="w-40 border-r border-border/50 py-3 flex flex-col gap-0.5">
             {PRESETS.map(p => (
@@ -301,16 +419,12 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
 
           {/* Calendar + footer */}
           <div className="flex flex-col">
-            {/* Navigation + two calendars */}
+            {/* Dual calendars */}
             <div className="flex gap-6 p-4 pb-2">
               {/* Left month */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <button
-                    type="button"
-                    onClick={() => { const p = addMonths(leftYear, leftMonth, -1); setLeftYear(p.year); setLeftMonth(p.month); }}
-                    className="p-1 rounded hover:bg-muted"
-                  >
+                  <button type="button" onClick={prevMonth} className="p-1 rounded hover:bg-muted">
                     <ChevronLeft className="w-4 h-4" />
                   </button>
                   <span className="text-sm font-bold">{MONTHS_FR[leftMonth]} {leftYear}</span>
@@ -328,11 +442,7 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
                 <div className="flex items-center justify-between mb-2">
                   <div className="w-6" />
                   <span className="text-sm font-bold">{MONTHS_FR[right.month]} {right.year}</span>
-                  <button
-                    type="button"
-                    onClick={() => { const n = addMonths(leftYear, leftMonth, 1); setLeftYear(n.year); setLeftMonth(n.month); }}
-                    className="p-1 rounded hover:bg-muted"
-                  >
+                  <button type="button" onClick={nextMonth} className="p-1 rounded hover:bg-muted">
                     <ChevronRight className="w-4 h-4" />
                   </button>
                 </div>
@@ -353,7 +463,7 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
               </span>
               <div className="flex gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={handleCancel} className="h-8 px-4 text-sm">
-                  Cancel
+                  Annuler
                 </Button>
                 <Button
                   type="button"
@@ -362,7 +472,7 @@ export function DateRangePicker({ value, onChange, placeholder = "Sélectionner 
                   disabled={!tempStart}
                   className="h-8 px-4 text-sm bg-blue-600 hover:bg-blue-700 text-white"
                 >
-                  Apply
+                  Appliquer
                 </Button>
               </div>
             </div>
