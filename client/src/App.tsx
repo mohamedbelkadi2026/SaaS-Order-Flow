@@ -228,7 +228,7 @@ function ProtectedRoutes() {
       <AppLayout>
         <AgentGuard>
           <Suspense fallback={<FullPageSpinner />}>
-            <Switch>
+            <Switch key={location}>
               <Route path="/" component={Dashboard} />
               <Route path="/orders/all" component={AllOrders} />
               <Route path="/orders/add" component={NewOrderAdd} />

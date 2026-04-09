@@ -429,13 +429,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         <span className="text-[10px] font-bold tracking-[0.15em] uppercase" style={{ color: 'rgba(255,255,255,0.45)' }}>{t('nav.menu')}</span>
       </div>
 
-      {/* Nav — event delegation: closes mobile drawer the instant any link (<a>) is tapped */}
-      <nav
-        className="flex-1 px-3 pb-3 overflow-y-auto space-y-0.5"
-        onClick={(e) => {
-          if ((e.target as HTMLElement).closest("a")) onClose?.();
-        }}
-      >
+      {/* Nav */}
+      <nav className="flex-1 px-3 pb-3 overflow-y-auto space-y-0.5">
         {navItems.map((item) => {
           const isOrdersMenu = item.name === "Mes Commandes";
           const isIntegrationMenu = item.name === "Integration";
@@ -475,6 +470,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               ) : (
                 <Link
                   href={item.href}
+                  onClick={onClose}
                   className={cn(
                     "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 group",
                     isActive
@@ -502,6 +498,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                       <Link
                         key={sub.name}
                         href={sub.href}
+                        onClick={onClose}
                         className={cn(
                           "flex items-center justify-between px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-100",
                           subActive
@@ -534,6 +531,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                       <Link
                         key={sub.name}
                         href={sub.href}
+                        onClick={onClose}
                         className={cn(
                           "flex items-center gap-2 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-100",
                           subActive ? "text-white font-bold" : "text-white/60 hover:text-white hover:bg-white/10"
@@ -557,6 +555,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                       <Link
                         key={sub.name}
                         href={sub.href}
+                        onClick={onClose}
                         className={cn(
                           "block px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-100",
                           subActive ? "text-white font-bold" : "text-white/60 hover:text-white hover:bg-white/10"
