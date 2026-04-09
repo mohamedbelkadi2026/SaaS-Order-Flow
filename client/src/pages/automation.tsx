@@ -1950,7 +1950,11 @@ function WhatsappTab() {
           </div>
           <div>
             <h2 className="text-lg font-bold text-zinc-800 mb-2">Connexion en cours...</h2>
-            <p className="text-sm text-zinc-400">Le QR Code apparaîtra dans quelques secondes. Ne fermez pas cette page.</p>
+            <p className="text-sm text-zinc-400">
+              {pairingMutation.isPending
+                ? "Génération du code en cours — cela peut prendre 10–20 secondes."
+                : "Connexion à WhatsApp en cours. Ne fermez pas cette page."}
+            </p>
           </div>
           <div className="flex justify-center gap-1.5">
             {[0,1,2].map(i => (

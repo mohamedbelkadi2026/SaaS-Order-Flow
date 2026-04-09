@@ -113,8 +113,21 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
   let _phoneNumber: string | null = null;
   let _reconnectTimer: NodeJS.Timeout | null = null;
   let _isRunning = false;
-  /** When true, QR events are suppressed — socket is waiting for pairing code entry */
-  let _pairingMode = false;
+
+  /**
+   * PAIRING CODE STATE
+   * isPairingMode = true  → QR generation is fully suppressed.
+   * _pairingPhone         → E.164 digits only (e.g. "212600000000")
+   * _pairingCodeResolve / _pairingCodeReject → callbacks that resolve the
+   *   promise returned by requestPairingCode() once the code arrives from
+   *   within the connection.update handler (the only correct moment to call
+   *   sock.requestPairingCode per the Baileys API).
+   */
+  let isPairingMode = false;
+  let _pairingPhone: string | null = null;
+  let _pairingCodeResolve: ((code: string) => void) | null = null;
+  let _pairingCodeReject: ((err: Error) => void) | null = null;
+
   const _lidToPhone = new Map<string, string>();
   const _processedMsgIds = new Map<string, number>();
 
@@ -271,11 +284,38 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
       _sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
+        /* ── QR event ─────────────────────────────────── */
         if (qr) {
-          if (_pairingMode) {
-            // Pairing code mode — silently suppress the QR event, keep state as "connecting"
-            console.log(`[WA:${storeId}] 📱 QR suppressed (pairing mode) — socket ready for code entry`);
+          if (isPairingMode) {
+            /*
+             * ✅ CORRECT MOMENT: Baileys emits QR exactly when the socket is
+             * ready to accept requestPairingCode(). We call it here instead of
+             * showing the QR, then resolve the waiting promise.
+             */
+            console.log(`[WA:${storeId}] 📱 QR suppressed — requesting pairing code for +${_pairingPhone}`);
+            try {
+              const rawCode: string = await (_sock as any).requestPairingCode(_pairingPhone!);
+              if (!rawCode) throw new Error("WhatsApp n'a renvoyé aucun code");
+              const formatted = rawCode.trim().replace(/(.{4})(?=.)/g, "$1-");
+              console.log(`[WA:${storeId}] ✅ Pairing code: ${formatted}`);
+              if (_pairingCodeResolve) {
+                _pairingCodeResolve(formatted);
+                _pairingCodeResolve = null;
+                _pairingCodeReject  = null;
+              }
+            } catch (err: any) {
+              console.error(`[WA:${storeId}] ❌ requestPairingCode error:`, err.message);
+              if (_pairingCodeReject) {
+                _pairingCodeReject(new Error(err.message ?? "Impossible de générer le code"));
+                _pairingCodeResolve = null;
+                _pairingCodeReject  = null;
+              }
+              // Tear down so the user can retry
+              isPairingMode = false;
+              _pairingPhone = null;
+            }
           } else {
+            /* Normal QR flow */
             try {
               _qrDataUrl = await QRCode.toDataURL(qr, {
                 width: 300, margin: 2,
@@ -291,18 +331,24 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
         }
 
         if (connection === "connecting") {
-          _waState = "connecting";
-          console.log(`[WA:${storeId}] Connecting...`);
-          await broadcastWAStatus();
+          if (!isPairingMode) {
+            // Only broadcast "connecting" in QR mode; pairing mode keeps its own state
+            _waState = "connecting";
+            await broadcastWAStatus();
+          }
+          console.log(`[WA:${storeId}] Socket connecting...`);
         }
 
         if (connection === "open") {
           _waState = "connected";
           _qrDataUrl = null;
           _isRunning = false;
-          _pairingMode = false;
+          isPairingMode = false;
+          _pairingPhone = null;
+          _pairingCodeResolve = null;
+          _pairingCodeReject  = null;
           _phoneNumber = _sock?.user?.id?.split(":")[0] ?? null;
-          console.log(`[WA:${storeId}] Connected — phone: ${_phoneNumber}`);
+          console.log(`[WA:${storeId}] ✅ Connected — phone: ${_phoneNumber}`);
           await broadcastWAStatus();
 
           // Update DB session status
@@ -331,10 +377,19 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
           _isRunning = false;
           const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
           const loggedOut = statusCode === DisconnectReason.loggedOut;
-          const wasInPairingMode = _pairingMode;
+          const wasInPairingMode = isPairingMode;
 
           console.log(`[WA:${storeId}] Disconnected — code: ${statusCode} | loggedOut: ${loggedOut} | pairingMode: ${wasInPairingMode}`);
-          _pairingMode = false;
+
+          // Reject any pending pairing code promise
+          if (_pairingCodeReject) {
+            _pairingCodeReject(new Error("Connexion fermée avant la génération du code"));
+          }
+          isPairingMode = false;
+          _pairingPhone = null;
+          _pairingCodeResolve = null;
+          _pairingCodeReject  = null;
+
           _waState = "idle";
           _sock = null;
           _phoneNumber = null;
@@ -349,12 +404,11 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
           } catch {}
 
           if (wasInPairingMode) {
-            // Pairing mode failed (code expired or wrong) — go back to idle, don't auto-reconnect
-            console.log(`[WA:${storeId}] 📱 Pairing code expired or failed — returning to idle`);
+            // Code expired or wrong — go to idle, no auto-reconnect (avoids QR loop)
+            console.log(`[WA:${storeId}] 📱 Pairing session closed — returning to idle (no auto-reconnect)`);
           } else if (loggedOut) {
             console.log(`[WA:${storeId}] Logged out (401). Clearing session files...`);
             await clearSessionFiles();
-            console.log(`[WA:${storeId}] Will reconnect in 3s...`);
             scheduleReconnect(3000);
           } else {
             console.log(`[WA:${storeId}] Reconnecting in 5s...`);
@@ -531,13 +585,19 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
 
     async resetAndRestart(): Promise<void> {
       console.log(`[WA:${storeId}] Force reset — wiping session...`);
+      if (_pairingCodeReject) {
+        _pairingCodeReject(new Error("Réinitialisation forcée"));
+      }
       if (_sock) {
         try { _sock.end(undefined); } catch {}
         _sock = null;
       }
       if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
       _isRunning = false;
-      _pairingMode = false;
+      isPairingMode = false;
+      _pairingPhone = null;
+      _pairingCodeResolve = null;
+      _pairingCodeReject  = null;
       _waState = "idle";
       _qrDataUrl = null;
       _phoneNumber = null;
@@ -548,9 +608,15 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
 
     async logout(): Promise<void> {
       console.log(`[WA:${storeId}] Logout requested.`);
+      if (_pairingCodeReject) {
+        _pairingCodeReject(new Error("Déconnexion demandée"));
+      }
       if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
       _isRunning = false;
-      _pairingMode = false;
+      isPairingMode = false;
+      _pairingPhone = null;
+      _pairingCodeResolve = null;
+      _pairingCodeReject  = null;
       if (_sock) {
         try { await _sock.logout(); } catch {}
         try { _sock.end(undefined); } catch {}
@@ -621,53 +687,83 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
     },
 
     async requestPairingCode(phoneNumber: string): Promise<string> {
-      // Strip +, spaces, dashes — Baileys requires pure digits
-      const clean = phoneNumber.replace(/\D/g, "");
-      if (clean.length < 7) throw new Error("Numéro de téléphone invalide (trop court)");
+      /*
+       * Phone sanitisation:
+       *  - Strip all non-digit characters
+       *  - If Moroccan local format (0XXXXXXXXX → 10 digits starting with 0), convert to 212XXXXXXXXX
+       *  - Minimum 7 digits as a sanity check
+       */
+      let clean = phoneNumber.replace(/\D/g, "");
+      if (clean.startsWith("00")) clean = clean.slice(2);       // 00212... → 212...
+      if (clean.startsWith("0") && clean.length === 10) {       // 06... (Morocco) → 2126...
+        clean = `212${clean.slice(1)}`;
+      }
+      if (clean.length < 7) {
+        throw new Error("Numéro de téléphone invalide — utilisez le format international (ex: +212 6 12 34 56 78)");
+      }
 
       if (_waState === "connected") throw new Error("Déjà connecté à WhatsApp");
 
-      // Set pairing mode BEFORE starting connection so QR events are suppressed from the start
-      _pairingMode = true;
-      console.log(`[WA:${storeId}] 📱 Entering pairing mode for phone: +${clean}`);
+      // Reject any lingering previous pairing attempt
+      if (_pairingCodeReject) {
+        _pairingCodeReject(new Error("Nouvel essai demandé"));
+        _pairingCodeReject = null;
+        _pairingCodeResolve = null;
+      }
 
-      // If a socket is already running from a previous attempt, tear it down cleanly
-      if (_sock && _waState !== "connecting") {
+      // Tear down any existing socket cleanly before starting fresh
+      if (_sock) {
         try { _sock.end(undefined); } catch {}
         _sock = null;
-        _isRunning = false;
-        _qrDataUrl = null;
       }
+      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      _isRunning = false;
+      _qrDataUrl = null;
 
-      // Start fresh connection if needed
-      if (!_isRunning) {
-        connectToWhatsApp().catch(e => {
-          console.error(`[WA:${storeId}] pairingCode connect error:`, e.message);
-          _pairingMode = false;
-        });
-      }
+      /*
+       * Set pairing state BEFORE starting the connection.
+       * isPairingMode=true ensures that when the first QR event fires inside
+       * connection.update, we call sock.requestPairingCode() instead of
+       * rendering a QR image.  This is the ONLY correct moment to call it.
+       */
+      isPairingMode = true;
+      _pairingPhone = clean;
+      console.log(`[WA:${storeId}] 📱 Pairing mode → +${clean}`);
 
-      // Wait up to 15 seconds for the socket to be initialised
-      let waited = 0;
-      while (!_sock && waited < 15000) {
-        await new Promise(r => setTimeout(r, 300));
-        waited += 300;
-      }
-      if (!_sock) {
-        _pairingMode = false;
-        throw new Error("Socket non disponible — réessayez dans quelques secondes");
-      }
+      // Build the promise BEFORE connecting so the resolve/reject are in scope when QR fires
+      const codePromise = new Promise<string>((resolve, reject) => {
+        _pairingCodeResolve = resolve;
+        _pairingCodeReject  = reject;
+      });
+
+      // Start a fresh connection (non-blocking)
+      connectToWhatsApp().catch(e => {
+        console.error(`[WA:${storeId}] pairingCode connect error:`, e.message);
+        if (_pairingCodeReject) {
+          _pairingCodeReject(new Error(e.message ?? "Erreur de connexion"));
+          _pairingCodeResolve = null;
+          _pairingCodeReject  = null;
+        }
+        isPairingMode = false;
+        _pairingPhone = null;
+      });
+
+      // Race: code arrives (via the QR event handler) OR 30s timeout
+      const TIMEOUT_MS = 30_000;
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Délai dépassé — réessayez dans quelques secondes")), TIMEOUT_MS)
+      );
 
       try {
-        const code: string = await (_sock as any).requestPairingCode(clean);
-        if (!code) throw new Error("Aucun code reçu de WhatsApp");
-        const formatted = code.trim().replace(/(.{4})(?=.)/g, "$1-");
-        console.log(`[WA:${storeId}] 📱 Pairing code generated: ${formatted}`);
-        return formatted;
+        const code = await Promise.race([codePromise, timeout]);
+        return code;
       } catch (err: any) {
-        _pairingMode = false;
-        console.error(`[WA:${storeId}] requestPairingCode error:`, err.message);
-        throw new Error(err.message ?? "Impossible de générer le code — vérifiez le numéro et réessayez");
+        // Clean up on failure
+        isPairingMode = false;
+        _pairingPhone = null;
+        _pairingCodeResolve = null;
+        _pairingCodeReject  = null;
+        throw new Error(err.message ?? "Impossible de générer le code");
       }
     },
   };
