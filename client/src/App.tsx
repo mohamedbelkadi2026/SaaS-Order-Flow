@@ -157,50 +157,69 @@ function useOrderStatusSSE() {
   }, [user]);
 }
 
+// Strict helper — only integer 1 or boolean true counts as verified.
+// This prevents null / undefined / 0 from sneaking through as "verified".
+function emailIsVerified(user: any): boolean {
+  return user?.isEmailVerified === 1 || user?.isEmailVerified === true;
+}
+
 function ProtectedRoutes() {
   const { user, isLoading } = useAuth();
   const [location, navigate] = useLocation();
   useOrderStatusSSE();
 
-  // Unverified owner = logged-in owner who hasn't confirmed their email yet.
+  // Unverified owner = owner whose email is NOT strictly verified (=== 1 | true).
+  // Super-admins are always considered verified regardless of the flag.
   const unverifiedOwner = !!(
-    user && user.role === "owner" && !user.isSuperAdmin && !user.isEmailVerified
+    user && user.role === "owner" && !user.isSuperAdmin && !emailIsVerified(user)
   );
+
   // Strict lock: unverified owners may ONLY be on /verify-email.
-  // Every other route — including "/" — sends them back.
   const needsVerification = unverifiedOwner && location !== "/verify-email";
 
-  // All redirects via useEffect — never navigate during render
+  // All redirects via useEffect — NEVER fire while isLoading to avoid loops.
   useEffect(() => {
-    if (!isLoading && user && ["/auth", "/login", "/register"].includes(location)) {
+    if (isLoading) return;
+    if (user && ["/auth", "/login", "/register"].includes(location)) {
       navigate(unverifiedOwner ? "/verify-email" : "/");
     }
   }, [isLoading, user, location, unverifiedOwner]);
 
+  // Redirect unverified owners away from all private routes.
   useEffect(() => {
-    if (needsVerification) {
-      console.log("User registered, redirecting to verification page...");
-      navigate("/verify-email");
-    }
-  }, [needsVerification]);
+    if (isLoading) return;
+    if (needsVerification) navigate("/verify-email");
+  }, [isLoading, needsVerification]);
 
+  // Redirect verified users away from /verify-email (they are already done).
+  useEffect(() => {
+    if (isLoading) return;
+    if (user && location === "/verify-email" && !unverifiedOwner) navigate("/");
+  }, [isLoading, user, location, unverifiedOwner]);
+
+  // Show spinner while user session is loading — no redirect logic runs during this.
   if (isLoading) return <FullPageSpinner />;
 
   // ── Not logged in ─────────────────────────────────────────────────────────
   if (!user) {
     if (location === "/auth" || location === "/login") return <AuthPage initialTab="login" />;
     if (location === "/register") return <AuthPage initialTab="register" />;
-    // /verify-email requires being logged in — redirect guests to login instead
     if (location === "/verify-email") return <AuthPage initialTab="login" />;
     return <LandingPage />;
   }
 
-  // ── Logged in — handle special pages first ────────────────────────────────
-  // Spinner instead of null while the useEffect fires the redirect
+  // ── Logged in — handle special pages ─────────────────────────────────────
+  // Spinner (instead of null) while useEffect fires its redirect
   if (location === "/auth" || location === "/login" || location === "/register") return <FullPageSpinner />;
-  // Unverified owners: ONLY the verify page is allowed — useEffect redirects everything else
-  if (location === "/verify-email") return <VerifyEmailPage />;
-  // Spinner instead of null while the useEffect fires the redirect to /verify-email
+
+  // /verify-email: show the page ONLY for unverified owners; everyone else gets a spinner
+  // while the useEffect above redirects them to /.
+  if (location === "/verify-email") {
+    if (unverifiedOwner) return <VerifyEmailPage />;
+    return <FullPageSpinner />;
+  }
+
+  // Spinner while the needsVerification useEffect fires the redirect
   if (needsVerification) return <FullPageSpinner />;
 
   // ── Verified user → full app ──────────────────────────────────────────────

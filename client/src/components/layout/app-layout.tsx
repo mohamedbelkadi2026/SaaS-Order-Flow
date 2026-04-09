@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, Component, ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
 import {
@@ -157,6 +157,43 @@ const LANG_OPTIONS = [
   { code: "ar" as const, label: "AR", flag: "🇲🇦", full: "العربية" },
   { code: "en" as const, label: "EN", flag: "🇬🇧", full: "English" },
 ];
+
+/* ─── Error Boundary ───────────────────────────────────────────── */
+class ContentErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(err: Error, info: React.ErrorInfo) {
+    console.error("[ContentErrorBoundary]", err, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-64 gap-4 p-8 text-center">
+          <AlertTriangle className="w-12 h-12 text-destructive opacity-60" />
+          <div>
+            <p className="font-semibold text-lg">Une erreur inattendue s'est produite</p>
+            <p className="text-muted-foreground text-sm mt-1">Actualisez la page pour continuer</p>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold"
+          >
+            Actualiser la page
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 /* ─── Main layout ──────────────────────────────────────────────── */
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -944,9 +981,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
         {/* Page content */}
         <main className="flex-1 p-3 sm:p-4 lg:p-6 overflow-x-hidden overflow-y-auto">
-          <div className="w-full">
-            {children}
-          </div>
+          <ContentErrorBoundary key={location}>
+            <div className="w-full">
+              {children}
+            </div>
+          </ContentErrorBoundary>
         </main>
       </div>
 

@@ -732,6 +732,18 @@ export default function Orders() {
     />
   );
 
+  if (isLoading && !data) {
+    return (
+      <div className="space-y-3 animate-pulse" data-testid="orders-loading-skeleton">
+        <div className="h-8 bg-muted rounded-lg w-48" />
+        <div className="h-10 bg-muted rounded-xl w-full" />
+        {[...Array(8)].map((_, i) => (
+          <div key={i} className="h-14 bg-muted rounded-xl w-full" />
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 animate-in fade-in duration-500">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">

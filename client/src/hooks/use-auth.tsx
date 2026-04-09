@@ -66,11 +66,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["/api/user"], data);
-      // Hard navigation guarantees a clean state and eliminates any white-screen flash
-      // that soft routing causes when the auth page briefly renders null during redirect.
-      const dest =
-        data?.role === "owner" && !data?.isEmailVerified ? "/verify-email" : "/";
-      window.location.replace(dest);
+      // Strict check: only treat isEmailVerified === 1 (or true) as verified.
+      // Using === 1 prevents null/undefined/0 from being accidentally treated as verified.
+      const verified = data?.isEmailVerified === 1 || data?.isEmailVerified === true;
+      const needsEmailVerification =
+        data?.role === "owner" && !data?.isSuperAdmin && !verified;
+      // Hard navigation guarantees a clean state and eliminates any white-screen flash.
+      window.location.replace(needsEmailVerification ? "/verify-email" : "/");
     },
     onError: (err: Error) => {
       toast({ title: "Erreur de connexion", description: err.message.replace(/^\d+:\s*/, ''), variant: "destructive" });
@@ -84,9 +86,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["/api/user"], data);
-      const dest =
-        data?.role === "owner" && !data?.isEmailVerified ? "/verify-email" : "/";
-      window.location.replace(dest);
+      const verified = data?.isEmailVerified === 1 || data?.isEmailVerified === true;
+      const needsEmailVerification =
+        data?.role === "owner" && !data?.isSuperAdmin && !verified;
+      window.location.replace(needsEmailVerification ? "/verify-email" : "/");
     },
     onError: (err: Error) => {
       toast({ title: "Erreur d'inscription", description: err.message.replace(/^\d+:\s*/, ''), variant: "destructive" });
