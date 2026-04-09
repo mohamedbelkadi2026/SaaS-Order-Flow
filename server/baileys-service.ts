@@ -59,6 +59,7 @@ export interface BaileysSessionInstance {
   sendMessage(phone: string, text: string): Promise<boolean>;
   sendImage(phone: string, imageUrl: string, caption: string): Promise<boolean>;
   isConnected(): boolean;
+  requestPairingCode(phoneNumber: string): Promise<string>;
 }
 
 /* ── Per-store session map ──────────────────────────────────── */
@@ -602,6 +603,43 @@ function createBaileysSession(storeId: number): BaileysSessionInstance {
 
     isConnected(): boolean {
       return _waState === "connected";
+    },
+
+    async requestPairingCode(phoneNumber: string): Promise<string> {
+      const clean = phoneNumber.replace(/\D/g, "");
+      if (!clean) throw new Error("Numéro de téléphone invalide");
+
+      if (_waState === "connected") throw new Error("Déjà connecté à WhatsApp");
+
+      // If a socket is already running, use it; otherwise start fresh connection
+      if (_waState === "idle" && !_isRunning) {
+        if (_sock) {
+          try { _sock.end(undefined); } catch {}
+          _sock = null;
+        }
+        _isRunning = false;
+        _qrDataUrl = null;
+        // Fire off connect — do NOT await (it blocks indefinitely waiting for events)
+        connectToWhatsApp().catch(e => console.error(`[WA:${storeId}] pairingCode connect error:`, e.message));
+      }
+
+      // Wait up to 12 seconds for the socket to be created
+      let waited = 0;
+      while (!_sock && waited < 12000) {
+        await new Promise(r => setTimeout(r, 300));
+        waited += 300;
+      }
+      if (!_sock) throw new Error("Socket non disponible — réessayez dans quelques secondes");
+
+      try {
+        const code: string = await (_sock as any).requestPairingCode(clean);
+        const formatted = (code ?? "").replace(/(.{4})(?=.)/g, "$1-");
+        console.log(`[WA:${storeId}] 📱 Pairing code: ${formatted}`);
+        return formatted;
+      } catch (err: any) {
+        console.error(`[WA:${storeId}] requestPairingCode error:`, err.message);
+        throw new Error(err.message ?? "Impossible de générer le code");
+      }
     },
   };
 }

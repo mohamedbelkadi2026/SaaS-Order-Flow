@@ -1,0 +1,22 @@
+The Full Prompt for Replit:
+"I need you to perform a complete update on my application. Please follow these instructions carefully to ensure the app is mobile-friendly, adds new features, and is ready for a stable deployment on Railway.
+1. Mobile Responsiveness (Automation & AI Section)
+Use CSS Media Queries to fix the header section for mobile devices (max-width: 768px).
+On mobile, the 4 action items (Retargeting, IA Confirmation, Connexion WhatsApp, Live Monitoring) must be arranged in a 2x2 grid (two items per row).
+Adjust padding and font sizes so the text is clear ('WADH') and fits perfectly.
+IMPORTANT: The Desktop (PC) layout must remain exactly as it is now (all items in one horizontal line).
+2. WhatsApp Pairing Code Feature
+In the 'Connexion WhatsApp' section, add an alternative connection method: 'Link with Phone Number' (Pairing Code).
+Backend: If you are not using it already, switch/implement the WhatsApp logic using the @whiskeysockets/baileys library.
+Create a route/logic where the user enters their phone number (international format), and the backend requests an 8-character Pairing Code from WhatsApp using sock.requestPairingCode(phoneNumber).
+Frontend: Add a clean input field for the phone number and a 'Get Code' button. Display the 8-character code clearly once it's generated.
+Keep the existing QR Code functionality working as well.
+3. Railway Deployment & Persistence
+Ensure the app is ready for Railway.
+Port Handling: Use process.env.PORT for the server to listen on.
+Session Persistence: Ensure all WhatsApp authentication files are saved in a specific folder (e.g., ./auth_info). This is crucial so the connection isn't lost when Railway redeploys the app.
+Ensure the start command in package.json is correct (e.g., node index.js).
+4. Final Check
+Review the entire UI to ensure it looks professional and consistent on both mobile and PC.
+Make sure the transition between QR code and Pairing code options is smooth for the user.
+Please implement these changes and let me know once the code is ready to be pushed to Railway."

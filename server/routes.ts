@@ -4763,6 +4763,22 @@ export async function registerRoutes(
     }
   });
 
+  /* POST /api/automation/whatsapp/pairing-code → get 8-char phone pairing code */
+  app.post("/api/automation/whatsapp/pairing-code", requireAuth, async (req: any, res: any) => {
+    try {
+      const { getBaileysInstance } = await import("./baileys-service");
+      const storeId: number = req.user!.storeId ?? 1;
+      const { phone } = req.body;
+      if (!phone || typeof phone !== "string") {
+        return res.status(400).json({ message: "Numéro de téléphone requis (format international, ex: 212612345678)" });
+      }
+      const code = await getBaileysInstance(storeId).requestPairingCode(phone);
+      res.json({ ok: true, code });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message ?? "Erreur lors de la génération du code" });
+    }
+  });
+
   /* GET /api/automation/whatsapp/events → SSE stream for real-time WA status (store-scoped) */
   app.get("/api/automation/whatsapp/events", requireAuth, async (req: any, res: any) => {
     const { addSSEClient } = await import("./sse");
