@@ -1559,6 +1559,13 @@ function WhatsappTab() {
   const [pairingError, setPairingError] = useState<string | null>(null);
   const [codeCopied, setCodeCopied]     = useState(false);
 
+  /**
+   * Ref mirror of pairingCode — always up-to-date inside SSE/polling callbacks
+   * (React state closures would capture a stale value otherwise)
+   */
+  const pairingCodeRef = useRef<string | null>(null);
+  useEffect(() => { pairingCodeRef.current = pairingCode; }, [pairingCode]);
+
   /* Subscribe to SSE for instant QR / status updates */
   useEffect(() => {
     let es: EventSource | null = null;
@@ -1571,11 +1578,23 @@ function WhatsappTab() {
         try {
           const d = JSON.parse(e.data);
           const newState = d.state ?? "idle";
+          setSseOk(true);
+
+          // 🔒 PAIRING LOCK: while a pairing code is on screen, only let
+          // "connected" or "idle" break through — never switch to "qr"
+          if (pairingCodeRef.current && newState !== "connected" && newState !== "idle") {
+            return;
+          }
+
           setWaState(newState);
           setPhone(d.phone ?? null);
           setQrUrl(d.qr ?? null);
-          setSseOk(true);
           if (newState === "connected") setPairingCode(null);
+          if (newState === "idle" && pairingCodeRef.current) {
+            // Code expired / connection dropped — go back to phone input form
+            setPairingCode(null);
+            setPairingError("Le code a expiré ou la connexion a été interrompue. Générez un nouveau code.");
+          }
         } catch { /* ignore parse error */ }
       });
 
@@ -1603,11 +1622,20 @@ function WhatsappTab() {
   useEffect(() => {
     if (statusQuery.data) {
       const newState = statusQuery.data.state ?? "idle";
+
+      // 🔒 PAIRING LOCK: same guard as SSE — don't let polling override the pairing code view
+      if (pairingCodeRef.current && newState !== "connected" && newState !== "idle") {
+        return;
+      }
+
       setWaState(newState);
       setPhone(statusQuery.data.phone ?? null);
-      if (statusQuery.data.qr) setQrUrl(statusQuery.data.qr);
-      // Clear pairing code once connected
+      if (statusQuery.data.qr && !pairingCodeRef.current) setQrUrl(statusQuery.data.qr);
       if (newState === "connected") setPairingCode(null);
+      if (newState === "idle" && pairingCodeRef.current) {
+        setPairingCode(null);
+        setPairingError("Le code a expiré ou la connexion a été interrompue. Générez un nouveau code.");
+      }
     }
   }, [statusQuery.data]);
 
@@ -1663,14 +1691,17 @@ function WhatsappTab() {
     onSuccess: (data) => {
       setPairingError(null);
       if (data.code) {
+        // Set pairingCode first, THEN switch state so the lock is active before any SSE arrives
         setPairingCode(data.code);
         setWaState("connecting");
+        setQrUrl(null); // discard any cached QR
       } else {
         setPairingError(data.message ?? "Code non reçu — réessayez");
       }
     },
     onError: (err: Error) => {
       setPairingError(err.message ?? "Impossible de générer le code. Vérifiez le numéro et réessayez.");
+      setWaState("idle"); // reset in case SSE moved us to "connecting"
     },
   });
 
