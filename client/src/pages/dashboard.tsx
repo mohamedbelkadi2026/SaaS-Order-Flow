@@ -1005,53 +1005,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      {canSeeProfit && (
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 lg:gap-4">
-        {/* Total Costs — Red */}
-        <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-total-costs" style={{ background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-              <Receipt className="w-6 h-6 text-white" />
-            </div>
-            <div className="flex-1">
-              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Total Coûts</p>
-              <p className="text-white text-2xl font-bold">
-                {formatCurrency((stats?.totalProductCost || 0) + (stats?.totalShipping || 0) + (stats?.totalPackaging || 0) + (stats?.totalAgentCommissions || 0) + (stats?.adSpendTotal || 0))}
-              </p>
-              <p className="text-white/70 text-xs mt-0.5">Produit + Livraison + Pub + Commissions</p>
-            </div>
-          </CardContent>
-        </Card>
-        {/* Commissions Agents — Gold */}
-        <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-agent-commissions" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #8a6930 100%)' }}>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-              <Users className="w-6 h-6 text-white" />
-            </div>
-            <div className="flex-1">
-              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Commissions Agents</p>
-              <p className="text-white text-2xl font-bold">{formatCurrency(stats?.totalAgentCommissions || 0)}</p>
-              <p className="text-white/70 text-xs mt-0.5">{delivered} livrées × taux/agent</p>
-            </div>
-          </CardContent>
-        </Card>
-        {/* Ad Spend — Gold-dark */}
-        <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-total-ad-spend" style={{ background: 'linear-gradient(135deg, #92400e 0%, #78350f 100%)' }}>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
-              <TrendingUp className="w-6 h-6 text-white" />
-            </div>
-            <div className="flex-1">
-              <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Dépenses Pub</p>
-              <p className="text-white text-2xl font-bold">{formatCurrency(stats?.adSpendTotal || 0)}</p>
-              <p className="text-white/70 text-xs mt-0.5">
-                {stats?.adSpendTotal > 0 ? `ROAS: ${stats.roas?.toFixed(2)}x | ROI: ${stats.roi?.toFixed(1)}%` : 'Aucune dépense publicitaire'}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-      )}
+      {/* TOTAL COÛTS, COMMISSIONS AGENTS, DÉPENSES PUB cards hidden by request */}
 
       {filters.productId !== 'all' && (
         <Card className="rounded-xl border-primary/30 bg-primary/5 shadow-sm" data-testid="card-product-drilldown">
