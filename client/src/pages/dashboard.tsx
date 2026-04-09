@@ -1085,74 +1085,89 @@ export default function Dashboard() {
             </Card>
 
             {/* Donut Chart — Répartition des statuts (30 % on desktop) */}
-            <Card className="lg:basis-[30%] rounded-xl shadow-sm border border-border/50" data-testid="card-agent-status-chart">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4" style={{ color: STATUS_COLORS.delivered }} />
-                  Répartition des statuts
-                </CardTitle>
-                <p className="text-xs text-muted-foreground">
-                  {agentMyStats?.totalOrders ?? 0} commande{(agentMyStats?.totalOrders ?? 0) !== 1 ? 's' : ''} au total
-                </p>
-              </CardHeader>
-              <CardContent className="px-3 pb-5">
-                {agentStatsLoading ? (
-                  <div className="h-[220px] flex items-center justify-center">
-                    <Skeleton className="w-full h-full rounded-lg" />
-                  </div>
-                ) : !agentMyStats?.byStatus?.length ? (
-                  <div className="h-[220px] flex items-center justify-center text-muted-foreground text-sm">
-                    Aucune donnée disponible
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center gap-4">
-                    <ResponsiveContainer width="100%" height={150}>
-                      <PieChart>
-                        <Pie
-                          data={agentMyStats.byStatus}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={42}
-                          outerRadius={68}
-                          paddingAngle={3}
-                          dataKey="value"
-                          stroke="none"
-                        >
-                          {agentMyStats.byStatus.map((entry, i) => (
-                            <Cell key={`cell-${i}`} fill={entry.color} />
-                          ))}
-                        </Pie>
-                        <RechartsTooltip
-                          contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
-                          formatter={(v: number, name: string) => [`${v} commandes`, name]}
-                          labelStyle={{ display: 'none' }}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    {/* Legend */}
-                    <div className="w-full space-y-2">
-                      {agentMyStats.byStatus.map((s) => {
-                        const pct = agentMyStats.totalOrders > 0
-                          ? ((s.value / agentMyStats.totalOrders) * 100).toFixed(1)
-                          : '0';
-                        return (
-                          <div key={s.name} className="flex items-center justify-between text-xs">
-                            <div className="flex items-center gap-2">
-                              <div className="w-3 h-3 rounded-sm shrink-0" style={{ background: s.color }} />
-                              <span className="text-foreground font-medium">{s.name}</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 tabular-nums">
-                              <span className="font-bold">{s.value}</span>
-                              <span className="text-muted-foreground text-[10px]">({pct}%)</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            {(() => {
+              // Build from the EXACT same variables the stat cards use — guaranteed match
+              const pieRows = [
+                { name: 'Confirmées', value: confirme,              color: STATUS_COLORS.confirme  },
+                { name: 'Livrées',    value: delivered,             color: STATUS_COLORS.delivered },
+                { name: 'En cours',   value: inProgress,            color: STATUS_COLORS.transit   },
+                { name: 'Annulées',   value: cancelled,             color: STATUS_COLORS.cancelled },
+                { name: 'Refusées',   value: stats?.refused || 0,   color: '#f97316'               },
+              ];
+              const pieTotal = pieRows.reduce((s, r) => s + r.value, 0);
+              const pieData  = pieRows.filter(r => r.value > 0); // only non-zero segments in donut
+              return (
+                <Card className="lg:basis-[30%] rounded-xl shadow-sm border border-border/50" data-testid="card-agent-status-chart">
+                  <CardHeader className="pb-2 pt-4 px-5">
+                    <CardTitle className="text-sm font-semibold text-foreground flex items-center gap-2">
+                      <CheckCircle className="w-4 h-4" style={{ color: STATUS_COLORS.delivered }} />
+                      Répartition des statuts
+                    </CardTitle>
+                    <p className="text-xs text-muted-foreground">
+                      {pieTotal} commande{pieTotal !== 1 ? 's' : ''} au total
+                    </p>
+                  </CardHeader>
+                  <CardContent className="px-3 pb-5">
+                    {isLoading ? (
+                      <div className="h-[220px] flex items-center justify-center">
+                        <Skeleton className="w-full h-full rounded-lg" />
+                      </div>
+                    ) : pieTotal === 0 ? (
+                      <div className="h-[220px] flex items-center justify-center text-muted-foreground text-sm">
+                        Aucune commande sur cette période
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-4">
+                        <ResponsiveContainer width="100%" height={150}>
+                          <PieChart>
+                            <Pie
+                              data={pieData}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={42}
+                              outerRadius={68}
+                              paddingAngle={3}
+                              dataKey="value"
+                              nameKey="name"
+                              stroke="none"
+                            >
+                              {pieData.map((entry, i) => (
+                                <Cell key={`cell-${i}`} fill={entry.color} />
+                              ))}
+                            </Pie>
+                            <RechartsTooltip
+                              contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
+                              formatter={(v: number, name: string) => [`${v} commandes`, name]}
+                              labelStyle={{ display: 'none' }}
+                            />
+                          </PieChart>
+                        </ResponsiveContainer>
+                        {/* Legend — ALL 5 rows always visible */}
+                        <div className="w-full space-y-2">
+                          {pieRows.map((s) => {
+                            const pct = pieTotal > 0
+                              ? ((s.value / pieTotal) * 100).toFixed(1)
+                              : '0.0';
+                            return (
+                              <div key={s.name} className="flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-3 h-3 rounded-sm shrink-0" style={{ background: s.color }} />
+                                  <span className={`font-medium ${s.value > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>{s.name}</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 tabular-nums">
+                                  <span className={`font-bold ${s.value > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>{s.value}</span>
+                                  <span className="text-muted-foreground text-[10px]">({pct}%)</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })()}
 
           </div>
         </div>
