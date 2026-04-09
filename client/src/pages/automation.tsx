@@ -27,11 +27,16 @@ function TabPill({ active, onClick, icon, label }: { active: boolean; onClick: (
   return (
     <button
       onClick={onClick}
-      className={cn("flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all", active ? "text-white shadow-lg" : "text-white/60 hover:text-white hover:bg-white/10")}
+      className={cn(
+        "flex items-center justify-center gap-1.5 w-full sm:w-auto",
+        "px-3 py-2 sm:px-5 sm:py-2.5 rounded-xl",
+        "text-xs sm:text-sm font-bold transition-all",
+        active ? "text-white shadow-lg" : "text-white/60 hover:text-white hover:bg-white/10"
+      )}
       style={active ? { background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` } : {}}
     >
-      {icon}
-      {label}
+      <span className="shrink-0">{icon}</span>
+      <span className="truncate leading-tight">{label}</span>
     </button>
   );
 }
@@ -43,18 +48,19 @@ export default function AutomationPage() {
   return (
     <div className="min-h-screen" style={{ background: "#f4f4f5" }}>
       {/* Header */}
-      <div className="px-6 pt-6 pb-4" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d2a7a 100%)` }}>
+      <div className="px-4 sm:px-6 pt-4 sm:pt-6 pb-4" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d2a7a 100%)` }}>
         <div className="max-w-5xl mx-auto">
           <div className="flex items-center gap-3 mb-1">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
-              <Bot className="w-5 h-5 text-white" />
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: `linear-gradient(135deg, ${GOLD}, #d4aa60)` }}>
+              <Bot className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-white">Automation & AI</h1>
-              <p className="text-white/50 text-xs">Marketing intelligent · Confirmation automatique · WhatsApp</p>
+              <h1 className="text-lg sm:text-xl font-bold text-white">Automation & AI</h1>
+              <p className="text-white/50 text-xs hidden sm:block">Marketing intelligent · Confirmation automatique · WhatsApp</p>
             </div>
           </div>
-          <div className="flex gap-2 mt-5">
+          {/* Mobile: 2×2 grid — Desktop: single horizontal row */}
+          <div className="grid grid-cols-2 gap-2 mt-4 sm:flex sm:flex-row sm:flex-nowrap sm:gap-2 sm:mt-5">
             <TabPill active={tab === "retargeting"} onClick={() => setTab("retargeting")} icon={<Megaphone className="w-4 h-4" />} label="Retargeting" />
             <TabPill active={tab === "ai"} onClick={() => setTab("ai")} icon={<Bot className="w-4 h-4" />} label="IA Confirmation" />
             <TabPill active={tab === "whatsapp"} onClick={() => setTab("whatsapp")} icon={<Wifi className="w-4 h-4" />} label="Connexion WhatsApp" />
