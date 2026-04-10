@@ -1983,10 +1983,15 @@ export class DatabaseStorage implements IStorage {
 
   async getStoresByOwner(userId: number): Promise<Store[]> {
     const user = await this.getUserById(userId);
-    if (!user?.storeId) return [];
-    const owned = await db.select().from(stores).where(eq(stores.ownerId, userId));
-    if (owned.length > 0) return owned;
-    return await db.select().from(stores).where(eq(stores.id, user.storeId));
+    if (!user) return [];
+    // Fetch all stores where ownerId = userId (multi-store owners)
+    const ownedStores = await db.select().from(stores).where(eq(stores.ownerId, userId));
+    const ownedIds = new Set(ownedStores.map(s => s.id));
+    // Also always include the user's primary storeId (created at signup, may have had null ownerId)
+    const extra = user.storeId && !ownedIds.has(user.storeId)
+      ? await db.select().from(stores).where(eq(stores.id, user.storeId))
+      : [];
+    return [...ownedStores, ...extra];
   }
 
   async updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined> {

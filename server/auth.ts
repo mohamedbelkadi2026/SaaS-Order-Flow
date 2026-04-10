@@ -154,6 +154,9 @@ export function setupAuth(app: Express) {
         preferredLanguage,
       });
 
+      // Backfill ownerId now that we have the user's ID
+      await storage.updateStore(store.id, { ownerId: user.id });
+
       await storage.createSubscription({
         storeId: store.id,
         plan: 'trial',

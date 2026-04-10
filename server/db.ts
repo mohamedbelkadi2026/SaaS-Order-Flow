@@ -234,6 +234,23 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] stores multi-select columns ensured ✅");
 
+    // ── 10. backfill stores.owner_id for signup-created stores ───────────────
+    // Stores created during signup had owner_id = NULL because the user record
+    // didn't exist yet at insert time. Fix this by joining to the users table.
+    const ownerFix = await client.query(`
+      UPDATE public.stores s
+        SET owner_id = u.id
+      FROM public.users u
+      WHERE s.owner_id IS NULL
+        AND u.store_id = s.id
+        AND u.role = 'owner'
+    `);
+    if (ownerFix.rowCount && ownerFix.rowCount > 0) {
+      console.log(`[Migration] stores.owner_id backfilled for ${ownerFix.rowCount} existing store(s) ✅`);
+    } else {
+      console.log("[Migration] stores.owner_id — no NULL owner_ids found, nothing to fix ✅");
+    }
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);
