@@ -13,7 +13,7 @@ import { SiShopify, SiWoocommerce, SiGooglesheets } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
-  useIntegrations, useCreateIntegration, useDeleteIntegration, useWebhookKey, useVerifyConnection, useMagasins,
+  useIntegrations, useCreateIntegration, useDeleteIntegration, useUpdateIntegration, useWebhookKey, useVerifyConnection, useMagasins,
   useShopifyIntegrations, useCreateShopifyIntegration, useToggleShopifyIntegration, useDeleteShopifyIntegration,
 } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
@@ -961,24 +961,29 @@ function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platfo
   const { data: integrations } = useIntegrations("store");
   const createIntegration = useCreateIntegration();
   const deleteIntegration = useDeleteIntegration();
+  const updateIntegration = useUpdateIntegration();
 
   const [selectedStore, setSelectedStore] = useState(stores[0] ? String(stores[0].id) : "");
   const [agreed, setAgreed] = useState(false);
   const [verifyResult, setVerifyResult] = useState<any>(null);
+  const [showForm, setShowForm] = useState(false);
 
   useEffect(() => { setVerifyResult(null); }, [selectedStore]);
 
-  const integration = (integrations || []).find(
-    (i: any) => i.provider === platform.id && String(i.magasinId) === selectedStore
+  const allProviderIntegrations = (integrations || []).filter((i: any) => i.provider === platform.id);
+  const integration = allProviderIntegrations.find(
+    (i: any) => String(i.magasinId) === selectedStore
   );
   const webhookUrl = `${origin}/api/webhooks/${platform.id}/order/${webhookKey}?magasin_id=${selectedStore}`;
+
+  const isConnected = allProviderIntegrations.length > 0;
+  const shouldShowForm = !isConnected || showForm;
 
   const handleVerify = async () => {
     if (!agreed) {
       toast({ title: "Veuillez confirmer", description: "Cochez la case pour confirmer la configuration", variant: "destructive" });
       return;
     }
-    // Save integration if not already saved
     if (!integration) {
       try {
         await createIntegration.mutateAsync({ provider: platform.id, type: "store", credentials: { webhookUrl }, magasinId: Number(selectedStore) } as any);
@@ -988,13 +993,102 @@ function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platfo
     setVerifyResult(result);
     if (result.hasActivity) {
       toast({ title: "Connexion vérifiée !", description: "Des événements ont été reçus" });
+      setShowForm(false);
     } else {
       toast({ title: "En attente", description: "Configurez le webhook dans votre plateforme et renvoyez un test", variant: "default" });
     }
   };
 
+  const PlatformIcon = platform.icon;
+
+  // ── Connected cards view ──────────────────────────────────────────────────
+  if (!shouldShowForm) {
+    return (
+      <div className="max-w-4xl space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-bold">{platform.name} — Intégrations</h2>
+            <p className="text-sm text-muted-foreground">{allProviderIntegrations.length} boutique(s) connectée(s)</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 border-dashed"
+            onClick={() => { setVerifyResult(null); setAgreed(false); setShowForm(true); }}
+          >
+            <Plus className="w-4 h-4" />
+            Intégrer le nouveau {platform.name}
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          {allProviderIntegrations.map((integ: any) => {
+            const magasin = stores.find((s: any) => s.id === integ.magasinId);
+            const magasinName = magasin?.name || (integ.magasinId ? `Magasin #${integ.magasinId}` : "Boutique principale");
+            return (
+              <div key={integ.id} className="relative bg-gray-50 dark:bg-muted/40 border rounded-xl p-4 space-y-3 overflow-hidden">
+                {/* Connected ribbon */}
+                <div className="absolute top-0 right-0 bg-green-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-bl-xl rounded-tr-xl">
+                  Connecté
+                </div>
+
+                {/* Header */}
+                <div className="flex items-center gap-2 pr-16">
+                  <PlatformIcon className={cn("w-5 h-5 shrink-0", platform.iconColor)} />
+                  <span className="font-semibold text-sm truncate">{magasinName}</span>
+                </div>
+
+                {/* Webhook key snippet */}
+                <p className="font-mono text-xs text-muted-foreground truncate">
+                  🔗 …/order/{webhookKey}?magasin_id={integ.magasinId}
+                </p>
+
+                {/* Footer */}
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-xs text-muted-foreground">
+                    {integ.ordersCount ?? 0} commande(s)
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {/* Toggle */}
+                    <button
+                      title={integ.isActive ? "Désactiver" : "Activer"}
+                      className={cn(
+                        "w-10 h-5 rounded-full transition-colors focus:outline-none",
+                        integ.isActive ? "bg-green-400" : "bg-gray-300"
+                      )}
+                      onClick={() => updateIntegration.mutate({ id: integ.id, isActive: integ.isActive ? 0 : 1 })}
+                    />
+                    {/* Delete */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 border-red-200 text-red-500 hover:bg-red-50"
+                      onClick={() => deleteIntegration.mutate(integ.id)}
+                      disabled={deleteIntegration.isPending}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Setup form view ───────────────────────────────────────────────────────
   return (
     <div className="max-w-4xl">
+      {isConnected && (
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-sm text-muted-foreground">Ajout d'une nouvelle connexion {platform.name}</p>
+          <Button variant="ghost" size="sm" onClick={() => setShowForm(false)}>
+            ← Retour aux connexions
+          </Button>
+        </div>
+      )}
       <div className="bg-white dark:bg-card rounded-2xl border shadow-sm p-7 space-y-6">
         <div className="flex items-center justify-between mb-2">
           <div>
@@ -1007,10 +1101,8 @@ function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platfo
         <StoreSelector stores={stores} value={selectedStore} onChange={setSelectedStore} />
 
         <div className="grid grid-cols-2 gap-8">
-          {/* Left: Steps */}
           {platform.steps && <StepsList steps={platform.steps} />}
 
-          {/* Right: Webhook URL + status */}
           <div className="space-y-4">
             <WebhookUrlBox url={webhookUrl} />
 

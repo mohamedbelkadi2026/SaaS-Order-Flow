@@ -1,0 +1,69 @@
+Exact changes — ONLY in client/src/pages/integrations.tsx, inside WebhookTab component:
+1. Add state to track if already connected:
+typescriptconst isConnected = !!integration && verifyResult?.hasActivity === true;
+// OR: if integration exists in DB, treat as connected right away
+const isConnected = !!integration;
+2. If isConnected === true, render a card instead of the form:
+tsxif (isConnected) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold">{platform.name} Intégration</h2>
+        <Button variant="outline" size="sm" onClick={() => {/* allow adding new */}}>
+          Intégrer le nouveau {platform.name}
+        </Button>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        {(integrations || [])
+          .filter((i: any) => i.provider === platform.id)
+          .map((integ: any) => (
+            <div key={integ.id} className="relative bg-gray-100 rounded-xl p-4 space-y-3">
+              {/* Connected ribbon */}
+              <div className="absolute top-0 right-0 bg-green-500 text-white text-[10px] font-bold px-2 py-1 rounded-bl-xl rounded-tr-xl">
+                Connected
+              </div>
+              {/* Header */}
+              <div className="flex items-center gap-2">
+                <TabIcon platform={platform} size="lg" />
+                <span className="font-mono text-sm font-semibold flex items-center gap-1">
+                  🔗 {JSON.parse(integ.credentials || '{}').webhookKey || webhookKey}
+                </span>
+              </div>
+              {/* Footer */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">— Orders</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    className={cn("w-10 h-5 rounded-full transition-colors", integ.isActive ? "bg-green-400" : "bg-gray-300")}
+                    onClick={() => {/* toggle isActive */}}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-red-300 text-red-500 hover:bg-red-50"
+                    onClick={() => deleteIntegration.mutate(integ.id)}
+                  >
+                    🗑️
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+3. The "Intégrer le nouveau Shopify" button resets verifyResult and shows the form again for adding a new one:
+typescriptconst [showForm, setShowForm] = useState(false);
+// Show form if no integrations exist OR showForm === true
+// Show cards if integrations exist AND showForm === false
+4. Orders count per integration: fetch from existing orders data filtered by source: 'shopify' — or just show the count from integration logs if available. If not available easily, show "— Orders" for now.
+5. Toggle on/off button: call PATCH /api/integrations/:id with { isActive: integ.isActive ? 0 : 1 } — this endpoint already exists.
+STRICT RULES:
+
+Change ONLY WebhookTab component in integrations.tsx
+Do NOT touch server, schema, storage, or any other file
+Do NOT change Google Sheets, YouCan, or any other platform tab
+Do NOT change order flow, AI, WhatsApp, or any backend logic
+The form (current UI) must still appear when user clicks "Intégrer le nouveau Shopify"
+Keep all existing props and hooks — just add conditional rendering
