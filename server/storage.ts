@@ -85,6 +85,9 @@ export interface IStorage {
   getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]>;
   getIntegration(id: number): Promise<StoreIntegration | undefined>;
   getIntegrationByProvider(storeId: number, provider: string): Promise<StoreIntegration | undefined>;
+  getIntegrationByWebhookKey(webhookKey: string): Promise<StoreIntegration | undefined>;
+  getIntegrationsByProvider(provider: string, storeIds: number[]): Promise<StoreIntegration[]>;
+  incrementIntegrationOrdersCount(id: number): Promise<void>;
   createIntegration(data: InsertIntegration): Promise<StoreIntegration>;
   updateIntegration(id: number, data: Partial<InsertIntegration>): Promise<StoreIntegration | undefined>;
   deleteIntegration(id: number): Promise<void>;
@@ -984,6 +987,25 @@ export class DatabaseStorage implements IStorage {
     const [integration] = await db.select().from(storeIntegrations)
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, provider)));
     return integration;
+  }
+
+  async getIntegrationByWebhookKey(webhookKey: string): Promise<StoreIntegration | undefined> {
+    const [integration] = await db.select().from(storeIntegrations)
+      .where(eq(storeIntegrations.webhookKey, webhookKey));
+    return integration;
+  }
+
+  async getIntegrationsByProvider(provider: string, storeIds: number[]): Promise<StoreIntegration[]> {
+    if (!storeIds.length) return [];
+    return await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.provider, provider), inArray(storeIntegrations.storeId, storeIds)))
+      .orderBy(desc(storeIntegrations.createdAt));
+  }
+
+  async incrementIntegrationOrdersCount(id: number): Promise<void> {
+    await db.update(storeIntegrations)
+      .set({ ordersCount: sql`COALESCE(${storeIntegrations.ordersCount}, 0) + 1` })
+      .where(eq(storeIntegrations.id, id));
   }
 
   async createIntegration(data: InsertIntegration): Promise<StoreIntegration> {

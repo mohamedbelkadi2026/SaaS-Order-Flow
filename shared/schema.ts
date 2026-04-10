@@ -209,6 +209,9 @@ export const storeIntegrations = pgTable("store_integrations", {
   type: text("type").notNull(),
   credentials: text("credentials").notNull().default('{}'),
   isActive: integer("is_active").default(1),
+  webhookKey: text("webhook_key"),
+  connectionName: text("connection_name"),
+  ordersCount: integer("orders_count").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

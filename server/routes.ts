@@ -1655,6 +1655,102 @@ export async function registerRoutes(
   });
 
   // ============================================================
+  // SHOPIFY MULTI-STORE INTEGRATIONS
+  // ============================================================
+
+  // List all Shopify integrations across all of the user's magasins
+  app.get("/api/integrations/shopify", requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const userStores = await storage.getStoresByOwner(userId);
+      const storeIds = userStores.map(s => s.id);
+      const integrations = await storage.getIntegrationsByProvider("shopify", storeIds);
+      // Attach store names for display
+      const result = integrations.map(i => ({
+        ...i,
+        storeName: userStores.find(s => s.id === i.storeId)?.name ?? "Magasin",
+      }));
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Create a new Shopify integration for a specific magasin
+  app.post("/api/integrations/shopify", requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const schema = z.object({
+        storeId: z.number(),
+        connectionName: z.string().min(1),
+      });
+      const { storeId, connectionName } = schema.parse(req.body);
+      // Verify user owns this magasin
+      const userStores = await storage.getStoresByOwner(userId);
+      if (!userStores.find(s => s.id === storeId)) {
+        return res.status(403).json({ message: "Ce magasin ne vous appartient pas" });
+      }
+      // Generate a unique webhook key
+      const { randomBytes } = await import("crypto");
+      const webhookKey = randomBytes(20).toString("hex");
+      const integration = await storage.createIntegration({
+        storeId,
+        provider: "shopify",
+        type: "store",
+        credentials: "{}",
+        isActive: 1,
+        webhookKey,
+        connectionName,
+        ordersCount: 0,
+      } as any);
+      res.json(integration);
+    } catch (err: any) {
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  // Toggle active / inactive for a Shopify integration
+  app.patch("/api/integrations/shopify/:id/toggle", requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const integration = await storage.getIntegration(id);
+      if (!integration) return res.status(404).json({ message: "Introuvable" });
+      // Verify ownership
+      const userId = req.user!.id;
+      const userStores = await storage.getStoresByOwner(userId);
+      if (!userStores.find(s => s.id === integration.storeId)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const updated = await storage.updateIntegration(id, {
+        isActive: integration.isActive === 1 ? 0 : 1,
+      } as any);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Delete a Shopify integration (reuse the generic delete, but scoped to Shopify)
+  app.delete("/api/integrations/shopify/:id", requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const integration = await storage.getIntegration(id);
+      if (!integration || integration.provider !== "shopify") {
+        return res.status(404).json({ message: "Introuvable" });
+      }
+      const userId = req.user!.id;
+      const userStores = await storage.getStoresByOwner(userId);
+      if (!userStores.find(s => s.id === integration.storeId)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      await storage.deleteIntegration(id);
+      res.json({ message: "Supprimé" });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ============================================================
   // CARRIER ACCOUNTS (Multi-account per carrier)
   // ============================================================
 
@@ -2835,6 +2931,65 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ── Shopify key-based webhook (multi-store routing by webhookKey) ──────────
+  app.post("/api/webhooks/shopify/order/:webhookKey", async (req, res) => {
+    const { webhookKey } = req.params;
+    try {
+      const integration = await storage.getIntegrationByWebhookKey(webhookKey);
+      if (!integration || integration.provider !== "shopify") {
+        return res.status(404).json({ message: "Webhook key not found" });
+      }
+      if (integration.isActive !== 1) {
+        return res.status(403).json({ message: "Integration inactive" });
+      }
+
+      const storeId = integration.storeId;
+      const store = await storage.getStore(storeId);
+      if (!store) return res.status(404).json({ message: "Store not found" });
+
+      const payload = req.body;
+      if (!payload || !payload.id) return res.status(400).json({ message: "Invalid webhook payload" });
+
+      const parsed = parseWebhookOrder("shopify", payload);
+      const existingOrder = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+      if (existingOrder) {
+        await storage.incrementIntegrationOrdersCount(integration.id);
+        return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
+      }
+
+      const storeProducts = await storage.getProductsByStore(storeId);
+      let productCost = 0;
+      const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
+      for (const item of parsed.lineItems) {
+        const matched = storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title);
+        if (matched) {
+          orderItemsToCreate.push({ productId: matched.id, quantity: item.quantity, price: item.price });
+          productCost += matched.costPrice * item.quantity;
+        }
+      }
+
+      const mediaBuyer = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
+      const order = await storage.createOrder({
+        storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
+        customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
+        customerCity: parsed.customerCity, status: "nouveau", totalPrice: parsed.totalPrice,
+        productCost, shippingCost: 0, adSpend: 0, source: "shopify", comment: parsed.comment,
+        utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
+        trafficPlatform: parsed.trafficPlatform || null,
+        mediaBuyerId: mediaBuyer?.id || null,
+      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+
+      await storage.incrementIntegrationOrdersCount(integration.id);
+      emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: "nouveau", source: "shopify" });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+
+      res.json({ success: true, orderId: order.id });
+    } catch (err) {
+      console.error("[Shopify Webhook Key] error:", err);
+      res.status(500).json({ message: "Webhook processing failed" });
     }
   });
 

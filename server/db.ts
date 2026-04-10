@@ -234,7 +234,16 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] stores multi-select columns ensured ✅");
 
-    // ── 10. backfill stores.owner_id for signup-created stores ───────────────
+    // ── 10. store_integrations: new multi-key columns ────────────────────────
+    await client.query(`
+      ALTER TABLE public.store_integrations
+        ADD COLUMN IF NOT EXISTS webhook_key     TEXT,
+        ADD COLUMN IF NOT EXISTS connection_name TEXT,
+        ADD COLUMN IF NOT EXISTS orders_count    INTEGER DEFAULT 0;
+    `);
+    console.log("[Migration] store_integrations new columns ensured ✅");
+
+    // ── 11. backfill stores.owner_id for signup-created stores ───────────────
     // Stores created during signup had owner_id = NULL because the user record
     // didn't exist yet at insert time. Fix this by joining to the users table.
     const ownerFix = await client.query(`

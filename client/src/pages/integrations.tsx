@@ -1,16 +1,20 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Copy, CheckCircle, Loader2, Link2, ExternalLink, RefreshCw, X } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Copy, CheckCircle, Loader2, Link2, ExternalLink, RefreshCw, Trash2, Plus, ShoppingBag } from "lucide-react";
 import { SiShopify, SiWoocommerce, SiGooglesheets } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { useIntegrations, useCreateIntegration, useDeleteIntegration, useWebhookKey, useVerifyConnection, useMagasins } from "@/hooks/use-store-data";
+import {
+  useIntegrations, useCreateIntegration, useDeleteIntegration, useWebhookKey, useVerifyConnection, useMagasins,
+  useShopifyIntegrations, useCreateShopifyIntegration, useToggleShopifyIntegration, useDeleteShopifyIntegration,
+} from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 
 // ---- Platform definitions ----
@@ -531,6 +535,260 @@ function YouCanTab() {
   );
 }
 
+// ─── Shopify multi-store tab ────────────────────────────────────────────────
+function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
+  const { toast } = useToast();
+  const { data: integrations = [], isLoading } = useShopifyIntegrations();
+  const createIntegration = useCreateShopifyIntegration();
+  const toggleIntegration = useToggleShopifyIntegration();
+  const deleteIntegration = useDeleteShopifyIntegration();
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [selectedStoreId, setSelectedStoreId] = useState("");
+  const [connectionName, setConnectionName] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+
+  const handleCreate = async () => {
+    if (!selectedStoreId || !connectionName.trim()) {
+      toast({ title: "Champs requis", description: "Choisissez un magasin et saisissez un nom.", variant: "destructive" });
+      return;
+    }
+    try {
+      await createIntegration.mutateAsync({ storeId: Number(selectedStoreId), connectionName: connectionName.trim() });
+      toast({ title: "Intégration créée !", description: "Copiez l'URL webhook et configurez-la dans Shopify." });
+      setModalOpen(false);
+      setSelectedStoreId("");
+      setConnectionName("");
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const handleToggle = async (id: number) => {
+    try {
+      await toggleIntegration.mutateAsync(id);
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await deleteIntegration.mutateAsync(id);
+      toast({ title: "Supprimé", description: "L'intégration a été supprimée." });
+      setConfirmDeleteId(null);
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Header row */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-bold text-[#1e1b4b] flex items-center gap-2">
+            <SiShopify className="w-5 h-5 text-[#95BF47]" />
+            Intégrations Shopify
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Connectez plusieurs boutiques Shopify à vos magasins TajerGrow.
+          </p>
+        </div>
+        <Button
+          onClick={() => setModalOpen(true)}
+          className="gap-2 bg-[#3B5BDB] hover:bg-[#2f4bc4] text-white font-semibold h-9 px-4"
+          data-testid="button-add-shopify"
+        >
+          <Plus className="w-4 h-4" />
+          Intégrer un nouveau store
+        </Button>
+      </div>
+
+      {/* Integration cards grid */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : integrations.length === 0 ? (
+        <div className="bg-white border border-border/50 rounded-2xl shadow-sm p-12 text-center space-y-3">
+          <div className="w-14 h-14 rounded-full bg-[#95BF47]/10 flex items-center justify-center mx-auto">
+            <SiShopify className="w-7 h-7 text-[#95BF47]" />
+          </div>
+          <p className="font-semibold text-[#1e1b4b]">Aucune intégration Shopify</p>
+          <p className="text-sm text-muted-foreground">Cliquez sur «&nbsp;Intégrer un nouveau store&nbsp;» pour démarrer.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {integrations.map((item: any) => {
+            const isActive = item.isActive === 1;
+            const webhookUrl = `${origin}/api/webhooks/shopify/order/${item.webhookKey}`;
+            const shortKey = item.webhookKey ? item.webhookKey.slice(0, 12) + "…" : "—";
+            return (
+              <div
+                key={item.id}
+                className="relative bg-white border border-border/50 rounded-2xl shadow-sm overflow-hidden flex flex-col"
+                data-testid={`card-shopify-${item.id}`}
+              >
+                {/* Active ribbon */}
+                {isActive && (
+                  <div className="absolute top-3 right-3 z-10">
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-700 border border-emerald-200">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                      Connecté
+                    </span>
+                  </div>
+                )}
+
+                {/* Card body */}
+                <div className="p-5 flex-1 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+                      <SiShopify className="w-5 h-5 text-[#95BF47]" />
+                    </div>
+                    <div className="min-w-0 flex-1 pr-16">
+                      <p className="font-semibold text-[#1e1b4b] truncate" data-testid={`text-shopify-name-${item.id}`}>
+                        {item.connectionName || "Sans nom"}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        Magasin : {item.storeName}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Webhook key display */}
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Webhook Key</p>
+                    <div className="flex items-center gap-2">
+                      <code className="text-[11px] font-mono bg-gray-50 border rounded px-2 py-1 flex-1 truncate" data-testid={`text-shopify-key-${item.id}`}>
+                        {shortKey}
+                      </code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(webhookUrl);
+                          toast({ title: "URL copiée !", description: "Collez-la dans Shopify → Webhooks" });
+                        }}
+                        className="shrink-0 p-1.5 rounded-lg border hover:bg-gray-50 transition-colors"
+                        title="Copier l'URL complète"
+                        data-testid={`button-copy-shopify-${item.id}`}
+                      >
+                        <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Stats */}
+                  <div className="bg-zinc-50 rounded-xl px-4 py-2.5 flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">Total Commandes</span>
+                    <span className="text-xl font-bold text-[#1e1b4b]" data-testid={`text-shopify-orders-${item.id}`}>
+                      {item.ordersCount ?? 0}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Card footer */}
+                <div className="border-t px-5 py-3 flex items-center justify-between bg-gray-50/50">
+                  <div className="flex items-center gap-2.5">
+                    <Switch
+                      checked={isActive}
+                      onCheckedChange={() => handleToggle(item.id)}
+                      disabled={toggleIntegration.isPending}
+                      data-testid={`switch-shopify-${item.id}`}
+                    />
+                    <span className="text-xs text-muted-foreground">{isActive ? "Actif" : "Inactif"}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setConfirmDeleteId(item.id)}
+                    className="h-8 px-2.5 text-red-500 hover:text-red-600 hover:bg-red-50"
+                    data-testid={`button-delete-shopify-${item.id}`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create integration modal */}
+      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
+        <DialogContent className="sm:max-w-md rounded-2xl">
+          <DialogTitle className="flex items-center gap-2">
+            <SiShopify className="w-5 h-5 text-[#95BF47]" />
+            Nouvelle intégration Shopify
+          </DialogTitle>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Nom de la connexion</Label>
+              <Input
+                value={connectionName}
+                onChange={e => setConnectionName(e.target.value)}
+                placeholder="ex: Boutique principale"
+                data-testid="input-shopify-name"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Magasin interne</Label>
+              <Select value={selectedStoreId} onValueChange={setSelectedStoreId}>
+                <SelectTrigger data-testid="select-shopify-store">
+                  <SelectValue placeholder="Sélectionner un magasin…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {magasins.map((s: any) => (
+                    <SelectItem key={s.id} value={String(s.id)} data-testid={`option-shopify-store-${s.id}`}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Les commandes reçues via ce webhook seront enregistrées dans ce magasin.
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setModalOpen(false)}>Annuler</Button>
+            <Button
+              onClick={handleCreate}
+              disabled={createIntegration.isPending}
+              className="bg-[#3B5BDB] hover:bg-[#2f4bc4] text-white"
+              data-testid="button-confirm-shopify"
+            >
+              {createIntegration.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Créer l'intégration
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm delete modal */}
+      <Dialog open={confirmDeleteId !== null} onOpenChange={() => setConfirmDeleteId(null)}>
+        <DialogContent className="sm:max-w-sm rounded-2xl">
+          <DialogTitle>Supprimer l'intégration ?</DialogTitle>
+          <p className="text-sm text-muted-foreground py-2">
+            Cette action est irréversible. Le webhook ne fonctionnera plus.
+          </p>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setConfirmDeleteId(null)}>Annuler</Button>
+            <Button
+              variant="destructive"
+              onClick={() => confirmDeleteId && handleDelete(confirmDeleteId)}
+              disabled={deleteIntegration.isPending}
+              data-testid="button-confirm-delete-shopify"
+            >
+              {deleteIntegration.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Supprimer
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 // --- Webhook-based integration tab ---
 function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platform; webhookKey: string; stores: any[]; origin: string }) {
   const { toast } = useToast();
@@ -683,7 +941,10 @@ export default function Integrations() {
         {activeTab === "youcan" && (
           <YouCanTab />
         )}
-        {platform.webhookBased && activeTab !== "gsheets" && activeTab !== "youcan" && (
+        {activeTab === "shopify" && (
+          <ShopifyTab magasins={stores} origin={origin} />
+        )}
+        {platform.webhookBased && activeTab !== "gsheets" && activeTab !== "youcan" && activeTab !== "shopify" && (
           <WebhookTab platform={platform} webhookKey={webhookKey} stores={stores} origin={origin} />
         )}
       </div>

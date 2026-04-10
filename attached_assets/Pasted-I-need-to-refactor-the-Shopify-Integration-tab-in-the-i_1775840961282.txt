@@ -1,0 +1,25 @@
+I need to refactor the Shopify Integration tab in the integrations.tsx page to support multiple store connections. The design MUST strictly follow the TajerGrow UI identity (Navy Blue sidebar, Soft Zinc background, and clean white cards).
+1. UI Update - Integration Grid:
+Replace the static instruction guide with a dynamic grid of integration cards.
+Top Header: Keep the existing tabs, but add a primary button at the top right of the Shopify tab: '+ Intégrer un nouveau store' using the Royal Blue color of the platform.
+Integration Cards (TajerGrow Theme):
+Background: Pure white with a subtle border (border-border/50) and soft shadow.
+Logo: Display the Shopify logo on the left.
+Content: Show the name assigned to the integration and the Unique Webhook Key.
+Stats: Show 'Total Commandes' (Order count) as a bold number.
+Actions (Bottom Row):
+A Toggle Switch (matching the platform style) to activate/deactivate the connection.
+A Delete Button (Trash icon) in a red-tinted ghost style.
+Ribbon: Add a green 'Connecté' ribbon/badge in the top-right corner if isActive is true.
+2. Modal & Mapping Logic:
+Clicking '+ Intégrer un nouveau store' should open a Dialog (Shadcn UI).
+The modal must contain a Select Dropdown to choose an internal Magasin (fetching from the magasins table).
+Upon saving, generate a new record in store_integrations with a unique webhookKey.
+3. Functional Webhook Routing:
+Update server/routes.ts: The POST /api/webhooks/shopify/order/:webhookKey must look up the correct store_id (Magasin) associated with that specific key.
+Ensure orders from Store A and Store B are routed to their respective internal Magasins automatically.
+Increment the specific integration's orders_count on every successful hit.
+4. Visual Consistency:
+Use the Inter/DM Sans font as used in the platform.
+The status badges should match the colors: Amber for 'Non vérifié', Emerald for 'Connecté', and Royal Blue for primary actions.
+Ensure the layout is fully responsive and fits within the existing AppLayout."

@@ -245,6 +245,56 @@ export function useDeleteIntegration() {
   });
 }
 
+export function useShopifyIntegrations() {
+  return useQuery({
+    queryKey: ["/api/integrations/shopify"],
+    queryFn: async () => {
+      const res = await fetch("/api/integrations/shopify", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch Shopify integrations");
+      return res.json() as Promise<any[]>;
+    },
+  });
+}
+
+export function useCreateShopifyIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { storeId: number; connectionName: string }) => {
+      const res = await apiRequest("POST", "/api/integrations/shopify", data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/integrations/shopify"] });
+    },
+  });
+}
+
+export function useToggleShopifyIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("PATCH", `/api/integrations/shopify/${id}/toggle`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/integrations/shopify"] });
+    },
+  });
+}
+
+export function useDeleteShopifyIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("DELETE", `/api/integrations/shopify/${id}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/integrations/shopify"] });
+    },
+  });
+}
+
 export function useIntegrationLogs(limit = 100) {
   return useQuery({
     queryKey: ["/api/integration-logs", limit],
