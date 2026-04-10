@@ -2834,6 +2834,11 @@ export async function registerRoutes(
       const integration = await storage.getIntegrationByProvider(storeId, provider);
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider, action: 'order_synced', status: 'success', message: `Commande ${parsed.orderNumber} importée via token webhook` });
 
+      // ── Real-time push — Socket.io + SSE ─────────────────────────────────────
+      emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+      console.log(`[WEBHOOK SUCCESS]: Order #${parsed.orderNumber} saved for Store ID: ${storeId} (orderId: ${order.id})`);
+
       res.json({ success: true, orderId: order.id });
 
       // ── Fire-and-forget: AI WhatsApp confirmation ──────────────

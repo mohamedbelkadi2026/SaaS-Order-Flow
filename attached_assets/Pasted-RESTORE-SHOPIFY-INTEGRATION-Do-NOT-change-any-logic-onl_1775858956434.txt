@@ -1,0 +1,45 @@
+RESTORE SHOPIFY INTEGRATION — Do NOT change any logic, only restore the existing flow exactly as it was.
+The Shopify → Platform webhook integration was working before. Here is the exact architecture that must be preserved/restored:
+
+1. Webhook URL format (must stay exactly this):
+POST /api/webhooks/shopify
+Query param: ?store_id={storeId}
+Defined in shared/routes.ts as api.orders.shopifyWebhook.path = '/api/webhooks/shopify'
+
+2. Server handler (in server/routes.ts — app.post(api.orders.shopifyWebhook.path, ...)):
+The handler must:
+
+Read store_id from query params
+Call parseWebhookOrder('shopify', payload) to extract order data
+Check for duplicate orders via storage.getOrderByNumber(storeId, parsed.orderNumber)
+Create order with source: 'shopify'
+Emit real-time events: emitNewOrder(...) and broadcastToStore(..., "new_order", ...)
+Return { success: true, orderId: order.id }
+
+
+3. Shopify payload parsing (function parseWebhookOrder in server/routes.ts):
+For provider 'shopify', extract:
+customerName  ← payload.customer.first_name + last_name (fallback: payload.shipping_address.name)
+customerPhone ← payload.customer.phone || payload.shipping_address.phone || payload.billing_address.phone
+customerAddress ← payload.shipping_address.address1 + address2
+customerCity  ← payload.shipping_address.city
+totalPrice    ← Math.round(parseFloat(payload.total_price) * 100)
+orderNumber   ← String(payload.order_number || payload.id)
+lineItems     ← payload.line_items[].{ sku, title, variant_title, quantity, price }
+comment       ← payload.note
+
+4. Frontend — Integration page (client/src/pages/integrations.tsx):
+The Shopify card must:
+
+Show platform id: "shopify", webhookBased: true
+Generate webhook URL as: {origin}/api/webhooks/{platform.id}/order/{webhookKey}
+Show 5 steps: Connect Shopify → Settings → Notifications → Webhooks → Create webhook → Save
+Have "Vérifier la Connexion" button that calls verify.mutateAsync('shopify')
+Show connection status: "✓ Vérifiée" or "En attente"
+
+
+5. The webhook key system:
+
+Each store has a unique webhookKey from storage.getOrGenerateWebhookKey(storeId)
+Exposed via GET /api/store/webhook-key (requires auth)
+Used in the universal webhook URL: POST /api/webhooks/shopify/order/{webhookKey}

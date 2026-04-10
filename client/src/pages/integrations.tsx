@@ -1112,10 +1112,7 @@ export default function Integrations() {
         {activeTab === "youcan" && (
           <YouCanTab />
         )}
-        {activeTab === "shopify" && (
-          <ShopifyTab magasins={stores} origin={origin} />
-        )}
-        {platform.webhookBased && activeTab !== "gsheets" && activeTab !== "youcan" && activeTab !== "shopify" && (
+        {platform.webhookBased && activeTab !== "gsheets" && activeTab !== "youcan" && (
           <WebhookTab platform={platform} webhookKey={webhookKey} stores={stores} origin={origin} />
         )}
       </div>
