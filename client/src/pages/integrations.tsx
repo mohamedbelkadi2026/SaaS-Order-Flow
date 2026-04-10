@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -966,8 +966,12 @@ function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platfo
   const [agreed, setAgreed] = useState(false);
   const [verifyResult, setVerifyResult] = useState<any>(null);
 
-  const integration = (integrations || []).find((i: any) => i.provider === platform.id);
-  const webhookUrl = `${origin}/api/webhooks/${platform.id}/order/${webhookKey}`;
+  useEffect(() => { setVerifyResult(null); }, [selectedStore]);
+
+  const integration = (integrations || []).find(
+    (i: any) => i.provider === platform.id && String(i.magasinId) === selectedStore
+  );
+  const webhookUrl = `${origin}/api/webhooks/${platform.id}/order/${webhookKey}?magasin_id=${selectedStore}`;
 
   const handleVerify = async () => {
     if (!agreed) {
@@ -977,10 +981,10 @@ function WebhookTab({ platform, webhookKey, stores, origin }: { platform: Platfo
     // Save integration if not already saved
     if (!integration) {
       try {
-        await createIntegration.mutateAsync({ provider: platform.id, type: "store", credentials: { webhookUrl } });
+        await createIntegration.mutateAsync({ provider: platform.id, type: "store", credentials: { webhookUrl }, magasinId: Number(selectedStore) } as any);
       } catch {}
     }
-    const result = await verify.mutateAsync(platform.id);
+    const result = await verify.mutateAsync({ provider: platform.id, magasinId: Number(selectedStore) });
     setVerifyResult(result);
     if (result.hasActivity) {
       toast({ title: "Connexion vérifiée !", description: "Des événements ont été reçus" });

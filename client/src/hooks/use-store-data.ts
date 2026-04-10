@@ -184,8 +184,13 @@ export function useWebhookKey() {
 
 export function useVerifyConnection() {
   return useMutation({
-    mutationFn: async (provider: string) => {
-      const res = await apiRequest("POST", `/api/integrations/verify/${provider}`, {});
+    mutationFn: async (params: string | { provider: string; magasinId?: number }) => {
+      const provider = typeof params === "string" ? params : params.provider;
+      const magasinId = typeof params === "string" ? undefined : params.magasinId;
+      const url = magasinId
+        ? `/api/integrations/verify/${provider}?magasin_id=${magasinId}`
+        : `/api/integrations/verify/${provider}`;
+      const res = await apiRequest("POST", url, {});
       return res.json();
     },
   });

@@ -1,0 +1,54 @@
+MULTI-STORE SHOPIFY INTEGRATION FIX
+Add magasinId support so each Shopify store connection is independent per magasin. Do NOT touch any other logic (AI, WhatsApp, carriers, orders, financials).
+1. shared/schema.ts — add column:
+typescript// In storeIntegrations table, add:
+magasinId: integer("magasin_id").references(() => magasins.id),
+2. DB Migration — add to migration file:
+sqlALTER TABLE store_integrations ADD COLUMN IF NOT EXISTS magasin_id INTEGER REFERENCES magasins(id);
+3. server/storage.ts — update getIntegrationByProvider:
+typescriptasync getIntegrationByProvider(storeId: number, provider: string, magasinId?: number) {
+  const conditions = [eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, provider)];
+  if (magasinId) conditions.push(eq(storeIntegrations.magasinId, magasinId));
+  const [integration] = await db.select().from(storeIntegrations).where(and(...conditions));
+  return integration;
+}
+4. server/routes.ts — POST /api/integrations — accept magasinId:
+typescript// Add to schema:
+magasinId: z.number().optional(),
+// Pass to getIntegrationByProvider and createIntegration:
+const existing = await storage.getIntegrationByProvider(storeId, data.provider, data.magasinId);
+// In createIntegration call, add: magasinId: data.magasinId || null
+5. server/routes.ts — POST /api/integrations/verify/:provider — filter by magasin:
+typescript// Accept query param: ?magasin_id=
+// const magasinId = req.query.magasin_id ? Number(req.query.magasin_id) : null;
+// Return same response: { connected, hasActivity, lastLog, logsCount }
+6. server/routes.ts — POST /api/webhooks/:provider/order/:webhookKey — read magasin_id:
+typescriptconst magasinId = req.query.magasin_id ? Number(req.query.magasin_id) : null;
+// pass magasinId when creating the order and logging
+7. client/src/pages/integrations.tsx — WebhookTab component — 3 changes:
+Change 1 — webhook URL includes magasin:
+typescriptconst webhookUrl = `${origin}/api/webhooks/${platform.id}/order/${webhookKey}?magasin_id=${selectedStore}`;
+Change 2 — createIntegration passes magasinId:
+typescriptawait createIntegration.mutateAsync({
+  provider: platform.id,
+  type: "store",
+  credentials: { webhookUrl },
+  magasinId: Number(selectedStore),
+});
+Change 3 — check integration per magasin, not globally:
+typescriptconst integration = (integrations || []).find(
+  (i: any) => i.provider === platform.id && String(i.magasinId) === selectedStore
+);
+Change 4 — verify passes magasinId:
+typescript// update useVerifyConnection hook call to pass magasin_id as query param
+const result = await verify.mutateAsync({ provider: platform.id, magasinId: Number(selectedStore) });
+// update the hook in use-store-data.ts to send ?magasin_id= in the request
+Change 5 — reset verifyResult when selectedStore changes:
+typescriptuseEffect(() => { setVerifyResult(null); }, [selectedStore]);
+STRICT RULES:
+
+Do NOT change anything outside these 7 files/sections
+Do NOT touch AI confirmation, WhatsApp, shipping carriers, order statuses, financial calculations
+The base webhook URL /api/webhooks/shopify/order/{webhookKey} stays the same — only ?magasin_id= added as query param
+All other platforms (YouCan, WooCommerce, GSheets, etc.) stay exactly as before
+Backward compatible — existing integrations without magasin_id continue working

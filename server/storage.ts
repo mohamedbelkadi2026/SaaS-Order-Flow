@@ -84,7 +84,7 @@ export interface IStorage {
   getIntegrationsByStore(storeId: number, type?: string): Promise<StoreIntegration[]>;
   getAllActiveIntegrationsByProvider(provider: string): Promise<StoreIntegration[]>;
   getIntegration(id: number): Promise<StoreIntegration | undefined>;
-  getIntegrationByProvider(storeId: number, provider: string): Promise<StoreIntegration | undefined>;
+  getIntegrationByProvider(storeId: number, provider: string, magasinId?: number): Promise<StoreIntegration | undefined>;
   getIntegrationByWebhookKey(webhookKey: string): Promise<StoreIntegration | undefined>;
   getIntegrationsByProvider(provider: string, storeIds: number[]): Promise<StoreIntegration[]>;
   incrementIntegrationOrdersCount(id: number): Promise<void>;
@@ -983,9 +983,10 @@ export class DatabaseStorage implements IStorage {
     return integration;
   }
 
-  async getIntegrationByProvider(storeId: number, provider: string): Promise<StoreIntegration | undefined> {
-    const [integration] = await db.select().from(storeIntegrations)
-      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, provider)));
+  async getIntegrationByProvider(storeId: number, provider: string, magasinId?: number): Promise<StoreIntegration | undefined> {
+    const conditions: any[] = [eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, provider)];
+    if (magasinId) conditions.push(eq(storeIntegrations.magasinId, magasinId));
+    const [integration] = await db.select().from(storeIntegrations).where(and(...conditions));
     return integration;
   }
 

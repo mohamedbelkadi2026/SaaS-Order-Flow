@@ -1573,11 +1573,12 @@ export async function registerRoutes(
         provider: z.string().min(1),
         type: z.enum(["store", "shipping"]),
         credentials: z.record(z.string()).default({}),
+        magasinId: z.number().optional(),
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
 
-      const existing = await storage.getIntegrationByProvider(storeId, data.provider);
+      const existing = await storage.getIntegrationByProvider(storeId, data.provider, data.magasinId);
       if (existing) {
         const updated = await storage.updateIntegration(existing.id, {
           credentials: JSON.stringify(data.credentials),
@@ -1597,7 +1598,8 @@ export async function registerRoutes(
         type: data.type,
         credentials: JSON.stringify(data.credentials),
         isActive: 1,
-      });
+        magasinId: data.magasinId || null,
+      } as any);
       await storage.createIntegrationLog({
         storeId, integrationId: integration.id, provider: data.provider,
         action: 'integration_connected', status: 'success',
@@ -2744,6 +2746,7 @@ export async function registerRoutes(
   app.post("/api/webhooks/:provider/order/:webhookKey", async (req, res) => {
     const provider = req.params.provider;
     const webhookKey = req.params.webhookKey;
+    const magasinId = req.query.magasin_id ? Number(req.query.magasin_id) : undefined;
     try {
       const store = await storage.getStoreByWebhookKey(webhookKey);
       if (!store) return res.status(404).json({ message: "Invalid webhook key" });
@@ -2831,7 +2834,7 @@ export async function registerRoutes(
 
       await storage.incrementMonthlyOrders(storeId);
 
-      const integration = await storage.getIntegrationByProvider(storeId, provider);
+      const integration = await storage.getIntegrationByProvider(storeId, provider, magasinId);
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider, action: 'order_synced', status: 'success', message: `Commande ${parsed.orderNumber} importée via token webhook` });
 
       // ── Real-time push — Socket.io + SSE ─────────────────────────────────────
@@ -2959,11 +2962,12 @@ export async function registerRoutes(
   app.post("/api/integrations/verify/:provider", requireAuth, async (req, res) => {
     const provider = req.params.provider;
     const storeId = req.user!.storeId!;
+    const magasinId = req.query.magasin_id ? Number(req.query.magasin_id) : undefined;
     try {
       const logs = await storage.getIntegrationLogs(storeId, 50);
       const providerLogs = logs.filter(l => l.provider === provider);
       const successLog = providerLogs.find(l => l.status === 'success');
-      const integration = await storage.getIntegrationByProvider(storeId, provider);
+      const integration = await storage.getIntegrationByProvider(storeId, provider, magasinId);
       res.json({
         connected: !!integration,
         hasActivity: providerLogs.length > 0,
