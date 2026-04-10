@@ -323,6 +323,9 @@ export default function Orders() {
     results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string }[];
   } | null>(null);
 
+  const [ameexShipOrderId, setAmeexShipOrderId] = useState<number | null>(null);
+  const [ameexShipPending, setAmeexShipPending] = useState(false);
+
   // ── Pre-shipping validation state ─────────────────────────────
   const [shipValidation, setShipValidation] = useState<{
     valid: OrderValidationResult[];
@@ -360,7 +363,7 @@ export default function Orders() {
         (a: any) => a.isActive === 1 || a.isActive === true || a.is_active === 1 || a.is_active === true
       );
     },
-    enabled: showBulkShipModal,
+    enabled: showBulkShipModal || ameexShipOrderId !== null,
     staleTime: 0,
     retry: false,
   });
@@ -1197,6 +1200,16 @@ export default function Orders() {
                             <button className="p-1.5 rounded hover:bg-muted transition-colors" title="Historique" data-testid={`action-history-${order.id}`}>
                               <Clock className="w-3.5 h-3.5 text-gray-400" />
                             </button>
+                            {order.status === 'confirme' && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setAmeexShipOrderId(order.id); }}
+                                className="p-1.5 rounded hover:bg-emerald-50 transition-colors"
+                                title="Expédier via Ameex"
+                                data-testid={`action-ship-ameex-${order.id}`}
+                              >
+                                <Truck className="w-3.5 h-3.5 text-emerald-600" />
+                              </button>
+                            )}
                             <button
                               onClick={(e) => { e.stopPropagation(); handleDeleteSingle(order.id); }}
                               className="p-1.5 rounded hover:bg-red-50 transition-colors"
@@ -1544,6 +1557,124 @@ export default function Orders() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* ── AMEEX SINGLE-ORDER SHIP DIALOG ──────────────────────────── */}
+      {(() => {
+        const ameexOrder = ameexShipOrderId
+          ? (data?.orders ?? []).find((o: any) => o.id === ameexShipOrderId)
+          : null;
+        const ameexAcct = activeCarrierAccounts?.find((a: any) => a.carrierName === "ameex");
+        return (
+          <Dialog
+            open={ameexShipOrderId !== null}
+            onOpenChange={(open) => { if (!open) setAmeexShipOrderId(null); }}
+          >
+            <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-ameex-ship">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-base font-bold">
+                  <img src="/carriers/ameex.svg" alt="Ameex" className="h-6 object-contain" />
+                  Expédier via Ameex
+                </DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground">
+                  La commande sera envoyée directement à Ameex et le numéro de suivi sera enregistré automatiquement.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-3 py-2">
+                {!ameexAcct ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                    <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
+                    <span>
+                      Aucun compte Ameex connecté.{" "}
+                      <a href="/integrations/shipping" className="underline font-semibold" onClick={() => setAmeexShipOrderId(null)}>
+                        Configurer maintenant
+                      </a>
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    {ameexOrder && (
+                      <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 space-y-1 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Commande</span>
+                          <span className="font-semibold">#{(ameexOrder as any).orderNumber || ameexShipOrderId}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Client</span>
+                          <span className="font-medium">{(ameexOrder as any).customerName}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Ville</span>
+                          <span className="font-medium">{(ameexOrder as any).customerCity || "—"}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Montant COD</span>
+                          <span className="font-semibold text-emerald-700">
+                            {((ameexOrder as any).totalPrice / 100).toFixed(2)} DH
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/40 rounded-lg px-3 py-2">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                      <span>Compte Ameex: <strong className="text-foreground">{ameexAcct.connectionName}</strong></span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setAmeexShipOrderId(null)}
+                  data-testid="button-ameex-ship-cancel"
+                >
+                  Annuler
+                </Button>
+                {ameexAcct && (
+                  <Button
+                    size="sm"
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5"
+                    disabled={ameexShipPending}
+                    data-testid="button-ameex-ship-confirm"
+                    onClick={async () => {
+                      if (!ameexShipOrderId) return;
+                      setAmeexShipPending(true);
+                      try {
+                        const res = await apiRequest("POST", `/api/orders/${ameexShipOrderId}/ship`, {
+                          provider: "ameex",
+                          accountId: ameexAcct.id,
+                        });
+                        const data = await res.json();
+                        setAmeexShipOrderId(null);
+                        qc.invalidateQueries({ queryKey: ['/api/orders'] });
+                        toast({
+                          title: "✅ Expédié via Ameex",
+                          description: data.trackingNumber
+                            ? `Tracking: ${data.trackingNumber}`
+                            : "Commande envoyée avec succès.",
+                        });
+                      } catch (err: any) {
+                        const msg = err?.message || "Erreur lors de l'expédition.";
+                        toast({ title: "Erreur Ameex", description: msg, variant: "destructive" });
+                      } finally {
+                        setAmeexShipPending(false);
+                      }
+                    }}
+                  >
+                    {ameexShipPending ? (
+                      <><Loader2 className="w-4 h-4 animate-spin" /> Envoi en cours...</>
+                    ) : (
+                      <><Truck className="w-4 h-4" /> Expédier via Ameex</>
+                    )}
+                  </Button>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+        );
+      })()}
 
       <Dialog open={showAssignModal} onOpenChange={setShowAssignModal}>
         <DialogContent className="sm:max-w-md rounded-xl" data-testid="dialog-bulk-assign">

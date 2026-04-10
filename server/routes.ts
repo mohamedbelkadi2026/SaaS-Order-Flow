@@ -13,7 +13,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 
 import fs from "fs";
@@ -3855,6 +3855,146 @@ export async function registerRoutes(
         }
       }
       res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ message: "Webhook processing failed" });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  // AMEEX — STATUS TRACKING & SYNC
+  // ══════════════════════════════════════════════════════════════════
+
+  /**
+   * GET /api/shipping/ameex/track/:trackingNumber
+   * Fetch live status for a single Ameex shipment.
+   */
+  app.get("/api/shipping/ameex/track/:trackingNumber", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { trackingNumber } = req.params;
+
+      const accounts = await storage.getCarrierAccounts(storeId, "ameex");
+      const account = accounts[0];
+      if (!account) {
+        return res.status(400).json({ message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
+      }
+
+      const result = await trackAmeexShipment(
+        trackingNumber,
+        (account as any).apiKey,
+        (account as any).apiUrl || undefined,
+      );
+
+      if (result.error) {
+        return res.status(502).json({ message: result.error, rawResponse: result.rawResponse });
+      }
+
+      res.json({
+        trackingNumber,
+        rawStatus: result.rawStatus,
+        mappedStatus: result.status,
+        rawResponse: result.rawResponse,
+      });
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  /**
+   * POST /api/shipping/ameex/sync
+   * Bulk-sync statuses for all orders currently shipped via Ameex.
+   * Iterates over all orders with shipping_provider = 'ameex' and track_number set,
+   * fetches their live status from Ameex, and updates the DB when status changed.
+   */
+  app.post("/api/shipping/ameex/sync", requireAuth, requireActiveSubscription, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      const accounts = await storage.getCarrierAccounts(storeId, "ameex");
+      const account = accounts[0];
+      if (!account) {
+        return res.status(400).json({ message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
+      }
+
+      const apiKey    = (account as any).apiKey;
+      const customUrl = (account as any).apiUrl || undefined;
+
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const ameexOrders = allOrders.filter((o: any) =>
+        o.shippingProvider === "ameex" &&
+        o.trackNumber &&
+        !["delivered", "refused", "Retour Recu"].includes(o.status || "")
+      );
+
+      if (ameexOrders.length === 0) {
+        return res.json({ synced: 0, updated: 0, message: "Aucune commande Ameex à synchroniser." });
+      }
+
+      let updated = 0;
+      const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
+
+      for (const order of ameexOrders) {
+        const result = await trackAmeexShipment(order.trackNumber!, apiKey, customUrl);
+        if (result.status && result.status !== order.status) {
+          await storage.updateOrderStatus(order.id, result.status);
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: "Ameex Sync",
+            note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
+          });
+          details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
+          updated++;
+        }
+      }
+
+      console.log(`[AMEEX-SYNC] storeId=${storeId}: checked ${ameexOrders.length}, updated ${updated}`);
+      res.json({ synced: ameexOrders.length, updated, details });
+    } catch (err) {
+      throw err;
+    }
+  });
+
+  /**
+   * POST /api/webhooks/shipping/ameex/:token
+   * Receive push notifications from Ameex when a shipment status changes.
+   * :token is the webhookToken from the carrier_accounts row.
+   */
+  app.post("/api/webhooks/shipping/ameex/:token", async (req, res) => {
+    try {
+      const { token } = req.params;
+      const body = req.body || {};
+
+      const trackingNumber: string | undefined =
+        body.tracking_number || body.tracking || body.barcode || body.code_suivi || body.colis;
+      const rawStatus: string | undefined =
+        body.statut || body.status || body.etat;
+
+      if (!trackingNumber) {
+        return res.status(400).json({ message: "tracking_number required" });
+      }
+
+      const order = await storage.getOrderByTrackingNumberAnyStore(trackingNumber);
+      if (!order) {
+        console.warn(`[AMEEX-WEBHOOK] Order not found for tracking=${trackingNumber}`);
+        return res.json({ success: true, matched: false });
+      }
+
+      if (rawStatus) {
+        const mappedStatus = mapAmeexStatus(rawStatus);
+        if (mappedStatus && mappedStatus !== order.status) {
+          await storage.updateOrderStatus(order.id, mappedStatus);
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: "Ameex Webhook",
+            note:      `Statut mis à jour via webhook: ${rawStatus} → ${mappedStatus}`,
+          });
+          console.log(`[AMEEX-WEBHOOK] Order #${order.id} status: ${order.status} → ${mappedStatus}`);
+        }
+      }
+
+      res.json({ success: true, matched: true });
     } catch (err) {
       res.status(500).json({ message: "Webhook processing failed" });
     }

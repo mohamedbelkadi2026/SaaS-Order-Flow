@@ -30,7 +30,7 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   onessta:        "https://api.onessta.com/api/v1/orders",
   ozoneexpress:   "https://api.ozoneexpress.ma/api/v1/orders",
   sendit:         "https://api.sendit.ma/api/v1/orders",
-  ameex:          "https://api.ameex.ma/api/v1/orders",
+  ameex:          "https://app.ameex.ma/api/v1/orders",
   speedex:        "https://api.speedex.ma/api/v1/orders",
   kargoexpress:   "https://api.kargoexpress.ma/api/v1/orders",
   forcelog:       "https://api.forcelog.ma/api/v1/orders",
@@ -38,6 +38,124 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   quicklivraison: "https://api.quicklivraison.ma/api/v1/orders",
   codinafrica:    "https://api.codinafrica.ma/api/v1/orders",
 };
+
+// ── Ameex tracking base URL ───────────────────────────────────────────────────
+const AMEEX_TRACKING_URL = "https://app.ameex.ma/api/v1/tracking";
+
+// ── Ameex status → platform status mapping ────────────────────────────────────
+// Maps the French status labels Ameex returns to our internal status codes.
+export const AMEEX_STATUS_MAP: Record<string, string> = {
+  // Success statuses
+  "livrée":        "delivered",
+  "livré":         "delivered",
+  "livre":         "delivered",
+  "livree":        "delivered",
+  "livrée avec succès": "delivered",
+
+  // Refusal / cancellation
+  "refusée":       "refused",
+  "refusé":        "refused",
+  "refuse":        "refused",
+  "refusee":       "refused",
+  "non livré":     "refused",
+
+  // Return
+  "retournée":     "Retour Recu",
+  "retourné":      "Retour Recu",
+  "retourne":      "Retour Recu",
+  "retournee":     "Retour Recu",
+  "en cours de retour": "En Cours De Retour",
+
+  // In transit
+  "en transit":    "transit",
+  "en livraison":  "transit",
+  "en cours":      "transit",
+  "en cours de livraison": "transit",
+  "expédié":       "transit",
+  "expedie":       "transit",
+
+  // Pickup / collected
+  "ramassé":       "Attente De Ramassage",
+  "collecté":      "Attente De Ramassage",
+  "collecte":      "Attente De Ramassage",
+  "en attente de ramassage": "Attente De Ramassage",
+  "prêt":          "Attente De Ramassage",
+
+  // Unreachable / no answer
+  "injoignable":   "unreachable",
+  "non répondu":   "unreachable",
+  "absent":        "unreachable",
+};
+
+/**
+ * Map a raw Ameex status string to the platform's internal status.
+ * Returns null if no mapping found (keeps current status unchanged).
+ */
+export function mapAmeexStatus(rawStatus: string): string | null {
+  if (!rawStatus) return null;
+  const normalized = rawStatus.toLowerCase().trim();
+  return AMEEX_STATUS_MAP[normalized] || null;
+}
+
+/**
+ * Fetch the current status of an Ameex shipment by tracking number.
+ * Uses GET https://app.ameex.ma/api/v1/tracking/{trackingNumber}
+ */
+export async function trackAmeexShipment(
+  trackingNumber: string,
+  apiKey: string,
+  customApiUrl?: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  const sanitizeToken = (raw: string | undefined | null): string => {
+    if (!raw) return "";
+    return raw.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+  };
+
+  const token = sanitizeToken(apiKey);
+  const baseUrl = (customApiUrl || AMEEX_TRACKING_URL).replace(/\/+$/, "");
+  const trackUrl = `${baseUrl}/${encodeURIComponent(trackingNumber)}`;
+
+  try {
+    const response = await axios.get(trackUrl, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "X-API-KEY":     token,
+        "Accept":        "application/json",
+      },
+      timeout: TIMEOUT_MS,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    const body = response.data;
+    console.log(`[AMEEX-TRACK] ${trackingNumber} → HTTP ${response.status}: ${JSON.stringify(body)}`);
+
+    if (response.status >= 400) {
+      const errMsg = extractCarrierErrorMsg(body) || `HTTP ${response.status}`;
+      return { status: null, rawStatus: null, rawResponse: body, error: errMsg };
+    }
+
+    // Extract status from common response shapes
+    const rawStatus: string | null =
+      body?.statut       ||
+      body?.status       ||
+      body?.etat         ||
+      body?.data?.statut ||
+      body?.data?.status ||
+      body?.data?.etat   ||
+      body?.result?.statut ||
+      body?.result?.status ||
+      null;
+
+    const mappedStatus = rawStatus ? mapAmeexStatus(rawStatus) : null;
+
+    return { status: mappedStatus, rawStatus, rawResponse: body };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    console.error(`[AMEEX-TRACK] Error for ${trackingNumber}: ${errMsg}`);
+    return { status: null, rawStatus: null, rawResponse: null, error: errMsg };
+  }
+}
 
 // ── Known bad-URL corrections (auto-applied before every request) ──────────
 // Maps patterns in user-pasted URLs to the correct replacement domain/path.
@@ -233,9 +351,40 @@ function buildGenericPayload(input: CarrierShipInput): Record<string, unknown> {
   };
 }
 
+/**
+ * Ameex API payload builder.
+ *
+ * Field names confirmed from Ameex Postman collection (documenter.getpostman.com/view/10265205/2sA3rwLZD1).
+ * POST https://app.ameex.ma/api/v1/orders
+ * Auth: Bearer {api_key}
+ */
+function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  const phone   = sanitizePhone(input.phone);
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+  const addr    = (input.address || "").trim() || input.city.trim();
+  const qty     = input.quantity ?? 1;
+
+  return {
+    nom:       input.customerName.trim(),
+    telephone: phone,
+    ville:     input.city.trim(),
+    adresse:   addr,
+    montant:   priceDH,
+    cod:       priceDH,
+    produit:   (input.productName || "Produit").trim(),
+    quantite:  qty,
+    ref:       input.orderNumber,
+    reference: input.orderNumber,
+    note:      input.note || "",
+    open:      input.canOpen ? 1 : 0,
+    ouverture: input.canOpen ? 1 : 0,
+  };
+}
+
 /** Dispatch to the correct builder based on the carrier. */
 function buildPayload(input: CarrierShipInput, providerKey: string): Record<string, unknown> {
   if (providerKey === "digylog") return buildDigylogPayload(input);
+  if (providerKey === "ameex")   return buildAmeexPayload(input);
   return buildGenericPayload(input);
 }
 

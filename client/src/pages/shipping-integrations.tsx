@@ -1119,6 +1119,23 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     }),
   });
 
+  const [ameexSyncPending, setAmeexSyncPending] = useState(false);
+  const handleAmeexSync = async () => {
+    setAmeexSyncPending(true);
+    try {
+      const res = await apiRequest("POST", "/api/shipping/ameex/sync", {});
+      const data = await res.json();
+      toast({
+        title: "✅ Statuts synchronisés",
+        description: `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
+      });
+    } catch (e: any) {
+      toast({ title: "Erreur de synchronisation", description: e.message, variant: "destructive" });
+    } finally {
+      setAmeexSyncPending(false);
+    }
+  };
+
   const safeTab = Math.min(activeTab, Math.max(0, accounts.length - 1));
   const acct = accounts[safeTab] || null;
 
@@ -1234,6 +1251,21 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         data-testid={`button-digylog-prefs-${acct.id}`}
                       >
                         <ShieldCheck className="w-3.5 h-3.5 mr-1" /> Préférences
+                      </Button>
+                    )}
+                    {providerId === "ameex" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleAmeexSync}
+                        disabled={ameexSyncPending}
+                        data-testid={`button-ameex-sync-statuses-${acct.id}`}
+                      >
+                        {ameexSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser les statuts
                       </Button>
                     )}
                     <Button
