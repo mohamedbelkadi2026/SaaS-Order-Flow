@@ -310,8 +310,12 @@ function parseWebhookOrder(provider: string, payload: any) {
   const { utmSource, buyerCode, utmCampaign, trafficPlatform } = extractUtmParams(payload);
 
   if (provider === 'shopify') {
+    const firstName = payload.customer?.first_name?.trim() || '';
+    const lastName = payload.customer?.last_name?.trim() || '';
     const rawName = payload.customer
-      ? `${payload.customer.first_name || ''} ${payload.customer.last_name || ''}`.trim()
+      ? (firstName.toLowerCase() === lastName.toLowerCase() || !lastName
+          ? firstName
+          : `${firstName} ${lastName}`).trim()
       : (payload.shipping_address?.name || 'Client Shopify');
     const customerName = cleanName(rawName) || 'Client Shopify';
     const customerPhone = payload.customer?.phone
