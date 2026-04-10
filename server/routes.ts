@@ -1729,9 +1729,12 @@ export async function registerRoutes(
       if (!userStores.find(s => s.id === integration.storeId)) {
         return res.status(403).json({ message: "Accès refusé" });
       }
-      // Check if any logs exist for this integration
-      const logs = await storage.getIntegrationLogs(integration.storeId, 50);
-      const hasHit = logs.some(l => l.integrationId === id || (l.provider === "shopify" && l.action === "order_received"));
+      // Check if any logs exist for this integration (real orders OR test pings)
+      const logs = await storage.getIntegrationLogs(integration.storeId, 100);
+      const hasHit = logs.some(l =>
+        l.integrationId === id &&
+        (l.action === "order_received" || l.action === "webhook_ping")
+      );
       const connected = hasHit || (integration.ordersCount ?? 0) > 0;
       if (connected) {
         // Mark as verified in credentials
@@ -2979,16 +2982,36 @@ export async function registerRoutes(
       if (!integration || integration.provider !== "shopify") {
         return res.status(404).json({ message: "Webhook key not found" });
       }
-      if (integration.isActive !== 1) {
-        return res.status(403).json({ message: "Integration inactive" });
-      }
 
       const storeId = integration.storeId;
       const store = await storage.getStore(storeId);
       if (!store) return res.status(404).json({ message: "Store not found" });
 
       const payload = req.body;
-      if (!payload || !payload.id) return res.status(400).json({ message: "Invalid webhook payload" });
+      const topic = (req.headers["x-shopify-topic"] as string) || "";
+      const isTestPing = !payload?.id || topic === "hmac-verification";
+
+      // Always log the incoming hit — this is what the verify endpoint checks
+      if (isTestPing || integration.isActive === 1) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: integration.id, provider: "shopify",
+          action: isTestPing ? "webhook_ping" : "order_received",
+          status: "success",
+          message: isTestPing
+            ? `Ping Shopify reçu (test de connexion) — topic: ${topic || "n/a"}`
+            : `Commande reçue via webhook key`,
+        });
+      }
+
+      // Reject further processing if inactive
+      if (integration.isActive !== 1) {
+        return res.status(200).json({ received: true, note: "integration inactive — ping logged" });
+      }
+
+      // For test pings without a real order payload, stop here
+      if (isTestPing) {
+        return res.status(200).json({ received: true, note: "test ping logged" });
+      }
 
       const parsed = parseWebhookOrder("shopify", payload);
       const existingOrder = await storage.getOrderByNumber(storeId, parsed.orderNumber);

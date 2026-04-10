@@ -617,8 +617,8 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
       const result = await verifyIntegration.mutateAsync(createdIntegration.id);
       if (result.connected) {
         setVerifyStatus("connected");
-        toast({ title: "Connexion vérifiée !", description: "Votre boutique Shopify est maintenant connectée." });
-        setTimeout(() => handleCloseModal(), 1500);
+        toast({ title: "Connexion établie avec succès !", description: "Les commandes Shopify seront synchronisées automatiquement." });
+        setTimeout(() => handleCloseModal(), 2000);
       } else {
         setVerifyStatus("pending");
         toast({ title: "En attente", description: "Aucun événement reçu. Configurez et testez le webhook dans Shopify.", variant: "default" });
@@ -933,18 +933,57 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
                       </span>
                     </label>
 
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground font-medium">Statut de la connexion</span>
-                      {verifyStatus === "idle" && <span className="text-muted-foreground text-xs">Non vérifiée</span>}
-                      {verifyStatus === "checking" && <span className="text-blue-600 text-xs flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Vérification…</span>}
-                      {verifyStatus === "connected" && <span className="text-emerald-600 font-semibold text-xs flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Connecté</span>}
-                      {verifyStatus === "pending" && <span className="text-amber-600 text-xs">En attente d'un signal</span>}
-                    </div>
+                    {/* ── Status feedback box ── */}
+                    {verifyStatus === "pending" && (
+                      <div className="bg-white border border-border/50 rounded-xl p-4 space-y-1.5" data-testid="box-shopify-pending">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                          <p className="text-sm font-bold text-gray-800">En attente</p>
+                        </div>
+                        <p className="text-[13px] text-gray-500 leading-relaxed pl-4">
+                          Aucun événement reçu. Configurez et testez le webhook dans Shopify.
+                        </p>
+                        <p className="text-[11px] text-gray-400 pl-4">
+                          Dans Shopify : Paramètres → Notifications → Webhooks → Envoyer un test
+                        </p>
+                      </div>
+                    )}
+
+                    {verifyStatus === "connected" && (
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-1.5" data-testid="box-shopify-connected">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <p className="text-sm font-bold text-emerald-800">Connexion établie avec succès !</p>
+                        </div>
+                        <p className="text-[13px] text-emerald-700 pl-6">
+                          Les commandes Shopify seront maintenant synchronisées automatiquement.
+                        </p>
+                      </div>
+                    )}
+
+                    {(verifyStatus === "idle" || verifyStatus === "checking") && (
+                      <div className="flex items-center justify-between text-sm py-0.5">
+                        <span className="text-muted-foreground font-medium">Statut de la connexion</span>
+                        {verifyStatus === "idle"
+                          ? <span className="text-muted-foreground text-xs">Non vérifiée</span>
+                          : <span className="text-[#1e3a8f] text-xs flex items-center gap-1.5">
+                              <Loader2 className="w-3 h-3 animate-spin" /> Vérification en cours…
+                            </span>
+                        }
+                      </div>
+                    )}
 
                     <Button
                       onClick={handleVerify}
                       disabled={verifyIntegration.isPending || verifyStatus === "checking" || verifyStatus === "connected"}
-                      className="w-full bg-[#1e3a8f] hover:bg-[#1e40af] text-white h-10 font-semibold gap-2"
+                      className={cn(
+                        "w-full h-10 font-semibold gap-2 transition-all",
+                        verifyStatus === "connected"
+                          ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                          : verifyStatus === "pending"
+                          ? "bg-amber-500 hover:bg-amber-600 text-white"
+                          : "bg-[#1e3a8f] hover:bg-[#1e40af] text-white"
+                      )}
                       data-testid="button-verify-shopify"
                     >
                       {verifyStatus === "checking" || verifyIntegration.isPending
@@ -952,7 +991,11 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
                         : verifyStatus === "connected"
                         ? <CheckCircle className="w-4 h-4" />
                         : <RefreshCw className="w-4 h-4" />}
-                      {verifyStatus === "connected" ? "Connecté !" : "Vérifier la Connexion"}
+                      {verifyStatus === "connected"
+                        ? "Connecté !"
+                        : verifyStatus === "pending"
+                        ? "Réessayer la vérification"
+                        : "Vérifier la Connexion"}
                     </Button>
 
                     <Button
