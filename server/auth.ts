@@ -239,19 +239,25 @@ export function setupAuth(app: Express) {
 
       await storage.updateUser(user.id, { isEmailVerified: 1 });
       await storage.deleteVerificationCode(user.id);
+      console.log(`[verify-email] User ${user.id} (${user.email}) verified ✅`);
 
-      // Refresh session user
-      const updatedUser = await storage.getUserById(user.id);
-      if (updatedUser) {
-        await new Promise<void>((resolve, reject) => {
-          req.login(updatedUser, (err) => (err ? reject(err) : resolve()));
-        });
+      // Refresh session user so the cookie reflects isEmailVerified = 1
+      try {
+        const updatedUser = await storage.getUserById(user.id);
+        if (updatedUser) {
+          await new Promise<void>((resolve, reject) => {
+            req.login(updatedUser, (err) => (err ? reject(err) : resolve()));
+          });
+        }
+      } catch (sessionErr) {
+        // Session refresh failed but DB is already updated — user can re-login manually
+        console.warn("[verify-email] Session refresh failed (non-fatal):", sessionErr);
       }
 
       return res.json({ success: true, message: "Email vérifié avec succès !" });
-    } catch (err) {
-      console.error("verify-email error:", err);
-      return res.status(500).json({ message: "Erreur serveur" });
+    } catch (err: any) {
+      console.error("[verify-email] Error:", err?.message || err);
+      return res.status(500).json({ success: false, message: err?.message || "Erreur serveur. Veuillez réessayer." });
     }
   });
 

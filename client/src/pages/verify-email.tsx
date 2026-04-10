@@ -49,9 +49,12 @@ export default function VerifyEmailPage() {
   const code = digits.join("");
 
   const verifyMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/auth/verify-email", { code }),
-    onSuccess: async (res: any) => {
-      if (res.success) {
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/auth/verify-email", { code });
+      return res.json() as Promise<{ success: boolean; message: string }>;
+    },
+    onSuccess: (data) => {
+      if (data.success) {
         toast({ title: "Email vérifié ✅", description: "Bienvenue sur TajerGrow !" });
         // Hard redirect after 1 second so the toast is visible and the session
         // is fully re-fetched from the server (more reliable than cache invalidation).
@@ -59,11 +62,12 @@ export default function VerifyEmailPage() {
           window.location.replace("/dashboard");
         }, 1000);
       } else {
-        toast({ title: "Erreur", description: res.message, variant: "destructive" });
+        toast({ title: "Erreur", description: data.message || "Vérification échouée.", variant: "destructive" });
       }
     },
     onError: (e: any) => {
-      toast({ title: "Code incorrect", description: e.message || "Veuillez réessayer.", variant: "destructive" });
+      const msg = e.message?.replace(/^\d+:\s*/, "") || "Code incorrect. Veuillez réessayer.";
+      toast({ title: "Erreur de vérification", description: msg, variant: "destructive" });
     },
   });
 
