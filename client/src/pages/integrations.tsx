@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -1061,7 +1062,13 @@ export default function Integrations() {
   const { data: magasins } = useMagasins();
   const [activeTab, setActiveTab] = useState<PlatformId>("gsheets");
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "https://www.tajergrow.com";
+  // Fetch the canonical public URL from the backend (Railway sets RAILWAY_PUBLIC_DOMAIN).
+  // Falls back to window.location.origin so it always works in dev and on custom domains.
+  const { data: systemUrlData } = useQuery<{ publicUrl: string | null }>({
+    queryKey: ["/api/system/public-url"],
+  });
+  const origin = systemUrlData?.publicUrl
+    ?? (typeof window !== "undefined" ? window.location.origin : "https://www.tajergrow.com");
   const webhookKey = webhookData?.webhookKey || "LOADING";
   const stores = magasins || [];
   const platform = PLATFORMS.find(p => p.id === activeTab)!;

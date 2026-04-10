@@ -2972,26 +2972,26 @@ export async function registerRoutes(
   });
 
   // ── Shopify key-based webhook (multi-store routing by webhookKey) ──────────
+  // NOTE: An early pre-flight logger in server/index.ts fires before this handler,
+  // logging the raw body before any route logic runs (Railway-visible immediately).
   app.post("/api/webhooks/shopify/order/:webhookKey", async (req, res) => {
     const { webhookKey } = req.params;
-
-    // ── 1. Deep logging — always first ────────────────────────────────────────
-    console.log(`[SHOPIFY WEBHOOK] ▶ Incoming — key: ${webhookKey} | topic: ${req.headers["x-shopify-topic"] || "n/a"}`);
-    console.log(`[SHOPIFY WEBHOOK] Body preview:`, JSON.stringify(req.body).slice(0, 800));
+    // Normalise key — trim whitespace, lowercase for safe comparison
+    const normKey = webhookKey.trim().toLowerCase();
 
     try {
-      // ── 2. Key matching ──────────────────────────────────────────────────────
-      const integration = await storage.getIntegrationByWebhookKey(webhookKey);
+      // ── 1. Key & integration lookup ──────────────────────────────────────────
+      const integration = await storage.getIntegrationByWebhookKey(normKey);
       if (!integration || integration.provider !== "shopify") {
-        console.error(`[WEBHOOK ERROR]: Invalid Webhook Key — "${webhookKey}" not found in store_integrations`);
+        console.error(`[WEBHOOK ERROR]: Store not found for key: ${normKey}`);
         return res.status(404).json({ message: "Webhook key not found" });
       }
-      console.log(`[SHOPIFY WEBHOOK] ✓ Key matched — integrationId: ${integration.id}, storeId: ${integration.storeId}, isActive: ${integration.isActive}`);
+      console.log(`[SHOPIFY WEBHOOK] ✓ Key matched — integrationId: ${integration.id} | storeId: ${integration.storeId} | isActive: ${integration.isActive}`);
 
       const storeId = integration.storeId;
       const store = await storage.getStore(storeId);
       if (!store) {
-        console.error(`[WEBHOOK ERROR]: Store ${storeId} not found for integration ${integration.id}`);
+        console.error(`[WEBHOOK ERROR]: Store record missing — storeId: ${storeId}`);
         return res.status(404).json({ message: "Store not found" });
       }
 
@@ -2999,23 +2999,27 @@ export async function registerRoutes(
       const topic = (req.headers["x-shopify-topic"] as string) || "";
       const isTestPing = !payload?.id || topic === "hmac-verification";
 
-      // ── Always log every hit in integration_logs ───────────────────────────
-      await storage.createIntegrationLog({
-        storeId, integrationId: integration.id, provider: "shopify",
-        action: isTestPing ? "webhook_ping" : "order_received",
-        status: "success",
-        message: isTestPing
-          ? `Ping Shopify reçu — topic: ${topic || "n/a"}`
-          : `Commande reçue via webhook key — topic: ${topic || "orders/create"}`,
-      });
+      // ── 2. Always log every hit in integration_logs ───────────────────────────
+      try {
+        await storage.createIntegrationLog({
+          storeId, integrationId: integration.id, provider: "shopify",
+          action: isTestPing ? "webhook_ping" : "order_received",
+          status: "success",
+          message: isTestPing
+            ? `Ping Shopify reçu — topic: ${topic || "n/a"}`
+            : `Commande reçue via webhook key — topic: ${topic || "orders/create"}`,
+        });
+      } catch (logErr: any) {
+        console.warn(`[SHOPIFY WEBHOOK] Could not write integration log:`, logErr?.message);
+      }
 
-      // Inactive integration: log but don't process
+      // Inactive integration: acknowledge but don't process
       if (integration.isActive !== 1) {
         console.warn(`[SHOPIFY WEBHOOK] ⚠ Integration ${integration.id} inactive — hit logged, no order created`);
         return res.status(200).json({ received: true, note: "integration inactive" });
       }
 
-      // Test ping: already logged, nothing more to do
+      // Test ping (no real order payload): acknowledge and stop
       if (isTestPing) {
         console.log(`[SHOPIFY WEBHOOK] ✓ Test ping logged for integration ${integration.id}`);
         return res.status(200).json({ received: true, note: "test ping logged" });
@@ -3023,36 +3027,38 @@ export async function registerRoutes(
 
       // ── 3. Parse order with safe defaults ────────────────────────────────────
       const parsed = parseWebhookOrder("shopify", payload);
-
-      // Guard: orderNumber must always be a non-empty string
       if (!parsed.orderNumber || parsed.orderNumber === "undefined" || parsed.orderNumber === "null") {
         parsed.orderNumber = `SHP-${Date.now()}`;
       }
       if (!parsed.customerName) parsed.customerName = "Client Anonyme";
-
       console.log(`[SHOPIFY WEBHOOK] Parsed — order: #${parsed.orderNumber} | customer: "${parsed.customerName}" | phone: "${parsed.customerPhone}" | total: ${parsed.totalPrice} | items: ${parsed.lineItems.length}`);
 
       // ── 4. Duplicate guard ────────────────────────────────────────────────────
       const existingOrder = await storage.getOrderByNumber(storeId, parsed.orderNumber);
       if (existingOrder) {
-        console.log(`[SHOPIFY WEBHOOK] Duplicate — order #${parsed.orderNumber} already exists (id: ${existingOrder.id})`);
-        await storage.incrementIntegrationOrdersCount(integration.id);
+        console.log(`[SHOPIFY WEBHOOK] Duplicate — order #${parsed.orderNumber} already exists (orderId: ${existingOrder.id})`);
+        try { await storage.incrementIntegrationOrdersCount(integration.id); } catch (_) {}
         return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
       }
 
-      // ── 5. Paywall check — warn only, never block webhook orders ─────────────
-      const paywallCheck = await storage.checkPaywall(storeId);
-      if (paywallCheck.isBlocked) {
-        console.warn(`[SHOPIFY WEBHOOK] ⚠ Store ${storeId} paywall (${paywallCheck.reason}, ${paywallCheck.current}/${paywallCheck.limit}) — allowing order anyway (webhook bypass)`);
+      // ── 5. Paywall — warn only, NEVER block incoming webhook orders ───────────
+      try {
+        const paywallCheck = await storage.checkPaywall(storeId);
+        if (paywallCheck.isBlocked) {
+          console.warn(`[WEBHOOK WARNING]: Order created despite paywall block — store: ${storeId}, reason: ${paywallCheck.reason}, usage: ${paywallCheck.current}/${paywallCheck.limit}`);
+        }
+      } catch (pwErr: any) {
+        console.warn(`[SHOPIFY WEBHOOK] Could not check paywall (non-fatal):`, pwErr?.message);
       }
 
-      // ── 6. Match line items to store products ─────────────────────────────────
-      const storeProducts = await storage.getProductsByStore(storeId);
+      // ── 6. Product matching (case-insensitive) ────────────────────────────────
+      let storeProducts: any[] = [];
+      try { storeProducts = await storage.getProductsByStore(storeId); } catch (_) {}
       let productCost = 0;
       const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
       for (const item of parsed.lineItems) {
         const matched = storeProducts.find(p =>
-          (item.sku && p.sku === item.sku) ||
+          (item.sku && p.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) ||
           p.name.toLowerCase() === item.title.toLowerCase()
         );
         if (matched) {
@@ -3060,61 +3066,80 @@ export async function registerRoutes(
           productCost += matched.costPrice * item.quantity;
         }
       }
-      console.log(`[SHOPIFY WEBHOOK] Product match — ${orderItemsToCreate.length}/${parsed.lineItems.length} items matched in store catalogue`);
+      console.log(`[SHOPIFY WEBHOOK] Product match — ${orderItemsToCreate.length}/${parsed.lineItems.length} items matched`);
 
       // ── 7. Agent assignment ───────────────────────────────────────────────────
-      const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
-      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity || "");
-      const mediaBuyer = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
+      let nextAgentId: number | null = null;
+      try {
+        const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
+        nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity || "");
+      } catch (_) {}
+      let mediaBuyer: any = null;
+      try {
+        if (parsed.buyerCode) mediaBuyer = await storage.getMediaBuyerByCode(storeId, parsed.buyerCode);
+      } catch (_) {}
 
-      // ── 8. Create the order ───────────────────────────────────────────────────
-      const order = await storage.createOrder({
-        storeId,
-        orderNumber: parsed.orderNumber,
-        customerName: parsed.customerName,
-        customerPhone: parsed.customerPhone || "",
-        customerAddress: parsed.customerAddress || "",
-        customerCity: parsed.customerCity || "",
-        status: "nouveau",
-        totalPrice: parsed.totalPrice,
-        productCost,
-        shippingCost: 0,
-        adSpend: 0,
-        source: "shopify",
-        comment: parsed.comment || null,
-        utmSource: parsed.utmSource || null,
-        utmCampaign: parsed.utmCampaign || null,
-        trafficPlatform: parsed.trafficPlatform || null,
-        mediaBuyerId: mediaBuyer?.id || null,
-      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+      // ── 8. Create order — isolated try/catch for clear DB error reporting ─────
+      let order: any;
+      try {
+        order = await storage.createOrder({
+          storeId,
+          orderNumber: parsed.orderNumber,
+          customerName: parsed.customerName,
+          customerPhone: parsed.customerPhone || "",
+          customerAddress: parsed.customerAddress || "",
+          customerCity: parsed.customerCity || "",
+          status: "nouveau",
+          totalPrice: parsed.totalPrice,
+          productCost,
+          shippingCost: 0,
+          adSpend: 0,
+          source: "shopify",
+          comment: parsed.comment || null,
+          utmSource: parsed.utmSource || null,
+          utmCampaign: parsed.utmCampaign || null,
+          trafficPlatform: parsed.trafficPlatform || null,
+          mediaBuyerId: mediaBuyer?.id || null,
+        } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+      } catch (dbErr: any) {
+        console.error(`[DATABASE ERROR]: Failed to save webhook order: ${dbErr?.message || dbErr}`);
+        return res.status(500).json({ message: "Failed to save order", detail: dbErr?.message });
+      }
 
-      if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+      // ── 9. Post-save updates — each wrapped independently ────────────────────
+      if (nextAgentId) {
+        try { await storage.assignOrder(order.id, nextAgentId); } catch (_) {}
+      }
+      try { await storage.incrementIntegrationOrdersCount(integration.id); } catch (_) {}
+      try { await storage.incrementMonthlyOrders(storeId); } catch (_) {}
+      try {
+        await storage.createIntegrationLog({
+          storeId, integrationId: integration.id, provider: "shopify",
+          action: "order_saved", status: "success",
+          message: `Commande #${parsed.orderNumber} enregistrée — client: ${parsed.customerName}`,
+        });
+      } catch (_) {}
 
-      // ── 9. Post-save counters & log ────────────────────────────────────────────
-      await storage.incrementIntegrationOrdersCount(integration.id);
-      await storage.incrementMonthlyOrders(storeId);
-      await storage.createIntegrationLog({
-        storeId, integrationId: integration.id, provider: "shopify",
-        action: "order_saved", status: "success",
-        message: `Commande #${parsed.orderNumber} enregistrée — client: ${parsed.customerName}`,
-      });
-
-      // ── 10. Real-time push ────────────────────────────────────────────────────
-      emitNewOrder(storeId, {
-        id: order.id,
-        orderNumber: parsed.orderNumber,
-        customerName: parsed.customerName,
-        status: "nouveau",
-        source: "shopify",
-      });
-      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+      // ── 10. Real-time push — both SSE and Socket.io ───────────────────────────
+      try {
+        emitNewOrder(storeId, {
+          id: order.id,
+          orderNumber: parsed.orderNumber,
+          customerName: parsed.customerName,
+          status: "nouveau",
+          source: "shopify",
+        });
+        broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+      } catch (rtErr: any) {
+        console.warn(`[SHOPIFY WEBHOOK] Real-time push failed (non-fatal):`, rtErr?.message);
+      }
 
       console.log(`[WEBHOOK SUCCESS]: Order #${parsed.orderNumber} saved for Store ID: ${storeId} (orderId: ${order.id})`);
-      res.json({ success: true, orderId: order.id });
+      return res.json({ success: true, orderId: order.id });
 
     } catch (err: any) {
-      console.error(`[SHOPIFY WEBHOOK] ✖ Error processing key "${webhookKey}":`, err?.message || err);
-      res.status(500).json({ message: "Webhook processing failed", detail: err?.message });
+      console.error(`[SHOPIFY WEBHOOK] ✖ Unhandled error — key: "${normKey}":`, err?.message || err);
+      return res.status(500).json({ message: "Webhook processing failed", detail: err?.message });
     }
   });
 

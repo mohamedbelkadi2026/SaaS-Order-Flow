@@ -990,8 +990,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getIntegrationByWebhookKey(webhookKey: string): Promise<StoreIntegration | undefined> {
+    // Normalize to lowercase on both sides for case-insensitive matching
+    const normKey = webhookKey.trim().toLowerCase();
     const [integration] = await db.select().from(storeIntegrations)
-      .where(eq(storeIntegrations.webhookKey, webhookKey));
+      .where(sql`LOWER(${storeIntegrations.webhookKey}) = ${normKey}`);
     return integration;
   }
 

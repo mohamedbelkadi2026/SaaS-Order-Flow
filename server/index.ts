@@ -354,6 +354,31 @@ app.use((req, res, next) => {
     next(); // pass to the real handler registered in routes.ts
   });
 
+  // ── Early Shopify webhook pre-flight logger ────────────────────────────────
+  // Registered BEFORE setupAuth so session/passport middleware never touches it.
+  // Logs the raw hit immediately (for Railway log visibility) then calls next()
+  // to hand off processing to the full handler registered in routes.ts.
+  app.post("/api/webhooks/shopify/order/:webhookKey", async (req: Request, res: Response, next: NextFunction) => {
+    console.log('--- NEW SHOPIFY WEBHOOK ARRIVED ---');
+    console.log('Key:', req.params.webhookKey);
+    console.log('Topic:', req.headers['x-shopify-topic'] || 'n/a');
+    console.log('Body:', JSON.stringify(req.body));
+    next(); // hand off to the real handler in routes.ts
+  });
+
+  // ── Canonical public URL endpoint — used by frontend to generate correct webhook URLs ──
+  app.get("/api/system/public-url", (_req, res) => {
+    // Railway sets RAILWAY_PUBLIC_DOMAIN; fall back to custom domain then localhost
+    const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+    const customDomain = process.env.APP_PUBLIC_URL;
+    const publicUrl = railwayDomain
+      ? `https://${railwayDomain}`
+      : customDomain
+      ? customDomain
+      : null; // null → frontend uses window.location.origin
+    res.json({ publicUrl });
+  });
+
   // 0b. Debug/diagnostic endpoint — useful for Railway log inspection
   app.get("/api/debug", async (_req, res) => {
     try {
