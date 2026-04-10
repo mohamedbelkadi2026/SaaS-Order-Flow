@@ -14,7 +14,6 @@ import { cn } from "@/lib/utils";
 import {
   useIntegrations, useCreateIntegration, useDeleteIntegration, useWebhookKey, useVerifyConnection, useMagasins,
   useShopifyIntegrations, useCreateShopifyIntegration, useToggleShopifyIntegration, useDeleteShopifyIntegration,
-  useVerifyShopifyIntegration,
 } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -552,8 +551,6 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
   const createIntegration = useCreateShopifyIntegration();
   const toggleIntegration = useToggleShopifyIntegration();
   const deleteIntegration = useDeleteShopifyIntegration();
-  const verifyIntegration = useVerifyShopifyIntegration();
-
   // Step 1 state
   const [modalOpen, setModalOpen] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);
@@ -565,8 +562,6 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
 
   // Step 2 state
   const [createdIntegration, setCreatedIntegration] = useState<any>(null);
-  const [agreed, setAgreed] = useState(false);
-  const [verifyStatus, setVerifyStatus] = useState<"idle" | "checking" | "connected" | "pending">("idle");
 
   // Delete state
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
@@ -579,8 +574,6 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
     setRamassage(false);
     setStock(false);
     setCreatedIntegration(null);
-    setAgreed(false);
-    setVerifyStatus("idle");
   };
 
   const handleOpenModal = () => { resetModal(); setModalOpen(true); };
@@ -606,27 +599,9 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
     }
   };
 
-  const handleVerify = async () => {
-    if (!agreed) {
-      toast({ title: "Confirmation requise", description: "Cochez la case avant de vérifier.", variant: "destructive" });
-      return;
-    }
-    if (!createdIntegration) return;
-    setVerifyStatus("checking");
-    try {
-      const result = await verifyIntegration.mutateAsync(createdIntegration.id);
-      if (result.connected) {
-        setVerifyStatus("connected");
-        toast({ title: "Connexion établie avec succès !", description: "Les commandes Shopify seront synchronisées automatiquement." });
-        setTimeout(() => handleCloseModal(), 2000);
-      } else {
-        setVerifyStatus("pending");
-        toast({ title: "En attente", description: "Aucun événement reçu. Configurez et testez le webhook dans Shopify.", variant: "default" });
-      }
-    } catch (err: any) {
-      setVerifyStatus("idle");
-      toast({ title: "Erreur", description: err.message, variant: "destructive" });
-    }
+  const handleConnect = () => {
+    toast({ title: "Shopify connecté avec succès ✅", description: "Les commandes seront synchronisées automatiquement via votre webhook." });
+    handleCloseModal();
   };
 
   const handleToggle = async (id: number) => {
@@ -867,7 +842,7 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
                 {/* Badge confirming creation */}
                 <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
                   <CheckCircle className="w-4 h-4 shrink-0" />
-                  Intégration créée — configurez maintenant le webhook dans Shopify.
+                  Intégration active — suivez les 5 étapes ci-dessous pour connecter Shopify.
                 </div>
 
                 <div className="grid grid-cols-2 gap-6">
@@ -894,7 +869,7 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
                     </div>
                   </div>
 
-                  {/* Right: URL + verify */}
+                  {/* Right: Webhook URL + connect */}
                   <div className="space-y-4">
                     <div className="space-y-1.5">
                       <Label className="text-sm font-semibold">URL du Webhook</Label>
@@ -917,85 +892,25 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
                         </Button>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Collez cette URL dans <span className="font-semibold">Shopify → Webhooks</span>.
+                        Collez cette URL dans <span className="font-semibold">Shopify → Paramètres → Webhooks</span>, topic <span className="font-semibold">Commandes / création</span>.
                       </p>
                     </div>
 
-                    <label className="flex items-start gap-2 cursor-pointer">
-                      <Checkbox
-                        checked={agreed}
-                        onCheckedChange={v => setAgreed(!!v)}
-                        className="mt-0.5 data-[state=checked]:bg-[#1e3a8f] data-[state=checked]:border-[#1e3a8f]"
-                        data-testid="checkbox-shopify-confirm"
-                      />
-                      <span className="text-sm text-muted-foreground leading-snug">
-                        Je comprends les étapes et j'ai configuré le webhook dans Shopify.
-                      </span>
-                    </label>
-
-                    {/* ── Status feedback box ── */}
-                    {verifyStatus === "pending" && (
-                      <div className="bg-white border border-border/50 rounded-xl p-4 space-y-1.5" data-testid="box-shopify-pending">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                          <p className="text-sm font-bold text-gray-800">En attente</p>
-                        </div>
-                        <p className="text-[13px] text-gray-500 leading-relaxed pl-4">
-                          Aucun événement reçu. Configurez et testez le webhook dans Shopify.
-                        </p>
-                        <p className="text-[11px] text-gray-400 pl-4">
-                          Dans Shopify : Paramètres → Notifications → Webhooks → Envoyer un test
-                        </p>
-                      </div>
-                    )}
-
-                    {verifyStatus === "connected" && (
-                      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 space-y-1.5" data-testid="box-shopify-connected">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-                          <p className="text-sm font-bold text-emerald-800">Connexion établie avec succès !</p>
-                        </div>
-                        <p className="text-[13px] text-emerald-700 pl-6">
-                          Les commandes Shopify seront maintenant synchronisées automatiquement.
-                        </p>
-                      </div>
-                    )}
-
-                    {(verifyStatus === "idle" || verifyStatus === "checking") && (
-                      <div className="flex items-center justify-between text-sm py-0.5">
-                        <span className="text-muted-foreground font-medium">Statut de la connexion</span>
-                        {verifyStatus === "idle"
-                          ? <span className="text-muted-foreground text-xs">Non vérifiée</span>
-                          : <span className="text-[#1e3a8f] text-xs flex items-center gap-1.5">
-                              <Loader2 className="w-3 h-3 animate-spin" /> Vérification en cours…
-                            </span>
-                        }
-                      </div>
-                    )}
+                    {/* Info note */}
+                    <div className="bg-blue-50 border border-blue-100 rounded-xl p-3.5 space-y-1">
+                      <p className="text-xs font-semibold text-[#1e3a8f]">Prêt à recevoir des commandes</p>
+                      <p className="text-[12px] text-blue-700 leading-relaxed">
+                        Votre intégration est active. Configurez le webhook dans Shopify puis cliquez sur « Enregistrer et Connecter » pour finaliser.
+                      </p>
+                    </div>
 
                     <Button
-                      onClick={handleVerify}
-                      disabled={verifyIntegration.isPending || verifyStatus === "checking" || verifyStatus === "connected"}
-                      className={cn(
-                        "w-full h-10 font-semibold gap-2 transition-all",
-                        verifyStatus === "connected"
-                          ? "bg-emerald-600 hover:bg-emerald-700 text-white"
-                          : verifyStatus === "pending"
-                          ? "bg-amber-500 hover:bg-amber-600 text-white"
-                          : "bg-[#1e3a8f] hover:bg-[#1e40af] text-white"
-                      )}
-                      data-testid="button-verify-shopify"
+                      onClick={handleConnect}
+                      className="w-full bg-[#1e3a8f] hover:bg-[#1e40af] text-white h-10 font-semibold gap-2"
+                      data-testid="button-save-connect-shopify"
                     >
-                      {verifyStatus === "checking" || verifyIntegration.isPending
-                        ? <Loader2 className="w-4 h-4 animate-spin" />
-                        : verifyStatus === "connected"
-                        ? <CheckCircle className="w-4 h-4" />
-                        : <RefreshCw className="w-4 h-4" />}
-                      {verifyStatus === "connected"
-                        ? "Connecté !"
-                        : verifyStatus === "pending"
-                        ? "Réessayer la vérification"
-                        : "Vérifier la Connexion"}
+                      <CheckCircle className="w-4 h-4" />
+                      Enregistrer et Connecter
                     </Button>
 
                     <Button

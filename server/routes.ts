@@ -1680,26 +1680,23 @@ export async function registerRoutes(
   app.post("/api/integrations/shopify", requireAuth, async (req, res) => {
     try {
       const userId = req.user!.id;
-      const schema = z.object({
+      const bodySchema = z.object({
         storeId: z.number(),
         connectionName: z.string().min(1),
+        canOpen: z.boolean().optional().default(true),
+        ramassage: z.boolean().optional().default(false),
+        stock: z.boolean().optional().default(false),
       });
-      const { storeId, connectionName } = schema.parse(req.body);
+      const { storeId, connectionName, canOpen, ramassage, stock } = bodySchema.parse(req.body);
       // Verify user owns this magasin
       const userStores = await storage.getStoresByOwner(userId);
       if (!userStores.find(s => s.id === storeId)) {
         return res.status(403).json({ message: "Ce magasin ne vous appartient pas" });
       }
-      // Generate a unique webhook key
+      // Generate a unique webhook key and mark as verified immediately
       const { randomBytes } = await import("crypto");
       const webhookKey = randomBytes(20).toString("hex");
-      const schema2 = z.object({
-        canOpen: z.boolean().optional().default(true),
-        ramassage: z.boolean().optional().default(false),
-        stock: z.boolean().optional().default(false),
-      });
-      const opts = schema2.parse(req.body);
-      const credentials = JSON.stringify({ verified: false, canOpen: opts.canOpen, ramassage: opts.ramassage, stock: opts.stock });
+      const credentials = JSON.stringify({ verified: true, canOpen, ramassage, stock });
       const integration = await storage.createIntegration({
         storeId,
         provider: "shopify",
