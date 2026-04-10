@@ -707,13 +707,19 @@ export async function shipOrderToCarrier(
     "Accept":       "application/json",
   };
 
-  if (apiKey) {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-    headers["X-API-KEY"]     = apiKey;
-    headers["Token"]         = apiKey;
-  }
-  if (apiSecret) {
-    headers["X-API-SECRET"] = apiSecret;
+  if (providerKey === "ameex") {
+    // Ameex uses C-Api-Key / C-Api-Id header pair
+    if (apiKey)    headers["C-Api-Key"] = apiKey;
+    if (apiSecret) headers["C-Api-Id"]  = apiSecret;
+  } else {
+    if (apiKey) {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+      headers["X-API-KEY"]     = apiKey;
+      headers["Token"]         = apiKey;
+    }
+    if (apiSecret) {
+      headers["X-API-SECRET"] = apiSecret;
+    }
   }
 
   // Inject carrier-specific extra headers (e.g. Referer for Digylog)

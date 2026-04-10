@@ -135,6 +135,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [webhookCopied,    setWebhookCopied]     = useState(false);
   const [submitError,      setSubmitError]       = useState<string | null>(null);
 
+  // ── Ameex-specific fields ─────────────────────────────────────────────────
+  const isAmeex  = providerId === "ameex";
+  const [ameexStoreName, setAmeexStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
+  const [ameexApiId,     setAmeexApiId]     = useState<string>("");
+  const [showAmeexKey,   setShowAmeexKey]   = useState(false);
+
   // ── Digylog store + network pickers ──────────────────────────────────────
   const isDigylog = providerId === "digylog";
   const [digylogStores,     setDigylogStores]    = useState<Array<{ id: number | string; name: string }>>([]);
@@ -264,25 +270,38 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       setSubmitError(null);
       if (existingAccount) {
         const body: any = { storeName: resolvedStoreName, assignmentRule: rule };
-        if (apiKey.trim()) body.apiKey = apiKey;
-        if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
-        body.carrierStoreName = carrierStoreName || null; // always send — null clears, string saves
-        if (isDigylog && networkId) body.networkId = Number(networkId);
+        if (isAmeex) {
+          if (apiKey.trim())        body.apiKey          = apiKey;
+          if (ameexApiId.trim())    body.apiSecret       = ameexApiId;
+          body.carrierStoreName = ameexStoreName.trim() || null;
+        } else {
+          if (apiKey.trim()) body.apiKey = apiKey;
+          if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
+          body.carrierStoreName = carrierStoreName || null;
+          if (isDigylog && networkId) body.networkId = Number(networkId);
+        }
         const res = await apiRequest("PATCH", `/api/carrier-accounts/${existingAccount.id}`, body);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
         return data;
       } else {
-        const res = await apiRequest("POST", "/api/carrier-accounts", {
+        const payload: any = {
           carrierName: providerId,
           apiKey,
-          apiUrl:           apiUrl.trim() || undefined,
-          storeName:        resolvedStoreName,
-          carrierStoreName: carrierStoreName || undefined,
-          ...(isDigylog && networkId ? { networkId: Number(networkId) } : {}),
           assignmentRule: rule,
           isDefault: rule === "default" ? 1 : 0,
-        });
+        };
+        if (isAmeex) {
+          payload.apiSecret       = ameexApiId.trim() || undefined;
+          payload.carrierStoreName = ameexStoreName.trim() || undefined;
+          payload.storeName       = resolvedStoreName;
+        } else {
+          payload.apiUrl           = apiUrl.trim() || undefined;
+          payload.storeName        = resolvedStoreName;
+          payload.carrierStoreName = carrierStoreName || undefined;
+          if (isDigylog && networkId) payload.networkId = Number(networkId);
+        }
+        const res = await apiRequest("POST", "/api/carrier-accounts", payload);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
         return data;
@@ -321,19 +340,34 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
 
   const handleSubmit = () => {
     setSubmitError(null);
-    if (!existingAccount && !apiKey.trim()) {
-      setSubmitError("Le token d'autorisation est requis.");
-      return;
-    }
     if (!existingAccount && !selectedStoreId) {
       setSubmitError("Veuillez sélectionner une boutique.");
       return;
     }
-    if (isDigylog && !carrierStoreName.trim()) {
-      const msg = "Le nom du magasin Digylog est obligatoire";
-      setSubmitError(msg);
-      toast({ title: "Champ requis", description: "Copiez exactement le nom depuis votre compte Digylog → onglet Magasins.", variant: "destructive" });
-      return;
+    if (isAmeex) {
+      if (!existingAccount && !apiKey.trim()) {
+        setSubmitError("Le C-Api-Key est requis.");
+        return;
+      }
+      if (!existingAccount && !ameexApiId.trim()) {
+        setSubmitError("Le C-Api-Id est requis.");
+        return;
+      }
+      if (!ameexStoreName.trim()) {
+        setSubmitError("Le Store Name est requis.");
+        return;
+      }
+    } else {
+      if (!existingAccount && !apiKey.trim()) {
+        setSubmitError("Le token d'autorisation est requis.");
+        return;
+      }
+      if (isDigylog && !carrierStoreName.trim()) {
+        const msg = "Le nom du magasin Digylog est obligatoire";
+        setSubmitError(msg);
+        toast({ title: "Champ requis", description: "Copiez exactement le nom depuis votre compte Digylog → onglet Magasins.", variant: "destructive" });
+        return;
+      }
     }
     mutation.mutate();
   };
@@ -342,104 +376,284 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   if (existingAccount) {
     return (
       <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
-        <DialogContent className="sm:max-w-md rounded-2xl bg-white">
+        <DialogContent className="sm:max-w-md rounded-2xl bg-white overflow-hidden">
           <DialogHeader className="pb-2">
             <DialogTitle style={{ color: NAVY }} className="text-lg font-bold">
               Modifier — {existingAccount.connectionName}
             </DialogTitle>
             <DialogDescription className="text-sm text-muted-foreground">
-              Mettez à jour le token, le nom du magasin Digylog ou copiez l'URL WebHook.
+              {isAmeex
+                ? "Mettez à jour vos identifiants Ameex ou copiez l'URL WebHook."
+                : "Mettez à jour le token, le nom du magasin Digylog ou copiez l'URL WebHook."}
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-6 py-2">
+          <div className="space-y-5 py-2 max-h-[70vh] overflow-y-auto pr-1">
 
-            {/* ── Authorization Token (API Key — not a login password) ── */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label
-                  htmlFor="carrier_token_input"
-                  className="font-semibold text-sm"
-                  style={{ color: NAVY }}
-                >
-                  Authorization Token
-                </Label>
-                <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
-                  Clé API
-                </span>
-              </div>
-
-              {/* Token status — shows current saved token (masked) when not editing */}
-              {existingAccount?.hasApiKey && !isEditingToken ? (
-                <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-green-200 bg-green-50">
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
-                    <span className="text-[12px] font-semibold text-green-700">Token actuel enregistré</span>
-                    <code className="text-[11px] font-mono text-gray-500 truncate ml-1">
-                      {existingAccount.apiKeyMasked}
-                    </code>
-                  </div>
-                  <button
-                    type="button"
-                    data-testid="button-edit-token"
-                    onClick={() => { setIsEditingToken(true); setApiKey(""); }}
-                    className="shrink-0 text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline underline-offset-2 transition-colors"
-                  >
-                    Modifier
-                  </button>
-                </div>
-              ) : (
-                <div className="relative">
+            {/* ══════════════ AMEEX EDIT FIELDS ══════════════ */}
+            {isAmeex ? (
+              <>
+                {/* Store Name */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="ameex_store_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Store Name <span className="text-red-500">*</span>
+                  </Label>
                   <Input
-                    id="carrier_token_input"
-                    name="carrier_token_input"
-                    data-testid="input-carrier-apikey"
-                    data-lpignore="true"
-                    data-form-type="other"
-                    autoComplete="new-password"
-                    type={showKey ? "text" : "password"}
-                    placeholder={existingAccount?.hasApiKey ? "Entrez un nouveau token pour remplacer l'actuel" : "Coller votre token API ici"}
-                    value={apiKey}
-                    onChange={e => { setApiKey(e.target.value); setIsEditingToken(true); }}
-                    className="pr-20 h-11 text-sm font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 placeholder:text-muted-foreground/60"
-                    autoFocus={isEditingToken}
+                    id="ameex_store_edit"
+                    data-testid="input-ameex-store-name"
+                    placeholder="Nom de votre boutique Ameex"
+                    value={ameexStoreName}
+                    onChange={e => setAmeexStoreName(e.target.value)}
+                    className="h-10 text-sm"
                   />
-                  <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-                    {existingAccount?.hasApiKey && (
+                </div>
+
+                {/* C-Api-Key + C-Api-Id side by side */}
+                <div className="grid grid-cols-2 gap-3">
+                  {/* C-Api-Key */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="ameex_ckey_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                      C-Api-Key
+                    </Label>
+                    {existingAccount?.hasApiKey && !isEditingToken ? (
+                      <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-green-200 bg-green-50">
+                        <ShieldCheck className="w-3.5 h-3.5 text-green-600 shrink-0" />
+                        <span className="text-[11px] font-semibold text-green-700 truncate flex-1">Enregistrée</span>
+                        <button
+                          type="button"
+                          data-testid="button-edit-token"
+                          onClick={() => { setIsEditingToken(true); setApiKey(""); }}
+                          className="shrink-0 text-[10px] font-bold text-blue-600 hover:text-blue-800 underline"
+                        >
+                          Modifier
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="relative">
+                        <Input
+                          id="ameex_ckey_edit"
+                          data-testid="input-ameex-apikey"
+                          data-lpignore="true"
+                          data-form-type="other"
+                          autoComplete="new-password"
+                          type={showAmeexKey ? "text" : "password"}
+                          placeholder="Nouvelle clé..."
+                          value={apiKey}
+                          onChange={e => { setApiKey(e.target.value); setIsEditingToken(true); }}
+                          className="pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300"
+                        />
+                        <button
+                          type="button"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                          onClick={() => setShowAmeexKey(v => !v)}
+                        >
+                          {showAmeexKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* C-Api-Id */}
+                  <div className="space-y-1.5">
+                    <Label htmlFor="ameex_cid_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                      C-Api-Id
+                    </Label>
+                    <Input
+                      id="ameex_cid_edit"
+                      data-testid="input-ameex-apiid"
+                      placeholder="Votre C-Api-Id"
+                      value={ameexApiId}
+                      onChange={e => setAmeexApiId(e.target.value)}
+                      className="h-10 text-xs font-mono"
+                    />
+                    <p className="text-[10px] text-muted-foreground">Laissez vide pour conserver l'actuel</p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* ── Generic: Authorization Token ── */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label
+                      htmlFor="carrier_token_input"
+                      className="font-semibold text-sm"
+                      style={{ color: NAVY }}
+                    >
+                      Authorization Token
+                    </Label>
+                    <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
+                      Clé API
+                    </span>
+                  </div>
+
+                  {existingAccount?.hasApiKey && !isEditingToken ? (
+                    <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-green-200 bg-green-50">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
+                        <span className="text-[12px] font-semibold text-green-700">Token actuel enregistré</span>
+                        <code className="text-[11px] font-mono text-gray-500 truncate ml-1">
+                          {existingAccount.apiKeyMasked}
+                        </code>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => { setIsEditingToken(false); setApiKey(""); }}
-                        className="text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded border border-border/50 transition-colors"
-                        title="Annuler la modification"
+                        data-testid="button-edit-token"
+                        onClick={() => { setIsEditingToken(true); setApiKey(""); }}
+                        className="shrink-0 text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline underline-offset-2 transition-colors"
                       >
-                        ✕
+                        Modifier
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <Input
+                        id="carrier_token_input"
+                        name="carrier_token_input"
+                        data-testid="input-carrier-apikey"
+                        data-lpignore="true"
+                        data-form-type="other"
+                        autoComplete="new-password"
+                        type={showKey ? "text" : "password"}
+                        placeholder={existingAccount?.hasApiKey ? "Entrez un nouveau token pour remplacer l'actuel" : "Coller votre token API ici"}
+                        value={apiKey}
+                        onChange={e => { setApiKey(e.target.value); setIsEditingToken(true); }}
+                        className="pr-20 h-11 text-sm font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 placeholder:text-muted-foreground/60"
+                        autoFocus={isEditingToken}
+                      />
+                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                        {existingAccount?.hasApiKey && (
+                          <button
+                            type="button"
+                            onClick={() => { setIsEditingToken(false); setApiKey(""); }}
+                            className="text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded border border-border/50 transition-colors"
+                            title="Annuler la modification"
+                          >
+                            ✕
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => setShowKey(v => !v)}
+                        >
+                          {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    {isEditingToken || !existingAccount?.hasApiKey
+                      ? <>Entrez votre <strong>clé API transporteur</strong>. Laissez vide pour conserver le token actuel.</>
+                      : <>Token sauvegardé de façon permanente. Cliquez sur <strong>Modifier</strong> pour le remplacer.</>
+                    }
+                  </p>
+                </div>
+
+                {/* ── Digylog store name (edit mode) ── */}
+                {isDigylog && (
+                  <div className="space-y-2">
+                    <Label
+                      htmlFor="carrier_store_name_edit"
+                      className="font-semibold text-sm flex items-center gap-1.5"
+                      style={{ color: NAVY }}
+                    >
+                      Nom du magasin (Digylog)
+                      <span className="text-red-500">*</span>
+                    </Label>
+                    <Input
+                      id="carrier_store_name_edit"
+                      data-testid="input-digylog-store-name"
+                      placeholder="Ex: Boutique Atlas"
+                      value={carrierStoreName}
+                      onChange={e => setCarrierStoreName(e.target.value)}
+                      className="h-11 text-sm"
+                    />
+                    <div className="space-y-2">
+                      {digylogStores.length > 0 ? (
+                        <Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
+                          <SelectTrigger className="h-11 text-sm">
+                            <SelectValue placeholder="Sélectionnez votre magasin Digylog..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {digylogStores.map(s => (
+                              <SelectItem key={String(s.id)} value={s.name}>{s.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <button
+                          type="button"
+                          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors"
+                          onClick={fetchDigylogStores}
+                          disabled={isFetchingStores}
+                        >
+                          {isFetchingStores
+                            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des magasins...</>
+                            : <><RefreshCw className="w-3.5 h-3.5" /> Charger les magasins depuis Digylog</>}
+                        </button>
+                      )}
+                      {digylogStores.length > 0 && (
+                        <button type="button" className="text-[11px] text-blue-500 hover:underline" onClick={fetchDigylogStores} disabled={isFetchingStores}>
+                          {isFetchingStores ? "Actualisation…" : "↺ Actualiser la liste"}
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Copiez exactement le nom depuis votre compte Digylog <strong>→ Magasins</strong>.
+                    </p>
+                  </div>
+                )}
+
+                {/* ── Digylog: network (point de collecte) ── */}
+                {isDigylog && (
+                  <div className="space-y-2">
+                    <Label className="font-semibold text-sm flex items-center gap-1.5" style={{ color: NAVY }}>
+                      Point de collecte (Réseau Digylog)
+                    </Label>
+                    {digylogNetworks.length > 0 ? (
+                      <Select value={networkId} onValueChange={setNetworkId}>
+                        <SelectTrigger data-testid="select-digylog-network-edit" className="h-11 text-sm">
+                          <SelectValue placeholder="Sélectionnez votre réseau Digylog..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {digylogNetworks.map(n => (
+                            <SelectItem key={String(n.id)} value={String(n.id)}>{n.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <button
+                        type="button"
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors"
+                        onClick={() => fetchDigylogNetworks()}
+                        disabled={isFetchingNetworks}
+                      >
+                        {isFetchingNetworks
+                          ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des réseaux...</>
+                          : <><RefreshCw className="w-3.5 h-3.5" /> Charger les réseaux depuis Digylog</>}
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="text-muted-foreground hover:text-foreground transition-colors"
-                      onClick={() => setShowKey(v => !v)}
-                    >
-                      {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
+                    {digylogNetworks.length > 0 && (
+                      <button type="button" className="text-[11px] text-blue-500 hover:underline" onClick={() => fetchDigylogNetworks()} disabled={isFetchingNetworks}>
+                        {isFetchingNetworks ? "Actualisation…" : "↺ Actualiser la liste"}
+                      </button>
+                    )}
+                    {networkId && (
+                      <p className="text-[11px] text-muted-foreground">Réseau sélectionné : <strong>{digylogNetworks.find(n => String(n.id) === networkId)?.name || `#${networkId}`}</strong></p>
+                    )}
                   </div>
-                </div>
-              )}
+                )}
+              </>
+            )}
 
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                {isEditingToken || !existingAccount?.hasApiKey
-                  ? <>Entrez votre <strong>clé API transporteur</strong>. Laissez vide pour conserver le token actuel.</>
-                  : <>Token sauvegardé de façon permanente. Cliquez sur <strong>Modifier</strong> pour le remplacer.</>
-                }
-              </p>
-            </div>
-
-            {/* ── WebHook URL (permanent) ── */}
+            {/* ── WebHook URL (permanent) — shared for all carriers ── */}
             <div className="space-y-2">
-              <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2.5">
+              <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2">
                 <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
                 <p className="text-[11px] font-semibold text-amber-800 leading-snug">
-                  ⚠️ Copiez cette URL dans vos paramètres API Digylog pour activer le tracking en temps réel.
+                  ⚠️ Copiez cette URL dans vos paramètres {isAmeex ? "Ameex" : "API"} pour activer le tracking en temps réel.
                 </p>
               </div>
               <Label className="font-semibold text-sm flex items-center gap-2" style={{ color: NAVY }}>
@@ -448,8 +662,8 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   Permanente
                 </span>
               </Label>
-              <div className="flex items-center gap-2 px-3 py-3 rounded-xl border-2 border-amber-200 bg-amber-50/50">
-                <code className="flex-1 text-[11px] font-mono text-gray-700 break-all leading-relaxed">
+              <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 border-amber-200 bg-amber-50/50 overflow-hidden">
+                <code className="flex-1 text-[10px] font-mono text-gray-700 truncate min-w-0">
                   {webhookUrl}
                 </code>
                 <button
@@ -460,7 +674,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     setWebhookCopied(true);
                     setTimeout(() => setWebhookCopied(false), 2000);
                   }}
-                  className={`shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                  className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
                     webhookCopied
                       ? "bg-green-100 text-green-700 border border-green-300"
                       : "bg-amber-500 text-white border border-amber-600 hover:bg-amber-600 shadow-sm"
@@ -471,111 +685,27 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     : <><Copy className="w-3.5 h-3.5" /> Copier</>}
                 </button>
               </div>
-              <p className="text-[10px] text-muted-foreground leading-relaxed">
-                URL permanente — ne change jamais même si vous mettez à jour le token. Collez-la dans les réglages webhook Digylog.
-              </p>
             </div>
 
-            {/* ── Digylog store name (edit mode) ── */}
-            {isDigylog && (
-              <div className="space-y-2">
-                <Label
-                  htmlFor="carrier_store_name_edit"
-                  className="font-semibold text-sm flex items-center gap-1.5"
-                  style={{ color: NAVY }}
-                >
-                  Nom du magasin (Digylog)
-                  <span className="text-red-500">*</span>
-                </Label>
-
-                {/* Manual text input — always visible so user can type/paste directly */}
-                <Input
-                  id="carrier_store_name_edit"
-                  data-testid="input-digylog-store-name"
-                  placeholder="Ex: Boutique Atlas"
-                  value={carrierStoreName}
-                  onChange={e => setCarrierStoreName(e.target.value)}
-                  className="h-11 text-sm"
-                />
-
-                {/* Store picker — fetch from Digylog to populate the dropdown */}
-                <div className="space-y-2">
-                  {digylogStores.length > 0 ? (
-                    <Select value={carrierStoreName} onValueChange={setCarrierStoreName}>
-                      <SelectTrigger className="h-11 text-sm">
-                        <SelectValue placeholder="Sélectionnez votre magasin Digylog..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {digylogStores.map(s => (
-                          <SelectItem key={String(s.id)} value={s.name}>{s.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <button
-                      type="button"
-                      className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors"
-                      onClick={fetchDigylogStores}
-                      disabled={isFetchingStores}
-                    >
-                      {isFetchingStores
-                        ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des magasins...</>
-                        : <><RefreshCw className="w-3.5 h-3.5" /> Charger les magasins depuis Digylog</>}
-                    </button>
-                  )}
-                  {digylogStores.length > 0 && (
-                    <button type="button" className="text-[11px] text-blue-500 hover:underline" onClick={fetchDigylogStores} disabled={isFetchingStores}>
-                      {isFetchingStores ? "Actualisation…" : "↺ Actualiser la liste"}
-                    </button>
-                  )}
-                </div>
-
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  Copiez exactement le nom depuis votre compte Digylog <strong>→ Magasins</strong>.
-                  Ce champ est obligatoire pour l'expédition.
-                </p>
-              </div>
-            )}
-
-            {/* ── Digylog: network (point de collecte) ── */}
-            {isDigylog && (
-              <div className="space-y-2">
-                <Label className="font-semibold text-sm flex items-center gap-1.5" style={{ color: NAVY }}>
-                  Point de collecte (Réseau Digylog)
-                </Label>
-                {digylogNetworks.length > 0 ? (
-                  <Select value={networkId} onValueChange={setNetworkId}>
-                    <SelectTrigger data-testid="select-digylog-network-edit" className="h-11 text-sm">
-                      <SelectValue placeholder="Sélectionnez votre réseau Digylog..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {digylogNetworks.map(n => (
-                        <SelectItem key={String(n.id)} value={String(n.id)}>{n.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <button
-                    type="button"
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border text-sm text-muted-foreground hover:border-gray-400 hover:text-foreground transition-colors"
-                    onClick={() => fetchDigylogNetworks()}
-                    disabled={isFetchingNetworks}
+            {/* ── Assignment rule (edit mode, all carriers) ── */}
+            <div className="space-y-2 pt-1">
+              <p className="text-sm font-semibold" style={{ color: NAVY }}>Règle d'affectation</p>
+              {(["default", "city", "product"] as const).map(r => (
+                <label key={r} className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <div
+                    onClick={() => setRule(r)}
+                    className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all cursor-pointer ${
+                      rule === r ? "border-blue-500 bg-blue-500" : "border-gray-300"
+                    }`}
                   >
-                    {isFetchingNetworks
-                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Chargement des réseaux...</>
-                      : <><RefreshCw className="w-3.5 h-3.5" /> Charger les réseaux depuis Digylog</>}
-                  </button>
-                )}
-                {digylogNetworks.length > 0 && (
-                  <button type="button" className="text-[11px] text-blue-500 hover:underline" onClick={() => fetchDigylogNetworks()} disabled={isFetchingNetworks}>
-                    {isFetchingNetworks ? "Actualisation…" : "↺ Actualiser la liste"}
-                  </button>
-                )}
-                {networkId && (
-                  <p className="text-[11px] text-muted-foreground">Réseau sélectionné : <strong>{digylogNetworks.find(n => String(n.id) === networkId)?.name || `#${networkId}`}</strong></p>
-                )}
-              </div>
-            )}
+                    {rule === r && <Check className="w-2.5 h-2.5 text-white" />}
+                  </div>
+                  <span className="text-sm">
+                    {r === "default" ? "Connexion par Défaut" : r === "city" ? "Connexion par Ville" : "Connexion par Produit"}
+                  </span>
+                </label>
+              ))}
+            </div>
 
             {/* ── Error banner ── */}
             {submitError && (
@@ -616,7 +746,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   // ── CREATE MODE: full form ─────────────────────────────────────────────────
   return (
     <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="sm:max-w-md rounded-2xl">
+      <DialogContent className="sm:max-w-md rounded-2xl overflow-hidden">
         <DialogHeader>
           <DialogTitle style={{ color: NAVY }}>
             Connexion avec {providerName}
@@ -626,7 +756,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 py-2">
+        <div className="space-y-5 py-2 max-h-[70vh] overflow-y-auto pr-1">
 
           {/* ── Boutique dropdown ── */}
           <div className="space-y-1.5">
@@ -653,39 +783,107 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             )}
           </div>
 
-          {/* ── Authorization token (API Key — not a login password) ── */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="carrier_token_create" className="font-semibold text-sm">
-                Authorization Token <span className="text-red-500">*</span>
-              </Label>
-              <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
-                Clé API
-              </span>
-            </div>
-            <div className="relative">
-              <Input
-                id="carrier_token_create"
-                name="carrier_token_create"
-                data-testid="input-carrier-apikey"
-                data-lpignore="true"
-                data-form-type="other"
-                autoComplete="new-password"
-                type={showKey ? "text" : "password"}
-                placeholder="Entrez votre token d'autorisation..."
-                value={apiKey}
-                onChange={e => setApiKey(e.target.value)}
-                className={`font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
-              />
-              <button
-                type="button"
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                onClick={() => setShowKey(v => !v)}
-              >
-                {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
+          {/* ══════════════ AMEEX CREATE FIELDS ══════════════ */}
+          {isAmeex ? (
+            <>
+              {/* Store Name */}
+              <div className="space-y-1.5">
+                <Label htmlFor="ameex_store_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  Store Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="ameex_store_create"
+                  data-testid="input-ameex-store-name"
+                  placeholder="Nom de votre boutique Ameex"
+                  value={ameexStoreName}
+                  onChange={e => setAmeexStoreName(e.target.value)}
+                  className={`h-10 text-sm ${!ameexStoreName.trim() && submitError ? "border-red-400" : ""}`}
+                />
+              </div>
+
+              {/* C-Api-Key + C-Api-Id — side by side */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* C-Api-Key */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="ameex_ckey_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    C-Api-Key <span className="text-red-500">*</span>
+                  </Label>
+                  <div className="relative">
+                    <Input
+                      id="ameex_ckey_create"
+                      data-testid="input-ameex-apikey"
+                      data-lpignore="true"
+                      data-form-type="other"
+                      autoComplete="new-password"
+                      type={showAmeexKey ? "text" : "password"}
+                      placeholder="Votre C-Api-Key"
+                      value={apiKey}
+                      onChange={e => setApiKey(e.target.value)}
+                      className={`pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
+                    />
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      onClick={() => setShowAmeexKey(v => !v)}
+                    >
+                      {showAmeexKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* C-Api-Id */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="ameex_cid_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    C-Api-Id <span className="text-red-500">*</span>
+                  </Label>
+                  <Input
+                    id="ameex_cid_create"
+                    data-testid="input-ameex-apiid"
+                    placeholder="Votre C-Api-Id"
+                    value={ameexApiId}
+                    onChange={e => setAmeexApiId(e.target.value)}
+                    className={`h-10 text-xs font-mono ${!ameexApiId.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* ── Generic: Authorization token (API Key) ── */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="carrier_token_create" className="font-semibold text-sm">
+                    Authorization Token <span className="text-red-500">*</span>
+                  </Label>
+                  <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
+                    Clé API
+                  </span>
+                </div>
+                <div className="relative">
+                  <Input
+                    id="carrier_token_create"
+                    name="carrier_token_create"
+                    data-testid="input-carrier-apikey"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showKey ? "text" : "password"}
+                    placeholder="Entrez votre token d'autorisation..."
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    className={`font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowKey(v => !v)}
+                  >
+                    {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
 
           {/* ── Digylog: store name ── */}
           {isDigylog && (
@@ -796,54 +994,56 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             </div>
           )}
 
-          {/* ── Advanced: API Base URL ── */}
-          <div className="space-y-1.5">
-            <button
-              type="button"
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => setShowAdvanced(v => !v)}
-              data-testid="button-toggle-advanced-url"
-            >
-              <span>{showAdvanced ? "▾" : "▸"}</span>
-              <span>Paramètres avancés (URL API personnalisée)</span>
-            </button>
-            {showAdvanced && (
-              <div className="space-y-1.5 pt-1">
-                <Label className="font-semibold text-sm">
-                  URL API Base{" "}
-                  <span className="text-muted-foreground font-normal text-xs">
-                    (optionnel — remplace l'URL par défaut)
-                  </span>
-                </Label>
-                <Input
-                  data-testid="input-carrier-apiurl"
-                  type="url"
-                  placeholder="ex: https://api.digylog.ma/v1/orders"
-                  value={apiUrl}
-                  onChange={e => setApiUrl(e.target.value)}
-                  className="font-mono text-xs"
-                />
-                <p className="text-[10px] text-muted-foreground leading-relaxed">
-                  Laisser vide pour utiliser l'URL par défaut.
-                </p>
-              </div>
-            )}
-          </div>
+          {/* ── Advanced: API Base URL (hidden for Ameex — fixed endpoint) ── */}
+          {!isAmeex && (
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setShowAdvanced(v => !v)}
+                data-testid="button-toggle-advanced-url"
+              >
+                <span>{showAdvanced ? "▾" : "▸"}</span>
+                <span>Paramètres avancés (URL API personnalisée)</span>
+              </button>
+              {showAdvanced && (
+                <div className="space-y-1.5 pt-1">
+                  <Label className="font-semibold text-sm">
+                    URL API Base{" "}
+                    <span className="text-muted-foreground font-normal text-xs">
+                      (optionnel — remplace l'URL par défaut)
+                    </span>
+                  </Label>
+                  <Input
+                    data-testid="input-carrier-apiurl"
+                    type="url"
+                    placeholder="ex: https://api.digylog.ma/v1/orders"
+                    value={apiUrl}
+                    onChange={e => setApiUrl(e.target.value)}
+                    className="font-mono text-xs"
+                  />
+                  <p className="text-[10px] text-muted-foreground leading-relaxed">
+                    Laisser vide pour utiliser l'URL par défaut.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── WebHook URL (permanent) ── */}
           <div className="space-y-1.5">
             <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-300 px-3 py-2">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
               <p className="text-[11px] font-semibold text-amber-800 leading-snug">
-                ⚠️ Copiez cette URL dans vos paramètres API Digylog pour activer le tracking en temps réel.
+                ⚠️ Copiez cette URL dans vos paramètres {isAmeex ? "Ameex" : "API"} pour activer le tracking en temps réel.
               </p>
             </div>
             <Label className="font-semibold text-sm flex items-center gap-1.5">
               WebHook URL
               <span className="text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Permanente</span>
             </Label>
-            <div className="flex items-center gap-2 p-2.5 rounded-xl border-2 border-amber-200 bg-amber-50/40">
-              <code className="flex-1 text-[11px] font-mono truncate text-foreground">
+            <div className="flex items-center gap-2 p-2.5 rounded-xl border-2 border-amber-200 bg-amber-50/40 overflow-hidden">
+              <code className="flex-1 text-[10px] font-mono truncate min-w-0 text-foreground">
                 {webhookUrl}
               </code>
               <button
@@ -866,7 +1066,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </button>
             </div>
             <p className="text-[10px] text-muted-foreground leading-relaxed">
-              Cette URL est <strong>permanente</strong> — elle ne change jamais. Collez-la dans les réglages webhook Digylog.
+              Cette URL est <strong>permanente</strong> — elle ne change jamais. Collez-la dans les réglages webhook {isAmeex ? "Ameex" : "de votre transporteur"}.
             </p>
           </div>
 
