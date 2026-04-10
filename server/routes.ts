@@ -1693,11 +1693,18 @@ export async function registerRoutes(
       // Generate a unique webhook key
       const { randomBytes } = await import("crypto");
       const webhookKey = randomBytes(20).toString("hex");
+      const schema2 = z.object({
+        canOpen: z.boolean().optional().default(true),
+        ramassage: z.boolean().optional().default(false),
+        stock: z.boolean().optional().default(false),
+      });
+      const opts = schema2.parse(req.body);
+      const credentials = JSON.stringify({ verified: false, canOpen: opts.canOpen, ramassage: opts.ramassage, stock: opts.stock });
       const integration = await storage.createIntegration({
         storeId,
         provider: "shopify",
         type: "store",
-        credentials: "{}",
+        credentials,
         isActive: 1,
         webhookKey,
         connectionName,
@@ -1706,6 +1713,36 @@ export async function registerRoutes(
       res.json(integration);
     } catch (err: any) {
       res.status(400).json({ message: err.message });
+    }
+  });
+
+  // Verify a Shopify integration (checks for webhook hits via integration_logs or ordersCount)
+  app.post("/api/integrations/shopify/:id/verify", requireAuth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const integration = await storage.getIntegration(id);
+      if (!integration || integration.provider !== "shopify") {
+        return res.status(404).json({ message: "Introuvable" });
+      }
+      const userId = req.user!.id;
+      const userStores = await storage.getStoresByOwner(userId);
+      if (!userStores.find(s => s.id === integration.storeId)) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      // Check if any logs exist for this integration
+      const logs = await storage.getIntegrationLogs(integration.storeId, 50);
+      const hasHit = logs.some(l => l.integrationId === id || (l.provider === "shopify" && l.action === "order_received"));
+      const connected = hasHit || (integration.ordersCount ?? 0) > 0;
+      if (connected) {
+        // Mark as verified in credentials
+        let creds: any = {};
+        try { creds = JSON.parse(integration.credentials || "{}"); } catch {}
+        creds.verified = true;
+        await storage.updateIntegration(id, { credentials: JSON.stringify(creds), isActive: 1 } as any);
+      }
+      res.json({ connected, ordersCount: integration.ordersCount ?? 0 });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
     }
   });
 
@@ -2983,6 +3020,11 @@ export async function registerRoutes(
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       await storage.incrementIntegrationOrdersCount(integration.id);
+      await storage.createIntegrationLog({
+        storeId, integrationId: integration.id, provider: "shopify",
+        action: "order_received", status: "success",
+        message: `Commande #${parsed.orderNumber} reçue via webhook key`,
+      });
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: "nouveau", source: "shopify" });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
 

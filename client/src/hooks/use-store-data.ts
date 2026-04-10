@@ -295,6 +295,19 @@ export function useDeleteShopifyIntegration() {
   });
 }
 
+export function useVerifyShopifyIntegration() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: number) => {
+      const res = await apiRequest("POST", `/api/integrations/shopify/${id}/verify`, {});
+      return res.json() as Promise<{ connected: boolean; ordersCount: number }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/integrations/shopify"] });
+    },
+  });
+}
+
 export function useIntegrationLogs(limit = 100) {
   return useQuery({
     queryKey: ["/api/integration-logs", limit],

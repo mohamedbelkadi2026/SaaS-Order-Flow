@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import {
   useIntegrations, useCreateIntegration, useDeleteIntegration, useWebhookKey, useVerifyConnection, useMagasins,
   useShopifyIntegrations, useCreateShopifyIntegration, useToggleShopifyIntegration, useDeleteShopifyIntegration,
+  useVerifyShopifyIntegration,
 } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -535,6 +536,15 @@ function YouCanTab() {
   );
 }
 
+// ─── Shopify integration guide steps ────────────────────────────────────────
+const SHOPIFY_STEPS = [
+  { title: "Se connecter à Shopify", sub: "Ouvrir l'admin Shopify\nLe lien s'adapte après choix du magasin." },
+  { title: "Paramètres → Notifications → Webhooks" },
+  { title: "Créer un webhook", sub: "Coller l'URL ci-contre dans le champ URL." },
+  { title: "Format : JSON — Événement : Création de commande" },
+  { title: "Enregistrer & tester" },
+];
+
 // ─── Shopify multi-store tab ────────────────────────────────────────────────
 function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
   const { toast } = useToast();
@@ -542,11 +552,39 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
   const createIntegration = useCreateShopifyIntegration();
   const toggleIntegration = useToggleShopifyIntegration();
   const deleteIntegration = useDeleteShopifyIntegration();
+  const verifyIntegration = useVerifyShopifyIntegration();
 
+  // Step 1 state
   const [modalOpen, setModalOpen] = useState(false);
+  const [step, setStep] = useState<1 | 2>(1);
   const [selectedStoreId, setSelectedStoreId] = useState("");
   const [connectionName, setConnectionName] = useState("");
+  const [canOpen, setCanOpen] = useState(true);
+  const [ramassage, setRamassage] = useState(false);
+  const [stock, setStock] = useState(false);
+
+  // Step 2 state
+  const [createdIntegration, setCreatedIntegration] = useState<any>(null);
+  const [agreed, setAgreed] = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState<"idle" | "checking" | "connected" | "pending">("idle");
+
+  // Delete state
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+
+  const resetModal = () => {
+    setStep(1);
+    setSelectedStoreId("");
+    setConnectionName("");
+    setCanOpen(true);
+    setRamassage(false);
+    setStock(false);
+    setCreatedIntegration(null);
+    setAgreed(false);
+    setVerifyStatus("idle");
+  };
+
+  const handleOpenModal = () => { resetModal(); setModalOpen(true); };
+  const handleCloseModal = () => { setModalOpen(false); resetModal(); };
 
   const handleCreate = async () => {
     if (!selectedStoreId || !connectionName.trim()) {
@@ -554,37 +592,64 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
       return;
     }
     try {
-      await createIntegration.mutateAsync({ storeId: Number(selectedStoreId), connectionName: connectionName.trim() });
-      toast({ title: "Intégration créée !", description: "Copiez l'URL webhook et configurez-la dans Shopify." });
-      setModalOpen(false);
-      setSelectedStoreId("");
-      setConnectionName("");
+      const result = await createIntegration.mutateAsync({
+        storeId: Number(selectedStoreId),
+        connectionName: connectionName.trim(),
+        canOpen,
+        ramassage,
+        stock,
+      } as any);
+      setCreatedIntegration(result);
+      setStep(2);
     } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const handleVerify = async () => {
+    if (!agreed) {
+      toast({ title: "Confirmation requise", description: "Cochez la case avant de vérifier.", variant: "destructive" });
+      return;
+    }
+    if (!createdIntegration) return;
+    setVerifyStatus("checking");
+    try {
+      const result = await verifyIntegration.mutateAsync(createdIntegration.id);
+      if (result.connected) {
+        setVerifyStatus("connected");
+        toast({ title: "Connexion vérifiée !", description: "Votre boutique Shopify est maintenant connectée." });
+        setTimeout(() => handleCloseModal(), 1500);
+      } else {
+        setVerifyStatus("pending");
+        toast({ title: "En attente", description: "Aucun événement reçu. Configurez et testez le webhook dans Shopify.", variant: "default" });
+      }
+    } catch (err: any) {
+      setVerifyStatus("idle");
       toast({ title: "Erreur", description: err.message, variant: "destructive" });
     }
   };
 
   const handleToggle = async (id: number) => {
-    try {
-      await toggleIntegration.mutateAsync(id);
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message, variant: "destructive" });
-    }
+    try { await toggleIntegration.mutateAsync(id); }
+    catch (err: any) { toast({ title: "Erreur", description: err.message, variant: "destructive" }); }
   };
 
   const handleDelete = async (id: number) => {
     try {
       await deleteIntegration.mutateAsync(id);
-      toast({ title: "Supprimé", description: "L'intégration a été supprimée." });
+      toast({ title: "Supprimé" });
       setConfirmDeleteId(null);
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message, variant: "destructive" });
-    }
+    } catch (err: any) { toast({ title: "Erreur", description: err.message, variant: "destructive" }); }
+  };
+
+  const copyUrl = (url: string) => {
+    navigator.clipboard.writeText(url);
+    toast({ title: "URL copiée !", description: "Collez-la dans Shopify → Webhooks" });
   };
 
   return (
     <div className="space-y-5">
-      {/* Header row */}
+      {/* ── Header ───────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold text-[#1e1b4b] flex items-center gap-2">
@@ -596,79 +661,82 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
           </p>
         </div>
         <Button
-          onClick={() => setModalOpen(true)}
-          className="gap-2 bg-[#3B5BDB] hover:bg-[#2f4bc4] text-white font-semibold h-9 px-4"
+          onClick={handleOpenModal}
+          className="gap-2 bg-[#1e3a8f] hover:bg-[#1e40af] text-white font-semibold h-9 px-4"
           data-testid="button-add-shopify"
         >
           <Plus className="w-4 h-4" />
-          Intégrer un nouveau store
+          Intégrer Shopify
         </Button>
       </div>
 
-      {/* Integration cards grid */}
+      {/* ── Cards grid ───────────────────────────────────────────────── */}
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
       ) : integrations.length === 0 ? (
-        <div className="bg-white border border-border/50 rounded-2xl shadow-sm p-12 text-center space-y-3">
+        <div className="bg-white border border-border/50 rounded-2xl shadow-sm p-14 text-center space-y-3">
           <div className="w-14 h-14 rounded-full bg-[#95BF47]/10 flex items-center justify-center mx-auto">
             <SiShopify className="w-7 h-7 text-[#95BF47]" />
           </div>
           <p className="font-semibold text-[#1e1b4b]">Aucune intégration Shopify</p>
-          <p className="text-sm text-muted-foreground">Cliquez sur «&nbsp;Intégrer un nouveau store&nbsp;» pour démarrer.</p>
+          <p className="text-sm text-muted-foreground">Cliquez sur «&nbsp;Intégrer Shopify&nbsp;» pour démarrer.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {integrations.map((item: any) => {
+            let creds: any = {};
+            try { creds = JSON.parse(item.credentials || "{}"); } catch {}
+            const isVerified = creds.verified === true;
             const isActive = item.isActive === 1;
             const webhookUrl = `${origin}/api/webhooks/shopify/order/${item.webhookKey}`;
-            const shortKey = item.webhookKey ? item.webhookKey.slice(0, 12) + "…" : "—";
+            const shortKey = item.webhookKey ? item.webhookKey.slice(0, 14) + "…" : "—";
             return (
               <div
                 key={item.id}
                 className="relative bg-white border border-border/50 rounded-2xl shadow-sm overflow-hidden flex flex-col"
                 data-testid={`card-shopify-${item.id}`}
               >
-                {/* Active ribbon */}
-                {isActive && (
-                  <div className="absolute top-3 right-3 z-10">
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-700 border border-emerald-200">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                      Connecté
-                    </span>
+                {/* Ribbon */}
+                {isVerified ? (
+                  <div className="absolute top-0 right-0 z-10">
+                    <div className="bg-emerald-500 text-white text-[10px] font-bold px-3 py-1 rounded-bl-xl rounded-tr-xl flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> Connecté
+                    </div>
+                  </div>
+                ) : (
+                  <div className="absolute top-0 right-0 z-10">
+                    <div className="bg-amber-400 text-white text-[10px] font-bold px-3 py-1 rounded-bl-xl rounded-tr-xl">
+                      Non vérifié
+                    </div>
                   </div>
                 )}
 
-                {/* Card body */}
-                <div className="p-5 flex-1 space-y-3">
+                {/* Body */}
+                <div className="p-5 flex-1 space-y-3 pt-7">
                   <div className="flex items-start gap-3">
                     <div className="w-10 h-10 rounded-xl bg-[#95BF47]/10 flex items-center justify-center shrink-0">
                       <SiShopify className="w-5 h-5 text-[#95BF47]" />
                     </div>
-                    <div className="min-w-0 flex-1 pr-16">
+                    <div className="min-w-0 flex-1">
                       <p className="font-semibold text-[#1e1b4b] truncate" data-testid={`text-shopify-name-${item.id}`}>
                         {item.connectionName || "Sans nom"}
                       </p>
-                      <p className="text-xs text-muted-foreground truncate">
-                        Magasin : {item.storeName}
-                      </p>
+                      <p className="text-xs text-muted-foreground truncate">Magasin : {item.storeName}</p>
                     </div>
                   </div>
 
-                  {/* Webhook key display */}
+                  {/* Webhook key */}
                   <div className="space-y-1">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Webhook Key</p>
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Unique Webhook Key</p>
                     <div className="flex items-center gap-2">
-                      <code className="text-[11px] font-mono bg-gray-50 border rounded px-2 py-1 flex-1 truncate" data-testid={`text-shopify-key-${item.id}`}>
+                      <code className="text-[11px] font-mono bg-zinc-50 border rounded-lg px-2.5 py-1.5 flex-1 truncate text-zinc-600" data-testid={`text-shopify-key-${item.id}`}>
                         {shortKey}
                       </code>
                       <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(webhookUrl);
-                          toast({ title: "URL copiée !", description: "Collez-la dans Shopify → Webhooks" });
-                        }}
-                        className="shrink-0 p-1.5 rounded-lg border hover:bg-gray-50 transition-colors"
+                        onClick={() => copyUrl(webhookUrl)}
+                        className="shrink-0 p-1.5 rounded-lg border bg-white hover:bg-zinc-50 transition-colors"
                         title="Copier l'URL complète"
                         data-testid={`button-copy-shopify-${item.id}`}
                       >
@@ -678,30 +746,33 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
                   </div>
 
                   {/* Stats */}
-                  <div className="bg-zinc-50 rounded-xl px-4 py-2.5 flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">Total Commandes</span>
-                    <span className="text-xl font-bold text-[#1e1b4b]" data-testid={`text-shopify-orders-${item.id}`}>
+                  <div className="bg-[#f8fafc] border border-border/40 rounded-xl px-4 py-3 flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground font-medium">Total Commandes</span>
+                    <span className="text-2xl font-bold text-[#1e3a8f]" data-testid={`text-shopify-orders-${item.id}`}>
                       {item.ordersCount ?? 0}
                     </span>
                   </div>
                 </div>
 
-                {/* Card footer */}
-                <div className="border-t px-5 py-3 flex items-center justify-between bg-gray-50/50">
+                {/* Footer */}
+                <div className="border-t px-5 py-3 flex items-center justify-between bg-zinc-50/60">
                   <div className="flex items-center gap-2.5">
                     <Switch
                       checked={isActive}
                       onCheckedChange={() => handleToggle(item.id)}
                       disabled={toggleIntegration.isPending}
                       data-testid={`switch-shopify-${item.id}`}
+                      className="data-[state=checked]:bg-[#1e3a8f]"
                     />
-                    <span className="text-xs text-muted-foreground">{isActive ? "Actif" : "Inactif"}</span>
+                    <span className={cn("text-xs font-medium", isActive ? "text-[#1e3a8f]" : "text-muted-foreground")}>
+                      {isActive ? "Actif" : "Inactif"}
+                    </span>
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => setConfirmDeleteId(item.id)}
-                    className="h-8 px-2.5 text-red-500 hover:text-red-600 hover:bg-red-50"
+                    className="h-8 px-2.5 text-red-500 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100"
                     data-testid={`button-delete-shopify-${item.id}`}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -713,58 +784,193 @@ function ShopifyTab({ magasins, origin }: { magasins: any[]; origin: string }) {
         </div>
       )}
 
-      {/* Create integration modal */}
-      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-        <DialogContent className="sm:max-w-md rounded-2xl">
-          <DialogTitle className="flex items-center gap-2">
+      {/* ── Setup Modal (2 steps) ─────────────────────────────────────── */}
+      <Dialog open={modalOpen} onOpenChange={handleCloseModal}>
+        <DialogContent className={cn("rounded-2xl overflow-hidden", step === 2 ? "sm:max-w-3xl" : "sm:max-w-lg")}>
+          {/* Modal header */}
+          <DialogTitle className="flex items-center gap-2 text-[#1e1b4b]">
             <SiShopify className="w-5 h-5 text-[#95BF47]" />
-            Nouvelle intégration Shopify
+            {step === 1 ? "Nouvelle intégration Shopify" : "Guide de configuration"}
           </DialogTitle>
-          <div className="space-y-4 py-2">
-            <div className="space-y-1.5">
-              <Label>Nom de la connexion</Label>
-              <Input
-                value={connectionName}
-                onChange={e => setConnectionName(e.target.value)}
-                placeholder="ex: Boutique principale"
-                data-testid="input-shopify-name"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Magasin interne</Label>
-              <Select value={selectedStoreId} onValueChange={setSelectedStoreId}>
-                <SelectTrigger data-testid="select-shopify-store">
-                  <SelectValue placeholder="Sélectionner un magasin…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {magasins.map((s: any) => (
-                    <SelectItem key={s.id} value={String(s.id)} data-testid={`option-shopify-store-${s.id}`}>
-                      {s.name}
-                    </SelectItem>
+
+          {/* ─── Step 1: Store selector + toggles ─── */}
+          {step === 1 && (
+            <div className="space-y-5 py-2">
+              <div className="space-y-1.5">
+                <Label className="text-sm font-semibold">Nom de la connexion</Label>
+                <Input
+                  value={connectionName}
+                  onChange={e => setConnectionName(e.target.value)}
+                  placeholder="ex: Boutique principale"
+                  data-testid="input-shopify-name"
+                />
+              </div>
+
+              {/* Magasin + toggles row */}
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Magasin</Label>
+                  <Select value={selectedStoreId} onValueChange={setSelectedStoreId}>
+                    <SelectTrigger className="h-10" data-testid="select-shopify-store">
+                      <SelectValue placeholder="Sélectionner un magasin…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {magasins.map((s: any) => (
+                        <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex items-center gap-6 pt-1">
+                  {[
+                    { label: "Can Open", value: canOpen, set: setCanOpen },
+                    { label: "Ramassage", value: ramassage, set: setRamassage },
+                    { label: "Stock", value: stock, set: setStock },
+                  ].map(({ label, value, set }) => (
+                    <label key={label} className="flex items-center gap-2 cursor-pointer">
+                      <Checkbox
+                        checked={value}
+                        onCheckedChange={v => set(!!v)}
+                        className="data-[state=checked]:bg-[#1e3a8f] data-[state=checked]:border-[#1e3a8f]"
+                      />
+                      <span className="text-sm text-muted-foreground">{label}</span>
+                    </label>
                   ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Les commandes reçues via ce webhook seront enregistrées dans ce magasin.
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                Les commandes reçues via ce webhook seront enregistrées dans le magasin sélectionné.
               </p>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <Button variant="outline" onClick={handleCloseModal}>Annuler</Button>
+                <Button
+                  onClick={handleCreate}
+                  disabled={createIntegration.isPending}
+                  className="bg-[#1e3a8f] hover:bg-[#1e40af] text-white font-semibold"
+                  data-testid="button-confirm-shopify"
+                >
+                  {createIntegration.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                  Créer & Configurer →
+                </Button>
+              </div>
             </div>
-          </div>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setModalOpen(false)}>Annuler</Button>
-            <Button
-              onClick={handleCreate}
-              disabled={createIntegration.isPending}
-              className="bg-[#3B5BDB] hover:bg-[#2f4bc4] text-white"
-              data-testid="button-confirm-shopify"
-            >
-              {createIntegration.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              Créer l'intégration
-            </Button>
-          </DialogFooter>
+          )}
+
+          {/* ─── Step 2: Guide + webhook URL + verify ─── */}
+          {step === 2 && createdIntegration && (() => {
+            const webhookUrl = `${origin}/api/webhooks/shopify/order/${createdIntegration.webhookKey}`;
+            return (
+              <div className="space-y-5 py-2">
+                {/* Badge confirming creation */}
+                <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                  <CheckCircle className="w-4 h-4 shrink-0" />
+                  Intégration créée — configurez maintenant le webhook dans Shopify.
+                </div>
+
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Left: Guide */}
+                  <div className="space-y-3">
+                    <p className="text-sm font-bold text-[#1e3a8f]">Guide d'intégration</p>
+                    <p className="text-xs text-muted-foreground">5 étapes courtes</p>
+                    <div className="space-y-3">
+                      {SHOPIFY_STEPS.map((s, i) => (
+                        <div key={i} className="flex gap-3">
+                          <div className="w-6 h-6 rounded-full border-2 border-[#1e3a8f]/30 flex items-center justify-center text-xs font-bold text-[#1e3a8f] shrink-0 mt-0.5">
+                            {i + 1}
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-[#1e1b4b]">{s.title}</p>
+                            {s.sub && s.sub.split('\n').map((line, li) => (
+                              <p key={li} className={cn("text-xs", li === 0 ? "text-[#1e3a8f] font-medium" : "text-muted-foreground")}>
+                                {line}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Right: URL + verify */}
+                  <div className="space-y-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-sm font-semibold">URL du Webhook</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          value={webhookUrl}
+                          readOnly
+                          className="font-mono text-xs bg-[#f8fafc] flex-1 border-border/60"
+                          data-testid="input-shopify-webhook-url"
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => copyUrl(webhookUrl)}
+                          className="shrink-0 gap-1.5 border-border/60"
+                          data-testid="button-copy-webhook-url"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          Copier
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Collez cette URL dans <span className="font-semibold">Shopify → Webhooks</span>.
+                      </p>
+                    </div>
+
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <Checkbox
+                        checked={agreed}
+                        onCheckedChange={v => setAgreed(!!v)}
+                        className="mt-0.5 data-[state=checked]:bg-[#1e3a8f] data-[state=checked]:border-[#1e3a8f]"
+                        data-testid="checkbox-shopify-confirm"
+                      />
+                      <span className="text-sm text-muted-foreground leading-snug">
+                        Je comprends les étapes et j'ai configuré le webhook dans Shopify.
+                      </span>
+                    </label>
+
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground font-medium">Statut de la connexion</span>
+                      {verifyStatus === "idle" && <span className="text-muted-foreground text-xs">Non vérifiée</span>}
+                      {verifyStatus === "checking" && <span className="text-blue-600 text-xs flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Vérification…</span>}
+                      {verifyStatus === "connected" && <span className="text-emerald-600 font-semibold text-xs flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Connecté</span>}
+                      {verifyStatus === "pending" && <span className="text-amber-600 text-xs">En attente d'un signal</span>}
+                    </div>
+
+                    <Button
+                      onClick={handleVerify}
+                      disabled={verifyIntegration.isPending || verifyStatus === "checking" || verifyStatus === "connected"}
+                      className="w-full bg-[#1e3a8f] hover:bg-[#1e40af] text-white h-10 font-semibold gap-2"
+                      data-testid="button-verify-shopify"
+                    >
+                      {verifyStatus === "checking" || verifyIntegration.isPending
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : verifyStatus === "connected"
+                        ? <CheckCircle className="w-4 h-4" />
+                        : <RefreshCw className="w-4 h-4" />}
+                      {verifyStatus === "connected" ? "Connecté !" : "Vérifier la Connexion"}
+                    </Button>
+
+                    <Button
+                      variant="ghost"
+                      className="w-full text-muted-foreground text-xs h-8"
+                      onClick={handleCloseModal}
+                    >
+                      Terminer plus tard
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
-      {/* Confirm delete modal */}
+      {/* ── Confirm delete modal ─────────────────────────────────────── */}
       <Dialog open={confirmDeleteId !== null} onOpenChange={() => setConfirmDeleteId(null)}>
         <DialogContent className="sm:max-w-sm rounded-2xl">
           <DialogTitle>Supprimer l'intégration ?</DialogTitle>

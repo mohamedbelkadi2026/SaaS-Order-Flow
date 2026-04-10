@@ -1,0 +1,32 @@
+"I need to implement a fully functional Multi-Shopify Integration module that matches the exact design and logic shown in the provided screenshots. The implementation must be integrated into client/src/pages/integrations.tsx and server/routes.ts.
+Technical Requirements:
+1. The Setup Modal (Matching Image 3):
+When clicking '+ Intégrer Shopify', open a Dialog that looks exactly like the screenshot.
+Top Row: A 'Magasin' select dropdown (linked to my magasins table) and toggles for 'Can Open', 'Ramassage', and 'Stock'.
+Left Column: A 'Guide d'intégration' with the 5 steps (1. Se connecter, 2. Paramètres, etc.).
+Right Column:
+A 'URL du Webhook' field showing a unique generated URL: https://tajergrow.com/api/webhooks/shopify/order/[UNIQUE_KEY].
+A 'Copier' button next to it.
+A checkbox: 'Je comprends les étapes...'.
+A 'Statut de la connexion' label (showing 'Non vérifiée' in grey by default).
+A primary blue button: 'Vérifier la Connexion'.
+2. Connection Verification Logic:
+When 'Vérifier la Connexion' is clicked, the backend must check the integration_logs table for any recent hits from Shopify for that specific webhookKey.
+If a hit exists, change the status to a green 'Connecté' badge and update the integration as active.
+3. The Grid UI (Matching Image 1):
+Once connected, show the Shopify integration as a card in a grid.
+Each card must display:
+Shopify logo.
+The unique key / store name.
+Real-time 'Orders Count' (number of orders received via this webhook).
+An active toggle switch.
+A red ghost delete button (trash icon).
+A green 'Connecté' ribbon in the top right.
+4. Backend Webhook Routing:
+Update server/routes.ts to handle POST /api/webhooks/shopify/order/:webhookKey.
+The handler must identify the internal magasin_id from the webhookKey.
+Incoming orders must be saved under the correct internal store and increment the ordersCount for that integration.
+5. Design & Identity:
+Use the TajerGrow Royal Blue (#1e3a8f) for buttons and active states.
+Use the Shadcn UI components (Dialog, Select, Switch, Badge) already present in the project.
+Backgrounds should be Soft Zinc (#f8fafc) and cards should be white with a clean border."
