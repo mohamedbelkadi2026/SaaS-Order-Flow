@@ -1,4 +1,4 @@
-import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance, useAgentStoreSettings } from "@/hooks/use-store-data";
+import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance, useAgentStoreSettings, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/utils";
@@ -75,6 +75,7 @@ export default function Dashboard() {
     shippingProvider: 'all',
     utmSource: 'all',
     utmCampaign: 'all',
+    magasinId: 'all',
     datePreset: 'all',
     dateFrom: '',
     dateTo: '',
@@ -89,6 +90,7 @@ export default function Dashboard() {
     if (filters.shippingProvider !== 'all') f.shippingProvider = filters.shippingProvider;
     if (filters.utmSource !== 'all') f.utmSource = filters.utmSource;
     if (filters.utmCampaign !== 'all') f.utmCampaign = filters.utmCampaign;
+    if (filters.magasinId !== 'all') f.magasinId = filters.magasinId;
     if (filters.dateFrom) f.dateFrom = filters.dateFrom;
     if (filters.dateTo) f.dateTo = filters.dateTo;
     return f;
@@ -186,6 +188,7 @@ export default function Dashboard() {
   const { data: agents } = useAgents();
   const { data: agentPerf } = useAgentPerformance();
   const { data: agentSettings = [] } = useAgentStoreSettings();
+  const { data: magasins = [] } = useMagasins();
 
   const handleDatePreset = (preset: string) => {
     if (preset === 'custom') {
@@ -208,7 +211,7 @@ export default function Dashboard() {
     setFilters({
       city: 'all', productId: 'all', agentId: 'all', source: 'all',
       shippingProvider: 'all', utmSource: 'all', utmCampaign: 'all',
-      datePreset: 'all', dateFrom: '', dateTo: '',
+      magasinId: 'all', datePreset: 'all', dateFrom: '', dateTo: '',
     });
   };
 
@@ -852,6 +855,20 @@ export default function Dashboard() {
                 ))}
               </SelectContent>
             </Select>
+
+            {(magasins as any[]).length > 1 && (
+              <Select value={filters.magasinId} onValueChange={(v) => updateFilter('magasinId', v)}>
+                <SelectTrigger className="w-full md:w-auto md:min-w-[150px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-magasin">
+                  <SelectValue placeholder="Tous les Magasins" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les Magasins</SelectItem>
+                  {(magasins as any[]).map((m: any) => (
+                    <SelectItem key={m.id} value={m.id.toString()}>{m.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
 
             <Select value={filters.datePreset} onValueChange={handleDatePreset}>
               <SelectTrigger className="w-full md:w-auto md:min-w-[150px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-preset">

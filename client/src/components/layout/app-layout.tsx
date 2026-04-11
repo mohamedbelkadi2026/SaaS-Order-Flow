@@ -718,39 +718,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {stores.length > 1 && (
-              <div ref={storeSwitcherRef} className="relative">
-                <button
-                  onClick={() => setStoreSwitcherOpen(v => !v)}
-                  className="h-8 px-2.5 rounded-xl text-xs font-bold border border-border/50 hover:bg-muted transition-colors flex items-center gap-1.5 text-foreground max-w-[130px]"
-                  data-testid="select-store-switcher"
-                >
-                  <Store className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                  <span className="truncate">{stores.find((s: any) => s.id === activeStoreId)?.name || stores[0]?.name || "Magasin"}</span>
-                  <ChevronDown className={`w-3 h-3 text-muted-foreground shrink-0 transition-transform duration-200 ${storeSwitcherOpen ? "rotate-180" : ""}`} />
-                </button>
-                {storeSwitcherOpen && (
-                  <div className="absolute left-0 top-10 min-w-[130px] bg-card border border-border rounded-2xl shadow-2xl z-50 overflow-hidden py-1">
-                    {stores.map((s: any) => (
-                      <button
-                        key={s.id}
-                        onClick={() => { setActiveStoreId(s.id); setStoreSwitcherOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-2 px-3 py-2 text-xs font-medium transition-colors hover:bg-muted text-left",
-                          activeStoreId === s.id ? "text-primary font-bold bg-primary/5" : "text-foreground"
-                        )}
-                        data-testid={`option-store-${s.id}`}
-                      >
-                        <Store className="w-3 h-3 shrink-0" />
-                        <span className="truncate">{s.name}</span>
-                        {activeStoreId === s.id && <span className="ml-auto text-primary text-xs">✓</span>}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
             <Button variant="ghost" size="icon" onClick={() => setIsDark(!isDark)} className="rounded-full h-8 w-8" data-testid="button-theme">
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </Button>
