@@ -27,6 +27,7 @@ async function syncWooCommerceStore(integration: any) {
         'Authorization': authHeader,
         'Content-Type': 'application/json',
       },
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {

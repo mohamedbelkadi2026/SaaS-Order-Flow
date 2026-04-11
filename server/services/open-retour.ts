@@ -64,6 +64,7 @@ export async function createOpenRetourReturn(
         "X-Client-ID": creds.clientId,
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) {
@@ -106,6 +107,7 @@ export async function testOpenRetourConnection(creds: OpenRetourCredentials): Pr
         "Authorization": `Bearer ${creds.apiKey}`,
         "X-Client-ID": creds.clientId,
       },
+      signal: AbortSignal.timeout(10000),
     });
     if (res.ok) return { ok: true, message: "Connexion réussie ✅" };
     if (res.status === 401) return { ok: false, message: "Clé API invalide" };

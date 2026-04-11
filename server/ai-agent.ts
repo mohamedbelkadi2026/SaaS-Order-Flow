@@ -33,12 +33,12 @@ async function resolveAIClient(storeId: number): Promise<ResolvedClient> {
 
   if (orKey) {
     return {
-      client: new OpenAI({ apiKey: orKey, baseURL: OPENROUTER_BASE, defaultHeaders: OPENROUTER_HEADERS }),
+      client: new OpenAI({ apiKey: orKey, baseURL: OPENROUTER_BASE, defaultHeaders: OPENROUTER_HEADERS, timeout: 12000, maxRetries: 1 }),
       model, provider: "OpenRouter",
     };
   }
   if (oaiKey) {
-    return { client: new OpenAI({ apiKey: oaiKey }), model: "gpt-4o-mini", provider: "OpenAI" };
+    return { client: new OpenAI({ apiKey: oaiKey, timeout: 12000, maxRetries: 1 }), model: "gpt-4o-mini", provider: "OpenAI" };
   }
   throw new Error("Veuillez configurer votre clé API OpenRouter pour activer la confirmation automatique.");
 }

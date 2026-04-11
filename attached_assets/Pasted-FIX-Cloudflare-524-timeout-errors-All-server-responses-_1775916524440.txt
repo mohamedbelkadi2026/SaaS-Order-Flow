@@ -1,0 +1,63 @@
+FIX — Cloudflare 524 timeout errors. All server responses must complete within 25 seconds maximum.
+The app is behind Cloudflare which has a 100s timeout, but Railway/the app is hanging on certain requests causing 524 errors. Fix ALL long-running operations:
+1. Add global request timeout middleware — in server/index.ts:
+typescript// Add this BEFORE all routes:
+app.use((req, res, next) => {
+  res.setTimeout(25000, () => {
+    console.error(`[Timeout] Request timed out: ${req.method} ${req.url}`);
+    if (!res.headersSent) {
+      res.status(504).json({ message: 'Request timeout' });
+    }
+  });
+  next();
+});
+2. Add timeout to ALL external API calls (OpenAI, WhatsApp, carrier APIs):
+Find every fetch(...) call to external services and add AbortController timeout:
+typescriptconst controller = new AbortController();
+const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s max
+try {
+  const response = await fetch(url, { 
+    ...options, 
+    signal: controller.signal 
+  });
+  clearTimeout(timeoutId);
+  return response;
+} catch (err: any) {
+  clearTimeout(timeoutId);
+  if (err.name === 'AbortError') {
+    console.error('[Fetch Timeout]', url);
+    throw new Error('External API timeout');
+  }
+  throw err;
+}
+3. Add timeout to ALL database queries that could be slow:
+typescript// In server/db.ts, set statement_timeout:
+await db.execute(sql`SET statement_timeout = '20000'`); // 20s max per query
+Or add to pool config:
+typescript{
+  connectionTimeoutMillis: 10000,
+  query_timeout: 20000,
+  statement_timeout: 20000,
+}
+4. Fix AI/WhatsApp background calls — make them non-blocking:
+Find triggerAIForNewOrder(...) and any WhatsApp send calls in route handlers. They must NEVER block the HTTP response:
+typescript// WRONG — blocks response:
+await triggerAIForNewOrder(storeId, order.id, ...);
+res.json({ success: true });
+
+// CORRECT — respond first, AI runs in background:
+res.json({ success: true }); // respond immediately
+triggerAIForNewOrder(storeId, order.id, ...).catch(err => 
+  console.error('[AI Background]', err)
+);
+Find ALL places where await triggerAIForNewOrder or await sendWhatsApp happens BEFORE res.json() and fix them — respond first, then trigger AI.
+5. Add timeout to OpenAI API calls specifically:
+typescript// When calling OpenAI, add timeout:
+const response = await openai.chat.completions.create({
+  ...params,
+}, { 
+  timeout: 12000, // 12 seconds max
+  maxRetries: 1,
+});
+Do NOT change: any business logic, order flow, AI logic itself, frontend.
+Only touch: request timeout middleware, fetch calls to external APIs, DB timeout config, and the order of res.json() vs triggerAI calls.

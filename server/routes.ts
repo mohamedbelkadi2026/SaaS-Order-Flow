@@ -4917,6 +4917,7 @@ export async function registerRoutes(
       method: "POST",
       headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/x-www-form-urlencoded" },
       body: "grant_type=client_credentials",
+      signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) {
       const txt = await res.text();
@@ -4947,6 +4948,7 @@ export async function registerRoutes(
           intent: "CAPTURE",
           purchase_units: [{ amount: { currency_code: "USD", value: amount }, description: `TajerGrow Plan ${planId}` }],
         }),
+        signal: AbortSignal.timeout(15000),
       }).then(r => r.json());
       if (!order.id) throw new Error(JSON.stringify(order));
       res.json({ orderID: order.id });
@@ -4965,6 +4967,7 @@ export async function registerRoutes(
       const capture: any = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${orderID}/capture`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(15000),
       }).then(r => r.json());
 
       if (capture.status !== "COMPLETED") {

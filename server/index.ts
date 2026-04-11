@@ -180,6 +180,17 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Global request timeout — 25s max (Cloudflare 524 / Railway hang protection) ──
+app.use((req, res, next) => {
+  res.setTimeout(25000, () => {
+    console.error(`[Timeout] Request timed out: ${req.method} ${req.url}`);
+    if (!res.headersSent) {
+      res.status(504).json({ message: 'Request timeout' });
+    }
+  });
+  next();
+});
+
 (async () => {
   // ── Register ALL routes BEFORE opening the port ───────────────────────────
   // This guarantees no request can arrive before routes are wired up.

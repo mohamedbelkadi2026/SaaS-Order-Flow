@@ -111,6 +111,7 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chatId, message }),
+      signal: AbortSignal.timeout(15000),
     });
     if (res.ok) {
       console.log(`[WA Transport:${storeId}] ✅ Message sent via Green API → ${chatId}`);
