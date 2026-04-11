@@ -538,6 +538,15 @@ export default function Orders() {
           queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
           queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
           queryClient.invalidateQueries({ queryKey: ["/api/integration-logs"] });
+          // If some orders were blocked (non-confirmed status), show a specific toast
+          const blocked = (d.results || []).filter((r: any) => r.status === 'failed' && r.error?.includes("doit être"));
+          if (blocked.length > 0) {
+            toast({
+              title: "Commandes non confirmées",
+              description: `${blocked.length} commande(s) n'ont pas été envoyées car elles ne sont pas confirmées. Veuillez d'abord confirmer ces commandes.`,
+              variant: "destructive",
+            });
+          }
         }
       } catch {}
     });
@@ -1804,6 +1813,18 @@ export default function Orders() {
             )}
           </div>
 
+          {/* Banner for blocked (non-confirmed) orders */}
+          {shipProgress && !shipProgress.active && shipProgress.results && shipProgress.results.some(r => r.status === 'failed' && r.error?.includes("doit être")) && (
+            <div className="mx-6 mt-4 mb-1 flex items-start gap-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-xl px-3 py-2.5">
+              <span className="text-base shrink-0">⚠️</span>
+              <p className="text-xs text-amber-800 dark:text-amber-300 leading-snug">
+                Certaines commandes n'ont pas été envoyées car elles ne sont pas confirmées.
+                <br />
+                <span className="font-semibold">Veuillez d'abord confirmer ces commandes.</span>
+              </p>
+            </div>
+          )}
+
           {/* Per-order error details — shown only when there are failures */}
           {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (
             <div className="px-6 pb-2">
@@ -1859,7 +1880,7 @@ export default function Orders() {
               Expédier les commandes
             </DialogTitle>
             <DialogDescription className="text-sm text-muted-foreground">
-              Seules les commandes avec le statut <Badge variant="outline" className="text-emerald-600 mx-1">confirmé</Badge> seront expédiées.
+              Seules les commandes avec le statut <Badge variant="outline" className="text-emerald-600 mx-1">Confirmé</Badge>, <Badge variant="outline" className="text-slate-600 mx-1">Expédié</Badge> ou <Badge variant="outline" className="text-orange-600 mx-1">Attente Ramassage</Badge> seront expédiées.
             </DialogDescription>
           </DialogHeader>
 

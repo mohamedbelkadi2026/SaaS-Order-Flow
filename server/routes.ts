@@ -1030,14 +1030,26 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Transporteur ${provider} non connecté. Ajoutez un compte dans Intégrations → Sociétés de Livraison.` });
       }
 
+      const SHIPPABLE_STATUSES = ['confirme', 'expédié', 'Attente De Ramassage'];
       const eligible = await storage.bulkShipOrders(orderIds, storeId);
-      if (eligible.length === 0) {
+
+      // Identify blocked orders (requested but not eligible due to wrong status)
+      const allRequested = await storage.getOrdersByIds(orderIds, storeId);
+      const eligibleIds = new Set(eligible.map((o: any) => o.id));
+      const blockedOrders = allRequested.filter((o: any) => !eligibleIds.has(o.id));
+
+      if (eligible.length === 0 && blockedOrders.length === 0) {
         return res.status(400).json({ message: "Aucune commande éligible (statut 'confirme' requis)" });
+      }
+      if (eligible.length === 0) {
+        return res.status(400).json({
+          message: `Aucune commande éligible — ${blockedOrders.length} commande(s) bloquée(s) car non confirmées. Statuts autorisés: ${SHIPPABLE_STATUSES.join(', ')}.`,
+        });
       }
 
       // ── Pre-load everything needed for the background job ────────
       type ShipResult = { orderId: number; orderNumber?: string; trackingNumber?: string; labelLink?: string; status: 'shipped' | 'failed'; error?: string };
-      const total = eligible.length;
+      const total = eligible.length + blockedOrders.length;
 
       // Pre-load all active carrier accounts for smart city-based dispatch
       const allCarrierAccounts = await storage.getCarrierAccounts(storeId, provider);
@@ -1052,6 +1064,19 @@ export async function registerRoutes(
         let done = 0;
         let shippedCount = 0;
         let failedCount  = 0;
+
+        // ── Pre-fill blocked (non-shippable status) orders ───────────
+        blockedOrders.forEach((order: any) => {
+          results.push({
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            status: 'failed',
+            error: `❌ Commande #${order.orderNumber} non envoyée — statut "${order.status}" doit être "Confirmé" avant expédition.`,
+          });
+          failedCount++;
+          done++;
+        });
+        if (blockedOrders.length > 0) broadcastProgress();
 
         // ── Helpers ─────────────────────────────────────────────────
         const getProductName = (order: any) =>

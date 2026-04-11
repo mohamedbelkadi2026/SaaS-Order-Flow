@@ -52,6 +52,7 @@ export interface IStorage {
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
   bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]>;
+  getOrdersByIds(orderIds: number[], storeId: number): Promise<Order[]>;
   deleteOrder(id: number, storeId: number): Promise<void>;
   bulkDeleteOrders(ids: number[], storeId: number): Promise<number>;
   createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order>;
@@ -603,9 +604,15 @@ export class DatabaseStorage implements IStorage {
       .where(and(
         inArray(orders.id, orderIds),
         eq(orders.storeId, storeId),
-        eq(orders.status, 'confirme')
+        inArray(orders.status, ['confirme', 'expédié', 'Attente De Ramassage'])
       ));
     return eligible;
+  }
+
+  async getOrdersByIds(orderIds: number[], storeId: number): Promise<Order[]> {
+    if (orderIds.length === 0) return [];
+    return db.select().from(orders)
+      .where(and(inArray(orders.id, orderIds), eq(orders.storeId, storeId)));
   }
 
   async deleteOrder(id: number, storeId: number): Promise<void> {
