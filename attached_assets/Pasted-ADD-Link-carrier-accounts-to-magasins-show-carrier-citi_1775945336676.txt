@@ -1,0 +1,65 @@
+ADD — Link carrier accounts to magasins, show carrier cities + logo per magasin in new order form
+THE GOAL: When a user creates a new order and selects a magasin, only show the carrier cities + logo of the carrier connected to THAT magasin.
+
+CHANGE 1 — shared/schema.ts — add magasinId to carrier_accounts table:
+typescriptexport const carrierAccounts = pgTable("carrier_accounts", {
+  // ... existing columns ...
+  magasinId: integer("magasin_id").references(() => magasins.id), // ADD THIS — nullable
+});
+DB Migration:
+sqlALTER TABLE carrier_accounts ADD COLUMN IF NOT EXISTS magasin_id INTEGER REFERENCES magasins(id);
+
+CHANGE 2 — server/routes.ts — GET /api/carriers/cities/all — filter by magasinId:
+Add optional query param ?magasin_id=:
+typescriptapp.get("/api/carriers/cities/all", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const magasinId = req.query.magasin_id ? Number(req.query.magasin_id) : null;
+
+  const accounts = await storage.getCarrierAccounts(storeId);
+  
+  // Filter: if magasinId provided, show only carriers linked to that magasin
+  // If carrier has no magasinId set (null), show it for ALL magasins (backward compat)
+  const filtered = magasinId
+    ? accounts.filter(a => !a.magasinId || a.magasinId === magasinId)
+    : accounts;
+
+  // ... rest of existing logic using `filtered` instead of `accounts`
+});
+
+CHANGE 3 — client/src/pages/new-order-add.tsx — pass magasinId to cities query:
+typescript// Get current magasin from the order form (already has magasin selector or use useMagasins hook)
+const { data: magasins } = useMagasins();
+const [selectedMagasinId, setSelectedMagasinId] = useState<number | null>(
+  magasins?.[0]?.id ?? null
+);
+
+// Update the cities query to pass magasin_id:
+const { data: allCarriers = [] } = useQuery({
+  queryKey: ["/api/carriers/cities/all", selectedMagasinId],
+  queryFn: () => fetch(
+    `/api/carriers/cities/all${selectedMagasinId ? `?magasin_id=${selectedMagasinId}` : ''}`
+  ).then(r => r.json()),
+  staleTime: 3 * 60 * 1000,
+});
+Add magasin selector in the new order form UI — same style as existing selectors:
+tsx<Select value={String(selectedMagasinId)} onValueChange={v => setSelectedMagasinId(Number(v))}>
+  {magasins?.map(m => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
+</Select>
+
+CHANGE 4 — server/routes.ts — carrier account creation — accept magasinId:
+In POST /api/carrier-accounts, add magasinId to the schema and save it:
+typescriptmagasinId: z.number().optional().nullable(),
+// Pass to storage.createCarrierAccount({ ..., magasinId: data.magasinId ?? null })
+
+CHANGE 5 — Shipping integrations page — show magasin selector when adding carrier:
+In the carrier account setup UI (shipping-integrations.tsx), add a magasin selector so user can link each carrier to a specific magasin when creating the account.
+
+CHANGE 6 — GET /api/carriers/cities/all — always return logo + cities automatically:
+The endpoint already returns logo from CARRIER_LOGOS_SERVER. Make sure it also auto-syncs cities on first load if dbCities is empty — call the carrier's /cities API in background and cache:
+typescript// If no cached cities, trigger background sync (don't await — respond immediately with defaults)
+if (dbCities.length === 0) {
+  syncCarrierCitiesInBackground(storeId, acct).catch(console.error);
+}
+
+Do NOT change: order flow, AI, WhatsApp, financial logic, status mapping, webhook processing.
+Only touch: shared/schema.ts, server/routes.ts (cities endpoint + carrier creation), client/src/pages/new-order-add.tsx, client/src/pages/shipping-integrations.tsx.

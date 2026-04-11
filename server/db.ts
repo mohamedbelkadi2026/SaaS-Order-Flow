@@ -252,6 +252,13 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] store_integrations.magasin_id ensured ✅");
 
+    // ── 13. carrier_accounts: magasin_id for per-magasin carrier scoping ─────
+    await client.query(`
+      ALTER TABLE public.carrier_accounts
+        ADD COLUMN IF NOT EXISTS magasin_id INTEGER;
+    `);
+    console.log("[Migration] carrier_accounts.magasin_id ensured ✅");
+
     // ── 11. backfill stores.owner_id for signup-created stores ───────────────
     // Stores created during signup had owner_id = NULL because the user record
     // didn't exist yet at insert time. Fix this by joining to the users table.

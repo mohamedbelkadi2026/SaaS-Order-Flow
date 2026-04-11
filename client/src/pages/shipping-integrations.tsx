@@ -301,6 +301,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           payload.carrierStoreName = carrierStoreName || undefined;
           if (isDigylog && networkId) payload.networkId = Number(networkId);
         }
+        if (selectedStoreId && selectedStoreId !== "__manual__") {
+          payload.magasinId = Number(selectedStoreId);
+        }
         const res = await apiRequest("POST", "/api/carrier-accounts", payload);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);

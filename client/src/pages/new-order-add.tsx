@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
-import { useAgents, useProducts, useStore, useAgentStoreSettings } from "@/hooks/use-store-data";
+import { useAgents, useProducts, useStore, useAgentStoreSettings, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest } from "@/lib/queryClient";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -52,6 +52,7 @@ export default function NewOrderAdd() {
   const { data: allProducts = [] } = useProducts();
   const { data: storeData } = useStore();
   const { data: agentSettings = [] } = useAgentStoreSettings();
+  const { data: magasins = [] } = useMagasins();
 
   const myAgentSetting = (agentSettings as any[]).find((s: any) => s.agentId === user?.id);
   const allowedProductIds: number[] = useMemo(() => {
@@ -72,6 +73,7 @@ export default function NewOrderAdd() {
   const [customerAddress, setCustomerAddress] = useState("");
   const [customerCity, setCustomerCity] = useState("");
   const [selectedCarrierProvider, setSelectedCarrierProvider] = useState<string>("");
+  const [selectedMagasinId, setSelectedMagasinId] = useState<string>("");
   const [status, setStatus] = useState("nouveau");
   const [agentId, setAgentId] = useState(isAgent ? String(user?.id || "") : "");
   const [comment, setComment] = useState("");
@@ -79,9 +81,19 @@ export default function NewOrderAdd() {
 
   // ── Carrier city lists ─────────────────────────────────────────────
   const { data: allCarriers = [], isLoading: citiesLoading } = useQuery<{
-    id: number; provider: string; isActive: number; cities: string[]; logo: string | null; source: string;
+    id: number; provider: string; isActive: number; cities: string[]; logo: string | null; source: string; magasinId: number | null;
   }[]>({
-    queryKey: ["/api/carriers/cities/all"],
+    queryKey: selectedMagasinId
+      ? ["/api/carriers/cities/all", selectedMagasinId]
+      : ["/api/carriers/cities/all"],
+    queryFn: async () => {
+      const url = selectedMagasinId
+        ? `/api/carriers/cities/all?magasin_id=${selectedMagasinId}`
+        : "/api/carriers/cities/all";
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
     staleTime: 3 * 60 * 1000,
   });
 
@@ -205,12 +217,35 @@ export default function NewOrderAdd() {
             </Button>
           </div>
 
-          {/* Boutique + toggles */}
+          {/* Boutique + magasin + toggles */}
           <div className="flex flex-wrap items-end gap-8 mb-6">
             <div className="flex-1 min-w-[180px]">
               <Label className="text-xs mb-1.5 block">Boutique *</Label>
               <Input value={storeData?.name || ""} readOnly className="bg-gray-50 text-sm" />
             </div>
+            {(magasins as any[]).length > 1 && (
+              <div className="flex-1 min-w-[180px]">
+                <Label className="text-xs mb-1.5 block">Magasin</Label>
+                <Select
+                  value={selectedMagasinId}
+                  onValueChange={v => {
+                    setSelectedMagasinId(v === "__all__" ? "" : v);
+                    setSelectedCarrierProvider("");
+                    setCustomerCity("");
+                  }}
+                >
+                  <SelectTrigger className="text-sm" data-testid="select-magasin-order">
+                    <SelectValue placeholder="Tous les magasins" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__all__">Tous les magasins</SelectItem>
+                    {(magasins as any[]).map((m: any) => (
+                      <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <Label className="text-sm font-medium">Ouvrable:</Label>
               <Switch checked={canOpen} onCheckedChange={setCanOpen} />

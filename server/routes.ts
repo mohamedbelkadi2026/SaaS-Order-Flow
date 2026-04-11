@@ -1856,7 +1856,7 @@ export async function registerRoutes(
   app.post("/api/carrier-accounts", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, carrierStoreName, networkId, storeId: linkedStoreId, assignmentRule, isDefault } = req.body;
+      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, carrierStoreName, networkId, storeId: linkedStoreId, assignmentRule, isDefault, magasinId } = req.body;
       if (!carrierName || !rawApiKey) {
         return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
       }
@@ -1887,7 +1887,8 @@ export async function registerRoutes(
         isActive: 1,
         assignmentRule: assignmentRule || "default",
         settings: networkId !== undefined ? { networkId: Number(networkId) } : {},
-      });
+        magasinId: magasinId ? Number(magasinId) : null,
+      } as any);
 
       // Log creation (non-blocking — failure won't affect the response)
       storage.createIntegrationLog({
@@ -4750,15 +4751,59 @@ export async function registerRoutes(
    */
   app.get("/api/carriers/cities/all", requireAuth, async (req, res) => {
     try {
-      const storeId = req.user!.storeId!;
+      const storeId  = req.user!.storeId!;
+      const magasinId = req.query.magasin_id ? Number(req.query.magasin_id) : null;
 
       // ── 1. New system: carrier_accounts ──────────────────────────────────
       const accounts = await storage.getCarrierAccounts(storeId);
       if (accounts.length > 0) {
+        // Filter by magasin: if magasinId given, include carriers with no magasin set (global)
+        // OR carriers explicitly linked to that magasin.
+        const filtered = magasinId
+          ? accounts.filter(a => !(a as any).magasinId || (a as any).magasinId === magasinId)
+          : accounts;
+
         const result = await Promise.all(
-          accounts.map(async (acct) => {
+          filtered.map(async (acct) => {
             // Check DB-synced city cache first
             const dbCities = await storage.getCarrierCities(storeId, acct.carrierName);
+            // If no cached cities, trigger background sync so next request has data
+            if (dbCities.length === 0 && acct.apiKey) {
+              (async () => {
+                try {
+                  const sanitize = (s: string) => s.replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
+                  const apiKey = sanitize(acct.apiKey);
+                  if (!apiKey) return;
+                  const rawBase = (acct.apiUrl || "").replace(/\/orders\s*$/i, "").replace(/\/+$/, "");
+                  const base = (rawBase || "https://api.digylog.com/api/v2/seller")
+                    .replace(/api\.digylog\.ma/i, "api.digylog.com")
+                    .replace(/app\.digylog\.com/i, "api.digylog.com");
+                  const citiesUrl = `${base}/cities`;
+                  const axiosLib = (await import("axios")).default;
+                  const resp = await axiosLib.get(citiesUrl, {
+                    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+                    timeout: 15_000,
+                    validateStatus: () => true,
+                  });
+                  if (resp.status !== 200) return;
+                  const raw = resp.data;
+                  const cityList: any[] =
+                    Array.isArray(raw) ? raw :
+                    Array.isArray(raw?.data) ? raw.data :
+                    Array.isArray(raw?.cities) ? raw.cities :
+                    Array.isArray(raw?.data?.cities) ? raw.data.cities : [];
+                  const cities: string[] = cityList
+                    .map((c: any) => (typeof c === "string" ? c : (c?.name || c?.city_name || c?.label || "")).trim())
+                    .filter(Boolean).sort();
+                  if (cities.length > 0) {
+                    await storage.upsertCarrierCities(storeId, acct.carrierName, acct.id, cities);
+                    console.log(`[CitiesAutoSync] Synced ${cities.length} cities for ${acct.carrierName} account #${acct.id}`);
+                  }
+                } catch (e: any) {
+                  console.warn(`[CitiesAutoSync] Failed for account #${acct.id}:`, e?.message);
+                }
+              })();
+            }
             const cities = dbCities.length > 0
               ? dbCities
               : getDefaultCitiesForProvider(acct.carrierName);
@@ -4766,6 +4811,7 @@ export async function registerRoutes(
             return {
               id: acct.id,
               provider: acct.carrierName,
+              magasinId: (acct as any).magasinId ?? null,
               isActive: acct.isActive,
               cities,
               logo,
