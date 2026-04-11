@@ -1,0 +1,65 @@
+FIX — Carrier webhook status mapping: add missing statuses + remove dangerous cross-store update
+CHANGE 1 — Remove cross-store fallback (CRITICAL):
+In server/routes.ts, inside processCarrierWebhook, find and DELETE this entire block:
+typescript// ── Cross-store fallback: URL may have wrong storeId ─────────────────
+if (!order && trackingNumber) {
+  console.warn(`[WEBHOOK-FLEXIBLE]: Not found in store ${storeId}...`);
+  const crossOrder = await storage.getOrderByTrackingNumberAnyStore(trackingNumber);
+  if (crossOrder) {
+    ...
+    order = crossOrder;
+    ...
+  }
+}
+Replace with just:
+typescript// No cross-store search — each store only updates its own orders
+This is causing orders from OTHER platforms/stores to get their status updated here.
+
+CHANGE 2 — Add missing carrier statuses to the mapping:
+In the same function, extend the status mapping to cover more Moroccan carrier statuses:
+typescript// DELIVERED — add:
+rawStatus.includes("livr") || rawStatus.includes("distribu") || 
+rawStatus === "delivered" || rawStatus.includes("remis") ||
+rawStatus.includes("livraison effectuée") || rawStatus.includes("livré")
+
+// REFUSED — add:
+rawStatus.includes("refus") || rawStatus.includes("retour") ||
+rawStatus.includes("annul") || rawStatus === "refused" ||
+rawStatus.includes("non livré") || rawStatus.includes("échec") ||
+rawStatus.includes("retourné") || rawStatus.includes("retour expéditeur") ||
+rawStatus.includes("retour en cours")
+
+// IN_PROGRESS — add:
+rawStatus.includes("réception") || rawStatus.includes("reception") ||
+rawStatus.includes("network") || rawStatus.includes("ramassé") ||
+rawStatus.includes("ramass") || rawStatus.includes("voyage") ||
+rawStatus.includes("transit") || rawStatus.includes("en cours") ||
+rawStatus.includes("enlev") || rawStatus.includes("pickup") ||
+rawStatus.includes("expédi") || rawStatus.includes("expedie") ||
+rawStatus.includes("distribution") || rawStatus.includes("prép") ||
+rawStatus.includes("enregistr") || rawStatus.includes("sorti") ||
+rawStatus.includes("hub") || rawStatus.includes("agence") ||
+rawStatus.includes("arrivé") || rawStatus.includes("arrive") ||
+rawStatus.includes("pris en charge") || rawStatus.includes("en attente") ||
+rawStatus.includes("traitement") || rawStatus.includes("collecté") ||
+rawStatus.includes("collecte") || rawStatus.includes("chargé") ||
+rawStatus.includes("charge")
+
+// WAITING FOR PICKUP — map to "Attente De Ramassage":
+rawStatus.includes("attente de ramassage") || rawStatus.includes("attente ramassage") ||
+rawStatus.includes("à enlever") || rawStatus.includes("prêt") ||
+rawStatus.includes("pret à") || rawStatus.includes("en attente d'enlèvement")
+→ newStatus = "Attente De Ramassage"
+
+CHANGE 3 — Also map Digylog-specific statuses (found in server/routes.ts around line 3819):
+In mapDigylogStatus or wherever Digylog statuses are mapped, add:
+typescript"En cours de réception au network" → "in_progress"
+"Arrivé au hub" → "in_progress"  
+"En cours de distribution" → "in_progress"
+"Non Reçu" → "Attente De Ramassage"
+"Tentative échouée" → "refused"
+"Retour en cours" → "retourné"
+"Retourné à l'expéditeur" → "retourné"
+
+Do NOT change: any other logic, order creation, AI, WhatsApp, frontend, financial calculations.
+Only touch: processCarrierWebhook function and Digylog status mapping in server/routes.ts.

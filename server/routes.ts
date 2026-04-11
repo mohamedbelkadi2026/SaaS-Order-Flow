@@ -2305,18 +2305,7 @@ export async function registerRoutes(
       if (order) matchedBy = `order_number="${orderNumber}"`;
     }
 
-    // ── Cross-store fallback: URL may have wrong storeId ─────────────────
-    // If no order was found in the specified store, search ALL stores.
-    // Digylog may be using a webhook URL that was configured with the wrong storeId.
-    if (!order && trackingNumber) {
-      console.warn(`[WEBHOOK-FLEXIBLE]: Not found in store ${storeId} — trying cross-store search for tracking="${trackingNumber}"`);
-      const crossOrder = await storage.getOrderByTrackingNumberAnyStore(trackingNumber);
-      if (crossOrder) {
-        console.warn(`[WEBHOOK-FLEXIBLE]: Found in store ${(crossOrder as any).storeId} — URL storeId=${storeId} was wrong`);
-        order = crossOrder;
-        matchedBy = `tracking_number="${trackingNumber}" (cross-store, URL had storeId=${storeId})`;
-      }
-    }
+    // No cross-store search — each store only updates its own orders
 
     if (!order) {
       console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" order="${orderNumber}"`);
@@ -2339,21 +2328,36 @@ export async function registerRoutes(
     await storage.updateOrder(order.id, { commentStatus: rawText });
 
     // ── Map raw carrier text → internal status ────────────────────────────
-    // Mapping rules (case-insensitive):
-    //   DELIVERED   → "delivered"     : livr, distribu
-    //   REFUSED     → "refused"       : refus, retour, annul
-    //   UNREACHABLE → "Injoignable"   : injoignable, unreachable, pas de réponse
-    //   IN_TRANSIT  → "in_progress"   : réception, network, ramassé, ramass, enlev,
-    //                                   voyage, transit, en cours, pickup, expédi,
-    //                                   distribution, prép, enregistr
-    //   DEFAULT     → "in_progress"   : anything else — commentStatus shows the real text
+    // Priority order matters — check DELIVERED first, then REFUSED, then WAITING,
+    // then IN_PROGRESS. Anything else falls through to the safe "in_progress" default.
     let newStatus: string = "in_progress"; // safe default — keeps order in Suivi
 
-    if (rawStatus.includes("livr") || rawStatus.includes("distribu") || rawStatus === "delivered") {
+    if (
+      rawStatus.includes("livr") || rawStatus.includes("distribu") ||
+      rawStatus === "delivered"  || rawStatus.includes("remis")    ||
+      rawStatus.includes("livraison effectuée") || rawStatus.includes("livré")
+    ) {
       newStatus = "delivered";
     } else if (
-      rawStatus.includes("refus") || rawStatus.includes("retour") ||
-      rawStatus.includes("annul") || rawStatus === "refused"
+      rawStatus.includes("attente de ramassage") || rawStatus.includes("attente ramassage") ||
+      rawStatus.includes("à enlever")            || rawStatus.includes("prêt")              ||
+      rawStatus.includes("pret à")               || rawStatus.includes("en attente d'enlèvement") ||
+      rawStatus === "non reçu"
+    ) {
+      newStatus = "Attente De Ramassage";
+    } else if (
+      rawStatus.includes("refus")          || rawStatus === "refused"              ||
+      rawStatus.includes("non livré")      || rawStatus.includes("échec")         ||
+      rawStatus.includes("retourné")       || rawStatus.includes("retour expéditeur") ||
+      rawStatus.includes("tentative échouée")
+    ) {
+      newStatus = "refused";
+    } else if (
+      rawStatus.includes("retour en cours")
+    ) {
+      newStatus = "retourné";
+    } else if (
+      rawStatus.includes("retour") || rawStatus.includes("annul")
     ) {
       newStatus = "refused";
     } else if (
@@ -2362,14 +2366,20 @@ export async function registerRoutes(
     ) {
       newStatus = "Injoignable";
     } else if (
-      rawStatus.includes("réception")   || rawStatus.includes("reception")   ||
-      rawStatus.includes("network")     || rawStatus.includes("ramassé")     ||
-      rawStatus.includes("ramass")      || rawStatus.includes("voyage")      ||
-      rawStatus.includes("transit")     || rawStatus.includes("en cours")    ||
-      rawStatus.includes("enlev")       || rawStatus.includes("pickup")      ||
-      rawStatus.includes("expédi")      || rawStatus.includes("expedie")     ||
-      rawStatus.includes("distribution")|| rawStatus.includes("prép")        ||
-      rawStatus.includes("enregistr")
+      rawStatus.includes("réception")    || rawStatus.includes("reception")    ||
+      rawStatus.includes("network")      || rawStatus.includes("ramassé")      ||
+      rawStatus.includes("ramass")       || rawStatus.includes("voyage")       ||
+      rawStatus.includes("transit")      || rawStatus.includes("en cours")     ||
+      rawStatus.includes("enlev")        || rawStatus.includes("pickup")       ||
+      rawStatus.includes("expédi")       || rawStatus.includes("expedie")      ||
+      rawStatus.includes("distribution") || rawStatus.includes("prép")         ||
+      rawStatus.includes("enregistr")    || rawStatus.includes("sorti")        ||
+      rawStatus.includes("hub")          || rawStatus.includes("agence")       ||
+      rawStatus.includes("arrivé")       || rawStatus.includes("arrive")       ||
+      rawStatus.includes("pris en charge")|| rawStatus.includes("en attente")  ||
+      rawStatus.includes("traitement")   || rawStatus.includes("collecté")     ||
+      rawStatus.includes("collecte")     || rawStatus.includes("chargé")       ||
+      rawStatus.includes("charge")
     ) {
       newStatus = "in_progress";
     }
@@ -4151,10 +4161,17 @@ export async function registerRoutes(
         "retourné": "retourné",
         "retournée": "retourné",
         "returned": "retourné",
+        "retourné à l'expéditeur": "retourné",
+        "retour en cours": "retourné",
         "en cours": "in_progress",
         "in_transit": "in_progress",
         "expédié": "in_progress",
         "shipped": "in_progress",
+        "en cours de réception au network": "in_progress",
+        "arrivé au hub": "in_progress",
+        "en cours de distribution": "in_progress",
+        "non reçu": "Attente De Ramassage",
+        "tentative échouée": "refused",
       };
       const internalStatus = statusMap[status.toLowerCase()] || status;
 
