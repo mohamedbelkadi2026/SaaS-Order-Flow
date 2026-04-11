@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions } from "@/hooks/use-store-data";
+import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { CustomerHistoryModal } from "@/components/customer-history-modal";
@@ -271,6 +271,8 @@ export default function Orders() {
   const { data, isLoading } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();
   const { data: filterOptions } = useFilterOptions();
+  const { data: magasins } = useMagasins();
+  const [selectedMagasin, setSelectedMagasin] = useState<number | null>(null);
   const { data: shippingIntegrations } = useIntegrations("shipping");
   const updateStatus = useUpdateOrderStatus();
   const assignAgent = useAssignAgent();
@@ -451,6 +453,7 @@ export default function Orders() {
   const filteredOrders = useMemo(() => {
     let visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
     if (showDuplicatesOnly) visible = visible.filter((o: any) => (o.duplicateCount ?? 1) > 1);
+    if (selectedMagasin) visible = visible.filter((o: any) => o.magasinId === selectedMagasin);
     if (!Object.values(colFilters).some(v => v)) return visible;
     return visible.filter((o: any) => {
       if (colFilters.code && !((o as any).trackNumber || o.orderNumber || '').toLowerCase().includes(colFilters.code.toLowerCase())) return false;
@@ -474,7 +477,7 @@ export default function Orders() {
       }
       return true;
     });
-  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds]);
+  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds, selectedMagasin]);
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -717,9 +720,10 @@ export default function Orders() {
   const resetFilters = () => {
     setFilters(f => ({ ...f, statusFilter: '', agentId: '', source: '', utmSource: '', utmCampaign: '', search: '', page: 1 }));
     setDateRange({ from: '', to: '' });
+    setSelectedMagasin(null);
   };
 
-  const hasActiveFilters = !!(filters.statusFilter || filters.agentId || filters.source || filters.utmSource || filters.utmCampaign || filters.search || dateRange.from || dateRange.to);
+  const hasActiveFilters = !!(filters.statusFilter || filters.agentId || filters.source || filters.utmSource || filters.utmCampaign || filters.search || dateRange.from || dateRange.to || selectedMagasin);
 
   const pageTitle = TITLE_MAP[filterKey] || "NOUVELLES";
   const visibleCount = visibleCols.length;
@@ -864,6 +868,24 @@ export default function Orders() {
               </SelectContent>
             </Select>
           </div>
+
+          {/* ── Magasin ── */}
+          {Array.isArray(magasins) && magasins.length > 1 && (
+            <div className="flex flex-col shrink-0">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Magasin</span>
+              <Select value={selectedMagasin ? String(selectedMagasin) : 'all'} onValueChange={(v) => setSelectedMagasin(v === 'all' ? null : Number(v))}>
+                <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[140px]" data-testid="filter-magasin">
+                  <SelectValue placeholder="Tous les Magasins" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les Magasins</SelectItem>
+                  {magasins.map((m: any) => (
+                    <SelectItem key={m.id} value={String(m.id)} data-testid={`filter-magasin-${m.id}`}>{m.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {/* ── Équipe ── */}
           <div className="flex flex-col shrink-0">
