@@ -53,6 +53,22 @@ export const ORDER_STATUSES = [
   { value: 'En stock',                      label: 'En stock',                      color: C.blue    },
   { value: 'Changer destinataire',          label: 'Changer destinataire',          color: C.blue    },
 
+  // ── Digylog-specific statuses ─────────────────────────────────────────────
+  { value: 'En cours de réception au network', label: 'En cours de réception',     color: C.blue    },
+  { value: 'Arrivé au hub',                 label: 'Arrivé au hub',                color: C.blue    },
+  { value: 'En cours de livraison',         label: 'En cours de livraison',        color: C.blue    },
+  { value: 'Sorti pour livraison',          label: 'Sorti pour livraison',         color: C.blue    },
+  { value: 'Pris en charge',                label: 'Pris en charge',               color: C.blue    },
+  { value: 'Collecté',                      label: 'Collecté',                     color: C.blue    },
+  { value: 'Chargé',                        label: 'Chargé',                       color: C.blue    },
+  { value: 'En attente de ramassage',       label: 'En attente ramassage',         color: C.orange  },
+  { value: 'Non Reçu',                      label: 'Non Reçu',                     color: C.orange  },
+  { value: 'Retour en cours',               label: 'Retour en cours',              color: C.rose    },
+  { value: "Retourné à l'expéditeur",       label: 'Retourné expéditeur',          color: C.rose    },
+  { value: 'Tentative échouée',             label: 'Tentative échouée',            color: C.rose    },
+  { value: 'Livré',                         label: 'Livré',                        color: C.emerald },
+  { value: 'Livraison effectuée',           label: 'Livraison effectuée',          color: C.emerald },
+
   // ── Issue / Refused carrier statuses (Rose) ───────────────────────────────
   { value: 'Client intéressé',              label: 'Client intéressé',              color: C.rose    },
   { value: 'Remboursé',                     label: 'Remboursé',                     color: C.rose    },
@@ -75,6 +91,19 @@ export const SUIVI_STATUSES = [
   // Moroccan carrier in-transit statuses
   'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
   'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+  // Digylog-specific statuses
+  'En cours de réception au network',
+  'Arrivé au hub',
+  'En cours de livraison',
+  'Sorti pour livraison',
+  'Pris en charge',
+  'Collecté',
+  'Chargé',
+  'En attente de ramassage',
+  'Non Reçu',
+  'Retour en cours',
+  "Retourné à l'expéditeur",
+  'Tentative échouée',
 ];
 
 // Statuses that represent a refused/issue outcome

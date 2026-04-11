@@ -2350,7 +2350,29 @@ export async function registerRoutes(
     //   DEFAULT     → "in_progress"   : anything else — commentStatus shows the real text
     let newStatus: string = "in_progress"; // safe default — keeps order in Suivi
 
-    if (rawStatus.includes("livr") || rawStatus.includes("distribu") || rawStatus === "delivered") {
+    // ── Digylog exact status → internal status (checked first, case-insensitive) ──
+    const DIGYLOG_EXACT_MAP: Record<string, string> = {
+      "En cours de réception au network": "in_progress",
+      "Arrivé au hub":                    "in_progress",
+      "En cours de livraison":            "in_progress",
+      "Sorti pour livraison":             "in_progress",
+      "Pris en charge":                   "in_progress",
+      "Collecté":                         "in_progress",
+      "Chargé":                           "in_progress",
+      "Non Reçu":                         "Attente De Ramassage",
+      "En attente de ramassage":          "Attente De Ramassage",
+      "Tentative échouée":                "refused",
+      "Retour en cours":                  "retourné",
+      "Retourné à l'expéditeur":          "retourné",
+      "Livré":                            "delivered",
+      "Livraison effectuée":              "delivered",
+    };
+    const exactKey = Object.keys(DIGYLOG_EXACT_MAP).find(
+      k => k.toLowerCase() === rawStatus
+    );
+    if (exactKey) {
+      newStatus = DIGYLOG_EXACT_MAP[exactKey];
+    } else if (rawStatus.includes("livr") || rawStatus.includes("distribu") || rawStatus === "delivered") {
       newStatus = "delivered";
     } else if (
       rawStatus.includes("refus") || rawStatus.includes("retour") ||

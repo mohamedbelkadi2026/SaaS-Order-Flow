@@ -1,0 +1,69 @@
+ADD — Digylog carrier statuses to StatusBadge + SUIVI_STATUSES list
+In client/src/components/ui/status-badge.tsx, add ALL Digylog real status strings to ORDER_STATUSES and SUIVI_STATUSES:
+CHANGE 1 — Add to ORDER_STATUSES array:
+typescript// ── Digylog-specific statuses (Blue = in transit) ─────────────────────────
+{ value: 'En cours de réception au network',  label: 'En cours de réception',       color: C.blue  },
+{ value: 'Arrivé au hub',                     label: 'Arrivé au hub',                color: C.blue  },
+{ value: 'En cours de livraison',             label: 'En cours de livraison',        color: C.blue  },
+{ value: 'Sorti pour livraison',              label: 'Sorti pour livraison',         color: C.blue  },
+{ value: 'Pris en charge',                    label: 'Pris en charge',               color: C.blue  },
+{ value: 'Collecté',                          label: 'Collecté',                     color: C.blue  },
+{ value: 'Chargé',                            label: 'Chargé',                       color: C.blue  },
+{ value: 'En attente de ramassage',           label: 'En attente ramassage',         color: C.orange },
+{ value: 'Non Reçu',                          label: 'Non Reçu',                     color: C.orange },
+{ value: 'Retour en cours',                   label: 'Retour en cours',              color: C.rose  },
+{ value: 'Retourné à l\'expéditeur',          label: 'Retourné expéditeur',          color: C.rose  },
+{ value: 'Tentative échouée',                 label: 'Tentative échouée',            color: C.rose  },
+{ value: 'Livré',                             label: 'Livré',                        color: C.emerald },
+{ value: 'Livraison effectuée',               label: 'Livraison effectuée',          color: C.emerald },
+CHANGE 2 — Add to SUIVI_STATUSES array (so these orders stay visible in "Suivi des Colis"):
+typescriptexport const SUIVI_STATUSES = [
+  'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
+  'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+  'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+  // Digylog
+  'En cours de réception au network',
+  'Arrivé au hub',
+  'En cours de livraison',
+  'Sorti pour livraison',
+  'Pris en charge',
+  'Collecté',
+  'Chargé',
+  'En attente de ramassage',
+  'Non Reçu',
+  'Retour en cours',
+  "Retourné à l'expéditeur",
+  'Tentative échouée',
+];
+CHANGE 3 — server/routes.ts — processCarrierWebhook — save commentStatus as exact carrier text AND map to correct internal status:
+The commentStatus column already saves raw carrier text ✅ — but make sure these Digylog statuses map correctly:
+typescript// Add BEFORE the existing if/else chain:
+// Digylog exact status → internal status
+const DIGYLOG_EXACT_MAP: Record<string, string> = {
+  "En cours de réception au network": "in_progress",
+  "Arrivé au hub":                    "in_progress",
+  "En cours de livraison":            "in_progress",
+  "Sorti pour livraison":             "in_progress",
+  "Pris en charge":                   "in_progress",
+  "Collecté":                         "in_progress",
+  "Chargé":                           "in_progress",
+  "Non Reçu":                         "Attente De Ramassage",
+  "En attente de ramassage":          "Attente De Ramassage",
+  "Tentative échouée":                "refused",
+  "Retour en cours":                  "retourné",
+  "Retourné à l'expéditeur":          "retourné",
+  "Livré":                            "delivered",
+  "Livraison effectuée":              "delivered",
+};
+
+// Check exact match first (case-insensitive):
+const exactKey = Object.keys(DIGYLOG_EXACT_MAP).find(
+  k => k.toLowerCase() === rawText.toLowerCase()
+);
+if (exactKey) {
+  newStatus = DIGYLOG_EXACT_MAP[exactKey];
+} else {
+  // ... existing if/else chain stays unchanged
+}
+Do NOT change: any other logic, order creation, AI, WhatsApp, frontend pages, financial calculations.
+Only touch: client/src/components/ui/status-badge.tsx (CHANGE 1 + 2) and server/routes.ts processCarrierWebhook (CHANGE 3).
