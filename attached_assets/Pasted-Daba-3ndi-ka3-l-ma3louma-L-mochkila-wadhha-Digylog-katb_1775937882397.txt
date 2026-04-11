@@ -1,0 +1,50 @@
+Daba 3ndi ka3 l ma3louma. L mochkila wadhha:
+Digylog katb3at response bla tracking w bla barcode — ila response fiha ghi num (li huwa order reference dyalna machi tracking Digylog), code katignorih sah w katb9a bla tracking number → "Échouées 1".
+L sabab ghالba wahd men tlatia:
+
+store name ghalt — Digylog ma 9bilatch l order
+checkDuplicate: 1 — commande deja mawjoda f Digylog, katb3at ghi num bla tracking
+Digylog katb3at response f format machi mashi9 (ex: { success: false, ... })
+
+Hna l prompt:
+
+FIX — Digylog returns no tracking number: handle duplicate detection + extract tracking from all response shapes
+In server/services/carrier-service.ts, fix extractTracking function and detectDigylogError to handle these missing cases:
+CHANGE 1 — Handle Digylog checkDuplicate response (order already exists):
+When Digylog detects a duplicate (checkDuplicate: 1), it returns the existing order with its tracking. Add this case:
+typescript// In extractTracking(), after the Array.isArray(body) check, add:
+// Shape: { success: false, message: "duplicate", data: { barcode: "..." } }
+if (body.data && (body.data.barcode || body.data.tracking || body.data.tracking_number)) {
+  const t = body.data.barcode || body.data.tracking || body.data.tracking_number;
+  console.log(`[TRACK-EXTRACT]: Digylog data.* → tracking = "${t}"`);
+  return String(t);
+}
+
+// Shape: { orders: [{ barcode, tracking, num }] } — already handled but add colis_id fallback:
+if (Array.isArray(body.orders) && body.orders.length > 0) {
+  const first = body.orders[0];
+  const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.colis_id;
+  if (t) return String(t);
+}
+
+// Shape: plain array — add colis_id fallback:
+if (Array.isArray(body) && body.length > 0) {
+  const first = body[0];
+  const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.colis_id;
+  if (t) return String(t);
+}
+CHANGE 2 — In detectDigylogError, do NOT treat duplicate as an error:
+typescript// In detectDigylogError(), add at the top:
+// If response contains a tracking/barcode somewhere, it's actually a success (even if duplicate)
+if (extractTracking(body)) return null; // has tracking = success, not an error
+CHANGE 3 — Log the full raw Digylog response in shipOrderToCarrier:
+After receiving the Digylog response, before any parsing, add:
+typescriptif (providerKey === "digylog") {
+  console.log(`[DIGYLOG-RAW-RESPONSE]: HTTP ${httpStatus}: ${JSON.stringify(rawBody).slice(0, 1000)}`);
+}
+This helps debug exactly what Digylog is returning.
+CHANGE 4 — In buildDigylogPayload, make checkDuplicate configurable:
+Change checkDuplicate: 1 to checkDuplicate: 0 — value 1 causes Digylog to skip re-creating and just return old data without tracking in some versions:
+typescriptcheckDuplicate: 0,  // was: 1
+Do NOT change: any other carrier logic, routes, frontend, order flow.
+Only touch: server/services/carrier-service.ts — the 4 changes above only.

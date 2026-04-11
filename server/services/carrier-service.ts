@@ -297,7 +297,7 @@ function buildDigylogPayload(input: CarrierShipInput): Record<string, unknown> {
     network:        networkId,
     store:          storeName,
     status:         0,
-    checkDuplicate: 1,
+    checkDuplicate: 0,
     orders: [{
       type:        1,
       num:         input.orderNumber,
@@ -413,13 +413,14 @@ function extractTracking(body: any): string | undefined {
   // Only use `tracking` or `barcode` — these are the real Digylog barcodes.
   if (Array.isArray(body) && body.length > 0) {
     const first = body[0];
-    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi;
+    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.colis_id;
     // Explicitly exclude first.num — it is always our own order reference, not a carrier barcode
     if (t) {
       console.log(`[TRACK-EXTRACT]: Digylog array → field used: ${
         first.tracking ? "tracking" :
         first.barcode  ? "barcode"  :
-        first.tracking_number ? "tracking_number" : "code_suivi"
+        first.tracking_number ? "tracking_number" :
+        first.code_suivi ? "code_suivi" : "colis_id"
       } = "${t}"`);
       return String(t);
     }
@@ -436,12 +437,13 @@ function extractTracking(body: any): string | undefined {
   // Same rule: skip `num` — it is our own reference echoed back.
   if (Array.isArray(body.orders) && body.orders.length > 0) {
     const first = body.orders[0];
-    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi;
+    const t = first.tracking || first.barcode || first.tracking_number || first.code_suivi || first.colis_id;
     if (t) {
       console.log(`[TRACK-EXTRACT]: Digylog orders[] → field used: ${
         first.tracking ? "tracking" :
         first.barcode  ? "barcode"  :
-        first.tracking_number ? "tracking_number" : "code_suivi"
+        first.tracking_number ? "tracking_number" :
+        first.code_suivi ? "code_suivi" : "colis_id"
       } = "${t}"`);
       return String(t);
     }
@@ -449,6 +451,17 @@ function extractTracking(body: any): string | undefined {
       console.warn(`[TRACK-EXTRACT]: ⚠️ Digylog orders[] returned only "num"="${first.num}" — skipping (order reference, not barcode).`);
     }
     return undefined;
+  }
+
+  // ── Digylog duplicate response: { success: false, data: { barcode/tracking/... } }
+  // When checkDuplicate catches an existing order, Digylog returns the existing barcode here.
+  if (body.data && !Array.isArray(body.data)) {
+    const d = body.data;
+    const t = d.barcode || d.tracking || d.tracking_number || d.code_suivi || d.colis_id;
+    if (t) {
+      console.log(`[TRACK-EXTRACT]: Digylog data.* → tracking = "${t}"`);
+      return String(t);
+    }
   }
 
   // ── Generic flat response ──────────────────────────────────────────────────
@@ -531,6 +544,10 @@ function extractCarrierErrorMsg(body: any): string | null {
  */
 function detectDigylogError(body: any): string | null {
   if (!body) return null;
+
+  // If a tracking/barcode is present anywhere in the response, it's a success —
+  // even if success:false (e.g. duplicate detection returns existing barcode).
+  if (extractTracking(body)) return null;
 
   // Shape 1 — plain array of order results
   if (Array.isArray(body)) {
