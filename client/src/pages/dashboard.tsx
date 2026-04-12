@@ -1105,13 +1105,14 @@ export default function Dashboard() {
             {(() => {
               // Build from the EXACT same variables the stat cards use — guaranteed match
               const pieRows = [
+                { name: 'Nouveau',    value: stats?.nouveau || 0,  color: '#f59e0b'               },
                 { name: 'Confirmées', value: confirme,              color: STATUS_COLORS.confirme  },
                 { name: 'Livrées',    value: delivered,             color: STATUS_COLORS.delivered },
                 { name: 'En cours',   value: inProgress,            color: STATUS_COLORS.transit   },
                 { name: 'Annulées',   value: cancelled,             color: STATUS_COLORS.cancelled },
-                { name: 'Refusées',   value: stats?.refused || 0,   color: '#f97316'               },
+                { name: 'Refusées',   value: stats?.refused || 0,   color: '#e11d48'               },
               ];
-              const pieTotal = pieRows.reduce((s, r) => s + r.value, 0);
+              const pieTotal = totalOrders;
               const pieData  = pieRows.filter(r => r.value > 0); // only non-zero segments in donut
               return (
                 <Card className="lg:basis-[30%] rounded-xl shadow-sm border border-border/50" data-testid="card-agent-status-chart">
@@ -1121,7 +1122,7 @@ export default function Dashboard() {
                       Répartition des statuts
                     </CardTitle>
                     <p className="text-xs text-muted-foreground">
-                      {pieTotal} commande{pieTotal !== 1 ? 's' : ''} au total
+                      {totalOrders} commande{totalOrders !== 1 ? 's' : ''} au total
                     </p>
                   </CardHeader>
                   <CardContent className="px-3 pb-5">
