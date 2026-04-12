@@ -1,0 +1,67 @@
+MAJOR UI FIX — Replace font + add carrier logo to order cards (mobile + table)
+CHANGE 1 — client/index.html — replace font with Inter (professional + bold):
+html<!-- Remove existing Google Fonts link if any, add: -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+CHANGE 2 — client/src/index.css — apply Inter font globally:
+css:root {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --foreground: 222 47% 8%;
+  --muted-foreground: 222 20% 30%;
+}
+
+* {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+}
+
+body {
+  font-weight: 500;
+  color: hsl(222 47% 8%);
+  -webkit-font-smoothing: antialiased;
+}
+
+td, th, p, span, div, label {
+  font-weight: 500;
+  color: hsl(222 47% 8%);
+}
+
+h1, h2, h3, h4, h5, h6, th {
+  font-weight: 700;
+}
+
+.text-muted-foreground {
+  color: hsl(222 20% 35%) !important;
+}
+CHANGE 3 — Add carrier logo to order cards (mobile view) in client/src/pages/orders.tsx:
+In the mobile card view (the card layout shown on small screens), find where each order card is rendered. Add the carrier logo after the status badge:
+tsx{/* Carrier logo — show if order has tracking/shippingProvider */}
+{(order as any).shippingProvider && (
+  <img
+    src={`/carriers/${(order as any).shippingProvider.toLowerCase()}.svg`}
+    alt={(order as any).shippingProvider}
+    className="w-8 h-8 object-contain"
+    onError={e => (e.currentTarget.style.display = 'none')}
+  />
+)}
+CHANGE 4 — Add carrier logo to table rows (desktop view):
+In the table row, in the "Frais de livraison" cell or next to tracking number, show the carrier logo:
+tsx<TableCell>
+  <div className="flex items-center gap-2">
+    {(order as any).shippingProvider && (
+      <img
+        src={`/carriers/${(order as any).shippingProvider.toLowerCase()}.svg`}
+        alt={(order as any).shippingProvider}
+        className="w-6 h-6 object-contain"
+        onError={e => (e.currentTarget.style.display = 'none')}
+      />
+    )}
+    {(order as any).shippingCost && (order as any).shippingCost > 0
+      ? `${((order as any).shippingCost / 100).toFixed(2)} DH`
+      : <span className="text-muted-foreground">—</span>
+    }
+  </div>
+</TableCell>
+Do NOT change: any logic, routes, server, layout structure, colors/backgrounds.
+Only touch: client/index.html, client/src/index.css, client/src/pages/orders.tsx.
+

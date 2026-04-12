@@ -1149,10 +1149,18 @@ export default function Orders() {
                       {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
                       {isColVisible('livraison') && (
                         <TableCell className="text-sm font-medium text-center">
-                          {(order as any).shippingCost && (order as any).shippingCost > 0
-                            ? `${((order as any).shippingCost / 100).toFixed(2)} DH`
-                            : <span className="text-muted-foreground text-xs">—</span>
-                          }
+                          <div className="flex items-center gap-2 justify-center">
+                            {order.shippingProvider && (() => {
+                              const logo = getCarrierLogo(order.shippingProvider);
+                              return logo
+                                ? <img src={logo} alt={order.shippingProvider} className="w-6 h-6 object-contain shrink-0" onError={e => (e.currentTarget.style.display = 'none')} />
+                                : null;
+                            })()}
+                            {(order as any).shippingCost && (order as any).shippingCost > 0
+                              ? `${((order as any).shippingCost / 100).toFixed(2)} DH`
+                              : <span className="text-muted-foreground text-xs">—</span>
+                            }
+                          </div>
                         </TableCell>
                       )}
                       {isColVisible('derniereAction') && (

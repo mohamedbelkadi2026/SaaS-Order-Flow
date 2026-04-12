@@ -6,8 +6,8 @@
 
 @layer base {
   :root {
-    --font-sans: 'DM Sans', sans-serif;
-    --font-display: 'Outfit', sans-serif;
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-display: 'Inter', system-ui, -apple-system, sans-serif;
 
     /* Light Theme — Soft Zinc background, Deep Indigo accents */
     --background: 240 6% 96%;
@@ -113,8 +113,9 @@
   }
 }
 
-/* ── Force bold dark text everywhere ───────────────────── */
+/* ── Force Inter font + bold dark text everywhere ───────── */
 * {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
   font-weight: 500 !important;
 }
 
