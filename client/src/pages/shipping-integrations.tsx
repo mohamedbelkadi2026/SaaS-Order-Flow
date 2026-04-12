@@ -107,6 +107,59 @@ function useStores() {
   });
 }
 
+type WebhookLog = {
+  id: number;
+  provider?: string;
+  action: string;
+  status: string;
+  message?: string;
+  createdAt?: string;
+};
+
+const WEBHOOK_ACTIONS = ['status_update', 'webhook_received', 'webhook_no_match'];
+
+function normalizeCarrierName(value?: string | null) {
+  return (value || "").toLowerCase().replace(/[\s_-]/g, "");
+}
+
+function getProviderLabel(provider?: string) {
+  const normalized = normalizeCarrierName(provider);
+  return PROVIDERS.find((p) => normalizeCarrierName(p.id) === normalized || normalizeCarrierName(p.name) === normalized)?.name || provider || "Transporteur";
+}
+
+function getWebhookIndicator(providerId: string, logs: WebhookLog[]) {
+  const providerLogs = logs.filter((log) => normalizeCarrierName(log.provider) === normalizeCarrierName(providerId));
+  const lastLog = providerLogs[0];
+  if (lastLog?.status === "fail") {
+    return {
+      label: "🔴 Erreur",
+      className: "bg-red-50 text-red-700 border-red-200",
+    };
+  }
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const hasRecentStatusUpdate = providerLogs.some((log) =>
+    log.action === "status_update" &&
+    new Date(log.createdAt || 0).getTime() >= since
+  );
+  if (hasRecentStatusUpdate) {
+    return {
+      label: "🟢 Webhook actif",
+      className: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    };
+  }
+  return {
+    label: "🟡 En attente",
+    className: "bg-amber-50 text-amber-700 border-amber-200",
+  };
+}
+
+function formatWebhookMessage(log: WebhookLog) {
+  const provider = getProviderLabel(log.provider);
+  const icon = log.action === "webhook_no_match" || log.status === "fail" ? "⚠️" : "📦";
+  const result = log.status === "fail" ? "❌" : "✅";
+  return `${icon} [${provider}] ${log.message || log.action.replace(/_/g, " ")} ${result}`;
+}
+
 /* ─── ConnectModal ───────────────────────────────────────────── */
 interface ConnectModalProps {
   providerId: string;
@@ -1663,9 +1716,21 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
 /* ─── Main page ──────────────────────────────────────────────── */
 export default function ShippingIntegrations() {
   const { data: allAccounts = [] } = useCarrierAccounts();
+  const { data: logs = [], isLoading: logsLoading } = useQuery<WebhookLog[]>({
+    queryKey: ["/api/integration-logs", "carrier-webhooks"],
+    queryFn: async () => {
+      const res = await fetch("/api/integration-logs?limit=200", { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    refetchInterval: 30_000,
+  });
 
   const [viewingProvider, setViewingProvider] = useState<string | null>(null);
   const [addingProvider,  setAddingProvider]  = useState<string | null>(null);
+  const carrierLogs = logs.filter(l =>
+    WEBHOOK_ACTIONS.includes(l.action)
+  );
 
   /* Build provider → accounts map */
   const accountsByProvider = new Map<string, any[]>();
@@ -1721,6 +1786,7 @@ export default function ShippingIntegrations() {
           {PROVIDERS.map(provider => {
             const connected = isConnected(provider.id);
             const count     = accountCount(provider.id);
+            const webhookIndicator = getWebhookIndicator(provider.id, carrierLogs);
 
             return (
               <Card
@@ -1764,6 +1830,12 @@ export default function ShippingIntegrations() {
                             {count} connexion{count > 1 ? "s" : ""}
                           </span>
                         )}
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${webhookIndicator.className}`}
+                          data-testid={`status-webhook-${provider.id}`}
+                        >
+                          {webhookIndicator.label}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -1820,6 +1892,71 @@ export default function ShippingIntegrations() {
           })}
         </div>
       </div>
+
+      <Card className="rounded-2xl border-border/50 shadow-sm overflow-hidden" data-testid="card-webhook-activity">
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold uppercase tracking-wider text-muted-foreground">
+                Activité Webhook
+              </h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                Statuts transporteurs reçus en temps réel, actualisés toutes les 30 secondes.
+              </p>
+            </div>
+            <Badge variant="outline" className="text-[10px] font-bold">
+              {carrierLogs.length} événement{carrierLogs.length !== 1 ? "s" : ""}
+            </Badge>
+          </div>
+
+          {logsLoading ? (
+            <div className="flex items-center justify-center h-24 text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin" />
+            </div>
+          ) : carrierLogs.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border/70 p-5 text-center text-sm text-muted-foreground">
+              Aucun webhook transporteur reçu pour le moment.
+            </div>
+          ) : (
+            <div className="rounded-xl border border-border/50 divide-y divide-border/40 overflow-hidden">
+              {carrierLogs.slice(0, 20).map((log) => (
+                <div
+                  key={log.id}
+                  className="flex items-start justify-between gap-3 px-4 py-3 text-sm"
+                  data-testid={`row-webhook-log-${log.id}`}
+                >
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground break-words">
+                      {formatWebhookMessage(log)}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      {log.createdAt
+                        ? new Date(log.createdAt).toLocaleString("fr-FR", {
+                            day: "2-digit",
+                            month: "2-digit",
+                            year: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : "Date inconnue"}
+                    </p>
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className={`text-[10px] shrink-0 ${
+                      log.status === "fail"
+                        ? "bg-red-50 text-red-700 border-red-200"
+                        : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    }`}
+                  >
+                    {log.action.replace(/_/g, " ")}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Modals */}
       {addingProvider && addingMeta && (
