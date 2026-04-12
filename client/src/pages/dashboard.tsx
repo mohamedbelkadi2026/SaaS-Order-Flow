@@ -23,7 +23,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 // Brand-aligned status colors
 const STATUS_COLORS = {
   delivered:  '#10b981', // Emerald Green  — Success/Money
-  confirme:   '#0ea5e9', // Sky Blue       — Progress/Action
+  confirme:   '#15803d', // Dark Green      — Confirmed/Action
   nouveau:    '#f59e0b', // Amber          — Attention/New
   transit:    '#64748b', // Slate Grey     — Neutral/En route
   cancelled:  '#e11d48', // Rose           — Loss/Cancelled
@@ -277,9 +277,9 @@ export default function Dashboard() {
   const roleBadge = (agentId: number) => {
     const s = agentSettingsMap.get(agentId);
     const role = s?.roleInStore || 'confirmation';
-    if (role === 'suivi') return <Badge className="text-[10px] h-4 px-1.5 bg-sky-100 text-sky-700 border-sky-200">Suivi</Badge>;
+    if (role === 'suivi') return <Badge className="text-[10px] h-4 px-1.5 bg-sky-100 text-sky-700 border-sky-200">Suivi</Badge>; // suivi keeps sky
     if (role === 'both') return <Badge className="text-[10px] h-4 px-1.5 bg-purple-100 text-purple-700 border-purple-200">Les deux</Badge>;
-    return <Badge className="text-[10px] h-4 px-1.5 bg-sky-100 text-sky-700 border-sky-200">Confirmation</Badge>;
+    return <Badge className="text-[10px] h-4 px-1.5 bg-green-100 text-green-800 border-green-200">Confirmation</Badge>;
   };
 
   if (isMediaBuyer) {
@@ -439,10 +439,10 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Confirmées — Sky Blue */}
+          {/* Confirmées — Dark Green */}
           <div
             className="rounded-xl p-5 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
-            style={{ background: 'linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%)' }}
+            style={{ background: 'linear-gradient(135deg, #15803d 0%, #166534 100%)' }}
             data-testid="card-mb-confirmed"
           >
             <div>
@@ -607,7 +607,7 @@ export default function Dashboard() {
                       <TableRow key={i} className="text-xs">
                         <TableCell className="font-medium max-w-[120px] truncate">{p.name}</TableCell>
                         <TableCell className="text-center font-bold">{p.total}</TableCell>
-                        <TableCell className="text-center text-sky-600 font-semibold">{p.confirmed}</TableCell>
+                        <TableCell className="text-center text-green-700 font-semibold">{p.confirmed}</TableCell>
                         <TableCell className="text-center">
                           <span className={`font-bold ${p.confirmRate >= 60 ? 'text-green-600' : p.confirmRate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{p.confirmRate}%</span>
                         </TableCell>
@@ -649,7 +649,7 @@ export default function Dashboard() {
                       <TableRow key={i} className="text-xs">
                         <TableCell className="font-medium">{c.name}</TableCell>
                         <TableCell className="text-center font-bold">{c.total}</TableCell>
-                        <TableCell className="text-center text-sky-600 font-semibold">{c.confirmed}</TableCell>
+                        <TableCell className="text-center text-green-700 font-semibold">{c.confirmed}</TableCell>
                         <TableCell className="text-center">
                           <span className={`font-bold ${c.confirmRate >= 60 ? 'text-green-600' : c.confirmRate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{c.confirmRate}%</span>
                         </TableCell>
@@ -1412,7 +1412,7 @@ export default function Dashboard() {
                         <span className="font-bold text-sm">{p.total}</span>
                       </TableCell>
                       <TableCell className="text-center">
-                        <Badge variant="outline" className="text-sky-600 border-sky-200 bg-sky-50 dark:bg-sky-950/30">{p.confirme}</Badge>
+                        <Badge variant="outline" className="text-green-700 border-green-200 bg-green-50 dark:bg-green-950/30">{p.confirme}</Badge>
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex flex-col items-center gap-1">

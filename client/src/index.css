@@ -119,10 +119,10 @@
   font-weight: 500 !important;
 }
 
-/* Arabic / RTL — use Cairo for better Arabic rendering */
+/* Arabic / RTL — use Rubik for clean Arabic rendering */
 [lang="ar"], [dir="rtl"], *:lang(ar),
 *[lang="ar"] *, *[dir="rtl"] * {
-  font-family: 'Cairo', 'Inter', system-ui, sans-serif !important;
+  font-family: 'Rubik', 'Cairo', system-ui, sans-serif !important;
 }
 
 h1, h2, h3, h4, h5, h6, th, .font-bold, .font-semibold {
