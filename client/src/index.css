@@ -27,7 +27,7 @@
     --secondary-foreground: 240 20% 12%;
 
     --muted: 240 5% 91%;
-    --muted-foreground: 222 20% 35%;
+    --muted-foreground: 222 20% 30%;
 
     --accent: 240 5% 91%;
     --accent-foreground: 240 20% 12%;
@@ -110,6 +110,44 @@
     @apply tracking-tight font-bold;
     font-weight: 700;
     color: hsl(var(--foreground));
+  }
+}
+
+/* ── Force bold dark text everywhere ───────────────────── */
+* {
+  font-weight: 500 !important;
+}
+
+h1, h2, h3, h4, h5, h6, th, .font-bold, .font-semibold {
+  font-weight: 700 !important;
+}
+
+/* Override muted text to be darker */
+.text-muted-foreground {
+  color: hsl(222 20% 30%) !important;
+}
+
+/* Table cells — dark and readable */
+td, th {
+  font-weight: 500 !important;
+  color: hsl(222 47% 8%) !important;
+}
+
+/* Force spans/divs/paragraphs inside cells to inherit */
+td span, td div, td p {
+  font-weight: inherit !important;
+  color: inherit !important;
+}
+
+/* Arabic / RTL text specifically */
+[lang="ar"], [dir="rtl"], *:lang(ar) {
+  font-weight: 600 !important;
+}
+
+@supports (font-weight: 600) {
+  *[lang="ar"], *[dir="rtl"] {
+    font-weight: 600 !important;
+    -webkit-font-smoothing: antialiased;
   }
 }
 
