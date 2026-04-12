@@ -1,0 +1,67 @@
+Fhmtk — bghiti font dyalk kamla tkon:
+
+Bold w noir w waydna
+Ka3 haja: commandes, titres, villes, adresses, kolonnat — kolchi
+
+Hna l prompt:
+
+GLOBAL TYPOGRAPHY FIX — Make all text across the entire platform bold, dark, and clearly readable
+Update the global CSS and table components to make ALL text heavier and darker throughout the entire platform.
+CHANGE 1 — client/src/index.css (or global CSS file) — increase base font weight:
+cssbody {
+  font-weight: 500; /* was 400 — make all text medium weight by default */
+  color: hsl(var(--foreground)); /* ensure dark color everywhere */
+}
+
+/* All text elements default to darker + heavier */
+p, span, div, td, th, li, a, label, input, select, textarea {
+  font-weight: 500;
+}
+
+/* Headings even bolder */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+CHANGE 2 — client/src/components/ui/table.tsx — bold dark table headers + cells:
+tsx// TableHead:
+className={cn(
+  "text-[11px] font-bold uppercase tracking-wider text-foreground",
+  className
+)}
+
+// TableCell:
+className={cn(
+  "py-3 px-4 text-sm font-500 text-foreground align-middle",
+  className
+)}
+CHANGE 3 — client/src/components/ui/badge.tsx — badges bold:
+tsxclassName={cn(
+  "font-bold", // was font-semibold
+  badgeVariants({ variant }),
+  className
+)}
+CHANGE 4 — client/tailwind.config.ts — set default font weight:
+typescripttheme: {
+  extend: {
+    fontWeight: {
+      DEFAULT: '500',
+    },
+    // ensure foreground color is near-black in light mode
+    colors: {
+      foreground: 'hsl(222 47% 8%)', // very dark, almost black
+    }
+  }
+}
+CHANGE 5 — client/src/components/ui/input.tsx — input text dark and bold:
+tsxclassName={cn(
+  "font-500 text-foreground placeholder:text-muted-foreground/70",
+  className
+)}
+CHANGE 6 — muted-foreground text — make less muted:
+In client/src/index.css, find where --muted-foreground is defined in :root and make it darker:
+css:root {
+  --muted-foreground: 222 20% 35%; /* was too light — make darker */
+}
+Do NOT change: any logic, routes, server, colors/backgrounds, layout structure.
+Only touch: client/src/index.css, client/src/components/ui/table.tsx, client/src/components/ui/badge.tsx, client/src/components/ui/input.tsx, client/tailwind.config.ts.

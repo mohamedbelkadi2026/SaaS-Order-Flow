@@ -82,6 +82,10 @@ export default {
           offline: "rgb(156 163 175)",
         },
       },
+      fontWeight: {
+        DEFAULT: "500",
+        500: "500",
+      },
       fontFamily: {
         sans: ["var(--font-sans)"],
         serif: ["var(--font-serif)"],

@@ -11,7 +11,7 @@
 
     /* Light Theme — Soft Zinc background, Deep Indigo accents */
     --background: 240 6% 96%;
-    --foreground: 240 20% 12%;
+    --foreground: 222 47% 8%;
 
     --card: 0 0% 100%;
     --card-foreground: 240 20% 12%;
@@ -27,7 +27,7 @@
     --secondary-foreground: 240 20% 12%;
 
     --muted: 240 5% 91%;
-    --muted-foreground: 240 10% 48%;
+    --muted-foreground: 222 20% 35%;
 
     --accent: 240 5% 91%;
     --accent-foreground: 240 20% 12%;
@@ -99,10 +99,17 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
+    font-weight: 500;
+    color: hsl(var(--foreground));
+  }
+  p, span, div, td, th, li, a, label, input, select, textarea {
+    font-weight: 500;
   }
   h1, h2, h3, h4, h5, h6 {
     font-family: var(--font-display);
     @apply tracking-tight font-bold;
+    font-weight: 700;
+    color: hsl(var(--foreground));
   }
 }
 
