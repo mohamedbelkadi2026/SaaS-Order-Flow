@@ -135,7 +135,7 @@ const ALL_COLUMNS = [
   { key: 'action', label: 'Action', locked: true },
 ] as const;
 
-const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','comment','derniereAction','status','prix','adresse','reference','source','action'];
+const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','comment','livraison','derniereAction','status','prix','adresse','reference','source','action'];
 
 function getStoredColumns(): string[] {
   try {
@@ -1148,10 +1148,10 @@ export default function Orders() {
                       )}
                       {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
                       {isColVisible('livraison') && (
-                        <TableCell className="text-sm font-medium">
-                          {order.shippingCost && order.shippingCost > 0
-                            ? `${(order.shippingCost / 100).toFixed(2)} DH`
-                            : <span className="text-muted-foreground">—</span>
+                        <TableCell className="text-sm font-medium text-center">
+                          {(order as any).shippingCost && (order as any).shippingCost > 0
+                            ? `${((order as any).shippingCost / 100).toFixed(2)} DH`
+                            : <span className="text-muted-foreground text-xs">—</span>
                           }
                         </TableCell>
                       )}

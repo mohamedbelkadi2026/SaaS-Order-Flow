@@ -876,6 +876,11 @@ export async function registerRoutes(
   app.get(api.orders.list.path, requireAuth, async (req, res) => {
     const user = req.user!;
     const status = req.query.status as string | undefined;
+    const includeShippingCost = (ordersList: any[]) =>
+      ordersList.map((order) => ({
+        ...order,
+        shippingCost: order.shippingCost ?? 0,
+      }));
 
     // Status group constants (mirrors status-badge.tsx)
     const SUIVI_GROUP = [
@@ -894,33 +899,33 @@ export async function registerRoutes(
     if (user.role === 'agent') {
       const ordersList = await storage.getOrdersByAgent(user.id);
       if (status === 'annule_group') {
-        res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
+        res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé'))));
       } else if (status === 'suivi_group') {
-        res.json(ordersList.filter(o =>
+        res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
           (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
-        ));
+        )));
       } else if (status === 'refused') {
-        res.json(ordersList.filter(o => REFUSED_GROUP.includes(o.status)));
+        res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
       } else {
-        res.json(status ? ordersList.filter(o => o.status === status) : ordersList);
+        res.json(includeShippingCost(status ? ordersList.filter(o => o.status === status) : ordersList));
       }
     } else {
       if (status === 'annule_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
-        res.json(ordersList.filter(o => o.status?.startsWith('Annulé')));
+        res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé'))));
       } else if (status === 'suivi_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
-        res.json(ordersList.filter(o =>
+        res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
           (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
-        ));
+        )));
       } else if (status === 'refused') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
-        res.json(ordersList.filter(o => REFUSED_GROUP.includes(o.status)));
+        res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
       } else {
         const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
-        res.json(ordersList);
+        res.json(includeShippingCost(ordersList));
       }
     }
   });
