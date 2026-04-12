@@ -307,6 +307,11 @@ export default function NewOrderAdd() {
                 isLoading={citiesLoading}
                 data-testid="select-city"
               />
+              {(activeCarrier as any)?.deliveryFee > 0 && (
+                <p className="mt-1 text-[11px] text-gray-500" data-testid="text-delivery-fee">
+                  Frais livraison : <span className="font-semibold text-gray-700">{((activeCarrier as any).deliveryFee / 100).toFixed(2)} DH</span>
+                </p>
+              )}
             </div>
             <div>
               <Label className="text-xs mb-1.5 block">Status</Label>

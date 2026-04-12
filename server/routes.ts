@@ -1019,6 +1019,7 @@ export async function registerRoutes(
             digylogNetworkId: ps.digylogNetworkId
               ? Number(ps.digylogNetworkId)
               : ps.networkId ? Number(ps.networkId) : 1,
+            deliveryFee:      (pinned as any).deliveryFee || 0,
           };
           console.log(`[BulkShip] Using pinned account id=${accountId} (${pinned.connectionName}) digylogStore="${pinnedCreds.digylogStoreName}" network=${pinnedCreds.digylogNetworkId}`);
         }
@@ -1098,6 +1099,7 @@ export async function registerRoutes(
             digylogNetworkId: s.digylogNetworkId
               ? Number(s.digylogNetworkId)
               : s.networkId ? Number(s.networkId) : 1,
+            deliveryFee:      a.deliveryFee || 0,
           };
         };
 
@@ -1197,6 +1199,10 @@ export async function registerRoutes(
                   storage.updateOrderShipping(order.id, trackingNumber, labelUrl!, provider),
                   storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
                 );
+                const fee = (orderCreds as any).deliveryFee || 0;
+                if (fee > 0) {
+                  dbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
+                }
                 logUpdates.push(storage.createIntegrationLog({
                   storeId, integrationId: null, provider,
                   action: 'shipping_sent', status: 'success',
@@ -1881,7 +1887,7 @@ export async function registerRoutes(
   app.post("/api/carrier-accounts", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
-      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, carrierStoreName, networkId, storeId: linkedStoreId, assignmentRule, isDefault, magasinId } = req.body;
+      const { carrierName, connectionName, apiKey: rawApiKey, apiSecret: rawApiSecret, apiUrl, storeName, carrierStoreName, networkId, storeId: linkedStoreId, assignmentRule, isDefault, magasinId, deliveryFee } = req.body;
       if (!carrierName || !rawApiKey) {
         return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
       }
@@ -1913,6 +1919,7 @@ export async function registerRoutes(
         assignmentRule: assignmentRule || "default",
         settings: networkId !== undefined ? { networkId: Number(networkId) } : {},
         magasinId: magasinId ? Number(magasinId) : null,
+        deliveryFee: deliveryFee !== undefined ? Math.round(Number(deliveryFee)) : 0,
       } as any);
 
       // Log creation (non-blocking — failure won't affect the response)
@@ -1944,7 +1951,7 @@ export async function registerRoutes(
       const acct = await storage.getCarrierAccount(id);
       if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
 
-      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, networkId, assignmentRule, isDefault, isActive, assignmentData } = req.body;
+      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, networkId, assignmentRule, isDefault, isActive, assignmentData, deliveryFee: patchDeliveryFee } = req.body;
       const cleanKey = (s: string | undefined | null) =>
         (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
       const tokenUpdated = !!(rawPatchKey && rawPatchKey !== "");
@@ -1958,7 +1965,8 @@ export async function registerRoutes(
         ...(assignmentRule    !== undefined && { assignmentRule }),
         ...(isDefault         !== undefined && { isDefault: isDefault ? 1 : 0 }),
         ...(isActive          !== undefined && { isActive: isActive ? 1 : 0 }),
-        ...(assignmentData    !== undefined && { assignmentData }),
+        ...(assignmentData      !== undefined && { assignmentData }),
+        ...(patchDeliveryFee    !== undefined && { deliveryFee: Math.round(Number(patchDeliveryFee)) }),
         // Write networkId under BOTH the legacy key (networkId) and the canonical key (digylogNetworkId)
         // so that pickFields in getAccountForShipping always finds it regardless of which key was written first.
         ...(networkId !== undefined && {
@@ -4862,6 +4870,8 @@ export async function registerRoutes(
               isActive: acct.isActive,
               cities,
               logo,
+              deliveryFee: (acct as any).deliveryFee || 0,
+              deliveryFeeDH: (((acct as any).deliveryFee || 0) / 100).toFixed(2),
               source: dbCities.length > 0 ? "synced" : "default",
               cityCount: cities.length,
             };

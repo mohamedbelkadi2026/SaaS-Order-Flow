@@ -152,6 +152,11 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   );
   const [isFetchingNetworks,setIsFetchingNetworks] = useState(false);
 
+  // ── Delivery fee (stored in centimes, edited in DH) ───────────────────────
+  const [deliveryFee, setDeliveryFee] = useState<string>(
+    existingAccount?.deliveryFee ? String((existingAccount.deliveryFee / 100).toFixed(2)) : ""
+  );
+
   const fetchDigylogStores = async (silent = false) => {
     const hasToken = apiKey.trim() || existingAccount?.hasApiKey;
     if (!hasToken) {
@@ -280,6 +285,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           body.carrierStoreName = carrierStoreName || null;
           if (isDigylog && networkId) body.networkId = Number(networkId);
         }
+        body.deliveryFee = Math.round(parseFloat(deliveryFee || "0") * 100);
         const res = await apiRequest("PATCH", `/api/carrier-accounts/${existingAccount.id}`, body);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
@@ -304,6 +310,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         if (selectedStoreId && selectedStoreId !== "__manual__") {
           payload.magasinId = Number(selectedStoreId);
         }
+        payload.deliveryFee = Math.round(parseFloat(deliveryFee || "0") * 100);
         const res = await apiRequest("POST", "/api/carrier-accounts", payload);
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
@@ -650,6 +657,27 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 )}
               </>
             )}
+
+            {/* ── Frais de livraison (edit mode, all carriers) ── */}
+            <div className="space-y-1.5">
+              <Label htmlFor="delivery_fee_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                Frais de livraison (DH)
+              </Label>
+              <Input
+                id="delivery_fee_edit"
+                data-testid="input-delivery-fee-edit"
+                type="number"
+                min="0"
+                step="0.5"
+                placeholder="Ex: 25"
+                value={deliveryFee}
+                onChange={e => setDeliveryFee(e.target.value)}
+                className="h-10 text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Montant facturé par la société de livraison par colis livré
+              </p>
+            </div>
 
             {/* ── WebHook URL (permanent) — shared for all carriers ── */}
             <div className="space-y-2">
@@ -1032,6 +1060,27 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               )}
             </div>
           )}
+
+          {/* ── Frais de livraison (create mode, all carriers) ── */}
+          <div className="space-y-1.5">
+            <Label htmlFor="delivery_fee_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+              Frais de livraison (DH)
+            </Label>
+            <Input
+              id="delivery_fee_create"
+              data-testid="input-delivery-fee-create"
+              type="number"
+              min="0"
+              step="0.5"
+              placeholder="Ex: 25"
+              value={deliveryFee}
+              onChange={e => setDeliveryFee(e.target.value)}
+              className="h-10 text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Montant facturé par la société de livraison par colis livré (optionnel)
+            </p>
+          </div>
 
           {/* ── WebHook URL (permanent) ── */}
           <div className="space-y-1.5">

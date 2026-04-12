@@ -187,6 +187,7 @@ export const carrierAccounts = pgTable("carrier_accounts", {
   assignmentData: text("assignment_data"),             // JSON array of cities or SKUs
   settings: jsonb("settings").default({}),             // flexible carrier-specific config
   magasinId: integer("magasin_id"),                    // optional: restrict to a specific magasin
+  deliveryFee: integer("delivery_fee").default(0),     // in centimes, e.g. 2500 = 25.00 DH
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

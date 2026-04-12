@@ -1,0 +1,69 @@
+Daba 3ndi ka3 l ma3louma. carrier_accounts ma 3ndha field dyal prix livraison — khss nziduha. Hna l prompt:
+
+ADD — Frais de livraison per carrier account: store price + auto-fill on ship
+THE GOAL: Each carrier account has a configured delivery price. When an order is shipped, shippingCost is automatically set from the carrier's configured price.
+
+CHANGE 1 — shared/schema.ts — add deliveryFee to carrier_accounts:
+typescriptexport const carrierAccounts = pgTable("carrier_accounts", {
+  // ... existing columns ...
+  deliveryFee: integer("delivery_fee").default(0), // in centimes, e.g. 2500 = 25.00 DH
+});
+DB Migration:
+sqlALTER TABLE carrier_accounts ADD COLUMN IF NOT EXISTS delivery_fee INTEGER DEFAULT 0;
+
+CHANGE 2 — server/routes.ts — auto-set shippingCost when order is shipped:
+In the bulk ship handler, after a successful ship (where trackingNumber is returned), update the order's shippingCost from the carrier's deliveryFee:
+typescript// After successful ship — find this block:
+dbUpdates.push(
+  storage.updateOrderShipping(order.id, trackingNumber, labelUrl!, provider),
+  storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
+);
+
+// ADD THIS — set shippingCost from carrier deliveryFee:
+const fee = (orderCreds as any).deliveryFee || 0;
+if (fee > 0) {
+  dbUpdates.push(
+    storage.updateOrder(order.id, { shippingCost: fee })
+  );
+}
+
+CHANGE 3 — server/routes.ts — include deliveryFee in GET /api/carriers/cities/all response:
+typescriptreturn {
+  id: acct.id,
+  provider: acct.carrierName,
+  isActive: acct.isActive,
+  cities,
+  logo,
+  deliveryFee: acct.deliveryFee || 0,         // ADD
+  deliveryFeeDH: ((acct.deliveryFee || 0) / 100).toFixed(2), // ADD
+  source: dbCities.length > 0 ? "synced" : "default",
+};
+
+CHANGE 4 — client/src/pages/shipping-integrations.tsx — add delivery fee input in carrier account form:
+In the carrier account creation/edit form, add a field:
+tsx<div className="space-y-1">
+  <Label>Frais de livraison (DH)</Label>
+  <Input
+    type="number"
+    placeholder="Ex: 25"
+    value={deliveryFee}
+    onChange={e => setDeliveryFee(e.target.value)}
+  />
+  <p className="text-xs text-muted-foreground">
+    Montant facturé par la société de livraison par colis livré
+  </p>
+</div>
+Send as centimes: deliveryFee: Math.round(parseFloat(deliveryFee || "0") * 100)
+
+CHANGE 5 — client/src/pages/new-order-add.tsx — show carrier delivery fee:
+When a carrier is selected and has deliveryFee > 0, show it as info under the city selector:
+tsx{activeCarrier?.deliveryFee > 0 && (
+  <p className="text-xs text-muted-foreground flex items-center gap-1">
+    🚚 Frais de livraison: <span className="font-semibold text-foreground">
+      {(activeCarrier.deliveryFee / 100).toFixed(2)} DH
+    </span>
+  </p>
+)}
+
+Do NOT change: order flow, AI, WhatsApp, status mapping, financial profit calculations (shippingCost already used correctly in profit engine).
+Only touch: shared/schema.ts, server/routes.ts (bulk ship + cities endpoint), client/src/pages/shipping-integrations.tsx, client/src/pages/new-order-add.tsx.
