@@ -133,8 +133,17 @@ async function runWooCommerceSync() {
   }
 }
 
-export function startWooCommerceSync() {
+export function startWooCommerceSync(intervals?: NodeJS.Timeout[]) {
   console.log(`[WooCommerce Sync] Starting polling job (every ${WC_POLL_INTERVAL / 1000}s)`);
-  runWooCommerceSync();
-  setInterval(runWooCommerceSync, WC_POLL_INTERVAL);
+  const run = async () => {
+    try {
+      await runWooCommerceSync();
+    } catch (err) {
+      console.error('[WooCommerce Sync] Job error (continuing):', err);
+    }
+  };
+  run();
+  const id = setInterval(run, WC_POLL_INTERVAL);
+  if (intervals) intervals.push(id);
+  return id;
 }

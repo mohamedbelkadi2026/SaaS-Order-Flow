@@ -47,11 +47,13 @@ const useSSL = isRemoteConnection(process.env.DATABASE_URL ?? "");
 
 export const pool = new Pool({
   connectionString,
-  max: 20,
-  idleTimeoutMillis: 30_000,
+  max: 10,
+  idleTimeoutMillis: 60_000,
   connectionTimeoutMillis: 10_000,
   statement_timeout: 20_000,
   query_timeout: 20_000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
   ...(useSSL && { ssl: { rejectUnauthorized: false } }),
 });
 

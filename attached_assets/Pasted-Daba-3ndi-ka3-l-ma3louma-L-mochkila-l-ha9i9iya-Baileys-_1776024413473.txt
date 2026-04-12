@@ -1,0 +1,129 @@
+Daba 3ndi ka3 l ma3louma. L mochkila l ha9i9iya:
+Baileys (WhatsApp) — autoStartBaileys() + autoStartDevices() — homa li kaykhsro l memory w kaycrashiw l app ba3d 1-2h. WhatsApp WebSocket connections kayb9aw mftouhin w ma kaytwq9ouch.
+Hna l prompt complet:
+
+FIX — App crashes after 1-2 hours: fix Baileys memory leaks + add keepalive + graceful shutdown
+CHANGE 1 — server/index.ts — add SIGTERM handler for Railway graceful shutdown:
+typescript// Add before the (async () => { ... })() block:
+const intervals: NodeJS.Timeout[] = [];
+
+process.on('SIGTERM', () => {
+  console.log('[Shutdown] SIGTERM received — closing gracefully...');
+  intervals.forEach(clearInterval);
+  httpServer.close(() => {
+    console.log('[Shutdown] HTTP server closed');
+    pool.end(() => {
+      console.log('[Shutdown] DB pool closed');
+      process.exit(0);
+    });
+  });
+  setTimeout(() => {
+    console.error('[Shutdown] Forced exit after 15s');
+    process.exit(1);
+  }, 15000);
+});
+
+process.on('SIGINT', () => {
+  intervals.forEach(clearInterval);
+  httpServer.close(() => process.exit(0));
+});
+CHANGE 2 — server/index.ts — fix uncaughtException handler (currently crashes on non-Baileys errors):
+typescriptprocess.on('uncaughtException', (err: Error) => {
+  const msg = err?.message ?? String(err);
+  // Non-fatal errors — log and continue
+  if (
+    msg.includes('Unsupported state or unable to authenticate') ||
+    msg.includes('aesDecryptGCM') ||
+    msg.includes('decodeFrame') ||
+    msg.includes('noise-handler') ||
+    msg.includes('Connection Closed') ||
+    msg.includes('ECONNRESET') ||
+    msg.includes('EPIPE') ||
+    msg.includes('read ECONNRESET')
+  ) {
+    console.warn('[Non-fatal error, continuing]:', msg);
+    return; // do NOT exit
+  }
+  console.error('[FATAL] Uncaught exception:', err);
+  // do NOT call process.exit(1) — let Railway keep the process alive
+  // Only log — Railway will restart if truly broken
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  // Never crash on unhandled rejections — just log
+  console.error('[UnhandledRejection — continuing]:', msg);
+});
+CHANGE 3 — server/index.ts — add DB keepalive ping every 4 minutes:
+typescript// After httpServer.listen, add:
+const dbKeepalive = setInterval(async () => {
+  try {
+    await pool.query('SELECT 1');
+  } catch (err: any) {
+    console.error('[Keepalive] DB ping failed:', err.message);
+  }
+}, 4 * 60 * 1000);
+intervals.push(dbKeepalive);
+CHANGE 4 — server/db.ts — fix pool config to prevent connection exhaustion:
+typescriptexport const pool = new Pool({
+  connectionString,
+  max: 10,                        // was 20 — reduce to avoid exhaustion
+  idleTimeoutMillis: 60_000,      // was 30_000 — give more time
+  connectionTimeoutMillis: 10_000,
+  keepAlive: true,                // ADD — prevents idle connections from dying
+  keepAliveInitialDelayMillis: 10_000, // ADD
+  ...(useSSL && { ssl: { rejectUnauthorized: false } }),
+});
+CHANGE 5 — server/jobs/woocommerce-sync.ts — wrap setInterval in try/catch + add to intervals:
+typescriptexport function startWooCommerceSync(intervals?: NodeJS.Timeout[]) {
+  console.log(`[WooCommerce Sync] Starting polling job`);
+  const run = async () => {
+    try {
+      await runWooCommerceSync();
+    } catch (err) {
+      console.error('[WooCommerce Sync] Job error (continuing):', err);
+    }
+  };
+  run();
+  const id = setInterval(run, WC_POLL_INTERVAL);
+  if (intervals) intervals.push(id);
+  return id;
+}
+CHANGE 6 — server/recovery-job.ts — wrap in try/catch + add to intervals:
+typescriptexport function startRecoveryJob(intervals?: NodeJS.Timeout[]) {
+  console.log('[Recovery] Background job started');
+  const run = async () => {
+    try {
+      await runRecoveryJob();
+    } catch (e: any) {
+      console.error('[Recovery] Job error (continuing):', e.message);
+    }
+  };
+  const id = setTimeout(() => {
+    run();
+    const intervalId = setInterval(run, JOB_INTERVAL_MS);
+    if (intervals) intervals.push(intervalId);
+  }, 60 * 1000);
+  if (intervals) intervals.push(id as any);
+}
+CHANGE 7 — server/index.ts — pass intervals to jobs:
+typescript// Change:
+startWooCommerceSync();
+startRecoveryJob();
+// To:
+startWooCommerceSync(intervals);
+startRecoveryJob(intervals);
+CHANGE 8 — Add SSE client cleanup every 5 minutes (prevents memory leak from dead connections):
+Find the SSE/broadcastToStore implementation (likely in server/sse.ts). Add cleanup:
+typescript// In sse.ts, add:
+setInterval(() => {
+  for (const [storeId, clients] of storeClients.entries()) {
+    const alive = clients.filter(c => !c.writableEnded && !c.destroyed);
+    if (alive.length !== clients.length) {
+      console.log(`[SSE Cleanup] Store ${storeId}: removed ${clients.length - alive.length} dead connections`);
+      storeClients.set(storeId, alive);
+    }
+  }
+}, 5 * 60 * 1000);
+Do NOT change: any routes, business logic, order flow, AI, frontend.
+Only touch: server/index.ts, server/db.ts, server/recovery-job.ts, server/jobs/woocommerce-sync.ts, server/sse.ts.

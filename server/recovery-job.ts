@@ -51,11 +51,19 @@ async function runRecoveryJob() {
   }
 }
 
-export function startRecoveryJob() {
+export function startRecoveryJob(intervals?: NodeJS.Timeout[]) {
   console.log("[Recovery] Background job started (checks every 5 minutes)");
-  // Run once after 1 min on startup, then every 5 min
-  setTimeout(() => {
-    runRecoveryJob();
-    setInterval(runRecoveryJob, JOB_INTERVAL_MS);
+  const run = async () => {
+    try {
+      await runRecoveryJob();
+    } catch (e: any) {
+      console.error('[Recovery] Job error (continuing):', e.message);
+    }
+  };
+  const timeoutId = setTimeout(() => {
+    run();
+    const intervalId = setInterval(run, JOB_INTERVAL_MS);
+    if (intervals) intervals.push(intervalId);
   }, 60 * 1000);
+  if (intervals) intervals.push(timeoutId as any);
 }

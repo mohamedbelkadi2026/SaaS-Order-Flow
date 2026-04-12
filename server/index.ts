@@ -10,7 +10,7 @@ import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
 import { initSocket } from "./socket";
 import { autoStartBaileys, autoStartDevices } from "./baileys-service";
-import { db, initializeDatabase } from "./db";
+import { db, pool, initializeDatabase } from "./db";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import path from "path";
@@ -40,42 +40,58 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// ── Shared interval registry — used for graceful shutdown ─────────────────────
+const intervals: NodeJS.Timeout[] = [];
+
 // ── Global uncaught exception handler ─────────────────────────────────────────
-// Baileys (WhatsApp library) can throw synchronous crypto errors inside WebSocket
-// event handlers (e.g. aesDecryptGCM "Unsupported state or unable to authenticate
-// data"). These are uncaught exceptions that would otherwise crash the process.
-// We catch them here, log them, and let the Baileys reconnect logic handle recovery.
 process.on("uncaughtException", (err: Error) => {
   const msg = err?.message ?? String(err);
-  // Baileys crypto / WebSocket decode errors — non-fatal, ignore gracefully
   if (
     msg.includes("Unsupported state or unable to authenticate") ||
     msg.includes("aesDecryptGCM") ||
     msg.includes("decodeFrame") ||
-    msg.includes("noise-handler")
+    msg.includes("noise-handler") ||
+    msg.includes("Connection Closed") ||
+    msg.includes("ECONNRESET") ||
+    msg.includes("EPIPE") ||
+    msg.includes("read ECONNRESET")
   ) {
-    console.warn("[WA] Baileys crypto error (non-fatal, session will reconnect):", msg);
+    console.warn("[Non-fatal error, continuing]:", msg);
     return;
   }
-  // For all other uncaught exceptions, log and exit so the process manager restarts
   console.error("[FATAL] Uncaught exception:", err);
-  process.exit(1);
+  // Log only — do not exit. Let the process manager decide.
 });
 
 process.on("unhandledRejection", (reason: unknown) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
-  if (
-    msg.includes("Unsupported state or unable to authenticate") ||
-    msg.includes("aesDecryptGCM")
-  ) {
-    console.warn("[WA] Baileys unhandled rejection (non-fatal):", msg);
-    return;
-  }
-  console.error("[FATAL] Unhandled rejection:", reason);
+  console.error("[UnhandledRejection — continuing]:", msg);
 });
 
+// ── Graceful shutdown on SIGTERM / SIGINT ─────────────────────────────────────
 const app = express();
 const httpServer = createServer(app);
+
+process.on("SIGTERM", () => {
+  console.log("[Shutdown] SIGTERM received — closing gracefully...");
+  intervals.forEach(clearInterval);
+  httpServer.close(() => {
+    console.log("[Shutdown] HTTP server closed");
+    pool.end(() => {
+      console.log("[Shutdown] DB pool closed");
+      process.exit(0);
+    });
+  });
+  setTimeout(() => {
+    console.error("[Shutdown] Forced exit after 15s");
+    process.exit(1);
+  }, 15000);
+});
+
+process.on("SIGINT", () => {
+  intervals.forEach(clearInterval);
+  httpServer.close(() => process.exit(0));
+});
 
 // ── Trust the Railway / Cloudflare proxy — MUST be first ──────────────────────
 // Without this, Express sees every request as HTTP (x-forwarded-proto is ignored),
@@ -461,10 +477,20 @@ app.use((req, res, next) => {
     })
   );
 
+  // ── DB keepalive — ping every 4 min to prevent idle connection drops ─────
+  const dbKeepalive = setInterval(async () => {
+    try {
+      await pool.query("SELECT 1");
+    } catch (err: any) {
+      console.error("[Keepalive] DB ping failed:", err.message);
+    }
+  }, 4 * 60 * 1000);
+  intervals.push(dbKeepalive);
+
   // ── Background jobs — start after port is open ────────────────────────────
   await ensureSuperAdmin();
-  startWooCommerceSync();
-  startRecoveryJob();
+  startWooCommerceSync(intervals);
+  startRecoveryJob(intervals);
   autoStartBaileys().catch(console.error);
   autoStartDevices().catch(console.error);
 })();

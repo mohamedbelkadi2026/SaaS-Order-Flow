@@ -45,6 +45,24 @@ export function addWASSEClient(res: Response) {
   });
 }
 
+// Periodically purge dead SSE connections to prevent memory leaks
+setInterval(() => {
+  for (const [storeId, set] of clients.entries()) {
+    const before = set.size;
+    for (const res of set) {
+      if ((res as any).writableEnded || (res as any).destroyed) set.delete(res);
+    }
+    const removed = before - set.size;
+    if (removed > 0) console.log(`[SSE Cleanup] Store ${storeId}: removed ${removed} dead connection(s)`);
+  }
+  const waBefore = waClients.size;
+  for (const res of waClients) {
+    if ((res as any).writableEnded || (res as any).destroyed) waClients.delete(res);
+  }
+  const waRemoved = waBefore - waClients.size;
+  if (waRemoved > 0) console.log(`[SSE Cleanup] WA global: removed ${waRemoved} dead connection(s)`);
+}, 5 * 60 * 1000);
+
 export function broadcastToStore(storeId: number, event: string, data: unknown) {
   // storeId=0 means broadcast to global WA clients
   if (storeId === 0) {
