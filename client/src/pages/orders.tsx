@@ -1043,7 +1043,7 @@ export default function Orders() {
                 {isColVisible('produit') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Produit</div>{showInlineFilters && renderColFilter('produit', 'Filtr...')}</TableHead>}
                 {isColVisible('actionBy') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Action By</div>{showInlineFilters && renderColFilter('actionBy', 'Filtr...')}</TableHead>}
                 {isColVisible('comment') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Comment</TableHead>}
-                {isColVisible('livraison') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Livraison</TableHead>}
+                {isColVisible('livraison') && <TableHead>Frais de livraison</TableHead>}
                 {isColVisible('derniereAction') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Dernière action</TableHead>}
                 {isColVisible('status') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Status</TableHead>}
                 {isColVisible('prix') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Prix</TableHead>}
@@ -1148,13 +1148,11 @@ export default function Orders() {
                       )}
                       {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
                       {isColVisible('livraison') && (
-                        <TableCell className="whitespace-nowrap text-[11px]">
-                          {order.shippingProvider ? (() => {
-                            const logo = getCarrierLogo(order.shippingProvider);
-                            return logo
-                              ? <img src={logo} alt={order.shippingProvider} style={{ maxHeight: 25, maxWidth: 70 }} className="object-contain mx-auto" />
-                              : <Badge className="bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{order.shippingProvider}</Badge>;
-                          })() : <span className="text-muted-foreground">-</span>}
+                        <TableCell className="text-sm font-medium">
+                          {order.shippingCost && order.shippingCost > 0
+                            ? `${(order.shippingCost / 100).toFixed(2)} DH`
+                            : <span className="text-muted-foreground">—</span>
+                          }
                         </TableCell>
                       )}
                       {isColVisible('derniereAction') && (
