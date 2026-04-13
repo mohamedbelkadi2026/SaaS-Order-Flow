@@ -41,6 +41,16 @@ export function flushPendingQueue(storeId: number): void {
   }
 }
 
+// ── Queue safety cap — clear any per-store queue that grows beyond 10 ─────────
+setInterval(() => {
+  for (const [storeId, queue] of pendingRetryQueues) {
+    if (queue.length > 10) {
+      queue.length = 0;
+      console.warn(`[WA] Queue for store ${storeId} cleared — was too large (>10)`);
+    }
+  }
+}, 30_000); // every 30 seconds
+
 // Background retry — every 60 seconds across all stores
 setInterval(async () => {
   const now = Date.now();
@@ -79,14 +89,11 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
       }
       console.warn(`[WA Transport:${storeId}] ⚠️ Baileys send returned false`);
     } else {
-      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected (state=${status.state})`);
+      console.warn(`[WA Transport:${storeId}] ⚠️ Baileys not connected (state=${status.state}) — message DROPPED (no queue)`);
       if (status.state !== "idle" && status.state !== "qr") {
         instance.start().catch(() => {});
         console.log(`[WA Transport:${storeId}] Reconnect triggered`);
       }
-      const queue = getQueue(storeId);
-      queue.push({ phone, message, storeId, retries: 0, nextRetry: Date.now() + 60_000 });
-      console.log(`[WA Transport:${storeId}] 📋 Queued message (${queue.length} total)`);
       return false;
     }
   } catch (err: any) {
@@ -97,11 +104,7 @@ export async function sendWhatsAppMessage(phone: string, message: string, storeI
   const instanceId = process.env.GREENAPI_INSTANCE_ID ?? "";
   const apiToken   = process.env.GREENAPI_API_TOKEN ?? "";
   if (!instanceId || !apiToken) {
-    console.error(`[WA Transport:${storeId}] No active WA session. Message to ${formatted} NOT sent.`);
-    const queue = getQueue(storeId);
-    if (!queue.some(m => m.phone === phone && m.message === message)) {
-      queue.push({ phone, message, storeId, retries: 0, nextRetry: Date.now() + 60_000 });
-    }
+    console.warn(`[WA Transport:${storeId}] No active WA session and no Green API config — message DROPPED (no queue)`);
     return false;
   }
 
