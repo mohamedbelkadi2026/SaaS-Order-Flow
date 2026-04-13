@@ -149,11 +149,11 @@ export default function Profile() {
     { id: 'success', label: '✅ Succès' },
   ];
   const SOUND_URLS: Record<string, string> = {
-    cash:    'https://cdn.freesound.org/previews/264/264762_4938496-lq.mp3',
-    bell:    'https://cdn.freesound.org/previews/411/411089_5121236-lq.mp3',
-    chime:   'https://cdn.freesound.org/previews/411/411642_5121236-lq.mp3',
-    ding:    'https://cdn.freesound.org/previews/536/536766_11861866-lq.mp3',
-    success: 'https://cdn.freesound.org/previews/341/341695_5858296-lq.mp3',
+    cash:    'https://www.soundjay.com/misc/sounds/cash-register-1.mp3',
+    bell:    'https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3',
+    chime:   'https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3',
+    ding:    'https://www.soundjay.com/buttons/sounds/button-3.mp3',
+    success: 'https://www.soundjay.com/misc/sounds/magic-chime-01.mp3',
   };
 
   const [pendingSoundEnabled, setPendingSoundEnabled] = useState(
@@ -179,7 +179,22 @@ export default function Profile() {
   const testSound = (id: string) => {
     const audio = new Audio(SOUND_URLS[id]);
     audio.volume = 0.8;
-    audio.play().catch(() => {});
+    audio.load();
+    audio.play().catch(err => {
+      console.error('Sound failed:', err);
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.4, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.5);
+      } catch {}
+    });
   };
 
   // ── Plan usage ───────────────────────────────────────────────────────────────

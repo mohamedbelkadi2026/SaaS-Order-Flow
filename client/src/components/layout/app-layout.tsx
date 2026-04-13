@@ -307,11 +307,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         if (!enabled) return;
         const id = localStorage.getItem('notif_sound_id') || 'cash';
         const urls: Record<string, string> = {
-          cash:    'https://cdn.freesound.org/previews/264/264762_4938496-lq.mp3',
-          bell:    'https://cdn.freesound.org/previews/411/411089_5121236-lq.mp3',
-          chime:   'https://cdn.freesound.org/previews/411/411642_5121236-lq.mp3',
-          ding:    'https://cdn.freesound.org/previews/536/536766_11861866-lq.mp3',
-          success: 'https://cdn.freesound.org/previews/341/341695_5858296-lq.mp3',
+          cash:    'https://www.soundjay.com/misc/sounds/cash-register-1.mp3',
+          bell:    'https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3',
+          chime:   'https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3',
+          ding:    'https://www.soundjay.com/buttons/sounds/button-3.mp3',
+          success: 'https://www.soundjay.com/misc/sounds/magic-chime-01.mp3',
         };
         const audio = new Audio(urls[id] || urls.cash);
         audio.volume = 0.8;
