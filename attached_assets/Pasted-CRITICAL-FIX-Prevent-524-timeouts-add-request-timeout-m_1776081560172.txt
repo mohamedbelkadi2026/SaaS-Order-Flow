@@ -1,0 +1,69 @@
+CRITICAL FIX — Prevent 524 timeouts: add request timeout middleware + fix Baileys blocking startup
+CHANGE 1 — server/index.ts — add global request timeout BEFORE all routes:
+typescript// Add immediately after app.set("trust proxy", true):
+app.use((req, res, next) => {
+  if (req.path === '/health' || req.path === '/api/health') return next();
+  const timeout = setTimeout(() => {
+    if (!res.headersSent) {
+      console.error(`[TIMEOUT] ${req.method} ${req.path} timed out after 25s`);
+      res.status(504).json({ message: 'Request timeout' });
+    }
+  }, 25000);
+  res.on('finish', () => clearTimeout(timeout));
+  res.on('close', () => clearTimeout(timeout));
+  next();
+});
+CHANGE 2 — server/index.ts — make Baileys non-blocking on startup:
+typescript// Find:
+autoStartBaileys().catch(console.error);
+autoStartDevices().catch(console.error);
+
+// Replace with (delayed + non-blocking):
+setTimeout(() => {
+  autoStartBaileys().catch(err => 
+    console.error('[Baileys] autoStart failed (non-fatal):', err.message)
+  );
+}, 10000); // wait 10s after server starts
+
+setTimeout(() => {
+  autoStartDevices().catch(err => 
+    console.error('[Devices] autoStart failed (non-fatal):', err.message)
+  );
+}, 15000); // wait 15s after server starts
+CHANGE 3 — server/index.ts — add memory monitor that restarts Baileys if memory too high:
+typescript// Add after server starts listening:
+setInterval(() => {
+  const mem = process.memoryUsage();
+  const heapUsedMB = Math.round(mem.heapUsed / 1024 / 1024);
+  const rssM = Math.round(mem.rss / 1024 / 1024);
+  console.log(`[Memory] Heap: ${heapUsedMB}MB RSS: ${rssM}MB`);
+  if (heapUsedMB > 450) {
+    console.warn('[Memory] HIGH MEMORY — forcing garbage collection');
+    if (global.gc) global.gc();
+  }
+}, 2 * 60 * 1000); // every 2 minutes
+CHANGE 4 — server/index.ts — add Cloudflare 524 prevention: keepalive header:
+typescript// Add in middleware section:
+app.use((req, res, next) => {
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Keep-Alive', 'timeout=60');
+  next();
+});
+CHANGE 5 — server/db.ts — reduce pool size to prevent DB connection exhaustion:
+typescriptexport const pool = new Pool({
+  connectionString,
+  max: 5,                          // reduce from 10/20
+  idleTimeoutMillis: 60_000,
+  connectionTimeoutMillis: 8_000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
+  ...(useSSL && { ssl: { rejectUnauthorized: false } }),
+});
+CHANGE 6 — Add Cloudflare Cache Rule (no code — do this in Cloudflare dashboard):
+
+Cloudflare → tajergrow.com → Rules → Cache Rules
+Add rule: tajergrow.com/api/* → Cache: Bypass + Origin Cache Control: On
+This prevents Cloudflare from caching API responses and reduces timeout risk
+
+Do NOT change: any routes, business logic, AI flow, order processing, frontend.
+Only touch: server/index.ts and server/db.ts.

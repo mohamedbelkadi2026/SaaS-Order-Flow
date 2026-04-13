@@ -47,9 +47,9 @@ const useSSL = isRemoteConnection(process.env.DATABASE_URL ?? "");
 
 export const pool = new Pool({
   connectionString,
-  max: 10,
+  max: 5,
   idleTimeoutMillis: 60_000,
-  connectionTimeoutMillis: 10_000,
+  connectionTimeoutMillis: 8_000,
   statement_timeout: 20_000,
   query_timeout: 20_000,
   keepAlive: true,
@@ -67,7 +67,7 @@ try {
   const parsed = new URL(process.env.DATABASE_URL ?? "");
   const safeUrl = `${parsed.protocol}//${parsed.username}:***@${parsed.hostname}:${parsed.port || 5432}${parsed.pathname}`;
   console.log(`[DB] Target: ${safeUrl}`);
-  console.log(`[DB] SSL: ${useSSL} | rejectUnauthorized: false | pool max: 20`);
+  console.log(`[DB] SSL: ${useSSL} | rejectUnauthorized: false | pool max: 5`);
 } catch {
   console.log("[DB] DATABASE_URL could not be parsed — check Railway Variables");
 }

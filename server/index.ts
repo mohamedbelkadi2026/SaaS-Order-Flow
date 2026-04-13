@@ -198,12 +198,22 @@ app.use((req, res, next) => {
 
 // ── Global request timeout — 25s max (Cloudflare 524 / Railway hang protection) ──
 app.use((req, res, next) => {
-  res.setTimeout(25000, () => {
-    console.error(`[Timeout] Request timed out: ${req.method} ${req.url}`);
+  if (req.path === '/health' || req.path === '/api/health') return next();
+  const timeout = setTimeout(() => {
     if (!res.headersSent) {
+      console.error(`[TIMEOUT] ${req.method} ${req.path} timed out after 25s`);
       res.status(504).json({ message: 'Request timeout' });
     }
-  });
+  }, 25000);
+  res.on('finish', () => clearTimeout(timeout));
+  res.on('close', () => clearTimeout(timeout));
+  next();
+});
+
+// ── Cloudflare 524 prevention — keepalive headers ─────────────────────────────
+app.use((req, res, next) => {
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Keep-Alive', 'timeout=60');
   next();
 });
 
@@ -491,6 +501,27 @@ app.use((req, res, next) => {
   await ensureSuperAdmin();
   startWooCommerceSync(intervals);
   startRecoveryJob(intervals);
-  autoStartBaileys().catch(console.error);
-  autoStartDevices().catch(console.error);
+  setTimeout(() => {
+    autoStartBaileys().catch(err =>
+      console.error('[Baileys] autoStart failed (non-fatal):', err.message)
+    );
+  }, 10000); // wait 10s after server starts
+
+  setTimeout(() => {
+    autoStartDevices().catch(err =>
+      console.error('[Devices] autoStart failed (non-fatal):', err.message)
+    );
+  }, 15000); // wait 15s after server starts
+
+  // ── Memory monitor — log every 2 min, GC if heap > 450 MB ────────────────
+  setInterval(() => {
+    const mem = process.memoryUsage();
+    const heapUsedMB = Math.round(mem.heapUsed / 1024 / 1024);
+    const rssM = Math.round(mem.rss / 1024 / 1024);
+    console.log(`[Memory] Heap: ${heapUsedMB}MB RSS: ${rssM}MB`);
+    if (heapUsedMB > 450) {
+      console.warn('[Memory] HIGH MEMORY — forcing garbage collection');
+      if (global.gc) global.gc();
+    }
+  }, 2 * 60 * 1000);
 })();
