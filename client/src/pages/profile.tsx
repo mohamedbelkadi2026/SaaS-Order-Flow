@@ -155,17 +155,57 @@ export default function Profile() {
       const ctx = new AudioCtx();
       const sounds: Record<string, () => void> = {
         cash: () => {
-          [880, 1100, 1320].forEach((freq, i) => {
+          // Realistic cash register "cha-ching" sound
+          const masterGain = ctx.createGain();
+          masterGain.connect(ctx.destination);
+          masterGain.gain.value = 0.6;
+
+          // "Cha" — drawer mechanism (noise burst)
+          const bufferSize = ctx.sampleRate * 0.08;
+          const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+          const data = buffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.3));
+          }
+          const noise = ctx.createBufferSource();
+          noise.buffer = buffer;
+          const noiseFilter = ctx.createBiquadFilter();
+          noiseFilter.type = 'bandpass';
+          noiseFilter.frequency.value = 3000;
+          noiseFilter.Q.value = 0.5;
+          noise.connect(noiseFilter);
+          noiseFilter.connect(masterGain);
+          noise.start(ctx.currentTime);
+
+          // "Ching" — metal bell ring (high frequency)
+          [1800, 2200, 2800, 3400].forEach((freq, i) => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
-            osc.connect(gain); gain.connect(ctx.destination);
-            osc.type = 'triangle';
+            osc.connect(gain);
+            gain.connect(masterGain);
+            osc.type = 'sine';
             osc.frequency.value = freq;
-            const t = ctx.currentTime + i * 0.08;
-            gain.gain.setValueAtTime(0.4, t);
-            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
-            osc.start(t); osc.stop(t + 0.15);
+            const t = ctx.currentTime + 0.06 + i * 0.01;
+            gain.gain.setValueAtTime(0.3 - i * 0.05, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
+            osc.start(t);
+            osc.stop(t + 0.8);
           });
+
+          // Low "clunk" — drawer opening thud
+          const clunk = ctx.createOscillator();
+          const clunkGain = ctx.createGain();
+          clunk.connect(clunkGain);
+          clunkGain.connect(masterGain);
+          clunk.type = 'sine';
+          clunk.frequency.setValueAtTime(180, ctx.currentTime);
+          clunk.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.1);
+          clunkGain.gain.setValueAtTime(0.5, ctx.currentTime);
+          clunkGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+          clunk.start(ctx.currentTime);
+          clunk.stop(ctx.currentTime + 0.1);
+
+          setTimeout(() => ctx.close(), 2000);
         },
         bell: () => {
           const osc = ctx.createOscillator();
