@@ -155,57 +155,79 @@ export default function Profile() {
       const ctx = new AudioCtx();
       const sounds: Record<string, () => void> = {
         cash: () => {
-          // Realistic cash register "cha-ching" sound
           const masterGain = ctx.createGain();
           masterGain.connect(ctx.destination);
-          masterGain.gain.value = 0.6;
+          masterGain.gain.value = 0.7;
 
-          // "Cha" — drawer mechanism (noise burst)
-          const bufferSize = ctx.sampleRate * 0.08;
-          const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-          const data = buffer.getChannelData(0);
-          for (let i = 0; i < bufferSize; i++) {
-            data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.3));
+          // === "KA" part — mechanical click + spring ===
+          const clickBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.015), ctx.sampleRate);
+          const clickData = clickBuf.getChannelData(0);
+          for (let i = 0; i < clickData.length; i++) {
+            clickData[i] = (Math.random() * 2 - 1) * (1 - i / clickData.length);
           }
-          const noise = ctx.createBufferSource();
-          noise.buffer = buffer;
-          const noiseFilter = ctx.createBiquadFilter();
-          noiseFilter.type = 'bandpass';
-          noiseFilter.frequency.value = 3000;
-          noiseFilter.Q.value = 0.5;
-          noise.connect(noiseFilter);
-          noiseFilter.connect(masterGain);
-          noise.start(ctx.currentTime);
+          const click = ctx.createBufferSource();
+          click.buffer = clickBuf;
+          const clickFilter = ctx.createBiquadFilter();
+          clickFilter.type = 'highpass';
+          clickFilter.frequency.value = 800;
+          click.connect(clickFilter);
+          clickFilter.connect(masterGain);
+          click.start(ctx.currentTime);
 
-          // "Ching" — metal bell ring (high frequency)
-          [1800, 2200, 2800, 3400].forEach((freq, i) => {
+          const swoosh = ctx.createOscillator();
+          const swooshGain = ctx.createGain();
+          swoosh.connect(swooshGain);
+          swooshGain.connect(masterGain);
+          swoosh.type = 'sawtooth';
+          swoosh.frequency.setValueAtTime(400, ctx.currentTime);
+          swoosh.frequency.exponentialRampToValueAtTime(120, ctx.currentTime + 0.08);
+          swooshGain.gain.setValueAtTime(0.25, ctx.currentTime);
+          swooshGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+          swoosh.start(ctx.currentTime);
+          swoosh.stop(ctx.currentTime + 0.08);
+
+          // === "CHING" part — bright metallic bell ===
+          const t = ctx.currentTime + 0.07;
+          [2637, 3136, 3951, 5274].forEach((freq, i) => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
             osc.connect(gain);
             gain.connect(masterGain);
             osc.type = 'sine';
             osc.frequency.value = freq;
-            const t = ctx.currentTime + 0.06 + i * 0.01;
-            gain.gain.setValueAtTime(0.3 - i * 0.05, t);
-            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
-            osc.start(t);
-            osc.stop(t + 0.8);
+            gain.gain.setValueAtTime(0.35 / (i + 1), t + i * 0.005);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 1.2 - i * 0.1);
+            osc.start(t + i * 0.005);
+            osc.stop(t + 1.2);
           });
 
-          // Low "clunk" — drawer opening thud
-          const clunk = ctx.createOscillator();
-          const clunkGain = ctx.createGain();
-          clunk.connect(clunkGain);
-          clunkGain.connect(masterGain);
-          clunk.type = 'sine';
-          clunk.frequency.setValueAtTime(180, ctx.currentTime);
-          clunk.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.1);
-          clunkGain.gain.setValueAtTime(0.5, ctx.currentTime);
-          clunkGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
-          clunk.start(ctx.currentTime);
-          clunk.stop(ctx.currentTime + 0.1);
+          // Shimmer — high frequency sparkle
+          [6000, 7500, 9000].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(masterGain);
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.08, t + i * 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+            osc.start(t + i * 0.01);
+            osc.stop(t + 0.4);
+          });
 
-          setTimeout(() => ctx.close(), 2000);
+          // Low resonance body
+          const body = ctx.createOscillator();
+          const bodyGain = ctx.createGain();
+          body.connect(bodyGain);
+          bodyGain.connect(masterGain);
+          body.type = 'sine';
+          body.frequency.value = 523;
+          bodyGain.gain.setValueAtTime(0.15, t);
+          bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+          body.start(t);
+          body.stop(t + 0.6);
+
+          setTimeout(() => ctx.close(), 3000);
         },
         bell: () => {
           const osc = ctx.createOscillator();

@@ -1,0 +1,83 @@
+
+FIX — Recreate exact "ka-ching" cash register sound from scratch using Web Audio API
+In client/src/components/layout/app-layout.tsx AND client/src/pages/profile.tsx, replace the cash case in playTone with:
+typescriptcash: () => {
+  const masterGain = ctx.createGain();
+  masterGain.connect(ctx.destination);
+  masterGain.gain.value = 0.7;
+
+  // === "KA" part — mechanical click + spring ===
+  // Click transient
+  const clickBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.015), ctx.sampleRate);
+  const clickData = clickBuf.getChannelData(0);
+  for (let i = 0; i < clickData.length; i++) {
+    clickData[i] = (Math.random() * 2 - 1) * (1 - i / clickData.length);
+  }
+  const click = ctx.createBufferSource();
+  click.buffer = clickBuf;
+  const clickFilter = ctx.createBiquadFilter();
+  clickFilter.type = 'highpass';
+  clickFilter.frequency.value = 800;
+  click.connect(clickFilter);
+  clickFilter.connect(masterGain);
+  click.start(ctx.currentTime);
+
+  // Spring/mechanism swoosh
+  const swoosh = ctx.createOscillator();
+  const swooshGain = ctx.createGain();
+  swoosh.connect(swooshGain);
+  swooshGain.connect(masterGain);
+  swoosh.type = 'sawtooth';
+  swoosh.frequency.setValueAtTime(400, ctx.currentTime);
+  swoosh.frequency.exponentialRampToValueAtTime(120, ctx.currentTime + 0.08);
+  swooshGain.gain.setValueAtTime(0.25, ctx.currentTime);
+  swooshGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+  swoosh.start(ctx.currentTime);
+  swoosh.stop(ctx.currentTime + 0.08);
+
+  // === "CHING" part — bright metallic bell ===
+  // Primary bell tone
+  const t = ctx.currentTime + 0.07;
+  [2637, 3136, 3951, 5274].forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.35 / (i + 1), t + i * 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 1.2 - i * 0.1);
+    osc.start(t + i * 0.005);
+    osc.stop(t + 1.2);
+  });
+
+  // Shimmer — high frequency sparkle
+  [6000, 7500, 9000].forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.08, t + i * 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+    osc.start(t + i * 0.01);
+    osc.stop(t + 0.4);
+  });
+
+  // Low resonance body
+  const body = ctx.createOscillator();
+  const bodyGain = ctx.createGain();
+  body.connect(bodyGain);
+  bodyGain.connect(masterGain);
+  body.type = 'sine';
+  body.frequency.value = 523;
+  bodyGain.gain.setValueAtTime(0.15, t);
+  bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+  body.start(t);
+  body.stop(t + 0.6);
+
+  setTimeout(() => ctx.close(), 3000);
+},
+Do NOT change: any other sound, any other file, any logic.
+Only touch: the cash: case in playTone in both app-layout.tsx and profile.tsx.
