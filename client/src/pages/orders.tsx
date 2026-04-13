@@ -372,6 +372,7 @@ export default function Orders() {
 
   const [visibleCols, setVisibleCols] = useState<string[]>(getStoredColumns);
   const [showColMenu, setShowColMenu] = useState(false);
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
 
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [showInlineFilters, setShowInlineFilters] = useState(false);
@@ -1299,7 +1300,7 @@ export default function Orders() {
           </div>
           <button
             className="h-10 w-10 rounded-xl border border-border/60 bg-card flex items-center justify-center shrink-0"
-            onClick={() => setShowColMenu(v => !v)}
+            onClick={() => setShowMobileFilters(v => !v)}
             data-testid="button-mobile-filter"
           >
             <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
