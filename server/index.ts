@@ -513,6 +513,14 @@ app.use((req, res, next) => {
     );
   }, 35000); // wait 35s after server starts
 
+  // ── WA queue guard — clear every 5 min unconditionally ──────────────────────
+  setInterval(() => {
+    try {
+      const { clearQueue } = require('./baileys-service');
+      clearQueue?.();
+    } catch {}
+  }, 5 * 60 * 1000); // clear queue every 5 min
+
   // ── Memory monitor — log every 2 min, GC + clear WA queue if heap > 400 MB ──
   setInterval(() => {
     const mem = process.memoryUsage();

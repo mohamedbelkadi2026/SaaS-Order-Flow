@@ -1219,3 +1219,13 @@ export async function autoStartBaileys(): Promise<void> {
     console.log("[WA-AUTO] No existing sessions to auto-start:", e.message);
   }
 }
+
+/** Clear the WhatsApp send queue — called externally by memory guard or queue watchdog */
+export function clearQueue(): void {
+  try {
+    const { clearQueue: clearWAQueue } = require('./whatsapp-service');
+    clearWAQueue?.();
+  } catch (e: any) {
+    console.warn('[Baileys] clearQueue delegate failed:', e.message);
+  }
+}
