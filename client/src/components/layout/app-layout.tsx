@@ -57,6 +57,7 @@ import { useActiveStore } from "@/hooks/use-active-store";
 import { useToast } from "@/hooks/use-toast";
 import { useSubscription } from "@/hooks/use-store-data";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useSoundNotification } from "@/hooks/use-sound-notification";
 
 /* ─── Nav definitions ─────────────────────────────────────────── */
 const ADMIN_NAV = [
@@ -219,6 +220,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const { toast } = useToast();
   const { activeStoreId, setActiveStoreId, stores } = useActiveStore();
+  const { playSound } = useSoundNotification();
   const userDropdownRef = useRef<HTMLDivElement>(null);
   const notifPanelRef = useRef<HTMLDivElement>(null);
 
@@ -301,25 +303,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return; // only connect when logged in
 
-    // Soft ping using Web Audio API — no external file needed
-    const playPing = () => {
-      try {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
-        gain.gain.setValueAtTime(0.35, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.4);
-        osc.onended = () => ctx.close();
-      } catch (_) { /* AudioContext not available */ }
-    };
-
     const es = new EventSource("/api/automation/events", { withCredentials: true });
 
     es.addEventListener("new_order", (e: MessageEvent) => {
@@ -328,9 +311,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
         queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
         queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
-        // Play ping only for automated sources (Shopify, YouCan, WooCommerce)
+        // Play user-chosen sound for automated sources (Shopify, YouCan, WooCommerce)
         const data = JSON.parse(e.data || "{}");
-        if (data.source && data.source !== "manual") playPing();
+        if (data.source && data.source !== "manual") playSound();
       } catch {}
     });
 

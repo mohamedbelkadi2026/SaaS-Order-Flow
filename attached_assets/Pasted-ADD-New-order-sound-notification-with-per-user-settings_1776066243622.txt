@@ -1,0 +1,113 @@
+ADD — New order sound notification with per-user settings
+CHANGE 1 — client/src/hooks/use-sound-notification.ts — create new hook:
+typescriptimport { useEffect, useRef } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+
+// Default notification sounds (hosted on CDN or local /sounds/ folder)
+export const NOTIFICATION_SOUNDS = [
+  { id: 'cash',     label: '💰 Caisse',        url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
+  { id: 'bell',     label: '🔔 Cloche',         url: 'https://assets.mixkit.co/active_storage/sfx/1/1-preview.mp3' },
+  { id: 'chime',    label: '✨ Carillon',        url: 'https://assets.mixkit.co/active_storage/sfx/2/2-preview.mp3' },
+  { id: 'ding',     label: '🎵 Ding',            url: 'https://assets.mixkit.co/active_storage/sfx/3/3-preview.mp3' },
+  { id: 'success',  label: '✅ Succès',          url: 'https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3' },
+];
+
+export function useSoundNotification() {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // Get user sound preferences from localStorage
+  const soundEnabled = localStorage.getItem('notification_sound_enabled') !== 'false';
+  const soundId = localStorage.getItem('notification_sound_id') || 'cash';
+  const sound = NOTIFICATION_SOUNDS.find(s => s.id === soundId) || NOTIFICATION_SOUNDS[0];
+
+  const playSound = () => {
+    if (!soundEnabled) return;
+    try {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+      audioRef.current = new Audio(sound.url);
+      audioRef.current.volume = 0.7;
+      audioRef.current.play().catch(() => {}); // ignore autoplay block
+    } catch {}
+  };
+
+  return { playSound, soundEnabled, soundId, sound };
+}
+CHANGE 2 — client/src/components/layout/app-layout.tsx OR wherever SSE/real-time new_order events are handled:
+Find where new_order SSE event is received and play sound:
+typescriptimport { useSoundNotification } from '@/hooks/use-sound-notification';
+
+// Inside component:
+const { playSound } = useSoundNotification();
+
+// Find the SSE event listener for new_order:
+// eventSource.addEventListener('new_order', ...) or similar
+// Add playSound() call:
+useEffect(() => {
+  // existing SSE listener — add playSound() when new order arrives:
+  const handleNewOrder = (event: any) => {
+    playSound(); // ADD THIS
+    // ... existing logic (toast, refetch, etc.) ...
+  };
+  // attach listener as before
+}, [playSound]);
+CHANGE 3 — Add sound settings in user profile page client/src/pages/profile.tsx:
+Add a new section "Notifications sonores":
+tsx<div className="space-y-4 border rounded-xl p-4">
+  <h3 className="font-semibold text-sm">🔔 Notifications sonores</h3>
+  
+  {/* Enable/disable toggle */}
+  <div className="flex items-center justify-between">
+    <label className="text-sm">Son pour nouvelle commande</label>
+    <Switch
+      checked={soundEnabled}
+      onCheckedChange={v => {
+        localStorage.setItem('notification_sound_enabled', String(v));
+        setSoundEnabled(v);
+      }}
+    />
+  </div>
+
+  {/* Sound selector */}
+  {soundEnabled && (
+    <div className="space-y-2">
+      <label className="text-xs text-muted-foreground">Choisir un son</label>
+      <div className="grid grid-cols-1 gap-2">
+        {NOTIFICATION_SOUNDS.map(s => (
+          <div
+            key={s.id}
+            className={cn(
+              "flex items-center justify-between p-3 rounded-lg border cursor-pointer",
+              selectedSound === s.id ? "border-primary bg-primary/5" : "border-border"
+            )}
+            onClick={() => {
+              localStorage.setItem('notification_sound_id', s.id);
+              setSelectedSound(s.id);
+            }}
+          >
+            <span className="text-sm font-medium">{s.label}</span>
+            <button
+              className="text-xs text-primary underline"
+              onClick={e => {
+                e.stopPropagation();
+                new Audio(s.url).play().catch(() => {});
+              }}
+            >
+              ▶ Tester
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )}
+</div>
+CHANGE 4 — Each user saves their own preference in localStorage (per browser):
+
+notification_sound_enabled = 'true' / 'false'
+notification_sound_id = 'cash' / 'bell' / etc.
+Settings are per-browser/device — each agent on their own device controls their own sound
+
+Do NOT change: any server routes, order logic, AI, WhatsApp, or any other feature.
+Only touch: create use-sound-notification.ts, update app-layout.tsx SSE handler, update profile.tsx.

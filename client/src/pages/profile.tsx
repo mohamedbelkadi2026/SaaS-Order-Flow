@@ -10,6 +10,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
+import { NOTIFICATION_SOUNDS } from "@/hooks/use-sound-notification";
 import {
   User, Globe, MessageCircle, CreditCard, Shield,
   Camera, TrendingUp, Store, Zap, Lock, Save, CheckCircle,
@@ -138,6 +140,14 @@ export default function Profile() {
     reader.onload = () => uploadLogo.mutate(reader.result as string);
     reader.readAsDataURL(file);
   };
+
+  // ── Sound notification preferences (localStorage per device) ────────────────
+  const [soundEnabled, setSoundEnabled] = useState(
+    () => localStorage.getItem('notification_sound_enabled') !== 'false'
+  );
+  const [selectedSound, setSelectedSound] = useState(
+    () => localStorage.getItem('notification_sound_id') || 'cash'
+  );
 
   // ── Plan usage ───────────────────────────────────────────────────────────────
   const monthlyOrders = sub?.currentMonthOrders ?? 0;
@@ -292,6 +302,7 @@ export default function Profile() {
 
             {/* ── Tab: Profil ───────────────────────────────────────────── */}
             {activeTab === "profil" && (
+              <>
               <Card className="p-4 md:p-6 rounded-2xl">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -339,6 +350,62 @@ export default function Profile() {
                   onClick={() => updateProfil.mutate({ username: profil.username, email: profil.email || null, phone: profil.phone || null })}
                 />
               </Card>
+
+              {/* ── Sound notifications ───────────────────────────────── */}
+              <Card className="p-4 md:p-6 rounded-2xl mt-4">
+                <div className="space-y-4">
+                  <h3 className="font-semibold text-sm">🔔 Notifications sonores</h3>
+
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm">Son pour nouvelle commande</label>
+                    <Switch
+                      data-testid="switch-sound-enabled"
+                      checked={soundEnabled}
+                      onCheckedChange={v => {
+                        localStorage.setItem('notification_sound_enabled', String(v));
+                        setSoundEnabled(v);
+                      }}
+                    />
+                  </div>
+
+                  {soundEnabled && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-muted-foreground">Choisir un son</p>
+                      <div className="grid grid-cols-1 gap-2">
+                        {NOTIFICATION_SOUNDS.map(s => (
+                          <div
+                            key={s.id}
+                            data-testid={`sound-option-${s.id}`}
+                            className={cn(
+                              "flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors",
+                              selectedSound === s.id
+                                ? "border-primary bg-primary/5"
+                                : "border-border hover:bg-muted/40"
+                            )}
+                            onClick={() => {
+                              localStorage.setItem('notification_sound_id', s.id);
+                              setSelectedSound(s.id);
+                            }}
+                          >
+                            <span className="text-sm font-medium">{s.label}</span>
+                            <button
+                              data-testid={`button-test-sound-${s.id}`}
+                              className="text-xs text-primary underline"
+                              onClick={e => {
+                                e.stopPropagation();
+                                new Audio(s.url).play().catch(() => {});
+                              }}
+                            >
+                              ▶ Tester
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Card>
+              </>
             )}
 
             {/* ── Tab: Réseaux ──────────────────────────────────────────── */}
