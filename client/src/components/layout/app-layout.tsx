@@ -57,7 +57,6 @@ import { useActiveStore } from "@/hooks/use-active-store";
 import { useToast } from "@/hooks/use-toast";
 import { useSubscription } from "@/hooks/use-store-data";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useSoundNotification } from "@/hooks/use-sound-notification";
 
 /* ─── Nav definitions ─────────────────────────────────────────── */
 const ADMIN_NAV = [
@@ -220,7 +219,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const { toast } = useToast();
   const { activeStoreId, setActiveStoreId, stores } = useActiveStore();
-  const { playSound } = useSoundNotification();
   const userDropdownRef = useRef<HTMLDivElement>(null);
   const notifPanelRef = useRef<HTMLDivElement>(null);
 
@@ -303,17 +301,53 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return; // only connect when logged in
 
+    const playPing = () => {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
+        gain.gain.setValueAtTime(0.35, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.4);
+        osc.onended = () => ctx.close();
+      } catch (_) {}
+    };
+
+    const playSound = () => {
+      try {
+        const soundEnabled = localStorage.getItem('notification_sound_enabled') !== 'false';
+        if (!soundEnabled) return;
+        const soundId = localStorage.getItem('notification_sound_id') || 'cash';
+        const sounds: Record<string, string> = {
+          cash:    'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3',
+          bell:    'https://assets.mixkit.co/active_storage/sfx/1/1-preview.mp3',
+          chime:   'https://assets.mixkit.co/active_storage/sfx/2/2-preview.mp3',
+          ding:    'https://assets.mixkit.co/active_storage/sfx/3/3-preview.mp3',
+          success: 'https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3',
+        };
+        const url = sounds[soundId] || sounds.cash;
+        const audio = new Audio(url);
+        audio.volume = 0.7;
+        audio.play().catch(() => playPing());
+      } catch { playPing(); }
+    };
+
     const es = new EventSource("/api/automation/events", { withCredentials: true });
 
-    es.addEventListener("new_order", (e: MessageEvent) => {
+    es.addEventListener("new_order", () => {
       try {
         // Invalidate order lists and sidebar badge count
         queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
         queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
         queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
-        // Play user-chosen sound for automated sources (Shopify, YouCan, WooCommerce)
-        const data = JSON.parse(e.data || "{}");
-        if (data.source && data.source !== "manual") playSound();
+        // Play sound for ALL new orders (manual + automated)
+        playSound();
       } catch {}
     });
 
