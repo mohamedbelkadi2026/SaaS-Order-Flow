@@ -62,6 +62,11 @@ setInterval(async () => {
       queue.splice(queue.indexOf(item), 1);
       const ok = await sendWhatsAppMessage(item.phone, item.message, storeId);
       if (!ok && item.retries < 3) {
+        if (queue.length >= 5) {
+          queue.length = 0;
+          console.warn(`[WA] Queue limit reached — cleared`);
+          return;
+        }
         queue.push({ ...item, retries: item.retries + 1, nextRetry: Date.now() + 60_000 });
       } else if (!ok) {
         console.error(`[WA Transport:${storeId}] ❌ Max retries (3) exceeded for ${item.phone} — dropped`);
@@ -69,6 +74,16 @@ setInterval(async () => {
     }
   }
 }, 60_000);
+
+/** Clear all pending queues — called externally by memory guard */
+export function clearQueue(): void {
+  for (const [storeId, queue] of pendingRetryQueues) {
+    if (queue.length > 0) {
+      queue.length = 0;
+      console.log(`[WA] Queue for store ${storeId} cleared externally`);
+    }
+  }
+}
 
 /* ── Primary send via per-store Baileys instance ─────────────── */
 export async function sendWhatsAppMessage(phone: string, message: string, storeId = 1): Promise<boolean> {

@@ -1,0 +1,54 @@
+Fhmtk mezyan! — bghiti WhatsApp ma ysift walo automatiquement hta nta tdir lui-même, bach queue ma tkberch.
+Hna l prompt:
+
+DISABLE all automatic WhatsApp sending — only send when manually triggered by user
+Find ALL places in the codebase where WhatsApp messages are sent automatically (AI confirmation, recovery messages, marketing, etc.) and disable the automatic sending.
+CHANGE 1 — server/recovery-job.ts — disable auto-send:
+typescriptasync function runRecoveryJob() {
+  return; // DISABLED — WhatsApp auto-send disabled
+}
+CHANGE 2 — Find triggerAIForNewOrder or any function that auto-sends WhatsApp when order arrives — disable it:
+typescript// Find calls like:
+triggerAIForNewOrder(...)
+// Replace with:
+// triggerAIForNewOrder(...) — DISABLED
+console.log('[WA] Auto-send disabled — skipping');
+CHANGE 3 — Find the WhatsApp transport queue — add hard limit + clear on startup:
+In the file containing Queued message log:
+typescript// At service init — clear queue:
+queue.length = 0;
+// OR queue.clear?.()
+
+// Before every queue.push():
+if (queue.length >= 5) {
+  queue.length = 0; // clear instead of accumulate
+  console.warn('[WA] Queue limit reached — cleared');
+  return; // drop message
+}
+CHANGE 4 — server/index.ts — delay Baileys start by 30s and add memory guard:
+typescript// Replace autoStartBaileys immediate call with:
+setTimeout(() => {
+  autoStartBaileys().catch(err => console.error('[Baileys] start failed:', err.message));
+}, 30000);
+
+setTimeout(() => {
+  autoStartDevices().catch(err => console.error('[Devices] start failed:', err.message));
+}, 35000);
+
+// Add memory guard every minute:
+setInterval(() => {
+  const mb = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+  if (mb > 400) {
+    console.warn(`[Memory] High memory ${mb}MB — clearing WA queue`);
+    // Import and clear queue
+    try { require('./baileys-service').clearQueue?.(); } catch {}
+  }
+}, 60_000);
+CHANGE 5 — Export clearQueue from Baileys service:
+typescript// In baileys-service.ts or wa-transport.ts:
+export function clearQueue() {
+  queue.length = 0;
+  console.log('[WA] Queue cleared externally');
+}
+Result: WhatsApp still works (Baileys still connects) but NEVER sends automatically. User controls when to send manually. Queue can never grow large.
+Do NOT change: manual WhatsApp send buttons in UI, connection/QR code logic, any other feature.

@@ -2918,8 +2918,8 @@ export async function registerRoutes(
       if (waState.state !== "connected") {
         console.warn(`[WhatsApp:${storeId}] ⚠️ Not connected (state=${waState.state}) — AI message will be queued`);
       }
-      triggerAIForNewOrder(storeId, order.id, parsed.customerPhone, parsed.customerName, firstProductId)
-        .catch(err => console.error(`[AI] Trigger failed for order ${order.id}:`, err.message));
+      // triggerAIForNewOrder(storeId, order.id, parsed.customerPhone, parsed.customerName, firstProductId) — DISABLED
+      console.log('[WA] Auto-send disabled — skipping AI trigger');
     } catch (err: any) {
       console.error(`Token webhook error (${provider}):`, err);
       res.status(500).json({ message: 'Webhook processing failed' });
@@ -2965,10 +2965,9 @@ export async function registerRoutes(
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName, status: 'nouveau', source: 'gsheets' });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       res.json({ success: true, orderId: order.id });
-      // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
-      console.log(`[Webhook] Attempting WhatsApp AI trigger for GSheets order: ${customerPhone}`);
-      triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
-        .catch(err => console.error(`[AI] GSheets trigger failed for order ${order.id}:`, err.message));
+      // ── Fire-and-forget: AI WhatsApp confirmation — DISABLED ──────────────
+      // triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id) — DISABLED
+      console.log('[WA] Auto-send disabled — skipping AI trigger');
     } catch (err: any) {
       console.error('GSheets webhook error:', err);
       res.status(500).json({ message: 'Processing failed' });
@@ -3015,8 +3014,8 @@ export async function registerRoutes(
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: "gsheets", action: "order_synced", status: "success", message: `Commande Google Sheets ${orderNumber} importée (API key)` });
       console.log(`[GSheets-API] New order #${orderNumber} for store ${storeId} — ${customerName} / ${customerPhone}`);
       res.json({ success: true, orderId: order.id });
-      triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
-        .catch(err => console.error(`[AI] GSheets-API trigger failed for order ${order.id}:`, err.message));
+      // triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id) — DISABLED
+      console.log('[WA] Auto-send disabled — skipping AI trigger');
     } catch (err: any) {
       console.error("[GSheets-API] Webhook error:", err);
       res.status(500).json({ success: false, message: "Processing failed" });
@@ -3368,11 +3367,12 @@ export async function registerRoutes(
 
       res.status(201).json(order);
 
-      // Fire-and-forget: AI confirmation trigger
-      if (data.status !== 'confirme') {
-        const firstProductId = data.items[0]?.productId ?? null;
-        triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, firstProductId).catch(console.error);
-      }
+      // Fire-and-forget: AI confirmation trigger — DISABLED
+      // if (data.status !== 'confirme') {
+      //   const firstProductId = data.items[0]?.productId ?? null;
+      //   triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, firstProductId) — DISABLED
+      // }
+      console.log('[WA] Auto-send disabled — skipping AI trigger');
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -3535,8 +3535,9 @@ export async function registerRoutes(
       const finalOrder = await storage.getOrder(order.id);
       res.status(201).json(finalOrder || order);
 
-      // Fire-and-forget: AI confirmation trigger
-      triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, orderItemsToCreate[0]?.productId).catch(console.error);
+      // Fire-and-forget: AI confirmation trigger — DISABLED
+      // triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, orderItemsToCreate[0]?.productId) — DISABLED
+      console.log('[WA] Auto-send disabled — skipping AI trigger');
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;

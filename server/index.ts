@@ -505,23 +505,27 @@ app.use((req, res, next) => {
     autoStartBaileys().catch(err =>
       console.error('[Baileys] autoStart failed (non-fatal):', err.message)
     );
-  }, 10000); // wait 10s after server starts
+  }, 30000); // wait 30s after server starts
 
   setTimeout(() => {
     autoStartDevices().catch(err =>
       console.error('[Devices] autoStart failed (non-fatal):', err.message)
     );
-  }, 15000); // wait 15s after server starts
+  }, 35000); // wait 35s after server starts
 
-  // ── Memory monitor — log every 2 min, GC if heap > 450 MB ────────────────
+  // ── Memory monitor — log every 2 min, GC + clear WA queue if heap > 400 MB ──
   setInterval(() => {
     const mem = process.memoryUsage();
     const heapUsedMB = Math.round(mem.heapUsed / 1024 / 1024);
     const rssM = Math.round(mem.rss / 1024 / 1024);
     console.log(`[Memory] Heap: ${heapUsedMB}MB RSS: ${rssM}MB`);
-    if (heapUsedMB > 450) {
-      console.warn('[Memory] HIGH MEMORY — forcing garbage collection');
+    if (heapUsedMB > 400) {
+      console.warn(`[Memory] High memory ${heapUsedMB}MB — clearing WA queue`);
       if (global.gc) global.gc();
+      try {
+        const { clearQueue } = require('./whatsapp-service');
+        clearQueue?.();
+      } catch {}
     }
   }, 2 * 60 * 1000);
 })();

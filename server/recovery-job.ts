@@ -18,6 +18,7 @@ async function getProductStock(orderId: number): Promise<number | null> {
 }
 
 async function runRecoveryJob() {
+  return; // DISABLED — WhatsApp auto-send disabled
   try {
     const allEnabled = await storage.getAllStoresWithRecoveryEnabled();
     if (!allEnabled.length) return;
