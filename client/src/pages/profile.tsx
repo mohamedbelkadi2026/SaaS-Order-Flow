@@ -11,7 +11,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { NOTIFICATION_SOUNDS } from "@/hooks/use-sound-notification";
 import {
   User, Globe, MessageCircle, CreditCard, Shield,
   Camera, TrendingUp, Store, Zap, Lock, Save, CheckCircle,
@@ -142,24 +141,45 @@ export default function Profile() {
   };
 
   // ── Sound notification preferences (localStorage per device) ────────────────
+  const SOUNDS = [
+    { id: 'cash',    label: '💰 Caisse enregistreuse' },
+    { id: 'bell',    label: '🔔 Cloche' },
+    { id: 'chime',   label: '✨ Carillon' },
+    { id: 'ding',    label: '🎵 Ding' },
+    { id: 'success', label: '✅ Succès' },
+  ];
+  const SOUND_URLS: Record<string, string> = {
+    cash:    'https://cdn.freesound.org/previews/397/397353_4284968-lq.mp3',
+    bell:    'https://cdn.freesound.org/previews/411/411089_5121236-lq.mp3',
+    chime:   'https://cdn.freesound.org/previews/411/411642_5121236-lq.mp3',
+    ding:    'https://cdn.freesound.org/previews/536/536766_11861866-lq.mp3',
+    success: 'https://cdn.freesound.org/previews/341/341695_5858296-lq.mp3',
+  };
+
   const [pendingSoundEnabled, setPendingSoundEnabled] = useState(
-    () => localStorage.getItem('notification_sound_enabled') !== 'false'
+    () => localStorage.getItem('notif_sound_enabled') !== 'false'
   );
   const [pendingSound, setPendingSound] = useState(
-    () => localStorage.getItem('notification_sound_id') || 'cash'
+    () => localStorage.getItem('notif_sound_id') || 'cash'
   );
   const [soundSaved, setSoundSaved] = useState(false);
 
   useEffect(() => {
-    setPendingSound(localStorage.getItem('notification_sound_id') || 'cash');
-    setPendingSoundEnabled(localStorage.getItem('notification_sound_enabled') !== 'false');
+    setPendingSound(localStorage.getItem('notif_sound_id') || 'cash');
+    setPendingSoundEnabled(localStorage.getItem('notif_sound_enabled') !== 'false');
   }, []);
 
   const saveSoundSettings = () => {
-    localStorage.setItem('notification_sound_id', pendingSound);
-    localStorage.setItem('notification_sound_enabled', String(pendingSoundEnabled));
+    localStorage.setItem('notif_sound_id', pendingSound);
+    localStorage.setItem('notif_sound_enabled', String(pendingSoundEnabled));
     setSoundSaved(true);
     setTimeout(() => setSoundSaved(false), 2000);
+  };
+
+  const testSound = (id: string) => {
+    const audio = new Audio(SOUND_URLS[id]);
+    audio.volume = 0.8;
+    audio.play().catch(() => {});
   };
 
   // ── Plan usage ───────────────────────────────────────────────────────────────
@@ -380,43 +400,46 @@ export default function Profile() {
 
                   {pendingSoundEnabled && (
                     <div className="space-y-2">
-                      <p className="text-xs text-muted-foreground">Choisir un son</p>
-                      <div className="grid grid-cols-1 gap-2">
-                        {NOTIFICATION_SOUNDS.map(s => (
-                          <div
-                            key={s.id}
-                            data-testid={`sound-option-${s.id}`}
-                            className={cn(
-                              "flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors",
-                              pendingSound === s.id
-                                ? "border-primary bg-primary/5 font-semibold"
-                                : "border-border hover:bg-muted/40"
-                            )}
-                            onClick={() => setPendingSound(s.id)}
-                          >
+                      <p className="text-xs text-muted-foreground">Choisir un son :</p>
+                      {SOUNDS.map(s => (
+                        <div
+                          key={s.id}
+                          data-testid={`sound-option-${s.id}`}
+                          className={cn(
+                            "flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors",
+                            pendingSound === s.id
+                              ? "border-primary bg-primary/5"
+                              : "border-border hover:bg-muted/40"
+                          )}
+                          onClick={() => setPendingSound(s.id)}
+                        >
+                          <div className="flex items-center gap-2">
+                            <div className={cn(
+                              "w-3 h-3 rounded-full border-2",
+                              pendingSound === s.id ? "border-primary bg-primary" : "border-muted-foreground"
+                            )} />
                             <span className="text-sm font-medium">{s.label}</span>
-                            <button
-                              data-testid={`button-test-sound-${s.id}`}
-                              className="text-xs text-primary font-medium px-2 py-1 rounded-md hover:bg-primary/10"
-                              onClick={e => {
-                                e.stopPropagation();
-                                new Audio(s.url).play().catch(() => {});
-                              }}
-                            >
-                              ▶ Tester
-                            </button>
                           </div>
-                        ))}
-                      </div>
+                          <button
+                            type="button"
+                            data-testid={`button-test-sound-${s.id}`}
+                            className="text-xs text-primary font-semibold px-3 py-1 rounded-lg hover:bg-primary/10 border border-primary/30"
+                            onClick={e => { e.stopPropagation(); testSound(s.id); }}
+                          >
+                            ▶ Tester
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   )}
 
                   <button
+                    type="button"
                     data-testid="button-save-sound"
                     className="w-full py-2.5 rounded-xl bg-primary text-white font-semibold text-sm mt-2"
                     onClick={saveSoundSettings}
                   >
-                    {soundSaved ? '✅ Enregistré !' : 'Enregistrer'}
+                    {soundSaved ? '✅ Enregistré !' : 'Enregistrer les préférences'}
                   </button>
                 </div>
               </Card>

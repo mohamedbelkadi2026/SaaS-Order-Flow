@@ -301,53 +301,48 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return; // only connect when logged in
 
-    const playPing = () => {
+    const playNotificationSound = () => {
       try {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(880, ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
-        gain.gain.setValueAtTime(0.35, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.4);
-        osc.onended = () => ctx.close();
-      } catch (_) {}
-    };
-
-    const playSound = () => {
-      try {
-        const soundEnabled = localStorage.getItem('notification_sound_enabled') !== 'false';
-        if (!soundEnabled) return;
-        const soundId = localStorage.getItem('notification_sound_id') || 'cash';
-        const sounds: Record<string, string> = {
-          cash:    'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3',
-          bell:    'https://assets.mixkit.co/active_storage/sfx/1/1-preview.mp3',
-          chime:   'https://assets.mixkit.co/active_storage/sfx/2/2-preview.mp3',
-          ding:    'https://assets.mixkit.co/active_storage/sfx/3/3-preview.mp3',
-          success: 'https://assets.mixkit.co/active_storage/sfx/2018/2018-preview.mp3',
+        const enabled = localStorage.getItem('notif_sound_enabled') !== 'false';
+        if (!enabled) return;
+        const id = localStorage.getItem('notif_sound_id') || 'cash';
+        const urls: Record<string, string> = {
+          cash:    'https://cdn.freesound.org/previews/397/397353_4284968-lq.mp3',
+          bell:    'https://cdn.freesound.org/previews/411/411089_5121236-lq.mp3',
+          chime:   'https://cdn.freesound.org/previews/411/411642_5121236-lq.mp3',
+          ding:    'https://cdn.freesound.org/previews/536/536766_11861866-lq.mp3',
+          success: 'https://cdn.freesound.org/previews/341/341695_5858296-lq.mp3',
         };
-        const url = sounds[soundId] || sounds.cash;
-        const audio = new Audio(url);
-        audio.volume = 0.7;
-        audio.play().catch(() => playPing());
-      } catch { playPing(); }
+        const audio = new Audio(urls[id] || urls.cash);
+        audio.volume = 0.8;
+        audio.play().catch(() => {
+          try {
+            const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.3);
+            gain.gain.setValueAtTime(0.4, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.4);
+            osc.onended = () => ctx.close();
+          } catch {}
+        });
+      } catch {}
     };
 
     const es = new EventSource("/api/automation/events", { withCredentials: true });
 
     es.addEventListener("new_order", () => {
       try {
-        // Invalidate order lists and sidebar badge count
         queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
         queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
         queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
-        // Play sound for ALL new orders (manual + automated)
-        playSound();
+        playNotificationSound();
       } catch {}
     });
 
