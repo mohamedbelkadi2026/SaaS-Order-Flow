@@ -148,12 +148,75 @@ export default function Profile() {
     { id: 'ding',    label: '🎵 Ding' },
     { id: 'success', label: '✅ Succès' },
   ];
-  const SOUND_URLS: Record<string, string> = {
-    cash:    'https://www.soundjay.com/misc/sounds/cash-register-1.mp3',
-    bell:    'https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3',
-    chime:   'https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3',
-    ding:    'https://www.soundjay.com/buttons/sounds/button-3.mp3',
-    success: 'https://www.soundjay.com/misc/sounds/magic-chime-01.mp3',
+  const playTone = (soundId: string) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const sounds: Record<string, () => void> = {
+        cash: () => {
+          [880, 1100, 1320].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            const t = ctx.currentTime + i * 0.08;
+            gain.gain.setValueAtTime(0.4, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+            osc.start(t); osc.stop(t + 0.15);
+          });
+        },
+        bell: () => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.value = 659;
+          gain.gain.setValueAtTime(0.5, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
+          osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 1.2);
+        },
+        chime: () => {
+          [523, 659, 784].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            const t = ctx.currentTime + i * 0.15;
+            gain.gain.setValueAtTime(0.35, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+            osc.start(t); osc.stop(t + 0.4);
+          });
+        },
+        ding: () => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.value = 1047;
+          gain.gain.setValueAtTime(0.45, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+          osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
+        },
+        success: () => {
+          [523, 659, 784, 1047].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = 'square';
+            osc.frequency.value = freq;
+            const t = ctx.currentTime + i * 0.1;
+            gain.gain.setValueAtTime(0.2, t);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+            osc.start(t); osc.stop(t + 0.15);
+          });
+        },
+      };
+      (sounds[soundId] || sounds.cash)();
+      setTimeout(() => ctx.close(), 3000);
+    } catch {}
   };
 
   const [pendingSoundEnabled, setPendingSoundEnabled] = useState(
@@ -177,24 +240,7 @@ export default function Profile() {
   };
 
   const testSound = (id: string) => {
-    const audio = new Audio(SOUND_URLS[id]);
-    audio.volume = 0.8;
-    audio.load();
-    audio.play().catch(err => {
-      console.error('Sound failed:', err);
-      try {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.4, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.5);
-      } catch {}
-    });
+    playTone(id);
   };
 
   // ── Plan usage ───────────────────────────────────────────────────────────────

@@ -301,38 +301,82 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return; // only connect when logged in
 
-    const playNotificationSound = () => {
+    const playTone = (soundId: string) => {
       try {
-        const enabled = localStorage.getItem('notif_sound_enabled') !== 'false';
-        if (!enabled) return;
-        const id = localStorage.getItem('notif_sound_id') || 'cash';
-        const urls: Record<string, string> = {
-          cash:    'https://www.soundjay.com/misc/sounds/cash-register-1.mp3',
-          bell:    'https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3',
-          chime:   'https://www.soundjay.com/misc/sounds/bell-ringing-01.mp3',
-          ding:    'https://www.soundjay.com/buttons/sounds/button-3.mp3',
-          success: 'https://www.soundjay.com/misc/sounds/magic-chime-01.mp3',
-        };
-        const audio = new Audio(urls[id] || urls.cash);
-        audio.volume = 0.8;
-        audio.play().catch(() => {
-          try {
-            const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const sounds: Record<string, () => void> = {
+          cash: () => {
+            [880, 1100, 1320].forEach((freq, i) => {
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain); gain.connect(ctx.destination);
+              osc.type = 'triangle';
+              osc.frequency.value = freq;
+              const t = ctx.currentTime + i * 0.08;
+              gain.gain.setValueAtTime(0.4, t);
+              gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+              osc.start(t); osc.stop(t + 0.15);
+            });
+          },
+          bell: () => {
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
-            osc.connect(gain);
-            gain.connect(ctx.destination);
+            osc.connect(gain); gain.connect(ctx.destination);
             osc.type = 'sine';
-            osc.frequency.setValueAtTime(880, ctx.currentTime);
-            osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.3);
-            gain.gain.setValueAtTime(0.4, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-            osc.start(ctx.currentTime);
-            osc.stop(ctx.currentTime + 0.4);
-            osc.onended = () => ctx.close();
-          } catch {}
-        });
+            osc.frequency.value = 659;
+            gain.gain.setValueAtTime(0.5, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
+            osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 1.2);
+          },
+          chime: () => {
+            [523, 659, 784].forEach((freq, i) => {
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain); gain.connect(ctx.destination);
+              osc.type = 'sine';
+              osc.frequency.value = freq;
+              const t = ctx.currentTime + i * 0.15;
+              gain.gain.setValueAtTime(0.35, t);
+              gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+              osc.start(t); osc.stop(t + 0.4);
+            });
+          },
+          ding: () => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.value = 1047;
+            gain.gain.setValueAtTime(0.45, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+            osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
+          },
+          success: () => {
+            [523, 659, 784, 1047].forEach((freq, i) => {
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain); gain.connect(ctx.destination);
+              osc.type = 'square';
+              osc.frequency.value = freq;
+              const t = ctx.currentTime + i * 0.1;
+              gain.gain.setValueAtTime(0.2, t);
+              gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+              osc.start(t); osc.stop(t + 0.15);
+            });
+          },
+        };
+        (sounds[soundId] || sounds.cash)();
+        setTimeout(() => ctx.close(), 3000);
       } catch {}
+    };
+
+    const playNotificationSound = () => {
+      const enabled = localStorage.getItem('notif_sound_enabled') !== 'false';
+      if (!enabled) return;
+      const id = localStorage.getItem('notif_sound_id') || 'cash';
+      playTone(id);
     };
 
     const es = new EventSource("/api/automation/events", { withCredentials: true });

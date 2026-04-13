@@ -1,0 +1,94 @@
+FIX — Replace all external sound URLs with Web Audio API generated sounds (no external URLs needed)
+In BOTH client/src/components/layout/app-layout.tsx AND client/src/pages/profile.tsx, remove ALL external MP3 URLs and replace with Web Audio API functions:
+CHANGE 1 — Create a playTone function that generates different sounds:
+typescriptconst playTone = (soundId: string) => {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+
+    const sounds: Record<string, () => void> = {
+      cash: () => {
+        // Cha-ching: two quick high notes
+        [880, 1100, 1320].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.type = 'triangle';
+          osc.frequency.value = freq;
+          const t = ctx.currentTime + i * 0.08;
+          gain.gain.setValueAtTime(0.4, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+          osc.start(t); osc.stop(t + 0.15);
+        });
+      },
+      bell: () => {
+        // Bell: long sine fade
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = 659;
+        gain.gain.setValueAtTime(0.5, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 1.2);
+      },
+      chime: () => {
+        // Chime: 3 ascending notes
+        [523, 659, 784].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          const t = ctx.currentTime + i * 0.15;
+          gain.gain.setValueAtTime(0.35, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+          osc.start(t); osc.stop(t + 0.4);
+        });
+      },
+      ding: () => {
+        // Ding: single short high note
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = 1047;
+        gain.gain.setValueAtTime(0.45, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.3);
+      },
+      success: () => {
+        // Success: ascending 4-note jingle
+        [523, 659, 784, 1047].forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.type = 'square';
+          osc.frequency.value = freq;
+          const t = ctx.currentTime + i * 0.1;
+          gain.gain.setValueAtTime(0.2, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+          osc.start(t); osc.stop(t + 0.15);
+        });
+      },
+    };
+
+    (sounds[soundId] || sounds.cash)();
+    setTimeout(() => ctx.close(), 3000);
+  } catch {}
+};
+CHANGE 2 — In app-layout.tsx — use playTone in playNotificationSound:
+typescriptconst playNotificationSound = () => {
+  const enabled = localStorage.getItem('notif_sound_enabled') !== 'false';
+  if (!enabled) return;
+  const id = localStorage.getItem('notif_sound_id') || 'cash';
+  playTone(id);
+};
+CHANGE 3 — In profile.tsx — use playTone in testSound:
+typescriptconst testSound = (id: string) => {
+  playTone(id);
+};
+Remove ALL new Audio(...) calls and ALL external URLs from both files — they are no longer needed.
+Do NOT change: any other logic, server, order flow, or any other file.
+Only touch: app-layout.tsx and profile.tsx sound functions only.
