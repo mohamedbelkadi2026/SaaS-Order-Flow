@@ -1,0 +1,85 @@
+MOBILE FILTER — clicking filter icon shows/hides full filter panel inline
+In client/src/pages/orders.tsx, in the mobile view:
+CHANGE 1 — Filter button toggles a filter panel:
+typescriptconst [showMobileFilters, setShowMobileFilters] = useState(false);
+The existing filter icon button — add onClick:
+tsx<button onClick={() => setShowMobileFilters(v => !v)}>
+  <Filter className="w-5 h-5" /> {/* existing icon */}
+</button>
+CHANGE 2 — Add collapsible filter panel below the search bar:
+When showMobileFilters === true, show this panel:
+tsx{showMobileFilters && (
+  <div className="bg-white dark:bg-card rounded-2xl border p-4 space-y-3 mb-3">
+
+    {/* Statut */}
+    <Select value={filters.status || 'all'} onValueChange={v => setFilters(f => ({...f, status: v}))}>
+      <SelectTrigger className="w-full"><SelectValue placeholder="Toutes les statuts" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Toutes les statuts</SelectItem>
+        {ORDER_STATUSES.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+
+    {/* Boutique / Magasin */}
+    <Select value={filters.magasinId || 'all'} onValueChange={v => setFilters(f => ({...f, magasinId: v}))}>
+      <SelectTrigger className="w-full"><SelectValue placeholder="Toutes les boutiques" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Toutes les boutiques</SelectItem>
+        {(magasins || []).map((m: any) => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
+      </SelectContent>
+    </Select>
+
+    {/* Source */}
+    <Select value={filters.source || 'all'} onValueChange={v => setFilters(f => ({...f, source: v}))}>
+      <SelectTrigger className="w-full"><SelectValue placeholder="Toutes sources" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Toutes sources</SelectItem>
+        <SelectItem value="shopify">Shopify</SelectItem>
+        <SelectItem value="manual">Manuel</SelectItem>
+        <SelectItem value="woocommerce">WooCommerce</SelectItem>
+      </SelectContent>
+    </Select>
+
+    {/* Équipe */}
+    <Select value={filters.agentId || 'all'} onValueChange={v => setFilters(f => ({...f, agentId: v}))}>
+      <SelectTrigger className="w-full"><SelectValue placeholder="Toute l'équipe" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Toute l'équipe</SelectItem>
+        {(agents || []).map((a: any) => <SelectItem key={a.id} value={String(a.id)}>{a.username}</SelectItem>)}
+      </SelectContent>
+    </Select>
+
+    {/* Type Date */}
+    <Select value={filters.dateType || 'lastAction'} onValueChange={v => setFilters(f => ({...f, dateType: v}))}>
+      <SelectTrigger className="w-full"><SelectValue placeholder="Type date" /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="lastAction">Dernière action</SelectItem>
+        <SelectItem value="createdAt">Date de création</SelectItem>
+      </SelectContent>
+    </Select>
+
+    {/* Doublons */}
+    <button
+      className={cn(
+        "w-full py-2 rounded-xl border text-sm font-semibold transition-colors",
+        filters.showDuplicates
+          ? "bg-amber-50 border-amber-300 text-amber-700"
+          : "bg-white border-gray-200 text-gray-600"
+      )}
+      onClick={() => setFilters(f => ({...f, showDuplicates: !f.showDuplicates}))}
+    >
+      ⚠️ Doublons
+    </button>
+
+    {/* Close button */}
+    <button
+      className="w-full py-2 rounded-xl bg-primary text-white text-sm font-semibold"
+      onClick={() => setShowMobileFilters(false)}
+    >
+      Appliquer les filtres
+    </button>
+
+  </div>
+)}
+Do NOT change: PC layout, any other page, server, or logic.
+Only touch: mobile section in client/src/pages/orders.tsx.

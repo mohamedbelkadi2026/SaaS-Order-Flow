@@ -372,6 +372,7 @@ export default function Orders() {
 
   const [visibleCols, setVisibleCols] = useState<string[]>(getStoredColumns);
   const [showColMenu, setShowColMenu] = useState(false);
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
 
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [showInlineFilters, setShowInlineFilters] = useState(false);
@@ -1298,13 +1299,105 @@ export default function Orders() {
             />
           </div>
           <button
-            className="h-10 w-10 rounded-xl border border-border/60 bg-card flex items-center justify-center shrink-0"
-            onClick={() => setShowColMenu(v => !v)}
+            className={cn(
+              "h-10 w-10 rounded-xl border flex items-center justify-center shrink-0 transition-colors",
+              showMobileFilters
+                ? "border-primary bg-primary text-white"
+                : "border-border/60 bg-card text-muted-foreground"
+            )}
+            onClick={() => setShowMobileFilters(v => !v)}
             data-testid="button-mobile-filter"
           >
-            <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
+            <SlidersHorizontal className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Mobile filter panel */}
+        {showMobileFilters && (
+          <div className="bg-white dark:bg-card rounded-2xl border border-border/60 p-4 space-y-3 mb-3">
+
+            {/* Statut */}
+            <Select value={filters.statusFilter || 'all'} onValueChange={v => updateFilter('statusFilter', v === 'all' ? '' : v)}>
+              <SelectTrigger className="w-full" data-testid="mobile-filter-status">
+                <SelectValue placeholder="Tous les statuts" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tous les statuts</SelectItem>
+                {ORDER_STATUSES.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+
+            {/* Boutique / Magasin */}
+            <Select value={selectedMagasin !== null ? String(selectedMagasin) : 'all'} onValueChange={v => setSelectedMagasin(v === 'all' ? null : Number(v))}>
+              <SelectTrigger className="w-full" data-testid="mobile-filter-magasin">
+                <SelectValue placeholder="Toutes les boutiques" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Toutes les boutiques</SelectItem>
+                {(magasins || []).map((m: any) => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+
+            {/* Source */}
+            <Select value={filters.source || 'all'} onValueChange={v => updateFilter('source', v === 'all' ? '' : v)}>
+              <SelectTrigger className="w-full" data-testid="mobile-filter-source">
+                <SelectValue placeholder="Toutes sources" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Toutes sources</SelectItem>
+                <SelectItem value="shopify">Shopify</SelectItem>
+                <SelectItem value="manual">Manuel</SelectItem>
+                <SelectItem value="woocommerce">WooCommerce</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Équipe */}
+            <Select value={filters.agentId || 'all'} onValueChange={v => updateFilter('agentId', v === 'all' ? '' : v)}>
+              <SelectTrigger className="w-full" data-testid="mobile-filter-agent">
+                <SelectValue placeholder="Toute l'équipe" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Toute l'équipe</SelectItem>
+                {(agents || []).map((a: any) => <SelectItem key={a.id} value={String(a.id)}>{a.username}</SelectItem>)}
+              </SelectContent>
+            </Select>
+
+            {/* Type Date */}
+            <Select value={filters.dateType || 'createdAt'} onValueChange={v => updateFilter('dateType', v)}>
+              <SelectTrigger className="w-full" data-testid="mobile-filter-date-type">
+                <SelectValue placeholder="Type date" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="createdAt">Date de création</SelectItem>
+                <SelectItem value="lastAction">Dernière action</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Doublons */}
+            <button
+              className={cn(
+                "w-full py-2 rounded-xl border text-sm font-semibold transition-colors",
+                showDuplicatesOnly
+                  ? "bg-amber-50 border-amber-300 text-amber-700"
+                  : "bg-white dark:bg-card border-border/60 text-muted-foreground"
+              )}
+              onClick={() => setShowDuplicatesOnly(v => !v)}
+              data-testid="mobile-filter-duplicates"
+            >
+              ⚠️ Doublons {showDuplicatesOnly ? "(actif)" : ""}
+            </button>
+
+            {/* Appliquer */}
+            <button
+              className="w-full py-2 rounded-xl bg-primary text-white text-sm font-semibold"
+              onClick={() => setShowMobileFilters(false)}
+              data-testid="mobile-filter-apply"
+            >
+              Appliquer les filtres
+            </button>
+
+          </div>
+        )}
 
         {/* Breadcrumb + count */}
         <div className="flex items-center justify-between mb-2 px-0.5">
