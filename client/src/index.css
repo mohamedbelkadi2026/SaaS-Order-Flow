@@ -134,16 +134,14 @@ h1, h2, h3, h4, h5, h6, th, .font-bold, .font-semibold {
   color: hsl(222 20% 30%) !important;
 }
 
-/* Table cells — dark and readable */
+/* Table cells — bold weight only; color left to the component/theme */
 td, th {
   font-weight: 500 !important;
-  color: hsl(222 47% 8%) !important;
 }
 
-/* Force spans/divs/paragraphs inside cells to inherit */
+/* Inherit weight inside cells, but NOT color — lets badge colors show through */
 td span, td div, td p {
   font-weight: inherit !important;
-  color: inherit !important;
 }
 
 /* Arabic / RTL text specifically */

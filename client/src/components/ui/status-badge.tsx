@@ -16,7 +16,7 @@ const C = {
   amber:        'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border-amber-200 dark:border-amber-800',
   sky:          'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400 border-sky-200 dark:border-sky-800',
   green:        'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 border-green-200 dark:border-green-800',
-  emeraldSolid: 'bg-[#15803d] text-white border-[#15803d] dark:bg-[#15803d] dark:text-white dark:border-[#15803d]',
+  emeraldSolid: 'bg-green-600 text-white border-green-700 dark:bg-green-600 dark:text-white dark:border-green-700',
   blue:    'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 border-blue-200 dark:border-blue-800',
   slate:   'bg-slate-100 text-slate-600 dark:bg-slate-800/50 dark:text-slate-400 border-slate-200 dark:border-slate-700',
   orange:  'bg-orange-50 text-orange-700 dark:bg-orange-900/20 dark:text-orange-400 border-orange-200 dark:border-orange-800',
