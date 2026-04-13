@@ -142,14 +142,14 @@ export default function Profile() {
 
   // ── Sound notification preferences (localStorage per device) ────────────────
   const SOUNDS = [
-    { id: 'cash',    label: '💰 Caisse enregistreuse' },
+    { id: 'cash',    label: '💵 Cha-ching (Caisse)' },
     { id: 'bell',    label: '🔔 Cloche' },
     { id: 'chime',   label: '✨ Carillon' },
     { id: 'ding',    label: '🎵 Ding' },
     { id: 'success', label: '✅ Succès' },
   ];
   const SOUND_URLS: Record<string, string> = {
-    cash:    'https://cdn.freesound.org/previews/397/397353_4284968-lq.mp3',
+    cash:    'https://cdn.freesound.org/previews/264/264762_4938496-lq.mp3',
     bell:    'https://cdn.freesound.org/previews/411/411089_5121236-lq.mp3',
     chime:   'https://cdn.freesound.org/previews/411/411642_5121236-lq.mp3',
     ding:    'https://cdn.freesound.org/previews/536/536766_11861866-lq.mp3',
