@@ -1,0 +1,135 @@
+Mezyan — automation page kayna w fiha toggle dyal AI. Daba 3ndi kolchi li khsni.
+Hna l prompt complet:
+
+ADD — WhatsApp automation control panel in automation.tsx with ON/OFF switches
+In client/src/pages/automation.tsx, in the "whatsapp" tab (<WhatsappTab />), add a new section at the TOP called "Contrôle de l'automatisation" with these switches:
+CHANGE 1 — Add to the WhatsappTab component:
+tsx// Add these state + API calls at top of WhatsappTab:
+const [autoSettings, setAutoSettings] = useState({
+  aiConfirmation: false,
+  recoveryMessages: false,
+  marketingAuto: false,
+});
+const [saving, setSaving] = useState(false);
+
+// Load settings on mount:
+useEffect(() => {
+  fetch('/api/whatsapp/auto-settings')
+    .then(r => r.json())
+    .then(d => setAutoSettings(d))
+    .catch(() => {});
+}, []);
+
+const saveSettings = async (newSettings: typeof autoSettings) => {
+  setSaving(true);
+  await fetch('/api/whatsapp/auto-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(newSettings),
+  });
+  setSaving(false);
+};
+
+const toggle = (key: keyof typeof autoSettings) => {
+  const updated = { ...autoSettings, [key]: !autoSettings[key] };
+  setAutoSettings(updated);
+  saveSettings(updated);
+};
+Add this UI section:
+tsx<div className="rounded-2xl border p-5 space-y-4 mb-6">
+  <div className="flex items-center gap-2 mb-2">
+    <Zap className="w-4 h-4" style={{ color: '#C5A059' }} />
+    <h3 className="font-bold text-sm uppercase tracking-wide">Contrôle Automatisation WhatsApp</h3>
+    {saving && <span className="text-xs text-muted-foreground ml-auto">Enregistrement...</span>}
+  </div>
+
+  {/* AI Confirmation */}
+  <div className="flex items-center justify-between p-3 rounded-xl bg-muted/30">
+    <div>
+      <p className="text-sm font-semibold">🤖 Confirmation IA automatique</p>
+      <p className="text-xs text-muted-foreground">Envoie un message WhatsApp dès qu'une commande arrive</p>
+    </div>
+    <button
+      onClick={() => toggle('aiConfirmation')}
+      className={cn("relative w-12 h-6 rounded-full transition-all", autoSettings.aiConfirmation ? "bg-green-500" : "bg-zinc-300")}
+    >
+      <span className={cn("absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all", autoSettings.aiConfirmation ? "left-6" : "left-0.5")} />
+    </button>
+  </div>
+
+  {/* Recovery */}
+  <div className="flex items-center justify-between p-3 rounded-xl bg-muted/30">
+    <div>
+      <p className="text-sm font-semibold">🔄 Messages de récupération</p>
+      <p className="text-xs text-muted-foreground">Relance automatique des clients injoignables</p>
+    </div>
+    <button
+      onClick={() => toggle('recoveryMessages')}
+      className={cn("relative w-12 h-6 rounded-full transition-all", autoSettings.recoveryMessages ? "bg-green-500" : "bg-zinc-300")}
+    >
+      <span className={cn("absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all", autoSettings.recoveryMessages ? "left-6" : "left-0.5")} />
+    </button>
+  </div>
+
+  {/* Marketing */}
+  <div className="flex items-center justify-between p-3 rounded-xl bg-muted/30">
+    <div>
+      <p className="text-sm font-semibold">📢 Campagnes marketing auto</p>
+      <p className="text-xs text-muted-foreground">Envoi automatique de campagnes retargeting</p>
+    </div>
+    <button
+      onClick={() => toggle('marketingAuto')}
+      className={cn("relative w-12 h-6 rounded-full transition-all", autoSettings.marketingAuto ? "bg-green-500" : "bg-zinc-300")}
+    >
+      <span className={cn("absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all", autoSettings.marketingAuto ? "left-6" : "left-0.5")} />
+    </button>
+  </div>
+
+  <p className="text-xs text-muted-foreground text-center">
+    ⚠️ Désactivez avant de déconnecter WhatsApp pour éviter la surcharge de la file d'attente
+  </p>
+</div>
+CHANGE 2 — server/routes.ts — add GET + POST /api/whatsapp/auto-settings:
+typescript// Store settings in memory (persisted to DB via store settings):
+const waAutoSettings: Record<number, { aiConfirmation: boolean; recoveryMessages: boolean; marketingAuto: boolean }> = {};
+
+app.get('/api/whatsapp/auto-settings', requireAuth, (req, res) => {
+  const storeId = req.user!.storeId!;
+  res.json(waAutoSettings[storeId] || { aiConfirmation: false, recoveryMessages: false, marketingAuto: false });
+});
+
+app.post('/api/whatsapp/auto-settings', requireAuth, (req, res) => {
+  const storeId = req.user!.storeId!;
+  waAutoSettings[storeId] = req.body;
+  console.log(`[WA Settings] Store ${storeId}:`, req.body);
+  res.json({ success: true });
+});
+
+// Export getter for use in other files:
+export function getWaAutoSettings(storeId: number) {
+  return waAutoSettings[storeId] || { aiConfirmation: false, recoveryMessages: false, marketingAuto: false };
+}
+CHANGE 3 — server/routes.ts — check settings before auto-sending:
+Find triggerAIForNewOrder( calls — wrap with check:
+typescriptconst waSettings = getWaAutoSettings(storeId);
+if (waSettings.aiConfirmation) {
+  triggerAIForNewOrder(...).catch(console.error);
+} else {
+  console.log('[WA] AI confirmation disabled — skipping auto-send');
+}
+CHANGE 4 — server/recovery-job.ts — check settings:
+typescript// Add at top of runRecoveryJob():
+const { getWaAutoSettings } = await import('./routes');
+const settings = getWaAutoSettings(storeId);
+if (!settings.recoveryMessages) {
+  console.log(`[Recovery] Auto-send disabled for store ${storeId} — skipping`);
+  continue;
+}
+CHANGE 5 — In baileys-service.ts or wa-transport.ts — add hard queue limit:
+typescript// Before every message queue push:
+if (queue.length >= 20) {
+  queue.length = 0;
+  console.warn('[WA] Queue overflow reset');
+}
+Do NOT change: WhatsApp connection, QR code, manual send, any other feature.
+Only touch: automation.tsx (UI section), server/routes.ts (settings endpoints + triggerAI check), server/recovery-job.ts (check), baileys queue file (limit).

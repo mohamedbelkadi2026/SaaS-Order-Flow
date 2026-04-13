@@ -18,6 +18,13 @@ import { emitNewOrder, emitOrderUpdated } from "./socket";
 
 import fs from "fs";
 
+// ── WhatsApp auto-send settings — per-store, in-memory ───────────────────────
+const waAutoSettings: Record<number, { aiConfirmation: boolean; recoveryMessages: boolean; marketingAuto: boolean }> = {};
+
+export function getWaAutoSettings(storeId: number) {
+  return waAutoSettings[storeId] ?? { aiConfirmation: false, recoveryMessages: false, marketingAuto: false };
+}
+
 // All user-uploaded files live under DATA_DIR so Railway volumes work correctly.
 const DATA_DIR = process.env.DATA_DIR ?? path.resolve(".");
 const UPLOADS_BASE = path.join(DATA_DIR, "uploads");
@@ -2918,8 +2925,12 @@ export async function registerRoutes(
       if (waState.state !== "connected") {
         console.warn(`[WhatsApp:${storeId}] ⚠️ Not connected (state=${waState.state}) — AI message will be queued`);
       }
-      // triggerAIForNewOrder(storeId, order.id, parsed.customerPhone, parsed.customerName, firstProductId) — DISABLED
-      console.log('[WA] Auto-send disabled — skipping AI trigger');
+      if (getWaAutoSettings(storeId).aiConfirmation) {
+        triggerAIForNewOrder(storeId, order.id, parsed.customerPhone, parsed.customerName, firstProductId)
+          .catch(err => console.error(`[AI] Trigger failed for order ${order.id}:`, err.message));
+      } else {
+        console.log('[WA] AI confirmation disabled — skipping auto-send');
+      }
     } catch (err: any) {
       console.error(`Token webhook error (${provider}):`, err);
       res.status(500).json({ message: 'Webhook processing failed' });
@@ -2965,9 +2976,13 @@ export async function registerRoutes(
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName, status: 'nouveau', source: 'gsheets' });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       res.json({ success: true, orderId: order.id });
-      // ── Fire-and-forget: AI WhatsApp confirmation — DISABLED ──────────────
-      // triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id) — DISABLED
-      console.log('[WA] Auto-send disabled — skipping AI trigger');
+      // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
+      if (getWaAutoSettings(storeId).aiConfirmation) {
+        triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
+          .catch(err => console.error(`[AI] GSheets trigger failed for order ${order.id}:`, err.message));
+      } else {
+        console.log('[WA] AI confirmation disabled — skipping auto-send');
+      }
     } catch (err: any) {
       console.error('GSheets webhook error:', err);
       res.status(500).json({ message: 'Processing failed' });
@@ -3014,8 +3029,12 @@ export async function registerRoutes(
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: "gsheets", action: "order_synced", status: "success", message: `Commande Google Sheets ${orderNumber} importée (API key)` });
       console.log(`[GSheets-API] New order #${orderNumber} for store ${storeId} — ${customerName} / ${customerPhone}`);
       res.json({ success: true, orderId: order.id });
-      // triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id) — DISABLED
-      console.log('[WA] Auto-send disabled — skipping AI trigger');
+      if (getWaAutoSettings(storeId).aiConfirmation) {
+        triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
+          .catch(err => console.error(`[AI] GSheets-API trigger failed for order ${order.id}:`, err.message));
+      } else {
+        console.log('[WA] AI confirmation disabled — skipping auto-send');
+      }
     } catch (err: any) {
       console.error("[GSheets-API] Webhook error:", err);
       res.status(500).json({ success: false, message: "Processing failed" });
@@ -3367,12 +3386,13 @@ export async function registerRoutes(
 
       res.status(201).json(order);
 
-      // Fire-and-forget: AI confirmation trigger — DISABLED
-      // if (data.status !== 'confirme') {
-      //   const firstProductId = data.items[0]?.productId ?? null;
-      //   triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, firstProductId) — DISABLED
-      // }
-      console.log('[WA] Auto-send disabled — skipping AI trigger');
+      // Fire-and-forget: AI confirmation trigger
+      if (data.status !== 'confirme' && getWaAutoSettings(storeId).aiConfirmation) {
+        const firstProductId = data.items[0]?.productId ?? null;
+        triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, firstProductId).catch(console.error);
+      } else {
+        console.log('[WA] AI confirmation disabled — skipping auto-send');
+      }
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -3535,9 +3555,12 @@ export async function registerRoutes(
       const finalOrder = await storage.getOrder(order.id);
       res.status(201).json(finalOrder || order);
 
-      // Fire-and-forget: AI confirmation trigger — DISABLED
-      // triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, orderItemsToCreate[0]?.productId) — DISABLED
-      console.log('[WA] Auto-send disabled — skipping AI trigger');
+      // Fire-and-forget: AI confirmation trigger
+      if (getWaAutoSettings(storeId).aiConfirmation) {
+        triggerAIForNewOrder(storeId, order.id, data.customerPhone, data.customerName, orderItemsToCreate[0]?.productId).catch(console.error);
+      } else {
+        console.log('[WA] AI confirmation disabled — skipping auto-send');
+      }
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -6773,6 +6796,19 @@ function submitOrder(e){
       console.error("[LP public order]", err.message);
       res.status(400).json({ message: err.message });
     }
+  });
+
+  // ── WhatsApp auto-send settings API ──────────────────────────────────────
+  app.get('/api/whatsapp/auto-settings', requireAuth, (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    res.json(getWaAutoSettings(storeId));
+  });
+
+  app.post('/api/whatsapp/auto-settings', requireAuth, (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    waAutoSettings[storeId] = req.body;
+    console.log(`[WA Settings] Store ${storeId}:`, req.body);
+    res.json({ success: true });
   });
 
   return httpServer;

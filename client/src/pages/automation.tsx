@@ -1552,6 +1552,39 @@ function WhatsappTab() {
   const [qrUrl, setQrUrl]           = useState<string | null>(null);
   const [sseOk, setSseOk]           = useState(false);
 
+  /* ── Auto-send settings ─────────────────────────────────────── */
+  const [autoSettings, setAutoSettings] = useState({ aiConfirmation: false, recoveryMessages: false, marketingAuto: false });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/whatsapp/auto-settings', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setAutoSettings(d); })
+      .catch(() => {});
+  }, []);
+
+  const saveAutoSettings = async (next: typeof autoSettings) => {
+    setSettingsSaving(true);
+    try {
+      await fetch('/api/whatsapp/auto-settings', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      });
+      setAutoSettings(next);
+      toast({ title: 'Paramètres sauvegardés' });
+    } catch {
+      toast({ title: 'Erreur de sauvegarde', variant: 'destructive' });
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
+
+  const toggleSetting = (key: keyof typeof autoSettings) => {
+    const next = { ...autoSettings, [key]: !autoSettings[key] };
+    saveAutoSettings(next);
+  };
+
   /* ── Pairing code method toggle (phone is primary) ─────────── */
   const [connMethod, setConnMethod]     = useState<"qr" | "phone">("phone");
   const [pairingPhone, setPairingPhone] = useState("");
@@ -1705,6 +1738,60 @@ function WhatsappTab() {
     },
   });
 
+  /* ── Auto-send control panel (shown in every WhatsApp state) ─── */
+  const ControlPanel = (
+    <div
+      className="bg-white rounded-2xl border border-zinc-100 px-5 py-4 space-y-3"
+      data-testid="wa-auto-settings-panel"
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <Zap className="w-4 h-4" style={{ color: GOLD }} />
+        <span className="text-sm font-bold text-zinc-800">Envoi automatique WhatsApp</span>
+        {settingsSaving && <Loader2 className="w-3.5 h-3.5 animate-spin text-zinc-400 ml-auto" />}
+      </div>
+
+      {(
+        [
+          { key: 'aiConfirmation',   label: 'Confirmation IA (nouvelles commandes)', icon: <Bot className="w-3.5 h-3.5" /> },
+          { key: 'recoveryMessages', label: 'Messages de récupération (paniers abandonnés)', icon: <MessageCircle className="w-3.5 h-3.5" /> },
+          { key: 'marketingAuto',   label: 'Campagnes marketing automatiques', icon: <Megaphone className="w-3.5 h-3.5" /> },
+        ] as { key: keyof typeof autoSettings; label: string; icon: React.ReactNode }[]
+      ).map(({ key, label, icon }) => {
+        const on = autoSettings[key];
+        return (
+          <button
+            key={key}
+            data-testid={`toggle-${key}`}
+            onClick={() => toggleSetting(key)}
+            disabled={settingsSaving}
+            className={cn(
+              "w-full flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-left transition-all border",
+              on
+                ? "border-green-200 bg-green-50"
+                : "border-zinc-100 bg-zinc-50 hover:bg-zinc-100",
+            )}
+          >
+            <span className={cn("shrink-0", on ? "text-green-600" : "text-zinc-400")}>{icon}</span>
+            <span className="flex-1 text-xs font-medium text-zinc-700">{label}</span>
+            <span
+              className={cn(
+                "shrink-0 w-9 h-5 rounded-full relative transition-colors",
+                on ? "bg-green-500" : "bg-zinc-300",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform",
+                  on ? "translate-x-4" : "translate-x-0",
+                )}
+              />
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+
   /* ── Force Restart button (available in all non-connected states) */
   const ForceRestartBtn = ({ size = "sm" }: { size?: "sm" | "lg" }) => (
     <button
@@ -1729,6 +1816,7 @@ function WhatsappTab() {
   if (waState === "idle") {
     return (
       <div className="max-w-md mx-auto space-y-4">
+        {ControlPanel}
         <div className="bg-white rounded-2xl border border-zinc-100 p-5 sm:p-7 space-y-5">
 
           {/* Header */}
@@ -1859,6 +1947,7 @@ function WhatsappTab() {
 
       return (
         <div className="max-w-md mx-auto space-y-4">
+          {ControlPanel}
 
           {/* ── Main code card ── */}
           <div className="bg-white rounded-2xl border-2 p-5 sm:p-7 space-y-5" style={{ borderColor: GOLD }}>
@@ -1953,6 +2042,7 @@ function WhatsappTab() {
 
     return (
       <div className="max-w-md mx-auto space-y-4">
+        {ControlPanel}
         <div className="bg-white rounded-2xl border border-zinc-100 p-10 text-center space-y-5">
           <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto" style={{ background: "rgba(30,27,75,0.06)", border: `2px solid ${NAVY}` }}>
             <Loader2 className="w-9 h-9 animate-spin" style={{ color: NAVY }} />
@@ -1982,6 +2072,7 @@ function WhatsappTab() {
   if (waState === "qr") {
     return (
       <div className="max-w-md mx-auto space-y-4">
+        {ControlPanel}
         <div className="bg-white rounded-2xl border border-zinc-100 p-6 text-center space-y-4">
           <div>
             <h2 className="text-xl font-bold mb-1" style={{ color: NAVY }}>Scanner le QR Code</h2>
@@ -2031,6 +2122,7 @@ function WhatsappTab() {
   /* ── CONNECTED — success state ─────────────────────────────── */
   return (
     <div className="max-w-md mx-auto space-y-4">
+      {ControlPanel}
       <div className="bg-white rounded-2xl p-7 text-center space-y-4" style={{ border: `2px solid ${NAVY}` }}>
         <div className="w-20 h-20 rounded-full flex items-center justify-center mx-auto" style={{ background: `rgba(197,160,89,0.12)`, border: `3px solid ${GOLD}` }}>
           <Wifi className="w-9 h-9" style={{ color: GOLD }} />

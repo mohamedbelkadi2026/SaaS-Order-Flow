@@ -3,6 +3,7 @@ import { triggerRecoveryMessage } from "./ai-agent";
 import { db } from "./db";
 import { products, orderItems } from "@shared/schema";
 import { eq } from "drizzle-orm";
+import { getWaAutoSettings } from "./routes";
 
 const JOB_INTERVAL_MS = 5 * 60 * 1000; // check every 5 minutes
 
@@ -18,15 +19,19 @@ async function getProductStock(orderId: number): Promise<number | null> {
 }
 
 async function runRecoveryJob() {
-  // TEMPORARILY DISABLED — waiting for WhatsApp access
-  console.log('[Recovery] Auto-send disabled');
-  return;
   try {
     const allEnabled = await storage.getAllStoresWithRecoveryEnabled();
     if (!allEnabled.length) return;
 
     for (const settings of allEnabled) {
       const { storeId, waitMinutes } = settings;
+
+      // Honour the per-store auto-settings toggle
+      if (!getWaAutoSettings(storeId).recoveryMessages) {
+        console.log(`[Recovery] Store ${storeId}: recovery messages disabled — skipping`);
+        continue;
+      }
+
       const leads = await storage.getAbandonedLeadsForRecovery(storeId, waitMinutes ?? 30);
       if (!leads.length) continue;
 
