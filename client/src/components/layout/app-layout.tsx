@@ -205,6 +205,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [storeSwitcherOpen, setStoreSwitcherOpen] = useState(false);
   const [integrationOpen, setIntegrationOpen] = useState(() => location.startsWith("/integrations"));
+  const [ordersOpen, setOrdersOpen] = useState(() =>
+    location.startsWith("/orders") && location !== "/orders/all"
+  );
+  const [nouvelleOpen, setNouvelleOpen] = useState(() =>
+    location === "/orders/add" || location === "/orders/import"
+  );
   const langMenuRef = useRef<HTMLDivElement>(null);
   const storeSwitcherRef = useRef<HTMLDivElement>(null);
   const { t, i18n } = useTranslation();
@@ -589,6 +595,47 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                     ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
                     : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />}
                 </button>
+              ) : isOrdersMenu ? (
+                /* Mes Commandes — toggle button */
+                <button
+                  onClick={() => setOrdersOpen(o => !o)}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150",
+                    isActive ? "text-white" : "text-white/70 hover:text-white hover:bg-white/10"
+                  )}
+                  style={isActive ? { background: 'rgba(255,255,255,0.18)' } : {}}
+                  data-testid="button-orders-menu"
+                >
+                  <item.icon className="w-[18px] h-[18px] shrink-0 opacity-90" />
+                  <span className="flex-1 leading-tight text-left">{t(NAV_KEYS[item.name] || item.name)}</span>
+                  {newOrdersCount > 0 && !ordersOpen && (
+                    <span className="shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold px-1.5 py-0.5 min-w-[20px]"
+                      style={{ background: '#ef4444', color: '#fff' }}>
+                      {newOrdersCount > 99 ? '99+' : newOrdersCount}
+                    </span>
+                  )}
+                  {ordersOpen
+                    ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
+                    : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />}
+                </button>
+              ) : isNouvelleMenu ? (
+                /* Nouvelle commande — link + toggle */
+                <Link
+                  href={item.href}
+                  onClick={() => { setNouvelleOpen(o => !o); onClose?.(); }}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 group",
+                    isActive ? "text-white" : "text-white/70 hover:text-white hover:bg-white/10"
+                  )}
+                  style={isActive ? { background: 'rgba(255,255,255,0.18)' } : {}}
+                  data-testid="link-nouvelle-commande"
+                >
+                  <item.icon className="w-[18px] h-[18px] shrink-0 opacity-90" />
+                  <span className="flex-1 leading-tight">{t(NAV_KEYS[item.name] || item.name)}</span>
+                  {nouvelleOpen
+                    ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
+                    : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />}
+                </Link>
               ) : (
                 <Link
                   href={item.href}
@@ -612,7 +659,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               )}
 
               {/* Orders submenu */}
-              {isOrdersMenu && (
+              {isOrdersMenu && ordersOpen && (
                 <div className="mt-0.5 mb-1 ml-4 space-y-0.5">
                   {visibleOrderSubItems.map((sub) => {
                     const subActive = location === sub.href;
@@ -669,7 +716,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               )}
 
               {/* Nouvelle commande submenu */}
-              {isNouvelleMenu && isActive && (
+              {isNouvelleMenu && nouvelleOpen && (
                 <div className="mt-0.5 mb-1 ml-4 space-y-0.5">
                   {NOUVELLE_SUB_ITEMS.map((sub) => {
                     const subActive = location === sub.href;

@@ -1,0 +1,58 @@
+FIX — Add toggle/collapse for ALL sidebar submenus (Mes Commandes, Nouvelle commande)
+In client/src/components/layout/app-layout.tsx:
+CHANGE 1 — Add state for each collapsible menu:
+typescript// Add with other useState declarations:
+const [ordersOpen, setOrdersOpen] = useState(() => 
+  location.startsWith("/orders") && location !== "/orders/all"
+);
+const [nouvelleOpen, setNouvelleOpen] = useState(() => 
+  location === "/orders/add" || location === "/orders/import"
+);
+CHANGE 2 — Change "Mes Commandes" from <Link> to <button> with toggle:
+Find the else branch (the <Link>) for isOrdersMenu — replace with a button like Integration:
+tsx{isOrdersMenu ? (
+  <button
+    onClick={() => setOrdersOpen(o => !o)}
+    className={cn(
+      "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150",
+      isActive ? "text-white" : "text-white/70 hover:text-white hover:bg-white/10"
+    )}
+    style={isActive ? { background: 'rgba(255,255,255,0.18)' } : {}}
+  >
+    <item.icon className="w-[18px] h-[18px] shrink-0 opacity-90" />
+    <span className="flex-1 leading-tight text-left">{t(NAV_KEYS[item.name] || item.name)}</span>
+    {newOrdersCount > 0 && !ordersOpen && (
+      <span className="shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold px-1.5 py-0.5 min-w-[20px]"
+        style={{ background: '#ef4444', color: '#fff' }}>
+        {newOrdersCount > 99 ? '99+' : newOrdersCount}
+      </span>
+    )}
+    {ordersOpen
+      ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
+      : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />}
+  </button>
+) : isIntegrationMenu ? (
+  // ... existing integration button unchanged ...
+) : (
+  // ... existing Link unchanged ...
+)}
+CHANGE 3 — Make Orders submenu conditional on ordersOpen:
+tsx// Find:
+{isOrdersMenu && (
+  <div className="mt-0.5 mb-1 ml-4 space-y-0.5">
+
+// Change to:
+{isOrdersMenu && ordersOpen && (
+  <div className="mt-0.5 mb-1 ml-4 space-y-0.5">
+CHANGE 4 — Make Nouvelle commande submenu conditional on nouvelleOpen:
+tsx// Find:
+{isNouvelleMenu && isActive && (
+
+// Change to:
+{isNouvelleMenu && nouvelleOpen && (
+And change the <Link> for isNouvelleMenu to also have a toggle:
+tsx// For isNouvelleMenu — change Link onClick to also toggle:
+onClick={() => { setNouvelleOpen(o => !o); onClose?.(); }}
+// Add chevron same as others
+Do NOT change: Integration menu, any other menu item, any other file.
+Only touch: app-layout.tsx — orders + nouvelle commande toggle logic only.
