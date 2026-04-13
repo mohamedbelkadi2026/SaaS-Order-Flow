@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest } from "@/lib/queryClient";
@@ -142,12 +142,25 @@ export default function Profile() {
   };
 
   // ── Sound notification preferences (localStorage per device) ────────────────
-  const [soundEnabled, setSoundEnabled] = useState(
+  const [pendingSoundEnabled, setPendingSoundEnabled] = useState(
     () => localStorage.getItem('notification_sound_enabled') !== 'false'
   );
-  const [selectedSound, setSelectedSound] = useState(
+  const [pendingSound, setPendingSound] = useState(
     () => localStorage.getItem('notification_sound_id') || 'cash'
   );
+  const [soundSaved, setSoundSaved] = useState(false);
+
+  useEffect(() => {
+    setPendingSound(localStorage.getItem('notification_sound_id') || 'cash');
+    setPendingSoundEnabled(localStorage.getItem('notification_sound_enabled') !== 'false');
+  }, []);
+
+  const saveSoundSettings = () => {
+    localStorage.setItem('notification_sound_id', pendingSound);
+    localStorage.setItem('notification_sound_enabled', String(pendingSoundEnabled));
+    setSoundSaved(true);
+    setTimeout(() => setSoundSaved(false), 2000);
+  };
 
   // ── Plan usage ───────────────────────────────────────────────────────────────
   const monthlyOrders = sub?.currentMonthOrders ?? 0;
@@ -360,15 +373,12 @@ export default function Profile() {
                     <label className="text-sm">Son pour nouvelle commande</label>
                     <Switch
                       data-testid="switch-sound-enabled"
-                      checked={soundEnabled}
-                      onCheckedChange={v => {
-                        localStorage.setItem('notification_sound_enabled', String(v));
-                        setSoundEnabled(v);
-                      }}
+                      checked={pendingSoundEnabled}
+                      onCheckedChange={v => setPendingSoundEnabled(v)}
                     />
                   </div>
 
-                  {soundEnabled && (
+                  {pendingSoundEnabled && (
                     <div className="space-y-2">
                       <p className="text-xs text-muted-foreground">Choisir un son</p>
                       <div className="grid grid-cols-1 gap-2">
@@ -378,19 +388,16 @@ export default function Profile() {
                             data-testid={`sound-option-${s.id}`}
                             className={cn(
                               "flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors",
-                              selectedSound === s.id
-                                ? "border-primary bg-primary/5"
+                              pendingSound === s.id
+                                ? "border-primary bg-primary/5 font-semibold"
                                 : "border-border hover:bg-muted/40"
                             )}
-                            onClick={() => {
-                              localStorage.setItem('notification_sound_id', s.id);
-                              setSelectedSound(s.id);
-                            }}
+                            onClick={() => setPendingSound(s.id)}
                           >
                             <span className="text-sm font-medium">{s.label}</span>
                             <button
                               data-testid={`button-test-sound-${s.id}`}
-                              className="text-xs text-primary underline"
+                              className="text-xs text-primary font-medium px-2 py-1 rounded-md hover:bg-primary/10"
                               onClick={e => {
                                 e.stopPropagation();
                                 new Audio(s.url).play().catch(() => {});
@@ -403,6 +410,14 @@ export default function Profile() {
                       </div>
                     </div>
                   )}
+
+                  <button
+                    data-testid="button-save-sound"
+                    className="w-full py-2.5 rounded-xl bg-primary text-white font-semibold text-sm mt-2"
+                    onClick={saveSoundSettings}
+                  >
+                    {soundSaved ? '✅ Enregistré !' : 'Enregistrer'}
+                  </button>
                 </div>
               </Card>
               </>
