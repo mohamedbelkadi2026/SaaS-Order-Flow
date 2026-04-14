@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
+import adminDashboardImg from "@assets/admin_dashaboard_1776178471898.png";
+import agentConfirmationImg from "@assets/agent_confmation_1776178471899.png";
+import agentMediaBuyerImg from "@assets/agent_media_buyer_1776178471899.png";
 import {
   BarChart3, Package, Smartphone, Truck, Target, TrendingUp,
   Check, ChevronRight, Star, Zap, Shield, Crown,
@@ -690,7 +693,7 @@ export default function LandingPage() {
 
               {/* Subheadline */}
               <p className="text-lg text-white/70 leading-relaxed max-w-md">
-                La première et seule plateforme au Maroc avec un tracking UTM avancé et une expédition automatisée pour le COD. Confirmez plus vite, livrez mieux, connaissez votre vrai bénéfice.
+                La plateforme tout-en-un des e-commerçants marocains. +1,499 commandes traitées, 60% de taux de confirmation.
               </p>
 
               {/* CTA Buttons */}
@@ -757,15 +760,110 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
             {[
-              { val: "+200", label: "Marchands actifs" },
-              { val: "68%", label: "Taux de confirmation moyen" },
-              { val: "1M+", label: "Commandes traitées" },
-              { val: "24/7", label: "Support dédié" },
+              { val: "+1,499", label: "Commandes traitées" },
+              { val: "60%",   label: "Taux de confirmation moyen" },
+              { val: "+200",  label: "Marchands actifs" },
+              { val: "24/7",  label: "Support dédié" },
             ].map((s) => (
               <FadeIn key={s.label}>
                 <div>
                   <p className="text-3xl font-black" style={{ fontFamily: "'Playfair Display', serif", color: GOLD }}>{s.val}</p>
                   <p className="text-sm mt-1" style={{ color: "rgba(255,255,255,0.55)" }}>{s.label}</p>
+                </div>
+              </FadeIn>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── PLATFORM SCREENSHOTS ──────────────────────────────── */}
+      <section className="py-20" style={{ background: "#f8f7ff" }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <FadeIn className="text-center mb-14">
+            <p className="text-sm font-bold uppercase tracking-widest mb-3" style={{ color: GOLD }}>
+              Aperçu de la plateforme
+            </p>
+            <h2 className="text-3xl sm:text-4xl font-black mb-4" style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}>
+              Une interface pensée pour
+              <span style={{ color: GOLD }}> chaque membre de votre équipe</span>
+            </h2>
+            <p className="text-lg max-w-2xl mx-auto" style={{ color: "#64748b" }}>
+              Dashboard admin, agent de confirmation, media buyer — chacun a son espace optimisé.
+            </p>
+          </FadeIn>
+
+          <div className="grid md:grid-cols-3 gap-6">
+            {[
+              {
+                title: "Dashboard Admin",
+                desc: "Vue globale: commandes, profit net, taux de confirmation, statut des colis en temps réel.",
+                img: adminDashboardImg,
+                badge: "Administrateur",
+                stats: ["113 commandes", "191 DH profit net", "100% livraison"],
+                popular: false,
+              },
+              {
+                title: "Agent de Confirmation",
+                desc: "Interface dédiée pour confirmer rapidement les commandes avec WhatsApp intégré.",
+                img: agentConfirmationImg,
+                badge: "Agent",
+                stats: ["Portefeuille 8 DH", "1 livraison ce mois", "Statistiques 15j"],
+                popular: true,
+              },
+              {
+                title: "Media Buyer",
+                desc: "Suivi ROI, taux de confirmation par campagne, profit net par produit et ville.",
+                img: agentMediaBuyerImg,
+                badge: "Media Buyer",
+                stats: ["ROI en temps réel", "Stats par campagne", "Générateur UTM"],
+                popular: false,
+              },
+            ].map((screen, i) => (
+              <FadeIn key={screen.title} delay={i * 100}>
+                <div
+                  className="relative rounded-2xl overflow-hidden border bg-white transition-all duration-300 hover:-translate-y-2"
+                  style={{
+                    borderColor: screen.popular ? "rgba(197,160,89,0.6)" : "rgba(30,27,75,0.08)",
+                    boxShadow: screen.popular
+                      ? "0 8px 40px rgba(197,160,89,0.2)"
+                      : "0 2px 16px rgba(0,0,0,0.06)",
+                  }}
+                >
+                  {screen.popular && (
+                    <div
+                      className="absolute top-3 right-3 z-10 text-xs font-bold px-3 py-1 rounded-full"
+                      style={{ background: GOLD, color: NAVY }}
+                    >
+                      Le plus utilisé
+                    </div>
+                  )}
+                  <div className="relative overflow-hidden" style={{ height: "220px", background: NAVY }}>
+                    <img
+                      src={screen.img}
+                      alt={screen.title}
+                      className="w-full h-full object-cover object-top opacity-90"
+                    />
+                    <div className="absolute bottom-3 left-3">
+                      <span
+                        className="text-xs font-bold px-3 py-1 rounded-full"
+                        style={{ background: "rgba(197,160,89,0.9)", color: NAVY }}
+                      >
+                        {screen.badge}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="p-5">
+                    <h3 className="font-bold text-lg mb-2" style={{ color: NAVY }}>{screen.title}</h3>
+                    <p className="text-sm mb-4" style={{ color: "#64748b" }}>{screen.desc}</p>
+                    <div className="space-y-1.5">
+                      {screen.stats.map(stat => (
+                        <div key={stat} className="flex items-center gap-2 text-xs" style={{ color: "#475569" }}>
+                          <span style={{ color: GOLD }}>✓</span>
+                          {stat}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </FadeIn>
             ))}

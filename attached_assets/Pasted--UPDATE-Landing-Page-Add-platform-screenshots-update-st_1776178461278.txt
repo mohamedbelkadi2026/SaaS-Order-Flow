@@ -1,0 +1,129 @@
+
+UPDATE Landing Page — Add platform screenshots + update stats to match real platform
+In client/src/pages/landing.tsx:
+CHANGE 1 — Update STATS BAR with impressive numbers:
+typescript{ val: "+1,499", label: "Commandes traitées" },
+{ val: "60%",   label: "Taux de confirmation moyen" },
+{ val: "+200",  label: "Marchands actifs" },
+{ val: "24/7",  label: "Support dédié" },
+CHANGE 2 — Add screenshots section after the STATS BAR and before FEATURES:
+tsx{/* ── PLATFORM SCREENSHOTS ──────────────────────────────── */}
+<section className="py-20" style={{ background: "#f8f7ff" }}>
+  <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <FadeIn className="text-center mb-14">
+      <p className="text-sm font-bold uppercase tracking-widest mb-3" style={{ color: GOLD }}>
+        Aperçu de la plateforme
+      </p>
+      <h2 className="text-3xl sm:text-4xl font-black mb-4" style={{ fontFamily: "'Playfair Display', serif", color: NAVY }}>
+        Une interface pensée pour
+        <span style={{ color: GOLD }}> chaque membre de votre équipe</span>
+      </h2>
+      <p className="text-lg max-w-2xl mx-auto" style={{ color: "#64748b" }}>
+        Dashboard admin, agent de confirmation, media buyer — chacun a son espace optimisé.
+      </p>
+    </FadeIn>
+
+    <div className="grid md:grid-cols-3 gap-6">
+      {[
+        {
+          title: "Dashboard Admin",
+          desc: "Vue globale: commandes, profit net, taux de confirmation, statut des colis en temps réel.",
+          img: "/screenshots/admin_dashboard.png",
+          badge: "Administrateur",
+          stats: ["113 commandes", "191 DH profit net", "100% livraison"],
+        },
+        {
+          title: "Agent de Confirmation",
+          desc: "Interface dédiée pour confirmer rapidement les commandes avec WhatsApp intégré.",
+          img: "/screenshots/agent_confirmation.png",
+          badge: "Agent",
+          stats: ["Portefeuille 8 DH", "1 livraison ce mois", "Statistiques 15j"],
+          popular: true,
+        },
+        {
+          title: "Media Buyer",
+          desc: "Suivi ROI, taux de confirmation par campagne, profit net par produit et ville.",
+          img: "/screenshots/agent_media_buyer.png",
+          badge: "Media Buyer",
+          stats: ["ROI en temps réel", "Stats par campagne", "Générateur UTM"],
+        },
+      ].map((screen, i) => (
+        <FadeIn key={screen.title} delay={i * 100}>
+          <div
+            className="relative rounded-2xl overflow-hidden border bg-white transition-all duration-300 hover:-translate-y-2"
+            style={{
+              borderColor: screen.popular ? "rgba(197,160,89,0.6)" : "rgba(30,27,75,0.08)",
+              boxShadow: screen.popular
+                ? "0 8px 40px rgba(197,160,89,0.2)"
+                : "0 2px 16px rgba(0,0,0,0.06)",
+            }}
+          >
+            {screen.popular && (
+              <div
+                className="absolute top-3 right-3 z-10 text-xs font-bold px-3 py-1 rounded-full"
+                style={{ background: GOLD, color: NAVY }}
+              >
+                Le plus utilisé
+              </div>
+            )}
+            {/* Screenshot image */}
+            <div className="relative overflow-hidden" style={{ height: "220px", background: NAVY }}>
+              <img
+                src={screen.img}
+                alt={screen.title}
+                className="w-full h-full object-cover object-top opacity-90"
+                onError={(e) => {
+                  // Fallback if image not found — show colored placeholder
+                  (e.currentTarget as HTMLImageElement).style.display = 'none';
+                }}
+              />
+              {/* Badge overlay */}
+              <div className="absolute bottom-3 left-3">
+                <span
+                  className="text-xs font-bold px-3 py-1 rounded-full"
+                  style={{ background: "rgba(197,160,89,0.9)", color: NAVY }}
+                >
+                  {screen.badge}
+                </span>
+              </div>
+            </div>
+            {/* Content */}
+            <div className="p-5">
+              <h3 className="font-bold text-lg mb-2" style={{ color: NAVY }}>{screen.title}</h3>
+              <p className="text-sm mb-4" style={{ color: "#64748b" }}>{screen.desc}</p>
+              <div className="space-y-1.5">
+                {screen.stats.map(stat => (
+                  <div key={stat} className="flex items-center gap-2 text-xs" style={{ color: "#475569" }}>
+                    <span style={{ color: GOLD }}>✓</span>
+                    {stat}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </FadeIn>
+      ))}
+    </div>
+  </div>
+</section>
+CHANGE 3 — Copy screenshot images to public folder:
+Create/copy these files to client/public/screenshots/:
+
+admin_dashboard.png — the admin dashboard screenshot
+agent_confirmation.png — the agent confirmation screenshot
+agent_media_buyer.png — the media buyer screenshot
+
+Add this to server/static.ts or server/index.ts to serve the screenshots:
+typescriptapp.use('/screenshots', express.static(path.join(DATA_DIR, 'client/public/screenshots')));
+CHANGE 4 — Update hero section tagline:
+typescript// Find the hero subtitle and update:
+"Gérez vos commandes, confirmez plus vite, livrez plus souvent."
+// Change to:
+"La plateforme tout-en-un des e-commerçants marocains. +1,499 commandes traitées, 60% de taux de confirmation."
+Do NOT change: any other page, server logic, order flow, authentication, or platform functionality.
+Only touch: client/src/pages/landing.tsx and add screenshot images to client/public/screenshots/.
+
+Important: Ba3d ma Replit ykhdm had l prompt — khssak:
+
+Upload had 3 screenshots (li 3titi) f Replit f folder client/public/screenshots/
+Smithom: admin_dashboard.png, agent_confirmation.png, agent_media_buyer.png
