@@ -1136,6 +1136,7 @@ export async function getDigylogDeliveryCost(
   apiUrl?: string,
 ): Promise<number | null> {
   try {
+    if (!trackingNumber || !apiKey) return null;
     const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
       .replace(/\/+$/, '')
       .replace(/api\.digylog\.ma/i, 'api.digylog.com');
@@ -1151,31 +1152,22 @@ export async function getDigylogDeliveryCost(
       validateStatus: () => true,
     });
 
-    console.log(`[DIGYLOG-COST] ${trackingNumber} → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 300)}`);
+    console.log(`[DIGYLOG-COST] ${trackingNumber} → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 400)}`);
 
     if (resp.status !== 200 || !resp.data) return null;
 
     const body = resp.data;
-
     const price =
-      body?.frais_livraison ||
-      body?.frais ||
-      body?.delivery_cost ||
-      body?.port ||
-      body?.cout_livraison ||
-      body?.shipping_cost ||
-      body?.data?.frais_livraison ||
-      body?.data?.port ||
-      null;
+      body?.frais_livraison ?? body?.frais ?? body?.port ??
+      body?.delivery_cost ?? body?.shipping_cost ??
+      body?.cout_livraison ?? body?.data?.frais_livraison ??
+      body?.data?.port ?? null;
 
-    if (!price) {
-      console.log(`[DIGYLOG-COST] No price field found in: ${JSON.stringify(body).slice(0, 200)}`);
-      return null;
-    }
+    if (price === null || price === undefined) return null;
 
-    const priceInCentimes = Math.round(parseFloat(price) * 100);
+    const priceInCentimes = Math.round(parseFloat(String(price)) * 100);
     console.log(`[DIGYLOG-COST] ${trackingNumber} → ${price} DH = ${priceInCentimes} centimes`);
-    return priceInCentimes;
+    return priceInCentimes > 0 ? priceInCentimes : null;
 
   } catch (err: any) {
     console.error(`[DIGYLOG-COST] Error:`, err?.message);
