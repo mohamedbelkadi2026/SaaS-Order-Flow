@@ -894,6 +894,19 @@ export async function registerRoutes(
       'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
       'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
       'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+      // Digylog exact statuses
+      'En cours de réception au network',
+      'Arrivé au hub',
+      'En cours de livraison',
+      'Sorti pour livraison',
+      'Pris en charge',
+      'Collecté',
+      'Chargé',
+      'En attente de ramassage',
+      'Non Reçu',
+      'Retour en cours',
+      "Retourné à l'expéditeur",
+      'Tentative échouée',
     ];
     const REFUSED_GROUP = [
       'refused',
@@ -910,6 +923,7 @@ export async function registerRoutes(
       } else if (status === 'suivi_group') {
         res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
+          SUIVI_GROUP.includes((o as any).commentStatus || '') ||
           (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
         )));
       } else if (status === 'refused') {
@@ -925,6 +939,7 @@ export async function registerRoutes(
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
+          SUIVI_GROUP.includes((o as any).commentStatus || '') ||
           (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
         )));
       } else if (status === 'refused') {
@@ -2397,18 +2412,18 @@ export async function registerRoutes(
 
     // ── Digylog exact status → internal status (checked first, case-insensitive) ──
     const DIGYLOG_EXACT_MAP: Record<string, string> = {
-      "En cours de réception au network": "in_progress",
-      "Arrivé au hub":                    "in_progress",
-      "En cours de livraison":            "in_progress",
-      "Sorti pour livraison":             "in_progress",
-      "Pris en charge":                   "in_progress",
-      "Collecté":                         "in_progress",
-      "Chargé":                           "in_progress",
-      "Non Reçu":                         "Attente De Ramassage",
-      "En attente de ramassage":          "Attente De Ramassage",
-      "Tentative échouée":                "refused",
-      "Retour en cours":                  "retourné",
-      "Retourné à l'expéditeur":          "retourné",
+      "En cours de réception au network": "En cours de réception au network",
+      "Arrivé au hub":                    "Arrivé au hub",
+      "En cours de livraison":            "En cours de livraison",
+      "Sorti pour livraison":             "Sorti pour livraison",
+      "Pris en charge":                   "Pris en charge",
+      "Collecté":                         "Collecté",
+      "Chargé":                           "Chargé",
+      "En attente de ramassage":          "En attente de ramassage",
+      "Non Reçu":                         "Non Reçu",
+      "Tentative échouée":                "Tentative échouée",
+      "Retour en cours":                  "Retour en cours",
+      "Retourné à l'expéditeur":          "Retourné à l'expéditeur",
       "Livré":                            "delivered",
       "Livraison effectuée":              "delivered",
     };

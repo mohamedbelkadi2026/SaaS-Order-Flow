@@ -1,0 +1,63 @@
+FIX — Suivi des Colis: show exact Digylog status text + add missing Digylog statuses to server SUIVI_GROUP
+CHANGE 1 — server/routes.ts — add all Digylog statuses to SUIVI_GROUP:
+Find const SUIVI_GROUP = [ and replace with:
+typescriptconst SUIVI_GROUP = [
+  'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
+  'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+  'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+  // Digylog exact statuses
+  'En cours de réception au network',
+  'Arrivé au hub',
+  'En cours de livraison',
+  'Sorti pour livraison',
+  'Pris en charge',
+  'Collecté',
+  'Chargé',
+  'En attente de ramassage',
+  'Non Reçu',
+  'Retour en cours',
+  "Retourné à l'expéditeur",
+  'Tentative échouée',
+];
+CHANGE 2 — server/routes.ts — processCarrierWebhook — save commentStatus as BOTH the display status AND update internal status:
+The key fix: when Digylog sends "En cours de réception au network", save it as BOTH:
+
+status = "En cours de réception au network" (exact Digylog text — so it shows correctly in Suivi)
+Keep commentStatus = "En cours de réception au network" (same)
+
+Change this logic:
+typescript// CURRENT — maps to generic internal status:
+// newStatus = "in_progress" for Digylog statuses
+
+// NEW — use exact Digylog text as status directly:
+const DIGYLOG_EXACT_MAP: Record<string, string> = {
+  "En cours de réception au network": "En cours de réception au network", // keep exact
+  "Arrivé au hub":                    "Arrivé au hub",
+  "En cours de livraison":            "En cours de livraison",
+  "Sorti pour livraison":             "Sorti pour livraison",
+  "Pris en charge":                   "Pris en charge",
+  "Collecté":                         "Collecté",
+  "Chargé":                           "Chargé",
+  "Non Reçu":                         "Non Reçu",
+  "En attente de ramassage":          "En attente de ramassage",
+  "Tentative échouée":                "Tentative échouée",
+  "Retour en cours":                  "Retour en cours",
+  "Retourné à l'expéditeur":          "Retourné à l'expéditeur",
+  "Livré":                            "delivered",
+  "Livraison effectuée":              "delivered",
+};
+CHANGE 3 — client/src/components/ui/status-badge.tsx — show commentStatus always (not only when trackNumber exists):
+In orders.tsx, find this pattern:
+typescriptstatus={(order as any).trackNumber && order.commentStatus ? order.commentStatus : order.status}
+Change to:
+typescriptstatus={order.commentStatus || order.status}
+This shows the exact carrier status text always — not just when trackNumber exists.
+CHANGE 4 — server/routes.ts — suivi_group filter — also match by commentStatus:
+In both agent and store suivi_group filters, add commentStatus matching:
+typescriptres.json(includeShippingCost(ordersList.filter(o =>
+  SUIVI_GROUP.includes(o.status) ||
+  SUIVI_GROUP.includes((o as any).commentStatus || '') ||
+  (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
+)));
+Do NOT change: any other status logic, order creation, AI, WhatsApp, financial calculations.
+Only touch: server/routes.ts (SUIVI_GROUP + processCarrierWebhook + suivi filter) and client/src/pages/orders.tsx (StatusBadge display) and client/src/components/ui/status-badge.tsx (if needed).
