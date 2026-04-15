@@ -312,6 +312,13 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] retargeting_leads table verified/created ✅');
 
+    // ── marketing_campaigns — sender_device_id ────────────────────────────────
+    await client.query(`
+      ALTER TABLE public.marketing_campaigns
+        ADD COLUMN IF NOT EXISTS sender_device_id INTEGER;
+    `);
+    console.log('[Migration] marketing_campaigns.sender_device_id ensured ✅');
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);
