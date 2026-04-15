@@ -1,0 +1,83 @@
+FIX — 3 issues: wrong status mapping + delivered detection + auto shipping cost
+CHANGE 1 — server/routes.ts — fix status mapping in processCarrierWebhook:
+Find the DIGYLOG_EXACT_MAP and fix these statuses — they must map to in_progress NOT delivered:
+typescriptconst DIGYLOG_EXACT_MAP: Record<string, string> = {
+  "En cours de réception au network": "in_progress",
+  "Arrivé au hub":                    "in_progress",
+  "En cours de livraison":            "in_progress",  // NOT delivered
+  "Sorti pour livraison":             "in_progress",  // NOT delivered
+  "Confirmé par livreur":             "in_progress",  // NOT delivered — means livreur confirmed pickup only
+  "Confirmé par livreur *":           "in_progress",  // same with asterisk
+  "Pris en charge":                   "in_progress",
+  "Collecté":                         "in_progress",
+  "Chargé":                           "in_progress",
+  "Non Reçu":                         "Attente De Ramassage",
+  "En attente de ramassage":          "Attente De Ramassage",
+  "Tentative échouée":                "refused",
+  "Retour en cours":                  "retourné",
+  "Retourné à l'expéditeur":          "retourné",
+  "Livré":                            "delivered",      // ONLY this = delivered
+  "Livraison effectuée":              "delivered",      // and this
+  "Remis au client":                  "delivered",      // and this
+};
+Also fix the fuzzy matching — rawStatus.includes("livr") catches "En cours de livraison" wrongly:
+typescript// Change delivered detection to be more specific:
+if (
+  rawStatus === "livré" || 
+  rawStatus === "livre" ||
+  rawStatus === "livraison effectuée" ||
+  rawStatus === "remis au client" ||
+  rawStatus.includes("remis") ||
+  rawStatus === "delivered"
+) {
+  newStatus = "delivered";
+}
+// Remove the broad rawStatus.includes("livr") check
+CHANGE 2 — Same fix in server/services/carrier-service.ts — trackDigylogShipment:
+Fix the status mapping there too:
+typescript// Change:
+if (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'delivered';
+
+// To (more specific):
+if (
+  rawLow === 'livré' || rawLow === 'livre' ||
+  rawLow === 'livraison effectuée' || rawLow === 'remis au client' ||
+  rawLow.includes('remis au') || rawLow === 'delivered'
+) {
+  mappedStatus = 'delivered';
+} else if (rawLow.includes('livr') || rawLow.includes('distribu')) {
+  mappedStatus = 'in_progress'; // "en cours de livraison" etc = still in progress
+}
+CHANGE 3 — server/routes.ts — auto-set shippingCost when order becomes delivered:
+In processCarrierWebhook, after await storage.updateOrderStatus(order.id, newStatus), add:
+typescript// Auto-set shippingCost when delivered
+if (newStatus === 'delivered') {
+  try {
+    const carrierAccts = await storage.getCarrierAccounts((order as any).storeId);
+    const activeCarrier = carrierAccts.find(a => 
+      a.carrierName.toLowerCase() === carrierName.toLowerCase() && a.isActive === 1
+    ) || carrierAccts[0];
+    const fee = (activeCarrier as any)?.deliveryFee || 0;
+    if (fee > 0) {
+      await storage.updateOrder(order.id, { shippingCost: fee });
+      console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee}`);
+    }
+  } catch (e) {
+    console.error('[DeliveryFee] Error:', e);
+  }
+}
+Also add same logic in auto-sync in server/index.ts:
+typescriptif (result.status && result.status !== order.status) {
+  await storage.updateOrderStatus(order.id, result.status);
+  await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+  
+  // Auto shipping cost on delivery
+  if (result.status === 'delivered') {
+    const fee = (account as any).deliveryFee || 0;
+    if (fee > 0) {
+      await storage.updateOrder(order.id, { shippingCost: fee });
+    }
+  }
+}
+Do NOT change: any other status logic, order creation, AI, WhatsApp, frontend.
+Only touch: processCarrierWebhook in server/routes.ts, trackDigylogShipment in carrier-service.ts, auto-sync in server/index.ts.

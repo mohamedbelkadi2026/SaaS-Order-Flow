@@ -1058,7 +1058,12 @@ export async function trackDigylogShipment(
       if (rawText) {
         const rawLow = rawText.toLowerCase();
         let mappedStatus = 'in_progress';
-        if (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'delivered';
+        if (
+          rawLow === 'livré' || rawLow === 'livre' ||
+          rawLow === 'livraison effectuée' || rawLow === 'remis au client' ||
+          rawLow.includes('remis au') || rawLow === 'delivered'
+        ) mappedStatus = 'delivered';
+        else if (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'in_progress'; // en cours de livraison etc
         else if (rawLow.includes('retour') && !rawLow.includes('en cours')) mappedStatus = 'retourné';
         else if (rawLow.includes('refus') || rawLow.includes('annul')) mappedStatus = 'refused';
         else if (rawLow.includes('injoignable') || rawLow.includes('absent')) mappedStatus = 'Injoignable';
@@ -1095,7 +1100,12 @@ export async function trackDigylogShipment(
       if (rawText) {
         const rawLow = rawText.toLowerCase();
         let mappedStatus = 'in_progress';
-        if (rawLow.includes('livr')) mappedStatus = 'delivered';
+        if (
+          rawLow === 'livré' || rawLow === 'livre' ||
+          rawLow === 'livraison effectuée' || rawLow === 'remis au client' ||
+          rawLow.includes('remis au') || rawLow === 'delivered'
+        ) mappedStatus = 'delivered';
+        else if (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'in_progress';
         else if (rawLow.includes('retour') && !rawLow.includes('en cours')) mappedStatus = 'retourné';
         else if (rawLow.includes('refus')) mappedStatus = 'refused';
         else if (rawLow.includes('ramass') || rawLow.includes('attente')) mappedStatus = 'Attente De Ramassage';

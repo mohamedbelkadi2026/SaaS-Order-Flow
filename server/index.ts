@@ -531,6 +531,15 @@ app.use((req, res, next) => {
           if (result.status && result.status !== order.status) {
             await st.updateOrderStatus(order.id, result.status);
             await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+
+            // Auto-set shippingCost when delivered
+            if (result.status === 'delivered') {
+              const fee = (account as any).deliveryFee || 0;
+              if (fee > 0) {
+                await st.updateOrder(order.id, { shippingCost: fee });
+              }
+            }
+
             await st.createOrderFollowUpLog({
               orderId: order.id,
               agentId: null,

@@ -2415,8 +2415,10 @@ export async function registerRoutes(
     const DIGYLOG_EXACT_MAP: Record<string, string> = {
       "En cours de réception au network": "En cours de réception au network",
       "Arrivé au hub":                    "Arrivé au hub",
-      "En cours de livraison":            "En cours de livraison",
-      "Sorti pour livraison":             "Sorti pour livraison",
+      "En cours de livraison":            "En cours de livraison",  // in progress, NOT delivered
+      "Sorti pour livraison":             "Sorti pour livraison",   // in progress, NOT delivered
+      "Confirmé par livreur":             "in_progress",            // livreur confirmed pickup only
+      "Confirmé par livreur *":           "in_progress",
       "Pris en charge":                   "Pris en charge",
       "Collecté":                         "Collecté",
       "Chargé":                           "Chargé",
@@ -2427,14 +2429,21 @@ export async function registerRoutes(
       "Retourné à l'expéditeur":          "Retourné à l'expéditeur",
       "Livré":                            "delivered",
       "Livraison effectuée":              "delivered",
+      "Remis au client":                  "delivered",
     };
     const exactKey = Object.keys(DIGYLOG_EXACT_MAP).find(
       k => k.toLowerCase() === rawStatus
     );
     if (exactKey) {
       newStatus = DIGYLOG_EXACT_MAP[exactKey];
-    } else if (rawStatus.includes("livr") || rawStatus.includes("distribu") || rawStatus === "delivered") {
+    } else if (
+      rawStatus === "livré" || rawStatus === "livre" ||
+      rawStatus === "livraison effectuée" || rawStatus === "remis au client" ||
+      rawStatus.includes("remis au") || rawStatus === "delivered"
+    ) {
       newStatus = "delivered";
+    } else if (rawStatus.includes("livr") || rawStatus.includes("distribu")) {
+      newStatus = "in_progress"; // "en cours de livraison" etc = still in transit
     } else if (
       rawStatus.includes("refus") || rawStatus.includes("retour") ||
       rawStatus.includes("annul") || rawStatus === "refused"
@@ -2461,6 +2470,24 @@ export async function registerRoutes(
     // The commentStatus column carries the real display text shown in the Suivi tab.
 
     await storage.updateOrderStatus(order.id, newStatus);
+
+    // Auto-set shippingCost when order is delivered
+    if (newStatus === 'delivered') {
+      try {
+        const carrierAccts = await storage.getCarrierAccounts((order as any).storeId);
+        const activeCarrier = carrierAccts.find((a: any) =>
+          a.carrierName.toLowerCase() === carrierName.toLowerCase() && a.isActive === 1
+        ) || carrierAccts[0];
+        const fee = (activeCarrier as any)?.deliveryFee || 0;
+        if (fee > 0) {
+          await storage.updateOrder(order.id, { shippingCost: fee });
+          console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee}`);
+        }
+      } catch (e) {
+        console.error('[DeliveryFee] Error:', e);
+      }
+    }
+
     console.log(`[WEBHOOK-RAW]: Internal status → ${newStatus} (commentStatus="${rawText}")`);
 
     // ── Capture driver info into follow-up journal ────────────────────────
