@@ -1,0 +1,53 @@
+REPLACE — getDigylogDeliveryCost: use order infos endpoint instead of cities
+In server/services/carrier-service.ts, find the entire getDigylogDeliveryCost function and replace it completely with:
+typescriptexport async function getDigylogDeliveryCost(
+  trackingNumber: string,
+  apiKey: string,
+  networkId: number = 1,
+  apiUrl?: string,
+): Promise<number | null> {
+  try {
+    if (!trackingNumber || !apiKey) return null;
+    const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '')
+      .replace(/api\.digylog\.ma/i, 'api.digylog.com');
+
+    const resp = await axios.get(`${base}/order/${encodeURIComponent(trackingNumber)}/infos`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+      },
+      timeout: 10000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    console.log(`[DIGYLOG-COST] ${trackingNumber} → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 400)}`);
+
+    if (resp.status !== 200 || !resp.data) return null;
+
+    const body = resp.data;
+    const price =
+      body?.frais_livraison ?? body?.frais ?? body?.port ??
+      body?.delivery_cost ?? body?.shipping_cost ??
+      body?.cout_livraison ?? body?.data?.frais_livraison ??
+      body?.data?.port ?? null;
+
+    if (price === null || price === undefined) return null;
+
+    const priceInCentimes = Math.round(parseFloat(String(price)) * 100);
+    console.log(`[DIGYLOG-COST] ${trackingNumber} → ${price} DH = ${priceInCentimes} centimes`);
+    return priceInCentimes > 0 ? priceInCentimes : null;
+
+  } catch (err: any) {
+    console.error(`[DIGYLOG-COST] Error:`, err?.message);
+    return null;
+  }
+}
+Also in server/routes.ts — find ALL calls to getDigylogDeliveryCost and change the first argument:
+
+Change getDigylogDeliveryCost(resolvedCity, ...) → getDigylogDeliveryCost(trackingNumber, ...)
+Change getDigylogDeliveryCost((order as any).customerCity || '', ...) → getDigylogDeliveryCost((order as any).trackNumber || '', ...)
+
+Do NOT change anything else.
