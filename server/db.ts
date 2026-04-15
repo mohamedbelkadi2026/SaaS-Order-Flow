@@ -297,12 +297,18 @@ export async function initializeDatabase(): Promise<void> {
         campaign     TEXT DEFAULT '',
         status       TEXT DEFAULT 'pending',
         sent_at      TIMESTAMP,
-        created_at   TIMESTAMP DEFAULT NOW()
+        created_at   TIMESTAMP DEFAULT NOW(),
+        imported_at  TIMESTAMP DEFAULT NOW()
       );
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_retargeting_leads_store 
       ON public.retargeting_leads(store_id);
+    `);
+    // Ensure imported_at exists on tables created before this column was added
+    await client.query(`
+      ALTER TABLE public.retargeting_leads
+        ADD COLUMN IF NOT EXISTS imported_at TIMESTAMP DEFAULT NOW();
     `);
     console.log('[Migration] retargeting_leads table verified/created ✅');
 
