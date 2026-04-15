@@ -2508,12 +2508,8 @@ export async function registerRoutes(
   // ── Permanent webhook URL: /api/webhooks/carrier/:storeId/:carrierName ─────
   // This URL never changes — based on storeId (permanent) + carrier name.
   // Use this in your carrier's webhook settings instead of the token-based URL.
-  // Digylog sends PUT — accept both methods with a simple alias:
-  app.put("/api/webhooks/carrier/:storeId/:carrierName", (req, _res, next) => {
-    req.method = 'POST';
-    next('route');
-  });
-  app.post("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+  // Accept all HTTP methods — Digylog uses PUT, others use POST:
+  app.all("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
     // ── STEP 0: Log every hit immediately — even before validation ────────
     console.log('--- INCOMING WEBHOOK DATA ---');
     console.log(JSON.stringify(req.body, null, 2));

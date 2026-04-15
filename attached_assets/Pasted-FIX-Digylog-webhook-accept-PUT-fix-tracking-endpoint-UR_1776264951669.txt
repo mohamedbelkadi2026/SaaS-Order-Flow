@@ -1,0 +1,59 @@
+FIX — Digylog webhook: accept PUT + fix tracking endpoint URL
+CHANGE 1 — server/routes.ts — accept both POST and PUT for carrier webhook:
+Find:
+typescriptapp.post("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+Change to handle both methods by adding this BEFORE the existing handler:
+typescript// Digylog uses PUT — redirect to POST handler
+app.put("/api/webhooks/carrier/:storeId/:carrierName", (req, res, next) => {
+  console.log('[DIGYLOG-PUT] Received PUT webhook — processing as POST');
+  next('route');
+});
+app.all("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+Change app.post( to app.all( — this accepts GET, POST, PUT, PATCH all at once.
+CHANGE 2 — server/routes.ts — add body.traking field (Digylog typo):
+In processCarrierWebhook, find tracking extraction and add:
+typescriptconst trackingNumber = (
+  body.traking        ||  // Digylog API uses "traking" (typo)
+  body.tracking_number || body.barcode || body.code_suivi ||
+  body.track_number   || body.colis_id || body.tracking  ||
+  body.colis          || body.id       || ""
+).toString().trim();
+CHANGE 3 — server/services/carrier-service.ts — fix Digylog tracking endpoint:
+In trackDigylogShipment, try multiple endpoint formats:
+typescript// Try different Digylog tracking endpoints:
+const endpoints = [
+  `${base}/tracking/${encodeURIComponent(trackingNumber)}`,
+  `${base}/colis/${encodeURIComponent(trackingNumber)}`,
+  `${base}/orders?tracking=${encodeURIComponent(trackingNumber)}`,
+  `${base}/shipments/${encodeURIComponent(trackingNumber)}`,
+];
+
+for (const trackUrl of endpoints) {
+  const response = await axios.get(trackUrl, {
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Accept': 'application/json',
+      'Referer': 'https://apiseller.digylog.com',
+    },
+    timeout: 8000,
+    httpsAgent: SSL_AGENT,
+    validateStatus: () => true,
+  });
+  
+  console.log(`[DIGYLOG-TRACK] ${trackingNumber} → ${trackUrl} → HTTP ${response.status}`);
+  
+  if (response.status === 200) {
+    // parse and return status
+    const body = response.data;
+    const rawText = (body?.status || body?.etat_libelle || body?.last_event || '').toString().trim();
+    if (rawText) {
+      // map and return
+    }
+  }
+}
+CHANGE 4 — server/index.ts — add body.traking to early webhook handler too:
+typescriptconst incomingTracking = (
+  b.traking || b.tracking || b.barcode || b.tracking_number || 
+  b.code_suivi || b.track_number || b.colis_id || b.colis || ""
+).toString().trim();
+Do NOT change: any other endpoint, order logic, AI, WhatsApp.
