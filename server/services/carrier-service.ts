@@ -1014,31 +1014,60 @@ export async function trackDigylogShipment(
   apiKey: string,
   apiUrl?: string,
 ): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
-  const baseUrl = (apiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
-  const trackUrl = `${baseUrl}/tracking/${encodeURIComponent(trackingNumber)}`;
+  const root = "https://api.digylog.com";
+  const encoded = encodeURIComponent(trackingNumber);
 
-  try {
-    const response = await axios.get(trackUrl, {
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "X-API-KEY": apiKey,
-        "Accept": "application/json",
-        "Referer": "https://apiseller.digylog.com",
-        "Origin": "https://apiseller.digylog.com",
-      },
-      timeout: 15000,
-      httpsAgent: SSL_AGENT,
-      validateStatus: () => true,
-    });
+  // Try the 3 candidate URLs in order — log every response so we can see which returns 200
+  const candidates = [
+    `${root}/api/v2/seller/tracking/${encoded}`,
+    `${root}/api/v2/parcels/${encoded}`,
+    `${root}/api/v2/seller/orders?barcode=${encoded}`,
+  ];
 
-    const body = response.data;
-    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${response.status}: ${JSON.stringify(body)}`);
+  // If the caller supplied a custom apiUrl, prepend it as the first candidate
+  if (apiUrl) {
+    const custom = apiUrl.replace(/\/+$/, "");
+    candidates.unshift(`${custom}/tracking/${encoded}`);
+  }
 
-    if (response.status >= 400) {
-      return { status: null, rawStatus: null, rawResponse: body, error: `HTTP ${response.status}` };
+  const headers = {
+    "Authorization": `Bearer ${apiKey}`,
+    "X-API-KEY": apiKey,
+    "Accept": "application/json",
+    "Referer": "https://apiseller.digylog.com",
+    "Origin": "https://apiseller.digylog.com",
+  };
+
+  let lastBody: unknown = null;
+  let lastStatus = 0;
+
+  for (const trackUrl of candidates) {
+    try {
+      const response = await axios.get(trackUrl, {
+        headers,
+        timeout: 15000,
+        httpsAgent: SSL_AGENT,
+        validateStatus: () => true,
+      });
+      lastBody = response.data;
+      lastStatus = response.status;
+      console.log(`[DIGYLOG-TRACK] ${trackingNumber} → ${trackUrl} — HTTP ${response.status}: ${JSON.stringify(response.data)}`);
+      if (response.status < 400) {
+        // Found a working endpoint — parse and return
+        break;
+      }
+    } catch (err: any) {
+      console.error(`[DIGYLOG-TRACK] ${trackingNumber} → ${trackUrl} — ERROR: ${err?.message}`);
     }
+  }
 
-    const DIGYLOG_STATUS_MAP: Record<string, string> = {
+  if (lastStatus === 0 || lastStatus >= 400) {
+    return { status: null, rawStatus: null, rawResponse: lastBody, error: `HTTP ${lastStatus || "all_failed"}` };
+  }
+
+  const body = lastBody;
+
+  const DIGYLOG_STATUS_MAP: Record<string, string> = {
       "livré": "delivered",
       "livrée": "delivered",
       "livre": "delivered",
@@ -1073,7 +1102,4 @@ export async function trackDigylogShipment(
     const mappedStatus = DIGYLOG_STATUS_MAP[normalized] || null;
 
     return { status: mappedStatus, rawStatus, rawResponse: body };
-  } catch (err: any) {
-    return { status: null, rawStatus: null, rawResponse: null, error: err?.message || String(err) };
-  }
 }
