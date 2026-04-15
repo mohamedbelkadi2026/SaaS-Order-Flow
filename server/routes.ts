@@ -2438,13 +2438,9 @@ export async function registerRoutes(
     );
     if (exactKey) {
       newStatus = DIGYLOG_EXACT_MAP[exactKey];
-    } else if (
-      rawStatus === "livré" || rawStatus === "livre" ||
-      rawStatus === "livraison effectuée" || rawStatus === "remis au client" ||
-      rawStatus === "delivered"
-    ) {
+    } else if (rawStatus === "livré" || rawStatus === "livre" || rawStatus === "livraison effectuée" || rawStatus === "remis au client" || rawStatus === "delivered" || rawStatus.includes("distribu")) {
       newStatus = "delivered";
-    } else if (rawStatus.includes("livr") || rawStatus.includes("cours de livr") || rawStatus.includes("distribu")) {
+    } else if (rawStatus.includes("livr") || rawStatus.includes("cours de livr")) {
       newStatus = "in_progress"; // "en cours de livraison", "sorti en livraison" etc = still in transit
     } else if (
       rawStatus.includes("refus") || rawStatus.includes("retour") ||
