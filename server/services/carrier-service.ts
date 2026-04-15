@@ -1015,7 +1015,7 @@ export async function trackDigylogShipment(
   apiUrl?: string,
 ): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
   const baseUrl = (apiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
-  const trackUrl = `${baseUrl}/orders/${encodeURIComponent(trackingNumber)}`;
+  const trackUrl = `${baseUrl}/tracking/${encodeURIComponent(trackingNumber)}`;
 
   try {
     const response = await axios.get(trackUrl, {
