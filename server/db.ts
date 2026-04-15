@@ -285,6 +285,27 @@ export async function initializeDatabase(): Promise<void> {
       console.log("[Migration] stores.owner_id — no NULL owner_ids found, nothing to fix ✅");
     }
 
+    // ── retargeting_leads table ───────────────────────────────────────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.retargeting_leads (
+        id           SERIAL PRIMARY KEY,
+        store_id     INTEGER NOT NULL REFERENCES stores(id),
+        name         TEXT NOT NULL DEFAULT '',
+        phone        TEXT NOT NULL DEFAULT '',
+        last_product TEXT DEFAULT '',
+        source       TEXT DEFAULT 'import',
+        campaign     TEXT DEFAULT '',
+        status       TEXT DEFAULT 'pending',
+        sent_at      TIMESTAMP,
+        created_at   TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_retargeting_leads_store 
+      ON public.retargeting_leads(store_id);
+    `);
+    console.log('[Migration] retargeting_leads table verified/created ✅');
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);
