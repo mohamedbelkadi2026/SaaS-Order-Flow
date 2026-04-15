@@ -1,0 +1,33 @@
+IX — Return deliveryCost from trackDigylogShipment and save it in sync
+CHANGE 1 — server/services/carrier-service.ts — add deliveryCost to return type:
+Find the return type of trackDigylogShipment:
+typescriptPromise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }>
+Change to:
+typescriptPromise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; deliveryCost?: number | null; error?: string }>
+In the infos fallback section, extract and return deliveryCost:
+typescript// After getting body from infos endpoint, add:
+const deliveryCostRaw = body?.deliveryCost ?? body?.frais_livraison ?? body?.port ?? null;
+const deliveryCost = deliveryCostRaw ? Math.round(parseFloat(String(deliveryCostRaw)) * 100) : null;
+
+// Include in return:
+return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost };
+Also add deliveryCost to ALL other return statements in the function (set to null if not available).
+CHANGE 2 — server/routes.ts — save deliveryCost from sync result:
+In POST /api/shipping/digylog/sync, find:
+typescriptconst result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
+if (result.status && result.status !== order.status) {
+  await storage.updateOrderStatus(order.id, result.status);
+  await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+Replace with:
+typescriptconst result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
+
+// Always save deliveryCost if available and not yet set
+if (result.deliveryCost && result.deliveryCost > 0 && !(order as any).shippingCost) {
+  await storage.updateOrder(order.id, { shippingCost: result.deliveryCost });
+  console.log(`[DIGYLOG-SYNC] DeliveryCost #${(order as any).orderNumber}: ${result.deliveryCost} centimes`);
+}
+
+if (result.status && result.status !== order.status) {
+  await storage.updateOrderStatus(order.id, result.status);
+  await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+Do NOT change anything else.

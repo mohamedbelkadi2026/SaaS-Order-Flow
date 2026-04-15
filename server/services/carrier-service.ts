@@ -1013,7 +1013,7 @@ export async function trackDigylogShipment(
   trackingNumber: string,
   apiKey: string,
   apiUrl?: string,
-): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; deliveryCost?: number | null; error?: string }> {
   try {
     const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
       .replace(/\/+$/, '')
@@ -1072,7 +1072,7 @@ export async function trackDigylogShipment(
         else if (rawLow.includes('ramass') || rawLow.includes('attente')) { mappedStatus = 'Attente De Ramassage'; }
 
         console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
-        return { status: mappedStatus, rawStatus: rawText, rawResponse: body };
+        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost: null };
       }
     }
 
@@ -1115,16 +1115,18 @@ export async function trackDigylogShipment(
         else if (rawLow.includes('ramass') || rawLow.includes('attente')) { mappedStatus = 'Attente De Ramassage'; }
 
         console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
-        return { status: mappedStatus, rawStatus: rawText, rawResponse: body };
+        const deliveryCostRaw = body?.deliveryCost ?? body?.frais_livraison ?? body?.port ?? null;
+        const deliveryCost = deliveryCostRaw ? Math.round(parseFloat(String(deliveryCostRaw)) * 100) : null;
+        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost };
       }
     }
 
     console.warn(`[DIGYLOG-TRACK] ${trackingNumber} → No status found`);
-    return { status: null, rawStatus: null, rawResponse: null, error: 'No status found' };
+    return { status: null, rawStatus: null, rawResponse: null, deliveryCost: null, error: 'No status found' };
 
   } catch (err: any) {
     console.error(`[DIGYLOG-TRACK] ${trackingNumber} → Error:`, err?.message);
-    return { status: null, rawStatus: null, rawResponse: null, error: err?.message };
+    return { status: null, rawStatus: null, rawResponse: null, deliveryCost: null, error: err?.message };
   }
 }
 
