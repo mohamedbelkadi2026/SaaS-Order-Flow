@@ -1,0 +1,109 @@
+FIX — Digylog tracking: use correct API endpoints from official documentation
+In server/services/carrier-service.ts, replace the entire trackDigylogShipment function with:
+typescriptexport async function trackDigylogShipment(
+  trackingNumber: string,
+  apiKey: string,
+  apiUrl?: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  try {
+    const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '')
+      .replace(/api\.digylog\.ma/i, 'api.digylog.com')
+      .replace(/app\.digylog\.com/i, 'api.digylog.com');
+
+    const headers = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Accept': 'application/json',
+      'Referer': 'https://apiseller.digylog.com',
+      'Origin': 'https://apiseller.digylog.com',
+    };
+
+    // Try /historics endpoint first — returns full history with latest status
+    const historicsUrl = `${base}/historics?trackings=${encodeURIComponent(trackingNumber)}`;
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → GET ${historicsUrl}`);
+
+    const histResp = await axios.get(historicsUrl, {
+      headers,
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${histResp.status}: ${JSON.stringify(histResp.data).slice(0, 300)}`);
+
+    if (histResp.status === 200 && histResp.data) {
+      const body = histResp.data;
+      // historics returns array or object with history array
+      const records = Array.isArray(body) ? body : (body.data || body.historics || body.orders || []);
+      const record = records[0] || body;
+      
+      const rawText = (
+        record?.last_event ||
+        record?.etat_libelle ||
+        record?.statut_libelle ||
+        record?.status ||
+        record?.etat ||
+        record?.libelle ||
+        ''
+      ).toString().trim();
+
+      if (rawText) {
+        const rawLow = rawText.toLowerCase();
+        let mappedStatus = 'in_progress';
+        if (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'delivered';
+        else if (rawLow.includes('retour') && !rawLow.includes('en cours')) mappedStatus = 'retourné';
+        else if (rawLow.includes('refus') || rawLow.includes('annul')) mappedStatus = 'refused';
+        else if (rawLow.includes('injoignable') || rawLow.includes('absent')) mappedStatus = 'Injoignable';
+        else if (rawLow.includes('ramass') || rawLow.includes('attente')) mappedStatus = 'Attente De Ramassage';
+
+        console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
+        return { status: mappedStatus, rawStatus: rawText, rawResponse: body };
+      }
+    }
+
+    // Fallback: /order/:traking/infos
+    const infosUrl = `${base}/order/${encodeURIComponent(trackingNumber)}/infos`;
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → GET ${infosUrl} (fallback)`);
+
+    const infosResp = await axios.get(infosUrl, {
+      headers,
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → infos HTTP ${infosResp.status}: ${JSON.stringify(infosResp.data).slice(0, 300)}`);
+
+    if (infosResp.status === 200 && infosResp.data) {
+      const body = infosResp.data;
+      const rawText = (
+        body?.last_event ||
+        body?.etat_libelle ||
+        body?.status ||
+        body?.etat ||
+        ''
+      ).toString().trim();
+
+      if (rawText) {
+        const rawLow = rawText.toLowerCase();
+        let mappedStatus = 'in_progress';
+        if (rawLow.includes('livr')) mappedStatus = 'delivered';
+        else if (rawLow.includes('retour') && !rawLow.includes('en cours')) mappedStatus = 'retourné';
+        else if (rawLow.includes('refus')) mappedStatus = 'refused';
+        else if (rawLow.includes('ramass') || rawLow.includes('attente')) mappedStatus = 'Attente De Ramassage';
+
+        console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
+        return { status: mappedStatus, rawStatus: rawText, rawResponse: body };
+      }
+    }
+
+    console.warn(`[DIGYLOG-TRACK] ${trackingNumber} → No status found`);
+    return { status: null, rawStatus: null, rawResponse: null, error: 'No status found' };
+
+  } catch (err: any) {
+    console.error(`[DIGYLOG-TRACK] ${trackingNumber} → Error:`, err?.message);
+    return { status: null, rawStatus: null, rawResponse: null, error: err?.message };
+  }
+}
+Do NOT change: any other function, routes, order logic.
+Only touch: trackDigylogShipment in server/services/carrier-service.ts.
