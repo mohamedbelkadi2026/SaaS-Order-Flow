@@ -2297,6 +2297,7 @@ export async function registerRoutes(
     // ── Extract all possible identifiers from the payload ─────────────────
     // Carriers differ: some send tracking IDs, some send our order reference
     const trackingNumber = (
+      body.traking        ||  // Digylog field (typo in their API)
       body.tracking_number || body.barcode   || body.code_suivi ||
       body.track_number   || body.colis_id  || body.tracking   ||
       body.colis          || body.id        || ""
@@ -2313,6 +2314,7 @@ export async function registerRoutes(
     // If none of the known fields are present, scan ALL body string values
     // as a last resort — so we NEVER miss the carrier text.
     const rawText = (
+      body.status           ||  // Digylog sends status as text here
       body.last_event       ||
       body.etat_libelle     ||
       body.statut_libelle   ||
@@ -2322,7 +2324,6 @@ export async function registerRoutes(
       body.current_status   ||
       body.event_label      ||
       body.event            ||
-      body.status           ||
       body.etat             ||
       body.statut           ||
       body.description      ||
@@ -2507,6 +2508,11 @@ export async function registerRoutes(
   // ── Permanent webhook URL: /api/webhooks/carrier/:storeId/:carrierName ─────
   // This URL never changes — based on storeId (permanent) + carrier name.
   // Use this in your carrier's webhook settings instead of the token-based URL.
+  // Digylog sends PUT — accept both methods with a simple alias:
+  app.put("/api/webhooks/carrier/:storeId/:carrierName", (req, _res, next) => {
+    req.method = 'POST';
+    next('route');
+  });
   app.post("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
     // ── STEP 0: Log every hit immediately — even before validation ────────
     console.log('--- INCOMING WEBHOOK DATA ---');

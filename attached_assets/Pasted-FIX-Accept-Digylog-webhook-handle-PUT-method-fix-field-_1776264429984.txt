@@ -1,0 +1,42 @@
+FIX — Accept Digylog webhook: handle PUT method + fix field name "traking"
+CHANGE 1 — server/routes.ts — add PUT method to carrier webhook endpoint:
+Find:
+typescriptapp.post("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+Add PUT handler right after:
+typescript// Digylog sends PUT — add alias:
+app.put("/api/webhooks/carrier/:storeId/:carrierName", async (req, res, next) => {
+  // Convert PUT to same handler as POST
+  req.method = 'POST';
+  next('route');
+});
+OR simply duplicate the handler for both methods:
+typescript['post', 'put'].forEach(method => {
+  (app as any)[method]("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
+    // ... existing handler code unchanged
+  });
+});
+CHANGE 2 — server/routes.ts — fix field extraction in processCarrierWebhook:
+Find where tracking number is extracted:
+typescriptconst trackingNumber = (
+  body.tracking_number || body.barcode   || body.code_suivi ||
+  body.track_number   || body.colis_id  || body.tracking   ||
+  body.colis          || body.id        || ""
+).toString().trim();
+Add body.traking (Digylog typo):
+typescriptconst trackingNumber = (
+  body.traking        ||  // Digylog field (typo in their API)
+  body.tracking_number || body.barcode   || body.code_suivi ||
+  body.track_number   || body.colis_id  || body.tracking   ||
+  body.colis          || body.id        || ""
+).toString().trim();
+CHANGE 3 — Also fix in server/index.ts — the early webhook handler:
+Find the same tracking extraction pattern and add body.traking there too.
+CHANGE 4 — Add Digylog idStatus mapping:
+In processCarrierWebhook, the rawText extraction — add body.status which Digylog sends as text:
+typescriptconst rawText = (
+  body.status           ||  // Digylog sends status as text here
+  body.last_event       ||
+  body.etat_libelle     ||
+  // ... rest unchanged
+Do NOT change: any other webhook, order creation, AI, WhatsApp.
+Only touch: server/routes.ts (PUT handler + traking field) and server/index.ts (traking field).

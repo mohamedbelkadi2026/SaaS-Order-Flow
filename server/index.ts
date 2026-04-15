@@ -280,7 +280,7 @@ app.use((req, res, next) => {
     // ── Step 2: Extract identifiers ───────────────────────────────────────
     const b = req.body || {};
     const incomingTracking = (
-      b.tracking || b.barcode || b.tracking_number || b.code_suivi ||
+      b.traking || b.tracking || b.barcode || b.tracking_number || b.code_suivi ||
       b.track_number || b.colis_id || b.colis || ""
     ).toString().trim();
 
