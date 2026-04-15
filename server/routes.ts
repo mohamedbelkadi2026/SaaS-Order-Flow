@@ -4455,6 +4455,40 @@ export async function registerRoutes(
     } catch (err) { throw err; }
   });
 
+  app.post('/api/admin/fix-shipping-cost', requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { trackDigylogShipment } = await import('./services/carrier-service');
+      const accounts = await storage.getCarrierAccounts(storeId, 'digylog');
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: 'No Digylog account' });
+
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const toFix = allOrders.filter((o: any) =>
+        o.shippingProvider === 'digylog' &&
+        o.trackNumber &&
+        (!o.shippingCost || o.shippingCost === 0)
+      );
+
+      console.log(`[FIX-COST] Found ${toFix.length} orders with 0 shippingCost`);
+      let fixed = 0;
+
+      for (const order of toFix) {
+        const result = await trackDigylogShipment(order.trackNumber!, (account as any).apiKey);
+        const cost = result.deliveryCost;
+        if (cost && cost > 0) {
+          await storage.updateOrder(order.id, { shippingCost: cost });
+          console.log(`[FIX-COST] #${(order as any).orderNumber} → shippingCost=${cost}`);
+          fixed++;
+        }
+      }
+
+      res.json({ checked: toFix.length, fixed, message: `${fixed} commandes corrigées` });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════
   // AMEEX — STATUS TRACKING & SYNC
   // ══════════════════════════════════════════════════════════════════
