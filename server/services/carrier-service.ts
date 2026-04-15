@@ -1158,6 +1158,7 @@ export async function getDigylogDeliveryCost(
 
     const body = resp.data;
     const price =
+      body?.deliveryCost ??      // Digylog V2 actual field name
       body?.frais_livraison ?? body?.frais ?? body?.port ??
       body?.delivery_cost ?? body?.shipping_cost ??
       body?.cout_livraison ?? body?.data?.frais_livraison ??
