@@ -1,0 +1,138 @@
+Add a Digylog tracking sync feature similar to the existing Ameex sync.
+
+1. In server/services/carrier-service.ts, add a new function trackDigylogShipment():
+
+export async function trackDigylogShipment(
+  trackingNumber: string,
+  apiKey: string,
+  apiUrl?: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  const baseUrl = (apiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
+  const trackUrl = `${baseUrl}/orders/${encodeURIComponent(trackingNumber)}`;
+
+  try {
+    const response = await axios.get(trackUrl, {
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "X-API-KEY": apiKey,
+        "Accept": "application/json",
+        "Referer": "https://apiseller.digylog.com",
+        "Origin": "https://apiseller.digylog.com",
+      },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    const body = response.data;
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${response.status}: ${JSON.stringify(body)}`);
+
+    if (response.status >= 400) {
+      return { status: null, rawStatus: null, rawResponse: body, error: `HTTP ${response.status}` };
+    }
+
+    const DIGYLOG_STATUS_MAP: Record<string, string> = {
+      "livré": "delivered",
+      "livrée": "delivered",
+      "livre": "delivered",
+      "livree": "delivered",
+      "retourné": "Retour Recu",
+      "retournée": "Retour Recu",
+      "retourne": "Retour Recu",
+      "en cours de retour": "En Cours De Retour",
+      "en cours": "transit",
+      "en livraison": "transit",
+      "en transit": "transit",
+      "expédié": "transit",
+      "expedie": "transit",
+      "ramassé": "Attente De Ramassage",
+      "collecté": "Attente De Ramassage",
+      "en attente": "Attente De Ramassage",
+      "refusé": "refused",
+      "refusée": "refused",
+      "refuse": "refused",
+      "injoignable": "unreachable",
+      "absent": "unreachable",
+    };
+
+    // Extract raw status from possible response shapes
+    const rawStatus: string | null =
+      body?.statut || body?.status || body?.etat ||
+      body?.data?.statut || body?.data?.status ||
+      (Array.isArray(body) && body[0]?.statut) ||
+      (Array.isArray(body) && body[0]?.status) ||
+      null;
+
+    const normalized = rawStatus?.toLowerCase().trim() || "";
+    const mappedStatus = DIGYLOG_STATUS_MAP[normalized] || null;
+
+    return { status: mappedStatus, rawStatus, rawResponse: body };
+  } catch (err: any) {
+    return { status: null, rawStatus: null, rawResponse: null, error: err?.message || String(err) };
+  }
+}
+
+2. In server/routes.ts, add these two endpoints AFTER the existing Digylog webhook (around line 4240):
+
+// GET /api/shipping/digylog/track/:trackingNumber
+app.get("/api/shipping/digylog/track/:trackingNumber", requireAuth, async (req, res) => {
+  try {
+    const storeId = req.user!.storeId!;
+    const { trackingNumber } = req.params;
+    const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+    const account = accounts[0];
+    if (!account) return res.status(400).json({ message: "Aucun compte Digylog configuré." });
+
+    const { trackDigylogShipment } = await import("./services/carrier-service");
+    const result = await trackDigylogShipment(trackingNumber, (account as any).apiKey, (account as any).apiUrl);
+
+    if (result.error) return res.status(502).json({ message: result.error, rawResponse: result.rawResponse });
+    res.json({ trackingNumber, rawStatus: result.rawStatus, mappedStatus: result.status, rawResponse: result.rawResponse });
+  } catch (err) { throw err; }
+});
+
+// POST /api/shipping/digylog/sync
+app.post("/api/shipping/digylog/sync", requireAuth, requireActiveSubscription, async (req, res) => {
+  try {
+    const storeId = req.user!.storeId!;
+    const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+    const account = accounts[0];
+    if (!account) return res.status(400).json({ message: "Aucun compte Digylog configuré." });
+
+    const apiKey = (account as any).apiKey;
+    const customUrl = (account as any).apiUrl || undefined;
+    const { trackDigylogShipment } = await import("./services/carrier-service");
+
+    const allOrders = await storage.getOrdersByStore(storeId);
+    const digylogOrders = allOrders.filter((o: any) =>
+      o.shippingProvider === "digylog" &&
+      o.trackNumber &&
+      !["delivered", "refused", "Retour Recu"].includes(o.status || "")
+    );
+
+    if (digylogOrders.length === 0) return res.json({ synced: 0, updated: 0, message: "Aucune commande Digylog à synchroniser." });
+
+    let updated = 0;
+    const details: any[] = [];
+
+    for (const order of digylogOrders) {
+      const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
+      if (result.status && result.status !== order.status) {
+        await storage.updateOrderStatus(order.id, result.status);
+        await storage.createOrderFollowUpLog({
+          orderId: order.id,
+          agentId: null,
+          agentName: "Digylog Sync",
+          note: `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
+        });
+        details.push({ orderId: order.id, trackingNumber: order.trackNumber, oldStatus: order.status, newStatus: result.status });
+        updated++;
+      }
+    }
+
+    console.log(`[DIGYLOG-SYNC] storeId=${storeId}: checked ${digylogOrders.length}, updated ${updated}`);
+    res.json({ synced: digylogOrders.length, updated, details });
+  } catch (err) { throw err; }
+});
+
+3. In the frontend, on the Suivi des colis page (wherever the Ameex sync button exists), add a similar "Synchroniser Digylog" button that calls POST /api/shipping/digylog/sync. Show the result (X commandes mises à jour).

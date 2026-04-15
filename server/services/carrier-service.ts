@@ -1006,3 +1006,74 @@ export async function shipOrderToCarrier(
     };
   }
 }
+
+// ── DIGYLOG — STATUS TRACKING ──────────────────────────────────────────────
+
+export async function trackDigylogShipment(
+  trackingNumber: string,
+  apiKey: string,
+  apiUrl?: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  const baseUrl = (apiUrl || "https://api.digylog.com/api/v2/seller").replace(/\/+$/, "");
+  const trackUrl = `${baseUrl}/orders/${encodeURIComponent(trackingNumber)}`;
+
+  try {
+    const response = await axios.get(trackUrl, {
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "X-API-KEY": apiKey,
+        "Accept": "application/json",
+        "Referer": "https://apiseller.digylog.com",
+        "Origin": "https://apiseller.digylog.com",
+      },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    const body = response.data;
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${response.status}: ${JSON.stringify(body)}`);
+
+    if (response.status >= 400) {
+      return { status: null, rawStatus: null, rawResponse: body, error: `HTTP ${response.status}` };
+    }
+
+    const DIGYLOG_STATUS_MAP: Record<string, string> = {
+      "livré": "delivered",
+      "livrée": "delivered",
+      "livre": "delivered",
+      "livree": "delivered",
+      "retourné": "Retour Recu",
+      "retournée": "Retour Recu",
+      "retourne": "Retour Recu",
+      "en cours de retour": "En Cours De Retour",
+      "en cours": "transit",
+      "en livraison": "transit",
+      "en transit": "transit",
+      "expédié": "transit",
+      "expedie": "transit",
+      "ramassé": "Attente De Ramassage",
+      "collecté": "Attente De Ramassage",
+      "en attente": "Attente De Ramassage",
+      "refusé": "refused",
+      "refusée": "refused",
+      "refuse": "refused",
+      "injoignable": "unreachable",
+      "absent": "unreachable",
+    };
+
+    const rawStatus: string | null =
+      body?.statut || body?.status || body?.etat ||
+      body?.data?.statut || body?.data?.status ||
+      (Array.isArray(body) && body[0]?.statut) ||
+      (Array.isArray(body) && body[0]?.status) ||
+      null;
+
+    const normalized = rawStatus?.toLowerCase().trim() || "";
+    const mappedStatus = DIGYLOG_STATUS_MAP[normalized] || null;
+
+    return { status: mappedStatus, rawStatus, rawResponse: body };
+  } catch (err: any) {
+    return { status: null, rawStatus: null, rawResponse: null, error: err?.message || String(err) };
+  }
+}

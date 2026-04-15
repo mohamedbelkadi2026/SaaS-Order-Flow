@@ -4264,6 +4264,71 @@ export async function registerRoutes(
   });
 
   // ══════════════════════════════════════════════════════════════════
+  // DIGYLOG — STATUS TRACKING & SYNC
+  // ══════════════════════════════════════════════════════════════════
+
+  app.get("/api/shipping/digylog/track/:trackingNumber", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { trackingNumber } = req.params;
+      const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Digylog configuré." });
+
+      const { trackDigylogShipment } = await import("./services/carrier-service");
+      const result = await trackDigylogShipment(trackingNumber, (account as any).apiKey, (account as any).apiUrl);
+
+      if (result.error) return res.status(502).json({ message: result.error, rawResponse: result.rawResponse });
+      res.json({ trackingNumber, rawStatus: result.rawStatus, mappedStatus: result.status, rawResponse: result.rawResponse });
+    } catch (err) { throw err; }
+  });
+
+  app.post("/api/shipping/digylog/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "digylog");
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Digylog configuré." });
+
+      const apiKey = (account as any).apiKey;
+      const customUrl = (account as any).apiUrl || undefined;
+      const { trackDigylogShipment } = await import("./services/carrier-service");
+
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const digylogOrders = allOrders.filter((o: any) =>
+        o.shippingProvider === "digylog" &&
+        o.trackNumber &&
+        !["delivered", "refused", "Retour Recu"].includes(o.status || "")
+      );
+
+      if (digylogOrders.length === 0) {
+        return res.json({ synced: 0, updated: 0, message: "Aucune commande Digylog à synchroniser." });
+      }
+
+      let updated = 0;
+      const details: any[] = [];
+
+      for (const order of digylogOrders) {
+        const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
+        if (result.status && result.status !== order.status) {
+          await storage.updateOrderStatus(order.id, result.status);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id,
+            agentId: null,
+            agentName: "Digylog Sync",
+            note: `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
+          });
+          details.push({ orderId: order.id, trackingNumber: order.trackNumber, oldStatus: order.status, newStatus: result.status });
+          updated++;
+        }
+      }
+
+      console.log(`[DIGYLOG-SYNC] storeId=${storeId}: checked ${digylogOrders.length}, updated ${updated}`);
+      res.json({ synced: digylogOrders.length, updated, details });
+    } catch (err) { throw err; }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
   // AMEEX — STATUS TRACKING & SYNC
   // ══════════════════════════════════════════════════════════════════
 

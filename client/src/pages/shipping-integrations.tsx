@@ -1441,6 +1441,23 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     }
   };
 
+  const [digylogSyncPending, setDigylogSyncPending] = useState(false);
+  const handleDigylogSync = async () => {
+    setDigylogSyncPending(true);
+    try {
+      const res = await apiRequest("POST", "/api/shipping/digylog/sync", {});
+      const data = await res.json();
+      toast({
+        title: "✅ Statuts Digylog synchronisés",
+        description: `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
+      });
+    } catch (e: any) {
+      toast({ title: "Erreur de synchronisation Digylog", description: e.message, variant: "destructive" });
+    } finally {
+      setDigylogSyncPending(false);
+    }
+  };
+
   const safeTab = Math.min(activeTab, Math.max(0, accounts.length - 1));
   const acct = accounts[safeTab] || null;
 
@@ -1571,6 +1588,21 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                           ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
                           : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
                         Synchroniser les statuts
+                      </Button>
+                    )}
+                    {providerId === "digylog" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleDigylogSync}
+                        disabled={digylogSyncPending}
+                        data-testid={`button-digylog-sync-statuses-${acct.id}`}
+                      >
+                        {digylogSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser Digylog
                       </Button>
                     )}
                     <Button
