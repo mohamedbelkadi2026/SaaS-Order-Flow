@@ -1015,82 +1015,69 @@ export async function trackDigylogShipment(
   apiUrl?: string,
 ): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
   try {
-    const trackUrl = `https://www.digylog.com/suivi-de-colis/?code=${encodeURIComponent(trackingNumber)}`;
+    const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '')
+      .replace(/api\.digylog\.ma/i, 'api.digylog.com')
+      .replace(/app\.digylog\.com/i, 'api.digylog.com');
+
+    const trackUrl = `${base}/orders/${encodeURIComponent(trackingNumber)}`;
+
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → GET ${trackUrl}`);
 
     const response = await axios.get(trackUrl, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html",
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+        'Origin': 'https://apiseller.digylog.com',
       },
       timeout: 15000,
       httpsAgent: SSL_AGENT,
       validateStatus: () => true,
     });
 
-    const html = response.data as string;
-    console.log(`[DIGYLOG-SCRAPE] ${trackingNumber} → HTTP ${response.status}`);
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${response.status}: ${JSON.stringify(response.data).slice(0, 300)}`);
 
-    if (response.status !== 200 || !html) {
-      return { status: null, rawStatus: null, rawResponse: null, error: `HTTP ${response.status}` };
+    if (response.status !== 200) {
+      return { status: null, rawStatus: null, rawResponse: response.data, error: `HTTP ${response.status}` };
     }
 
-    const DIGYLOG_STATUS_MAP: Record<string, string> = {
-      "livré": "delivered",
-      "livrée": "delivered",
-      "livree": "delivered",
-      "livre": "delivered",
-      "retourné": "Retour Recu",
-      "retournée": "Retour Recu",
-      "retourne": "Retour Recu",
-      "en cours de retour": "En Cours De Retour",
-      "en cours de livraison": "transit",
-      "en livraison": "transit",
-      "en transit": "transit",
-      "en cours": "transit",
-      "expédié": "transit",
-      "sorti en livraison": "transit",
-      "ramassé": "Attente De Ramassage",
-      "en attente de ramassage": "Attente De Ramassage",
-      "en attente": "Attente De Ramassage",
-      "refusé": "refused",
-      "refusée": "refused",
-      "non livré": "refused",
-      "injoignable": "unreachable",
-      "absent": "unreachable",
-    };
+    const body = response.data;
 
-    const statusPatterns = [
-      /class="[^"]*status[^"]*"[^>]*>([^<]+)</i,
-      /class="[^"]*statut[^"]*"[^>]*>([^<]+)</i,
-      /class="[^"]*etat[^"]*"[^>]*>([^<]+)</i,
-      /<span[^>]*>([^<]{3,40})<\/span>/gi,
-      /<p[^>]*>([^<]{3,40})<\/p>/gi,
-    ];
+    const rawText = (
+      body?.etat_libelle ||
+      body?.last_event ||
+      body?.statut_libelle ||
+      body?.status ||
+      body?.etat ||
+      body?.data?.etat_libelle ||
+      body?.data?.last_event ||
+      body?.data?.status ||
+      (Array.isArray(body) && body[0]?.etat_libelle) ||
+      (Array.isArray(body) && body[0]?.last_event) ||
+      (Array.isArray(body) && body[0]?.status) ||
+      ''
+    ).toString().trim();
 
-    let rawStatus: string | null = null;
-    for (const pattern of statusPatterns) {
-      const match = html.match(pattern);
-      if (match) {
-        const text = match[1]?.trim();
-        if (text && text.length > 2 && text.length < 50) {
-          const normalized = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          for (const [key, value] of Object.entries(DIGYLOG_STATUS_MAP)) {
-            const normKey = key.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            if (normalized.includes(normKey)) {
-              rawStatus = text;
-              const mappedStatus = value;
-              console.log(`[DIGYLOG-SCRAPE] ${trackingNumber} → rawStatus="${rawStatus}" mapped="${mappedStatus}"`);
-              return { status: mappedStatus, rawStatus, rawResponse: { scraped: true, url: trackUrl } };
-            }
-          }
-        }
-      }
+    if (!rawText) {
+      console.warn(`[DIGYLOG-TRACK] ${trackingNumber} → No status found in response`);
+      return { status: null, rawStatus: null, rawResponse: body, error: 'No status in response' };
     }
 
-    console.warn(`[DIGYLOG-SCRAPE] ${trackingNumber} → Could not extract status from HTML`);
-    return { status: null, rawStatus: null, rawResponse: { scraped: true, html: html.slice(0, 500) }, error: "Status not found in page" };
+    const rawLow = rawText.toLowerCase();
+    let mappedStatus: string = 'in_progress';
+
+    if (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'delivered';
+    else if (rawLow.includes('refus') || rawLow.includes('annul')) mappedStatus = 'refused';
+    else if (rawLow.includes('retour')) mappedStatus = 'retourné';
+    else if (rawLow.includes('injoignable') || rawLow.includes('absent')) mappedStatus = 'Injoignable';
+    else if (rawLow.includes('ramass') || rawLow.includes('attente')) mappedStatus = 'Attente De Ramassage';
+
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
+    return { status: mappedStatus, rawStatus: rawText, rawResponse: body };
 
   } catch (err: any) {
+    console.error(`[DIGYLOG-TRACK] ${trackingNumber} → Error:`, err?.message);
     return { status: null, rawStatus: null, rawResponse: null, error: err?.message || String(err) };
   }
 }

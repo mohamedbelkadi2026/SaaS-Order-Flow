@@ -1,0 +1,83 @@
+FIX — Replace Digylog HTML scraping with real Digylog API v2 tracking
+In server/services/carrier-service.ts, replace the entire trackDigylogShipment function with API call:
+typescriptexport async function trackDigylogShipment(
+  trackingNumber: string,
+  apiKey: string,
+  apiUrl?: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  try {
+    // Use Digylog V2 API to track shipment
+    const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '')
+      .replace(/api\.digylog\.ma/i, 'api.digylog.com')
+      .replace(/app\.digylog\.com/i, 'api.digylog.com');
+
+    const trackUrl = `${base}/orders/${encodeURIComponent(trackingNumber)}`;
+
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → GET ${trackUrl}`);
+
+    const response = await axios.get(trackUrl, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+        'Origin': 'https://apiseller.digylog.com',
+      },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${response.status}: ${JSON.stringify(response.data).slice(0, 300)}`);
+
+    if (response.status !== 200) {
+      return { status: null, rawStatus: null, rawResponse: response.data, error: `HTTP ${response.status}` };
+    }
+
+    const body = response.data;
+
+    // Extract status from various response shapes
+    const rawText = (
+      body?.etat_libelle ||
+      body?.last_event ||
+      body?.statut_libelle ||
+      body?.status ||
+      body?.etat ||
+      body?.data?.etat_libelle ||
+      body?.data?.last_event ||
+      body?.data?.status ||
+      (Array.isArray(body) && body[0]?.etat_libelle) ||
+      (Array.isArray(body) && body[0]?.last_event) ||
+      (Array.isArray(body) && body[0]?.status) ||
+      ''
+    ).toString().trim();
+
+    if (!rawText) {
+      console.warn(`[DIGYLOG-TRACK] ${trackingNumber} → No status found in response`);
+      return { status: null, rawStatus: null, rawResponse: body, error: 'No status in response' };
+    }
+
+    // Map to internal status using existing DIGYLOG_EXACT_MAP logic
+    const rawLow = rawText.toLowerCase();
+    let mappedStatus: string = 'in_progress';
+
+    if (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'delivered';
+    else if (rawLow.includes('refus') || rawLow.includes('annul')) mappedStatus = 'refused';
+    else if (rawLow.includes('retour')) mappedStatus = 'retourné';
+    else if (rawLow.includes('injoignable') || rawLow.includes('absent')) mappedStatus = 'Injoignable';
+    else if (rawLow.includes('ramass') || rawLow.includes('attente')) mappedStatus = 'Attente De Ramassage';
+
+    console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
+    return { status: mappedStatus, rawStatus: rawText, rawResponse: body };
+
+  } catch (err: any) {
+    console.error(`[DIGYLOG-TRACK] ${trackingNumber} → Error:`, err?.message);
+    return { status: null, rawStatus: null, rawResponse: null, error: err?.message || String(err) };
+  }
+}
+Also update server/routes.ts — /api/shipping/digylog/sync — save commentStatus too:
+Find where storage.updateOrderStatus(order.id, result.status) is called and add:
+typescriptawait storage.updateOrderStatus(order.id, result.status);
+await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+Do NOT change: any other carrier, order creation, webhook endpoints, or any other file.
+Only touch: trackDigylogShipment function in server/services/carrier-service.ts and the sync route in server/routes.ts.

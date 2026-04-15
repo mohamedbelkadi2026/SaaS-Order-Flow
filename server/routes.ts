@@ -4327,6 +4327,7 @@ export async function registerRoutes(
         const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
         if (result.status && result.status !== order.status) {
           await storage.updateOrderStatus(order.id, result.status);
+          await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
           await storage.createOrderFollowUpLog({
             orderId: order.id,
             agentId: null,
