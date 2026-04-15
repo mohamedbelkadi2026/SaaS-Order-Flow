@@ -312,12 +312,16 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] retargeting_leads table verified/created ✅');
 
-    // ── marketing_campaigns — sender_device_id ────────────────────────────────
+    // ── marketing_campaigns — missing columns ─────────────────────────────────
     await client.query(`
       ALTER TABLE public.marketing_campaigns
         ADD COLUMN IF NOT EXISTS sender_device_id INTEGER;
     `);
-    console.log('[Migration] marketing_campaigns.sender_device_id ensured ✅');
+    await client.query(`
+      ALTER TABLE public.marketing_campaigns
+        ADD COLUMN IF NOT EXISTS rotation_enabled INTEGER DEFAULT 0;
+    `);
+    console.log('[Migration] marketing_campaigns columns ensured ✅');
 
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
