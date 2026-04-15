@@ -1,0 +1,46 @@
+*FIX — "Livrée " goes to Livrées + auto shippingCost on delivery
+*CHANGE 1 — server/routes.ts — add "Livrée " to SUIVI_GROUP exclusion and delivered detection:
+In DIGYLOG_EXACT_MAP, add:
+typescript"Livrée *":   "delivered",
+"Livrée":     "delivered",
+"Livré *":    "delivered",
+CHANGE 2 — server/routes.ts — auto-set shippingCost when status becomes "delivered":
+In processCarrierWebhook, after:
+typescriptawait storage.updateOrderStatus(order.id, newStatus);
+Add:
+typescript// Auto-set shippingCost when delivered
+if (newStatus === 'delivered') {
+  try {
+    const carrierAccts = await storage.getCarrierAccounts((order as any).storeId);
+    const activeCarrier = carrierAccts.find((a: any) =>
+      a.carrierName.toLowerCase() === carrierName.toLowerCase()
+    ) || carrierAccts[0];
+    const fee = (activeCarrier as any)?.deliveryFee || 0;
+    if (fee > 0) {
+      await storage.updateOrder(order.id, { shippingCost: fee });
+      console.log(`[DeliveryFee] Order #${(order as any).orderNumber} → shippingCost=${fee}`);
+    }
+  } catch (feeErr) {
+    console.error('[DeliveryFee] Error:', feeErr);
+  }
+}
+CHANGE 3 — Same in auto-sync in server/index.ts:
+After await storage.updateOrderStatus(order.id, result.status), add:
+typescriptif (result.status === 'delivered') {
+  const fee = (account as any).deliveryFee || 0;
+  if (fee > 0) {
+    await storage.updateOrder(order.id, { shippingCost: fee });
+    console.log(`[AUTO-SYNC] DeliveryFee set for order #${(order as any).orderNumber}: ${fee}`);
+  }
+}
+*CHANGE 4 — server/routes.ts — fix fuzzy delivered check to include "livrée ":
+typescript} else if (
+  rawStatus === "livré" || rawStatus === "livre" ||
+  rawStatus === "livrée" || rawStatus === "livrée *" ||
+  rawStatus === "livré *" || rawStatus === "livraison effectuée" ||
+  rawStatus === "remis au client" || rawStatus === "remis au client *" ||
+  rawStatus === "delivered" || rawStatus.includes("distribu")
+) {
+  newStatus = "delivered";
+Do NOT change: any other logic, AI, WhatsApp, frontend.
+Only touch: server/routes.ts (DIGYLOG_EXACT_MAP + processCarrierWebhook + fuzzy check) and server/index.ts (auto-sync).
