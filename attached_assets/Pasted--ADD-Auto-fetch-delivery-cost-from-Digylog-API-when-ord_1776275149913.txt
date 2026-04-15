@@ -1,0 +1,118 @@
+
+ADD — Auto-fetch delivery cost from Digylog API when order is shipped
+CHANGE 1 — server/services/carrier-service.ts — add function to get delivery cost:
+typescriptexport async function getDigylogDeliveryCost(
+  cityName: string,
+  apiKey: string,
+  networkId: number = 1,
+  apiUrl?: string,
+): Promise<number | null> {
+  try {
+    const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '')
+      .replace(/api\.digylog\.ma/i, 'api.digylog.com');
+
+    // Step 1: Get cities list to find city ID
+    const citiesResp = await axios.get(`${base}/cities`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+      },
+      timeout: 10000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    if (citiesResp.status !== 200) return null;
+
+    const cities = Array.isArray(citiesResp.data) ? citiesResp.data :
+                   citiesResp.data?.data || citiesResp.data?.cities || [];
+
+    // Find city by name (fuzzy match)
+    const cityNorm = cityName.toLowerCase().trim();
+    const matched = cities.find((c: any) => {
+      const name = (c.name || c.ville || c.label || '').toLowerCase();
+      return name === cityNorm || name.includes(cityNorm) || cityNorm.includes(name);
+    });
+
+    if (!matched) {
+      console.log(`[DIGYLOG-COST] City "${cityName}" not found in Digylog cities`);
+      return null;
+    }
+
+    const cityId = matched.id || matched.city_id;
+
+    // Step 2: Get delivery cost for this city
+    const costResp = await axios.get(`${base}/deliverycost?network=${networkId}&city=${cityId}`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+      },
+      timeout: 10000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    if (costResp.status !== 200) return null;
+
+    const costData = costResp.data;
+    const price = costData?.price || costData?.cost || costData?.amount ||
+                  costData?.data?.price || costData?.livraison ||
+                  (Array.isArray(costData) ? costData[0]?.price : null);
+
+    if (!price) return null;
+
+    const priceInCentimes = Math.round(parseFloat(price) * 100);
+    console.log(`[DIGYLOG-COST] City "${cityName}" (id=${cityId}) → ${price} DH (${priceInCentimes} centimes)`);
+    return priceInCentimes;
+
+  } catch (err: any) {
+    console.error(`[DIGYLOG-COST] Error:`, err?.message);
+    return null;
+  }
+}
+CHANGE 2 — server/routes.ts — use getDigylogDeliveryCost when order is shipped:
+In the bulk ship handler, after successful ship (where trackingNumber is returned and status = 'Attente De Ramassage'):
+typescript// After successful ship — try to get real delivery cost from Digylog
+if (provider === 'digylog') {
+  try {
+    const { getDigylogDeliveryCost } = await import('./services/carrier-service');
+    const networkId = (orderCreds as any).digylogNetworkId || 1;
+    const cost = await getDigylogDeliveryCost(
+      resolvedCity,
+      (orderCreds as any).apiKey,
+      networkId,
+      (orderCreds as any).apiUrl
+    );
+    if (cost && cost > 0) {
+      dbUpdates.push(storage.updateOrder(order.id, { shippingCost: cost }));
+      console.log(`[DIGYLOG-COST] Order #${ref} → shippingCost=${cost} centimes for city "${resolvedCity}"`);
+    }
+  } catch (costErr) {
+    console.error('[DIGYLOG-COST] Failed to fetch cost:', costErr);
+  }
+}
+CHANGE 3 — Also set shippingCost when order becomes "delivered" in processCarrierWebhook:
+When newStatus === 'delivered', fetch real cost from Digylog:
+typescriptif (newStatus === 'delivered') {
+  try {
+    const { getDigylogDeliveryCost } = await import('./services/carrier-service');
+    const carrierAccts = await storage.getCarrierAccounts((order as any).storeId);
+    const acct = carrierAccts.find((a: any) => a.carrierName === 'digylog') || carrierAccts[0];
+    if (acct) {
+      const cost = await getDigylogDeliveryCost(
+        (order as any).customerCity || '',
+        acct.apiKey,
+        acct.settings?.digylogNetworkId || 1,
+        acct.apiUrl || undefined
+      );
+      if (cost && cost > 0) {
+        await storage.updateOrder(order.id, { shippingCost: cost });
+      }
+    }
+  } catch {}
+}
+Do NOT change: any other logic, frontend, AI, WhatsApp.
+Only touch: server/services/carrier-service.ts (new function) and server/routes.ts (use it on ship + on delivered).

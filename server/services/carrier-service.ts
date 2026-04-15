@@ -1127,3 +1127,74 @@ export async function trackDigylogShipment(
     return { status: null, rawStatus: null, rawResponse: null, error: err?.message };
   }
 }
+
+// ── DIGYLOG — DELIVERY COST LOOKUP ─────────────────────────────────────────
+export async function getDigylogDeliveryCost(
+  cityName: string,
+  apiKey: string,
+  networkId: number = 1,
+  apiUrl?: string,
+): Promise<number | null> {
+  try {
+    const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '')
+      .replace(/api\.digylog\.ma/i, 'api.digylog.com');
+
+    const citiesResp = await axios.get(`${base}/cities`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+      },
+      timeout: 10000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    if (citiesResp.status !== 200) return null;
+
+    const cities = Array.isArray(citiesResp.data) ? citiesResp.data :
+                   citiesResp.data?.data || citiesResp.data?.cities || [];
+
+    const cityNorm = cityName.toLowerCase().trim();
+    const matched = cities.find((c: any) => {
+      const name = (c.name || c.ville || c.label || '').toLowerCase();
+      return name === cityNorm || name.includes(cityNorm) || cityNorm.includes(name);
+    });
+
+    if (!matched) {
+      console.log(`[DIGYLOG-COST] City "${cityName}" not found in Digylog cities`);
+      return null;
+    }
+
+    const cityId = matched.id || matched.city_id;
+
+    const costResp = await axios.get(`${base}/deliverycost?network=${networkId}&city=${cityId}`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+      },
+      timeout: 10000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    if (costResp.status !== 200) return null;
+
+    const costData = costResp.data;
+    const price = costData?.price || costData?.cost || costData?.amount ||
+                  costData?.data?.price || costData?.livraison ||
+                  (Array.isArray(costData) ? costData[0]?.price : null);
+
+    if (!price) return null;
+
+    const priceInCentimes = Math.round(parseFloat(price) * 100);
+    console.log(`[DIGYLOG-COST] City "${cityName}" (id=${cityId}) → ${price} DH (${priceInCentimes} centimes)`);
+    return priceInCentimes;
+
+  } catch (err: any) {
+    console.error(`[DIGYLOG-COST] Error:`, err?.message);
+    return null;
+  }
+}

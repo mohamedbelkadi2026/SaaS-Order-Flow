@@ -13,7 +13,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 
 import fs from "fs";
@@ -1229,6 +1229,20 @@ export async function registerRoutes(
                 const fee = (orderCreds as any).deliveryFee || 0;
                 if (fee > 0) {
                   dbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
+                }
+                // Try to get real per-city delivery cost from Digylog
+                if (provider === 'digylog') {
+                  const networkId = (orderCreds as any).digylogNetworkId || 1;
+                  dbUpdates.push(
+                    getDigylogDeliveryCost(resolvedCity, (orderCreds as any).apiKey, networkId, (orderCreds as any).apiUrl)
+                      .then(cost => {
+                        if (cost && cost > 0) {
+                          console.log(`[DIGYLOG-COST] Order #${ref} → shippingCost=${cost} centimes for city "${resolvedCity}"`);
+                          return storage.updateOrder(order.id, { shippingCost: cost });
+                        }
+                      })
+                      .catch(costErr => console.error('[DIGYLOG-COST] Failed to fetch cost:', costErr))
+                  );
                 }
                 logUpdates.push(storage.createIntegrationLog({
                   storeId, integrationId: null, provider,
@@ -2477,13 +2491,28 @@ export async function registerRoutes(
     if (newStatus === 'delivered') {
       try {
         const carrierAccts = await storage.getCarrierAccounts((order as any).storeId);
-        const activeCarrier = carrierAccts.find((a: any) =>
+        const acct = carrierAccts.find((a: any) =>
           a.carrierName.toLowerCase() === carrierName.toLowerCase() && a.isActive === 1
         ) || carrierAccts[0];
-        const fee = (activeCarrier as any)?.deliveryFee || 0;
-        if (fee > 0) {
-          await storage.updateOrder(order.id, { shippingCost: fee });
-          console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee}`);
+        if (acct) {
+          // Try real per-city cost from Digylog API first
+          const cost = await getDigylogDeliveryCost(
+            (order as any).customerCity || '',
+            acct.apiKey,
+            acct.settings?.digylogNetworkId || (acct as any).digylogNetworkId || 1,
+            acct.apiUrl || undefined
+          );
+          if (cost && cost > 0) {
+            await storage.updateOrder(order.id, { shippingCost: cost });
+            console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cost} (per-city)`);
+          } else {
+            // Fallback to static deliveryFee from account
+            const fee = (acct as any)?.deliveryFee || 0;
+            if (fee > 0) {
+              await storage.updateOrder(order.id, { shippingCost: fee });
+              console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee} (static fee)`);
+            }
+          }
         }
       } catch (e) {
         console.error('[DeliveryFee] Error:', e);
