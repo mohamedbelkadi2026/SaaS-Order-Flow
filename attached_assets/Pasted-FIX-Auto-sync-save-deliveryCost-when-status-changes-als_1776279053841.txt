@@ -1,0 +1,35 @@
+FIX — Auto-sync: save deliveryCost when status changes + also when already delivered
+In server/routes.ts, in POST /api/shipping/digylog/sync, find:
+typescriptif (result.status && result.status !== order.status) {
+  await storage.updateOrderStatus(order.id, result.status);
+  await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+Replace with:
+typescriptif (result.status && result.status !== order.status) {
+  await storage.updateOrderStatus(order.id, result.status);
+  const updateData: any = { commentStatus: result.rawStatus || result.status };
+  // Auto-fetch delivery cost from Digylog
+  try {
+    const { getDigylogDeliveryCost } = await import('./services/carrier-service');
+    const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
+    const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
+    if (cost && cost > 0) {
+      updateData.shippingCost = cost;
+      console.log(`[DIGYLOG-SYNC] Order #${(order as any).orderNumber} → deliveryCost=${cost} centimes`);
+    }
+  } catch {}
+  await storage.updateOrder(order.id, updateData);
+Also add deliveryCost fetch for already-delivered orders (even if status didn't change):
+After the if (result.status && result.status !== order.status) block, add:
+typescript// Also update shippingCost if order is delivered but shippingCost is 0
+if ((result.status === 'delivered' || order.status === 'delivered') && !(order as any).shippingCost) {
+  try {
+    const { getDigylogDeliveryCost } = await import('./services/carrier-service');
+    const networkId = (account as any).settings?.digylogNetworkId || 1;
+    const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
+    if (cost && cost > 0) {
+      await storage.updateOrder(order.id, { shippingCost: cost });
+      console.log(`[DIGYLOG-SYNC] DeliveryCost updated for #${(order as any).orderNumber}: ${cost}`);
+    }
+  } catch {}
+}
+Do NOT change anything else.

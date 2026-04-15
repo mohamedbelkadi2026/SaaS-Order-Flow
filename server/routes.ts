@@ -4387,7 +4387,17 @@ export async function registerRoutes(
         const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
         if (result.status && result.status !== order.status) {
           await storage.updateOrderStatus(order.id, result.status);
-          await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+          const updateData: any = { commentStatus: result.rawStatus || result.status };
+          // Auto-fetch delivery cost from Digylog
+          try {
+            const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
+            const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
+            if (cost && cost > 0) {
+              updateData.shippingCost = cost;
+              console.log(`[DIGYLOG-SYNC] Order #${(order as any).orderNumber} → deliveryCost=${cost} centimes`);
+            }
+          } catch {}
+          await storage.updateOrder(order.id, updateData);
           await storage.createOrderFollowUpLog({
             orderId: order.id,
             agentId: null,
@@ -4396,6 +4406,17 @@ export async function registerRoutes(
           });
           details.push({ orderId: order.id, trackingNumber: order.trackNumber, oldStatus: order.status, newStatus: result.status });
           updated++;
+        }
+        // Also update shippingCost if order is delivered but shippingCost is 0
+        if ((result.status === 'delivered' || order.status === 'delivered') && !(order as any).shippingCost) {
+          try {
+            const networkId = (account as any).settings?.digylogNetworkId || 1;
+            const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
+            if (cost && cost > 0) {
+              await storage.updateOrder(order.id, { shippingCost: cost });
+              console.log(`[DIGYLOG-SYNC] DeliveryCost updated for #${(order as any).orderNumber}: ${cost}`);
+            }
+          } catch {}
         }
       }
 
