@@ -1,0 +1,93 @@
+Digylog does not have a tracking API endpoint. All GET requests to their API return 404.
+The only way to get tracking status is by scraping their public tracking page.
+
+In server/services/carrier-service.ts, replace the trackDigylogShipment function with this scraping approach:
+
+export async function trackDigylogShipment(
+  trackingNumber: string,
+  apiKey: string,
+  apiUrl?: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  try {
+    const trackUrl = `https://www.digylog.com/suivi-de-colis/?code=${encodeURIComponent(trackingNumber)}`;
+    
+    const response = await axios.get(trackUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/html",
+      },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    const html = response.data as string;
+    console.log(`[DIGYLOG-SCRAPE] ${trackingNumber} → HTTP ${response.status}`);
+
+    if (response.status !== 200 || !html) {
+      return { status: null, rawStatus: null, rawResponse: null, error: `HTTP ${response.status}` };
+    }
+
+    // Extract status from the HTML page
+    // Digylog shows statuses like: "Livré", "En cours de livraison", "Retourné", etc.
+    const DIGYLOG_STATUS_MAP: Record<string, string> = {
+      "livré": "delivered",
+      "livrée": "delivered",
+      "livree": "delivered",
+      "livre": "delivered",
+      "retourné": "Retour Recu",
+      "retournée": "Retour Recu",
+      "retourne": "Retour Recu",
+      "en cours de retour": "En Cours De Retour",
+      "en cours de livraison": "transit",
+      "en livraison": "transit",
+      "en transit": "transit",
+      "en cours": "transit",
+      "expédié": "transit",
+      "sorti en livraison": "transit",
+      "ramassé": "Attente De Ramassage",
+      "en attente de ramassage": "Attente De Ramassage",
+      "en attente": "Attente De Ramassage",
+      "refusé": "refused",
+      "refusée": "refused",
+      "non livré": "refused",
+      "injoignable": "unreachable",
+      "absent": "unreachable",
+    };
+
+    // Try to find status in HTML — look for common class names Digylog uses
+    const statusPatterns = [
+      /class="[^"]*status[^"]*"[^>]*>([^<]+)</i,
+      /class="[^"]*statut[^"]*"[^>]*>([^<]+)</i,
+      /class="[^"]*etat[^"]*"[^>]*>([^<]+)</i,
+      /<span[^>]*>([^<]{3,40})<\/span>/gi,
+      /<p[^>]*>([^<]{3,40})<\/p>/gi,
+    ];
+
+    let rawStatus: string | null = null;
+    for (const pattern of statusPatterns) {
+      const match = html.match(pattern);
+      if (match) {
+        const text = match[1]?.trim();
+        if (text && text.length > 2 && text.length < 50) {
+          const normalized = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          for (const [key, value] of Object.entries(DIGYLOG_STATUS_MAP)) {
+            const normKey = key.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            if (normalized.includes(normKey)) {
+              rawStatus = text;
+              const mappedStatus = value;
+              console.log(`[DIGYLOG-SCRAPE] ${trackingNumber} → rawStatus="${rawStatus}" mapped="${mappedStatus}"`);
+              return { status: mappedStatus, rawStatus, rawResponse: { scraped: true, url: trackUrl } };
+            }
+          }
+        }
+      }
+    }
+
+    console.warn(`[DIGYLOG-SCRAPE] ${trackingNumber} → Could not extract status from HTML`);
+    return { status: null, rawStatus: null, rawResponse: { scraped: true, html: html.slice(0, 500) }, error: "Status not found in page" };
+
+  } catch (err: any) {
+    return { status: null, rawStatus: null, rawResponse: null, error: err?.message || String(err) };
+  }
+}
