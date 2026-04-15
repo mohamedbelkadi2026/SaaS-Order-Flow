@@ -1234,7 +1234,7 @@ export async function registerRoutes(
                 if (provider === 'digylog') {
                   const networkId = (orderCreds as any).digylogNetworkId || 1;
                   dbUpdates.push(
-                    getDigylogDeliveryCost(resolvedCity, (orderCreds as any).apiKey, networkId, (orderCreds as any).apiUrl)
+                    getDigylogDeliveryCost(trackingNumber, (orderCreds as any).apiKey, networkId, (orderCreds as any).apiUrl)
                       .then(cost => {
                         if (cost && cost > 0) {
                           console.log(`[DIGYLOG-COST] Order #${ref} → shippingCost=${cost} centimes for city "${resolvedCity}"`);
@@ -2497,7 +2497,7 @@ export async function registerRoutes(
         if (acct) {
           // Try real per-city cost from Digylog API first
           const cost = await getDigylogDeliveryCost(
-            (order as any).customerCity || '',
+            (order as any).trackNumber || '',
             acct.apiKey,
             acct.settings?.digylogNetworkId || (acct as any).digylogNetworkId || 1,
             acct.apiUrl || undefined

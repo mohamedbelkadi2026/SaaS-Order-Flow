@@ -1130,7 +1130,7 @@ export async function trackDigylogShipment(
 
 // ── DIGYLOG — DELIVERY COST LOOKUP ─────────────────────────────────────────
 export async function getDigylogDeliveryCost(
-  cityName: string,
+  trackingNumber: string,
   apiKey: string,
   networkId: number = 1,
   apiUrl?: string,
@@ -1140,7 +1140,7 @@ export async function getDigylogDeliveryCost(
       .replace(/\/+$/, '')
       .replace(/api\.digylog\.ma/i, 'api.digylog.com');
 
-    const citiesResp = await axios.get(`${base}/cities`, {
+    const resp = await axios.get(`${base}/order/${encodeURIComponent(trackingNumber)}/infos`, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Accept': 'application/json',
@@ -1151,46 +1151,30 @@ export async function getDigylogDeliveryCost(
       validateStatus: () => true,
     });
 
-    if (citiesResp.status !== 200) return null;
+    console.log(`[DIGYLOG-COST] ${trackingNumber} → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 300)}`);
 
-    const cities = Array.isArray(citiesResp.data) ? citiesResp.data :
-                   citiesResp.data?.data || citiesResp.data?.cities || [];
+    if (resp.status !== 200 || !resp.data) return null;
 
-    const cityNorm = cityName.toLowerCase().trim();
-    const matched = cities.find((c: any) => {
-      const name = (c.name || c.ville || c.label || '').toLowerCase();
-      return name === cityNorm || name.includes(cityNorm) || cityNorm.includes(name);
-    });
+    const body = resp.data;
 
-    if (!matched) {
-      console.log(`[DIGYLOG-COST] City "${cityName}" not found in Digylog cities`);
+    const price =
+      body?.frais_livraison ||
+      body?.frais ||
+      body?.delivery_cost ||
+      body?.port ||
+      body?.cout_livraison ||
+      body?.shipping_cost ||
+      body?.data?.frais_livraison ||
+      body?.data?.port ||
+      null;
+
+    if (!price) {
+      console.log(`[DIGYLOG-COST] No price field found in: ${JSON.stringify(body).slice(0, 200)}`);
       return null;
     }
 
-    const cityId = matched.id || matched.city_id;
-
-    const costResp = await axios.get(`${base}/deliverycost?network=${networkId}&city=${cityId}`, {
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Accept': 'application/json',
-        'Referer': 'https://apiseller.digylog.com',
-      },
-      timeout: 10000,
-      httpsAgent: SSL_AGENT,
-      validateStatus: () => true,
-    });
-
-    if (costResp.status !== 200) return null;
-
-    const costData = costResp.data;
-    const price = costData?.price || costData?.cost || costData?.amount ||
-                  costData?.data?.price || costData?.livraison ||
-                  (Array.isArray(costData) ? costData[0]?.price : null);
-
-    if (!price) return null;
-
     const priceInCentimes = Math.round(parseFloat(price) * 100);
-    console.log(`[DIGYLOG-COST] City "${cityName}" (id=${cityId}) → ${price} DH (${priceInCentimes} centimes)`);
+    console.log(`[DIGYLOG-COST] ${trackingNumber} → ${price} DH = ${priceInCentimes} centimes`);
     return priceInCentimes;
 
   } catch (err: any) {

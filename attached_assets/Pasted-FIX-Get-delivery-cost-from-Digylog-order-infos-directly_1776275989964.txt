@@ -1,0 +1,71 @@
+FIX — Get delivery cost from Digylog order infos directly (not by city)
+In server/services/carrier-service.ts, update getDigylogDeliveryCost — instead of fetching cities then cost, fetch it directly from the order infos endpoint:
+typescriptexport async function getDigylogDeliveryCost(
+  trackingNumber: string,
+  apiKey: string,
+  networkId: number = 1,
+  apiUrl?: string,
+): Promise<number | null> {
+  try {
+    const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '')
+      .replace(/api\.digylog\.ma/i, 'api.digylog.com');
+
+    // Get order infos — contains frais_livraison directly
+    const resp = await axios.get(`${base}/order/${encodeURIComponent(trackingNumber)}/infos`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Referer': 'https://apiseller.digylog.com',
+      },
+      timeout: 10000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    console.log(`[DIGYLOG-COST] ${trackingNumber} → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 300)}`);
+
+    if (resp.status !== 200 || !resp.data) return null;
+
+    const body = resp.data;
+    
+    // Try all possible field names for delivery cost
+    const price =
+      body?.frais_livraison ||
+      body?.frais ||
+      body?.delivery_cost ||
+      body?.port ||
+      body?.cout_livraison ||
+      body?.shipping_cost ||
+      body?.data?.frais_livraison ||
+      body?.data?.port ||
+      null;
+
+    if (!price) {
+      console.log(`[DIGYLOG-COST] No price field found in: ${JSON.stringify(body).slice(0, 200)}`);
+      return null;
+    }
+
+    const priceInCentimes = Math.round(parseFloat(price) * 100);
+    console.log(`[DIGYLOG-COST] ${trackingNumber} → ${price} DH = ${priceInCentimes} centimes`);
+    return priceInCentimes;
+
+  } catch (err: any) {
+    console.error(`[DIGYLOG-COST] Error:`, err?.message);
+    return null;
+  }
+}
+CHANGE 2 — server/routes.ts — pass trackingNumber instead of cityName:
+Find where getDigylogDeliveryCost is called in bulk ship and change:
+typescript// Change:
+getDigylogDeliveryCost(resolvedCity, (orderCreds as any).apiKey, networkId, ...)
+
+// To:
+getDigylogDeliveryCost(trackingNumber, (orderCreds as any).apiKey, networkId, ...)
+Also in processCarrierWebhook where delivered:
+typescript// Change:
+getDigylogDeliveryCost((order as any).customerCity || '', acct.apiKey, ...)
+
+// To:
+getDigylogDeliveryCost((order as any).trackNumber || '', acct.apiKey, ...)
+Do NOT change anything else.
