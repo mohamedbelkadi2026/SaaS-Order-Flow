@@ -1,0 +1,44 @@
+VERIFY AND FIX — Auto-sync job must start on server startup
+Check server/index.ts — verify the auto Digylog sync interval exists. If it does NOT exist, add it:
+typescript// After httpServer.listen, add:
+setTimeout(async () => {
+  try {
+    const { db } = await import('./db');
+    const { carrierAccounts } = await import('@shared/schema');
+    const { eq } = await import('drizzle-orm');
+    const { storage } = await import('./storage');
+    const { trackDigylogShipment } = await import('./services/carrier-service');
+
+    const accounts = await db.select().from(carrierAccounts).where(eq(carrierAccounts.carrierName, 'digylog'));
+    
+    for (const account of accounts) {
+      const allOrders = await storage.getOrdersByStore(account.storeId);
+      const toSync = allOrders.filter((o: any) =>
+        o.shippingProvider === 'digylog' && o.trackNumber &&
+        !['refused', 'Retour Recu'].includes(o.status || '')
+      );
+      if (!toSync.length) continue;
+      console.log(`[AUTO-SYNC][initial] store=${account.storeId}: syncing ${toSync.length} orders`);
+      
+      for (const order of toSync) {
+        const result = await trackDigylogShipment(order.trackNumber!, account.apiKey);
+        console.log(`[DIGYLOG-SYNC-DEBUG] order=${(order as any).orderNumber} result.deliveryCost=${(result as any).deliveryCost} order.shippingCost=${(order as any).shippingCost}`);
+        
+        // Save deliveryCost always if available
+        if ((result as any).deliveryCost && (result as any).deliveryCost > 0) {
+          await storage.updateOrder(order.id, { shippingCost: (result as any).deliveryCost });
+          console.log(`[AUTO-SYNC] DeliveryCost saved for #${(order as any).orderNumber}: ${(result as any).deliveryCost}`);
+        }
+        
+        if (result.status && result.status !== order.status) {
+          await storage.updateOrderStatus(order.id, result.status);
+          await storage.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+          console.log(`[AUTO-SYNC] Status updated #${(order as any).orderNumber}: ${result.status}`);
+        }
+      }
+    }
+  } catch (e: any) {
+    console.error('[AUTO-SYNC] Error:', e?.message);
+  }
+}, 30 * 1000); // 30 seconds after startup
+Do NOT change anything else.

@@ -528,12 +528,20 @@ app.use((req, res, next) => {
         console.log(`[AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
         for (const order of toSync) {
           const result = await trackDigylogShipment(order.trackNumber!, apiKey);
+          console.log(`[DIGYLOG-SYNC-DEBUG] order=${(order as any).orderNumber} result.deliveryCost=${result.deliveryCost} order.shippingCost=${(order as any).shippingCost}`);
+
+          // Save deliveryCost from tracking result if available and not yet set
+          if (result.deliveryCost && result.deliveryCost > 0 && !(order as any).shippingCost) {
+            await st.updateOrder(order.id, { shippingCost: result.deliveryCost });
+            console.log(`[AUTO-SYNC] DeliveryCost saved for #${(order as any).orderNumber}: ${result.deliveryCost}`);
+          }
+
           if (result.status && result.status !== order.status) {
             await st.updateOrderStatus(order.id, result.status);
             await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
 
-            // Auto-set shippingCost when delivered
-            if (result.status === 'delivered') {
+            // Fallback: set shippingCost from static deliveryFee if not already set
+            if (result.status === 'delivered' && !(order as any).shippingCost) {
               const fee = (account as any).deliveryFee || 0;
               if (fee > 0) {
                 await st.updateOrder(order.id, { shippingCost: fee });
