@@ -2417,8 +2417,10 @@ export async function registerRoutes(
       "Arrivé au hub":                    "Arrivé au hub",
       "En cours de livraison":            "En cours de livraison",  // in progress, NOT delivered
       "Sorti pour livraison":             "Sorti pour livraison",   // in progress, NOT delivered
-      "Confirmé par livreur":             "in_progress",            // livreur confirmed pickup only
+      "Confirmé par livreur":             "in_progress",            // livreur confirmed pickup only — NOT delivered
       "Confirmé par livreur *":           "in_progress",
+      "Rappel en cours":                  "in_progress",
+      "Rappel en cours *":               "in_progress",
       "Pris en charge":                   "Pris en charge",
       "Collecté":                         "Collecté",
       "Chargé":                           "Chargé",
@@ -2439,11 +2441,11 @@ export async function registerRoutes(
     } else if (
       rawStatus === "livré" || rawStatus === "livre" ||
       rawStatus === "livraison effectuée" || rawStatus === "remis au client" ||
-      rawStatus.includes("remis au") || rawStatus === "delivered"
+      rawStatus === "delivered"
     ) {
       newStatus = "delivered";
-    } else if (rawStatus.includes("livr") || rawStatus.includes("distribu")) {
-      newStatus = "in_progress"; // "en cours de livraison" etc = still in transit
+    } else if (rawStatus.includes("livr") || rawStatus.includes("cours de livr") || rawStatus.includes("distribu")) {
+      newStatus = "in_progress"; // "en cours de livraison", "sorti en livraison" etc = still in transit
     } else if (
       rawStatus.includes("refus") || rawStatus.includes("retour") ||
       rawStatus.includes("annul") || rawStatus === "refused"
@@ -4370,6 +4372,28 @@ export async function registerRoutes(
 
       console.log(`[DIGYLOG-SYNC] storeId=${storeId}: checked ${digylogOrders.length}, updated ${updated}`);
       res.json({ synced: digylogOrders.length, updated, details });
+    } catch (err) { throw err; }
+  });
+
+  // One-time fix: revert orders wrongly marked as "delivered" due to bad status mapping
+  app.post('/api/admin/fix-wrong-delivered', requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const orders = await storage.getOrdersByStore(storeId);
+      const wrongStatuses = [
+        'Confirmé par livreur', 'Confirmé par livreur *',
+        'En cours de livraison', 'Sorti pour livraison',
+        'Rappel en cours', 'Rappel en cours *',
+      ];
+      let fixed = 0;
+      for (const order of orders) {
+        if (order.status === 'delivered' && wrongStatuses.includes((order as any).commentStatus || '')) {
+          await storage.updateOrderStatus(order.id, 'in_progress');
+          fixed++;
+          console.log(`[FIX-DELIVERED] Order #${(order as any).orderNumber} reverted from delivered → in_progress (commentStatus="${(order as any).commentStatus}")`);
+        }
+      }
+      res.json({ fixed, message: `${fixed} commande(s) corrigée(s)` });
     } catch (err) { throw err; }
   });
 

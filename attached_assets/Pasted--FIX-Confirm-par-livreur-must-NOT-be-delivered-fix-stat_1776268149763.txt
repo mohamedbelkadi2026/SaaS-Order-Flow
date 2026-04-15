@@ -1,0 +1,53 @@
+
+FIX — "Confirmé par livreur" must NOT be delivered — fix status mapping
+CHANGE 1 — server/routes.ts — in processCarrierWebhook, fix DIGYLOG_EXACT_MAP:
+Find and update these entries:
+typescript// REMOVE or change these — they are NOT delivered:
+"Confirmé par livreur":   "in_progress",  // was wrongly "delivered"
+"Confirmé par livreur *": "in_progress",  // was wrongly "delivered"
+"En cours de livraison":  "in_progress",  // keep as in_progress
+"Rappel en cours":        "in_progress",  // add this
+"Rappel en cours *":      "in_progress",  // add this
+CHANGE 2 — Fix the fuzzy rawStatus.includes("livr") check:
+Find this line:
+typescript} else if (rawStatus.includes("livr") || rawStatus.includes("distribu") || rawStatus === "delivered") {
+  newStatus = "delivered";
+Replace with:
+typescript} else if (
+  rawStatus === "livré" ||
+  rawStatus === "livre" ||
+  rawStatus === "livraison effectuée" ||
+  rawStatus === "remis au client" ||
+  rawStatus === "delivered"
+) {
+  newStatus = "delivered";
+CHANGE 3 — Same fix in server/services/carrier-service.ts:
+Find:
+typescriptif (rawLow.includes('livr') || rawLow.includes('distribu')) mappedStatus = 'delivered';
+Replace with:
+typescriptif (
+  rawLow === 'livré' || rawLow === 'livre' ||
+  rawLow === 'livraison effectuée' || rawLow === 'remis au client' ||
+  rawLow === 'delivered'
+) {
+  mappedStatus = 'delivered';
+} else if (rawLow.includes('livr') || rawLow.includes('cours de livr')) {
+  mappedStatus = 'in_progress';
+}
+CHANGE 4 — Fix orders already wrongly marked as delivered:
+In server/routes.ts, add a one-time fix endpoint to correct wrong statuses:
+typescriptapp.post('/api/admin/fix-wrong-delivered', requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const orders = await storage.getOrdersByStore(storeId);
+  let fixed = 0;
+  for (const order of orders) {
+    const wrongStatuses = ['Confirmé par livreur', 'Confirmé par livreur *', 'En cours de livraison', 'Rappel en cours', 'Rappel en cours *'];
+    if (order.status === 'delivered' && wrongStatuses.includes((order as any).commentStatus || '')) {
+      await storage.updateOrderStatus(order.id, 'in_progress');
+      fixed++;
+    }
+  }
+  res.json({ fixed });
+});
+Do NOT change: any other status, order creation, AI, WhatsApp, frontend.
+Only touch: processCarrierWebhook in server/routes.ts + trackDigylogShipment in carrier-service.ts.
