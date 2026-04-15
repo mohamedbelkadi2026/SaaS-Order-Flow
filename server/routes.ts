@@ -2430,15 +2430,19 @@ export async function registerRoutes(
       "Retour en cours":                  "Retour en cours",
       "Retourné à l'expéditeur":          "Retourné à l'expéditeur",
       "Livré":                            "delivered",
+      "Livré *":                          "delivered",
+      "Livrée":                           "delivered",
+      "Livrée *":                         "delivered",
       "Livraison effectuée":              "delivered",
       "Remis au client":                  "delivered",
+      "Remis au client *":                "delivered",
     };
     const exactKey = Object.keys(DIGYLOG_EXACT_MAP).find(
       k => k.toLowerCase() === rawStatus
     );
     if (exactKey) {
       newStatus = DIGYLOG_EXACT_MAP[exactKey];
-    } else if (rawStatus === "livré" || rawStatus === "livre" || rawStatus === "livraison effectuée" || rawStatus === "remis au client" || rawStatus === "delivered" || rawStatus.includes("distribu")) {
+    } else if (rawStatus === "livré" || rawStatus === "livre" || rawStatus === "livrée" || rawStatus === "livrée *" || rawStatus === "livré *" || rawStatus === "livraison effectuée" || rawStatus === "remis au client" || rawStatus === "remis au client *" || rawStatus === "delivered" || rawStatus.includes("distribu")) {
       newStatus = "delivered";
     } else if (rawStatus.includes("livr") || rawStatus.includes("cours de livr")) {
       newStatus = "in_progress"; // "en cours de livraison", "sorti en livraison" etc = still in transit
