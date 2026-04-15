@@ -4385,6 +4385,7 @@ export async function registerRoutes(
 
       for (const order of digylogOrders) {
         const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
+        console.log(`[DIGYLOG-SYNC-DEBUG] order=${(order as any).orderNumber} result.deliveryCost=${result.deliveryCost} order.shippingCost=${(order as any).shippingCost}`);
 
         // Always save deliveryCost if returned directly from tracking and not yet set
         if (result.deliveryCost && result.deliveryCost > 0 && !(order as any).shippingCost) {
