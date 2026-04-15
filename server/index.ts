@@ -501,6 +501,64 @@ app.use((req, res, next) => {
   await ensureSuperAdmin();
   startWooCommerceSync(intervals);
   startRecoveryJob(intervals);
+
+  // ── Auto Digylog status sync ───────────────────────────────────────────────
+  async function runDigylogSync(label: string) {
+    try {
+      const { storage: st } = await import('./storage');
+      const { trackDigylogShipment } = await import('./services/carrier-service');
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'digylog'));
+
+      for (const account of accounts) {
+        const storeId = (account as any).storeId;
+        const apiKey  = (account as any).apiKey;
+        const allOrders = await st.getOrdersByStore(storeId);
+        const toSync = allOrders.filter((o: any) =>
+          o.shippingProvider === 'digylog' &&
+          o.trackNumber &&
+          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+        );
+        if (!toSync.length) continue;
+
+        console.log(`[AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
+        for (const order of toSync) {
+          const result = await trackDigylogShipment(order.trackNumber!, apiKey);
+          if (result.status && result.status !== order.status) {
+            await st.updateOrderStatus(order.id, result.status);
+            await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+            await st.createOrderFollowUpLog({
+              orderId: order.id,
+              agentId: null,
+              agentName: 'Digylog Auto-Sync',
+              note: `📦 Statut mis à jour automatiquement: ${result.rawStatus} → ${result.status}`,
+            });
+            console.log(`[AUTO-SYNC][${label}] Order #${(order as any).orderNumber} → ${result.rawStatus} (${result.status})`);
+            try {
+              const { broadcastToStore } = await import('./sse');
+              broadcastToStore(storeId, 'order_updated', {
+                orderId: order.id,
+                status: result.status,
+                commentStatus: result.rawStatus,
+              });
+            } catch {}
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[AUTO-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+
+  // Run once after 2 minutes on startup, then every 15 minutes
+  setTimeout(() => runDigylogSync('initial'), 2 * 60 * 1000);
+  const autoDigylogSync = setInterval(() => runDigylogSync('interval'), 15 * 60 * 1000);
+  intervals.push(autoDigylogSync);
+
   setTimeout(() => {
     autoStartBaileys().catch(err =>
       console.error('[Baileys] autoStart failed (non-fatal):', err.message)
