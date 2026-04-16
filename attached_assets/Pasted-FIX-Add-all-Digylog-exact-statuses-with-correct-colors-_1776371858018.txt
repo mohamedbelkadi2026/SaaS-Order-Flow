@@ -1,0 +1,32 @@
+FIX — Add all Digylog exact statuses with correct colors to status-badge.tsx
+In client/src/components/ui/status-badge.tsx, find the ORDER_STATUSES array and add these entries:
+typescript// Digylog exact statuses — delivered (emerald)
+{ value: 'Livrée',                          label: 'Livrée',                        color: C.emerald },
+{ value: 'Livrée *',                        label: 'Livrée *',                      color: C.emerald },
+{ value: 'Livré *',                         label: 'Livré *',                       color: C.emerald },
+{ value: 'Livraison effectuée',             label: 'Livraison effectuée',           color: C.emerald },
+{ value: 'Remis au client',                 label: 'Remis au client',               color: C.emerald },
+
+// Digylog exact statuses — in progress (blue/transit)
+{ value: 'En cours de livraison',           label: 'En cours de livraison',         color: C.transit },
+{ value: 'Sorti pour livraison',            label: 'Sorti pour livraison',          color: C.transit },
+{ value: 'En cours de réception au network',label: 'En cours de réception',         color: C.transit },
+{ value: 'Arrivé au hub',                   label: 'Arrivé au hub',                 color: C.transit },
+{ value: 'Pris en charge',                  label: 'Pris en charge',                color: C.transit },
+{ value: 'Collecté',                        label: 'Collecté',                      color: C.transit },
+{ value: 'Chargé',                          label: 'Chargé',                        color: C.transit },
+{ value: 'Confirmé par livreur',            label: 'Confirmé par livreur',          color: C.transit },
+{ value: 'Confirmé par livreur *',          label: 'Confirmé par livreur *',        color: C.transit },
+{ value: 'Rappel en cours',                 label: 'Rappel en cours',               color: C.transit },
+{ value: 'Rappel en cours *',               label: 'Rappel en cours *',             color: C.transit },
+
+// Digylog exact statuses — waiting (amber)
+{ value: 'En attente de ramassage',         label: 'Attente ramassage',             color: C.amber   },
+{ value: 'Non Reçu',                        label: 'Non Reçu',                      color: C.amber   },
+
+// Digylog exact statuses — refused/return (red/cancelled)
+{ value: 'Tentative échouée',               label: 'Tentative échouée',             color: C.cancelled },
+{ value: 'Retour en cours',                 label: 'Retour en cours',               color: C.cancelled },
+{ value: "Retourné à l'expéditeur",         label: "Retourné à l'expéditeur",       color: C.cancelled },
+First check what color constants exist — look for C.transit, C.amber, C.cancelled etc at the top of the file and use the correct ones.
+Do NOT change anything else.
