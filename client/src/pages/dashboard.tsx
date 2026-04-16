@@ -1307,56 +1307,155 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {canSeeCharts && (
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
-        <Card className="col-span-1 lg:col-span-2 rounded-xl shadow-sm border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-base font-semibold">Comparaison des ventes</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[280px] w-full">
-              {isLoading ? (
-                <Skeleton className="w-full h-full rounded-xl" />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={dailyChartData} margin={{ top: 5, right: 10, bottom: 5, left: -10 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" className="opacity-10 text-border" />
-                    <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: 'currentColor', opacity: 0.4, fontSize: 10 }} dy={10} interval={Math.max(0, Math.floor(dailyChartData.length / 10))} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fill: 'currentColor', opacity: 0.4, fontSize: 10 }} />
-                    <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgb(0 0 0 / 0.1)', fontSize: 12 }} />
-                    <Line type="monotone" dataKey="count" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3, fill: '#3b82f6' }} activeDot={{ r: 5 }} name="Commandes" />
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+      {!isAgent && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
 
-        <Card className="col-span-1 rounded-xl shadow-sm border-border/50">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-semibold">Statut des commandes</CardTitle>
-          </CardHeader>
-          <CardContent className="flex justify-center items-center h-[280px]">
-            {isLoading ? (
-              <Skeleton className="w-[200px] h-[200px] rounded-full" />
-            ) : pieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={pieData} cx="50%" cy="45%" outerRadius={90} dataKey="value" stroke="none">
-                    {pieData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgb(0 0 0 / 0.1)', fontSize: 12 }} />
-                  <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
-                </PieChart>
+          {/* ── LEFT HALF: Statistiques Confirmation ───────────────── */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 border-b pb-2">
+              <PhoneCall className="w-4 h-4 text-sky-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Statistiques Confirmation</h2>
+            </div>
+
+            {/* Confirmation KPI row */}
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Total Leads', value: totalOrders, color: '#1e1b4b', sub: '100%' },
+                { label: 'Confirmés', value: confirme, color: STATUS_COLORS.confirme, sub: `${confirmPct}%` },
+                { label: 'Annulés', value: cancelled, color: STATUS_COLORS.cancelled, sub: `${cancelPct}%` },
+                { label: 'Injoignables', value: stats?.injoignable || 0, color: '#6366f1', sub: `${totalOrders > 0 ? (((stats?.injoignable || 0) / totalOrders) * 100).toFixed(1) : 0}%` },
+              ].map(k => (
+                <div key={k.label} className="rounded-xl border bg-white dark:bg-card p-3 shadow-sm">
+                  <p className="text-xs text-muted-foreground mb-1">{k.label}</p>
+                  <p className="text-xl font-extrabold" style={{ color: k.color }}>{k.value}</p>
+                  <p className="text-xs font-semibold" style={{ color: k.color }}>{k.sub}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Confirmation rate big display */}
+            <div className="rounded-xl border bg-white dark:bg-card p-4 shadow-sm flex items-center gap-4">
+              <div className="relative w-20 h-20 shrink-0">
+                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="4" />
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke={STATUS_COLORS.confirme} strokeWidth="4"
+                    strokeDasharray={`${confirmPct} ${100 - parseFloat(confirmPct)}`} strokeLinecap="round" />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-sm font-extrabold" style={{ color: STATUS_COLORS.confirme }}>{confirmPct}%</span>
+                </div>
+              </div>
+              <div>
+                <p className="font-bold">Taux de confirmation</p>
+                <p className="text-xs text-muted-foreground">{confirme} confirmés sur {totalOrders} leads</p>
+                <div className="flex gap-3 mt-2 text-xs">
+                  <span className="text-amber-500">🆕 {stats?.nouveau || 0} nouveaux</span>
+                  <span className="text-indigo-500">📵 {stats?.boiteVocale || 0} BV</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Evolution chart */}
+            <div className="rounded-xl border bg-white dark:bg-card p-4 shadow-sm">
+              <p className="text-xs font-bold uppercase tracking-wide mb-3 text-muted-foreground">Évolution des commandes</p>
+              <ResponsiveContainer width="100%" height={160}>
+                <LineChart data={stats?.daily?.map((d: any) => ({ date: d.date?.slice(5), count: d.count })) || []}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fontSize: 9 }} axisLine={false} tickLine={false} allowDecimals={false} width={20} />
+                  <RechartsTooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+                  <Line type="monotone" dataKey="count" stroke={STATUS_COLORS.confirme} strokeWidth={2} dot={false} />
+                </LineChart>
               </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-muted-foreground">Aucune donnée</p>
+            </div>
+          </div>
+
+          {/* ── RIGHT HALF: Statistiques Livraison ─────────────────── */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 border-b pb-2">
+              <Truck className="w-4 h-4 text-emerald-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Statistiques Livraison</h2>
+            </div>
+
+            {/* Delivery KPI row */}
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Expédiés', value: stats?.totalShipped || 0, color: '#3b82f6', sub: `${totalOrders > 0 ? (((stats?.totalShipped || 0) / totalOrders) * 100).toFixed(1) : 0}%` },
+                { label: 'Livrés', value: stats?.deliveredShipped || 0, color: '#10b981', sub: `${stats?.deliveryShippingRate || 0}%` },
+                { label: 'En attente', value: stats?.pendingShipped || 0, color: '#f59e0b', sub: 'En transit' },
+                { label: 'Retours', value: stats?.refusedShipped || 0, color: '#ef4444', sub: `${stats?.returnShippingRate || 0}%` },
+              ].map(k => (
+                <div key={k.label} className="rounded-xl border bg-white dark:bg-card p-3 shadow-sm">
+                  <p className="text-xs text-muted-foreground mb-1">{k.label}</p>
+                  <p className="text-xl font-extrabold" style={{ color: k.color }}>{k.value}</p>
+                  <p className="text-xs font-semibold" style={{ color: k.color }}>{k.sub}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Delivery rate + carrier */}
+            <div className="rounded-xl border bg-white dark:bg-card p-4 shadow-sm flex items-center gap-4">
+              <div className="relative w-20 h-20 shrink-0">
+                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="4" />
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" strokeWidth="4"
+                    strokeDasharray={`${stats?.deliveryShippingRate || 0} ${100 - (stats?.deliveryShippingRate || 0)}`} strokeLinecap="round" />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-sm font-extrabold text-emerald-600">{stats?.deliveryShippingRate || 0}%</span>
+                </div>
+              </div>
+              <div>
+                <p className="font-bold">Taux de livraison</p>
+                <p className="text-xs text-muted-foreground">{stats?.deliveredShipped || 0} livrés / {stats?.totalShipped || 0} expédiés</p>
+                <div className="flex gap-3 mt-2 text-xs">
+                  <span className="text-red-500">↩ Retour: {stats?.returnShippingRate || 0}%</span>
+                  <span className="text-amber-500">⏳ {stats?.pendingShipped || 0} en cours</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Carrier performance */}
+            {stats?.byCarrier && Object.keys(stats.byCarrier).length > 0 && (
+              <div className="rounded-xl border bg-white dark:bg-card p-4 shadow-sm">
+                <p className="text-xs font-bold uppercase tracking-wide mb-3 text-muted-foreground">Carrier Performance</p>
+                <div className="space-y-3">
+                  {Object.entries(stats.byCarrier as Record<string, any>).map(([carrier, data]: [string, any], i) => {
+                    const rate = data.total > 0 ? Math.round((data.delivered / data.total) * 100) : 0;
+                    return (
+                      <div key={carrier}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground font-bold">{i + 1}</span>
+                            <img src={`/carriers/${carrier.toLowerCase()}.svg`} className="w-5 h-5 object-contain" onError={e => (e.currentTarget.style.display='none')} alt={carrier} />
+                            <span className="font-semibold text-sm capitalize">{carrier}</span>
+                          </div>
+                          <div className="flex gap-2 text-xs">
+                            <span className="text-emerald-600 font-bold">{data.delivered}</span>
+                            <span className="text-muted-foreground">|</span>
+                            <span className="text-amber-500">{data.pending}</span>
+                            <span className="text-muted-foreground">|</span>
+                            <span className="text-red-500">{data.refused}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-1.5">
+                            <div className="h-1.5 rounded-full bg-emerald-500" style={{ width: `${rate}%` }} />
+                          </div>
+                          <span className="text-xs font-bold text-muted-foreground">{rate}%</span>
+                        </div>
+                        <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+                          <span>{data.total} total · G.S: {rate}%</span>
+                          <span className="text-red-400">{data.refused} failed</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </div>
       )}
 
       {!isAgent && <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
@@ -1428,30 +1527,6 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        {canSeeCharts && (
-        <Card className="col-span-1 rounded-xl shadow-sm border-border/50">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-semibold">Statut des livraisons</CardTitle>
-          </CardHeader>
-          <CardContent className="flex justify-center items-center h-[280px]">
-            {deliveryPieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={deliveryPieData} cx="50%" cy="45%" outerRadius={90} dataKey="value" stroke="none">
-                    {deliveryPieData.map((entry, index) => (
-                      <Cell key={`dcell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <RechartsTooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgb(0 0 0 / 0.1)', fontSize: 12 }} />
-                  <Legend verticalAlign="bottom" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-sm text-muted-foreground">Aucune donnée</p>
-            )}
-          </CardContent>
-        </Card>
-        )}
       </div>}
 
       {canSeeTopProducts && (
