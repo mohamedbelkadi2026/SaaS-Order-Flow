@@ -263,17 +263,17 @@ function StoreModal({
 
   const agentItems = (agents || []).filter((a: any) => a.role === 'agent');
 
-  // Carrier accounts: build items from actual carrier_accounts (isActive = 1)
-  const carrierItems = (carrierAccounts || []).map((acc: any) => ({
-    value: acc.carrierName,
-    label: acc.connectionName
-      ? `${acc.connectionName} (${acc.carrierName})`
-      : acc.carrierName,
-  }));
-  // Deduplicate by value
-  const uniqueCarrierItems = carrierItems.filter(
-    (c, i, arr) => arr.findIndex(x => x.value === c.value) === i
-  );
+  // Each connection gets its own item — identified by unique ID
+  const uniqueCarrierItems = (carrierAccounts || [])
+    .filter((acc: any) => acc.isActive !== 0)
+    .map((acc: any) => ({
+      value: String(acc.id),
+      label: acc.connectionName
+        ? `${acc.connectionName} (${acc.carrierName})`
+        : acc.carrierName,
+      carrierName: acc.carrierName,
+      id: acc.id,
+    }));
 
   const platformItems = (storeIntegrationsList || []).map((s: any) => ({
     value: s.provider,
@@ -746,7 +746,10 @@ export default function Magasins() {
                   {Array.isArray(store.linkedCarriers) && store.linkedCarriers.length > 0 && (
                     <Badge variant="outline" className="text-[10px] bg-purple-50 text-purple-700 border-purple-200">
                       <Truck className="w-2.5 h-2.5 mr-1" />
-                      {store.linkedCarriers.join(", ")}
+                      {store.linkedCarriers.map((id: string) => {
+                        const acc = (carrierAccounts || []).find((a: any) => String(a.id) === String(id));
+                        return acc ? (acc.connectionName || acc.carrierName) : id;
+                      }).join(", ")}
                     </Badge>
                   )}
                 </div>
