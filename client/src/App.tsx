@@ -57,6 +57,7 @@ import AutomationPage from "@/pages/automation";
 import VerifyEmailPage from "@/pages/verify-email";
 import LpBuilder from "@/pages/lp-builder";
 import LpView from "@/pages/lp-view";
+import DeliveryStats from "@/pages/delivery-stats";
 
 // ── Purely public paths — always rendered, no auth/verification check ─────────
 // Any path listed here is served directly from AppRouter before any auth logic.
@@ -256,6 +257,7 @@ function ProtectedRoutes() {
               <Route path="/lp-builder" component={LpBuilder} />
               <Route path="/checkout" component={CheckoutPage} />
               <Route path="/automation" component={AutomationPage} />
+              <Route path="/delivery-stats" component={DeliveryStats} />
               <Route component={NotFound} />
             </Switch>
           </Suspense>
