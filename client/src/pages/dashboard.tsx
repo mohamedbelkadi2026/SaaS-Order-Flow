@@ -14,7 +14,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3, MapPin } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3, MapPin, Target } from "lucide-react";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -1318,6 +1318,80 @@ export default function Dashboard() {
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ══ ADVERTISING REPORT ══ */}
+      {!isAgent && !isMediaBuyer && (stats?.adSpendTotal || 0) > 0 && (
+        <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5">
+          <div className="flex items-center justify-between pb-3 border-b mb-4">
+            <div className="flex items-center gap-2">
+              <Target className="w-4 h-4 text-purple-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Advertising Report</h2>
+            </div>
+            <div className="flex gap-4 text-xs text-muted-foreground">
+              <span>Total dépensé: <span className="font-bold text-foreground">{formatCurrency(stats?.adSpendTotal || 0)}</span></span>
+              <span>ROAS global: <span className="font-bold text-purple-600">{stats?.roas?.toFixed(2) || '0'}x</span></span>
+              <span>ROI: <span className={`font-bold ${(stats?.roi || 0) >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{stats?.roi?.toFixed(1) || '0'}%</span></span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
+            {[
+              { label: 'Budget total', value: formatCurrency(stats?.adSpendTotal || 0), color: '#8b5cf6', icon: '💰' },
+              { label: 'Revenus livrés', value: formatCurrency(stats?.revenue || 0), color: '#10b981', icon: '📈' },
+              { label: 'Profit net', value: formatCurrency(stats?.profit || 0), color: (stats?.profit || 0) >= 0 ? '#10b981' : '#ef4444', icon: '💎' },
+              { label: 'Cost / Livraison', value: (stats?.deliveredShipped || 0) > 0 ? formatCurrency(Math.round((stats?.adSpendTotal || 0) / stats.deliveredShipped)) : '—', color: '#f59e0b', icon: '📦' },
+            ].map(k => (
+              <div key={k.label} className="rounded-xl border p-3 bg-muted/10">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-base">{k.icon}</span>
+                  <span className="text-[11px] text-muted-foreground uppercase tracking-wide">{k.label}</span>
+                </div>
+                <p className="text-xl font-extrabold" style={{ color: k.color }}>{k.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {stats?.byPlatform && Object.keys(stats.byPlatform).length > 0 && (
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground mb-3">Performance par plateforme</p>
+              <div className="space-y-3">
+                {Object.entries(stats.byPlatform as Record<string, any>)
+                  .sort((a, b) => b[1].spend - a[1].spend)
+                  .map(([platform, data]: [string, any]) => {
+                    const costPerDel = data.delivered > 0 ? Math.round(data.spend / data.delivered) : 0;
+                    const roas = data.spend > 0 ? (data.revenue / data.spend).toFixed(2) : '0';
+                    const platformColor = platform.toLowerCase().includes('facebook') ? '#1877f2'
+                      : platform.toLowerCase().includes('tiktok') ? '#000000'
+                      : platform.toLowerCase().includes('google') ? '#ea4335'
+                      : platform.toLowerCase().includes('snapchat') ? '#fffc00'
+                      : '#8b5cf6';
+                    const maxSpend = Math.max(...Object.values(stats.byPlatform as any).map((d: any) => d.spend));
+                    const pct = maxSpend > 0 ? Math.round((data.spend / maxSpend) * 100) : 0;
+                    return (
+                      <div key={platform} className="rounded-xl border p-3 bg-muted/5">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ background: platformColor }} />
+                            <span className="font-semibold text-sm">{platform}</span>
+                          </div>
+                          <div className="flex gap-4 text-xs">
+                            <span className="text-muted-foreground">Dépensé: <span className="font-bold text-foreground">{formatCurrency(data.spend)}</span></span>
+                            <span className="text-emerald-600 font-bold">{data.delivered} livrées</span>
+                            <span className="text-purple-600 font-bold">ROAS: {roas}x</span>
+                            <span className="text-amber-600">CPL: {costPerDel > 0 ? formatCurrency(costPerDel) : '—'}</span>
+                          </div>
+                        </div>
+                        <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-2">
+                          <div className="h-2 rounded-full transition-all" style={{ width: `${pct}%`, background: platformColor }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

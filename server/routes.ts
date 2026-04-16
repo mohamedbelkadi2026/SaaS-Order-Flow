@@ -740,6 +740,38 @@ export async function registerRoutes(
       if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + amountCents;
     });
 
+    // Build per-platform ad spend breakdown
+    const byPlatform: Record<string, { spend: number; delivered: number; revenue: number }> = {};
+
+    adSpendEntries.forEach((e: any) => {
+      if (activeProductId !== null && e.productId !== activeProductId) return;
+      if (dateFrom && e.date < dateFrom) return;
+      if (dateTo && e.date > dateTo) return;
+      const src = e.source || 'Autre';
+      if (!byPlatform[src]) byPlatform[src] = { spend: 0, delivered: 0, revenue: 0 };
+      byPlatform[src].spend += Math.round(Number(e.amount ?? 0) * 100);
+    });
+
+    newAdSpendEntries.forEach((e: any) => {
+      const src = e.source || 'Autre';
+      if (!byPlatform[src]) byPlatform[src] = { spend: 0, delivered: 0, revenue: 0 };
+      byPlatform[src].spend += Number(e.amount ?? 0);
+    });
+
+    allOrders.forEach((o: any) => {
+      const src = o.utmSource || o.source || null;
+      if (!src || o.status !== 'delivered') return;
+      const platformKey = src.toLowerCase().includes('facebook') ? 'Facebook Ads'
+        : src.toLowerCase().includes('tiktok') ? 'TikTok Ads'
+        : src.toLowerCase().includes('google') ? 'Google Ads'
+        : src.toLowerCase().includes('snapchat') ? 'Snapchat Ads'
+        : src;
+      if (byPlatform[platformKey]) {
+        byPlatform[platformKey].delivered++;
+        byPlatform[platformKey].revenue += (o.totalPrice ?? 0);
+      }
+    });
+
     // Build a name→productId map from store products
     const productNameToId = new Map(storeProducts.map((p: any) => [p.name.toLowerCase().trim(), p.id]));
 
@@ -765,6 +797,7 @@ export async function registerRoutes(
       returnShippingRate: totalShipped > 0 ? Math.round((refusedShipped / totalShipped) * 100) : 0,
       byCarrier,
       cityStats,
+      byPlatform: canRevenue ? byPlatform : undefined,
       totalShippingCost: canRevenue ? totalShipping : undefined,
       revenue: canRevenue ? revenue : undefined,
       roas: canRevenue ? roas : undefined,
