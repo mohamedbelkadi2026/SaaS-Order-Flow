@@ -623,6 +623,17 @@ export async function registerRoutes(
       }
     });
 
+    // City stats
+    const cityMap: Record<string, { name: string; total: number; confirmed: number; delivered: number }> = {};
+    allOrders.forEach(o => {
+      const city = (o as any).customerCity || 'Inconnue';
+      if (!cityMap[city]) cityMap[city] = { name: city, total: 0, confirmed: 0, delivered: 0 };
+      cityMap[city].total++;
+      if (ADMIN_CONFIRMED.has(o.status)) cityMap[city].confirmed++;
+      if (o.status === 'delivered') cityMap[city].delivered++;
+    });
+    const cityStats = Object.values(cityMap).sort((a, b) => b.delivered - a.delivered).slice(0, 10);
+
     const cancelled = annuleFake + annuleFauxNumero + annuleDouble;
     // confirmationRate = (confirme + expédié + delivered) / total
     const confirmationRate = totalOrders > 0 ? Math.round(confirme / totalOrders * 100) : 0;
@@ -753,6 +764,7 @@ export async function registerRoutes(
       deliveryShippingRate: totalShipped > 0 ? Math.round((deliveredShipped / totalShipped) * 100) : 0,
       returnShippingRate: totalShipped > 0 ? Math.round((refusedShipped / totalShipped) * 100) : 0,
       byCarrier,
+      cityStats,
       totalShippingCost: canRevenue ? totalShipping : undefined,
       revenue: canRevenue ? revenue : undefined,
       roas: canRevenue ? roas : undefined,

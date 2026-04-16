@@ -14,7 +14,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3 } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3, MapPin } from "lucide-react";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -1190,6 +1190,137 @@ export default function Dashboard() {
 
       {/* TOTAL COÛTS, COMMISSIONS AGENTS, DÉPENSES PUB cards hidden by request */}
 
+      {/* ══ ÉVOLUTION GLOBALE — full width 3 lignes ══ */}
+      {!isAgent && !isMediaBuyer && canSeeCharts && (
+        <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-sm font-bold uppercase tracking-wide">Évolution des Commandes</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Commandes · Confirmées · Livrées par jour</p>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-blue-500 inline-block rounded-full"/><span className="text-muted-foreground">Commandes</span></span>
+              <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-green-500 inline-block rounded-full"/><span className="text-muted-foreground">Confirmées</span></span>
+              <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-orange-500 inline-block rounded-full"/><span className="text-muted-foreground">Livrées</span></span>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart
+              data={stats?.daily?.map((d: any) => ({
+                date: new Date(d.date).toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }),
+                Commandes: d.count || 0,
+                Confirmées: d.confirmed || 0,
+                Livrées: d.delivered || 0,
+              })) || []}
+              margin={{ top: 5, right: 20, left: 0, bottom: 5 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} interval={Math.max(0, Math.floor(((stats?.daily?.length || 0) - 1) / 8))} />
+              <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} allowDecimals={false} width={25} />
+              <RechartsTooltip contentStyle={{ borderRadius: '8px', border: '1px solid hsl(var(--border))', fontSize: 12 }} />
+              <Line type="monotone" dataKey="Commandes" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3, fill: '#3b82f6' }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="Confirmées" stroke="#10b981" strokeWidth={2} dot={{ r: 3, fill: '#10b981' }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="Livrées" stroke="#f97316" strokeWidth={2} dot={{ r: 3, fill: '#f97316' }} activeDot={{ r: 5 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ══ TOP CITIES + PERFORMANCE ÉQUIPE ══ */}
+      {!isAgent && !isMediaBuyer && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+
+          {/* ── TOP CITIES ── */}
+          <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5">
+            <div className="flex items-center gap-2 pb-2 border-b mb-4">
+              <MapPin className="w-4 h-4 text-blue-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Top Villes — Livraisons</h2>
+            </div>
+            <div className="space-y-3">
+              {(() => {
+                const cityStats = (stats as any)?.cityStats || [];
+                if (cityStats.length === 0) {
+                  return <p className="text-sm text-muted-foreground text-center py-6">Aucune donnée disponible</p>;
+                }
+                return cityStats.slice(0, 8).map((city: any, i: number) => {
+                  const rate = city.total > 0 ? Math.round((city.delivered / city.total) * 100) : 0;
+                  return (
+                    <div key={city.name}>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-muted-foreground w-5">{i+1}</span>
+                          <span className="font-semibold text-sm">{city.name}</span>
+                        </div>
+                        <div className="flex items-center gap-3 text-xs">
+                          <span className="text-emerald-600 font-semibold">{city.delivered} livrées</span>
+                          <span className="text-muted-foreground">{city.total} total</span>
+                          <span className="font-bold">{rate}%</span>
+                        </div>
+                      </div>
+                      <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-1.5">
+                        <div className="h-1.5 rounded-full bg-blue-500" style={{ width: `${rate}%` }} />
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+
+          {/* ── PERFORMANCE ÉQUIPE ── */}
+          <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5">
+            <div className="flex items-center gap-2 pb-2 border-b mb-4">
+              <Users className="w-4 h-4 text-indigo-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Performance de l'Équipe</h2>
+            </div>
+            <div className="space-y-3">
+              {agentPerf && agentPerf.length > 0 ? agentPerf.map((perf: any) => {
+                const agent = agentMap.get(perf.agentId);
+                const confirmRate = perf.total > 0 ? Math.round((perf.confirmed / perf.total) * 100) : 0;
+                const deliverRate = perf.confirmed > 0 ? Math.round((perf.delivered / perf.confirmed) * 100) : 0;
+                return (
+                  <div key={perf.agentId} className="rounded-xl border p-3 bg-muted/10">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center text-xs font-bold text-indigo-600">
+                          {(agent?.username || 'A')[0].toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="font-semibold text-sm">{agent?.username || `Agent #${perf.agentId}`}</p>
+                          <p className="text-[10px] text-muted-foreground">{perf.total} commandes traitées</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 text-xs">
+                        <span className="px-2 py-0.5 rounded-full font-bold" style={{ background: `${STATUS_COLORS.confirme}20`, color: STATUS_COLORS.confirme }}>{confirmRate}% conf</span>
+                        <span className="px-2 py-0.5 rounded-full font-bold bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600">{deliverRate}% livr</span>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground w-20">Confirmation</span>
+                        <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-1.5">
+                          <div className="h-1.5 rounded-full" style={{ width: `${confirmRate}%`, background: STATUS_COLORS.confirme }} />
+                        </div>
+                        <span className="text-[10px] font-bold w-8 text-right" style={{ color: STATUS_COLORS.confirme }}>{perf.confirmed}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground w-20">Livraison</span>
+                        <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-1.5">
+                          <div className="h-1.5 rounded-full bg-emerald-500" style={{ width: `${deliverRate}%` }} />
+                        </div>
+                        <span className="text-[10px] font-bold text-emerald-600 w-8 text-right">{perf.delivered}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }) : (
+                <p className="text-sm text-muted-foreground text-center py-6">Aucun agent</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Agent Performance Charts — placed below all status cards ── */}
       {isAgent && (
         <div className="space-y-3">
@@ -1565,76 +1696,6 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {!isAgent && <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
-        <Card className="col-span-1 lg:col-span-2 rounded-xl shadow-sm border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-base font-semibold flex items-center gap-2">
-              <div className="p-1.5 bg-primary/10 rounded-lg"><TrendingUp className="w-4 h-4 text-primary" /></div>
-              Performance de l'équipe
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader className="bg-muted/20">
-                  <TableRow>
-                    <TableHead className="text-xs">Membre</TableHead>
-                    <TableHead className="text-xs text-center">Activités</TableHead>
-                    <TableHead className="text-xs">Cmd / Taux</TableHead>
-                    <TableHead className="text-xs text-center">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {agentPerf && agentPerf.length > 0 ? agentPerf.map((perf: any) => {
-                    const agent = agentMap.get(perf.agentId);
-                    const confirmRate = perf.total > 0 ? Math.round((perf.confirmed / perf.total) * 100) : 0;
-                    const deliverRate = perf.total > 0 ? Math.round((perf.delivered / perf.total) * 100) : 0;
-                    return (
-                      <TableRow key={perf.agentId} data-testid={`perf-row-${perf.agentId}`}>
-                        <TableCell>
-                          <div className="font-medium text-sm">{agent?.username || `Agent #${perf.agentId}`}</div>
-                          <div className="mt-0.5">{roleBadge(perf.agentId)}</div>
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <Badge className="bg-orange-500 text-white text-xs">{perf.total}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="font-semibold w-5">{perf.confirmed}</span>
-                              <div className="flex-1 bg-muted rounded-full h-1.5 max-w-[80px]">
-                                <div className="h-1.5 rounded-full" style={{ width: `${confirmRate}%`, background: STATUS_COLORS.confirme }} />
-                              </div>
-                              <span className="text-muted-foreground">confirme</span>
-                              <span className="font-bold" style={{ color: STATUS_COLORS.confirme }}>{confirmRate}%</span>
-                            </div>
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="font-semibold w-5">{perf.delivered}</span>
-                              <div className="flex-1 bg-muted rounded-full h-1.5 max-w-[80px]">
-                                <div className="h-1.5 rounded-full" style={{ width: `${deliverRate}%`, background: STATUS_COLORS.delivered }} />
-                              </div>
-                              <span className="text-muted-foreground">livré</span>
-                              <span className="font-bold" style={{ color: STATUS_COLORS.delivered }}>{deliverRate}%</span>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <button className="p-1.5 rounded-md hover:bg-muted transition-colors"><Eye className="w-4 h-4 text-muted-foreground" /></button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  }) : (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center py-6 text-muted-foreground text-sm">Aucune donnée de performance</TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-
-      </div>}
 
       {canSeeTopProducts && (
       <Card className="rounded-xl border-border/50 shadow-sm bg-white dark:bg-card" data-testid="card-product-performance">
