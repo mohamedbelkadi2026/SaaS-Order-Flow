@@ -1033,86 +1033,157 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ── DELIVERY & LOGISTICS ──────────────────────────────────────── */}
-      {!isAgent && !isMediaBuyer && (stats?.totalShipped || 0) > 0 && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Truck className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-bold uppercase tracking-wide">Delivery & Logistics</h2>
-            <span className="text-xs text-muted-foreground">Shipping and delivery operations</span>
-          </div>
+      {/* ══ STATS SECTION: Confirmation + Livraison ══ */}
+      {!isAgent && !isMediaBuyer && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Donut */}
-            <Card className="rounded-xl shadow-sm border p-5 flex flex-col items-center justify-center">
-              <div className="relative w-28 h-28 mb-3">
+          {/* ── LEFT: Statistiques Confirmation ── */}
+          <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5 space-y-4">
+            <div className="flex items-center gap-2 pb-2 border-b">
+              <PhoneCall className="w-4 h-4 text-sky-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Statistiques Confirmation</h2>
+            </div>
+
+            {/* 4 KPI cards */}
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Total Leads', value: totalOrders, color: '#1e1b4b' },
+                { label: 'Confirmés', value: confirme, color: STATUS_COLORS.confirme, pct: totalOrders > 0 ? ((confirme/totalOrders)*100).toFixed(1) : '0' },
+                { label: 'Annulés', value: cancelled, color: STATUS_COLORS.cancelled, pct: totalOrders > 0 ? ((cancelled/totalOrders)*100).toFixed(1) : '0' },
+                { label: 'Injoignables', value: stats?.injoignable || 0, color: '#6366f1', pct: totalOrders > 0 ? (((stats?.injoignable||0)/totalOrders)*100).toFixed(1) : '0' },
+              ].map(k => (
+                <div key={k.label} className="rounded-xl border p-3 bg-muted/20">
+                  <p className="text-[11px] text-muted-foreground uppercase tracking-wide mb-1">{k.label}</p>
+                  <p className="text-2xl font-extrabold" style={{ color: k.color }}>{k.value}</p>
+                  {k.pct !== undefined && <p className="text-xs font-semibold mt-0.5" style={{ color: k.color }}>{k.pct}%</p>}
+                </div>
+              ))}
+            </div>
+
+            {/* Confirmation rate */}
+            <div className="flex items-center gap-4 rounded-xl border p-4 bg-muted/10">
+              <div className="relative w-20 h-20 shrink-0">
                 <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="3.5" />
-                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" strokeWidth="3.5"
-                    strokeDasharray={`${stats?.deliveryShippingRate || 0} ${100 - (stats?.deliveryShippingRate || 0)}`}
-                    strokeLinecap="round" />
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="4"/>
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke={STATUS_COLORS.confirme} strokeWidth="4"
+                    strokeDasharray={`${totalOrders > 0 ? ((confirme/totalOrders)*100).toFixed(1) : 0} 100`} strokeLinecap="round"/>
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <span className="text-xl font-extrabold text-emerald-600">{stats?.deliveryShippingRate || 0}%</span>
-                  <span className="text-[10px] text-muted-foreground font-medium">DELIVERED</span>
+                  <span className="text-sm font-extrabold" style={{ color: STATUS_COLORS.confirme }}>
+                    {totalOrders > 0 ? ((confirme/totalOrders)*100).toFixed(1) : 0}%
+                  </span>
                 </div>
               </div>
-              <div className="text-center space-y-1.5">
-                <p className="font-bold text-sm">AVG D.T</p>
-                <div className="flex gap-4 text-xs justify-center">
-                  <div className="text-center">
-                    <p className="font-bold text-emerald-600">{stats?.deliveredShipped || 0}</p>
-                    <p className="text-muted-foreground">DELIVERED</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="font-bold text-amber-500">{stats?.pendingShipped || 0}</p>
-                    <p className="text-muted-foreground">PENDING</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="font-bold text-red-500">{stats?.returnShippingRate || 0}%</p>
-                    <p className="text-muted-foreground">RETURNED</p>
-                  </div>
+              <div>
+                <p className="font-bold text-sm">Taux de confirmation</p>
+                <p className="text-xs text-muted-foreground">{confirme} confirmés / {totalOrders} leads</p>
+                <div className="flex flex-wrap gap-3 mt-2 text-xs">
+                  <span className="text-amber-500">🆕 {stats?.nouveau || 0} nouveaux</span>
+                  <span className="text-indigo-500">📵 {stats?.boiteVocale || 0} boite vocale</span>
+                  <span className="text-blue-500">🔄 {inProgress} en cours</span>
                 </div>
               </div>
-            </Card>
+            </div>
 
-            {/* Carrier Performance */}
-            <Card className="lg:col-span-2 rounded-xl shadow-sm border p-5">
-              <p className="text-xs font-bold uppercase tracking-wide mb-4">Carrier Performance</p>
-              <div className="space-y-4">
-                {Object.entries((stats?.byCarrier || {}) as Record<string, any>).map(([carrier, data]: [string, any], i) => {
-                  const rate = data.total > 0 ? Math.round((data.delivered / data.total) * 100) : 0;
-                  return (
-                    <div key={carrier}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-muted-foreground w-4">{i + 1}</span>
-                          <img src={`/carriers/${carrier.toLowerCase()}.svg`} className="w-5 h-5 object-contain" onError={e => (e.currentTarget.style.display='none')} alt={carrier} />
-                          <span className="font-semibold text-sm capitalize">{carrier}</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-xs">
-                          <span className="font-bold">{data.total}</span>
-                          <span className="text-muted-foreground">TOTAL ORDERS</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-2">
-                          <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${rate}%` }} />
-                        </div>
-                      </div>
-                      <div className="flex justify-between text-xs text-muted-foreground">
-                        <div className="flex gap-3">
-                          <span><span className="text-emerald-600 font-semibold">{data.delivered}</span> DELIVERED</span>
-                          <span><span className="text-amber-500 font-semibold">{data.pending}</span> PENDING</span>
-                          <span><span className="text-red-500 font-semibold">{data.refused}</span> FAILED</span>
-                        </div>
-                        <span className="font-bold">G.S: {rate}%</span>
-                      </div>
-                    </div>
-                  );
-                })}
+            {/* Mini evolution chart */}
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground mb-2">Évolution (30j)</p>
+              <ResponsiveContainer width="100%" height={120}>
+                <LineChart data={stats?.daily?.map((d: any) => ({ date: d.date?.slice(5), c: d.count || 0, conf: d.confirmed || 0 })) || []}
+                  margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                  <YAxis tick={{ fontSize: 9 }} axisLine={false} tickLine={false} allowDecimals={false} width={25} />
+                  <RechartsTooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
+                  <Line type="monotone" dataKey="c" stroke="#3b82f6" strokeWidth={2} dot={false} name="Commandes" />
+                  <Line type="monotone" dataKey="conf" stroke={STATUS_COLORS.confirme} strokeWidth={2} dot={false} name="Confirmées" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* ── RIGHT: Statistiques Livraison ── */}
+          <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5 space-y-4">
+            <div className="flex items-center gap-2 pb-2 border-b">
+              <Truck className="w-4 h-4 text-emerald-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Statistiques Livraison</h2>
+            </div>
+
+            {/* 4 KPI cards */}
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: 'Expédiés', value: stats?.totalShipped || 0, color: '#3b82f6' },
+                { label: 'Livrés', value: stats?.deliveredShipped || 0, color: '#10b981', pct: `${stats?.deliveryShippingRate || 0}%` },
+                { label: 'En attente', value: stats?.pendingShipped || 0, color: '#f59e0b', pct: 'En transit' },
+                { label: 'Retours', value: stats?.refusedShipped || 0, color: '#ef4444', pct: `${stats?.returnShippingRate || 0}%` },
+              ].map(k => (
+                <div key={k.label} className="rounded-xl border p-3 bg-muted/20">
+                  <p className="text-[11px] text-muted-foreground uppercase tracking-wide mb-1">{k.label}</p>
+                  <p className="text-2xl font-extrabold" style={{ color: k.color }}>{k.value}</p>
+                  {k.pct && <p className="text-xs font-semibold mt-0.5" style={{ color: k.color }}>{k.pct}</p>}
+                </div>
+              ))}
+            </div>
+
+            {/* Delivery rate */}
+            <div className="flex items-center gap-4 rounded-xl border p-4 bg-muted/10">
+              <div className="relative w-20 h-20 shrink-0">
+                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="4"/>
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" strokeWidth="4"
+                    strokeDasharray={`${stats?.deliveryShippingRate || 0} 100`} strokeLinecap="round"/>
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-sm font-extrabold text-emerald-600">{stats?.deliveryShippingRate || 0}%</span>
+                </div>
               </div>
-            </Card>
+              <div>
+                <p className="font-bold text-sm">Taux de livraison</p>
+                <p className="text-xs text-muted-foreground">{stats?.deliveredShipped || 0} livrés / {stats?.totalShipped || 0} expédiés</p>
+                <div className="flex flex-wrap gap-3 mt-2 text-xs">
+                  <span className="text-red-500">↩ Retour: {stats?.returnShippingRate || 0}%</span>
+                  <span className="text-amber-500">⏳ {stats?.pendingShipped || 0} pending</span>
+                  <span className="text-orange-500">💰 {formatCurrency(stats?.totalShippingCost || 0)} frais</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Carrier performance */}
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground mb-3">Carrier Performance</p>
+              {stats?.byCarrier && Object.keys(stats.byCarrier).length > 0 ? (
+                <div className="space-y-3">
+                  {Object.entries(stats.byCarrier as Record<string, any>).map(([carrier, data]: [string, any], i) => {
+                    const rate = data.total > 0 ? Math.round((data.delivered / data.total) * 100) : 0;
+                    return (
+                      <div key={carrier}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-muted-foreground">{i+1}</span>
+                            <img src={`/carriers/${carrier.toLowerCase()}.svg`} className="w-5 h-5 object-contain" onError={e => (e.currentTarget.style.display='none')} alt={carrier} />
+                            <span className="font-semibold text-sm capitalize">{carrier}</span>
+                          </div>
+                          <span className="text-xs font-bold text-muted-foreground">{data.total} orders</span>
+                        </div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-2">
+                            <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${rate}%` }} />
+                          </div>
+                          <span className="text-xs font-bold text-emerald-600 w-9 text-right">{rate}%</span>
+                        </div>
+                        <div className="flex gap-3 text-[11px] text-muted-foreground">
+                          <span className="text-emerald-600 font-semibold">{data.delivered} delivered</span>
+                          <span className="text-amber-500">{data.pending} pending</span>
+                          <span className="text-red-500">{data.refused} failed</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-4">Aucune commande expédiée</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1122,12 +1193,6 @@ export default function Dashboard() {
       {/* ── Agent Performance Charts — placed below all status cards ── */}
       {isAgent && (
         <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <BarChart3 className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-bold text-foreground uppercase tracking-wide">Statistiques de Performance</h2>
-            <span className="text-xs text-muted-foreground">— 15 derniers jours</span>
-          </div>
-
           <div className="flex flex-col lg:flex-row gap-4">
 
             {/* Line Chart — Évolution des commandes (70 % on desktop) */}
@@ -1307,7 +1372,7 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {!isAgent && (
+      {false /* removed stale split grid */ && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
 
           {/* ── LEFT HALF: Statistiques Confirmation ───────────────── */}
@@ -1459,8 +1524,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── ÉVOLUTION GLOBALE — full width ─────────────────────────── */}
-      {!isAgent && canSeeCharts && (
+      {/* ── ÉVOLUTION GLOBALE — removed, now in mini chart ─────────── */}
+      {false && canSeeCharts && (
         <Card className="rounded-xl shadow-sm border-border/50 bg-white dark:bg-card">
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
             <div>
