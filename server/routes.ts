@@ -629,22 +629,26 @@ export async function registerRoutes(
     // deliveryRate = delivered / confirmed (not divided by total)
     const deliveryRate = confirme > 0 ? Math.round(delivered / confirme * 100) : 0;
 
-    const dailyMap: Record<string, number> = {};
+    const dailyMap: Record<string, { total: number; confirmed: number; delivered: number }> = {};
     const now = new Date();
     const startDate = dateFrom ? new Date(dateFrom + 'T00:00:00') : new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
     const endDate = dateTo ? new Date(dateTo + 'T00:00:00') : new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const cursor = new Date(startDate);
     while (cursor <= endDate) {
-      dailyMap[cursor.toISOString().slice(0, 10)] = 0;
+      dailyMap[cursor.toISOString().slice(0, 10)] = { total: 0, confirmed: 0, delivered: 0 };
       cursor.setDate(cursor.getDate() + 1);
     }
     allOrders.forEach(o => {
       if (o.createdAt) {
         const day = new Date(o.createdAt).toISOString().slice(0, 10);
-        if (dailyMap[day] !== undefined) dailyMap[day]++;
+        if (dailyMap[day] !== undefined) {
+          dailyMap[day].total++;
+          if (ADMIN_CONFIRMED.has(o.status)) dailyMap[day].confirmed++;
+          if (o.status === 'delivered') dailyMap[day].delivered++;
+        }
       }
     });
-    const daily = Object.entries(dailyMap).map(([date, count]) => ({ date, count }));
+    const daily = Object.entries(dailyMap).map(([date, d]) => ({ date, count: d.total, confirmed: d.confirmed, delivered: d.delivered }));
 
     const storeProducts = await storage.getProductsByStore(storeId);
     const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));

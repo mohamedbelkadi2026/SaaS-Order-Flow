@@ -1355,16 +1355,17 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Evolution chart */}
+            {/* Evolution chart (mini) */}
             <div className="rounded-xl border bg-white dark:bg-card p-4 shadow-sm">
               <p className="text-xs font-bold uppercase tracking-wide mb-3 text-muted-foreground">Évolution des commandes</p>
               <ResponsiveContainer width="100%" height={160}>
-                <LineChart data={stats?.daily?.map((d: any) => ({ date: d.date?.slice(5), count: d.count })) || []}>
+                <LineChart data={stats?.daily?.map((d: any) => ({ date: d.date?.slice(5), Commandes: d.count || 0, Confirmées: d.confirmed || 0 })) || []}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                   <XAxis dataKey="date" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 9 }} axisLine={false} tickLine={false} allowDecimals={false} width={20} />
                   <RechartsTooltip contentStyle={{ fontSize: 11, borderRadius: 6 }} />
-                  <Line type="monotone" dataKey="count" stroke={STATUS_COLORS.confirme} strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Commandes" stroke="#3b82f6" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Confirmées" stroke="#10b981" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1456,6 +1457,47 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+      )}
+
+      {/* ── ÉVOLUTION GLOBALE — full width ─────────────────────────── */}
+      {!isAgent && canSeeCharts && (
+        <Card className="rounded-xl shadow-sm border-border/50 bg-white dark:bg-card">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-base font-semibold">Évolution des Commandes</CardTitle>
+              <p className="text-xs text-muted-foreground mt-0.5">Commandes · Confirmées · Livrées — par jour</p>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-blue-500 inline-block rounded" />Commandes</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-green-500 inline-block rounded" />Confirmées</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-orange-500 inline-block rounded" />Livrées</span>
+            </div>
+          </CardHeader>
+          <CardContent className="p-2">
+            <ResponsiveContainer width="100%" height={260}>
+              <LineChart
+                data={stats?.daily?.map((d: any) => ({
+                  date: d.date?.slice(5)?.replace('-', '/'),
+                  Commandes: d.count || 0,
+                  Confirmées: d.confirmed || 0,
+                  Livrées: d.delivered || 0,
+                })) || []}
+                margin={{ top: 5, right: 20, left: 0, bottom: 5 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} allowDecimals={false} width={25} />
+                <RechartsTooltip
+                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgb(0 0 0 / 0.1)', fontSize: 12 }}
+                  formatter={(value: any, name: string) => [value, name]}
+                />
+                <Line type="monotone" dataKey="Commandes" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3, fill: '#3b82f6' }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="Confirmées" stroke="#10b981" strokeWidth={2} dot={{ r: 3, fill: '#10b981' }} activeDot={{ r: 5 }} />
+                <Line type="monotone" dataKey="Livrées" stroke="#f97316" strokeWidth={2} dot={{ r: 3, fill: '#f97316' }} activeDot={{ r: 5 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
       )}
 
       {!isAgent && <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 lg:gap-6">
