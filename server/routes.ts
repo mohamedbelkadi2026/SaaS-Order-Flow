@@ -579,6 +579,10 @@ export async function registerRoutes(
       deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
     );
 
+    // Delivery tracking
+    let totalShipped = 0, deliveredShipped = 0, refusedShipped = 0, pendingShipped = 0;
+    const byCarrier: Record<string, { total: number; delivered: number; pending: number; refused: number }> = {};
+
     allOrders.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
       else if (o.status === 'in_progress') inProgress++;
@@ -593,6 +597,17 @@ export async function registerRoutes(
       if (ADMIN_CONFIRMED.has(o.status)) confirme++;
       // delivered = only truly delivered
       if (o.status === 'delivered') delivered++;
+
+      // Delivery shipping tracking
+      if ((o as any).trackNumber) {
+        totalShipped++;
+        const carrier = (o as any).shippingProvider || 'Inconnu';
+        if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
+        byCarrier[carrier].total++;
+        if (o.status === 'delivered') { deliveredShipped++; byCarrier[carrier].delivered++; }
+        else if (['refused', 'retourné', 'Retour Recu'].includes(o.status)) { refusedShipped++; byCarrier[carrier].refused++; }
+        else { pendingShipped++; byCarrier[carrier].pending++; }
+      }
 
       // Revenue & costs: only from delivered orders
       if (o.status === 'delivered') {
@@ -727,6 +742,14 @@ export async function registerRoutes(
       totalOrders, nouveau, confirme, inProgress, cancelled, delivered, refused,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
       confirmationRate, deliveryRate,
+      totalShipped,
+      deliveredShipped,
+      refusedShipped,
+      pendingShipped,
+      deliveryShippingRate: totalShipped > 0 ? Math.round((deliveredShipped / totalShipped) * 100) : 0,
+      returnShippingRate: totalShipped > 0 ? Math.round((refusedShipped / totalShipped) * 100) : 0,
+      byCarrier,
+      totalShippingCost: canRevenue ? totalShipping : undefined,
       revenue: canRevenue ? revenue : undefined,
       roas: canRevenue ? roas : undefined,
       roi: canRevenue ? roi : undefined,

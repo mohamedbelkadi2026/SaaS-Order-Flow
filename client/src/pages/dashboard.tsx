@@ -183,7 +183,6 @@ export default function Dashboard() {
   });
   const totalCommissionsOwed = commissionsSummary?.reduce((sum, a) => sum + Number(a.totalOwed), 0) ?? 0;
 
-  const { data: ordersList = [] } = useQuery<any[]>({ queryKey: ['/api/orders'], enabled: !isAgent && !isMediaBuyer });
 
   const { data: stats, isLoading } = useFilteredStats(activeFilters);
   const { data: filterOptions } = useFilterOptions();
@@ -1034,126 +1033,89 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* ── DELIVERY ANALYTICS SECTION ─────────────────────────────── */}
-      {!isAgent && !isMediaBuyer && (() => {
-        const shipped = (ordersList || []).filter((o: any) => o.trackNumber);
-        const delivered = shipped.filter((o: any) => o.status === 'delivered');
-        const refused = shipped.filter((o: any) => ['refused','retourné'].includes(o.status));
-        const pending = shipped.filter((o: any) => !['delivered','refused','retourné','Retour Recu'].includes(o.status));
-        const deliveryRate = shipped.length > 0 ? ((delivered.length / shipped.length) * 100).toFixed(1) : '0';
-        const returnRate = shipped.length > 0 ? ((refused.length / shipped.length) * 100).toFixed(1) : '0';
-        const totalShippingCost = delivered.reduce((s: number, o: any) => s + (o.shippingCost || 0), 0);
+      {/* ── DELIVERY & LOGISTICS ──────────────────────────────────────── */}
+      {!isAgent && !isMediaBuyer && (stats?.totalShipped || 0) > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Truck className="w-4 h-4 text-muted-foreground" />
+            <h2 className="text-sm font-bold uppercase tracking-wide">Delivery & Logistics</h2>
+            <span className="text-xs text-muted-foreground">Shipping and delivery operations</span>
+          </div>
 
-        const byCarrier: Record<string, { total: number; delivered: number; pending: number; refused: number }> = {};
-        for (const o of shipped) {
-          const c = o.shippingProvider || 'Inconnu';
-          if (!byCarrier[c]) byCarrier[c] = { total: 0, delivered: 0, pending: 0, refused: 0 };
-          byCarrier[c].total++;
-          if (o.status === 'delivered') byCarrier[c].delivered++;
-          else if (['refused','retourné'].includes(o.status)) byCarrier[c].refused++;
-          else byCarrier[c].pending++;
-        }
-
-        if (shipped.length === 0) return null;
-
-        return (
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <Truck className="w-4 h-4 text-muted-foreground" />
-              <h2 className="text-sm font-bold uppercase tracking-wide text-foreground">Delivery & Logistics</h2>
-              <span className="text-xs text-muted-foreground">— {shipped.length} colis expédiés</span>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="rounded-2xl border bg-white dark:bg-card p-5 shadow-sm flex flex-col items-center justify-center">
-                <div className="relative w-28 h-28">
-                  <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
-                    <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="3" />
-                    <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" strokeWidth="3"
-                      strokeDasharray={`${deliveryRate} ${100 - parseFloat(deliveryRate)}`}
-                      strokeLinecap="round" />
-                    {parseFloat(returnRate) > 0 && (
-                      <circle cx="18" cy="18" r="15.9" fill="none" stroke="#ef4444" strokeWidth="3"
-                        strokeDasharray={`${returnRate} ${100 - parseFloat(returnRate)}`}
-                        strokeDashoffset={`-${deliveryRate}`}
-                        strokeLinecap="round" />
-                    )}
-                  </svg>
-                  <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-xl font-bold text-green-600">{deliveryRate}%</span>
-                    <span className="text-[10px] text-muted-foreground">Livré</span>
-                  </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Donut */}
+            <Card className="rounded-xl shadow-sm border p-5 flex flex-col items-center justify-center">
+              <div className="relative w-28 h-28 mb-3">
+                <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="3.5" />
+                  <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" strokeWidth="3.5"
+                    strokeDasharray={`${stats?.deliveryShippingRate || 0} ${100 - (stats?.deliveryShippingRate || 0)}`}
+                    strokeLinecap="round" />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-xl font-extrabold text-emerald-600">{stats?.deliveryShippingRate || 0}%</span>
+                  <span className="text-[10px] text-muted-foreground font-medium">DELIVERED</span>
                 </div>
-                <div className="mt-3 text-center space-y-1">
-                  <p className="font-bold text-sm">Taux de livraison</p>
-                  <div className="flex gap-3 text-xs justify-center">
-                    <span className="text-green-600">✓ {delivered.length} livrées</span>
-                    <span className="text-amber-500">⏳ {pending.length} en cours</span>
-                    <span className="text-red-500">↩ {refused.length} retours</span>
+              </div>
+              <div className="text-center space-y-1.5">
+                <p className="font-bold text-sm">AVG D.T</p>
+                <div className="flex gap-4 text-xs justify-center">
+                  <div className="text-center">
+                    <p className="font-bold text-emerald-600">{stats?.deliveredShipped || 0}</p>
+                    <p className="text-muted-foreground">DELIVERED</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="font-bold text-amber-500">{stats?.pendingShipped || 0}</p>
+                    <p className="text-muted-foreground">PENDING</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="font-bold text-red-500">{stats?.returnShippingRate || 0}%</p>
+                    <p className="text-muted-foreground">RETURNED</p>
                   </div>
                 </div>
               </div>
+            </Card>
 
-              <div className="lg:col-span-2 grid grid-cols-2 gap-3">
-                {[
-                  { label: 'Total expédiés', value: shipped.length, color: '#3b82f6', icon: '📦' },
-                  { label: 'Taux de retour', value: `${returnRate}%`, color: '#ef4444', icon: '↩️' },
-                  { label: 'Frais livraison', value: `${(totalShippingCost / 100).toFixed(2)} DH`, color: '#f97316', icon: '🚚' },
-                  { label: 'En attente retour', value: refused.length, color: '#f59e0b', icon: '⚠️' },
-                ].map(s => (
-                  <div key={s.label} className="rounded-xl border bg-white dark:bg-card p-3 shadow-sm">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-sm">{s.icon}</span>
-                      <span className="text-xs text-muted-foreground">{s.label}</span>
-                    </div>
-                    <p className="text-lg font-bold" style={{ color: s.color }}>{s.value}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {Object.keys(byCarrier).length > 0 && (
-              <div className="rounded-2xl border bg-white dark:bg-card p-5 shadow-sm">
-                <h3 className="font-bold text-sm mb-4 uppercase tracking-wide">Carrier Performance</h3>
-                <div className="space-y-4">
-                  {Object.entries(byCarrier).map(([carrier, data], i) => {
-                    const rate = data.total > 0 ? Math.round((data.delivered / data.total) * 100) : 0;
-                    return (
-                      <div key={carrier}>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-muted-foreground">{i + 1}</span>
-                            <img src={`/carriers/${carrier.toLowerCase()}.svg`} className="w-5 h-5 object-contain" onError={e => (e.currentTarget.style.display='none')} alt={carrier} />
-                            <span className="font-semibold text-sm capitalize">{carrier}</span>
-                          </div>
-                          <div className="flex items-center gap-3 text-xs">
-                            <span className="text-green-600 font-bold">{data.delivered}</span>
-                            <span className="text-muted-foreground">DELIVERED</span>
-                            <span className="text-amber-500">{data.pending}</span>
-                            <span className="text-muted-foreground">PENDING</span>
-                            <span className="text-red-500">{data.refused}</span>
-                            <span className="text-muted-foreground">FAILED</span>
-                          </div>
-                        </div>
+            {/* Carrier Performance */}
+            <Card className="lg:col-span-2 rounded-xl shadow-sm border p-5">
+              <p className="text-xs font-bold uppercase tracking-wide mb-4">Carrier Performance</p>
+              <div className="space-y-4">
+                {Object.entries((stats?.byCarrier || {}) as Record<string, any>).map(([carrier, data]: [string, any], i) => {
+                  const rate = data.total > 0 ? Math.round((data.delivered / data.total) * 100) : 0;
+                  return (
+                    <div key={carrier}>
+                      <div className="flex items-center justify-between mb-1.5">
                         <div className="flex items-center gap-2">
-                          <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-2">
-                            <div className="h-2 rounded-full bg-green-500 transition-all" style={{ width: `${rate}%` }} />
-                          </div>
-                          <span className="text-xs font-bold text-muted-foreground w-10 text-right">G.S: {rate}%</span>
+                          <span className="text-xs font-bold text-muted-foreground w-4">{i + 1}</span>
+                          <img src={`/carriers/${carrier.toLowerCase()}.svg`} className="w-5 h-5 object-contain" onError={e => (e.currentTarget.style.display='none')} alt={carrier} />
+                          <span className="font-semibold text-sm capitalize">{carrier}</span>
                         </div>
-                        <div className="flex justify-between text-xs text-muted-foreground mt-0.5">
-                          <span>{data.total} TOTAL ORDERS</span>
-                          <span>{data.refused} FAILED</span>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-bold">{data.total}</span>
+                          <span className="text-muted-foreground">TOTAL ORDERS</span>
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-2">
+                          <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${rate}%` }} />
+                        </div>
+                      </div>
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <div className="flex gap-3">
+                          <span><span className="text-emerald-600 font-semibold">{data.delivered}</span> DELIVERED</span>
+                          <span><span className="text-amber-500 font-semibold">{data.pending}</span> PENDING</span>
+                          <span><span className="text-red-500 font-semibold">{data.refused}</span> FAILED</span>
+                        </div>
+                        <span className="font-bold">G.S: {rate}%</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            )}
+            </Card>
           </div>
-        );
-      })()}
+        </div>
+      )}
 
       {/* TOTAL COÛTS, COMMISSIONS AGENTS, DÉPENSES PUB cards hidden by request */}
 

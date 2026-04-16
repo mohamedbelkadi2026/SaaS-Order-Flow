@@ -1,0 +1,116 @@
+Daba fhmto kamla. stats/filtered ma 3ndha totalShipped, byCarrier, pendingReturn — khssna nzidhoum f server w ndiru section f dashboard.
+Hna l prompt complet:
+
+ADD — Delivery & Logistics stats to /api/stats/filtered + Dashboard section
+CHANGE 1 — server/routes.ts — add delivery stats to /api/stats/filtered response:
+In the allOrders.forEach(o => { loop, add:
+typescript// Delivery tracking
+let totalShipped = 0, deliveredShipped = 0, refusedShipped = 0, pendingShipped = 0;
+const byCarrier: Record<string, { total: number; delivered: number; pending: number; refused: number }> = {};
+Before the allOrders.forEach loop. Then inside the loop add:
+typescriptif ((o as any).trackNumber) {
+  totalShipped++;
+  const carrier = (o as any).shippingProvider || 'Inconnu';
+  if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
+  byCarrier[carrier].total++;
+  if (o.status === 'delivered') { deliveredShipped++; byCarrier[carrier].delivered++; }
+  else if (['refused','retourné','Retour Recu'].includes(o.status)) { refusedShipped++; byCarrier[carrier].refused++; }
+  else { pendingShipped++; byCarrier[carrier].pending++; }
+}
+In the res.json({...}) response, add:
+typescripttotalShipped,
+deliveredShipped,
+refusedShipped,
+pendingShipped,
+deliveryShippingRate: totalShipped > 0 ? Math.round((deliveredShipped / totalShipped) * 100) : 0,
+returnShippingRate: totalShipped > 0 ? Math.round((refusedShipped / totalShipped) * 100) : 0,
+byCarrier,
+totalShippingCost: canRevenue ? totalShipping : undefined,
+CHANGE 2 — client/src/pages/dashboard.tsx — add Delivery & Logistics section:
+After the existing stat cards section (after the "Refusées" card), add:
+tsx{/* ── DELIVERY & LOGISTICS ──────────────────────────────────────── */}
+{!isAgent && !isMediaBuyer && (stats?.totalShipped || 0) > 0 && (
+  <div className="space-y-4">
+    <div className="flex items-center gap-2">
+      <Truck className="w-4 h-4 text-muted-foreground" />
+      <h2 className="text-sm font-bold uppercase tracking-wide">Delivery & Logistics</h2>
+      <span className="text-xs text-muted-foreground">Shipping and delivery operations</span>
+    </div>
+
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Donut */}
+      <Card className="rounded-xl shadow-sm border p-5 flex flex-col items-center justify-center">
+        <div className="relative w-28 h-28 mb-3">
+          <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+            <circle cx="18" cy="18" r="15.9" fill="none" stroke="#e5e7eb" strokeWidth="3.5" />
+            <circle cx="18" cy="18" r="15.9" fill="none" stroke="#10b981" strokeWidth="3.5"
+              strokeDasharray={`${stats?.deliveryShippingRate || 0} ${100 - (stats?.deliveryShippingRate || 0)}`}
+              strokeLinecap="round" />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-xl font-extrabold text-emerald-600">{stats?.deliveryShippingRate || 0}%</span>
+            <span className="text-[10px] text-muted-foreground font-medium">DELIVERED</span>
+          </div>
+        </div>
+        <div className="text-center space-y-1.5">
+          <p className="font-bold text-sm">AVG D.T</p>
+          <div className="flex gap-4 text-xs justify-center">
+            <div className="text-center">
+              <p className="font-bold text-emerald-600">{stats?.deliveredShipped || 0}</p>
+              <p className="text-muted-foreground">DELIVERED</p>
+            </div>
+            <div className="text-center">
+              <p className="font-bold text-amber-500">{stats?.pendingShipped || 0}</p>
+              <p className="text-muted-foreground">PENDING</p>
+            </div>
+            <div className="text-center">
+              <p className="font-bold text-red-500">{stats?.returnShippingRate || 0}%</p>
+              <p className="text-muted-foreground">RETURNED</p>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Carrier Performance */}
+      <Card className="lg:col-span-2 rounded-xl shadow-sm border p-5">
+        <p className="text-xs font-bold uppercase tracking-wide mb-4">Carrier Performance</p>
+        <div className="space-y-4">
+          {Object.entries((stats?.byCarrier || {}) as Record<string, any>).map(([carrier, data]: [string, any], i) => {
+            const rate = data.total > 0 ? Math.round((data.delivered / data.total) * 100) : 0;
+            return (
+              <div key={carrier}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-muted-foreground w-4">{i + 1}</span>
+                    <img src={`/carriers/${carrier.toLowerCase()}.svg`} className="w-5 h-5 object-contain" onError={e => (e.currentTarget.style.display='none')} alt={carrier} />
+                    <span className="font-semibold text-sm capitalize">{carrier}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-bold">{data.total}</span>
+                    <span className="text-muted-foreground">TOTAL ORDERS</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-full h-2">
+                    <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${rate}%` }} />
+                  </div>
+                </div>
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <div className="flex gap-3">
+                    <span><span className="text-emerald-600 font-semibold">{data.delivered}</span> DELIVERED</span>
+                    <span><span className="text-amber-500 font-semibold">{data.pending}</span> PENDING</span>
+                    <span><span className="text-red-500 font-semibold">{data.refused}</span> FAILED</span>
+                  </div>
+                  <span className="font-bold">G.S: {rate}%</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    </div>
+  </div>
+)}
+Make sure Truck is imported from lucide-react — add it if missing.
+Do NOT change: any other section, any other endpoint.
+Only touch: server/routes.ts (add delivery stats to response) and client/src/pages/dashboard.tsx (add section).
