@@ -337,10 +337,10 @@ export default function Orders() {
 
   // Fetch carrier city list for the selected provider (for pre-flight validation)
   const { data: bulkCarrierData } = useQuery<{ provider: string | null; cities: string[]; isCarrierSpecific: boolean }>({
-    queryKey: ["/api/carriers/cities", bulkShipProvider],
+    queryKey: ["/api/carriers/cities", bulkShipProvider, selectedMagasin],
     queryFn: () =>
       bulkShipProvider
-        ? fetch(`/api/carriers/cities?provider=${encodeURIComponent(bulkShipProvider)}`, { credentials: "include" }).then(r => r.json())
+        ? fetch(`/api/carriers/cities?provider=${encodeURIComponent(bulkShipProvider)}${selectedMagasin ? `&magasin_id=${selectedMagasin}` : ''}`, { credentials: "include" }).then(r => r.json())
         : Promise.resolve({ provider: null, cities: [], isCarrierSpecific: false }),
     enabled: !!bulkShipProvider,
     staleTime: 5 * 60 * 1000,
@@ -348,9 +348,10 @@ export default function Orders() {
 
   // Active carrier accounts — fetched from carrier_accounts table, NOT legacy storeIntegrations
   const { data: activeCarrierAccounts, isLoading: loadingCarrierAccounts } = useQuery<any[]>({
-    queryKey: ["/api/shipping/active-accounts"],
+    queryKey: ["/api/shipping/active-accounts", selectedMagasin],
     queryFn: async () => {
-      const r1 = await fetch("/api/shipping/active-accounts", { credentials: "include" });
+      const magasinParam = selectedMagasin ? `?magasin_id=${selectedMagasin}` : '';
+      const r1 = await fetch(`/api/shipping/active-accounts${magasinParam}`, { credentials: "include" });
       if (r1.ok) {
         const data = await r1.json();
         console.log("[DEBUG-SHIPPING]: Carriers from /api/shipping/active-accounts:", data?.length, data);
