@@ -1,0 +1,47 @@
+FIX — Show ALL carrier connections in magasin form (by ID), fix shipping selector
+In client/src/pages/magasins.tsx:
+CHANGE 1 — Use connection ID as value (not carrierName):
+Find and replace:
+typescriptconst carrierItems = (carrierAccounts || []).map((acc: any) => ({
+  value: acc.carrierName,
+  label: acc.connectionName
+    ? `${acc.connectionName} (${acc.carrierName})`
+    : acc.carrierName,
+}));
+// Deduplicate by value
+const uniqueCarrierItems = carrierItems.filter(
+  (c, i, arr) => arr.findIndex(x => x.value === c.value) === i
+);
+With:
+typescript// Each connection is unique — use ID as value
+const uniqueCarrierItems = (carrierAccounts || [])
+  .filter((acc: any) => acc && acc.isActive !== 0)
+  .map((acc: any) => ({
+    value: String(acc.id),
+    label: acc.connectionName
+      ? `${acc.connectionName} (${acc.carrierName})`
+      : acc.carrierName,
+    carrierName: acc.carrierName,
+  }));
+CHANGE 2 — Display carrier names in card using IDs:
+Find:
+typescript{store.linkedCarriers.join(", ")}
+Replace with:
+typescript{(Array.isArray(store.linkedCarriers) ? store.linkedCarriers : []).map((val: string) => {
+  const acc = (carrierAccounts || []).find((a: any) => String(a.id) === String(val) || a.carrierName === val);
+  return acc ? (acc.connectionName ? `${acc.connectionName} (${acc.carrierName})` : acc.carrierName) : val;
+}).join(", ")}
+CHANGE 3 — Fix setSelectedCarriers on edit to support both old (name) and new (id) format:
+Find:
+typescriptsetSelectedCarriers(Array.isArray(store.linkedCarriers) ? store.linkedCarriers : []);
+Replace with:
+typescript// Support both old format (carrierName strings) and new format (ID strings)
+const carriers = Array.isArray(store.linkedCarriers) ? store.linkedCarriers : [];
+// If values look like IDs (numeric strings), use as-is. If names, convert to IDs.
+const normalizedCarriers = carriers.map((val: string) => {
+  if (/^\d+$/.test(String(val))) return String(val); // already an ID
+  const acc = (carrierAccounts || []).find((a: any) => a.carrierName === val);
+  return acc ? String(acc.id) : String(val);
+});
+setSelectedCarriers(normalizedCarriers);
+Do NOT change: any other logic, server, shipping flow.

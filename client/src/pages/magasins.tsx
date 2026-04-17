@@ -263,15 +263,16 @@ function StoreModal({
 
   const agentItems = (agents || []).filter((a: any) => a.role === 'agent');
 
+  // Each connection is unique — use ID as value
   const uniqueCarrierItems = (carrierAccounts || [])
     .filter((acc: any) => acc && acc.isActive !== 0)
     .map((acc: any) => ({
-      value: acc.carrierName || '',
+      value: String(acc.id),
       label: acc.connectionName
         ? `${acc.connectionName} (${acc.carrierName})`
-        : (acc.carrierName || ''),
-    }))
-    .filter((c, i, arr) => arr.findIndex(x => x.value === c.value) === i);
+        : acc.carrierName,
+      carrierName: acc.carrierName,
+    }));
 
   const platformItems = (storeIntegrationsList || []).map((s: any) => ({
     value: s.provider,
@@ -650,7 +651,14 @@ export default function Magasins() {
     setForm(storeToForm(store));
     setSelectedAgentIds(Array.isArray(store.agentIds) ? store.agentIds.map(Number) : []);
     setSelectedServices(Array.isArray(store.services) ? store.services : []);
-    setSelectedCarriers(Array.isArray(store.linkedCarriers) ? store.linkedCarriers : []);
+    // Support both old format (carrierName strings) and new format (ID strings)
+    const carriers = Array.isArray(store.linkedCarriers) ? store.linkedCarriers : [];
+    const normalizedCarriers = carriers.map((val: string) => {
+      if (/^\d+$/.test(String(val))) return String(val); // already an ID
+      const acc = (carrierAccounts || []).find((a: any) => a.carrierName === val);
+      return acc ? String(acc.id) : String(val);
+    });
+    setSelectedCarriers(normalizedCarriers);
     setSelectedPlatforms(Array.isArray(store.linkedPlatforms) ? store.linkedPlatforms : []);
     setNewLogoPreview(null);
   };
@@ -744,7 +752,10 @@ export default function Magasins() {
                   {Array.isArray(store.linkedCarriers) && store.linkedCarriers.length > 0 && (
                     <Badge variant="outline" className="text-[10px] bg-purple-50 text-purple-700 border-purple-200">
                       <Truck className="w-2.5 h-2.5 mr-1" />
-                      {(Array.isArray(store.linkedCarriers) ? store.linkedCarriers : []).join(", ")}
+                      {(Array.isArray(store.linkedCarriers) ? store.linkedCarriers : []).map((val: string) => {
+                        const acc = (carrierAccounts || []).find((a: any) => String(a.id) === String(val) || a.carrierName === val);
+                        return acc ? (acc.connectionName ? `${acc.connectionName} (${acc.carrierName})` : acc.carrierName) : val;
+                      }).join(", ")}
                     </Badge>
                   )}
                 </div>
