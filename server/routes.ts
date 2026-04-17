@@ -2431,6 +2431,8 @@ export async function registerRoutes(
     // ── Extract all possible identifiers from the payload ─────────────────
     // Carriers differ: some send tracking IDs, some send our order reference
     const trackingNumber = (
+      body.CODE           ||  // Ameex webhook field (uppercase)
+      body.code           ||  // Ameex webhook field (lowercase)
       body.traking        ||  // Digylog field (typo in their API)
       body.tracking_number || body.barcode   || body.code_suivi ||
       body.track_number   || body.colis_id  || body.tracking   ||
@@ -2448,6 +2450,8 @@ export async function registerRoutes(
     // If none of the known fields are present, scan ALL body string values
     // as a last resort — so we NEVER miss the carrier text.
     const rawText = (
+      body.STATUT_S_NAME    ||  // Ameex: sub-status name (most specific)
+      body.STATUT_NAME      ||  // Ameex: main status name
       body.status           ||  // Digylog sends status as text here
       body.last_event       ||
       body.etat_libelle     ||
@@ -2459,6 +2463,7 @@ export async function registerRoutes(
       body.event_label      ||
       body.event            ||
       body.etat             ||
+      body.STATUT           ||  // Ameex: status code (fallback if no name fields)
       body.statut           ||
       body.description      ||
       body.data?.status     ||
@@ -2604,6 +2609,20 @@ export async function registerRoutes(
     }
     // Anything else also falls through to "in_progress" (the default above).
     // The commentStatus column carries the real display text shown in the Suivi tab.
+
+    // ── Ameex status code override (takes priority over text fuzzy match) ──
+    const AMEEX_WEBHOOK_STATUS_MAP: Record<string, string> = {
+      'DELIVERED':   'delivered',
+      'IN_PROGRESS': 'in_progress',
+      'CANCELLED':   'refused',
+      'RETURNED':    'retourné',
+      'PICKUP':      'Attente De Ramassage',
+      'NO_ANSWER':   'Injoignable',
+    };
+    const ameexCode = (body.STATUT || '').toString().toUpperCase();
+    if (ameexCode && AMEEX_WEBHOOK_STATUS_MAP[ameexCode]) {
+      newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexCode];
+    }
 
     await storage.updateOrderStatus(order.id, newStatus);
 
@@ -4745,6 +4764,27 @@ export async function registerRoutes(
 
       res.json({ success: true, matched: true });
     } catch (err) {
+      res.status(500).json({ message: "Webhook processing failed" });
+    }
+  });
+
+  /**
+   * POST /api/webhooks/carrier/:storeId/ameex
+   * Ameex push notifications using storeId in the URL (e.g. /api/webhooks/carrier/37/ameex).
+   * Routes through the shared processCarrierWebhook handler for full Ameex field support.
+   */
+  app.post("/api/webhooks/carrier/:storeId/ameex", async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      if (!storeId || isNaN(storeId)) {
+        return res.status(400).json({ message: "storeId invalide dans l'URL" });
+      }
+      const body = req.body || {};
+      console.log(`[AMEEX-WEBHOOK-V2] store=${storeId} keys=${Object.keys(body).join(', ')}`);
+      const result = await processCarrierWebhook(storeId, 'ameex', body);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      console.error('[AMEEX-WEBHOOK-V2] Error:', err);
       res.status(500).json({ message: "Webhook processing failed" });
     }
   });
