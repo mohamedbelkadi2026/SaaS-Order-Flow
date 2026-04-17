@@ -122,7 +122,7 @@ export async function trackAmeexShipment(
         "X-API-KEY":     token,
         "Accept":        "application/json",
       },
-      timeout: TIMEOUT_MS,
+      timeout: AMEEX_TIMEOUT_MS, // 45 seconds for Ameex
       httpsAgent: SSL_AGENT,
       validateStatus: () => true,
     });
@@ -203,6 +203,7 @@ function autoCorrectUrl(raw: string): { url: string; corrected: boolean; hints: 
 // Worst case: 2 attempts × 15 s + 1 delay × 2 s = 32 s max before the user
 // sees an error. Never hang for 90 s.
 const TIMEOUT_MS = 15_000;
+const AMEEX_TIMEOUT_MS = 45_000; // Ameex API is slower — allow 45 s
 
 // ── Transient error codes that trigger an automatic retry ────────────────────
 const TRANSIENT_CODES = new Set([
@@ -776,11 +777,12 @@ export async function shipOrderToCarrier(
   console.log(`${tag} PAYLOAD:\n${JSON.stringify(payload, null, 2)}`);
   console.log(`${"═".repeat(70)}\n`);
 
-  // ── 5. HTTP request via axios (20s timeout, SSL bypass) ──────────
+  // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
   // Inner helper — runs one attempt and throws on network error
+  const effectiveTimeout = providerKey === "ameex" ? AMEEX_TIMEOUT_MS : TIMEOUT_MS;
   const attempt = () => axios.post(apiUrl, payload, {
     headers,
-    timeout: TIMEOUT_MS,
+    timeout: effectiveTimeout,
     httpsAgent: SSL_AGENT,
     validateStatus: () => true, // Don't throw on 4xx/5xx — handled below
   });

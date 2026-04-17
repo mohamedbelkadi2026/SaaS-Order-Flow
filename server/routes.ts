@@ -1090,6 +1090,8 @@ export async function registerRoutes(
   });
 
   app.post("/api/orders/bulk-ship", requireAuth, requireActiveSubscription, async (req, res) => {
+    req.setTimeout(60000); // 60s for carrier API calls
+    res.setTimeout(60000);
     try {
       const user = req.user!;
       if (user.role === 'agent') {
