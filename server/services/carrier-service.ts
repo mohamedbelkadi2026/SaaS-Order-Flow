@@ -122,7 +122,7 @@ export async function trackAmeexShipment(
         "X-API-KEY":     token,
         "Accept":        "application/json",
       },
-      timeout: AMEEX_TIMEOUT_MS, // 45 seconds for Ameex
+      timeout: TIMEOUT_MS_AMEEX, // 45 seconds for Ameex
       httpsAgent: SSL_AGENT,
       validateStatus: () => true,
     });
@@ -203,7 +203,7 @@ function autoCorrectUrl(raw: string): { url: string; corrected: boolean; hints: 
 // Worst case: 2 attempts × 15 s + 1 delay × 2 s = 32 s max before the user
 // sees an error. Never hang for 90 s.
 const TIMEOUT_MS = 15_000;
-const AMEEX_TIMEOUT_MS = 45_000; // Ameex API is slower — allow 45 s
+const TIMEOUT_MS_AMEEX = 45_000; // Ameex server is slow — allow 45 s
 
 // ── Transient error codes that trigger an automatic retry ────────────────────
 const TRANSIENT_CODES = new Set([
@@ -216,6 +216,8 @@ const TRANSIENT_CODES = new Set([
 ]);
 
 const MAX_ATTEMPTS   = 2;    // 1 initial + 1 retry — fail fast, report clearly
+// Per-carrier max attempts
+const getMaxAttempts = (provider: string) => provider === 'ameex' ? 3 : MAX_ATTEMPTS;
 const RETRY_DELAY_MS = 2000; // 2 s between each attempt
 
 export interface CarrierShipInput {
@@ -779,10 +781,10 @@ export async function shipOrderToCarrier(
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
   // Inner helper — runs one attempt and throws on network error
-  const effectiveTimeout = providerKey === "ameex" ? AMEEX_TIMEOUT_MS : TIMEOUT_MS;
+  const timeoutMs = providerKey === 'ameex' ? TIMEOUT_MS_AMEEX : TIMEOUT_MS;
   const attempt = () => axios.post(apiUrl, payload, {
     headers,
-    timeout: effectiveTimeout,
+    timeout: timeoutMs,
     httpsAgent: SSL_AGENT,
     validateStatus: () => true, // Don't throw on 4xx/5xx — handled below
   });
@@ -793,11 +795,12 @@ export async function shipOrderToCarrier(
   try {
     let response: Awaited<ReturnType<typeof attempt>>;
 
-    // ── Retry loop: up to MAX_ATTEMPTS (3) with RETRY_DELAY_MS (2s) between ──
+    // ── Retry loop: up to maxAttempts with RETRY_DELAY_MS (2s) between ──
+    const maxAttempts = getMaxAttempts(providerKey);
     let lastErr: any;
     let succeeded = false;
 
-    for (let attempt_n = 1; attempt_n <= MAX_ATTEMPTS; attempt_n++) {
+    for (let attempt_n = 1; attempt_n <= maxAttempts; attempt_n++) {
       try {
         response = await attempt();
         succeeded = true;
@@ -810,11 +813,11 @@ export async function shipOrderToCarrier(
           err?.message?.toLowerCase().includes("eai_again") ||
           err?.message?.toLowerCase().includes("enotfound");
 
-        if (isTransient && attempt_n < MAX_ATTEMPTS) {
-          console.warn(`${tag} ⚠️ Transient network error [${code}] — attempt ${attempt_n}/${MAX_ATTEMPTS}. Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+        if (isTransient && attempt_n < maxAttempts) {
+          console.warn(`${tag} ⚠️ Transient network error [${code}] — attempt ${attempt_n}/${maxAttempts}. Retrying in ${RETRY_DELAY_MS / 1000}s...`);
           console.warn(`[API-DEBUG]: Retry attempt ${attempt_n + 1} for URL: ${apiUrl}`);
           await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
-        } else if (isTransient && attempt_n === MAX_ATTEMPTS) {
+        } else if (isTransient && attempt_n === maxAttempts) {
           // All retries exhausted for a transient error — throw with friendly message
           const exhausted = new Error(`EAI_AGAIN_EXHAUSTED:${code || "TRANSIENT"}`);
           (exhausted as any).code = code;
