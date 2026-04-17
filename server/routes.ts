@@ -199,6 +199,25 @@ const DIGYLOG_CITIES_DEFAULT = [
   "Tinghir","Tiznit","Zagora",
 ].sort();
 
+const AMEEX_CITIES_DEFAULT = [
+  "Agadir","Afourer","Aghbala","Ain El Aouda","Ain Harrouda","Ain Taoujdate",
+  "Ait Melloul","Al Hoceima","Assa","Asilah","Azemmour","Azilal","Azrou",
+  "Bejaad","Ben Ahmed","Ben Guerir","Beni Mellal","Berkane","Berrechid",
+  "Bouarfa","Boujdour","Bouskoura","Casablanca","Chefchaouen",
+  "Dakhla","Dcheira El Jihadia",
+  "El Hajeb","El Jadida","El Kelaa des Sraghna","Errachidia","Erfoud","Essaouira",
+  "Fès","Fnideq","Figuig","Guelmim","Ifrane","Inezgane","Jerada",
+  "Kénitra","Khémisset","Khénifra","Khouribga","Ksar El Kebir",
+  "Laâyoune","Larache",
+  "Marrakech","Martil","Mdiq","Meknès","Midelt","Mohammedia","Moulay Bousselham",
+  "Nador","Oued Zem","Oujda","Ouarzazate","Ouled Teima",
+  "Rabat","Rissani",
+  "Safi","Salé","Selouane","Settat","Sidi Bennour","Sidi Ifni","Sidi Kacem",
+  "Sidi Slimane","Sidi Yahia El Gharb","Souk El Arbaa",
+  "Tahanaout","Tanger","Taourirt","Taroudant","Taza","Temara","Tétouan",
+  "Tinghir","Tiznit","Zagora",
+].sort();
+
 const CATHEDIS_CITIES_DEFAULT = [
   "Agadir","Ait Melloul","Al Hoceima","Asilah","Ben Guerir","Beni Mellal",
   "Berkane","Berrechid","Casablanca","Chefchaouen","Dakhla","Dcheira El Jihadia",
@@ -241,6 +260,7 @@ function getDefaultCitiesForProvider(provider: string): string[] {
   const p = (provider||"").toLowerCase();
   if (p.includes("digylog")||p.includes("ecotrack")||p.includes("eco-track")) return DIGYLOG_CITIES_DEFAULT;
   if (p.includes("cathedis")) return CATHEDIS_CITIES_DEFAULT;
+  if (p.includes("ameex")) return AMEEX_CITIES_DEFAULT;
   return MOROCCAN_CITIES_DEFAULT;
 }
 
@@ -2045,6 +2065,32 @@ export async function registerRoutes(
       }).catch(e => console.error('[LOG-ERROR] createIntegrationLog:', e));
 
       res.json(acct);
+
+      // Background: sync Ameex cities right after account creation
+      if (carrierName.toLowerCase() === 'ameex' && acct.apiKey) {
+        (async () => {
+          try {
+            const axiosLib = (await import('axios')).default;
+            const resp = await axiosLib.get('https://app.ameex.ma/api/v1/cities', {
+              headers: { 'Authorization': `Bearer ${acct.apiKey}`, 'Accept': 'application/json' },
+              timeout: 15000,
+              validateStatus: () => true,
+            });
+            if (resp.status === 200 && resp.data) {
+              const cityData = Array.isArray(resp.data) ? resp.data : (resp.data.data || resp.data.cities || []);
+              const cityNames: string[] = cityData.map((c: any) => c.name || c.ville || c.label || c).filter(Boolean);
+              if (cityNames.length > 0) {
+                await storage.upsertCarrierCities(storeId, 'ameex', acct.id, cityNames);
+                console.log(`[AMEEX-CITIES-BG] Synced ${cityNames.length} cities for new account #${acct.id}`);
+              }
+            } else {
+              console.log(`[AMEEX-CITIES-BG] HTTP ${resp.status} — skipping city sync`);
+            }
+          } catch (e: any) {
+            console.error('[AMEEX-CITIES-BG] Error during background city sync:', e?.message);
+          }
+        })();
+      }
     } catch (error: any) {
       console.error('[DB-ERROR] POST /api/carrier-accounts:', error?.message || error);
       console.error('[DB-ERROR] Code:', error?.code);
@@ -5079,6 +5125,36 @@ export async function registerRoutes(
               count: dbCities.length,
             });
           }
+        }
+      }
+
+      // ── 1b. Try live Ameex cities if provider is ameex and no DB cache ──────
+      if (provider === 'ameex') {
+        try {
+          const ameexAccts = await storage.getCarrierAccounts(storeId, 'ameex');
+          const acct = ameexAccts[0];
+          if (acct?.apiKey) {
+            const axiosLib = (await import('axios')).default;
+            const resp = await axiosLib.get(
+              'https://app.ameex.ma/api/v1/cities',
+              {
+                headers: { 'Authorization': `Bearer ${acct.apiKey}`, 'Accept': 'application/json' },
+                timeout: 10000,
+                validateStatus: () => true,
+              }
+            );
+            if (resp.status === 200 && resp.data) {
+              const cityData = Array.isArray(resp.data) ? resp.data : (resp.data.data || resp.data.cities || []);
+              const cityNames: string[] = cityData.map((c: any) => c.name || c.ville || c.label || c).filter(Boolean);
+              if (cityNames.length > 0) {
+                await storage.upsertCarrierCities(storeId, 'ameex', acct.id, cityNames);
+                return res.json({ provider: 'ameex', cities: cityNames, isCarrierSpecific: true, source: 'live' });
+              }
+            }
+            console.log(`[AMEEX-CITIES] HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 200)}`);
+          }
+        } catch (e: any) {
+          console.error('[AMEEX-CITIES] Error:', e?.message);
         }
       }
 
