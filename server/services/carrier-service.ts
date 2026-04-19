@@ -30,7 +30,7 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   onessta:        "https://api.onessta.com/api/v1/orders",
   ozoneexpress:   "https://api.ozoneexpress.ma/api/v1/orders",
   sendit:         "https://api.sendit.ma/api/v1/orders",
-  ameex:          "https://app.ameex.ma/api/v1/orders",
+  ameex:          "https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add",
   speedex:        "https://api.speedex.ma/api/v1/orders",
   kargoexpress:   "https://api.kargoexpress.ma/api/v1/orders",
   forcelog:       "https://api.forcelog.ma/api/v1/orders",
@@ -40,7 +40,7 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
 };
 
 // ── Ameex tracking base URL ───────────────────────────────────────────────────
-const AMEEX_TRACKING_URL = "https://app.ameex.ma/api/v1/tracking";
+const AMEEX_TRACKING_URL = "https://api.ameex.app/customer/Delivery/Parcels/Track";
 
 // ── Ameex status → platform status mapping ────────────────────────────────────
 // Maps the French status labels Ameex returns to our internal status codes.
@@ -355,39 +355,41 @@ function buildGenericPayload(input: CarrierShipInput): Record<string, unknown> {
 }
 
 /**
- * Ameex API payload builder.
- *
- * Field names confirmed from Ameex Postman collection (documenter.getpostman.com/view/10265205/2sA3rwLZD1).
- * POST https://app.ameex.ma/api/v1/orders
- * Auth: Bearer {api_key}
+ * Ameex API payload builder — new API (api.ameex.app).
+ * Sends as FormData (multipart/form-data) to:
+ * POST https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add
+ * Auth: C-Api-Key + C-Api-Id headers
  */
-function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+function buildAmeexPayload(input: CarrierShipInput, apiId?: string): Record<string, string> {
   const phone   = sanitizePhone(input.phone);
-  const priceDH = +(input.totalPrice / 100).toFixed(2);
-  const addr    = (input.address || "").trim() || input.city.trim();
-  const qty     = input.quantity ?? 1;
+  const priceDH = String(Math.round((input.totalPrice || 0) / 100));
 
   return {
-    nom:       input.customerName.trim(),
-    telephone: phone,
-    ville:     input.city.trim(),
-    adresse:   addr,
-    montant:   priceDH,
-    cod:       priceDH,
-    produit:   (input.productName || "Produit").trim(),
-    quantite:  qty,
-    ref:       input.orderNumber,
-    reference: input.orderNumber,
+    type:      "SIMPLE",
+    business:  apiId || String(input.storeId),
+    order_num: input.orderNumber || "",
+    replace:   "true",
+    open:      input.canOpen ? "YES" : "NO",
+    try:       "YES",
+    name:      input.customerName.trim(),
+    phone:     phone,
+    phone2:    "",
+    city:      input.city.trim(),
+    address:   (input.address || "").trim() || input.city.trim(),
+    price:     priceDH,
     note:      input.note || "",
-    open:      input.canOpen ? 1 : 0,
-    ouverture: input.canOpen ? 1 : 0,
+    products:  JSON.stringify([{
+      ref:         input.orderNumber || "PROD",
+      designation: (input.productName || "Produit").trim(),
+      quantity:    input.quantity ?? 1,
+    }]),
   };
 }
 
 /** Dispatch to the correct builder based on the carrier. */
-function buildPayload(input: CarrierShipInput, providerKey: string): Record<string, unknown> {
+function buildPayload(input: CarrierShipInput, providerKey: string, apiId?: string): Record<string, unknown> {
   if (providerKey === "digylog") return buildDigylogPayload(input);
-  if (providerKey === "ameex")   return buildAmeexPayload(input);
+  if (providerKey === "ameex")   return buildAmeexPayload(input, apiId);
   return buildGenericPayload(input);
 }
 
@@ -752,7 +754,7 @@ export async function shipOrderToCarrier(
   // ── 4. Build payload & log everything ───────────────────────────
   let payload: Record<string, unknown>;
   try {
-    payload = buildPayload(input, providerKey);
+    payload = buildPayload(input, providerKey, apiSecret);
   } catch (payloadErr: any) {
     const errMsg = payloadErr?.message || String(payloadErr);
     console.error(`${tag} ❌ Payload build failed: ${errMsg}`);
@@ -780,9 +782,19 @@ export async function shipOrderToCarrier(
   console.log(`${"═".repeat(70)}\n`);
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
+  // For Ameex: convert payload to FormData (multipart) instead of JSON
+  let ameexFd: any = null;
+  if (providerKey === 'ameex') {
+    const FormDataLib = (await import('form-data')).default;
+    ameexFd = new FormDataLib();
+    Object.entries(payload).forEach(([k, v]) => ameexFd.append(k, String(v)));
+    // Replace Content-Type with multipart boundary from form-data
+    Object.assign(headers, ameexFd.getHeaders());
+  }
+
   // Inner helper — runs one attempt and throws on network error
   const timeoutMs = providerKey === 'ameex' ? TIMEOUT_MS_AMEEX : TIMEOUT_MS;
-  const attempt = () => axios.post(apiUrl, payload, {
+  const attempt = () => axios.post(apiUrl, ameexFd ?? payload, {
     headers,
     timeout: timeoutMs,
     httpsAgent: SSL_AGENT,

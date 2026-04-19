@@ -1,0 +1,62 @@
+FIX — Rewrite Ameex carrier integration with correct new API
+In server/services/carrier-service.ts:
+CHANGE 1 — Update Ameex base URL:
+typescript// Change:
+ameex: "https://app.ameex.ma/api/v1/orders"
+// Or whatever old URL exists, replace with:
+ameex: "https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add"
+CHANGE 2 — Fix Ameex payload builder buildAmeexPayload:
+Find the buildAmeexPayload function and rewrite it:
+typescriptfunction buildAmeexPayload(input: CarrierShipInput): any {
+  return {
+    type: "SIMPLE",
+    business: input.apiId || input.storeId,  // C-Api-Id value = business ID
+    order_num: input.orderRef || input.orderNumber || "",
+    replace: "true",
+    open: input.openDelivery ? "YES" : "NO",
+    try: "YES",
+    name: input.customerName,
+    phone: input.phone,
+    phone2: "",
+    city: input.city,
+    address: input.address,
+    price: String(Math.round((input.totalPrice || 0) / 100)),
+    note: input.note || "",
+    products: JSON.stringify([{
+      ref: input.productRef || "PROD",
+      designation: input.productName || "Produit",
+      quantity: input.quantity || 1,
+    }]),
+  };
+}
+CHANGE 3 — Fix Ameex request headers — use C-Api-Id + C-Api-Key instead of Bearer:
+Find where Ameex request is sent and change headers:
+typescript// For Ameex — use FormData + specific headers
+if (providerKey === 'ameex') {
+  const FormData = (await import('form-data')).default;
+  const fd = new FormData();
+  Object.entries(payload).forEach(([k, v]) => fd.append(k, String(v)));
+  
+  const response = await axios.post(apiUrl, fd, {
+    headers: {
+      'C-Api-Id': credentials.apiId || credentials.storeId,
+      'C-Api-Key': credentials.apiKey,
+      ...fd.getHeaders(),
+    },
+    timeout: TIMEOUT_MS_AMEEX,
+    httpsAgent: SSL_AGENT,
+    validateStatus: () => true,
+  });
+  // handle response
+}
+CHANGE 4 — Fix Ameex tracking URL:
+typescriptconst AMEEX_TRACKING_URL = "https://api.ameex.app/customer/Delivery/Parcels/Track";
+CHANGE 5 — Fix carrier account form to accept apiId field for Ameex:
+In client/src/pages/shipping-integrations.tsx or wherever Ameex account is configured, add "API ID" field (separate from API Key):
+
+Label: "API ID (C-Api-Id)"
+Field name: apiId
+Save alongside apiKey
+
+In server/routes.ts carrier account creation, accept and save apiId in settings JSON.
+Do NOT change: Digylog, any other carrier.

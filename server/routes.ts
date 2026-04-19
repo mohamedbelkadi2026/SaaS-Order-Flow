@@ -2052,7 +2052,10 @@ export async function registerRoutes(
         isDefault: isDefault ? 1 : (existing.length === 0 ? 1 : 0),
         isActive: 1,
         assignmentRule: assignmentRule || "default",
-        settings: networkId !== undefined ? { networkId: Number(networkId) } : {},
+        settings: {
+          ...(networkId !== undefined ? { networkId: Number(networkId) } : {}),
+          ...(carrierName.toLowerCase() === 'ameex' && rawApiSecret ? { apiId: rawApiSecret } : {}),
+        },
         magasinId: magasinId ? Number(magasinId) : null,
         deliveryFee: deliveryFee !== undefined ? Math.round(Number(deliveryFee)) : 0,
       } as any);
