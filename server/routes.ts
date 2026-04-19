@@ -1217,10 +1217,9 @@ export async function registerRoutes(
         // if user pinned an account → always use it; otherwise use city routing
         const extractAcctCreds = (a: any): Record<string, any> => {
           const s = (a.settings as any) || {};
-          const resolvedApiSecret = a.apiSecret || s.apiId || '';
           return {
             apiKey:           a.apiKey,
-            apiSecret:        resolvedApiSecret,
+            apiSecret:        a.apiSecret || (a.settings as any)?.apiId || '',
             apiUrl:           a.apiUrl           || '',
             carrierStoreName: a.carrierStoreName  ?? s.digylogStoreName ?? '',
             digylogStoreName: s.digylogStoreName  ?? a.carrierStoreName ?? '',
