@@ -368,17 +368,17 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const addr    = (input.address || "").trim() || input.city.trim();
 
   return {
-    business:     input.apiId || input.apiSecret || "",  // Ameex Business ID (C-Api-Id)
+    business:     String(input.apiSecret || input.apiId || ""),
     type:         "SIMPLE",
     destinataire: input.customerName.trim(),
     telephone:    phone,
     ville:        input.city.trim(),
     adresse:      addr,
-    montant:      priceDH,
-    cod:          priceDH,
+    montant:      String(priceDH),
+    cod:          String(priceDH),
     produit:      (input.productName || "Produit").trim(),
-    quantite:     input.quantity ?? 1,
-    ref:          input.orderNumber,
+    quantite:     String(input.quantity ?? 1),
+    ref:          String(input.orderNumber),
     note:         input.note || "",
     open:         input.canOpen ? "YES" : "NO",
     replace:      "true",
