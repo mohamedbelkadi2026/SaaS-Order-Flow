@@ -2394,6 +2394,13 @@ export async function registerRoutes(
       }
 
       const axiosLib = (await import("axios")).default;
+
+      if (carrierKey === "ameex") {
+        console.log(`[AMEEX-CITIES-REQ] URL: ${citiesUrl}`);
+        console.log(`[AMEEX-CITIES-REQ] Headers: ${JSON.stringify(reqHeaders)}`);
+        console.log(`[AMEEX-CITIES-REQ] Raw apiKey from DB: "${acct.apiKey?.slice(0, 50)}"`);
+      }
+
       const resp = await axiosLib.get(citiesUrl, {
         headers: reqHeaders,
         timeout: 20_000,
@@ -2402,6 +2409,8 @@ export async function registerRoutes(
       });
 
       if (carrierKey === "ameex") {
+        console.log(`[AMEEX-CITIES-RESP] Status: ${resp.status}`);
+        console.log(`[AMEEX-CITIES-RESP] Data: ${JSON.stringify(resp.data).slice(0, 500)}`);
         console.log(`[AMEEX-CITIES-DEBUG] HTTP ${resp.status}`);
         console.log(`[AMEEX-CITIES-DEBUG] Response: ${JSON.stringify(resp.data).slice(0, 1000)}`);
 
