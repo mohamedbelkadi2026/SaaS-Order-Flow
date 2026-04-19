@@ -850,14 +850,18 @@ export async function shipOrderToCarrier(
       return { success: false, httpStatus: httpSt, rawResponse: rb, error: logicalError, carrierMessage: logicalError };
     }
     const trackingNumber = extractTracking(rb);
-    if (!trackingNumber) {
+    // Ameex does NOT return tracking number on creation — it arrives via webhook (field: CODE)
+    // If login:success and no api.type:error, treat as success with a pending tracking placeholder
+    const ameexSuccess = rb?.login === 'success' && rb?.api?.type !== 'error';
+    if (!trackingNumber && !ameexSuccess) {
       const noTrackMsg = `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
       console.error(`${tag} ❌ ${noTrackMsg} Raw: ${JSON.stringify(rb)}`);
       return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus: httpSt, rawResponse: rb };
     }
-    const labelUrl = extractLabelUrl(rb) || `/api/labels/${trackingNumber}.pdf`;
-    console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${trackingNumber}`);
-    return { success: true, trackingNumber, labelUrl, httpStatus: httpSt, rawResponse: rb };
+    const finalTracking = trackingNumber || `AMEEX-PENDING-${input.orderNumber}`;
+    const labelUrl = `/api/labels/${finalTracking}.pdf`;
+    console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${finalTracking} (webhook will update later)`);
+    return { success: true, trackingNumber: finalTracking, labelUrl, httpStatus: httpSt, rawResponse: rb };
   }
 
   // Inner helper — runs one attempt and throws on network error (non-Ameex carriers)
