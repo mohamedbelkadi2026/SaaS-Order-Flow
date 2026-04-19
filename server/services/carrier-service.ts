@@ -360,36 +360,36 @@ function buildGenericPayload(input: CarrierShipInput): Record<string, unknown> {
  * POST https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add
  * Auth: C-Api-Key + C-Api-Id headers
  */
-function buildAmeexPayload(input: CarrierShipInput, apiId?: string): Record<string, string> {
+function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone   = sanitizePhone(input.phone);
-  const priceDH = String(Math.round((input.totalPrice || 0) / 100));
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+  const addr    = (input.address || "").trim() || input.city.trim();
+  const qty     = input.quantity ?? 1;
 
   return {
-    type:      "SIMPLE",
-    business:  apiId || String(input.storeId),
-    order_num: input.orderNumber || "",
-    replace:   "true",
-    open:      input.canOpen ? "YES" : "NO",
-    try:       "YES",
-    name:      input.customerName.trim(),
-    phone:     phone,
-    phone2:    "",
-    city:      input.city.trim(),
-    address:   (input.address || "").trim() || input.city.trim(),
-    price:     priceDH,
-    note:      input.note || "",
-    products:  JSON.stringify([{
-      ref:         input.orderNumber || "PROD",
-      designation: (input.productName || "Produit").trim(),
-      quantity:    input.quantity ?? 1,
-    }]),
+    // Ameex required fields
+    destinataire: input.customerName.trim(),   // "Destinataire: est obligatoire"
+    telephone:    phone,
+    ville:        input.city.trim(),
+    adresse:      addr,
+    montant:      priceDH,
+    cod:          priceDH,
+    produit:      (input.productName || "Produit").trim(),
+    quantite:     qty,
+    ref:          input.orderNumber,
+    note:         input.note || "",
+    open:         input.canOpen ? "YES" : "NO",
+    type:         "SIMPLE",
+    // Also keep old field names as fallback
+    nom:          input.customerName.trim(),
+    name:         input.customerName.trim(),
   };
 }
 
 /** Dispatch to the correct builder based on the carrier. */
-function buildPayload(input: CarrierShipInput, providerKey: string, apiId?: string): Record<string, unknown> {
+function buildPayload(input: CarrierShipInput, providerKey: string, _apiId?: string): Record<string, unknown> {
   if (providerKey === "digylog") return buildDigylogPayload(input);
-  if (providerKey === "ameex")   return buildAmeexPayload(input, apiId);
+  if (providerKey === "ameex")   return buildAmeexPayload(input);
   return buildGenericPayload(input);
 }
 
@@ -783,19 +783,54 @@ export async function shipOrderToCarrier(
   console.log(`${"═".repeat(70)}\n`);
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
-  // For Ameex: convert payload to FormData (multipart) instead of JSON
-  let ameexFd: any = null;
   if (providerKey === 'ameex') {
+    // Ameex requires multipart/form-data
     const FormDataLib = (await import('form-data')).default;
-    ameexFd = new FormDataLib();
-    Object.entries(payload).forEach(([k, v]) => ameexFd.append(k, String(v)));
-    // Replace Content-Type with multipart boundary from form-data
-    Object.assign(headers, ameexFd.getHeaders());
+    const fd = new FormDataLib();
+    Object.entries(payload).forEach(([k, v]) => fd.append(k, String(v ?? '')));
+
+    const cleanKey = (k: string) => (k || '').replace(/<[^>]*>/g, '').trim();
+
+    const resp = await axios.post(apiUrl, fd, {
+      headers: {
+        'C-Api-Key': cleanKey(apiKey),
+        'C-Api-Id':  cleanKey(apiSecret || ''),
+        ...fd.getHeaders(),
+      },
+      timeout: TIMEOUT_MS_AMEEX || 45000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+    // log and handle response
+    console.log(`[AMEEX-SHIP-DEBUG] FormData sent → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 500)}`);
+
+    // Process Ameex response using shared helpers
+    const httpSt  = resp.status;
+    const rb: any = resp.data;
+    if (httpSt >= 400) {
+      const errMsg = extractCarrierErrorMsg(rb) || `HTTP ${httpSt}`;
+      console.error(`${tag} ❌ Ameex rejected (HTTP ${httpSt}): ${errMsg}`);
+      return { success: false, httpStatus: httpSt, rawResponse: rb, error: `[HTTP ${httpSt}] ${errMsg}`, carrierMessage: errMsg };
+    }
+    const logicalError = detectLogicalError(rb);
+    if (logicalError) {
+      console.error(`${tag} ❌ Ameex logical error: ${logicalError}`);
+      return { success: false, httpStatus: httpSt, rawResponse: rb, error: logicalError, carrierMessage: logicalError };
+    }
+    const trackingNumber = extractTracking(rb);
+    if (!trackingNumber) {
+      const noTrackMsg = `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
+      console.error(`${tag} ❌ ${noTrackMsg} Raw: ${JSON.stringify(rb)}`);
+      return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus: httpSt, rawResponse: rb };
+    }
+    const labelUrl = extractLabelUrl(rb) || `/api/labels/${trackingNumber}.pdf`;
+    console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${trackingNumber}`);
+    return { success: true, trackingNumber, labelUrl, httpStatus: httpSt, rawResponse: rb };
   }
 
-  // Inner helper — runs one attempt and throws on network error
-  const timeoutMs = providerKey === 'ameex' ? TIMEOUT_MS_AMEEX : TIMEOUT_MS;
-  const attempt = () => axios.post(apiUrl, ameexFd ?? payload, {
+  // Inner helper — runs one attempt and throws on network error (non-Ameex carriers)
+  const timeoutMs = TIMEOUT_MS;
+  const attempt = () => axios.post(apiUrl, payload, {
     headers,
     timeout: timeoutMs,
     httpsAgent: SSL_AGENT,

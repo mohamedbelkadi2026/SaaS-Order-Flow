@@ -1,0 +1,54 @@
+Kaychof — payload katb3at nom bas Ameex katkhdam destinataire machi nom. Hna l fix:
+
+FIX — Ameex payload field names + use FormData
+In server/services/carrier-service.ts, find buildAmeexPayload and replace completely:
+typescriptfunction buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  const phone   = sanitizePhone(input.phone);
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+  const addr    = (input.address || "").trim() || input.city.trim();
+  const qty     = input.quantity ?? 1;
+
+  return {
+    // Ameex required fields
+    destinataire: input.customerName.trim(),   // "Destinataire: est obligatoire"
+    telephone:    phone,
+    ville:        input.city.trim(),
+    adresse:      addr,
+    montant:      priceDH,
+    cod:          priceDH,
+    produit:      (input.productName || "Produit").trim(),
+    quantite:     qty,
+    ref:          input.orderNumber,
+    note:         input.note || "",
+    open:         input.canOpen ? "YES" : "NO",
+    type:         "SIMPLE",
+    // Also keep old field names as fallback
+    nom:          input.customerName.trim(),
+    name:         input.customerName.trim(),
+  };
+}
+Also in the Ameex shipping request — send as FormData not JSON:
+Find where Ameex request is sent (around line 728-730) and add FormData handling:
+typescriptif (providerKey === 'ameex') {
+  // Ameex requires multipart/form-data
+  const FormDataLib = (await import('form-data')).default;
+  const fd = new FormDataLib();
+  Object.entries(payload).forEach(([k, v]) => fd.append(k, String(v ?? '')));
+  
+  const cleanKey = (k: string) => (k || '').replace(/<[^>]*>/g, '').trim();
+  
+  const resp = await axios.post(apiUrl, fd, {
+    headers: {
+      'C-Api-Key': cleanKey(apiKey),
+      'C-Api-Id':  cleanKey(apiSecret || ''),
+      ...fd.getHeaders(),
+    },
+    timeout: TIMEOUT_MS_AMEEX || 45000,
+    httpsAgent: SSL_AGENT,
+    validateStatus: () => true,
+  });
+  // log and handle response
+  console.log(`[AMEEX-SHIP-DEBUG] FormData sent → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 500)}`);
+  return resp; // let existing handler process tracking extraction
+}
+Do NOT change: Digylog or any other carrier.
