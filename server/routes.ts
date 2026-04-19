@@ -2358,23 +2358,36 @@ export async function registerRoutes(
       const apiKey = sanitize(acct.apiKey);
       if (!apiKey) return res.status(400).json({ message: "Token API manquant sur ce compte" });
 
-      // Build cities URL — base is api.digylog.com/api/v2/seller, endpoint is /cities
+      // Build cities URL — carrier-specific
       const rawBase = (acct.apiUrl || "").replace(/\/orders\s*$/i, "").replace(/\/+$/, "");
-      const base = (rawBase || "https://api.digylog.com/api/v2/seller")
-        .replace(/api\.digylog\.ma/i, "api.digylog.com")
-        .replace(/app\.digylog\.com/i, "api.digylog.com");
-      const citiesUrl = `${base}/cities`;
+      const carrierKey = (acct.carrierName || "").toLowerCase();
+
+      let citiesUrl: string;
+      if (carrierKey === "ameex") {
+        citiesUrl = "https://api.ameex.app/customer/Delivery/Cities/Action/Type/Get";
+      } else if (carrierKey === "digylog") {
+        const base = (rawBase || "https://api.digylog.com/api/v2/seller")
+          .replace(/api\.digylog\.ma/i, "api.digylog.com")
+          .replace(/app\.digylog\.com/i, "api.digylog.com");
+        citiesUrl = `${base}/cities`;
+      } else {
+        return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
+      }
 
       console.log(`[CitiesSync] Fetching cities for account #${accountId} (${acct.carrierName}) from ${citiesUrl}`);
 
+      const reqHeaders: any = { Accept: "application/json" };
+      if (carrierKey === "ameex") {
+        reqHeaders["Authorization"] = apiKey; // Ameex: raw token, no Bearer prefix
+      } else {
+        reqHeaders["Authorization"] = `Bearer ${apiKey}`;
+        reqHeaders["Referer"] = "https://apiseller.digylog.com";
+        reqHeaders["Origin"]  = "https://apiseller.digylog.com";
+      }
+
       const axiosLib = (await import("axios")).default;
       const resp = await axiosLib.get(citiesUrl, {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          Accept:        "application/json",
-          Referer:       "https://apiseller.digylog.com",
-          Origin:        "https://apiseller.digylog.com",
-        },
+        headers: reqHeaders,
         timeout: 20_000,
         httpsAgent: new (await import("https")).default.Agent({ rejectUnauthorized: false }),
         validateStatus: () => true,
@@ -2383,7 +2396,7 @@ export async function registerRoutes(
       if (resp.status !== 200) {
         console.error(`[CitiesSync] HTTP ${resp.status}:`, JSON.stringify(resp.data).slice(0, 300));
         return res.status(resp.status).json({
-          message: `L'API Digylog a répondu avec HTTP ${resp.status}`,
+          message: `L'API ${acct.carrierName} a répondu avec HTTP ${resp.status}`,
           raw: resp.data,
         });
       }
@@ -2403,7 +2416,7 @@ export async function registerRoutes(
         .sort();
 
       if (!cities.length) {
-        return res.status(422).json({ message: "Aucune ville reçue de Digylog. Vérifiez votre token et réessayez." });
+        return res.status(422).json({ message: `Aucune ville reçue de ${acct.carrierName}. Vérifiez votre token et réessayez.` });
       }
 
       await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, cities);
@@ -2413,7 +2426,7 @@ export async function registerRoutes(
       res.json({ count: cities.length, cities, syncedAt: new Date().toISOString() });
     } catch (err: any) {
       console.error("[CitiesSync] Error:", err?.message);
-      res.status(502).json({ message: `Impossible de contacter Digylog: ${err?.message || "erreur réseau"}` });
+      res.status(502).json({ message: `Impossible de contacter ${(acct as any)?.carrierName || "le transporteur"}: ${err?.message || "erreur réseau"}` });
     }
   });
 
