@@ -822,6 +822,7 @@ export async function shipOrderToCarrier(
     });
 
     console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
+    console.log(`[AMEEX-INPUT-DEBUG] customerName="${input.customerName}" apiSecret="${input.apiSecret}" apiId="${input.apiId}" city="${input.city}"`);
 
     const resp = await axios.post(apiUrl, fd, {
       headers: {

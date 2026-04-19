@@ -1280,6 +1280,7 @@ export async function registerRoutes(
                 console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
                 console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId} qty=${bulkQty}`);
+                console.log(`[AMEEX-PRE-SHIP] order=${order.id} customerName="${order.customerName}" apiSecret="${(orderCreds as any).apiSecret}" settings=${JSON.stringify((orderCreds as any).settings || {})}`);
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
