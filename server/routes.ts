@@ -18,6 +18,12 @@ import { emitNewOrder, emitOrderUpdated } from "./socket";
 
 import fs from "fs";
 
+// ── Strip HTML tags from API keys (Ameex sometimes stores wrapped values) ─────
+function stripHtml(val: string | null | undefined): string {
+  if (!val) return "";
+  return val.replace(/<[^>]*>/g, "").trim();
+}
+
 // ── WhatsApp auto-send settings — per-store, in-memory ───────────────────────
 const waAutoSettings: Record<number, { aiConfirmation: boolean; recoveryMessages: boolean; marketingAuto: boolean }> = {};
 
@@ -2378,7 +2384,9 @@ export async function registerRoutes(
 
       const reqHeaders: any = { Accept: "application/json" };
       if (carrierKey === "ameex") {
-        reqHeaders["Authorization"] = apiKey; // Ameex: raw token, no Bearer prefix
+        // Ameex uses C-Api-Key / C-Api-Id header pair — strip any HTML wrapping
+        reqHeaders["C-Api-Key"] = stripHtml(acct.apiKey);
+        reqHeaders["C-Api-Id"]  = stripHtml((acct as any).apiSecret || (acct as any).storeName || "");
       } else {
         reqHeaders["Authorization"] = `Bearer ${apiKey}`;
         reqHeaders["Referer"] = "https://apiseller.digylog.com";

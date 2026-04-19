@@ -730,9 +730,10 @@ export async function shipOrderToCarrier(
   };
 
   if (providerKey === "ameex") {
-    // Ameex uses C-Api-Key / C-Api-Id header pair
-    if (apiKey)    headers["C-Api-Key"] = apiKey;
-    if (apiSecret) headers["C-Api-Id"]  = apiSecret;
+    // Ameex uses C-Api-Key / C-Api-Id header pair — strip any HTML wrapping
+    const cleanKey = (k: string) => k.replace(/<[^>]*>/g, "").trim();
+    if (apiKey)    headers["C-Api-Key"] = cleanKey(apiKey);
+    if (apiSecret) headers["C-Api-Id"]  = cleanKey(apiSecret);
   } else {
     if (apiKey) {
       headers["Authorization"] = `Bearer ${apiKey}`;
