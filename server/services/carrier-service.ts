@@ -786,17 +786,29 @@ export async function shipOrderToCarrier(
     // Ameex requires multipart/form-data
     const FormDataLib = (await import('form-data')).default;
     const fd = new FormDataLib();
-    Object.entries(payload).forEach(([k, v]) => fd.append(k, String(v ?? '')));
+    const fdFields: Record<string, string> = {};
+    Object.entries(payload).forEach(([k, v]) => {
+      fd.append(k, String(v ?? ''));
+      fdFields[k] = String(v ?? '');
+    });
 
     const cleanKey = (k: string) => (k || '').replace(/<[^>]*>/g, '').trim();
 
-    const resp = await axios.post(apiUrl, fd, {
+    console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
+    console.log(`[AMEEX-FORMDATA] C-Api-Key: "${cleanKey(apiKey).slice(0, 20)}..."`);
+    console.log(`[AMEEX-FORMDATA] C-Api-Id: "${cleanKey(apiSecret || '').slice(0, 10)}"`);
+
+    // Try application/x-www-form-urlencoded instead of FormData
+    const params = new URLSearchParams();
+    Object.entries(payload).forEach(([k, v]) => params.append(k, String(v ?? '')));
+
+    const resp = await axios.post(apiUrl, params, {
       headers: {
         'C-Api-Key': cleanKey(apiKey),
         'C-Api-Id':  cleanKey(apiSecret || ''),
-        ...fd.getHeaders(),
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-      timeout: TIMEOUT_MS_AMEEX || 45000,
+      timeout: 45000,
       httpsAgent: SSL_AGENT,
       validateStatus: () => true,
     });
