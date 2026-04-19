@@ -2393,6 +2393,27 @@ export async function registerRoutes(
         validateStatus: () => true,
       });
 
+      if (carrierKey === "ameex") {
+        console.log(`[AMEEX-CITIES-DEBUG] HTTP ${resp.status}`);
+        console.log(`[AMEEX-CITIES-DEBUG] Response: ${JSON.stringify(resp.data).slice(0, 1000)}`);
+
+        const AMEEX_CITIES_ENDPOINTS = [
+          "https://api.ameex.app/customer/Delivery/Cities/Action/Type/Get",
+          "https://api.ameex.app/customer/Cities/Action/Type/Get",
+          "https://api.ameex.app/customer/Delivery/Cities",
+          "https://c.ameex.app/api/v1/cities",
+        ];
+        for (const url of AMEEX_CITIES_ENDPOINTS) {
+          try {
+            const r = await axiosLib.get(url, { headers: reqHeaders, timeout: 10000, validateStatus: () => true });
+            console.log(`[AMEEX-CITIES] ${url} → HTTP ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
+            if (r.status === 200 && r.data) break;
+          } catch (e: any) {
+            console.log(`[AMEEX-CITIES] ${url} → Error: ${e.message}`);
+          }
+        }
+      }
+
       if (resp.status !== 200) {
         console.error(`[CitiesSync] HTTP ${resp.status}:`, JSON.stringify(resp.data).slice(0, 300));
         return res.status(resp.status).json({
