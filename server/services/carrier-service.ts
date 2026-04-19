@@ -787,26 +787,21 @@ export async function shipOrderToCarrier(
     const FormDataLib = (await import('form-data')).default;
     const fd = new FormDataLib();
     const fdFields: Record<string, string> = {};
-    Object.entries(payload).forEach(([k, v]) => {
-      fd.append(k, String(v ?? ''));
-      fdFields[k] = String(v ?? '');
-    });
-
     const cleanKey = (k: string) => (k || '').replace(/<[^>]*>/g, '').trim();
 
+    Object.entries(payload).forEach(([k, v]) => {
+      const val = String(v ?? '').trim();
+      fd.append(k, val);
+      fdFields[k] = val;
+    });
+
     console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
-    console.log(`[AMEEX-FORMDATA] C-Api-Key: "${cleanKey(apiKey).slice(0, 20)}..."`);
-    console.log(`[AMEEX-FORMDATA] C-Api-Id: "${cleanKey(apiSecret || '').slice(0, 10)}"`);
 
-    // Try application/x-www-form-urlencoded instead of FormData
-    const params = new URLSearchParams();
-    Object.entries(payload).forEach(([k, v]) => params.append(k, String(v ?? '')));
-
-    const resp = await axios.post(apiUrl, params, {
+    const resp = await axios.post(apiUrl, fd, {
       headers: {
+        ...fd.getHeaders(),        // multipart/form-data + correct boundary
         'C-Api-Key': cleanKey(apiKey),
         'C-Api-Id':  cleanKey(apiSecret || ''),
-        'Content-Type': 'application/x-www-form-urlencoded',
       },
       timeout: 45000,
       httpsAgent: SSL_AGENT,
