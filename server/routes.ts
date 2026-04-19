@@ -2439,19 +2439,29 @@ export async function registerRoutes(
         });
       }
 
-      // Normalise various response shapes: array, { data: [] }, { cities: [] }, { data: { cities: [] } }
-      const raw = resp.data;
-      let cityList: any[] =
-        Array.isArray(raw)               ? raw :
-        Array.isArray(raw?.data)         ? raw.data :
-        Array.isArray(raw?.cities)       ? raw.cities :
-        Array.isArray(raw?.data?.cities) ? raw.data.cities : [];
+      // Parse city names — carrier-specific response shapes
+      let cities: string[] = [];
 
-      // Extract string name from object entries or use the string directly
-      const cities: string[] = cityList
-        .map((c: any) => (typeof c === "string" ? c : (c?.name || c?.city_name || c?.label || "")).trim())
-        .filter(Boolean)
-        .sort();
+      if (carrierKey === "ameex") {
+        // Ameex returns: {"login":"success","api":{"cities":{"1":{"name":"Marrakech",...},"2":...}}}
+        const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
+        cities = (Object.values(citiesObj) as any[])
+          .map((c: any) => (c.name || c.ville || "").trim())
+          .filter(Boolean)
+          .sort();
+      } else {
+        // Other carriers: array or wrapped array
+        const raw = resp.data;
+        const cityList: any[] =
+          Array.isArray(raw)               ? raw :
+          Array.isArray(raw?.data)         ? raw.data :
+          Array.isArray(raw?.cities)       ? raw.cities :
+          Array.isArray(raw?.data?.cities) ? raw.data.cities : [];
+        cities = cityList
+          .map((c: any) => (typeof c === "string" ? c : (c?.name || c?.city_name || c?.label || "")).trim())
+          .filter(Boolean)
+          .sort();
+      }
 
       if (!cities.length) {
         return res.status(422).json({ message: `Aucune ville reçue de ${acct.carrierName}. Vérifiez votre token et réessayez.` });
