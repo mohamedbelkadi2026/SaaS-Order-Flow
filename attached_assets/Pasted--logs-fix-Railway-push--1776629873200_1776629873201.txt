@@ -1,0 +1,64 @@
+المشكلة واضحة — الـ logs مزيانين ولكن الـ fix ما تطبقش على Railway.
+سؤال مهم: واش دارتي push للفايلين اللي عطيتك إياهم؟ لأن الـ log باقي كيقول نفس الـ error اللي كان من البداية.
+خليني نعطيك prompt مباشر لـ Replit يحل المشكلتين معاً في مرة واحدة:
+
+Fix Ameex — "Destinataire est obligatoire" — TWO bugs to fix:
+
+BUG 1 — server/routes.ts — extractAcctCreds function (around line 1218)
+The function doesn't read settings.apiId, so apiSecret is always empty for Ameex. Ameex stores C-Api-Id in settings.apiId. Replace:
+ts// BEFORE
+const extractAcctCreds = (a: any): Record<string, any> => {
+  const s = (a.settings as any) || {};
+  return {
+    apiKey:    a.apiKey,
+    apiSecret: a.apiSecret || '',
+    ...
+  };
+};
+
+// AFTER
+const extractAcctCreds = (a: any): Record<string, any> => {
+  const s = (a.settings as any) || {};
+  const resolvedApiSecret = a.apiSecret || s.apiId || '';
+  return {
+    apiKey:    a.apiKey,
+    apiSecret: resolvedApiSecret,   // ← NOW reads settings.apiId as fallback
+    ...
+  };
+};
+
+BUG 2 — server/services/carrier-service.ts — Ameex request block (around line 785)
+Currently builds a FormData (fd) but then IGNORES it and sends URLSearchParams instead. Ameex only accepts multipart/form-data. Replace the entire if (providerKey === 'ameex') request block with:
+tsif (providerKey === 'ameex') {
+  const FormDataLib = (await import('form-data')).default;
+  const fd = new FormDataLib();
+  const fdFields: Record<string, string> = {};
+  const cleanKey = (k: string) => (k || '').replace(/<[^>]*>/g, '').trim();
+
+  Object.entries(payload).forEach(([k, v]) => {
+    const val = String(v ?? '').trim();
+    fd.append(k, val);
+    fdFields[k] = val;
+  });
+
+  console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
+  console.log(`[AMEEX-FORMDATA] C-Api-Key: "${cleanKey(apiKey).slice(0, 20)}..."`);
+  console.log(`[AMEEX-FORMDATA] C-Api-Id: "${cleanKey(apiSecret || '').slice(0, 10)}"`);
+
+  const resp = await axios.post(apiUrl, fd, {
+    headers: {
+      ...fd.getHeaders(),          // ← multipart/form-data + correct boundary
+      'C-Api-Key': cleanKey(apiKey),
+      'C-Api-Id':  cleanKey(apiSecret || ''),
+    },
+    timeout: 45000,
+    httpsAgent: SSL_AGENT,
+    validateStatus: () => true,
+  });
+  // keep the rest of the response handling unchanged (log, extractTracking, etc.)
+
+Root cause summary:
+
+Bug 1: C-Api-Id (23187) was saved in settings.apiId but extractAcctCreds never read it → business field and C-Api-Id header were always empty → Ameex rejected the request
+Bug 2: URLSearchParams was sent instead of multipart/form-data → Ameex couldn't parse fields even if they existed
+
