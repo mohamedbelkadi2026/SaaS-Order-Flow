@@ -45,6 +45,7 @@ const PROVIDERS = [
   { id: "caledex",        name: "Caledex",           cities: 270, logo: null                     },
   { id: "oscario",        name: "Oscario",           cities: 390, logo: null                     },
   { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                     },
+  { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                   },
 ];
 
 /* ─── Webhook domain ─────────────────────────────────────────── */
@@ -193,6 +194,10 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [ameexStoreName, setAmeexStoreName] = useState<string>(existingAccount?.carrierStoreName || "");
   const [ameexApiId,     setAmeexApiId]     = useState<string>("");
   const [showAmeexKey,   setShowAmeexKey]   = useState(false);
+
+  // ── Custom carrier fields ─────────────────────────────────────────────────
+  const isCustom = providerId === "custom";
+  const [customCarrierName, setCustomCarrierName] = useState<string>("");
 
   // ── Digylog store + network pickers ──────────────────────────────────────
   const isDigylog = providerId === "digylog";
@@ -345,7 +350,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         return data;
       } else {
         const payload: any = {
-          carrierName: providerId,
+          carrierName: isCustom ? customCarrierName.trim() : providerId,
           apiKey,
           assignmentRule: rule,
           isDefault: rule === "default" ? 1 : 0,
@@ -354,6 +359,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           payload.apiSecret       = ameexApiId.trim() || undefined;
           payload.carrierStoreName = ameexStoreName.trim() || undefined;
           payload.storeName       = resolvedStoreName;
+        } else if (isCustom) {
+          payload.apiUrl    = apiUrl.trim() || undefined;
+          payload.storeName = resolvedStoreName;
         } else {
           payload.apiUrl           = apiUrl.trim() || undefined;
           payload.storeName        = resolvedStoreName;
@@ -407,7 +415,16 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
       setSubmitError("Veuillez sélectionner une boutique.");
       return;
     }
-    if (isAmeex) {
+    if (isCustom) {
+      if (!customCarrierName.trim()) {
+        setSubmitError("Le nom du transporteur est requis.");
+        return;
+      }
+      if (!existingAccount && !apiKey.trim()) {
+        setSubmitError("La clé API est requise.");
+        return;
+      }
+    } else if (isAmeex) {
       if (!existingAccount && !apiKey.trim()) {
         setSubmitError("Le C-Api-Key est requis.");
         return;
@@ -867,7 +884,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             )}
           </div>
 
-          {/* ══════════════ AMEEX CREATE FIELDS ══════════════ */}
+          {/* ══════════════ CUSTOM / AMEEX / GENERIC CREATE FIELDS ══════════════ */}
           {isAmeex ? (
             <>
               {/* Store Name */}
@@ -928,6 +945,62 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     onChange={e => setAmeexApiId(e.target.value)}
                     className={`h-10 text-xs font-mono ${!ameexApiId.trim() && submitError ? "border-red-400" : ""}`}
                   />
+                </div>
+              </div>
+            </>
+          ) : isCustom ? (
+            <>
+              {/* ── Custom carrier: nom, URL, clé API ── */}
+              <div className="space-y-1.5">
+                <Label htmlFor="custom_carrier_name" className="font-semibold text-sm">
+                  Nom du transporteur <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="custom_carrier_name"
+                  data-testid="input-custom-carrier-name"
+                  placeholder="Ex: MonTransporteur"
+                  value={customCarrierName}
+                  onChange={e => setCustomCarrierName(e.target.value)}
+                  className={`h-10 text-sm ${!customCarrierName.trim() && submitError ? "border-red-400" : ""}`}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="custom_carrier_url" className="font-semibold text-sm">
+                  URL API <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="custom_carrier_url"
+                  data-testid="input-custom-carrier-url"
+                  placeholder="https://api.montransporteur.ma/orders"
+                  value={apiUrl}
+                  onChange={e => setApiUrl(e.target.value)}
+                  className="h-10 text-sm font-mono"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="custom_carrier_key" className="font-semibold text-sm">
+                  Clé API <span className="text-red-500">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="custom_carrier_key"
+                    data-testid="input-custom-carrier-apikey"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showKey ? "text" : "password"}
+                    placeholder="Votre clé API..."
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    className={`pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowKey(v => !v)}
+                  >
+                    {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
                 </div>
               </div>
             </>

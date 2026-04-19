@@ -1,0 +1,62 @@
+Refactor the carrier system to be data-driven so adding a new carrier 
+requires ZERO code changes (only config). Keep Digylog and Ameex logic 
+untouched — they already work.
+
+━━━ GOAL ━━━
+Any carrier that uses standard REST JSON (Bearer token + JSON body with 
+fields: nom_complet, telephone, ville, adresse, montant, produit) should 
+work automatically via generic config.
+
+━━━ CHANGE 1 — server/services/carrier-service.ts ━━━
+Add a carrierConfigs map above buildPayload():
+
+const carrierConfigs: Record<string, {
+  authType: 'bearer' | 'apikey' | 'custom';
+  bodyFormat?: Record<string, string>; // field name mapping
+}> = {
+  ecotrack:       { authType: 'bearer' },
+  cathedis:       { authType: 'bearer' },
+  onessta:        { authType: 'bearer' },
+  ozoneexpress:   { authType: 'bearer' },
+  sendit:         { authType: 'bearer' },
+  speedex:        { authType: 'bearer' },
+  kargoexpress:   { authType: 'bearer' },
+  forcelog:       { authType: 'bearer' },
+  livo:           { authType: 'bearer' },
+  quicklivraison: { authType: 'bearer' },
+  codinafrica:    { authType: 'bearer' },
+  olivraison:     { authType: 'bearer' },
+  livreego:       { authType: 'bearer' },
+  powerdelivery:  { authType: 'bearer' },
+  caledex:        { authType: 'bearer' },
+  oscario:        { authType: 'bearer' },
+  colisspeed:     { authType: 'bearer' },
+};
+
+In buildGenericPayload(), the current output already works for all 
+'bearer' carriers — no change needed there.
+
+━━━ CHANGE 2 — client/src/pages/shipping-integrations.tsx ━━━
+The PROVIDERS array already has all carriers. 
+Add this function to allow adding a NEW carrier from UI without 
+code changes — show a simple form when user selects "Autre / Autre 
+transporteur" with fields: name, apiUrl, apiKey.
+Add this entry at the END of PROVIDERS[]:
+
+{ id: "custom", name: "➕ Autre transporteur", cities: 0, logo: null }
+
+When providerId === "custom", show 3 fields:
+- Nom du transporteur (text) → stored as carrierName
+- URL API (text)
+- Clé API (text)
+
+━━━ CHANGE 3 — server/routes.ts ━━━
+In the POST /api/carrier-accounts route, when carrierName is not in 
+the known list, save it as-is (already works — no change needed).
+
+━━━ DO NOT TOUCH ━━━
+- Digylog logic (buildDigylogPayload, digylog stores/networks fetching)
+- Ameex logic (FormData sending, C-Api-Key/C-Api-Id headers)
+- extractAcctCreds (already fixed)
+- Any tracking or webhook logic
+- Database schema

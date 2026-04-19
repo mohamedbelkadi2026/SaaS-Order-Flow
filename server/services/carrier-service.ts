@@ -385,6 +385,32 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   };
 }
 
+// ── Data-driven carrier registry ────────────────────────────────────────────
+// Adding a new standard REST/Bearer carrier requires ONLY a new entry here.
+// Digylog and Ameex have dedicated builders and are NOT in this map.
+const carrierConfigs: Record<string, {
+  authType: 'bearer' | 'apikey' | 'custom';
+  bodyFormat?: Record<string, string>;
+}> = {
+  ecotrack:       { authType: 'bearer' },
+  cathedis:       { authType: 'bearer' },
+  onessta:        { authType: 'bearer' },
+  ozoneexpress:   { authType: 'bearer' },
+  sendit:         { authType: 'bearer' },
+  speedex:        { authType: 'bearer' },
+  kargoexpress:   { authType: 'bearer' },
+  forcelog:       { authType: 'bearer' },
+  livo:           { authType: 'bearer' },
+  quicklivraison: { authType: 'bearer' },
+  codinafrica:    { authType: 'bearer' },
+  olivraison:     { authType: 'bearer' },
+  livreego:       { authType: 'bearer' },
+  powerdelivery:  { authType: 'bearer' },
+  caledex:        { authType: 'bearer' },
+  oscario:        { authType: 'bearer' },
+  colisspeed:     { authType: 'bearer' },
+};
+
 /** Dispatch to the correct builder based on the carrier. */
 function buildPayload(input: CarrierShipInput, providerKey: string, _apiId?: string): Record<string, unknown> {
   if (providerKey === "digylog") return buildDigylogPayload(input);
