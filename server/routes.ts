@@ -7295,5 +7295,48 @@ function submitOrder(e){
     res.json({ success: true });
   });
 
+  app.post('/api/debug/ameex-test', requireAuth, async (req: any, res: any) => {
+    try {
+      const axios = (await import('axios')).default;
+      const FormData = (await import('form-data')).default;
+
+      const fd = new FormData();
+      fd.append('business', '23187');
+      fd.append('type', 'SIMPLE');
+      fd.append('destinataire', 'Test Client');
+      fd.append('telephone', '0600000000');
+      fd.append('ville', 'Casablanca');
+      fd.append('adresse', 'Test adresse');
+      fd.append('montant', '100');
+      fd.append('cod', '100');
+      fd.append('produit', 'Test produit');
+      fd.append('quantite', '1');
+      fd.append('ref', 'TEST-001');
+      fd.append('note', '');
+      fd.append('open', 'NO');
+      fd.append('replace', 'true');
+
+      const resp = await axios.post(
+        'https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add',
+        fd,
+        {
+          headers: {
+            'C-Api-Key': '138797-446910-81bC9F-e2c7dC-b8839F-09d464',
+            'C-Api-Id': '23187',
+            ...fd.getHeaders(),
+          },
+          timeout: 30000,
+          validateStatus: () => true,
+        }
+      );
+
+      console.log('[AMEEX-TEST] HTTP:', resp.status);
+      console.log('[AMEEX-TEST] Response:', JSON.stringify(resp.data));
+      res.json({ status: resp.status, data: resp.data });
+    } catch (e: any) {
+      res.json({ error: e.message });
+    }
+  });
+
   return httpServer;
 }
