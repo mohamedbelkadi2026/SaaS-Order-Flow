@@ -237,6 +237,8 @@ export interface CarrierShipInput {
   digylogStoreName?: string; // Digylog store name from settings.digylogStoreName
   digylogNetworkId?: number; // Digylog network ID from settings.digylogNetworkId
   digylogNetwork?: number;   // legacy alias for digylogNetworkId
+  apiId?: string;            // Ameex: C-Api-Id / Business ID
+  apiSecret?: string;        // Ameex: C-Api-Id / Business ID (stored as apiSecret)
 }
 
 export interface CarrierShipResult {
@@ -364,25 +366,22 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone   = sanitizePhone(input.phone);
   const priceDH = +(input.totalPrice / 100).toFixed(2);
   const addr    = (input.address || "").trim() || input.city.trim();
-  const qty     = input.quantity ?? 1;
 
   return {
-    // Ameex required fields
-    destinataire: input.customerName.trim(),   // "Destinataire: est obligatoire"
+    business:     input.apiId || input.apiSecret || "",  // Ameex Business ID (C-Api-Id)
+    type:         "SIMPLE",
+    destinataire: input.customerName.trim(),
     telephone:    phone,
     ville:        input.city.trim(),
     adresse:      addr,
     montant:      priceDH,
     cod:          priceDH,
     produit:      (input.productName || "Produit").trim(),
-    quantite:     qty,
+    quantite:     input.quantity ?? 1,
     ref:          input.orderNumber,
     note:         input.note || "",
     open:         input.canOpen ? "YES" : "NO",
-    type:         "SIMPLE",
-    // Also keep old field names as fallback
-    nom:          input.customerName.trim(),
-    name:         input.customerName.trim(),
+    replace:      "true",
   };
 }
 

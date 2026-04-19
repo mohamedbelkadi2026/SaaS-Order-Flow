@@ -1296,6 +1296,8 @@ export async function registerRoutes(
                   carrierStoreName: (orderCreds as any).carrierStoreName || "",
                   digylogStoreName: (orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName || "",
                   digylogNetworkId: (orderCreds as any).digylogNetworkId || 1,
+                  apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
+                  apiSecret:        (orderCreds as any).apiSecret || '',
                 });
               })
             );
@@ -5135,6 +5137,8 @@ export async function registerRoutes(
         carrierStoreName: (creds as any).carrierStoreName || "",
         digylogStoreName: (creds as any).digylogStoreName || (creds as any).carrierStoreName || "",
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
+        apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
+        apiSecret:        (creds as any).apiSecret || '',
       });
 
       if (!shipResult.success) {
