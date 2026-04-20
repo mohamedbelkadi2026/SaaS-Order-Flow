@@ -7411,168 +7411,135 @@ function submitOrder(e){
     storage: multer.memoryStorage(),
     limits: { fileSize: 10 * 1024 * 1024 },
   });
-  app.post('/api/product-research/analyze', requireAuth, productResearchUpload.single('image'), async (req: any, res: any) => {
+  app.post('/api/product-research/analyze', requireAuth, async (req: any, res: any) => {
     try {
-      const keyword = req.body?.keyword || '';
-      const imageBase64 = req.body?.imageBase64 || (req.file ? req.file.buffer.toString('base64') : '');
-      const imageMime = req.file?.mimetype || 'image/jpeg';
+      const { keyword, imageBase64, imageMime } = req.body || {};
+
+      console.log(`[ProductResearch] keyword="${keyword}" imageBase64 length=${imageBase64?.length || 0}`);
+
       let extractedKeywords = keyword || '';
 
-      // Step 1: Google Lens reverse image search via RapidAPI
-      let lensResults: any[] = [];
-      if (imageBase64 && process.env.RAPIDAPI_KEY) {
+      // Step 1: AI analyzes image → keywords
+      if (imageBase64 && imageBase64.length > 100) {
         try {
-          const lensResp = await fetch(
-            'https://reverse-image-search1.p.rapidapi.com/search/image',
-            {
-              method: 'POST',
-              headers: {
-                'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-                'X-RapidAPI-Host': 'reverse-image-search1.p.rapidapi.com',
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ image: `data:${imageMime};base64,${imageBase64}` }),
-            },
-          );
-          console.log(`[LENS-DEBUG] Status: ${lensResp.status}`);
-          const lensText = await lensResp.text();
-          console.log(`[LENS-DEBUG] Response: ${lensText.slice(0, 500)}`);
-          if (lensResp.ok) {
-            const lensData: any = JSON.parse(lensText);
-            const matches = lensData?.visual_matches || lensData?.results || lensData?.image_results || [];
-            lensResults = (matches as any[]).slice(0, 12).map((r: any) => ({
-              title: r.title || r.name || '',
-              url: r.link || r.url || '',
-              thumbnail: r.thumbnail || r.image || '',
-              source: r.source || r.domain || '',
-              price: r.price || '',
-            }));
-            if (!extractedKeywords && lensData?.knowledge_graph?.title) {
-              extractedKeywords = lensData.knowledge_graph.title;
-            }
-          }
-        } catch (e: any) {
-          console.error('[ProductResearch] Lens error:', e.message);
-        }
-      }
-
-      // Step 2: AI image analysis with Claude (fallback when no keywords yet)
-      if (imageBase64 && !extractedKeywords && process.env.ANTHROPIC_API_KEY) {
-        try {
+          console.log('[ProductResearch] Sending image to Claude AI...');
           const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'x-api-key': process.env.ANTHROPIC_API_KEY || '',
               'anthropic-version': '2023-06-01',
             },
             body: JSON.stringify({
               model: 'claude-haiku-4-5-20251001',
-              max_tokens: 150,
+              max_tokens: 100,
               messages: [{
                 role: 'user',
                 content: [
-                  { type: 'image', source: { type: 'base64', media_type: imageMime, data: imageBase64 } },
-                  { type: 'text', text: 'What is this product? Give me 3 short English search keywords to find videos about it on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else. Example: electric knife sharpener, knife sharpener gadget, kitchen knife tool' },
+                  {
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: (imageMime || 'image/jpeg') as any,
+                      data: imageBase64,
+                    },
+                  },
+                  {
+                    type: 'text',
+                    text: 'What product is in this image? Give me 3 short English search keywords to find videos about this product on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else.',
+                  },
                 ],
               }],
             }),
           });
           const aiData: any = await aiResp.json();
+          console.log('[ProductResearch] AI response:', JSON.stringify(aiData).slice(0, 300));
           if (aiData?.content?.[0]?.text) {
             extractedKeywords = String(aiData.content[0].text).trim();
-            console.log(`[ProductResearch] AI keywords: ${extractedKeywords}`);
+            console.log('[ProductResearch] AI keywords:', extractedKeywords);
           }
         } catch (e: any) {
           console.error('[ProductResearch] AI error:', e.message);
-          extractedKeywords = keyword || '';
         }
       }
 
       const mainKw = (extractedKeywords.split(',')[0] || '').trim() || keyword || '';
-      const allKw = extractedKeywords.split(',').map((k: string) => k.trim()).filter(Boolean);
+      console.log('[ProductResearch] mainKw:', mainKw);
 
-      // Step 2: YouTube search via RapidAPI
-      let youtubeVideos: any[] = [];
-      if (mainKw && process.env.RAPIDAPI_KEY) {
-        try {
-          const ytResp = await fetch(
-            `https://youtube-search-and-download.p.rapidapi.com/search?query=${encodeURIComponent(mainKw + ' review')}&type=v`,
-            {
-              headers: {
-                'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-                'X-RapidAPI-Host': 'youtube-search-and-download.p.rapidapi.com',
-              },
-            },
-          );
-          console.log(`[YT-DEBUG] Status: ${ytResp.status}`);
-          const ytText = await ytResp.text();
-          console.log(`[YT-DEBUG] Response: ${ytText.slice(0, 500)}`);
-          if (ytResp.ok) {
-            const ytData: any = JSON.parse(ytText);
-            youtubeVideos = (ytData?.contents || [])
-              .filter((item: any) => item.video)
-              .slice(0, 6)
-              .map((item: any) => ({
-                id: item.video?.videoId,
-                title: item.video?.title,
-                thumbnail: item.video?.thumbnails?.[0]?.url,
-                views: item.video?.viewCountText,
-                channel: item.video?.channelName,
-                duration: item.video?.lengthText,
-                url: `https://www.youtube.com/watch?v=${item.video?.videoId}`,
-                platform: 'youtube',
-              }));
-          }
-          console.log(`[ProductResearch] YouTube videos: ${youtubeVideos.length}`);
-        } catch (e: any) {
-          console.error('[ProductResearch] YouTube error:', e.message);
-        }
+      if (!mainKw) {
+        return res.json({ keywords: '', mainKeyword: '', tiktokVideos: [], youtubeVideos: [], lensResults: [] });
       }
 
-      // Step 3: TikTok search via RapidAPI
+      // TikTok
       let tiktokVideos: any[] = [];
-      if (mainKw && process.env.RAPIDAPI_KEY) {
-        try {
-          const ttResp = await fetch(
-            `https://tiktok-scraper2.p.rapidapi.com/video/search?keyword=${encodeURIComponent(mainKw)}&count=8`,
-            {
-              headers: {
-                'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-                'X-RapidAPI-Host': 'tiktok-scraper2.p.rapidapi.com',
-              },
+      try {
+        const ttResp = await fetch(
+          `https://tiktok-scraper2.p.rapidapi.com/video/search?keyword=${encodeURIComponent(mainKw)}&count=8`,
+          {
+            headers: {
+              'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+              'X-RapidAPI-Host': 'tiktok-scraper2.p.rapidapi.com',
             },
-          );
-          console.log(`[TT-DEBUG] Status: ${ttResp.status}`);
-          const ttText = await ttResp.text();
-          console.log(`[TT-DEBUG] Response: ${ttText.slice(0, 500)}`);
-          if (ttResp.ok) {
-            const ttData: any = JSON.parse(ttText);
-            const items = ttData?.data?.videos || ttData?.data || [];
-            tiktokVideos = (items as any[]).slice(0, 8).map((v: any) => ({
-              id: v.video_id || v.id,
-              title: v.title || v.desc || '',
-              thumbnail: v.cover || v.origin_cover || '',
-              views: v.play_count || v.statistics?.play_count || 0,
-              likes: v.digg_count || v.statistics?.digg_count || 0,
-              author: v.author?.nickname || '',
-              url: `https://www.tiktok.com/@${v.author?.unique_id}/video/${v.video_id || v.id}`,
-              platform: 'tiktok',
-            }));
-          }
-          console.log(`[ProductResearch] TikTok videos: ${tiktokVideos.length}`);
-        } catch (e: any) {
-          console.error('[ProductResearch] TikTok error:', e.message);
+          },
+        );
+        console.log(`[TT-DEBUG] Status: ${ttResp.status}`);
+        const ttText = await ttResp.text();
+        console.log(`[TT-DEBUG] Response: ${ttText.slice(0, 300)}`);
+        if (ttResp.ok) {
+          const ttData: any = JSON.parse(ttText);
+          const items = ttData?.data?.videos || ttData?.videos || ttData?.data || [];
+          tiktokVideos = (items as any[]).slice(0, 8).map((v: any) => ({
+            title: v.title || v.desc || '',
+            thumbnail: v.cover || v.origin_cover || v.dynamic_cover || '',
+            views: v.play_count || v.statistics?.play_count || 0,
+            likes: v.digg_count || v.statistics?.digg_count || 0,
+            author: v.author?.nickname || v.author_name || '',
+            url: v.url || `https://www.tiktok.com/@${v.author?.unique_id}/video/${v.video_id || v.id}`,
+          }));
         }
+      } catch (e: any) {
+        console.error('[ProductResearch] TikTok error:', e.message);
+      }
+
+      // YouTube
+      let youtubeVideos: any[] = [];
+      try {
+        const ytResp = await fetch(
+          `https://youtube-search-and-download.p.rapidapi.com/search?query=${encodeURIComponent(mainKw)}&type=v&sort=r`,
+          {
+            headers: {
+              'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+              'X-RapidAPI-Host': 'youtube-search-and-download.p.rapidapi.com',
+            },
+          },
+        );
+        console.log(`[YT-DEBUG] Status: ${ytResp.status}`);
+        const ytText = await ytResp.text();
+        console.log(`[YT-DEBUG] Response: ${ytText.slice(0, 300)}`);
+        if (ytResp.ok) {
+          const ytData: any = JSON.parse(ytText);
+          youtubeVideos = (ytData?.contents || [])
+            .filter((item: any) => item.video)
+            .slice(0, 6)
+            .map((item: any) => ({
+              title: item.video?.title,
+              thumbnail: item.video?.thumbnails?.[0]?.url,
+              views: item.video?.viewCountText,
+              channel: item.video?.channelName,
+              duration: item.video?.lengthText,
+              url: `https://www.youtube.com/watch?v=${item.video?.videoId}`,
+            }));
+        }
+      } catch (e: any) {
+        console.error('[ProductResearch] YouTube error:', e.message);
       }
 
       res.json({
         keywords: extractedKeywords,
         mainKeyword: mainKw,
-        allKeywords: allKw,
-        lensResults,
-        youtubeVideos,
         tiktokVideos,
+        youtubeVideos,
+        lensResults: [],
       });
     } catch (e: any) {
       console.error('[ProductResearch] Error:', e.message);

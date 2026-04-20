@@ -1,0 +1,166 @@
+FIX — Image upload + auto keyword extraction
+CHANGE 1 — client/src/pages/product-research.tsx — fix image sending:
+tsxconst analyze = async () => {
+  if (!imageBase64 && !manualKeyword) return;
+  setLoading(true);
+  setKeywords('');
+  setYoutubeVideos([]);
+  setTiktokVideos([]);
+  setLensResults([]);
+  try {
+    const r = await fetch('/api/product-research/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ 
+        keyword: manualKeyword, 
+        imageBase64: imageBase64,
+        imageMime: 'image/jpeg'
+      }),
+    });
+    const data = await r.json();
+    setKeywords(data.keywords || '');
+    setYoutubeVideos(data.youtubeVideos || []);
+    setTiktokVideos(data.tiktokVideos || []);
+    setLensResults(data.lensResults || []);
+  } catch (e) { console.error(e); }
+  setLoading(false);
+};
+CHANGE 2 — server/routes.ts — fix image reading + AI keyword extraction:
+typescriptapp.post('/api/product-research/analyze', requireAuth, async (req: any, res: any) => {
+  try {
+    const { keyword, imageBase64, imageMime } = req.body || {};
+    
+    console.log(`[ProductResearch] keyword="${keyword}" imageBase64 length=${imageBase64?.length || 0}`);
+    
+    let extractedKeywords = keyword || '';
+
+    // Step 1: AI analyzes image → keywords
+    if (imageBase64 && imageBase64.length > 100) {
+      try {
+        console.log('[ProductResearch] Sending image to Claude AI...');
+        const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 100,
+            messages: [{
+              role: 'user',
+              content: [
+                { 
+                  type: 'image', 
+                  source: { 
+                    type: 'base64', 
+                    media_type: (imageMime || 'image/jpeg') as any,
+                    data: imageBase64 
+                  } 
+                },
+                { 
+                  type: 'text', 
+                  text: 'What product is in this image? Give me 3 short English search keywords to find videos about this product on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else.' 
+                }
+              ]
+            }]
+          })
+        });
+        const aiData = await aiResp.json();
+        console.log('[ProductResearch] AI response:', JSON.stringify(aiData).slice(0, 300));
+        if (aiData.content?.[0]?.text) {
+          extractedKeywords = aiData.content[0].text.trim();
+          console.log('[ProductResearch] AI keywords:', extractedKeywords);
+        }
+      } catch (e: any) {
+        console.error('[ProductResearch] AI error:', e.message);
+      }
+    }
+
+    const mainKw = extractedKeywords?.split(',')[0]?.trim() || keyword || '';
+    console.log('[ProductResearch] mainKw:', mainKw);
+
+    if (!mainKw) {
+      return res.json({ keywords: '', mainKeyword: '', tiktokVideos: [], youtubeVideos: [], lensResults: [] });
+    }
+
+    // TikTok
+    let tiktokVideos: any[] = [];
+    try {
+      const ttResp = await fetch(
+        `https://tiktok-scraper2.p.rapidapi.com/video/search?keyword=${encodeURIComponent(mainKw)}&count=8`,
+        {
+          headers: {
+            'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+            'X-RapidAPI-Host': 'tiktok-scraper2.p.rapidapi.com',
+          }
+        }
+      );
+      console.log(`[TT-DEBUG] Status: ${ttResp.status}`);
+      const ttText = await ttResp.text();
+      console.log(`[TT-DEBUG] Response: ${ttText.slice(0, 300)}`);
+      if (ttResp.ok) {
+        const ttData = JSON.parse(ttText);
+        const items = ttData.data?.videos || ttData.videos || ttData.data || [];
+        tiktokVideos = items.slice(0, 8).map((v: any) => ({
+          title: v.title || v.desc || '',
+          thumbnail: v.cover || v.origin_cover || v.dynamic_cover || '',
+          views: v.play_count || v.statistics?.play_count || 0,
+          likes: v.digg_count || v.statistics?.digg_count || 0,
+          author: v.author?.nickname || v.author_name || '',
+          url: v.url || `https://www.tiktok.com/@${v.author?.unique_id}/video/${v.video_id || v.id}`,
+        }));
+      }
+    } catch (e: any) {
+      console.error('[ProductResearch] TikTok error:', e.message);
+    }
+
+    // YouTube
+    let youtubeVideos: any[] = [];
+    try {
+      const ytResp = await fetch(
+        `https://youtube-search-and-download.p.rapidapi.com/search?query=${encodeURIComponent(mainKw)}&type=v&sort=r`,
+        {
+          headers: {
+            'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+            'X-RapidAPI-Host': 'youtube-search-and-download.p.rapidapi.com',
+          }
+        }
+      );
+      console.log(`[YT-DEBUG] Status: ${ytResp.status}`);
+      const ytText = await ytResp.text();
+      console.log(`[YT-DEBUG] Response: ${ytText.slice(0, 300)}`);
+      if (ytResp.ok) {
+        const ytData = JSON.parse(ytText);
+        youtubeVideos = (ytData.contents || [])
+          .filter((item: any) => item.video)
+          .slice(0, 6)
+          .map((item: any) => ({
+            title: item.video?.title,
+            thumbnail: item.video?.thumbnails?.[0]?.url,
+            views: item.video?.viewCountText,
+            channel: item.video?.channelName,
+            duration: item.video?.lengthText,
+            url: `https://www.youtube.com/watch?v=${item.video?.videoId}`,
+          }));
+      }
+    } catch (e: any) {
+      console.error('[ProductResearch] YouTube error:', e.message);
+    }
+
+    res.json({
+      keywords: extractedKeywords,
+      mainKeyword: mainKw,
+      tiktokVideos,
+      youtubeVideos,
+      lensResults: [],
+    });
+
+  } catch (e: any) {
+    console.error('[ProductResearch] Error:', e.message);
+    res.status(500).json({ message: e.message });
+  }
+});
+Do NOT change anything else.

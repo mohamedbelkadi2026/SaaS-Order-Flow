@@ -37,7 +37,7 @@ export default function ProductResearch() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ keyword: manualKeyword, imageBase64 }),
+        body: JSON.stringify({ keyword: manualKeyword, imageBase64, imageMime: 'image/jpeg' }),
       });
       const data = await r.json();
       setKeywords(data.keywords || '');
