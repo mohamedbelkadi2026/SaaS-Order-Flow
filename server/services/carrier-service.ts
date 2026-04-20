@@ -868,12 +868,31 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
 
   // Inner helper — runs one attempt and throws on network error (non-Ameex carriers)
   const timeoutMs = TIMEOUT_MS;
-  const attempt = () => axios.post(apiUrl, payload, {
-    headers,
-    timeout: timeoutMs,
-    httpsAgent: SSL_AGENT,
-    validateStatus: () => true, // Don't throw on 4xx/5xx — handled below
-  });
+  const attempt = async () => {
+    if (providerKey === 'ameex') {
+      // Ameex requires multipart/form-data
+      const FormData = (await import('form-data')).default;
+      const fd = new FormData();
+      Object.entries(payload).forEach(([k, v]) => fd.append(k, String(v ?? '')));
+      const cleanKey = (s: string) => (s || '').replace(/<[^>]*>/g, '').trim();
+      return axios.post(apiUrl, fd, {
+        headers: {
+          'C-Api-Key': cleanKey(apiKey || ''),
+          'C-Api-Id': cleanKey(apiSecret || ''),
+          ...fd.getHeaders(),
+        },
+        timeout: 45000,
+        httpsAgent: SSL_AGENT,
+        validateStatus: () => true,
+      });
+    }
+    return axios.post(apiUrl, payload, {
+      headers,
+      timeout: timeoutMs,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true, // Don't throw on 4xx/5xx — handled below
+    });
+  };
 
   let httpStatus = 0;
   let rawBody: unknown;
