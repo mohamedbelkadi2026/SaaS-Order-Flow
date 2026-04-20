@@ -1,0 +1,70 @@
+UPDATE — Product Research: fetch real TikTok videos by keyword
+In server/routes.ts, in /api/product-research/analyze, add TikTok video search:
+typescript// TikTok search by keyword
+let tiktokVideos: any[] = [];
+try {
+  const tiktokResp = await fetch(
+    `https://tiktok-download-video1.p.rapidapi.com/feed/search?keywords=${encodeURIComponent(mainKw)}&count=8&cursor=0&region=MA&publish_time=0&sort_type=0`,
+    {
+      headers: {
+        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+        'X-RapidAPI-Host': 'tiktok-download-video1.p.rapidapi.com',
+      }
+    }
+  );
+  if (tiktokResp.ok) {
+    const tiktokData = await tiktokResp.json();
+    const items = tiktokData.data?.videos || tiktokData.data || [];
+    tiktokVideos = items.slice(0, 8).map((v: any) => ({
+      id: v.video_id || v.id,
+      title: v.title || v.desc || '',
+      cover: v.cover || v.origin_cover || '',
+      playUrl: v.play || v.wmplay || '',
+      noWatermark: v.nowm || v.play_no_watermark || '',
+      likes: v.digg_count || v.statistics?.digg_count || 0,
+      views: v.play_count || v.statistics?.play_count || 0,
+      author: v.author?.nickname || '',
+      url: `https://www.tiktok.com/@${v.author?.unique_id}/video/${v.video_id || v.id}`,
+    }));
+  }
+} catch (e: any) {
+  console.error('[ProductResearch] TikTok error:', e.message);
+}
+Add tiktokVideos to response:
+typescriptres.json({ keywords: extractedKeywords, mainKeyword: mainKw, aliResults, tiktokVideos, searchUrls });
+Also update client/src/pages/product-research.tsx:
+Add state:
+tsxconst [tiktokVideos, setTiktokVideos] = useState<any[]>([]);
+// In analyze: setTiktokVideos(data.tiktokVideos || []);
+Add TikTok videos section after AliExpress results:
+tsx{tiktokVideos.length > 0 && (
+  <div className="rounded-2xl border bg-white dark:bg-card p-4">
+    <p className="font-semibold text-sm mb-3">🎵 TikTok Videos ({tiktokVideos.length})</p>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {tiktokVideos.map((v, i) => (
+        <a key={i} href={v.url} target="_blank" rel="noopener noreferrer"
+          className="rounded-xl border overflow-hidden hover:shadow-md transition-all group">
+          <div className="relative aspect-[9/16] overflow-hidden bg-black">
+            {v.cover && <img src={v.cover} alt={v.title} className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-all" />}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
+                <span className="text-white text-lg">▶</span>
+              </div>
+            </div>
+            <div className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+              {v.views > 1000000 ? `${(v.views/1000000).toFixed(1)}M` : v.views > 1000 ? `${(v.views/1000).toFixed(0)}K` : v.views} views
+            </div>
+          </div>
+          <div className="p-2">
+            <p className="text-[10px] line-clamp-2">{v.title}</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">@{v.author}</p>
+            <div className="flex items-center gap-1 mt-1">
+              <span className="text-[10px] text-red-500">❤️ {v.likes > 1000 ? `${(v.likes/1000).toFixed(0)}K` : v.likes}</span>
+            </div>
+          </div>
+        </a>
+      ))}
+    </div>
+  </div>
+)}
+Do NOT change anything else.

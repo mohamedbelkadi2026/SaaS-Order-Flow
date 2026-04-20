@@ -7474,6 +7474,39 @@ function submitOrder(e){
         }
       }
 
+      // TikTok search by keyword
+      let tiktokVideos: any[] = [];
+      if (mainKw && process.env.RAPIDAPI_KEY) {
+        try {
+          const tiktokResp = await fetch(
+            `https://tiktok-download-video1.p.rapidapi.com/feed/search?keywords=${encodeURIComponent(mainKw)}&count=8&cursor=0&region=MA&publish_time=0&sort_type=0`,
+            {
+              headers: {
+                'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+                'X-RapidAPI-Host': 'tiktok-download-video1.p.rapidapi.com',
+              },
+            },
+          );
+          if (tiktokResp.ok) {
+            const tiktokData: any = await tiktokResp.json();
+            const items = tiktokData?.data?.videos || tiktokData?.data || [];
+            tiktokVideos = (items as any[]).slice(0, 8).map((v: any) => ({
+              id: v.video_id || v.id,
+              title: v.title || v.desc || '',
+              cover: v.cover || v.origin_cover || '',
+              playUrl: v.play || v.wmplay || '',
+              noWatermark: v.nowm || v.play_no_watermark || '',
+              likes: v.digg_count || v.statistics?.digg_count || 0,
+              views: v.play_count || v.statistics?.play_count || 0,
+              author: v.author?.nickname || '',
+              url: `https://www.tiktok.com/@${v.author?.unique_id}/video/${v.video_id || v.id}`,
+            }));
+          }
+        } catch (e: any) {
+          console.error('[ProductResearch] TikTok error:', e.message);
+        }
+      }
+
       const searchUrls = {
         aliexpress: `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(mainKw)}`,
         alibaba1688: `https://s.1688.com/selloffer/offerlist.htm?keywords=${encodeURIComponent(mainKw)}`,
@@ -7488,6 +7521,7 @@ function submitOrder(e){
         keywords: extractedKeywords,
         mainKeyword: mainKw,
         aliResults,
+        tiktokVideos,
         searchUrls,
       });
     } catch (e: any) {

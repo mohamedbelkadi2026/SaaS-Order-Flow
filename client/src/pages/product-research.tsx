@@ -18,6 +18,7 @@ export default function ProductResearch() {
   const [manualKeyword, setManualKeyword] = useState('');
   const [keywords, setKeywords] = useState('');
   const [aliResults, setAliResults] = useState<any[]>([]);
+  const [tiktokVideos, setTiktokVideos] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -39,6 +40,7 @@ export default function ProductResearch() {
     setLoading(true);
     setKeywords('');
     setAliResults([]);
+    setTiktokVideos([]);
     try {
       const r = await fetch('/api/product-research/analyze', {
         method: 'POST',
@@ -49,6 +51,7 @@ export default function ProductResearch() {
       const data = await r.json();
       setKeywords(data.keywords || manualKeyword);
       setAliResults(data.aliResults || []);
+      setTiktokVideos(data.tiktokVideos || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   };
@@ -198,6 +201,43 @@ export default function ProductResearch() {
                 <div className="p-2">
                   <p className="text-xs line-clamp-2 font-medium">{r.title}</p>
                   {r.price && <p className="text-xs text-emerald-600 font-bold mt-1">${r.price}</p>}
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tiktokVideos.length > 0 && (
+        <div className="rounded-2xl border bg-white dark:bg-card p-4" data-testid="section-tiktok-videos">
+          <p className="font-semibold text-sm mb-3">🎵 TikTok Videos ({tiktokVideos.length})</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {tiktokVideos.map((v, i) => (
+              <a
+                key={i}
+                href={v.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-xl border overflow-hidden hover:shadow-md transition-all group"
+                data-testid={`card-tiktok-${i}`}
+              >
+                <div className="relative aspect-[9/16] overflow-hidden bg-black">
+                  {v.cover && <img src={v.cover} alt={v.title} className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-all" />}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
+                      <span className="text-white text-lg">▶</span>
+                    </div>
+                  </div>
+                  <div className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded-full">
+                    {v.views > 1000000 ? `${(v.views / 1000000).toFixed(1)}M` : v.views > 1000 ? `${(v.views / 1000).toFixed(0)}K` : v.views} views
+                  </div>
+                </div>
+                <div className="p-2">
+                  <p className="text-[10px] line-clamp-2">{v.title}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">@{v.author}</p>
+                  <div className="flex items-center gap-1 mt-1">
+                    <span className="text-[10px] text-red-500">❤️ {v.likes > 1000 ? `${(v.likes / 1000).toFixed(0)}K` : v.likes}</span>
+                  </div>
                 </div>
               </a>
             ))}
