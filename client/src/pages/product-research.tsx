@@ -7,6 +7,7 @@ export default function ProductResearch() {
   const [imageBase64, setImageBase64] = useState('');
   const [manualKeyword, setManualKeyword] = useState('');
   const [keywords, setKeywords] = useState('');
+  const [metaAds, setMetaAds] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -28,6 +29,7 @@ export default function ProductResearch() {
     if (!image && !manualKeyword) return;
     setLoading(true);
     setKeywords('');
+    setMetaAds([]);
     try {
       const r = await fetch('/api/product-research/analyze', {
         method: 'POST',
@@ -37,6 +39,7 @@ export default function ProductResearch() {
       });
       const data = await r.json();
       setKeywords(data.keywords || manualKeyword);
+      setMetaAds(data.metaAds || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   };
@@ -192,6 +195,35 @@ export default function ProductResearch() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {metaAds.length > 0 && (
+        <div className="rounded-2xl border bg-white dark:bg-card p-5" data-testid="section-meta-ads">
+          <p className="font-bold text-sm mb-4">📘 Facebook Video Ads trouvées ({metaAds.length})</p>
+          <div className="space-y-3">
+            {metaAds.map((ad: any, i: number) => (
+              <div key={i} className="rounded-xl border p-3 flex items-start gap-3 hover:bg-muted/10" data-testid={`card-meta-ad-${i}`}>
+                <span className="text-2xl">📘</span>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm" data-testid={`text-ad-page-${i}`}>{ad.pageName}</p>
+                  {ad.body && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{ad.body}</p>}
+                  {ad.title && <p className="text-xs font-medium mt-1">{ad.title}</p>}
+                </div>
+                {ad.snapshotUrl && (
+                  <a
+                    href={ad.snapshotUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700"
+                    data-testid={`link-ad-snapshot-${i}`}
+                  >
+                    Voir l'ad
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

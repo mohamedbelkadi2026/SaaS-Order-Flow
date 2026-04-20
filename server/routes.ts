@@ -7454,7 +7454,34 @@ function submitOrder(e){
         }
       }
 
-      res.json({ keywords: extractedKeywords });
+      // Meta Ad Library search
+      const mainKeyword = (extractedKeywords.split(',')[0] || '').trim() || keyword || '';
+      let metaAds: any[] = [];
+
+      if (mainKeyword) {
+        try {
+          const metaToken = process.env.META_ACCESS_TOKEN || '4156048424636972|o7DZLiO0Yz9E7b6txoStMDXvSF4';
+          const metaUrl = `https://graph.facebook.com/v19.0/ads_archive?access_token=${metaToken}&ad_reached_countries=MA&search_terms=${encodeURIComponent(mainKeyword)}&ad_type=ALL&media_type=VIDEO&fields=ad_creative_body,page_name,ad_snapshot_url,ad_creative_link_title&limit=10`;
+
+          const metaResp = await fetch(metaUrl);
+          const metaData: any = await metaResp.json();
+
+          if (Array.isArray(metaData?.data)) {
+            metaAds = metaData.data.map((ad: any) => ({
+              platform: 'facebook',
+              pageName: ad.page_name,
+              body: ad.ad_creative_body,
+              title: ad.ad_creative_link_title,
+              snapshotUrl: ad.ad_snapshot_url,
+            }));
+          }
+          console.log(`[ProductResearch] Meta ads found: ${metaAds.length}`);
+        } catch (metaErr: any) {
+          console.error('[ProductResearch] Meta API error:', metaErr.message);
+        }
+      }
+
+      res.json({ keywords: extractedKeywords, metaAds });
     } catch (e: any) {
       res.status(500).json({ message: e.message });
     }
