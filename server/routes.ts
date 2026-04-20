@@ -7497,7 +7497,7 @@ function submitOrder(e){
       if (mainKw && process.env.RAPIDAPI_KEY) {
         try {
           const ytResp = await fetch(
-            `https://youtube-search-and-download.p.rapidapi.com/search?query=${encodeURIComponent(mainKw + ' product review')}&type=v&sort=r`,
+            `https://youtube-search-and-download.p.rapidapi.com/search?query=${encodeURIComponent(mainKw + ' review')}&type=v`,
             {
               headers: {
                 'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
@@ -7535,11 +7535,11 @@ function submitOrder(e){
       if (mainKw && process.env.RAPIDAPI_KEY) {
         try {
           const ttResp = await fetch(
-            `https://tiktok-download-video1.p.rapidapi.com/feed/search?keywords=${encodeURIComponent(mainKw)}&count=8&cursor=0&region=MA&publish_time=0&sort_type=0`,
+            `https://tiktok-scraper2.p.rapidapi.com/video/search?keyword=${encodeURIComponent(mainKw)}&count=8`,
             {
               headers: {
                 'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-                'X-RapidAPI-Host': 'tiktok-download-video1.p.rapidapi.com',
+                'X-RapidAPI-Host': 'tiktok-scraper2.p.rapidapi.com',
               },
             },
           );
