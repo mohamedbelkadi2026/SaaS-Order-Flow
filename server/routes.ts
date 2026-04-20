@@ -4380,6 +4380,9 @@ export async function registerRoutes(
       const storeId = user.storeId!;
       const agentId = user.id;
 
+      // Filter params
+      const { city, productId, dateFrom, dateTo } = req.query as Record<string, string>;
+
       // Fetch all orders assigned to this agent in the last 15 days
       const now = new Date();
       const cutoff = new Date(now);
@@ -4389,14 +4392,36 @@ export async function registerRoutes(
       const { orders: ordersTable } = await import("@shared/schema");
       const { and, gte, eq: drEq } = await import("drizzle-orm");
 
-      const agentOrders = await db
+      const startDate = dateFrom ? new Date(dateFrom) : cutoff;
+
+      let agentOrders = await db
         .select()
         .from(ordersTable)
         .where(and(
           drEq(ordersTable.storeId, storeId),
           drEq(ordersTable.assignedToId, agentId),
-          gte(ordersTable.createdAt, cutoff),
+          gte(ordersTable.createdAt, startDate),
         ));
+
+      // Build the unfiltered cities/products lists (so dropdowns stay populated after filtering)
+      const allCities = [...new Set((agentOrders as any[]).map(o => o.customerCity).filter(Boolean))];
+
+      // Apply filters
+      if (city && city !== 'all') {
+        agentOrders = agentOrders.filter((o: any) => o.customerCity === city);
+      }
+      if (productId && productId !== 'all') {
+        const pid = Number(productId);
+        agentOrders = agentOrders.filter((o: any) =>
+          (Array.isArray(o.items) && o.items.some((i: any) => i.productId === pid)) ||
+          (o.rawProductName && String(o.rawProductName) === productId)
+        );
+      }
+      if (dateTo) {
+        const to = new Date(dateTo);
+        to.setHours(23, 59, 59, 999);
+        agentOrders = agentOrders.filter((o: any) => o.createdAt && new Date(o.createdAt) <= to);
+      }
 
       // ── Daily counts (line chart) ──────────────────────────────────
       const dayMap = new Map<string, number>();
@@ -4454,14 +4479,15 @@ export async function registerRoutes(
       ].filter(b => b.value > 0);
 
       // ── Products breakdown (table) ────────────────────────────────
-      const productMap: Record<string, { name: string; total: number; confirmed: number; delivered: number }> = {};
+      const productMap: Record<string, { id: number; name: string; total: number; confirmed: number; delivered: number }> = {};
       for (const o of agentOrders as any[]) {
         const name =
           o.rawProductName ||
           o.items?.[0]?.rawProductName ||
           o.items?.[0]?.product?.name ||
           'Produit';
-        if (!productMap[name]) productMap[name] = { name, total: 0, confirmed: 0, delivered: 0 };
+        const pid = o.items?.[0]?.productId || 0;
+        if (!productMap[name]) productMap[name] = { id: pid, name, total: 0, confirmed: 0, delivered: 0 };
         productMap[name].total++;
         const s = (o.status ?? '').toLowerCase().trim();
         if (
@@ -4478,7 +4504,7 @@ export async function registerRoutes(
       }
       const products = Object.values(productMap).sort((a, b) => b.total - a.total);
 
-      res.json({ daily, byStatus, totalOrders: agentOrders.length, products });
+      res.json({ daily, byStatus, totalOrders: agentOrders.length, cities: allCities, products });
     } catch (err: any) {
       console.error("[/api/agents/my-stats]", err.message);
       res.status(500).json({ message: err.message });

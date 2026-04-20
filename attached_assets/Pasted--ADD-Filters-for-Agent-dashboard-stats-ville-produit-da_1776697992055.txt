@@ -1,0 +1,128 @@
+
+ADD — Filters for Agent dashboard stats (ville, produit, date)
+CHANGE 1 — server/routes.ts — add filter params to /api/agents/my-stats:
+typescriptapp.get("/api/agents/my-stats", requireAuth, async (req: any, res: any) => {
+  try {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const agentId = user.id;
+
+    // NEW: Accept filter params
+    const { city, productId, dateFrom, dateTo } = req.query as Record<string, string>;
+
+    const now = new Date();
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - 14);
+    cutoff.setHours(0, 0, 0, 0);
+
+    const { orders: ordersTable } = await import("@shared/schema");
+    const { and, gte, eq: drEq } = await import("drizzle-orm");
+
+    let agentOrders = await db
+      .select()
+      .from(ordersTable)
+      .where(and(
+        drEq(ordersTable.storeId, storeId),
+        drEq(ordersTable.assignedToId, agentId),
+        gte(ordersTable.createdAt, dateFrom ? new Date(dateFrom) : cutoff),
+      ));
+
+    // Apply filters
+    if (city && city !== 'all') {
+      agentOrders = agentOrders.filter(o => o.customerCity === city);
+    }
+    if (productId && productId !== 'all') {
+      const pid = Number(productId);
+      agentOrders = agentOrders.filter(o => 
+        (o as any).items?.some((i: any) => i.productId === pid)
+      );
+    }
+    if (dateTo) {
+      const to = new Date(dateTo);
+      to.setHours(23, 59, 59, 999);
+      agentOrders = agentOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
+    }
+
+    // Build unique cities and products for filter options
+    const cities = [...new Set(agentOrders.map(o => o.customerCity).filter(Boolean))];
+    const productMap: Record<string, { id: number; name: string; total: number; confirmed: number; delivered: number }> = {};
+    agentOrders.forEach((o: any) => {
+      const name = o.rawProductName || o.items?.[0]?.rawProductName || o.items?.[0]?.product?.name || 'Produit';
+      const pid = o.items?.[0]?.productId || 0;
+      if (!productMap[name]) productMap[name] = { id: pid, name, total: 0, confirmed: 0, delivered: 0 };
+      productMap[name].total++;
+      if (['confirme','delivered','in_progress','expédié'].includes(o.status || '')) productMap[name].confirmed++;
+      if (o.status === 'delivered') productMap[name].delivered++;
+    });
+    const products = Object.values(productMap).sort((a, b) => b.total - a.total);
+
+    // ... rest of existing stats calculation unchanged ...
+
+    res.json({ daily, byStatus, totalOrders: agentOrders.length, cities, products });
+  }
+CHANGE 2 — client/src/pages/dashboard.tsx — add filter state + UI for agent:
+Add state for agent filters:
+tsxconst [agentFilters, setAgentFilters] = useState({ city: 'all', productId: 'all', dateFrom: '', dateTo: '' });
+Update the query to pass filters:
+tsxconst { data: agentMyStats, isLoading: agentStatsLoading } = useQuery({
+  queryKey: ['/api/agents/my-stats', agentFilters],
+  queryFn: async () => {
+    const params = new URLSearchParams();
+    if (agentFilters.city !== 'all') params.set('city', agentFilters.city);
+    if (agentFilters.productId !== 'all') params.set('productId', agentFilters.productId);
+    if (agentFilters.dateFrom) params.set('dateFrom', agentFilters.dateFrom);
+    if (agentFilters.dateTo) params.set('dateTo', agentFilters.dateTo);
+    const r = await fetch(`/api/agents/my-stats?${params}`, { credentials: 'include' });
+    return r.json();
+  },
+  enabled: isAgent,
+});
+Add filter UI before agent stats section:
+tsx{isAgent && (
+  <div className="flex flex-wrap gap-2 p-3 rounded-xl border bg-white dark:bg-card shadow-sm">
+    <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground self-center">Filtres</span>
+    
+    {/* City filter */}
+    <Select value={agentFilters.city} onValueChange={v => setAgentFilters(f => ({ ...f, city: v }))}>
+      <SelectTrigger className="h-8 text-xs w-auto min-w-[130px]">
+        <SelectValue placeholder="Toutes les villes" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Toutes les villes</SelectItem>
+        {(agentMyStats?.cities || []).map((c: string) => (
+          <SelectItem key={c} value={c}>{c}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+
+    {/* Product filter */}
+    <Select value={agentFilters.productId} onValueChange={v => setAgentFilters(f => ({ ...f, productId: v }))}>
+      <SelectTrigger className="h-8 text-xs w-auto min-w-[140px]">
+        <SelectValue placeholder="Tous les produits" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Tous les produits</SelectItem>
+        {(agentMyStats?.products || []).map((p: any) => (
+          <SelectItem key={p.name} value={String(p.id || p.name)}>{p.name}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+
+    {/* Date filters */}
+    <input type="date" value={agentFilters.dateFrom}
+      onChange={e => setAgentFilters(f => ({ ...f, dateFrom: e.target.value }))}
+      className="h-8 text-xs border rounded-md px-2 bg-white dark:bg-card" />
+    <input type="date" value={agentFilters.dateTo}
+      onChange={e => setAgentFilters(f => ({ ...f, dateTo: e.target.value }))}
+      className="h-8 text-xs border rounded-md px-2 bg-white dark:bg-card" />
+
+    {/* Reset */}
+    {(agentFilters.city !== 'all' || agentFilters.productId !== 'all' || agentFilters.dateFrom || agentFilters.dateTo) && (
+      <button onClick={() => setAgentFilters({ city: 'all', productId: 'all', dateFrom: '', dateTo: '' })}
+        className="h-8 px-3 text-xs rounded-md border text-muted-foreground hover:bg-muted">
+        Réinitialiser
+      </button>
+    )}
+  </div>
+)}
+Do NOT change: admin dashboard, media buyer, server other than my-stats endpoint.
