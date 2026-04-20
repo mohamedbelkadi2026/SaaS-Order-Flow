@@ -8,6 +8,7 @@ export default function ProductResearch() {
   const [keywords, setKeywords] = useState('');
   const [youtubeVideos, setYoutubeVideos] = useState<any[]>([]);
   const [tiktokVideos, setTiktokVideos] = useState<any[]>([]);
+  const [lensResults, setLensResults] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'tiktok' | 'youtube'>('tiktok');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -30,6 +31,7 @@ export default function ProductResearch() {
     setKeywords('');
     setYoutubeVideos([]);
     setTiktokVideos([]);
+    setLensResults([]);
     try {
       const r = await fetch('/api/product-research/analyze', {
         method: 'POST',
@@ -41,6 +43,7 @@ export default function ProductResearch() {
       setKeywords(data.keywords || '');
       setYoutubeVideos(data.youtubeVideos || []);
       setTiktokVideos(data.tiktokVideos || []);
+      setLensResults(data.lensResults || []);
       if ((data.tiktokVideos || []).length > 0) setActiveTab('tiktok');
       else if ((data.youtubeVideos || []).length > 0) setActiveTab('youtube');
     } catch (e) { console.error(e); }
@@ -157,6 +160,40 @@ export default function ProductResearch() {
           )}
         </div>
       </div>
+
+      {lensResults.length > 0 && (
+        <div className="rounded-2xl border bg-white dark:bg-card p-4" data-testid="section-lens-results">
+          <p className="font-semibold text-sm mb-3">🔍 Produits similaires trouvés ({lensResults.length})</p>
+          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+            {lensResults.map((r, i) => (
+              <a
+                key={i}
+                href={r.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-xl border overflow-hidden hover:shadow-md transition-all group"
+                data-testid={`card-lens-${i}`}
+              >
+                <div className="aspect-square overflow-hidden bg-muted">
+                  {r.thumbnail && (
+                    <img
+                      src={r.thumbnail}
+                      alt={r.title}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-all"
+                      onError={e => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
+                    />
+                  )}
+                </div>
+                <div className="p-1.5">
+                  <p className="text-[10px] line-clamp-2 font-medium">{r.title}</p>
+                  {r.price && <p className="text-[10px] text-emerald-600 font-bold">{r.price}</p>}
+                  <p className="text-[10px] text-muted-foreground truncate">{r.source}</p>
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {(tiktokVideos.length > 0 || youtubeVideos.length > 0) && (
         <div className="rounded-2xl border bg-white dark:bg-card overflow-hidden" data-testid="section-videos">

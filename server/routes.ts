@@ -7406,14 +7406,56 @@ function submitOrder(e){
     }
   });
 
-  // ─── Product Research — Image → AI keywords → TikTok + YouTube videos ───
-  app.post('/api/product-research/analyze', requireAuth, async (req: any, res: any) => {
+  // ─── Product Research — Image → Google Lens + AI keywords → Videos ───
+  const productResearchUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 },
+  });
+  app.post('/api/product-research/analyze', requireAuth, productResearchUpload.single('image'), async (req: any, res: any) => {
     try {
-      const { keyword, imageBase64 } = req.body || {};
+      const keyword = req.body?.keyword || '';
+      const imageBase64 = req.body?.imageBase64 || (req.file ? req.file.buffer.toString('base64') : '');
+      const imageMime = req.file?.mimetype || 'image/jpeg';
       let extractedKeywords = keyword || '';
 
-      // Step 1: AI image analysis with Claude
-      if (imageBase64 && process.env.ANTHROPIC_API_KEY) {
+      // Step 1: Google Lens reverse image search via RapidAPI
+      let lensResults: any[] = [];
+      if (imageBase64 && process.env.RAPIDAPI_KEY) {
+        try {
+          const lensResp = await fetch(
+            'https://reverse-image-search1.p.rapidapi.com/search/image',
+            {
+              method: 'POST',
+              headers: {
+                'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+                'X-RapidAPI-Host': 'reverse-image-search1.p.rapidapi.com',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ image: `data:${imageMime};base64,${imageBase64}` }),
+            },
+          );
+          if (lensResp.ok) {
+            const lensData: any = await lensResp.json();
+            console.log('[ProductResearch] Lens response:', JSON.stringify(lensData).slice(0, 500));
+            const matches = lensData?.visual_matches || lensData?.results || lensData?.image_results || [];
+            lensResults = (matches as any[]).slice(0, 12).map((r: any) => ({
+              title: r.title || r.name || '',
+              url: r.link || r.url || '',
+              thumbnail: r.thumbnail || r.image || '',
+              source: r.source || r.domain || '',
+              price: r.price || '',
+            }));
+            if (!extractedKeywords && lensData?.knowledge_graph?.title) {
+              extractedKeywords = lensData.knowledge_graph.title;
+            }
+          }
+        } catch (e: any) {
+          console.error('[ProductResearch] Lens error:', e.message);
+        }
+      }
+
+      // Step 2: AI image analysis with Claude (fallback when no keywords yet)
+      if (imageBase64 && !extractedKeywords && process.env.ANTHROPIC_API_KEY) {
         try {
           const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -7428,7 +7470,7 @@ function submitOrder(e){
               messages: [{
                 role: 'user',
                 content: [
-                  { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+                  { type: 'image', source: { type: 'base64', media_type: imageMime, data: imageBase64 } },
                   { type: 'text', text: 'What is this product? Give me 3 short English search keywords to find videos about it on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else. Example: electric knife sharpener, knife sharpener gadget, kitchen knife tool' },
                 ],
               }],
@@ -7520,6 +7562,7 @@ function submitOrder(e){
         keywords: extractedKeywords,
         mainKeyword: mainKw,
         allKeywords: allKw,
+        lensResults,
         youtubeVideos,
         tiktokVideos,
       });
