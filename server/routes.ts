@@ -7422,40 +7422,37 @@ function submitOrder(e){
       // Step 1: AI analyzes image → keywords
       if (imageBase64 && imageBase64.length > 100) {
         try {
-          console.log('[ProductResearch] Sending image to Claude AI...');
-          const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+          console.log('[ProductResearch] Sending image to OpenRouter AI...');
+          const aiResp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'x-api-key': process.env.ANTHROPIC_API_KEY || '',
-              'anthropic-version': '2023-06-01',
+              'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY || ''}`,
+              'HTTP-Referer': 'https://www.tajergrow.com',
+              'X-Title': 'TajerGrow',
             },
             body: JSON.stringify({
-              model: 'claude-haiku-4-5-20251001',
+              model: 'google/gemini-flash-1.5',
               max_tokens: 100,
               messages: [{
                 role: 'user',
                 content: [
                   {
-                    type: 'image',
-                    source: {
-                      type: 'base64',
-                      media_type: (imageMime || 'image/jpeg') as any,
-                      data: imageBase64,
-                    },
+                    type: 'image_url',
+                    image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
                   },
                   {
                     type: 'text',
-                    text: 'What product is in this image? Give me 3 short English search keywords to find videos about this product on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else.',
+                    text: 'What product is in this image? Give me 3 short English search keywords to find videos about this product on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else. Example: electric juicer, lemon squeezer, citrus press',
                   },
                 ],
               }],
             }),
           });
           const aiData: any = await aiResp.json();
-          console.log('[ProductResearch] AI response:', JSON.stringify(aiData).slice(0, 300));
-          if (aiData?.content?.[0]?.text) {
-            extractedKeywords = String(aiData.content[0].text).trim();
+          console.log('[ProductResearch] OpenRouter response:', JSON.stringify(aiData).slice(0, 300));
+          if (aiData?.choices?.[0]?.message?.content) {
+            extractedKeywords = String(aiData.choices[0].message.content).trim();
             console.log('[ProductResearch] AI keywords:', extractedKeywords);
           }
         } catch (e: any) {
