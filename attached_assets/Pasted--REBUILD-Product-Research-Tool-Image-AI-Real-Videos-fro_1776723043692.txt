@@ -1,4 +1,132 @@
-import { useState, useRef } from 'react';
+
+REBUILD — Product Research Tool: Image → AI → Real Videos from TikTok + YouTube
+CHANGE 1 — server/routes.ts — rebuild analyze endpoint:
+typescriptapp.post('/api/product-research/analyze', requireAuth, async (req: any, res: any) => {
+  try {
+    const { keyword, imageBase64 } = req.body || {};
+    let extractedKeywords = keyword || '';
+
+    // Step 1: AI analyzes image → extracts product keywords
+    if (imageBase64) {
+      try {
+        const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY || '',
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 150,
+            messages: [{
+              role: 'user',
+              content: [
+                { 
+                  type: 'image', 
+                  source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } 
+                },
+                { 
+                  type: 'text', 
+                  text: 'What is this product? Give me 3 short English search keywords to find videos about it on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else. Example: electric knife sharpener, knife sharpener gadget, kitchen knife tool' 
+                }
+              ]
+            }]
+          })
+        });
+        const aiData = await aiResp.json();
+        if (aiData.content?.[0]?.text) {
+          extractedKeywords = aiData.content[0].text.trim();
+          console.log(`[ProductResearch] AI keywords: ${extractedKeywords}`);
+        }
+      } catch (e: any) {
+        console.error('[ProductResearch] AI error:', e.message);
+        extractedKeywords = keyword || '';
+      }
+    }
+
+    const mainKw = extractedKeywords.split(',')[0]?.trim() || keyword || '';
+    const allKw = extractedKeywords.split(',').map((k: string) => k.trim()).filter(Boolean);
+
+    // Step 2: YouTube search via RapidAPI
+    let youtubeVideos: any[] = [];
+    try {
+      const ytResp = await fetch(
+        `https://youtube-search-and-download.p.rapidapi.com/search?query=${encodeURIComponent(mainKw + ' product review')}&type=v&sort=r`,
+        {
+          headers: {
+            'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+            'X-RapidAPI-Host': 'youtube-search-and-download.p.rapidapi.com',
+          }
+        }
+      );
+      if (ytResp.ok) {
+        const ytData = await ytResp.json();
+        youtubeVideos = (ytData.contents || [])
+          .filter((item: any) => item.video)
+          .slice(0, 6)
+          .map((item: any) => ({
+            id: item.video?.videoId,
+            title: item.video?.title,
+            thumbnail: item.video?.thumbnails?.[0]?.url,
+            views: item.video?.viewCountText,
+            channel: item.video?.channelName,
+            duration: item.video?.lengthText,
+            url: `https://www.youtube.com/watch?v=${item.video?.videoId}`,
+            platform: 'youtube',
+          }));
+      }
+      console.log(`[ProductResearch] YouTube videos: ${youtubeVideos.length}`);
+    } catch (e: any) {
+      console.error('[ProductResearch] YouTube error:', e.message);
+    }
+
+    // Step 3: TikTok search via RapidAPI
+    let tiktokVideos: any[] = [];
+    try {
+      const ttResp = await fetch(
+        `https://tiktok-download-video1.p.rapidapi.com/feed/search?keywords=${encodeURIComponent(mainKw)}&count=8&cursor=0&region=MA&publish_time=0&sort_type=0`,
+        {
+          headers: {
+            'X-RapidAPI-Key': process.env.RAPIDAPI_KEY || '',
+            'X-RapidAPI-Host': 'tiktok-download-video1.p.rapidapi.com',
+          }
+        }
+      );
+      if (ttResp.ok) {
+        const ttData = await ttResp.json();
+        const items = ttData.data?.videos || ttData.data || [];
+        tiktokVideos = items.slice(0, 8).map((v: any) => ({
+          id: v.video_id || v.id,
+          title: v.title || v.desc || '',
+          thumbnail: v.cover || v.origin_cover || '',
+          views: v.play_count || v.statistics?.play_count || 0,
+          likes: v.digg_count || v.statistics?.digg_count || 0,
+          author: v.author?.nickname || '',
+          url: `https://www.tiktok.com/@${v.author?.unique_id}/video/${v.video_id || v.id}`,
+          platform: 'tiktok',
+        }));
+      }
+      console.log(`[ProductResearch] TikTok videos: ${tiktokVideos.length}`);
+    } catch (e: any) {
+      console.error('[ProductResearch] TikTok error:', e.message);
+    }
+
+    res.json({
+      keywords: extractedKeywords,
+      mainKeyword: mainKw,
+      allKeywords: allKw,
+      youtubeVideos,
+      tiktokVideos,
+    });
+
+  } catch (e: any) {
+    console.error('[ProductResearch] Error:', e.message);
+    res.status(500).json({ message: e.message });
+  }
+});
+CHANGE 2 — Rebuild client/src/pages/product-research.tsx:
+tsximport { useState, useRef } from 'react';
 import { Search, Upload, Loader2, Youtube, Music2, RefreshCw, Eye, Heart } from 'lucide-react';
 
 export default function ProductResearch() {
@@ -47,14 +175,14 @@ export default function ProductResearch() {
     setLoading(false);
   };
 
-  const fmtNum = (n: number) =>
-    n > 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n > 1_000 ? `${(n / 1_000).toFixed(0)}K` : String(n);
+  const fmtNum = (n: number) => n > 1000000 ? `${(n/1000000).toFixed(1)}M` : n > 1000 ? `${(n/1000).toFixed(0)}K` : String(n);
   const kwList = keywords.split(',').map(k => k.trim()).filter(Boolean);
 
   return (
-    <div className="space-y-5 p-4 sm:p-6 max-w-5xl mx-auto" data-testid="page-product-research">
+    <div className="space-y-5 p-4 sm:p-6 max-w-5xl mx-auto">
+      {/* Header */}
       <div>
-        <h1 className="text-xl font-bold flex items-center gap-2" data-testid="text-page-title">
+        <h1 className="text-xl font-bold flex items-center gap-2">
           🎬 Product Research
         </h1>
         <p className="text-xs text-muted-foreground mt-0.5">
@@ -62,16 +190,17 @@ export default function ProductResearch() {
         </p>
       </div>
 
+      {/* Input section */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Image upload */}
         <div className="rounded-2xl border bg-white dark:bg-card p-4 space-y-3">
           <p className="font-semibold text-sm">📸 Image produit</p>
           <div
             onClick={() => inputRef.current?.click()}
             className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed rounded-xl cursor-pointer hover:bg-muted/20 transition-all"
-            data-testid="dropzone-image"
           >
             {imagePreview ? (
-              <img src={imagePreview} className="h-full object-contain rounded-lg p-1" alt="preview" data-testid="img-preview" />
+              <img src={imagePreview} className="h-full object-contain rounded-lg p-1" alt="preview" />
             ) : (
               <div className="text-center space-y-2">
                 <Upload className="w-7 h-7 mx-auto text-muted-foreground opacity-40" />
@@ -79,7 +208,7 @@ export default function ProductResearch() {
               </div>
             )}
           </div>
-          <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleImage} data-testid="input-image-file" />
+          <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleImage} />
 
           <div className="flex items-center gap-2">
             <div className="flex-1 h-px bg-border" />
@@ -94,14 +223,12 @@ export default function ProductResearch() {
             onChange={e => setManualKeyword(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && analyze()}
             className="w-full h-9 px-3 text-sm border rounded-lg bg-white dark:bg-card focus:outline-none focus:ring-2 focus:ring-purple-400"
-            data-testid="input-manual-keyword"
           />
 
           <button
             onClick={analyze}
             disabled={loading || (!imageBase64 && !manualKeyword)}
             className="w-full h-10 rounded-xl font-semibold text-sm bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 flex items-center justify-center gap-2"
-            data-testid="button-analyze"
           >
             {loading
               ? <><Loader2 className="w-4 h-4 animate-spin" />Recherche en cours...</>
@@ -110,40 +237,30 @@ export default function ProductResearch() {
           </button>
         </div>
 
+        {/* Keywords */}
         <div className="rounded-2xl border bg-white dark:bg-card p-4 space-y-3">
           <p className="font-semibold text-sm">🤖 Produit détecté par IA</p>
           {kwList.length > 0 ? (
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
                 {kwList.map((k, i) => (
-                  <span
-                    key={i}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium border ${
-                      i === 0
-                        ? 'bg-purple-600 text-white border-purple-600'
-                        : 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 border-purple-200'
-                    }`}
-                    data-testid={`badge-keyword-${i}`}
-                  >
+                  <span key={i}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border ${i === 0 ? 'bg-purple-600 text-white border-purple-600' : 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 border-purple-200'}`}>
                     {i === 0 ? '🎯 ' : ''}{k}
                   </span>
                 ))}
               </div>
               <div className="grid grid-cols-2 gap-2 pt-2">
                 <div className="rounded-xl bg-muted/20 p-3 text-center">
-                  <p className="text-lg font-bold text-pink-500" data-testid="count-tiktok">{tiktokVideos.length}</p>
+                  <p className="text-lg font-bold text-pink-500">{tiktokVideos.length}</p>
                   <p className="text-[10px] text-muted-foreground">TikTok vidéos</p>
                 </div>
                 <div className="rounded-xl bg-muted/20 p-3 text-center">
-                  <p className="text-lg font-bold text-red-500" data-testid="count-youtube">{youtubeVideos.length}</p>
+                  <p className="text-lg font-bold text-red-500">{youtubeVideos.length}</p>
                   <p className="text-[10px] text-muted-foreground">YouTube vidéos</p>
                 </div>
               </div>
-              <button
-                onClick={analyze}
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary"
-                data-testid="button-rerun"
-              >
+              <button onClick={analyze} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary">
                 <RefreshCw className="w-3 h-3" /> Relancer
               </button>
             </div>
@@ -158,25 +275,21 @@ export default function ProductResearch() {
         </div>
       </div>
 
+      {/* Video results */}
       {(tiktokVideos.length > 0 || youtubeVideos.length > 0) && (
-        <div className="rounded-2xl border bg-white dark:bg-card overflow-hidden" data-testid="section-videos">
+        <div className="rounded-2xl border bg-white dark:bg-card overflow-hidden">
+          {/* Tabs */}
           <div className="flex border-b">
             <button
               onClick={() => setActiveTab('tiktok')}
-              className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold transition-all ${
-                activeTab === 'tiktok' ? 'bg-black text-white' : 'text-muted-foreground hover:bg-muted/20'
-              }`}
-              data-testid="tab-tiktok"
+              className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold transition-all ${activeTab === 'tiktok' ? 'bg-black text-white' : 'text-muted-foreground hover:bg-muted/20'}`}
             >
               <Music2 className="w-4 h-4" />
               TikTok ({tiktokVideos.length})
             </button>
             <button
               onClick={() => setActiveTab('youtube')}
-              className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold transition-all ${
-                activeTab === 'youtube' ? 'bg-red-600 text-white' : 'text-muted-foreground hover:bg-muted/20'
-              }`}
-              data-testid="tab-youtube"
+              className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-semibold transition-all ${activeTab === 'youtube' ? 'bg-red-600 text-white' : 'text-muted-foreground hover:bg-muted/20'}`}
             >
               <Youtube className="w-4 h-4" />
               YouTube ({youtubeVideos.length})
@@ -184,20 +297,16 @@ export default function ProductResearch() {
           </div>
 
           <div className="p-4">
+            {/* TikTok videos */}
             {activeTab === 'tiktok' && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {tiktokVideos.map((v, i) => (
-                  <a
-                    key={i}
-                    href={v.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-xl border overflow-hidden hover:shadow-md transition-all group"
-                    data-testid={`card-tiktok-${i}`}
-                  >
+                  <a key={i} href={v.url} target="_blank" rel="noopener noreferrer"
+                    className="rounded-xl border overflow-hidden hover:shadow-md transition-all group">
                     <div className="relative bg-black" style={{ aspectRatio: '9/16' }}>
                       {v.thumbnail && (
-                        <img src={v.thumbnail} alt={v.title} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-all" />
+                        <img src={v.thumbnail} alt={v.title}
+                          className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-all" />
                       )}
                       <div className="absolute inset-0 flex items-center justify-center">
                         <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center group-hover:bg-white/40 transition-all">
@@ -231,20 +340,16 @@ export default function ProductResearch() {
               </div>
             )}
 
+            {/* YouTube videos */}
             {activeTab === 'youtube' && (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {youtubeVideos.map((v, i) => (
-                  <a
-                    key={i}
-                    href={v.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-xl border overflow-hidden hover:shadow-md transition-all group"
-                    data-testid={`card-youtube-${i}`}
-                  >
+                  <a key={i} href={v.url} target="_blank" rel="noopener noreferrer"
+                    className="rounded-xl border overflow-hidden hover:shadow-md transition-all group">
                     <div className="relative aspect-video overflow-hidden bg-black">
                       {v.thumbnail && (
-                        <img src={v.thumbnail} alt={v.title} className="w-full h-full object-cover group-hover:scale-105 transition-all" />
+                        <img src={v.thumbnail} alt={v.title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-all" />
                       )}
                       <div className="absolute inset-0 flex items-center justify-center">
                         <div className="w-10 h-10 rounded-full bg-red-600/80 flex items-center justify-center group-hover:bg-red-600 transition-all">
@@ -282,3 +387,19 @@ export default function ProductResearch() {
     </div>
   );
 }
+CHANGE 3 — Add to Railway Variables:
+RAPIDAPI_KEY=8b2b5db17fmsh118f874ea1d00d8p120c4bjsncd51f3db7aa9
+CHANGE 4 — Subscribe to these 2 APIs on RapidAPI (free plans):
+
+youtube-search-and-download — search: "YouTube Search and Download"
+tiktok-download-video1 — search: "TikTok Download Video"
+
+Both free tier available w nfs key katkhdam.
+CHANGE 5 — Add route + sidebar (if not already added):
+tsx// App.tsx:
+import ProductResearch from '@/pages/product-research';
+<Route path="/product-research" component={ProductResearch} />
+
+// app-layout.tsx sidebar:
+{ name: "Product Research", href: "/product-research", icon: Video },
+Do NOT change: any existing page, server logic, or other features.

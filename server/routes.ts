@@ -7406,13 +7406,13 @@ function submitOrder(e){
     }
   });
 
-  // ─── Product Research — Image/Keyword → AI Keywords + AliExpress search ──
+  // ─── Product Research — Image → AI keywords → TikTok + YouTube videos ───
   app.post('/api/product-research/analyze', requireAuth, async (req: any, res: any) => {
     try {
       const { keyword, imageBase64 } = req.body || {};
       let extractedKeywords = keyword || '';
 
-      // AI image analysis with Claude
+      // Step 1: AI image analysis with Claude
       if (imageBase64 && process.env.ANTHROPIC_API_KEY) {
         try {
           const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -7424,12 +7424,12 @@ function submitOrder(e){
             },
             body: JSON.stringify({
               model: 'claude-haiku-4-5-20251001',
-              max_tokens: 200,
+              max_tokens: 150,
               messages: [{
                 role: 'user',
                 content: [
                   { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
-                  { type: 'text', text: 'Identify this product precisely. Return ONLY 5 comma-separated English search keywords for AliExpress/TikTok. Example format: electric juicer, lemon squeezer, citrus press, kitchen gadget, fruit juicer' },
+                  { type: 'text', text: 'What is this product? Give me 3 short English search keywords to find videos about it on TikTok and YouTube. Return ONLY comma-separated keywords, nothing else. Example: electric knife sharpener, knife sharpener gadget, kitchen knife tool' },
                 ],
               }],
             }),
@@ -7437,48 +7437,57 @@ function submitOrder(e){
           const aiData: any = await aiResp.json();
           if (aiData?.content?.[0]?.text) {
             extractedKeywords = String(aiData.content[0].text).trim();
+            console.log(`[ProductResearch] AI keywords: ${extractedKeywords}`);
           }
         } catch (e: any) {
           console.error('[ProductResearch] AI error:', e.message);
-          extractedKeywords = keyword || 'product';
+          extractedKeywords = keyword || '';
         }
       }
 
       const mainKw = (extractedKeywords.split(',')[0] || '').trim() || keyword || '';
+      const allKw = extractedKeywords.split(',').map((k: string) => k.trim()).filter(Boolean);
 
-      // AliExpress search via RapidAPI
-      let aliResults: any[] = [];
+      // Step 2: YouTube search via RapidAPI
+      let youtubeVideos: any[] = [];
       if (mainKw && process.env.RAPIDAPI_KEY) {
         try {
-          const aliResp = await fetch(
-            `https://aliexpress-datahub.p.rapidapi.com/item_search_2?q=${encodeURIComponent(mainKw)}&page=1`,
+          const ytResp = await fetch(
+            `https://youtube-search-and-download.p.rapidapi.com/search?query=${encodeURIComponent(mainKw + ' product review')}&type=v&sort=r`,
             {
               headers: {
                 'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
-                'X-RapidAPI-Host': 'aliexpress-datahub.p.rapidapi.com',
+                'X-RapidAPI-Host': 'youtube-search-and-download.p.rapidapi.com',
               },
             },
           );
-          if (aliResp.ok) {
-            const aliData: any = await aliResp.json();
-            aliResults = (aliData?.result?.resultList || []).slice(0, 8).map((item: any) => ({
-              title: item?.item?.title,
-              price: item?.item?.sku?.def?.promotionPrice,
-              image: item?.item?.image,
-              url: `https://www.aliexpress.com/item/${item?.item?.itemId}.html`,
-              hasVideo: false,
-            }));
+          if (ytResp.ok) {
+            const ytData: any = await ytResp.json();
+            youtubeVideos = (ytData?.contents || [])
+              .filter((item: any) => item.video)
+              .slice(0, 6)
+              .map((item: any) => ({
+                id: item.video?.videoId,
+                title: item.video?.title,
+                thumbnail: item.video?.thumbnails?.[0]?.url,
+                views: item.video?.viewCountText,
+                channel: item.video?.channelName,
+                duration: item.video?.lengthText,
+                url: `https://www.youtube.com/watch?v=${item.video?.videoId}`,
+                platform: 'youtube',
+              }));
           }
+          console.log(`[ProductResearch] YouTube videos: ${youtubeVideos.length}`);
         } catch (e: any) {
-          console.error('[ProductResearch] AliExpress error:', e.message);
+          console.error('[ProductResearch] YouTube error:', e.message);
         }
       }
 
-      // TikTok search by keyword
+      // Step 3: TikTok search via RapidAPI
       let tiktokVideos: any[] = [];
       if (mainKw && process.env.RAPIDAPI_KEY) {
         try {
-          const tiktokResp = await fetch(
+          const ttResp = await fetch(
             `https://tiktok-download-video1.p.rapidapi.com/feed/search?keywords=${encodeURIComponent(mainKw)}&count=8&cursor=0&region=MA&publish_time=0&sort_type=0`,
             {
               headers: {
@@ -7487,42 +7496,32 @@ function submitOrder(e){
               },
             },
           );
-          if (tiktokResp.ok) {
-            const tiktokData: any = await tiktokResp.json();
-            const items = tiktokData?.data?.videos || tiktokData?.data || [];
+          if (ttResp.ok) {
+            const ttData: any = await ttResp.json();
+            const items = ttData?.data?.videos || ttData?.data || [];
             tiktokVideos = (items as any[]).slice(0, 8).map((v: any) => ({
               id: v.video_id || v.id,
               title: v.title || v.desc || '',
-              cover: v.cover || v.origin_cover || '',
-              playUrl: v.play || v.wmplay || '',
-              noWatermark: v.nowm || v.play_no_watermark || '',
-              likes: v.digg_count || v.statistics?.digg_count || 0,
+              thumbnail: v.cover || v.origin_cover || '',
               views: v.play_count || v.statistics?.play_count || 0,
+              likes: v.digg_count || v.statistics?.digg_count || 0,
               author: v.author?.nickname || '',
               url: `https://www.tiktok.com/@${v.author?.unique_id}/video/${v.video_id || v.id}`,
+              platform: 'tiktok',
             }));
           }
+          console.log(`[ProductResearch] TikTok videos: ${tiktokVideos.length}`);
         } catch (e: any) {
           console.error('[ProductResearch] TikTok error:', e.message);
         }
       }
 
-      const searchUrls = {
-        aliexpress: `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(mainKw)}`,
-        alibaba1688: `https://s.1688.com/selloffer/offerlist.htm?keywords=${encodeURIComponent(mainKw)}`,
-        tiktok: `https://www.tiktok.com/search?q=${encodeURIComponent(mainKw)}`,
-        tiktokAds: `https://library.tiktok.com/ads/?region=MA&search=${encodeURIComponent(mainKw)}`,
-        metaAds: `https://www.facebook.com/ads/library/?country=MA&search_terms=${encodeURIComponent(mainKw)}&ad_type=ALL&media_type=video`,
-        youtube: `https://www.youtube.com/results?search_query=${encodeURIComponent(mainKw + ' review')}`,
-        pinterest: `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(mainKw)}`,
-      };
-
       res.json({
         keywords: extractedKeywords,
         mainKeyword: mainKw,
-        aliResults,
+        allKeywords: allKw,
+        youtubeVideos,
         tiktokVideos,
-        searchUrls,
       });
     } catch (e: any) {
       console.error('[ProductResearch] Error:', e.message);
