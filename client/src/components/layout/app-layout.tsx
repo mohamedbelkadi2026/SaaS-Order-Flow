@@ -45,6 +45,7 @@ import {
   CalendarX,
   Bot,
   BarChart3,
+  Video,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { setLanguage } from "@/i18n";
@@ -76,6 +77,7 @@ const ADMIN_NAV = [
   { name: "Calculateur de Marge",   href: "/calculator",    icon: PieChart        },
   { name: "Profit Analyzer Pro",    href: "/profit-analyzer", icon: BarChart3     },
   { name: "Statistiques Livraison", href: "/delivery-stats",  icon: Truck         },
+  { name: "Product Research",       href: "/product-research", icon: Video        },
   { name: "Infographie IA",          href: "/lp-builder",    icon: Wand2           },
   { name: "Automation & AI",        href: "/automation",    icon: Bot             },
   { name: "Integration",            href: "/integrations",  icon: Plug,           hasSubmenu: true  },

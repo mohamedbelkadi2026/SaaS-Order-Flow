@@ -7406,5 +7406,59 @@ function submitOrder(e){
     }
   });
 
+  // ─── Product Research — Image/Keyword → AI Keywords ──────────────────────
+  app.post('/api/product-research/analyze', requireAuth, async (req: any, res: any) => {
+    try {
+      const { keyword, imageBase64 } = req.body || {};
+
+      if (!imageBase64 && !keyword) {
+        return res.status(400).json({ message: 'Image ou mot-clé requis' });
+      }
+
+      let extractedKeywords = keyword || '';
+
+      if (imageBase64 && process.env.ANTHROPIC_API_KEY) {
+        try {
+          const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 150,
+              messages: [{
+                role: 'user',
+                content: [
+                  {
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 },
+                  },
+                  {
+                    type: 'text',
+                    text: 'Identify this product. Give me exactly 5 short search keywords in English suitable for AliExpress/1688/TikTok search. Return ONLY comma-separated keywords. Example: electric juicer, lemon squeezer, citrus press, kitchen gadget, fruit juicer',
+                  },
+                ],
+              }],
+            }),
+          });
+          const data: any = await response.json();
+          if (data?.content?.[0]?.text) {
+            extractedKeywords = String(data.content[0].text).trim();
+          }
+        } catch (aiErr: any) {
+          console.error('[ProductResearch] AI error:', aiErr.message);
+          extractedKeywords = keyword || 'product';
+        }
+      }
+
+      res.json({ keywords: extractedKeywords });
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
+    }
+  });
+
   return httpServer;
 }
