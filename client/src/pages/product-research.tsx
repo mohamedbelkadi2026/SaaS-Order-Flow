@@ -56,7 +56,7 @@ export default function ProductResearch() {
     { name: 'TikTok', icon: '🎵', color: 'text-black dark:text-white', url: `https://www.tiktok.com/search?q=${encodeURIComponent(mainKw)}` },
     { name: 'TikTok Ads', icon: '📱', color: 'text-pink-600', url: `https://library.tiktok.com/ads?search=${encodeURIComponent(mainKw)}&countryCode=MA` },
     { name: 'YouTube', icon: '▶️', color: 'text-red-600', url: `https://www.youtube.com/results?search_query=${encodeURIComponent(mainKw + ' review')}` },
-    { name: 'Meta Ad Library', icon: '📘', color: 'text-blue-600', url: `https://www.facebook.com/ads/library/?q=${encodeURIComponent(mainKw)}&search_type=keyword_unordered` },
+    { name: 'Meta Ad Library', icon: '📘', color: 'text-blue-600', url: `https://www.facebook.com/ads/library/?country=MA&search_terms=${encodeURIComponent(mainKw)}&ad_type=ALL&media_type=video` },
     { name: 'Pinterest', icon: '📌', color: 'text-red-500', url: `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(mainKw)}` },
     { name: 'Dropship Spy', icon: '🔍', color: 'text-purple-600', url: `https://www.dropship-spy.com/?s=${encodeURIComponent(mainKw)}` },
     { name: 'Minea', icon: '📊', color: 'text-indigo-600', url: `https://minea.com/search?q=${encodeURIComponent(mainKw)}` },
