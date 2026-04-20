@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { useAuth } from '@/hooks/use-auth';
 
 export const NOTIFICATION_SOUNDS = [
   { id: 'cash',    label: '💰 Caisse',   url: 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3' },
@@ -10,9 +11,11 @@ export const NOTIFICATION_SOUNDS = [
 
 export function useSoundNotification() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const { user } = useAuth();
+  const userId = (user as any)?.id || 'guest';
 
-  const soundEnabled = localStorage.getItem('notification_sound_enabled') !== 'false';
-  const soundId = localStorage.getItem('notification_sound_id') || 'cash';
+  const soundEnabled = localStorage.getItem(`notif_sound_enabled_${userId}`) !== 'false';
+  const soundId = localStorage.getItem(`notif_sound_id_${userId}`) || 'cash';
   const sound = NOTIFICATION_SOUNDS.find(s => s.id === soundId) || NOTIFICATION_SOUNDS[0];
 
   const playSound = () => {

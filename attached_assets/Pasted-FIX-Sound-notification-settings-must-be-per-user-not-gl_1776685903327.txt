@@ -1,0 +1,44 @@
+FIX — Sound notification settings must be per-user (not global)
+PROBLEM: Sound settings are stored globally (localStorage without userId key or in a shared DB record), so changing them for one user affects all users.
+SOLUTION: Store sound settings per-user using userId as key.
+CHANGE 1 — client/src/ — find the sound settings hook/component:
+Find where sound settings are saved to localStorage, something like:
+typescriptlocalStorage.setItem('soundSettings', JSON.stringify(settings))
+// or
+localStorage.setItem('notificationSound', value)
+Change to include userId:
+typescript// Get current user id
+const userId = user?.id || 'guest';
+localStorage.setItem(`soundSettings_${userId}`, JSON.stringify(settings))
+And when reading:
+typescriptconst userId = user?.id || 'guest';
+const saved = localStorage.getItem(`soundSettings_${userId}`);
+CHANGE 2 — Find ALL localStorage keys related to sounds/notifications and add userId suffix:
+Search for these patterns and fix each one:
+typescript// Any of these patterns:
+localStorage.getItem('sound')
+localStorage.setItem('sound')
+localStorage.getItem('notification')
+localStorage.setItem('notification')
+localStorage.getItem('notif')
+localStorage.setItem('notif')
+localStorage.getItem('audio')
+localStorage.setItem('audio')
+Replace each with _${user?.id || 'guest'} suffix on the key.
+CHANGE 3 — Make sure user object is available in the sound settings component — import from auth context:
+typescriptimport { useAuth } from '@/hooks/use-auth'; // or wherever useAuth is
+const { user } = useAuth();
+CHANGE 4 — Reset to defaults when user changes (logout/login different user):
+typescript// In useEffect watching user changes:
+useEffect(() => {
+  if (user?.id) {
+    const saved = localStorage.getItem(`soundSettings_${user.id}`);
+    if (saved) {
+      setSettings(JSON.parse(saved));
+    } else {
+      setSettings(DEFAULT_SOUND_SETTINGS); // reset to defaults for new user
+    }
+  }
+}, [user?.id]);
+Do NOT change: any server logic, any other settings, any other feature.
+Only touch: the sound/notification settings storage — add userId to localStorage keys.

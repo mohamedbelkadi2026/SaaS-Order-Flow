@@ -443,9 +443,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     };
 
     const playNotificationSound = () => {
-      const enabled = localStorage.getItem('notif_sound_enabled') !== 'false';
+      const uid = (user as any)?.id || 'guest';
+      const enabled = localStorage.getItem(`notif_sound_enabled_${uid}`) !== 'false';
       if (!enabled) return;
-      const id = localStorage.getItem('notif_sound_id') || 'cash';
+      const id = localStorage.getItem(`notif_sound_id_${uid}`) || 'cash';
       playTone(id);
     };
 

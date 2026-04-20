@@ -281,22 +281,25 @@ export default function Profile() {
     } catch {}
   };
 
+  const soundUserId = (user as any)?.id || 'guest';
   const [pendingSoundEnabled, setPendingSoundEnabled] = useState(
-    () => localStorage.getItem('notif_sound_enabled') !== 'false'
+    () => localStorage.getItem(`notif_sound_enabled_${soundUserId}`) !== 'false'
   );
   const [pendingSound, setPendingSound] = useState(
-    () => localStorage.getItem('notif_sound_id') || 'cash'
+    () => localStorage.getItem(`notif_sound_id_${soundUserId}`) || 'cash'
   );
   const [soundSaved, setSoundSaved] = useState(false);
 
   useEffect(() => {
-    setPendingSound(localStorage.getItem('notif_sound_id') || 'cash');
-    setPendingSoundEnabled(localStorage.getItem('notif_sound_enabled') !== 'false');
-  }, []);
+    const uid = (user as any)?.id || 'guest';
+    setPendingSound(localStorage.getItem(`notif_sound_id_${uid}`) || 'cash');
+    setPendingSoundEnabled(localStorage.getItem(`notif_sound_enabled_${uid}`) !== 'false');
+  }, [(user as any)?.id]);
 
   const saveSoundSettings = () => {
-    localStorage.setItem('notif_sound_id', pendingSound);
-    localStorage.setItem('notif_sound_enabled', String(pendingSoundEnabled));
+    const uid = (user as any)?.id || 'guest';
+    localStorage.setItem(`notif_sound_id_${uid}`, pendingSound);
+    localStorage.setItem(`notif_sound_enabled_${uid}`, String(pendingSoundEnabled));
     setSoundSaved(true);
     setTimeout(() => setSoundSaved(false), 2000);
   };
