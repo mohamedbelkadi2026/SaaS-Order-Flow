@@ -4381,18 +4381,29 @@ export async function registerRoutes(
       const agentId = user.id;
 
       // Filter params
-      const { city, productId, dateFrom, dateTo } = req.query as Record<string, string>;
+      const { city, product, dateRange } = req.query as Record<string, string>;
 
-      // Fetch all orders assigned to this agent in the last 15 days
+      // Compute window from dateRange shortcut
       const now = new Date();
-      const cutoff = new Date(now);
-      cutoff.setDate(cutoff.getDate() - 14); // 15 days including today
-      cutoff.setHours(0, 0, 0, 0);
+      let cutoff = new Date(now);
+      let endDate: Date | null = null;
+
+      if (dateRange === 'today') {
+        cutoff = new Date(now);
+        cutoff.setHours(0, 0, 0, 0);
+      } else if (dateRange === 'month') {
+        cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+      } else if (dateRange === 'lastmonth') {
+        cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      } else {
+        // 'all' or default — last 90 days
+        cutoff.setDate(cutoff.getDate() - 89);
+        cutoff.setHours(0, 0, 0, 0);
+      }
 
       const { orders: ordersTable } = await import("@shared/schema");
       const { and, gte, eq: drEq } = await import("drizzle-orm");
-
-      const startDate = dateFrom ? new Date(dateFrom) : cutoff;
 
       let agentOrders = await db
         .select()
@@ -4400,27 +4411,32 @@ export async function registerRoutes(
         .where(and(
           drEq(ordersTable.storeId, storeId),
           drEq(ordersTable.assignedToId, agentId),
-          gte(ordersTable.createdAt, startDate),
+          gte(ordersTable.createdAt, cutoff),
         ));
 
-      // Build the unfiltered cities/products lists (so dropdowns stay populated after filtering)
+      // Cap by endDate (lastmonth window)
+      if (endDate) {
+        agentOrders = agentOrders.filter((o: any) => o.createdAt && new Date(o.createdAt) <= endDate!);
+      }
+
+      // Build the unfiltered cities list (so dropdown stays populated after filtering)
       const allCities = [...new Set((agentOrders as any[]).map(o => o.customerCity).filter(Boolean))];
 
-      // Apply filters
+      // Apply city filter
       if (city && city !== 'all') {
         agentOrders = agentOrders.filter((o: any) => o.customerCity === city);
       }
-      if (productId && productId !== 'all') {
-        const pid = Number(productId);
-        agentOrders = agentOrders.filter((o: any) =>
-          (Array.isArray(o.items) && o.items.some((i: any) => i.productId === pid)) ||
-          (o.rawProductName && String(o.rawProductName) === productId)
-        );
-      }
-      if (dateTo) {
-        const to = new Date(dateTo);
-        to.setHours(23, 59, 59, 999);
-        agentOrders = agentOrders.filter((o: any) => o.createdAt && new Date(o.createdAt) <= to);
+
+      // Apply product filter (by name)
+      if (product && product !== 'all') {
+        agentOrders = agentOrders.filter((o: any) => {
+          const name =
+            o.rawProductName ||
+            o.items?.[0]?.rawProductName ||
+            o.items?.[0]?.product?.name ||
+            '';
+          return name === product;
+        });
       }
 
       // ── Daily counts (line chart) ──────────────────────────────────

@@ -1,0 +1,139 @@
+
+REDESIGN — Agent dashboard filters: position + date shortcuts + real product filtering
+In client/src/pages/dashboard.tsx:
+CHANGE 1 — Move filters ABOVE stat cards, add date shortcuts:
+Replace current agent filters with:
+tsx{isAgent && (
+  <div className="rounded-xl border bg-white dark:bg-card shadow-sm p-3 flex flex-wrap items-center gap-2">
+    <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Filtres</span>
+
+    {/* Date shortcuts */}
+    {[
+      { label: "Aujourd'hui", value: 'today' },
+      { label: 'Ce mois', value: 'month' },
+      { label: 'Mois dernier', value: 'lastmonth' },
+      { label: 'Tout', value: 'all' },
+    ].map(opt => (
+      <button
+        key={opt.value}
+        onClick={() => setAgentFilters(f => ({ ...f, dateRange: opt.value }))}
+        className={`h-7 px-3 text-xs rounded-full border font-medium transition-all ${
+          agentFilters.dateRange === opt.value
+            ? 'bg-primary text-white border-primary'
+            : 'bg-white dark:bg-card text-muted-foreground hover:bg-muted'
+        }`}
+      >
+        {opt.label}
+      </button>
+    ))}
+
+    {/* Separator */}
+    <div className="w-px h-5 bg-border" />
+
+    {/* Product filter */}
+    <Select value={agentFilters.productId} onValueChange={v => setAgentFilters(f => ({ ...f, productId: v }))}>
+      <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] rounded-full">
+        <SelectValue placeholder="Tous les produits" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Tous les produits</SelectItem>
+        {(agentMyStats?.products || []).map((p: any) => (
+          <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+
+    {/* City filter */}
+    <Select value={agentFilters.city} onValueChange={v => setAgentFilters(f => ({ ...f, city: v }))}>
+      <SelectTrigger className="h-7 text-xs w-auto min-w-[120px] rounded-full">
+        <SelectValue placeholder="Toutes les villes" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Toutes les villes</SelectItem>
+        {(agentMyStats?.cities || []).map((c: string) => (
+          <SelectItem key={c} value={c}>{c}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+
+    {/* Reset */}
+    {(agentFilters.city !== 'all' || agentFilters.productId !== 'all' || agentFilters.dateRange !== 'all') && (
+      <button
+        onClick={() => setAgentFilters({ city: 'all', productId: 'all', dateRange: 'all' })}
+        className="h-7 px-3 text-xs rounded-full border text-red-500 hover:bg-red-50"
+      >
+        ✕ Reset
+      </button>
+    )}
+  </div>
+)}
+CHANGE 2 — Update agentFilters state:
+tsxconst [agentFilters, setAgentFilters] = useState({
+  city: 'all',
+  productId: 'all',
+  dateRange: 'month', // default: ce mois
+});
+CHANGE 3 — Update query to pass dateRange:
+tsxconst { data: agentMyStats } = useQuery({
+  queryKey: ['/api/agents/my-stats', agentFilters],
+  queryFn: async () => {
+    const params = new URLSearchParams();
+    if (agentFilters.city !== 'all') params.set('city', agentFilters.city);
+    if (agentFilters.productId !== 'all') params.set('product', agentFilters.productId);
+    params.set('dateRange', agentFilters.dateRange);
+    const r = await fetch(`/api/agents/my-stats?${params}`, { credentials: 'include' });
+    return r.json();
+  },
+  enabled: isAgent,
+});
+CHANGE 4 — server/routes.ts — handle dateRange in /api/agents/my-stats:
+typescriptconst { city, product, dateRange } = req.query as Record<string, string>;
+
+const now = new Date();
+let cutoff = new Date(now);
+
+if (dateRange === 'today') {
+  cutoff = new Date(now);
+  cutoff.setHours(0, 0, 0, 0);
+} else if (dateRange === 'month') {
+  cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+} else if (dateRange === 'lastmonth') {
+  cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+} else {
+  // 'all' or default — last 90 days
+  cutoff.setDate(cutoff.getDate() - 89);
+  cutoff.setHours(0, 0, 0, 0);
+}
+
+// For lastmonth, also set end date
+let endDate: Date | null = null;
+if (dateRange === 'lastmonth') {
+  endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+}
+Apply filters:
+typescript// Filter by city
+if (city && city !== 'all') {
+  agentOrders = agentOrders.filter(o => o.customerCity === city);
+}
+
+// Filter by product name
+if (product && product !== 'all') {
+  agentOrders = agentOrders.filter((o: any) => {
+    const name = o.rawProductName || o.items?.[0]?.rawProductName || o.items?.[0]?.product?.name || '';
+    return name === product;
+  });
+}
+
+// Apply endDate for lastmonth
+if (endDate) {
+  agentOrders = agentOrders.filter(o => o.createdAt && new Date(o.createdAt) <= endDate!);
+}
+CHANGE 5 — Show filtered product name in dashboard title when product selected:
+tsx{isAgent && agentFilters.productId !== 'all' && (
+  <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 flex items-center gap-2">
+    <Package className="w-4 h-4 text-primary" />
+    <span className="text-sm font-semibold text-primary">Filtré par: {agentFilters.productId}</span>
+    <button onClick={() => setAgentFilters(f => ({ ...f, productId: 'all' }))} className="ml-auto text-xs text-muted-foreground hover:text-red-500">✕</button>
+  </div>
+)}
+Do NOT change: admin dashboard, media buyer, any server endpoint other than my-stats.

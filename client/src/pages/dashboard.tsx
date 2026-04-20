@@ -113,7 +113,11 @@ export default function Dashboard() {
     enabled: isAgent,
   });
 
-  const [agentFilters, setAgentFilters] = useState({ city: 'all', productId: 'all', dateFrom: '', dateTo: '' });
+  const [agentFilters, setAgentFilters] = useState({
+    city: 'all',
+    productId: 'all',
+    dateRange: 'month' as 'today' | 'month' | 'lastmonth' | 'all',
+  });
 
   const { data: agentMyStats, isLoading: agentStatsLoading } = useQuery<{
     daily: { date: string; orders: number }[];
@@ -126,11 +130,9 @@ export default function Dashboard() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (agentFilters.city !== 'all') params.set('city', agentFilters.city);
-      if (agentFilters.productId !== 'all') params.set('productId', agentFilters.productId);
-      if (agentFilters.dateFrom) params.set('dateFrom', agentFilters.dateFrom);
-      if (agentFilters.dateTo) params.set('dateTo', agentFilters.dateTo);
-      const qs = params.toString();
-      const r = await fetch(`/api/agents/my-stats${qs ? `?${qs}` : ''}`, { credentials: 'include' });
+      if (agentFilters.productId !== 'all') params.set('product', agentFilters.productId);
+      params.set('dateRange', agentFilters.dateRange);
+      const r = await fetch(`/api/agents/my-stats?${params}`, { credentials: 'include' });
       if (!r.ok) throw new Error('Failed to fetch');
       return r.json();
     },
@@ -822,6 +824,84 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* ── Agent Filters — positioned above stat cards ── */}
+      {isAgent && (
+        <div className="rounded-xl border bg-white dark:bg-card shadow-sm p-3 flex flex-wrap items-center gap-2" data-testid="agent-filters-bar">
+          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Filtres</span>
+
+          {[
+            { label: "Aujourd'hui", value: 'today' },
+            { label: 'Ce mois', value: 'month' },
+            { label: 'Mois dernier', value: 'lastmonth' },
+            { label: 'Tout', value: 'all' },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setAgentFilters((f) => ({ ...f, dateRange: opt.value as any }))}
+              className={`h-7 px-3 text-xs rounded-full border font-medium transition-all ${
+                agentFilters.dateRange === opt.value
+                  ? 'bg-primary text-white border-primary'
+                  : 'bg-white dark:bg-card text-muted-foreground hover:bg-muted'
+              }`}
+              data-testid={`button-agent-date-${opt.value}`}
+            >
+              {opt.label}
+            </button>
+          ))}
+
+          <div className="w-px h-5 bg-border" />
+
+          <Select value={agentFilters.productId} onValueChange={(v) => setAgentFilters((f) => ({ ...f, productId: v }))}>
+            <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] rounded-full" data-testid="select-agent-product">
+              <SelectValue placeholder="Tous les produits" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tous les produits</SelectItem>
+              {(agentMyStats?.products || []).map((p: any) => (
+                <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={agentFilters.city} onValueChange={(v) => setAgentFilters((f) => ({ ...f, city: v }))}>
+            <SelectTrigger className="h-7 text-xs w-auto min-w-[120px] rounded-full" data-testid="select-agent-city">
+              <SelectValue placeholder="Toutes les villes" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Toutes les villes</SelectItem>
+              {(agentMyStats?.cities || []).map((c: string) => (
+                <SelectItem key={c} value={c}>{c}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {(agentFilters.city !== 'all' || agentFilters.productId !== 'all' || agentFilters.dateRange !== 'all') && (
+            <button
+              onClick={() => setAgentFilters({ city: 'all', productId: 'all', dateRange: 'all' })}
+              className="h-7 px-3 text-xs rounded-full border text-red-500 hover:bg-red-50"
+              data-testid="button-agent-filters-reset"
+            >
+              ✕ Reset
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Active product badge above stat cards ── */}
+      {isAgent && agentFilters.productId !== 'all' && (
+        <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 flex items-center gap-2" data-testid="agent-active-product-badge">
+          <Package className="w-4 h-4 text-primary" />
+          <span className="text-sm font-semibold text-primary">Filtré par: {agentFilters.productId}</span>
+          <button
+            onClick={() => setAgentFilters((f) => ({ ...f, productId: 'all' }))}
+            className="ml-auto text-xs text-muted-foreground hover:text-red-500"
+            data-testid="button-clear-product-filter"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {!isAgent && (
       <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-filter-bar">
         <CardContent className="p-2.5 md:p-4">
@@ -1455,62 +1535,6 @@ export default function Dashboard() {
                   })}
               </div>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Agent Filters ── */}
-      {isAgent && (
-        <div className="flex flex-wrap gap-2 p-3 rounded-xl border bg-white dark:bg-card shadow-sm" data-testid="agent-filters-bar">
-          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground self-center">Filtres</span>
-
-          <Select value={agentFilters.city} onValueChange={(v) => setAgentFilters((f) => ({ ...f, city: v }))}>
-            <SelectTrigger className="h-8 text-xs w-auto min-w-[130px]" data-testid="select-agent-city">
-              <SelectValue placeholder="Toutes les villes" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Toutes les villes</SelectItem>
-              {(agentMyStats?.cities || []).map((c: string) => (
-                <SelectItem key={c} value={c}>{c}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={agentFilters.productId} onValueChange={(v) => setAgentFilters((f) => ({ ...f, productId: v }))}>
-            <SelectTrigger className="h-8 text-xs w-auto min-w-[140px]" data-testid="select-agent-product">
-              <SelectValue placeholder="Tous les produits" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Tous les produits</SelectItem>
-              {(agentMyStats?.products || []).map((p: any) => (
-                <SelectItem key={p.name} value={String(p.id || p.name)}>{p.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <input
-            type="date"
-            value={agentFilters.dateFrom}
-            onChange={(e) => setAgentFilters((f) => ({ ...f, dateFrom: e.target.value }))}
-            className="h-8 text-xs border rounded-md px-2 bg-white dark:bg-card"
-            data-testid="input-agent-date-from"
-          />
-          <input
-            type="date"
-            value={agentFilters.dateTo}
-            onChange={(e) => setAgentFilters((f) => ({ ...f, dateTo: e.target.value }))}
-            className="h-8 text-xs border rounded-md px-2 bg-white dark:bg-card"
-            data-testid="input-agent-date-to"
-          />
-
-          {(agentFilters.city !== 'all' || agentFilters.productId !== 'all' || agentFilters.dateFrom || agentFilters.dateTo) && (
-            <button
-              onClick={() => setAgentFilters({ city: 'all', productId: 'all', dateFrom: '', dateTo: '' })}
-              className="h-8 px-3 text-xs rounded-md border text-muted-foreground hover:bg-muted"
-              data-testid="button-agent-filters-reset"
-            >
-              Réinitialiser
-            </button>
           )}
         </div>
       )}
