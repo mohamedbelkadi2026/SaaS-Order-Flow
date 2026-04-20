@@ -821,8 +821,8 @@ export async function shipOrderToCarrier(
       fdFields[k] = val;
     });
 
-    console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
-    console.log(`[AMEEX-INPUT-DEBUG] customerName="${input.customerName}" apiSecret="${input.apiSecret}" apiId="${input.apiId}" city="${input.city}"`);
+    console.log(`[AMEEX-INPUT-DEBUG] name="${input.customerName}" secret="${input.apiSecret}" id="${input.apiId}"`);
+console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
 
     const resp = await axios.post(apiUrl, fd, {
       headers: {
