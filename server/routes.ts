@@ -7406,20 +7406,16 @@ function submitOrder(e){
     }
   });
 
-  // ─── Product Research — Image/Keyword → AI Keywords ──────────────────────
+  // ─── Product Research — Image/Keyword → AI Keywords + AliExpress search ──
   app.post('/api/product-research/analyze', requireAuth, async (req: any, res: any) => {
     try {
       const { keyword, imageBase64 } = req.body || {};
-
-      if (!imageBase64 && !keyword) {
-        return res.status(400).json({ message: 'Image ou mot-clé requis' });
-      }
-
       let extractedKeywords = keyword || '';
 
+      // AI image analysis with Claude
       if (imageBase64 && process.env.ANTHROPIC_API_KEY) {
         try {
-          const response = await fetch('https://api.anthropic.com/v1/messages', {
+          const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -7428,61 +7424,74 @@ function submitOrder(e){
             },
             body: JSON.stringify({
               model: 'claude-haiku-4-5-20251001',
-              max_tokens: 150,
+              max_tokens: 200,
               messages: [{
                 role: 'user',
                 content: [
-                  {
-                    type: 'image',
-                    source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 },
-                  },
-                  {
-                    type: 'text',
-                    text: 'Identify this product. Give me exactly 5 short search keywords in English suitable for AliExpress/1688/TikTok search. Return ONLY comma-separated keywords. Example: electric juicer, lemon squeezer, citrus press, kitchen gadget, fruit juicer',
-                  },
+                  { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+                  { type: 'text', text: 'Identify this product precisely. Return ONLY 5 comma-separated English search keywords for AliExpress/TikTok. Example format: electric juicer, lemon squeezer, citrus press, kitchen gadget, fruit juicer' },
                 ],
               }],
             }),
           });
-          const data: any = await response.json();
-          if (data?.content?.[0]?.text) {
-            extractedKeywords = String(data.content[0].text).trim();
+          const aiData: any = await aiResp.json();
+          if (aiData?.content?.[0]?.text) {
+            extractedKeywords = String(aiData.content[0].text).trim();
           }
-        } catch (aiErr: any) {
-          console.error('[ProductResearch] AI error:', aiErr.message);
+        } catch (e: any) {
+          console.error('[ProductResearch] AI error:', e.message);
           extractedKeywords = keyword || 'product';
         }
       }
 
-      // Meta Ad Library search
-      const mainKeyword = (extractedKeywords.split(',')[0] || '').trim() || keyword || '';
-      let metaAds: any[] = [];
+      const mainKw = (extractedKeywords.split(',')[0] || '').trim() || keyword || '';
 
-      if (mainKeyword) {
+      // AliExpress search via RapidAPI
+      let aliResults: any[] = [];
+      if (mainKw && process.env.RAPIDAPI_KEY) {
         try {
-          const metaToken = process.env.META_ACCESS_TOKEN || '4156048424636972|o7DZLiO0Yz9E7b6txoStMDXvSF4';
-          const metaUrl = `https://graph.facebook.com/v19.0/ads_archive?access_token=${metaToken}&ad_reached_countries=MA&search_terms=${encodeURIComponent(mainKeyword)}&ad_type=ALL&media_type=VIDEO&fields=ad_creative_body,page_name,ad_snapshot_url,ad_creative_link_title&limit=10`;
-
-          const metaResp = await fetch(metaUrl);
-          const metaData: any = await metaResp.json();
-
-          if (Array.isArray(metaData?.data)) {
-            metaAds = metaData.data.map((ad: any) => ({
-              platform: 'facebook',
-              pageName: ad.page_name,
-              body: ad.ad_creative_body,
-              title: ad.ad_creative_link_title,
-              snapshotUrl: ad.ad_snapshot_url,
+          const aliResp = await fetch(
+            `https://aliexpress-datahub.p.rapidapi.com/item_search_2?q=${encodeURIComponent(mainKw)}&page=1`,
+            {
+              headers: {
+                'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+                'X-RapidAPI-Host': 'aliexpress-datahub.p.rapidapi.com',
+              },
+            },
+          );
+          if (aliResp.ok) {
+            const aliData: any = await aliResp.json();
+            aliResults = (aliData?.result?.resultList || []).slice(0, 8).map((item: any) => ({
+              title: item?.item?.title,
+              price: item?.item?.sku?.def?.promotionPrice,
+              image: item?.item?.image,
+              url: `https://www.aliexpress.com/item/${item?.item?.itemId}.html`,
+              hasVideo: false,
             }));
           }
-          console.log(`[ProductResearch] Meta ads found: ${metaAds.length}`);
-        } catch (metaErr: any) {
-          console.error('[ProductResearch] Meta API error:', metaErr.message);
+        } catch (e: any) {
+          console.error('[ProductResearch] AliExpress error:', e.message);
         }
       }
 
-      res.json({ keywords: extractedKeywords, metaAds });
+      const searchUrls = {
+        aliexpress: `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(mainKw)}`,
+        alibaba1688: `https://s.1688.com/selloffer/offerlist.htm?keywords=${encodeURIComponent(mainKw)}`,
+        tiktok: `https://www.tiktok.com/search?q=${encodeURIComponent(mainKw)}`,
+        tiktokAds: `https://library.tiktok.com/ads/?region=MA&search=${encodeURIComponent(mainKw)}`,
+        metaAds: `https://www.facebook.com/ads/library/?country=MA&search_terms=${encodeURIComponent(mainKw)}&ad_type=ALL&media_type=video`,
+        youtube: `https://www.youtube.com/results?search_query=${encodeURIComponent(mainKw + ' review')}`,
+        pinterest: `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(mainKw)}`,
+      };
+
+      res.json({
+        keywords: extractedKeywords,
+        mainKeyword: mainKw,
+        aliResults,
+        searchUrls,
+      });
     } catch (e: any) {
+      console.error('[ProductResearch] Error:', e.message);
       res.status(500).json({ message: e.message });
     }
   });
