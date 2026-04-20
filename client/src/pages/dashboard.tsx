@@ -117,6 +117,7 @@ export default function Dashboard() {
     daily: { date: string; orders: number }[];
     byStatus: { name: string; value: number; color: string }[];
     totalOrders: number;
+    products?: { name: string; total: number; confirmed: number; delivered: number }[];
   }>({
     queryKey: ['/api/agents/my-stats'],
     enabled: isAgent,
@@ -666,6 +667,55 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         </div>
+
+        {/* ── PRODUITS COMMANDÉS — Media Buyer ── */}
+        {mediaBuyerStats?.products && mediaBuyerStats.products.length > 0 && (
+          <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5" data-testid="card-mb-products-table">
+            <div className="flex items-center gap-2 pb-2 border-b mb-4">
+              <Package className="w-4 h-4 text-indigo-500" />
+              <h2 className="text-sm font-bold uppercase tracking-wide">Produits Commandés</h2>
+              <span className="text-xs text-muted-foreground ml-auto">{mediaBuyerStats.products.length} produit(s)</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="text-left py-2 pr-4">Produit</th>
+                    <th className="text-center py-2 px-2">Total</th>
+                    <th className="text-center py-2 px-2">Confirmés</th>
+                    <th className="text-center py-2 px-2">% Conf</th>
+                    <th className="text-center py-2 px-2">En cours</th>
+                    <th className="text-center py-2 px-2">Livrés</th>
+                    <th className="text-center py-2 px-2">% Livr</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mediaBuyerStats.products.map((p: any, i: number) => {
+                    const confRate = p.total > 0 ? Math.round(((p.confirmed || 0) / p.total) * 100) : 0;
+                    const delivRate = (p.confirmed || 0) > 0 ? Math.round(((p.delivered || 0) / (p.confirmed || 1)) * 100) : 0;
+                    const confColor = confRate >= 60 ? 'text-emerald-600' : confRate >= 40 ? 'text-amber-500' : 'text-red-500';
+                    const delivColor = delivRate >= 60 ? 'text-emerald-600' : delivRate >= 40 ? 'text-amber-500' : 'text-red-500';
+                    return (
+                      <tr key={i} className="border-b last:border-0 hover:bg-muted/20" data-testid={`row-mb-product-${i}`}>
+                        <td className="py-2 pr-4 font-medium max-w-[180px] truncate">{p.name}</td>
+                        <td className="text-center py-2 px-2 font-bold">{p.total}</td>
+                        <td className="text-center py-2 px-2 text-emerald-600 font-semibold">{p.confirmed || 0}</td>
+                        <td className="text-center py-2 px-2">
+                          <span className={`font-bold ${confColor}`}>{confRate}%</span>
+                        </td>
+                        <td className="text-center py-2 px-2 text-amber-500 font-semibold">{p.inProgress || 0}</td>
+                        <td className="text-center py-2 px-2 text-blue-600 font-semibold">{p.delivered || 0}</td>
+                        <td className="text-center py-2 px-2">
+                          <span className={`font-bold ${delivColor}`}>{delivRate}%</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* UTM Pro Link Generator */}
         <Card className="rounded-xl border-border/50 shadow-sm" data-testid="card-link-builder">
@@ -1543,6 +1593,53 @@ export default function Dashboard() {
             })()}
 
           </div>
+
+          {/* ── PRODUITS COMMANDÉS — Agent ── */}
+          {agentMyStats?.products && agentMyStats.products.length > 0 && (
+            <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5" data-testid="card-agent-products-table">
+              <div className="flex items-center gap-2 pb-2 border-b mb-4">
+                <Package className="w-4 h-4 text-indigo-500" />
+                <h2 className="text-sm font-bold uppercase tracking-wide">Produits Commandés</h2>
+                <span className="text-xs text-muted-foreground ml-auto">{agentMyStats.products.length} produit(s)</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-[11px] uppercase tracking-wide text-muted-foreground">
+                      <th className="text-left py-2 pr-4">Produit</th>
+                      <th className="text-center py-2 px-2">Total</th>
+                      <th className="text-center py-2 px-2">Confirmés</th>
+                      <th className="text-center py-2 px-2">% Conf</th>
+                      <th className="text-center py-2 px-2">Livrés</th>
+                      <th className="text-center py-2 px-2">% Livr</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agentMyStats.products.map((p: any, i: number) => {
+                      const confRate = p.total > 0 ? Math.round((p.confirmed / p.total) * 100) : 0;
+                      const delivRate = p.confirmed > 0 ? Math.round((p.delivered / p.confirmed) * 100) : 0;
+                      const confColor = confRate >= 60 ? 'text-emerald-600' : confRate >= 40 ? 'text-amber-500' : 'text-red-500';
+                      const delivColor = delivRate >= 60 ? 'text-emerald-600' : delivRate >= 40 ? 'text-amber-500' : 'text-red-500';
+                      return (
+                        <tr key={i} className="border-b last:border-0 hover:bg-muted/20" data-testid={`row-agent-product-${i}`}>
+                          <td className="py-2 pr-4 font-medium max-w-[180px] truncate">{p.name}</td>
+                          <td className="text-center py-2 px-2 font-bold">{p.total}</td>
+                          <td className="text-center py-2 px-2 text-emerald-600 font-semibold">{p.confirmed}</td>
+                          <td className="text-center py-2 px-2">
+                            <span className={`font-bold ${confColor}`}>{confRate}%</span>
+                          </td>
+                          <td className="text-center py-2 px-2 text-blue-600 font-semibold">{p.delivered}</td>
+                          <td className="text-center py-2 px-2">
+                            <span className={`font-bold ${delivColor}`}>{delivRate}%</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

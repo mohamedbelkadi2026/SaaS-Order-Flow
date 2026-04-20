@@ -4453,7 +4453,32 @@ export async function registerRoutes(
         { name: "Refusées",   value: buckets.refused,   color: "#f97316" },
       ].filter(b => b.value > 0);
 
-      res.json({ daily, byStatus, totalOrders: agentOrders.length });
+      // ── Products breakdown (table) ────────────────────────────────
+      const productMap: Record<string, { name: string; total: number; confirmed: number; delivered: number }> = {};
+      for (const o of agentOrders as any[]) {
+        const name =
+          o.rawProductName ||
+          o.items?.[0]?.rawProductName ||
+          o.items?.[0]?.product?.name ||
+          'Produit';
+        if (!productMap[name]) productMap[name] = { name, total: 0, confirmed: 0, delivered: 0 };
+        productMap[name].total++;
+        const s = (o.status ?? '').toLowerCase().trim();
+        if (
+          s === 'confirme' || s === 'confirmé' || s === 'confirmed' ||
+          s === 'delivered' || s === 'livré' || s === 'livrée' ||
+          s === 'in_progress' || s === 'inprogress' || s === 'en cours' ||
+          s === 'expédié' || s === 'expedie' || s === 'shipped'
+        ) {
+          productMap[name].confirmed++;
+        }
+        if (s === 'delivered' || s === 'livré' || s === 'livrée') {
+          productMap[name].delivered++;
+        }
+      }
+      const products = Object.values(productMap).sort((a, b) => b.total - a.total);
+
+      res.json({ daily, byStatus, totalOrders: agentOrders.length, products });
     } catch (err: any) {
       console.error("[/api/agents/my-stats]", err.message);
       res.status(500).json({ message: err.message });
