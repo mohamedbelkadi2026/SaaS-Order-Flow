@@ -7434,9 +7434,11 @@ function submitOrder(e){
               body: JSON.stringify({ image: `data:${imageMime};base64,${imageBase64}` }),
             },
           );
+          console.log(`[LENS-DEBUG] Status: ${lensResp.status}`);
+          const lensText = await lensResp.text();
+          console.log(`[LENS-DEBUG] Response: ${lensText.slice(0, 500)}`);
           if (lensResp.ok) {
-            const lensData: any = await lensResp.json();
-            console.log('[ProductResearch] Lens response:', JSON.stringify(lensData).slice(0, 500));
+            const lensData: any = JSON.parse(lensText);
             const matches = lensData?.visual_matches || lensData?.results || lensData?.image_results || [];
             lensResults = (matches as any[]).slice(0, 12).map((r: any) => ({
               title: r.title || r.name || '',
@@ -7503,8 +7505,11 @@ function submitOrder(e){
               },
             },
           );
+          console.log(`[YT-DEBUG] Status: ${ytResp.status}`);
+          const ytText = await ytResp.text();
+          console.log(`[YT-DEBUG] Response: ${ytText.slice(0, 500)}`);
           if (ytResp.ok) {
-            const ytData: any = await ytResp.json();
+            const ytData: any = JSON.parse(ytText);
             youtubeVideos = (ytData?.contents || [])
               .filter((item: any) => item.video)
               .slice(0, 6)
@@ -7538,8 +7543,11 @@ function submitOrder(e){
               },
             },
           );
+          console.log(`[TT-DEBUG] Status: ${ttResp.status}`);
+          const ttText = await ttResp.text();
+          console.log(`[TT-DEBUG] Response: ${ttText.slice(0, 500)}`);
           if (ttResp.ok) {
-            const ttData: any = await ttResp.json();
+            const ttData: any = JSON.parse(ttText);
             const items = ttData?.data?.videos || ttData?.data || [];
             tiktokVideos = (items as any[]).slice(0, 8).map((v: any) => ({
               id: v.video_id || v.id,
