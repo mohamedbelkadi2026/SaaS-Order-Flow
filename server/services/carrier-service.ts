@@ -809,6 +809,7 @@ export async function shipOrderToCarrier(
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
   if (providerKey === 'ameex') {
+    console.log(`[AMEEX-REACHED] input=`, JSON.stringify(input));
     // Ameex requires multipart/form-data
     const FormDataLib = (await import('form-data')).default;
     const fd = new FormDataLib();
