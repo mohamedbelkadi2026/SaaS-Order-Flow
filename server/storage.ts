@@ -1880,73 +1880,71 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // TRUE PERCENTAGE DISTRIBUTION
-    // Track how many orders each agent received this cycle and pick the agent
-    // most below their target percentage to ensure real distribution.
-    // TRUE DAILY ROUND-ROBIN
-    // Reset counts every day — each day starts fresh
-    // Strict alternation: agent with least orders today gets next order
+    // ── Get store distribution method + last assigned agent ──
+    const storeData = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
+    const distMethod = storeData[0]?.distributionMethod || 'auto';
+    const lastAgentId = storeData[0]?.lastAssignedAgentId || null;
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (distMethod === 'auto' || !distMethod) {
+      // PURE ROUND-ROBIN: next agent after lastAssignedAgent
+      const agentIds = eligibleAgents.map(a => a.id);
 
-    // Count today's orders per agent
-    const agentStats = await Promise.all(
-      eligibleAgents.map(async (agent) => {
-        const setting = settingsMap.get(agent.id);
-        const targetPct = setting ? Math.max(1, setting.leadPercentage ?? 100) : 100;
-
-        const [countResult] = await db
-          .select({ count: sql<number>`cast(count(*) as int)` })
-          .from(orders)
-          .where(and(
-            eq(orders.storeId, storeId),
-            eq(orders.assignedToId, agent.id),
-            gte(orders.createdAt, today),
-            lt(orders.createdAt, tomorrow),
-          ));
-
-        return {
-          agentId: agent.id,
-          targetPct,
-          todayCount: Number(countResult?.count ?? 0),
-        };
-      })
-    );
-
-    const totalToday = agentStats.reduce((s, a) => s + a.todayCount, 0);
-
-    // Find agent most below their target % for today
-    let selectedAgentId: number | null = null;
-    let maxDeficit = -Infinity;
-
-    for (const stat of agentStats) {
-      // Current % this agent has today
-      const currentPct = totalToday === 0
-        ? 0
-        : (stat.todayCount / (totalToday + 1)) * 100;
-
-      // How far below target (deficit)
-      const deficit = stat.targetPct - currentPct;
-
-      console.log(`[DIST-TODAY] Agent ${stat.agentId}: target=${stat.targetPct}% today=${stat.todayCount} deficit=${deficit.toFixed(1)}`);
-
-      if (deficit > maxDeficit) {
-        maxDeficit = deficit;
-        selectedAgentId = stat.agentId;
+      if (agentIds.length === 0) return null;
+      if (agentIds.length === 1) {
+        await db.update(stores).set({ lastAssignedAgentId: agentIds[0] }).where(eq(stores.id, storeId));
+        return agentIds[0];
       }
-    }
 
-    // Fallback
-    if (!selectedAgentId && eligibleAgents.length > 0) {
-      selectedAgentId = eligibleAgents[0].id;
-    }
+      const lastIndex = lastAgentId ? agentIds.indexOf(lastAgentId) : -1;
+      const nextIndex = (lastIndex + 1) % agentIds.length;
+      const nextAgentId = agentIds[nextIndex];
 
-    console.log(`[DIST-TODAY] → Selected: agent ${selectedAgentId} (total today: ${totalToday + 1})`);
-    await db.update(stores).set({ lastAssignedAgentId: selectedAgentId }).where(eq(stores.id, storeId));
-    return selectedAgentId;
+      console.log(`[ROUND-ROBIN] agents=${agentIds} last=${lastAgentId} next=${nextAgentId}`);
+      await db.update(stores).set({ lastAssignedAgentId: nextAgentId }).where(eq(stores.id, storeId));
+      return nextAgentId;
+
+    } else if (distMethod === 'pourcentage') {
+      // PERCENTAGE: daily reset, pick agent most below target
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const agentStats = await Promise.all(
+        eligibleAgents.map(async (agent) => {
+          const setting = settingsMap.get(agent.id);
+          const targetPct = setting ? Math.max(1, setting.leadPercentage ?? 100) : 100;
+          const [countResult] = await db
+            .select({ count: sql<number>`cast(count(*) as int)` })
+            .from(orders)
+            .where(and(
+              eq(orders.storeId, storeId),
+              eq(orders.assignedToId, agent.id),
+              gte(orders.createdAt, today),
+              lt(orders.createdAt, tomorrow),
+            ));
+          return { agentId: agent.id, targetPct, todayCount: Number(countResult?.count ?? 0) };
+        })
+      );
+
+      const totalToday = agentStats.reduce((s, a) => s + a.todayCount, 0);
+      let selectedAgentId: number | null = null;
+      let maxDeficit = -Infinity;
+
+      for (const stat of agentStats) {
+        const currentPct = totalToday === 0 ? 0 : (stat.todayCount / (totalToday + 1)) * 100;
+        const deficit = stat.targetPct - currentPct;
+        console.log(`[DIST-%] Agent ${stat.agentId}: target=${stat.targetPct}% today=${stat.todayCount} deficit=${deficit.toFixed(1)}`);
+        if (deficit > maxDeficit) { maxDeficit = deficit; selectedAgentId = stat.agentId; }
+      }
+
+      if (!selectedAgentId) selectedAgentId = eligibleAgents[0].id;
+      console.log(`[DIST-%] → Selected: ${selectedAgentId}`);
+      await db.update(stores).set({ lastAssignedAgentId: selectedAgentId }).where(eq(stores.id, storeId));
+      return selectedAgentId;
+
+    } else {
+      // Fallback: first eligible agent
+      return eligibleAgents[0]?.id || null;
+    }
   }
 
   async getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]> {
