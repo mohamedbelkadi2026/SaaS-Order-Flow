@@ -1,0 +1,69 @@
+FIX — True daily round-robin: reset every day, strict alternation
+In server/storage.ts, replace the distribution section in getNextAgent with:
+typescript// TRUE DAILY ROUND-ROBIN
+// Reset counts every day — each day starts fresh
+// Strict alternation: agent with least orders today gets next order
+
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+const tomorrow = new Date(today);
+tomorrow.setDate(tomorrow.getDate() + 1);
+
+// Count today's orders per agent
+const agentStats = await Promise.all(
+  eligibleAgents.map(async (agent) => {
+    const setting = settingsMap.get(agent.id);
+    const targetPct = setting ? Math.max(1, setting.leadPercentage ?? 100) : 100;
+
+    const [countResult] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        eq(orders.assignedToId, agent.id),
+        gte(orders.createdAt, today),
+        lt(orders.createdAt, tomorrow),
+      ));
+
+    return {
+      agentId: agent.id,
+      targetPct,
+      todayCount: Number(countResult?.count ?? 0),
+    };
+  })
+);
+
+const totalToday = agentStats.reduce((s, a) => s + a.todayCount, 0);
+
+// Find agent most below their target % for today
+let selectedAgentId: number | null = null;
+let maxDeficit = -Infinity;
+
+for (const stat of agentStats) {
+  // Current % this agent has today
+  const currentPct = totalToday === 0
+    ? 0
+    : (stat.todayCount / (totalToday + 1)) * 100;
+
+  // How far below target (deficit)
+  const deficit = stat.targetPct - currentPct;
+
+  console.log(`[DIST-TODAY] Agent ${stat.agentId}: target=${stat.targetPct}% today=${stat.todayCount} deficit=${deficit.toFixed(1)}`);
+
+  if (deficit > maxDeficit) {
+    maxDeficit = deficit;
+    selectedAgentId = stat.agentId;
+  }
+}
+
+// Fallback
+if (!selectedAgentId && eligibleAgents.length > 0) {
+  selectedAgentId = eligibleAgents[0].id;
+}
+
+console.log(`[DIST-TODAY] → Selected: agent ${selectedAgentId} (total today: ${totalToday + 1})`);
+await db.update(stores).set({ lastAssignedAgentId: selectedAgentId }).where(eq(stores.id, storeId));
+return selectedAgentId;
+Make sure lt is imported:
+typescriptconst { and, gte, lt, eq: drEq, sql } = await import('drizzle-orm');
+Do NOT change anything else.

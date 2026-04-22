@@ -15,7 +15,7 @@ import {
   type StockLog,
   type Payment, type InsertPayment,
 } from "@shared/schema";
-import { eq, desc, and, sql, count, ne, like, gte, lte, inArray, or } from "drizzle-orm";
+import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or } from "drizzle-orm";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -1883,53 +1883,55 @@ export class DatabaseStorage implements IStorage {
     // TRUE PERCENTAGE DISTRIBUTION
     // Track how many orders each agent received this cycle and pick the agent
     // most below their target percentage to ensure real distribution.
-    // TRUE ROUND-ROBIN based on percentage
-    // Each agent gets orders proportional to their leadPercentage
-    // Algorithm: pick agent who is most "behind" their target
+    // TRUE DAILY ROUND-ROBIN
+    // Reset counts every day — each day starts fresh
+    // Strict alternation: agent with least orders today gets next order
 
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Count today's orders per agent
     const agentStats = await Promise.all(
       eligibleAgents.map(async (agent) => {
         const setting = settingsMap.get(agent.id);
         const targetPct = setting ? Math.max(1, setting.leadPercentage ?? 100) : 100;
 
-        // Count orders assigned to this agent this month
-        const now = new Date();
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-
         const [countResult] = await db
           .select({ count: sql<number>`cast(count(*) as int)` })
           .from(orders)
-          .where(
-            and(
-              eq(orders.storeId, storeId),
-              eq(orders.assignedToId, agent.id),
-              gte(orders.createdAt, monthStart),
-            )
-          );
+          .where(and(
+            eq(orders.storeId, storeId),
+            eq(orders.assignedToId, agent.id),
+            gte(orders.createdAt, today),
+            lt(orders.createdAt, tomorrow),
+          ));
 
         return {
           agentId: agent.id,
           targetPct,
-          count: Number(countResult?.count ?? 0),
+          todayCount: Number(countResult?.count ?? 0),
         };
       })
     );
 
-    // Total orders distributed this month
-    const totalDistributed = agentStats.reduce((s, a) => s + a.count, 0);
+    const totalToday = agentStats.reduce((s, a) => s + a.todayCount, 0);
 
-    // Pick agent most below their target percentage
+    // Find agent most below their target % for today
     let selectedAgentId: number | null = null;
     let maxDeficit = -Infinity;
 
     for (const stat of agentStats) {
-      const currentPct = totalDistributed === 0
+      // Current % this agent has today
+      const currentPct = totalToday === 0
         ? 0
-        : (stat.count / totalDistributed) * 100;
+        : (stat.todayCount / (totalToday + 1)) * 100;
 
+      // How far below target (deficit)
       const deficit = stat.targetPct - currentPct;
 
-      console.log(`[DIST] Agent ${stat.agentId}: target=${stat.targetPct}% current=${currentPct.toFixed(1)}% count=${stat.count} deficit=${deficit.toFixed(1)}`);
+      console.log(`[DIST-TODAY] Agent ${stat.agentId}: target=${stat.targetPct}% today=${stat.todayCount} deficit=${deficit.toFixed(1)}`);
 
       if (deficit > maxDeficit) {
         maxDeficit = deficit;
@@ -1942,7 +1944,7 @@ export class DatabaseStorage implements IStorage {
       selectedAgentId = eligibleAgents[0].id;
     }
 
-    console.log(`[DIST] Selected agent: ${selectedAgentId}`);
+    console.log(`[DIST-TODAY] → Selected: agent ${selectedAgentId} (total today: ${totalToday + 1})`);
     await db.update(stores).set({ lastAssignedAgentId: selectedAgentId }).where(eq(stores.id, storeId));
     return selectedAgentId;
   }
