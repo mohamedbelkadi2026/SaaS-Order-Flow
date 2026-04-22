@@ -616,7 +616,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                   {newOrdersCount > 0 && !ordersOpen && (
                     <span className="shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold px-1.5 py-0.5 min-w-[20px]"
                       style={{ background: '#ef4444', color: '#fff' }}>
-                      {newOrdersCount > 99 ? '99+' : newOrdersCount}
+                      {newOrdersCount}
                     </span>
                   )}
                   {ordersOpen
@@ -687,7 +687,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                             className="ml-2 shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold leading-none px-1.5 py-0.5 min-w-[20px]"
                             style={{ background: '#ef4444', color: '#fff' }}
                           >
-                            {newOrdersCount > 99 ? '99+' : newOrdersCount}
+                            {newOrdersCount}
                           </span>
                         )}
                       </Link>
