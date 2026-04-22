@@ -1880,27 +1880,52 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Determine distribution method for the store's agents
-    // Prefer per-agent distributionMethod. If multiple agents: weighted random by leadPercentage.
-    // Build weighted pool based on leadPercentage
-    const pool: number[] = [];
+    // TRUE PERCENTAGE DISTRIBUTION
+    // Track how many orders each agent received this cycle and pick the agent
+    // most below their target percentage to ensure real distribution.
+    const agentOrderCounts = await Promise.all(
+      eligibleAgents.map(async (agent) => {
+        const [countResult] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(orders)
+          .where(and(
+            eq(orders.storeId, storeId),
+            eq(orders.assignedToId, agent.id),
+          ));
+        return { agentId: agent.id, count: Number(countResult?.count || 0) };
+      })
+    );
+
+    const totalOrders = agentOrderCounts.reduce((s, a) => s + a.count, 0);
+
+    let selectedAgentId: number | null = null;
+    let maxDeficit = -Infinity;
+
     for (const agent of eligibleAgents) {
       const setting = settingsMap.get(agent.id);
-      const pct = setting ? Math.max(1, setting.leadPercentage) : 100;
-      // If the agent uses auto (round robin), give 1 ticket; else use their leadPercentage
-      const method = agent.distributionMethod || 'auto';
-      const tickets = method === 'pourcentage' ? pct : 1;
-      for (let i = 0; i < tickets; i++) pool.push(agent.id);
+      const targetPct = setting ? Math.max(1, setting.leadPercentage) : 100;
+      const currentCount = agentOrderCounts.find(a => a.agentId === agent.id)?.count || 0;
+
+      // What % this agent currently has (using totalOrders + 1 to bias the very first assignment)
+      const currentPct = totalOrders === 0 ? 0 : (currentCount / (totalOrders + 1)) * 100;
+
+      // How far below target they are (deficit)
+      const deficit = targetPct - currentPct;
+
+      if (deficit > maxDeficit) {
+        maxDeficit = deficit;
+        selectedAgentId = agent.id;
+      }
     }
 
-    if (pool.length === 0) return null;
+    if (!selectedAgentId && eligibleAgents.length > 0) {
+      selectedAgentId = eligibleAgents[0].id;
+    }
 
-    // Pick a random agent from the weighted pool
-    const randomIndex = Math.floor(Math.random() * pool.length);
-    const nextAgentId = pool[randomIndex];
-
-    await db.update(stores).set({ lastAssignedAgentId: nextAgentId }).where(eq(stores.id, storeId));
-    return nextAgentId;
+    if (selectedAgentId) {
+      await db.update(stores).set({ lastAssignedAgentId: selectedAgentId }).where(eq(stores.id, storeId));
+    }
+    return selectedAgentId;
   }
 
   async getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]> {

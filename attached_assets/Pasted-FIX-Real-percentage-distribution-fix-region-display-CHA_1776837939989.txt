@@ -1,0 +1,55 @@
+FIX — Real percentage distribution + fix region display
+CHANGE 1 — server/storage.ts — replace random with true round-robin by percentage:
+Find getNextAgent function, replace the pool/random section:
+typescript// TRUE PERCENTAGE DISTRIBUTION
+// Track how many orders each agent received this cycle
+// Use lastAssignedAgentId + order counts to ensure real 50/50
+
+const agentOrderCounts = await Promise.all(
+  eligibleAgents.map(async (agent) => {
+    const [countResult] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(ordersTable)
+      .where(and(
+        eq(ordersTable.storeId, storeId),
+        eq(ordersTable.assignedToId, agent.id),
+      ));
+    return { agentId: agent.id, count: Number(countResult?.count || 0) };
+  })
+);
+
+// Calculate target ratio for each agent
+const totalOrders = agentOrderCounts.reduce((s, a) => s + a.count, 0);
+
+// Find agent most below their target percentage
+let selectedAgentId: number | null = null;
+let maxDeficit = -Infinity;
+
+for (const agent of eligibleAgents) {
+  const setting = settingsMap.get(agent.id);
+  const targetPct = setting ? Math.max(1, setting.leadPercentage) : 100;
+  const currentCount = agentOrderCounts.find(a => a.agentId === agent.id)?.count || 0;
+  
+  // What % this agent currently has
+  const currentPct = totalOrders === 0 ? 0 : (currentCount / (totalOrders + 1)) * 100;
+  
+  // How far below target they are (deficit)
+  const deficit = targetPct - currentPct;
+  
+  if (deficit > maxDeficit) {
+    maxDeficit = deficit;
+    selectedAgentId = agent.id;
+  }
+}
+
+if (!selectedAgentId && eligibleAgents.length > 0) {
+  selectedAgentId = eligibleAgents[0].id;
+}
+
+await db.update(stores).set({ lastAssignedAgentId: selectedAgentId }).where(eq(stores.id, storeId));
+return selectedAgentId;
+Add import at top of storage.ts if missing:
+typescriptimport { orders as ordersTable } from '@shared/schema';
+CHANGE 2 — Fix Région display in UI:
+In client/src/pages/gestion-equipe.tsx wla wherever agent settings are shown, make sure allowedRegions is displayed as chips/badges.
+Do NOT change: any other logic.

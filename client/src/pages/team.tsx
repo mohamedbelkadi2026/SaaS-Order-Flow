@@ -818,12 +818,28 @@ export default function Team() {
                         {agent.distributionMethod === 'region' && setting && (() => {
                           try {
                             const regions: string[] = JSON.parse(setting.allowedRegions || '[]');
-                            return regions.length > 0 ? (
-                              <div className="flex items-center gap-1 text-muted-foreground">
-                                <MapPin className="w-3 h-3" />
-                                <span>{regions.length} région{regions.length > 1 ? 's' : ''}</span>
+                            if (regions.length === 0) return null;
+                            return (
+                              <div className="flex items-start gap-1 flex-wrap">
+                                <MapPin className="w-3 h-3 mt-0.5 text-muted-foreground" />
+                                <div className="flex flex-wrap gap-1" data-testid={`regions-agent-${agent.id}`}>
+                                  {regions.map((r) => {
+                                    const meta = MOROCCAN_REGIONS.find(m => m.value === r);
+                                    const label = meta ? meta.label.replace(/^Région\s+/i, '') : r;
+                                    return (
+                                      <Badge
+                                        key={r}
+                                        variant="outline"
+                                        className="text-[10px] h-4 bg-purple-50 dark:bg-purple-900/20 text-purple-700 border-purple-200"
+                                        data-testid={`badge-region-${agent.id}-${r}`}
+                                      >
+                                        {label}
+                                      </Badge>
+                                    );
+                                  })}
+                                </div>
                               </div>
-                            ) : null;
+                            );
                           } catch { return null; }
                         })()}
                       </div>
