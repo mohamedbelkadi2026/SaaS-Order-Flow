@@ -4385,33 +4385,35 @@ export async function registerRoutes(
 
       // Compute window from dateRange shortcut or custom range
       const now = new Date();
-      let cutoff = new Date(now);
-      let endDate: Date | null = null;
+      let cutoff = new Date();
+      let endDate: Date = new Date();
 
       if (dateFrom) {
         // Custom date range
         cutoff = new Date(dateFrom + 'T00:00:00');
         endDate = dateTo ? new Date(dateTo + 'T23:59:59') : new Date();
       } else if (dateRange === 'today') {
-        cutoff = new Date(now);
-        cutoff.setHours(0, 0, 0, 0);
+        cutoff = new Date(); cutoff.setHours(0, 0, 0, 0);
+        endDate = new Date(); endDate.setHours(23, 59, 59, 999);
+      } else if (dateRange === 'yesterday') {
+        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 1); cutoff.setHours(0, 0, 0, 0);
+        endDate = new Date(); endDate.setDate(endDate.getDate() - 1); endDate.setHours(23, 59, 59, 999);
       } else if (dateRange === '7days') {
-        cutoff = new Date(now);
-        cutoff.setDate(cutoff.getDate() - 6);
-        cutoff.setHours(0, 0, 0, 0);
+        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6); cutoff.setHours(0, 0, 0, 0);
       } else if (dateRange === 'month') {
         cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
       } else if (dateRange === 'lastmonth') {
         cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1);
         endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      } else if (dateRange === 'all') {
+        cutoff = new Date('2020-01-01');
       } else {
-        // 'all' or default — last 90 days
-        cutoff.setDate(cutoff.getDate() - 89);
-        cutoff.setHours(0, 0, 0, 0);
+        // default: ce mois
+        cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
       }
 
       const { orders: ordersTable } = await import("@shared/schema");
-      const { and, gte, eq: drEq } = await import("drizzle-orm");
+      const { and, gte, lte, eq: drEq } = await import("drizzle-orm");
 
       let agentOrders = await db
         .select()
@@ -4420,19 +4422,17 @@ export async function registerRoutes(
           drEq(ordersTable.storeId, storeId),
           drEq(ordersTable.assignedToId, agentId),
           gte(ordersTable.createdAt, cutoff),
+          lte(ordersTable.createdAt, endDate),
         ));
-
-      // Cap by endDate (lastmonth window)
-      if (endDate) {
-        agentOrders = agentOrders.filter((o: any) => o.createdAt && new Date(o.createdAt) <= endDate!);
-      }
 
       // Build the unfiltered cities list (so dropdown stays populated after filtering)
       const allCities = [...new Set((agentOrders as any[]).map(o => o.customerCity).filter(Boolean))];
 
-      // Apply city filter
+      // Apply city filter (case-insensitive contains)
       if (city && city !== 'all') {
-        agentOrders = agentOrders.filter((o: any) => o.customerCity === city);
+        agentOrders = agentOrders.filter((o: any) =>
+          (o.customerCity || '').toLowerCase().includes(city.toLowerCase())
+        );
       }
 
       // Apply product filter (by name)
@@ -4528,7 +4528,38 @@ export async function registerRoutes(
       }
       const products = Object.values(productMap).sort((a, b) => b.total - a.total);
 
-      res.json({ daily, byStatus, totalOrders: agentOrders.length, cities: allCities, products });
+      // ── KPI summary (filtered) ─────────────────────────────────────
+      let nouveauCount = 0;
+      for (const o of agentOrders) {
+        const s = (o.status ?? '').toLowerCase().trim();
+        if (s === 'nouveau' || s === 'new') nouveauCount++;
+      }
+      const total = agentOrders.length;
+      const confirme = buckets.confirme;
+      const delivered = buckets.delivered;
+      const cancelled = buckets.cancelled;
+      const refused = buckets.refused;
+      const en_cours = buckets.en_cours;
+      const confirmRate = total > 0 ? Math.round(((confirme + delivered + en_cours) / total) * 100) : 0;
+      const deliverRate = (confirme + delivered) > 0 ? Math.round((delivered / (confirme + delivered)) * 100) : 0;
+
+      res.json({
+        daily,
+        byStatus,
+        totalOrders: total,
+        cities: allCities,
+        products,
+        // KPI fields for agent dashboard cards
+        total,
+        confirme,
+        delivered,
+        cancelled,
+        refused,
+        en_cours,
+        nouveau: nouveauCount,
+        confirmRate,
+        deliverRate,
+      });
     } catch (err: any) {
       console.error("[/api/agents/my-stats]", err.message);
       res.status(500).json({ message: err.message });

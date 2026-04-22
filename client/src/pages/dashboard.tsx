@@ -124,17 +124,25 @@ export default function Dashboard() {
   });
 
   const [agentFilters, setAgentFilters] = useState({
-    city: 'all',
-    productId: 'all',
-    dateRange: 'month' as 'today' | '7days' | 'month' | 'lastmonth' | 'all' | 'custom',
+    dateRange: 'month' as 'today' | 'yesterday' | '7days' | 'month' | 'lastmonth' | 'all' | 'custom',
     dateFrom: '',
     dateTo: '',
+    city: 'all',
+    productId: 'all',
+    showCustom: false,
   });
 
   const { data: agentMyStats, isLoading: agentStatsLoading } = useQuery<{
-    daily: { date: string; orders: number }[];
-    byStatus: { name: string; value: number; color: string }[];
-    totalOrders: number;
+    total: number;
+    confirme: number;
+    delivered: number;
+    cancelled: number;
+    refused: number;
+    en_cours: number;
+    nouveau: number;
+    confirmRate: number;
+    deliverRate: number;
+    daily: { date: string; orders: number; confirmed?: number }[];
     cities?: string[];
     products?: { id?: number; name: string; total: number; confirmed: number; delivered: number }[];
   }>({
@@ -847,78 +855,82 @@ export default function Dashboard() {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Filtres</span>
 
-            {[
-              { label: "Aujourd'hui", value: 'today' },
-              { label: '7 jours', value: '7days' },
-              { label: 'Ce mois', value: 'month' },
-              { label: 'Mois dernier', value: 'lastmonth' },
-              { label: 'Tout', value: 'all' },
-            ].map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setAgentFilters((f) => ({ ...f, dateRange: opt.value as any, dateFrom: '', dateTo: '' }))}
-                className={`h-7 px-3 text-xs rounded-full border font-medium transition-all ${
-                  agentFilters.dateRange === opt.value && !agentFilters.dateFrom
-                    ? 'bg-primary text-white border-primary'
-                    : 'bg-white dark:bg-card text-muted-foreground hover:bg-muted'
-                }`}
-                data-testid={`button-agent-date-${opt.value}`}
-              >
-                {opt.label}
-              </button>
-            ))}
+            <Select
+              value={agentFilters.showCustom ? 'custom' : agentFilters.dateRange}
+              onValueChange={(v) => {
+                if (v === 'custom') {
+                  setAgentFilters((f) => ({ ...f, showCustom: true, dateRange: 'custom' }));
+                } else {
+                  setAgentFilters((f) => ({ ...f, dateRange: v as any, showCustom: false, dateFrom: '', dateTo: '' }));
+                }
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs w-auto min-w-[150px] rounded-full" data-testid="select-agent-date-range">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="today">📅 Aujourd'hui</SelectItem>
+                <SelectItem value="yesterday">⬅️ Hier</SelectItem>
+                <SelectItem value="7days">📆 7 derniers jours</SelectItem>
+                <SelectItem value="month">🗓️ Ce mois</SelectItem>
+                <SelectItem value="lastmonth">◀️ Mois dernier</SelectItem>
+                <SelectItem value="all">♾️ Toutes les dates</SelectItem>
+                <SelectItem value="custom">✏️ Personnalisé</SelectItem>
+              </SelectContent>
+            </Select>
 
-            <div className="w-px h-5 bg-border" />
-
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-muted-foreground">Du</span>
-              <input
-                type="date"
-                value={agentFilters.dateFrom}
-                onChange={(e) => setAgentFilters((f) => ({ ...f, dateFrom: e.target.value, dateRange: 'custom' }))}
-                className="h-7 text-xs border rounded-lg px-2 bg-white dark:bg-card cursor-pointer"
-                data-testid="input-agent-date-from"
-              />
-              <span className="text-xs text-muted-foreground">Au</span>
-              <input
-                type="date"
-                value={agentFilters.dateTo}
-                onChange={(e) => setAgentFilters((f) => ({ ...f, dateTo: e.target.value, dateRange: 'custom' }))}
-                className="h-7 text-xs border rounded-lg px-2 bg-white dark:bg-card cursor-pointer"
-                data-testid="input-agent-date-to"
-              />
-            </div>
+            {agentFilters.showCustom && (
+              <>
+                <input
+                  type="date"
+                  value={agentFilters.dateFrom}
+                  onChange={(e) => setAgentFilters((f) => ({ ...f, dateFrom: e.target.value }))}
+                  className="h-8 text-xs border rounded-lg px-2 bg-white dark:bg-card cursor-pointer"
+                  data-testid="input-agent-date-from"
+                />
+                <span className="text-xs text-muted-foreground">→</span>
+                <input
+                  type="date"
+                  value={agentFilters.dateTo}
+                  onChange={(e) => setAgentFilters((f) => ({ ...f, dateTo: e.target.value }))}
+                  className="h-8 text-xs border rounded-lg px-2 bg-white dark:bg-card cursor-pointer"
+                  data-testid="input-agent-date-to"
+                />
+              </>
+            )}
 
             <div className="w-px h-5 bg-border" />
 
             <Select value={agentFilters.city} onValueChange={(v) => setAgentFilters((f) => ({ ...f, city: v }))}>
-              <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] rounded-full" data-testid="select-agent-city">
+              <SelectTrigger className="h-8 text-xs w-auto min-w-[140px] rounded-full" data-testid="select-agent-city">
                 <SelectValue placeholder="Toutes les villes" />
               </SelectTrigger>
-              <SelectContent className="max-h-64 overflow-y-auto">
-                <SelectItem value="all">Toutes les villes</SelectItem>
+              <SelectContent className="max-h-60 overflow-y-auto">
+                <SelectItem value="all">🌍 Toutes les villes</SelectItem>
                 {MOROCCO_CITIES_FR.map((c) => (
                   <SelectItem key={c} value={c}>{c}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
 
-            <Select value={agentFilters.productId} onValueChange={(v) => setAgentFilters((f) => ({ ...f, productId: v }))}>
-              <SelectTrigger className="h-7 text-xs w-auto min-w-[140px] rounded-full" data-testid="select-agent-product">
-                <SelectValue placeholder="Tous les produits" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les produits</SelectItem>
-                {(agentMyStats?.products || []).map((p: any) => (
-                  <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {(agentMyStats?.products || []).length > 0 && (
+              <Select value={agentFilters.productId} onValueChange={(v) => setAgentFilters((f) => ({ ...f, productId: v }))}>
+                <SelectTrigger className="h-8 text-xs w-auto min-w-[140px] rounded-full" data-testid="select-agent-product">
+                  <SelectValue placeholder="Tous les produits" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">📦 Tous les produits</SelectItem>
+                  {(agentMyStats?.products || []).map((p: any) => (
+                    <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
 
             {(agentFilters.city !== 'all' || agentFilters.productId !== 'all' || agentFilters.dateRange !== 'month' || agentFilters.dateFrom) && (
               <button
-                onClick={() => setAgentFilters({ city: 'all', productId: 'all', dateRange: 'month', dateFrom: '', dateTo: '' })}
-                className="h-7 px-3 text-xs rounded-full border text-red-500 hover:bg-red-50"
+                onClick={() => setAgentFilters({ dateRange: 'month', dateFrom: '', dateTo: '', city: 'all', productId: 'all', showCustom: false })}
+                className="h-8 px-3 text-xs rounded-full border text-red-500 hover:bg-red-50"
                 data-testid="button-agent-filters-reset"
               >
                 ✕ Reset
@@ -932,6 +944,24 @@ export default function Dashboard() {
               <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary font-semibold">{agentFilters.city}</span>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Agent KPI cards (filtered) ── */}
+      {isAgent && agentMyStats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3" data-testid="agent-kpi-cards">
+          {[
+            { label: 'Total', value: agentMyStats.total || 0, color: '#1e1b4b', testid: 'kpi-agent-total' },
+            { label: 'Confirmées', value: agentMyStats.confirme || 0, color: '#10b981', pct: `${agentMyStats.confirmRate || 0}%`, testid: 'kpi-agent-confirmed' },
+            { label: 'Livrées', value: agentMyStats.delivered || 0, color: '#3b82f6', pct: `${agentMyStats.deliverRate || 0}%`, testid: 'kpi-agent-delivered' },
+            { label: 'Annulées', value: agentMyStats.cancelled || 0, color: '#ef4444', testid: 'kpi-agent-cancelled' },
+          ].map((k) => (
+            <div key={k.label} className="rounded-xl border bg-white dark:bg-card p-3 shadow-sm" data-testid={k.testid}>
+              <p className="text-[11px] text-muted-foreground uppercase">{k.label}</p>
+              <p className="text-2xl font-extrabold" style={{ color: k.color }}>{k.value}</p>
+              {k.pct && <p className="text-xs font-semibold" style={{ color: k.color }}>{k.pct}</p>}
+            </div>
+          ))}
         </div>
       )}
 
