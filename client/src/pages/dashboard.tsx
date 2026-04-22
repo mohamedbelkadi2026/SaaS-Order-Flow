@@ -283,11 +283,14 @@ export default function Dashboard() {
     </div>
   );
 
-  const confirme = stats?.confirme || 0;
-  const cancelled = stats?.cancelled || 0;
-  const inProgress = stats?.inProgress || 0;
-  const delivered = stats?.delivered || 0;
-  const totalOrders = stats?.totalOrders || 0;
+  // For agents: source the headline stat cards from the date-filtered
+  // /api/agents/my-stats endpoint so the cards react to the filter bar.
+  // For owners/media-buyers: keep the global /api/stats values.
+  const confirme    = isAgent ? (agentMyStats?.confirme  || 0) : (stats?.confirme    || 0);
+  const cancelled   = isAgent ? (agentMyStats?.cancelled || 0) : (stats?.cancelled   || 0);
+  const inProgress  = isAgent ? (agentMyStats?.en_cours  || 0) : (stats?.inProgress  || 0);
+  const delivered   = isAgent ? (agentMyStats?.delivered || 0) : (stats?.delivered   || 0);
+  const totalOrders = isAgent ? (agentMyStats?.total     || 0) : (stats?.totalOrders || 0);
 
   const confirmPct = totalOrders > 0 ? ((confirme / totalOrders) * 100).toFixed(2) : '0';
   const cancelPct = totalOrders > 0 ? ((cancelled / totalOrders) * 100).toFixed(2) : '0';
@@ -944,24 +947,6 @@ export default function Dashboard() {
               <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary font-semibold">{agentFilters.city}</span>
             </div>
           )}
-        </div>
-      )}
-
-      {/* ── Agent KPI cards (filtered) ── */}
-      {isAgent && agentMyStats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3" data-testid="agent-kpi-cards">
-          {[
-            { label: 'Total', value: agentMyStats.total || 0, color: '#1e1b4b', testid: 'kpi-agent-total' },
-            { label: 'Confirmées', value: agentMyStats.confirme || 0, color: '#10b981', pct: `${agentMyStats.confirmRate || 0}%`, testid: 'kpi-agent-confirmed' },
-            { label: 'Livrées', value: agentMyStats.delivered || 0, color: '#3b82f6', pct: `${agentMyStats.deliverRate || 0}%`, testid: 'kpi-agent-delivered' },
-            { label: 'Annulées', value: agentMyStats.cancelled || 0, color: '#ef4444', testid: 'kpi-agent-cancelled' },
-          ].map((k) => (
-            <div key={k.label} className="rounded-xl border bg-white dark:bg-card p-3 shadow-sm" data-testid={k.testid}>
-              <p className="text-[11px] text-muted-foreground uppercase">{k.label}</p>
-              <p className="text-2xl font-extrabold" style={{ color: k.color }}>{k.value}</p>
-              {k.pct && <p className="text-xs font-semibold" style={{ color: k.color }}>{k.pct}</p>}
-            </div>
-          ))}
         </div>
       )}
 
