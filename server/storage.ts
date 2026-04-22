@@ -1883,7 +1883,10 @@ export class DatabaseStorage implements IStorage {
     // TRUE PERCENTAGE DISTRIBUTION
     // Track how many orders each agent received this cycle and pick the agent
     // most below their target percentage to ensure real distribution.
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // Count only TODAY's assignments to measure current percentage
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
     const agentOrderCounts = await Promise.all(
       eligibleAgents.map(async (agent) => {
         const [countResult] = await db
@@ -1892,26 +1895,22 @@ export class DatabaseStorage implements IStorage {
           .where(and(
             eq(orders.storeId, storeId),
             eq(orders.assignedToId, agent.id),
-            gte(orders.createdAt, sevenDaysAgo),
+            gte(orders.createdAt, todayStart),
           ));
         return { agentId: agent.id, count: Number(countResult?.count || 0) };
       })
     );
 
-    const totalOrders = agentOrderCounts.reduce((s, a) => s + a.count, 0);
+    const totalToday = agentOrderCounts.reduce((s, a) => s + a.count, 0);
 
     let selectedAgentId: number | null = null;
     let maxDeficit = -Infinity;
 
     for (const agent of eligibleAgents) {
       const setting = settingsMap.get(agent.id);
-      const targetPct = setting ? Math.max(1, setting.leadPercentage) : 100;
+      const targetPct = setting ? Math.max(1, setting.leadPercentage) : (100 / eligibleAgents.length);
       const currentCount = agentOrderCounts.find(a => a.agentId === agent.id)?.count || 0;
-
-      // What % this agent currently has (using totalOrders + 1 to bias the very first assignment)
-      const currentPct = totalOrders === 0 ? 0 : (currentCount / (totalOrders + 1)) * 100;
-
-      // How far below target they are (deficit)
+      const currentPct = totalToday === 0 ? 0 : (currentCount / (totalToday + 1)) * 100;
       const deficit = targetPct - currentPct;
 
       if (deficit > maxDeficit) {
