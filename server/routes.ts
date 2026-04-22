@@ -2727,9 +2727,9 @@ export async function registerRoutes(
 
     console.log(`[WEBHOOK-RAW]: Internal status → ${newStatus} (commentStatus="${rawText}")`);
 
-    // ── Capture driver info into follow-up journal ────────────────────────
+    // ── Capture driver info into follow-up journal + persist on order ─────
     const driverName  = body.livreur_name || body.driver_name  || body.livreur || body.courier_name  || "";
-    const driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || "";
+    const driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || body.livreur_phone || "";
     if (driverName || driverPhone) {
       const parts: string[] = [];
       if (driverName)  parts.push(driverName);
@@ -2738,6 +2738,12 @@ export async function registerRoutes(
         orderId: order.id, agentId: null, agentName: carrierName,
         note: `🚴 Livreur: ${parts.join(" — ")} (mis à jour par ${carrierName})`,
       });
+      // Persist directly on the order so the UI can show it everywhere
+      await storage.updateOrder(order.id, {
+        driverName:  driverName  || undefined,
+        driverPhone: driverPhone || undefined,
+      } as any);
+      console.log(`[DRIVER] Order #${(order as any).orderNumber} → livreur: ${driverName} ${driverPhone}`);
     }
 
     // ── Log the status update in the follow-up journal ────────────────────

@@ -1194,6 +1194,26 @@ export default function Orders() {
                               </SelectContent>
                             </Select>
                           )}
+                          {/* Livreur info — show in Suivi des Colis */}
+                          {urlStatus === 'suivi_group' && ((order as any).driverPhone || (order as any).driverName) && (
+                            <div className="flex items-center gap-1.5 mt-1">
+                              <span className="text-[10px] text-muted-foreground">🚴</span>
+                              {(order as any).driverName && (
+                                <span className="text-[10px] font-medium" data-testid={`text-driver-name-${order.id}`}>{(order as any).driverName}</span>
+                              )}
+                              {(order as any).driverPhone && (
+                                <a
+                                  href={`tel:${(order as any).driverPhone}`}
+                                  className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 font-semibold"
+                                  onClick={e => e.stopPropagation()}
+                                  data-testid={`link-driver-phone-${order.id}`}
+                                >
+                                  <Phone className="w-2.5 h-2.5" />
+                                  {(order as any).driverPhone}
+                                </a>
+                              )}
+                            </div>
+                          )}
                         </TableCell>
                       )}
                       {isColVisible('prix') && <TableCell className="font-semibold whitespace-nowrap">{formatCurrency(order.totalPrice)}</TableCell>}

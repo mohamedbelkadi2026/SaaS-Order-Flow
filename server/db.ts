@@ -202,6 +202,14 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: orders.carrier_name + carrier_id columns ensured.");
 
+    // ── 6b. orders: livreur (driver) info from carrier webhook/sync ───────────
+    await client.query(`
+      ALTER TABLE public.orders
+        ADD COLUMN IF NOT EXISTS driver_name  TEXT DEFAULT '',
+        ADD COLUMN IF NOT EXISTS driver_phone TEXT DEFAULT '';
+    `);
+    console.log('[Migration] driver_name + driver_phone columns ensured ✅');
+
     // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.email_verification_codes (

@@ -131,6 +131,8 @@ export const orders = pgTable("orders", {
   pickupDate: timestamp("pickup_date"),
   carrierId: integer("carrier_id"),
   carrierName: text("carrier_name"),
+  driverName:  text("driver_name").default(""),
+  driverPhone: text("driver_phone").default(""),
 });
 
 export const orderItems = pgTable("order_items", {

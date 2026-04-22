@@ -1,0 +1,88 @@
+ADD — Livreur info (name + phone) saved in order + displayed in Suivi des Colis
+CHANGE 1 — server/db.ts — add livreur columns to orders table:
+typescriptawait client.query(`
+  ALTER TABLE orders 
+  ADD COLUMN IF NOT EXISTS driver_name TEXT DEFAULT '',
+  ADD COLUMN IF NOT EXISTS driver_phone TEXT DEFAULT '';
+`);
+console.log('[Migration] driver_name + driver_phone columns ensured ✅');
+CHANGE 2 — shared/schema.ts — add fields to orders table:
+typescriptdriverName:  text("driver_name").default(""),
+driverPhone: text("driver_phone").default(""),
+CHANGE 3 — server/routes.ts — save driver info to order when webhook arrives:
+In processCarrierWebhook, after capturing driver info, add:
+typescriptconst driverName  = body.livreur_name || body.driver_name || body.livreur || body.courier_name || "";
+const driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || body.livreur_phone || "";
+
+// Save to order directly
+if (driverName || driverPhone) {
+  await storage.updateOrder(order.id, {
+    driverName:  driverName  || undefined,
+    driverPhone: driverPhone || undefined,
+  });
+  console.log(`[DRIVER] Order #${(order as any).orderNumber} → livreur: ${driverName} ${driverPhone}`);
+}
+Also in auto-sync — extract from /order/:tracking/infos response:
+typescript// After getting infos body, extract driver:
+const driverName = body?.livreur_name || body?.driver?.name || body?.courier_name || '';
+const driverPhone = body?.livreur_tel || body?.driver?.phone || body?.courier_phone || '';
+if (driverName || driverPhone) {
+  await storage.updateOrder(order.id, { driverName, driverPhone });
+}
+CHANGE 4 — client/src/pages/orders.tsx — display livreur in Suivi des Colis:
+In the orders table row, find the STATUS column cell and add livreur info below status:
+tsx{/* Livreur info — show in Suivi des Colis */}
+{urlStatus === 'suivi_group' && ((order as any).driverPhone || (order as any).driverName) && (
+  <div className="flex items-center gap-1.5 mt-1">
+    <span className="text-[10px] text-muted-foreground">🚴</span>
+    {(order as any).driverName && (
+      <span className="text-[10px] font-medium">{(order as any).driverName}</span>
+    )}
+    {(order as any).driverPhone && (
+      
+        href={`tel:${(order as any).driverPhone}`}
+        className="flex items-center gap-1 text-[10px] text-blue-600 hover:text-blue-800 font-semibold"
+        onClick={e => e.stopPropagation()}
+      >
+        <Phone className="w-2.5 h-2.5" />
+        {(order as any).driverPhone}
+      </a>
+    )}
+  </div>
+)}
+Also in the order detail modal/drawer, add livreur section:
+tsx{/* Livreur section */}
+{((order as any).driverPhone || (order as any).driverName) && (
+  <div className="rounded-xl border p-3 bg-blue-50 dark:bg-blue-900/20 space-y-2">
+    <p className="text-xs font-bold uppercase tracking-wide text-blue-700 flex items-center gap-1.5">
+      🚴 Livreur assigné
+    </p>
+    <div className="flex items-center justify-between">
+      <div>
+        {(order as any).driverName && (
+          <p className="font-semibold text-sm">{(order as any).driverName}</p>
+        )}
+        {(order as any).driverPhone && (
+          <p className="text-xs text-muted-foreground">{(order as any).driverPhone}</p>
+        )}
+      </div>
+      {(order as any).driverPhone && (
+        <div className="flex gap-2">
+          <a href={`tel:${(order as any).driverPhone}`}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500 text-white text-xs font-semibold hover:bg-green-600">
+            <Phone className="w-3.5 h-3.5" />
+            Appeler
+          </a>
+          <a href={`https://wa.me/${(order as any).driverPhone?.replace(/\D/g, '')}`}
+            target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-semibold hover:bg-emerald-600">
+            WhatsApp
+          </a>
+        </div>
+      )}
+    </div>
+  </div>
+)}
+CHANGE 5 — Add Phone import in orders.tsx if missing:
+tsximport { ..., Phone } from 'lucide-react';
+Do NOT change: any other column, any other page, any other carrier logic.

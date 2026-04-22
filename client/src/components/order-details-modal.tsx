@@ -474,6 +474,46 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         {/* ── SCROLLABLE BODY ── */}
         <div className="overflow-y-auto flex-1 bg-gray-50">
 
+          {/* Livreur section — visible whenever carrier reported a driver */}
+          {((order as any).driverPhone || (order as any).driverName) && (
+            <div className="mx-4 mt-4 rounded-xl border p-3 bg-blue-50 dark:bg-blue-900/20 space-y-2" data-testid="section-driver-info">
+              <p className="text-xs font-bold uppercase tracking-wide text-blue-700 flex items-center gap-1.5">
+                🚴 Livreur assigné
+              </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  {(order as any).driverName && (
+                    <p className="font-semibold text-sm" data-testid="text-driver-name">{(order as any).driverName}</p>
+                  )}
+                  {(order as any).driverPhone && (
+                    <p className="text-xs text-muted-foreground" data-testid="text-driver-phone">{(order as any).driverPhone}</p>
+                  )}
+                </div>
+                {(order as any).driverPhone && (
+                  <div className="flex gap-2">
+                    <a
+                      href={`tel:${(order as any).driverPhone}`}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500 text-white text-xs font-semibold hover:bg-green-600"
+                      data-testid="link-driver-call"
+                    >
+                      <Phone className="w-3.5 h-3.5" />
+                      Appeler
+                    </a>
+                    <a
+                      href={`https://wa.me/${String((order as any).driverPhone).replace(/\D/g, '')}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 text-white text-xs font-semibold hover:bg-emerald-600"
+                      data-testid="link-driver-whatsapp"
+                    >
+                      WhatsApp
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* ── TWO CARDS: stacked on mobile, side-by-side on desktop ── */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4">
 

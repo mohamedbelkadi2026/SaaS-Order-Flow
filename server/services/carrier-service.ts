@@ -1227,6 +1227,16 @@ export async function trackDigylogShipment(
         console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
         const deliveryCostRaw = body?.deliveryCost ?? body?.frais_livraison ?? body?.port ?? null;
         const deliveryCost = deliveryCostRaw ? Math.round(parseFloat(String(deliveryCostRaw)) * 100) : null;
+
+        // Extract livreur (driver) info so the caller can persist it on the order
+        const driverName  = body?.livreur_name || body?.driver?.name  || body?.courier_name  || '';
+        const driverPhone = body?.livreur_tel  || body?.driver?.phone || body?.courier_phone || '';
+        if (driverName || driverPhone) {
+          (body as any).__driverName  = driverName;
+          (body as any).__driverPhone = driverPhone;
+          console.log(`[DIGYLOG-TRACK] ${trackingNumber} → livreur: ${driverName} ${driverPhone}`);
+        }
+
         return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost };
       }
     }
