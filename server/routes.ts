@@ -4489,10 +4489,12 @@ export async function registerRoutes(
           buckets.refused++;
         } else if (s === "cancelled" || s.startsWith("annulé") || s.startsWith("annule")) {
           buckets.cancelled++;
-        } else {
-          // Any unrecognised status falls to cancelled to avoid data loss
-          buckets.cancelled++;
+        } else if (s === "nouveau" || s === "new" || s === "") {
+          // nouveau = unactioned leads — not cancelled
+        } else if (s === "shipping" || s === "shipped" || s === "en_cours" || s === "transit") {
+          buckets.en_cours++;
         }
+        // truly unrecognised statuses are silently ignored — NOT added to cancelled
       }
       const byStatus = [
         { name: "Confirmées", value: buckets.confirme,  color: "#0ea5e9" },
