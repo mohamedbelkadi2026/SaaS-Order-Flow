@@ -1883,6 +1883,7 @@ export class DatabaseStorage implements IStorage {
     // TRUE PERCENTAGE DISTRIBUTION
     // Track how many orders each agent received this cycle and pick the agent
     // most below their target percentage to ensure real distribution.
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const agentOrderCounts = await Promise.all(
       eligibleAgents.map(async (agent) => {
         const [countResult] = await db
@@ -1891,6 +1892,7 @@ export class DatabaseStorage implements IStorage {
           .where(and(
             eq(orders.storeId, storeId),
             eq(orders.assignedToId, agent.id),
+            gte(orders.createdAt, sevenDaysAgo),
           ));
         return { agentId: agent.id, count: Number(countResult?.count || 0) };
       })
