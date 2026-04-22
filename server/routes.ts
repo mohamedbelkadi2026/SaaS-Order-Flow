@@ -4381,15 +4381,23 @@ export async function registerRoutes(
       const agentId = user.id;
 
       // Filter params
-      const { city, product, dateRange } = req.query as Record<string, string>;
+      const { city, product, dateRange, dateFrom, dateTo } = req.query as Record<string, string>;
 
-      // Compute window from dateRange shortcut
+      // Compute window from dateRange shortcut or custom range
       const now = new Date();
       let cutoff = new Date(now);
       let endDate: Date | null = null;
 
-      if (dateRange === 'today') {
+      if (dateFrom) {
+        // Custom date range
+        cutoff = new Date(dateFrom + 'T00:00:00');
+        endDate = dateTo ? new Date(dateTo + 'T23:59:59') : new Date();
+      } else if (dateRange === 'today') {
         cutoff = new Date(now);
+        cutoff.setHours(0, 0, 0, 0);
+      } else if (dateRange === '7days') {
+        cutoff = new Date(now);
+        cutoff.setDate(cutoff.getDate() - 6);
         cutoff.setHours(0, 0, 0, 0);
       } else if (dateRange === 'month') {
         cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
