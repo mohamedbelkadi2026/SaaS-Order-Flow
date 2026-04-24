@@ -4610,7 +4610,8 @@ export async function registerRoutes(
 
   app.get("/api/stats/commissions-summary", requireAdmin, async (req, res) => {
     const storeId = req.user!.storeId!;
-    const summary = await storage.getCommissionsSummary(storeId);
+    const { dateFrom, dateTo, month, agentId } = req.query as Record<string, string>;
+    const summary = await storage.getCommissionsSummary(storeId, { dateFrom, dateTo, month, agentId });
     res.json(summary);
   });
 

@@ -220,7 +220,14 @@ export default function Dashboard() {
   });
 
   const { data: commissionsSummary } = useQuery<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>({
-    queryKey: ['/api/stats/commissions-summary'],
+    queryKey: ['/api/stats/commissions-summary', activeFilters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (activeFilters.dateFrom) params.set('dateFrom', activeFilters.dateFrom);
+      if (activeFilters.dateTo) params.set('dateTo', activeFilters.dateTo);
+      const r = await fetch(`/api/stats/commissions-summary?${params}`, { credentials: 'include' });
+      return r.json();
+    },
     enabled: !isAgent,
   });
   const totalCommissionsOwed = commissionsSummary?.reduce((sum, a) => sum + Number(a.totalOwed), 0) ?? 0;

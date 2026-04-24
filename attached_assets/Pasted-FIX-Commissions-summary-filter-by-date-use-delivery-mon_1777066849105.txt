@@ -1,0 +1,86 @@
+FIX — Commissions summary: filter by date + use delivery month
+CHANGE 1 — server/routes.ts — pass filters to commissions endpoint:
+Find:
+typescriptapp.get("/api/stats/commissions-summary", requireAdmin, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const summary = await storage.getCommissionsSummary(storeId);
+  res.json(summary);
+});
+Replace with:
+typescriptapp.get("/api/stats/commissions-summary", requireAdmin, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const { dateFrom, dateTo, month, agentId } = req.query as Record<string, string>;
+  const summary = await storage.getCommissionsSummary(storeId, { dateFrom, dateTo, month, agentId });
+  res.json(summary);
+});
+CHANGE 2 — server/storage.ts — update getCommissionsSummary with date filter:
+Find:
+typescriptasync getCommissionsSummary(storeId: number): Promise<...> {
+Replace with:
+typescriptasync getCommissionsSummary(storeId: number, opts?: { dateFrom?: string; dateTo?: string; month?: string; agentId?: string }): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {
+  const agents = await db.select().from(users).where(and(eq(users.storeId, storeId), eq(users.role, 'agent')));
+  const result = [];
+  
+  // Calculate date range
+  const now = new Date();
+  let cutoff: Date;
+  let endDate: Date = new Date();
+
+  if (opts?.dateFrom) {
+    cutoff = new Date(opts.dateFrom + 'T00:00:00');
+    endDate = opts?.dateTo ? new Date(opts.dateTo + 'T23:59:59') : new Date();
+  } else if (opts?.month) {
+    // Format: "2026-04" → first and last day of month
+    const [year, mon] = opts.month.split('-').map(Number);
+    cutoff = new Date(year, mon - 1, 1);
+    endDate = new Date(year, mon, 0, 23, 59, 59);
+  } else {
+    // Default: current month
+    cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+    endDate = new Date();
+  }
+
+  for (const agent of agents) {
+    if (opts?.agentId && String(agent.id) !== opts.agentId) continue;
+    
+    const setting = await this.getAgentStoreSetting(agent.id, storeId);
+    const rate = Number(setting?.commissionRate ?? 0);
+    
+    // Count deliveries in date range — using updatedAt (delivery date)
+    const allDelivered = await db.select()
+      .from(orders)
+      .where(and(
+        eq(orders.assignedToId, agent.id),
+        eq(orders.storeId, storeId),
+        eq(orders.status, 'delivered'),
+        gte(orders.updatedAt, cutoff),
+        lte(orders.updatedAt, endDate),
+      ));
+    
+    const deliveredTotal = allDelivered.length;
+    result.push({ 
+      agentId: agent.id, 
+      agentName: agent.username, 
+      commissionRate: rate, 
+      deliveredTotal, 
+      totalOwed: deliveredTotal * rate 
+    });
+  }
+  return result;
+}
+Make sure gte, lte imported in storage.ts.
+CHANGE 3 — client/src/pages/dashboard.tsx — pass active filters to commissions query:
+Find:
+typescriptuseQuery({ queryKey: ['/api/stats/commissions-summary'] })
+Replace with:
+typescriptuseQuery({ 
+  queryKey: ['/api/stats/commissions-summary', activeFilters],
+  queryFn: async () => {
+    const params = new URLSearchParams();
+    if (activeFilters.dateFrom) params.set('dateFrom', activeFilters.dateFrom);
+    if (activeFilters.dateTo) params.set('dateTo', activeFilters.dateTo);
+    const r = await fetch(`/api/stats/commissions-summary?${params}`, { credentials: 'include' });
+    return r.json();
+  }
+})
+Do NOT change: agent dashboard, any other endpoint.

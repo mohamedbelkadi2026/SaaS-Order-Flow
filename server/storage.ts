@@ -2042,28 +2042,54 @@ export class DatabaseStorage implements IStorage {
     return { totalEarned: Number(deliveredTotal) * Number(rate), deliveredThisMonth, deliveredTotal, commissionRate: rate };
   }
 
-  async getCommissionsSummary(storeId: number): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {
+  async getCommissionsSummary(storeId: number, opts?: { dateFrom?: string; dateTo?: string; month?: string; agentId?: string }): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {
     const agents = await db.select().from(users).where(and(eq(users.storeId, storeId), eq(users.role, 'agent')));
-    // Count delivered orders by the month they were DELIVERED (updated_at)
-    // not the month they were CREATED (created_at)
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const result = [];
+
+    // Calculate date range
+    const now = new Date();
+    let cutoff: Date;
+    let endDate: Date = new Date();
+
+    if (opts?.dateFrom) {
+      cutoff = new Date(opts.dateFrom + 'T00:00:00');
+      endDate = opts?.dateTo ? new Date(opts.dateTo + 'T23:59:59') : new Date();
+    } else if (opts?.month) {
+      // Format: "2026-04" → first and last day of month
+      const [year, mon] = opts.month.split('-').map(Number);
+      cutoff = new Date(year, mon - 1, 1);
+      endDate = new Date(year, mon, 0, 23, 59, 59);
+    } else {
+      // Default: current month
+      cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+      endDate = new Date();
+    }
+
     for (const agent of agents) {
+      if (opts?.agentId && String(agent.id) !== opts.agentId) continue;
+
       const setting = await this.getAgentStoreSetting(agent.id, storeId);
       const rate = Number(setting?.commissionRate ?? 0);
-      const [row] = await db.select({ count: sql<number>`count(*)` })
+
+      // Count deliveries in date range — using updatedAt (delivery date)
+      const allDelivered = await db.select()
         .from(orders)
         .where(and(
           eq(orders.assignedToId, agent.id),
           eq(orders.storeId, storeId),
           eq(orders.status, 'delivered'),
-          sql`COALESCE(${orders.updatedAt}, ${orders.createdAt}) >= ${startOfMonth.toISOString()}`,
-          sql`COALESCE(${orders.updatedAt}, ${orders.createdAt}) < ${startOfNextMonth.toISOString()}`,
+          gte(orders.updatedAt, cutoff),
+          lte(orders.updatedAt, endDate),
         ));
-      const deliveredTotal = Number(row?.count ?? 0);
-      result.push({ agentId: agent.id, agentName: agent.username, commissionRate: rate, deliveredTotal, totalOwed: Number(deliveredTotal) * Number(rate) });
+
+      const deliveredTotal = allDelivered.length;
+      result.push({
+        agentId: agent.id,
+        agentName: agent.username,
+        commissionRate: rate,
+        deliveredTotal,
+        totalOwed: deliveredTotal * rate,
+      });
     }
     return result;
   }
