@@ -1212,6 +1212,7 @@ export async function trackDigylogShipment(
     });
 
     console.log(`[DIGYLOG-TRACK] ${trackingNumber} → infos HTTP ${infosResp.status}: ${JSON.stringify(infosResp.data).slice(0, 300)}`);
+    console.log(`[DIGYLOG-INFOS-FULL] ${trackingNumber}: ${JSON.stringify(infosResp.data)}`);
 
     if (infosResp.status === 200 && infosResp.data) {
       const body = infosResp.data;
