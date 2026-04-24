@@ -2044,13 +2044,24 @@ export class DatabaseStorage implements IStorage {
 
   async getCommissionsSummary(storeId: number): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {
     const agents = await db.select().from(users).where(and(eq(users.storeId, storeId), eq(users.role, 'agent')));
+    // Count delivered orders by the month they were DELIVERED (updated_at)
+    // not the month they were CREATED (created_at)
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfNextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const result = [];
     for (const agent of agents) {
       const setting = await this.getAgentStoreSetting(agent.id, storeId);
       const rate = Number(setting?.commissionRate ?? 0);
       const [row] = await db.select({ count: sql<number>`count(*)` })
         .from(orders)
-        .where(and(eq(orders.assignedToId, agent.id), eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
+        .where(and(
+          eq(orders.assignedToId, agent.id),
+          eq(orders.storeId, storeId),
+          eq(orders.status, 'delivered'),
+          sql`COALESCE(${orders.updatedAt}, ${orders.createdAt}) >= ${startOfMonth.toISOString()}`,
+          sql`COALESCE(${orders.updatedAt}, ${orders.createdAt}) < ${startOfNextMonth.toISOString()}`,
+        ));
       const deliveredTotal = Number(row?.count ?? 0);
       result.push({ agentId: agent.id, agentName: agent.username, commissionRate: rate, deliveredTotal, totalOwed: Number(deliveredTotal) * Number(rate) });
     }

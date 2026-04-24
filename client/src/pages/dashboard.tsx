@@ -1157,6 +1157,9 @@ export default function Dashboard() {
               <div>
                 <p className="text-white/80 text-xs font-semibold uppercase tracking-wider">Total Commissions à Payer</p>
                 <p className="text-white text-2xl font-bold">{totalCommissionsOwed.toFixed(2)} DH</p>
+                <p className="text-xs text-white/70 mt-1">
+                  Livraisons de {new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
+                </p>
               </div>
             </div>
             <div className="flex gap-4">
