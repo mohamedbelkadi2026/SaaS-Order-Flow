@@ -1149,6 +1149,7 @@ export async function trackDigylogShipment(
     });
 
     console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${histResp.status}: ${JSON.stringify(histResp.data).slice(0, 300)}`);
+    console.log(`[DIGYLOG-HISTORICS-FULL] ${trackingNumber} → ${JSON.stringify(histResp.data)}`);
 
     if (histResp.status === 200 && histResp.data) {
       const body = histResp.data;
