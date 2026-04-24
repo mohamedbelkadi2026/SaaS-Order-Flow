@@ -1123,7 +1123,7 @@ export async function trackDigylogShipment(
   trackingNumber: string,
   apiKey: string,
   apiUrl?: string,
-): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; deliveryCost?: number | null; error?: string }> {
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; deliveryCost?: number | null; driverPhone?: string; driverName?: string; error?: string }> {
   try {
     const base = (apiUrl || 'https://api.digylog.com/api/v2/seller')
       .replace(/\/+$/, '')
@@ -1228,16 +1228,16 @@ export async function trackDigylogShipment(
         const deliveryCostRaw = body?.deliveryCost ?? body?.frais_livraison ?? body?.port ?? null;
         const deliveryCost = deliveryCostRaw ? Math.round(parseFloat(String(deliveryCostRaw)) * 100) : null;
 
-        // Extract livreur (driver) info so the caller can persist it on the order
-        const driverName  = body?.livreur_name || body?.driver?.name  || body?.courier_name  || '';
-        const driverPhone = body?.livreur_tel  || body?.driver?.phone || body?.courier_phone || '';
-        if (driverName || driverPhone) {
-          (body as any).__driverName  = driverName;
-          (body as any).__driverPhone = driverPhone;
-          console.log(`[DIGYLOG-TRACK] ${trackingNumber} → livreur: ${driverName} ${driverPhone}`);
-        }
+        // Extract driver phone from Digylog /infos response
+        const driverPhone = body?.livreur_phone || body?.livreur_tel || body?.driver_phone ||
+                           body?.livreur?.phone || body?.livreur?.telephone ||
+                           body?.courier_phone || "";
+        const driverName = body?.livreur_name || body?.livreur?.name ||
+                          body?.livreur?.nom || body?.courier_name || "";
 
-        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost };
+        console.log(`[DIGYLOG-DRIVER] ${trackingNumber} → phone="${driverPhone}" name="${driverName}" raw keys=${Object.keys(body).join(',')}`);
+
+        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost, driverPhone, driverName };
       }
     }
 

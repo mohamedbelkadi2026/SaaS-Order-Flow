@@ -4745,6 +4745,15 @@ export async function registerRoutes(
           console.log(`[DIGYLOG-SYNC] DeliveryCost #${(order as any).orderNumber}: ${result.deliveryCost} centimes`);
         }
 
+        // Persist livreur (driver) info returned by Digylog /infos
+        if (result.driverPhone || result.driverName) {
+          await storage.updateOrder(order.id, {
+            driverPhone: result.driverPhone || undefined,
+            driverName:  result.driverName  || undefined,
+          } as any);
+          console.log(`[DIGYLOG-DRIVER-SAVED] Order #${(order as any).orderNumber} → ${result.driverName} ${result.driverPhone}`);
+        }
+
         if (result.status && result.status !== order.status) {
           await storage.updateOrderStatus(order.id, result.status);
           const updateData: any = { commentStatus: result.rawStatus || result.status };
