@@ -2780,6 +2780,27 @@ export async function registerRoutes(
       console.log(`[DRIVER] Order #${(order as any).orderNumber} → livreur: ${resolvedDriverName} ${driverPhone}`);
     }
 
+    // ── Extract driverPhone + motif from Digylog webhook payload ──────────
+    {
+      const wDriverPhone = body.driverPhone || body.driver_phone || body.livreur_tel || '';
+      const motif = body.motif || body.motif_status || '';
+
+      console.log(`[DRIVER-WEBHOOK] tracking=${trackingNumber} driverPhone=${wDriverPhone} motif=${motif}`);
+
+      // Build comment with motif + driverPhone
+      const commentParts: string[] = [];
+      if (rawText) commentParts.push(rawText);
+      if (motif) commentParts.push(`Motif: ${motif}`);
+      if (wDriverPhone) commentParts.push(`📞 Livreur: ${wDriverPhone}`);
+      const fullComment = commentParts.join(' | ');
+
+      // Save to order
+      if (wDriverPhone) {
+        await storage.updateOrder(order.id, { driverPhone: wDriverPhone } as any);
+      }
+      await storage.updateOrder(order.id, { commentStatus: fullComment } as any);
+    }
+
     // ── Log the status update in the follow-up journal ────────────────────
     await storage.createOrderFollowUpLog({
       orderId: order.id, agentId: null, agentName: carrierName,
