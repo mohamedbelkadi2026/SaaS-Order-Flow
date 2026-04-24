@@ -2580,13 +2580,9 @@ export async function registerRoutes(
       console.warn(`[WEBHOOK-FLEXIBLE]: Not found in store ${storeId} — trying cross-store search for tracking="${trackingNumber}"`);
       const crossOrder = await storage.getOrderByTrackingNumberAnyStore(trackingNumber);
       if (crossOrder) {
-        const foundStoreId = (crossOrder as any).storeId;
-        console.warn(`[WEBHOOK-CROSS]: Found in store ${foundStoreId} — URL storeId=${storeId} was wrong; updating order in real store`);
+        console.warn(`[WEBHOOK-FLEXIBLE]: Found in store ${(crossOrder as any).storeId} — URL storeId=${storeId} was wrong`);
         order = crossOrder;
-        matchedBy = `tracking_number="${trackingNumber}" (cross-store, URL had storeId=${storeId} → real store=${foundStoreId})`;
-        // Reassign storeId so all downstream writes (integration log, broadcast,
-        // follow-up logs) target the order's actual store, not the wrong URL one.
-        storeId = foundStoreId;
+        matchedBy = `tracking_number="${trackingNumber}" (cross-store, URL had storeId=${storeId})`;
       }
     }
 
