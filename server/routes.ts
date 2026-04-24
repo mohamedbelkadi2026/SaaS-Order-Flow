@@ -2605,6 +2605,18 @@ export async function registerRoutes(
     console.log(`[WEBHOOK-RESULT]: Order found — id=${order.id} orderNumber=${(order as any).orderNumber} (matched by ${matchedBy})`);
     console.log(`[WEBHOOK-RAW]: Received status "${rawText}" for Order ${order.id}`);
 
+    // ── Backfill trackNumber + shipping provider on first webhook ─────────
+    // If the order was created without a tracking number (e.g. manually) and the
+    // carrier is now reporting one, persist it so the UI can show it everywhere.
+    if (!(order as any).trackNumber && trackingNumber) {
+      await storage.updateOrder(order.id, {
+        trackNumber: trackingNumber,
+        shippingProvider: carrierName,
+        status: 'Attente De Ramassage',
+      } as any);
+      console.log(`[WEBHOOK-TRACK] Order #${(order as any).orderNumber} → trackNumber saved: ${trackingNumber}`);
+    }
+
     // ── Always save the exact carrier text into commentStatus ─────────────
     // Mirror whatever the carrier says — displayed verbatim in the Suivi tab.
     // Write unconditionally: even an empty string clears a stale value.
