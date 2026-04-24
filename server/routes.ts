@@ -2741,10 +2741,30 @@ export async function registerRoutes(
 
     // ── Capture driver info into follow-up journal + persist on order ─────
     const driverName  = body.livreur_name || body.driver_name  || body.livreur || body.courier_name  || "";
-    const driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || body.livreur_phone || "";
-    if (driverName || driverPhone) {
+    let driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || body.livreur_phone || "";
+
+    // Ameex sends driver phone inside COMMENT field as:
+    // "Livreur Casa3 | Téléphone: 0808080808"
+    if (!driverPhone && body.COMMENT) {
+      const phoneMatch = String(body.COMMENT).match(/[Tt]él[ée]phone[:\s]+([0-9+\s]{8,15})/);
+      if (phoneMatch) {
+        driverPhone = phoneMatch[1].trim();
+        console.log(`[DRIVER-AMEEX] Extracted phone from COMMENT: "${driverPhone}"`);
+      }
+    }
+    // Also extract driver name from Ameex COMMENT: "Livreur Casa3 | Téléphone: ..."
+    let resolvedDriverName = driverName;
+    if (!resolvedDriverName && body.COMMENT) {
+      const nameMatch = String(body.COMMENT).match(/[Ll]ivreur\s+([^|]+)/);
+      if (nameMatch) {
+        resolvedDriverName = nameMatch[1].trim();
+        console.log(`[DRIVER-AMEEX] Extracted name from COMMENT: "${resolvedDriverName}"`);
+      }
+    }
+
+    if (resolvedDriverName || driverPhone) {
       const parts: string[] = [];
-      if (driverName)  parts.push(driverName);
+      if (resolvedDriverName)  parts.push(resolvedDriverName);
       if (driverPhone) parts.push(driverPhone);
       await storage.createOrderFollowUpLog({
         orderId: order.id, agentId: null, agentName: carrierName,
@@ -2752,10 +2772,10 @@ export async function registerRoutes(
       });
       // Persist directly on the order so the UI can show it everywhere
       await storage.updateOrder(order.id, {
-        driverName:  driverName  || undefined,
+        driverName:  resolvedDriverName  || undefined,
         driverPhone: driverPhone || undefined,
       } as any);
-      console.log(`[DRIVER] Order #${(order as any).orderNumber} → livreur: ${driverName} ${driverPhone}`);
+      console.log(`[DRIVER] Order #${(order as any).orderNumber} → livreur: ${resolvedDriverName} ${driverPhone}`);
     }
 
     // ── Log the status update in the follow-up journal ────────────────────
