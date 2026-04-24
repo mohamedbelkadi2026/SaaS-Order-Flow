@@ -1148,7 +1148,25 @@ export default function Orders() {
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
-                      {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
+                      {isColVisible('comment') && (
+                        <TableCell className="max-w-[140px] text-muted-foreground text-[11px]">
+                          <div className="flex flex-col gap-0.5">
+                            <span className="truncate" title={order.comment || order.commentStatus || ''}>
+                              {order.comment || order.commentStatus || '-'}
+                            </span>
+                            {urlStatus === 'suivi_group' && (order as any).driverPhone && (
+                              <a
+                                href={`tel:${(order as any).driverPhone}`}
+                                className="flex items-center gap-1 text-[11px] text-blue-600 font-semibold hover:underline"
+                                onClick={e => e.stopPropagation()}
+                                data-testid={`link-comment-driver-phone-${order.id}`}
+                              >
+                                🚴 {(order as any).driverPhone}
+                              </a>
+                            )}
+                          </div>
+                        </TableCell>
+                      )}
                       {isColVisible('livraison') && (
                         <TableCell className="text-sm font-medium text-center">
                           <div className="flex items-center gap-2 justify-center">
