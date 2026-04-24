@@ -2743,22 +2743,24 @@ export async function registerRoutes(
     const driverName  = body.livreur_name || body.driver_name  || body.livreur || body.courier_name  || "";
     let driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || body.livreur_phone || "";
 
-    // Ameex sends driver phone inside COMMENT field as:
-    // "Livreur Casa3 | Téléphone: 0808080808"
-    if (!driverPhone && body.COMMENT) {
-      const phoneMatch = String(body.COMMENT).match(/[Tt]él[ée]phone[:\s]+([0-9+\s]{8,15})/);
+    // Digylog & Ameex send driver phone inside COMMENT field:
+    // "Livreur Casa3 | Téléphone: 0628802315"
+    if (!driverPhone) {
+      const commentText = body.COMMENT || body.comment || body.note || "";
+      const phoneMatch = String(commentText).match(/[Tt]él[ée]phone[e]?[:\s]+([0-9]{8,10})/);
       if (phoneMatch) {
         driverPhone = phoneMatch[1].trim();
-        console.log(`[DRIVER-AMEEX] Extracted phone from COMMENT: "${driverPhone}"`);
+        console.log(`[DRIVER-WEBHOOK] Extracted phone from COMMENT: "${driverPhone}"`);
       }
     }
-    // Also extract driver name from Ameex COMMENT: "Livreur Casa3 | Téléphone: ..."
+    // Also extract driver name from COMMENT: "Livreur Casa3 | Téléphone: ..."
     let resolvedDriverName = driverName;
-    if (!resolvedDriverName && body.COMMENT) {
-      const nameMatch = String(body.COMMENT).match(/[Ll]ivreur\s+([^|]+)/);
+    if (!resolvedDriverName) {
+      const commentText = body.COMMENT || body.comment || body.note || "";
+      const nameMatch = String(commentText).match(/[Ll]ivreur\s+([^|]+)/);
       if (nameMatch) {
         resolvedDriverName = nameMatch[1].trim();
-        console.log(`[DRIVER-AMEEX] Extracted name from COMMENT: "${resolvedDriverName}"`);
+        console.log(`[DRIVER-WEBHOOK] Extracted name from COMMENT: "${resolvedDriverName}"`);
       }
     }
 

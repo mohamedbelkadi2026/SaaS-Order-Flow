@@ -1,0 +1,51 @@
+In server/routes.ts, find the Digylog webhook handler.
+Search for: PUT /api/webhooks/carrier/:storeId/digylog
+
+Inside that handler, find where the webhook body is processed.
+The webhook from Digylog sends driver phone in the COMMENT field like:
+"Livreur Casa3 | Téléphone: 0628802315"
+
+Find this block:
+    const driverName  = body.livreur_name || body.driver_name  || body.livreur || body.courier_name  || "";
+    let driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || body.livreur_phone || "";
+
+Replace with:
+    const driverName  = body.livreur_name || body.driver_name  || body.livreur || body.courier_name  || "";
+    let driverPhone = body.livreur_tel  || body.driver_phone || body.courier_phone || body.livreur_phone || "";
+
+    // Digylog & Ameex send driver phone inside COMMENT field:
+    // "Livreur Casa3 | Téléphone: 0628802315"
+    if (!driverPhone) {
+      const commentText = body.COMMENT || body.comment || body.note || "";
+      const phoneMatch = String(commentText).match(/[Tt]él[ée]phone[e]?[:\s]+([0-9]{8,10})/);
+      if (phoneMatch) {
+        driverPhone = phoneMatch[1].trim();
+        console.log(`[DRIVER-WEBHOOK] Extracted phone from COMMENT: "${driverPhone}"`);
+      }
+    }
+
+Also in server/storage.ts, find trackDigylogShipment function.
+In the historics block, after extracting rawText, add:
+
+    // Try to extract driver phone from historics COMMENT field
+    const allRecords = Array.isArray(records) ? records : [];
+    let histDriverPhone = "";
+    for (const rec of allRecords) {
+      const commentText = rec?.comment || rec?.COMMENT || rec?.note || rec?.newvalue || "";
+      const phoneMatch = String(commentText).match(/[Tt]él[ée]phone[e]?[:\s]+([0-9]{8,10})/);
+      if (phoneMatch) {
+        histDriverPhone = phoneMatch[1].trim();
+        console.log(`[DRIVER-HISTORICS] ${trackingNumber} → phone="${histDriverPhone}" from comment="${commentText}"`);
+        break;
+      }
+    }
+
+Then update the return of trackDigylogShipment to include driverPhone: histDriverPhone
+
+And in routes.ts where trackDigylogShipment result is used, save the driverPhone:
+    if (trackResult.driverPhone) {
+      await storage.updateOrder(order.id, { driverPhone: trackResult.driverPhone } as any);
+      console.log(`[DRIVER-SAVED] Order tracking=${trackingNumber} → phone=${trackResult.driverPhone}`);
+    }
+
+Push to GitHub then deploy on Replit.

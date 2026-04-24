@@ -1166,6 +1166,19 @@ export async function trackDigylogShipment(
         ''
       ).toString().trim();
 
+      // Try to extract driver phone from historics COMMENT field
+      const allRecords = Array.isArray(records) ? records : [];
+      let histDriverPhone = "";
+      for (const rec of allRecords) {
+        const commentText = rec?.comment || rec?.COMMENT || rec?.note || rec?.newvalue || "";
+        const phoneMatch = String(commentText).match(/[Tt]él[ée]phone[e]?[:\s]+([0-9]{8,10})/);
+        if (phoneMatch) {
+          histDriverPhone = phoneMatch[1].trim();
+          console.log(`[DRIVER-HISTORICS] ${trackingNumber} → phone="${histDriverPhone}" from comment="${commentText}"`);
+          break;
+        }
+      }
+
       if (rawText) {
         const rawLow = rawText.toLowerCase();
         let mappedStatus = 'in_progress';
@@ -1183,7 +1196,7 @@ export async function trackDigylogShipment(
         else if (rawLow.includes('ramass') || rawLow.includes('attente')) { mappedStatus = 'Attente De Ramassage'; }
 
         console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
-        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost: null };
+        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost: null, driverPhone: histDriverPhone };
       }
     }
 
