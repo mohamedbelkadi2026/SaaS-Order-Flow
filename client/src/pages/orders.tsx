@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { CustomerHistoryModal } from "@/components/customer-history-modal";
 import { formatCurrency } from "@/lib/utils";
-import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -81,6 +81,48 @@ const TITLE_MAP: Record<string, string> = {
   livrees: "LIVRÉES",
   refuses: "REFUSÉES",
 };
+
+// ── Status dropdown options (grouped: agent-set first, carrier-set below) ──
+// Used by the inline status setter in the orders table row.
+const STATUS_DROPDOWN_OPTIONS: { value: string; label: string; disabled?: boolean }[] = [
+  // ── Agent statuses (manually set by agents) ─────────────────
+  { value: 'nouveau',                       label: 'Nouveau'                    },
+  { value: 'confirme',                      label: 'Confirmé'                   },
+  { value: 'Injoignable',                   label: 'Injoignable'                },
+  { value: 'Annulé (fake)',                 label: 'Annulé (fake)'              },
+  { value: 'Annulé (faux numéro)',          label: 'Annulé (faux numéro)'       },
+  { value: 'Annulé (double)',               label: 'Annulé (double)'            },
+  { value: 'boite vocale',                  label: 'Boite Vocale'               },
+  { value: 'in_progress',                   label: 'En cours'                   },
+  { value: 'refused',                       label: 'Refusé'                     },
+
+  // ── Visual separator (non-selectable) ────────────────────────
+  { value: '__separator_carrier__',         label: '── Transporteur ──',  disabled: true },
+
+  // ── Carrier / Shipping statuses (set by carrier webhook) ─────
+  { value: 'Attente De Ramassage',          label: 'Attente Ramassage'          },
+  { value: 'expédié',                       label: 'Expédié'                    },
+  { value: 'retourné',                      label: 'Retourné'                   },
+  { value: 'delivered',                     label: 'Livré'                      },
+  { value: 'En Voyage',                     label: 'En Voyage'                  },
+  { value: 'À préparer',                    label: 'À préparer'                 },
+  { value: 'Ramassé',                       label: 'Ramassé'                    },
+  { value: 'En transit',                    label: 'En transit'                 },
+  { value: 'Reçu',                          label: 'Reçu'                       },
+  { value: 'En cours de distribution',      label: 'En cours de distribution'   },
+  { value: 'Programmé',                     label: 'Programmé'                  },
+  { value: 'En stock',                      label: 'En stock'                   },
+  { value: 'Changer destinataire',          label: 'Changer destinataire'       },
+  { value: 'En cours de réception au network', label: 'En cours de réception'  },
+  { value: 'Arrivé au hub',                 label: 'Arrivé au hub'              },
+  { value: 'En cours de livraison',         label: 'En cours de livraison'      },
+  { value: 'Sorti pour livraison',          label: 'Sorti pour livraison'       },
+  { value: 'Pris en charge',                label: 'Pris en charge'             },
+  { value: 'Collecté',                      label: 'Collecté'                   },
+  { value: 'Chargé',                        label: 'Chargé'                     },
+  { value: 'Confirmé par livreur',          label: 'Confirmé par livreur'       },
+  { value: 'Confirmé par livreur *',        label: 'Confirmé par livreur *'     },
+];
 
 const ALL_ORDER_STATUSES = [
   { value: '', label: 'Tous les statuts' },
@@ -1198,8 +1240,15 @@ export default function Orders() {
                                 <StatusBadge status={order.commentStatus || order.status} className="cursor-pointer" />
                               </SelectTrigger>
                               <SelectContent>
-                                {ORDER_STATUSES.map(s => (
-                                  <SelectItem key={s.value} value={s.value} className="text-xs">
+                                {STATUS_DROPDOWN_OPTIONS.map(s => (
+                                  <SelectItem
+                                    key={s.value}
+                                    value={s.value}
+                                    disabled={s.disabled}
+                                    className={s.disabled
+                                      ? "text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 pointer-events-none opacity-70 justify-center"
+                                      : "text-xs"}
+                                  >
                                     {s.label}
                                   </SelectItem>
                                 ))}
