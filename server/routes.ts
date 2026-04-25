@@ -1013,6 +1013,12 @@ export async function registerRoutes(
       'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
       'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
     ];
+    // Statuses that legitimately belong to the Nouveaux / Confirmation tab
+    const CONFIRMATION_STATUSES = [
+      'nouveau', 'confirme', 'Injoignable', 'Annulé',
+      'Annulé Faux Numéro', 'Annulé Double', 'Annulé Fake',
+      'Boite vocale', 'Rappel', 'En cours'
+    ];
 
     if (user.role === 'agent') {
       const ordersList = await storage.getOrdersByAgent(user.id);
@@ -1026,6 +1032,13 @@ export async function registerRoutes(
         )));
       } else if (status === 'refused') {
         res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
+      } else if (status === 'nouveau') {
+        // Nouveaux = only real new orders (no carrier statuses)
+        res.json(includeShippingCost(ordersList.filter(o =>
+          o.status === 'nouveau' &&
+          !SUIVI_GROUP.includes((o as any).commentStatus || '') &&
+          !(o as any).trackNumber
+        )));
       } else {
         res.json(includeShippingCost(status ? ordersList.filter(o => o.status === status) : ordersList));
       }
@@ -1043,6 +1056,13 @@ export async function registerRoutes(
       } else if (status === 'refused') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
+      } else if (status === 'nouveau') {
+        const ordersList = await storage.getOrdersByStore(user.storeId!);
+        res.json(includeShippingCost(ordersList.filter(o =>
+          o.status === 'nouveau' &&
+          !SUIVI_GROUP.includes((o as any).commentStatus || '') &&
+          !(o as any).trackNumber
+        )));
       } else {
         const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
         res.json(includeShippingCost(ordersList));
