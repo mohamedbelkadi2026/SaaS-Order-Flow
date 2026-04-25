@@ -93,6 +93,13 @@ export const ORDER_STATUSES = [
   { value: 'Pas réponse 2 (Suivi)',         label: 'Pas réponse 2',                 color: C.indigo  },
   { value: 'Pas réponse 3 (Suivi)',         label: 'Pas réponse 3',                 color: C.indigo  },
   { value: 'Demande retour',                label: 'Demande retour',                color: C.rose    },
+  // Annulé statuses — red
+  { value: 'Pas de réponse 1',              label: 'Pas de réponse 1',              color: C.rose    },
+  { value: 'Pas de réponse 2',              label: 'Pas de réponse 2',              color: C.rose    },
+  { value: 'Pas de réponse 3',              label: 'Pas de réponse 3',              color: C.rose    },
+  { value: 'Pas de réponse 4',              label: 'Pas de réponse 4',              color: C.rose    },
+  { value: "Client n'a pas commandé",       label: "Client n'a pas commandé",       color: C.rose    },
+  { value: 'Produit non disponible',        label: 'Produit non disponible',        color: C.rose    },
 ] as const;
 
 // Statuses that keep an order in the Suivi des Colis view

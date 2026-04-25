@@ -110,6 +110,12 @@ const ALL_ORDER_STATUSES = [
   { value: 'Boîte vocale',                  label: 'Boîte vocale (transporteur)'    },
   { value: 'Pas de réponse + SMS',          label: 'Pas de réponse + SMS'           },
   { value: 'Demande retour',                label: 'Demande retour'                 },
+  { value: 'Pas de réponse 1',              label: 'Pas de réponse 1'               },
+  { value: 'Pas de réponse 2',              label: 'Pas de réponse 2'               },
+  { value: 'Pas de réponse 3',              label: 'Pas de réponse 3'               },
+  { value: 'Pas de réponse 4',              label: 'Pas de réponse 4'               },
+  { value: "Client n'a pas commandé",       label: "Client n'a pas commandé"        },
+  { value: 'Produit non disponible',        label: 'Produit non disponible'         },
   { value: 'delivered',                     label: 'Livré'                          },
   { value: 'refused',                       label: 'Refusé'                         },
 ];

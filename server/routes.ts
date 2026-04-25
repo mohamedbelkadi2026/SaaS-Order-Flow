@@ -1012,6 +1012,13 @@ export async function registerRoutes(
       'Incompatibilité avec les attentes', 'Article retourné', "Erreur d'expédition",
       'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
       'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
+      // New cancellation statuses for agent confirmation
+      'Pas de réponse 1',
+      'Pas de réponse 2',
+      'Pas de réponse 3',
+      'Pas de réponse 4',
+      "Client n'a pas commandé",
+      'Produit non disponible',
     ];
     // Statuses that legitimately belong to the Nouveaux / Confirmation tab
     const CONFIRMATION_STATUSES = [
