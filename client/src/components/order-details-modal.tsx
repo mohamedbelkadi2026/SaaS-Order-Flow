@@ -173,6 +173,12 @@ const ORDER_STATUSES: { value: string; label: string; disabled?: boolean }[] = [
   { value: "Annulé (faux numéro)",           label: "Annulé (faux numéro)" },
   { value: "Annulé (double)",                label: "Annulé (double)" },
   { value: "boite vocale",                   label: "Boite Vocale" },
+  { value: "Pas de réponse 1",               label: "Pas de réponse 1" },
+  { value: "Pas de réponse 2",               label: "Pas de réponse 2" },
+  { value: "Pas de réponse 3",               label: "Pas de réponse 3" },
+  { value: "Pas de réponse 4",               label: "Pas de réponse 4" },
+  { value: "Client n'a pas commandé",        label: "Client n'a pas commandé" },
+  { value: "Produit non disponible",         label: "Produit non disponible" },
   { value: "in_progress",                    label: "En cours" },
   { value: "refused",                        label: "Refusé" },
 
