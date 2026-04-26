@@ -18,7 +18,7 @@ import {
   Store, User, Truck, Globe, Plus, Pencil, Loader2,
   X, Home, Users, Tag, Trash2, Package, ChevronDown,
 } from "lucide-react";
-import { SiWhatsapp } from "react-icons/si";
+import { SiWhatsapp, SiShopify } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -66,14 +66,20 @@ function InlineMultiSelect({
   items: any[];
   selected: (string | number)[];
   onToggle: (id: string | number) => void;
-  getLabel: (item: any) => string;
+  getLabel: (item: any) => React.ReactNode;
   getId: (item: any) => string | number;
   searchable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  // getLabel may return JSX, so we fall back to item.label (string) for search matching.
+  const getSearchText = (item: any): string => {
+    const lbl = getLabel(item);
+    if (typeof lbl === 'string') return lbl;
+    return typeof item?.label === 'string' ? item.label : '';
+  };
   const filtered = items.filter(item =>
-    !search || getLabel(item).toLowerCase().includes(search.toLowerCase())
+    !search || getSearchText(item).toLowerCase().includes(search.toLowerCase())
   );
   const selectedItems = items.filter(item => selected.includes(getId(item)));
 
@@ -275,7 +281,8 @@ function StoreModal({
 
   const platformItems = (storeIntegrationsList || []).map((s: any) => ({
     value: String(s.id),
-    label: s.connectionName || s.storeName || s.provider || 'Sans nom',
+    label: s.connectionName || `${s.provider} #${s.id}`,
+    provider: s.provider,
   }));
 
   const isCreate = !title.includes("Modifier");
@@ -455,7 +462,16 @@ function StoreModal({
                     selected={selectedPlatforms}
                     onToggle={togglePlatform}
                     getId={(s: any) => s.value}
-                    getLabel={(s: any) => s.label}
+                    getLabel={(s: any) => (
+                      <div className="flex items-center gap-2">
+                        {s.provider === 'shopify' && (
+                          <div className="w-6 h-6 rounded-md bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+                            <SiShopify className="w-3.5 h-3.5 text-[#95BF47]" />
+                          </div>
+                        )}
+                        <span className="truncate">{s.label}</span>
+                      </div>
+                    )}
                   />
                 </div>
               </div>

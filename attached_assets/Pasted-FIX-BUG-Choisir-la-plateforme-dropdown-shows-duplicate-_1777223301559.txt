@@ -1,0 +1,63 @@
+FIX BUG — "Choisir la plateforme" dropdown shows duplicate "shopify" instead of real connection names + add Shopify logo
+Problem:
+On the Magasins page, in the create/edit store modal, the "Choisir la plateforme" dropdown (under "Configuration de livraison") shows "shopify" twice instead of the real connection names (e.g. "Promomarkett", "Anakio") that I configured on the Integrations page. I want the dropdown to show the connection name with the Shopify logo next to it — exactly like in the second screenshot below.
+File to fix: client/src/pages/magasins.tsx
+Schema reference (already in shared/schema.ts):
+The storeIntegrations table has these fields available: id, provider (e.g. "shopify"), connectionName (e.g. "Promomarkett", "Anakio"), magasinId. Note: there is NO storeName field on storeIntegrations — don't reference it.
+
+Fix 1 — Replace the buggy mapping (around line 276):
+Current broken code:
+tsconst platformItems = (storeIntegrationsList || []).map((s: any) => ({
+  value: s.provider,
+  label: s.provider === 'shopify'
+    ? (s.connectionName || s.storeName || 'shopify')
+    : s.provider,
+}));
+Replace with:
+tsconst platformItems = (storeIntegrationsList || []).map((s: any) => ({
+  value: String(s.id),
+  label: s.connectionName || `${s.provider} #${s.id}`,
+  provider: s.provider,
+}));
+value must be the unique integration id (as string) — not s.provider, because every Shopify integration has the same provider "shopify", which is why both items collide on the same value.
+
+Fix 2 — Render each item with the Shopify logo + connection name (like the second screenshot):
+Find the <InlineMultiSelect> for the platform (around line 454). It currently uses getLabel={(s: any) => s.label} which returns plain text. Change it to render JSX with the icon:
+
+At the top of the file, add the Shopify icon import if not already present:
+
+tsimport { SiShopify } from "react-icons/si";
+
+Replace the platform <InlineMultiSelect> block (around line 452-462) with:
+
+tsx<div className="space-y-1.5">
+  <Label className="text-xs text-muted-foreground">Choisir la plateforme</Label>
+  <InlineMultiSelect
+    placeholder="Choisir une ou plusieurs plateformes"
+    items={platformItems}
+    selected={selectedPlatforms}
+    onToggle={togglePlatform}
+    getId={(s: any) => s.value}
+    getLabel={(s: any) => (
+      <div className="flex items-center gap-2">
+        {s.provider === 'shopify' && (
+          <div className="w-6 h-6 rounded-md bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+            <SiShopify className="w-3.5 h-3.5 text-[#95BF47]" />
+          </div>
+        )}
+        <span className="truncate">{s.label}</span>
+      </div>
+    )}
+  />
+</div>
+If InlineMultiSelect's getLabel prop is typed to return only string, update its type to React.ReactNode so it accepts JSX.
+
+Fix 3 — Normalize loaded selections in openEdit (around line 656):
+Old data may have stored provider strings like ["shopify"]. Filter those out so we only keep numeric integration IDs going forward:
+tssetSelectedPlatforms(
+  Array.isArray(store.linkedPlatforms)
+    ? store.linkedPlatforms
+        .map((v: any) => String(v))
+        .filter((v: string) => /^\d+$/.test(v))
+    : []
+);
