@@ -1,0 +1,67 @@
+Fix getNextAgent in server/storage.ts to correctly distribute leads 
+based on each agent's configured percentage.
+
+This must work for ANY number of agents with ANY percentages 
+(e.g. 50/25/25, 33/33/33, 60/20/20, etc.)
+
+Find the entire block starting with:
+    // TRUE PERCENTAGE DISTRIBUTION
+or
+    // ROUND-ROBIN DISTRIBUTION
+or
+    // Count only TODAY's assignments
+
+And replace EVERYTHING from that comment until `return selectedAgentId;` with:
+
+    // PERCENTAGE-BASED DISTRIBUTION (works for any number of agents)
+    // Uses today's assignments as the reference window — resets daily
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const agentCounts = await Promise.all(
+      eligibleAgents.map(async (agent) => {
+        const [row] = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(orders)
+          .where(and(
+            eq(orders.storeId, storeId),
+            eq(orders.assignedToId, agent.id),
+            gte(orders.createdAt, todayStart),
+          ));
+        return { agentId: agent.id, count: Number(row?.count || 0) };
+      })
+    );
+
+    const totalToday = agentCounts.reduce((s, a) => s + a.count, 0);
+    const defaultPct = 100 / eligibleAgents.length;
+
+    let selectedAgentId: number | null = null;
+    let maxDeficit = -Infinity;
+
+    for (const agent of eligibleAgents) {
+      const setting = settingsMap.get(agent.id);
+      const targetPct = Math.max(0.1, setting?.leadPercentage ?? defaultPct);
+      const currentCount = agentCounts.find(a => a.agentId === agent.id)?.count || 0;
+      const currentPct = totalToday === 0 ? 0 : (currentCount / (totalToday + 1)) * 100;
+      const deficit = targetPct - currentPct;
+
+      if (deficit > maxDeficit) {
+        maxDeficit = deficit;
+        selectedAgentId = agent.id;
+      }
+    }
+
+    if (!selectedAgentId && eligibleAgents.length > 0) {
+      selectedAgentId = eligibleAgents[0].id;
+    }
+
+    if (selectedAgentId) {
+      await db.update(stores)
+        .set({ lastAssignedAgentId: selectedAgentId })
+        .where(eq(stores.id, storeId));
+    }
+
+Make sure `gte` is imported from drizzle-orm at the top of storage.ts.
+If not present, add it to the existing drizzle-orm import line.
+
+Push to GitHub then deploy on Replit.
