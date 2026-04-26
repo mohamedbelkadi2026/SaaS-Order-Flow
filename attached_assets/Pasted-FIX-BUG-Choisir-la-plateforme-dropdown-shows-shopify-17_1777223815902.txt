@@ -1,0 +1,91 @@
+FIX BUG — "Choisir la plateforme" dropdown shows "shopify #17" / "shopify #16" instead of the real boutique names (Promomarkett, Anakio)
+Problem:
+On the Magasins page, in the create/edit store modal, the "Choisir la plateforme" dropdown (under "Configuration de livraison") shows "shopify #17" and "shopify #16" instead of the real boutique names that I configured on the Integrations page (Promomarkett magasin_id=37, Anakio magasin_id=42). I want to see the actual boutique names with the Shopify logo, like the cards on the Integrations page.
+File to fix: client/src/pages/magasins.tsx
+Why "shopify #17" appears:
+The current code uses connectionName as the label, but in this DB the integration row's connectionName is empty/null, so the fallback ${s.provider} #${s.id} kicks in. The boutique name actually lives in the magasins table, joined via integration.magasinId. I already have magasins loaded in the page (const { data: magasins } = useMagasins(); at line 532) — we just need to pass it down and resolve the name.
+
+Schema reference (from shared/schema.ts):
+
+storeIntegrations row has: id, provider (e.g. "shopify"), connectionName (often empty), magasinId (FK to stores.id)
+The boutique name lives in magasins[i].name where magasins[i].id === integration.magasinId
+storeIntegrations has NO storeName column — do not reference it
+
+
+Fix 1 — Pass magasins into the modal via sharedModalProps:
+Around line 663, update sharedModalProps:
+tsconst sharedModalProps = {
+  agents: agentList,
+  carrierAccounts: activeCarrierAccounts,
+  storeIntegrationsList: platformList,
+  magasinsList: magasins || [],   // ← add this line
+  selectedAgentIds, setSelectedAgentIds,
+  selectedServices, setSelectedServices,
+  selectedCarriers, setSelectedCarriers,
+  selectedPlatforms, setSelectedPlatforms,
+};
+Around lines 173 and 189 (the modal component's destructuring + props type), add magasinsList:
+ts// in the destructure
+agents, carrierAccounts, storeIntegrationsList, magasinsList,
+
+// in the type definition
+magasinsList: any[];
+
+Fix 2 — Replace the buggy platformItems mapping (around line 276):
+Current broken code:
+tsconst platformItems = (storeIntegrationsList || []).map((s: any) => ({
+  value: s.provider,
+  label: s.provider === 'shopify'
+    ? (s.connectionName || s.storeName || 'shopify')
+    : s.provider,
+}));
+Replace with this — resolve the real boutique name from magasinsList:
+tsconst platformItems = (storeIntegrationsList || []).map((s: any) => {
+  const magasin = (magasinsList || []).find((m: any) => Number(m.id) === Number(s.magasinId));
+  const displayName =
+    (s.connectionName && s.connectionName.trim()) ||
+    (magasin?.name && magasin.name.trim()) ||
+    `${s.provider} #${s.id}`;
+  return {
+    value: String(s.id),
+    label: displayName,
+    provider: s.provider,
+  };
+});
+value MUST be String(s.id) (unique per integration). Using s.provider is the original bug — every Shopify integration shares the same "shopify" value, which collapses both items into one.
+
+Fix 3 — Render Shopify logo + boutique name in the dropdown (so it looks like the Integrations page cards):
+At the top of the file, ensure this import exists:
+tsimport { SiShopify } from "react-icons/si";
+Find the <InlineMultiSelect> for the platform (around line 452-462) and replace with:
+tsx<div className="space-y-1.5">
+  <Label className="text-xs text-muted-foreground">Choisir la plateforme</Label>
+  <InlineMultiSelect
+    placeholder="Choisir une ou plusieurs plateformes"
+    items={platformItems}
+    selected={selectedPlatforms}
+    onToggle={togglePlatform}
+    getId={(s: any) => s.value}
+    getLabel={(s: any) => (
+      <div className="flex items-center gap-2">
+        {s.provider === 'shopify' && (
+          <div className="w-6 h-6 rounded-md bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+            <SiShopify className="w-3.5 h-3.5 text-[#95BF47]" />
+          </div>
+        )}
+        <span className="truncate font-medium">{s.label}</span>
+      </div>
+    )}
+  />
+</div>
+If InlineMultiSelect's getLabel prop type is (item: any) => string, change it to (item: any) => React.ReactNode so it accepts JSX.
+
+Fix 4 — Normalize loaded selections in openEdit (around line 656):
+Old data may have stored provider strings like ["shopify"]. Filter those out so we only keep numeric integration IDs:
+tssetSelectedPlatforms(
+  Array.isArray(store.linkedPlatforms)
+    ? store.linkedPlatforms
+        .map((v: any) => String(v))
+        .filter((v: string) => /^\d+$/.test(v))
+    : []
+);

@@ -176,7 +176,7 @@ function WhatsAppPreview({ storeName, message }: { storeName: string; message: s
 // ---- Store Modal ----
 function StoreModal({
   isOpen, onClose, title, form, setForm, onSave, isPending,
-  agents, carrierAccounts, storeIntegrationsList,
+  agents, carrierAccounts, storeIntegrationsList, magasinsList,
   logoUrl, onLogoUpload, isUploadingLogo,
   selectedAgentIds, setSelectedAgentIds,
   selectedServices, setSelectedServices,
@@ -193,6 +193,7 @@ function StoreModal({
   agents: any[];
   carrierAccounts: any[];
   storeIntegrationsList: any[];
+  magasinsList: any[];
   logoUrl?: string | null;
   onLogoUpload?: (base64: string) => void;
   isUploadingLogo?: boolean;
@@ -279,11 +280,20 @@ function StoreModal({
     (c, i, arr) => arr.findIndex(x => x.value === c.value) === i
   );
 
-  const platformItems = (storeIntegrationsList || []).map((s: any) => ({
-    value: String(s.id),
-    label: s.connectionName || `${s.provider} #${s.id}`,
-    provider: s.provider,
-  }));
+  const platformItems = (storeIntegrationsList || []).map((s: any) => {
+    const magasin = (magasinsList || []).find(
+      (m: any) => Number(m.id) === Number(s.magasinId)
+    );
+    const displayName =
+      (s.connectionName && s.connectionName.trim()) ||
+      (magasin?.name && magasin.name.trim()) ||
+      `${s.provider} #${s.id}`;
+    return {
+      value: String(s.id),
+      label: displayName,
+      provider: s.provider,
+    };
+  });
 
   const isCreate = !title.includes("Modifier");
 
@@ -469,7 +479,7 @@ function StoreModal({
                             <SiShopify className="w-3.5 h-3.5 text-[#95BF47]" />
                           </div>
                         )}
-                        <span className="truncate">{s.label}</span>
+                        <span className="truncate font-medium">{s.label}</span>
                       </div>
                     )}
                   />
@@ -684,6 +694,7 @@ export default function Magasins() {
     agents: agentList,
     carrierAccounts: activeCarrierAccounts,
     storeIntegrationsList: platformList,
+    magasinsList: magasins || [],
     selectedAgentIds, setSelectedAgentIds,
     selectedServices, setSelectedServices,
     selectedCarriers, setSelectedCarriers,
