@@ -275,7 +275,9 @@ function StoreModal({
 
   const platformItems = (storeIntegrationsList || []).map((s: any) => ({
     value: s.provider,
-    label: s.provider,
+    label: s.provider === 'shopify'
+      ? (s.connectionName || s.webhookKey?.slice(0, 8) || 'shopify')
+      : s.provider,
   }));
 
   const isCreate = !title.includes("Modifier");
