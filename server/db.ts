@@ -210,6 +210,14 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] driver_name + driver_phone columns ensured ✅');
 
+    // ── 6c. orders.magasin_id — per-magasin scoping for multi-boutique accounts ─
+    // Nullable (legacy rows have no magasin). FK to stores(id) for referential integrity.
+    await client.query(`
+      ALTER TABLE public.orders
+        ADD COLUMN IF NOT EXISTS magasin_id INTEGER REFERENCES public.stores(id);
+    `);
+    console.log('[Migration] orders.magasin_id column ensured ✅');
+
     // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.email_verification_codes (

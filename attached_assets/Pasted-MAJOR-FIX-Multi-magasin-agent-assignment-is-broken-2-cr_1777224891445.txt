@@ -1,0 +1,218 @@
+MAJOR FIX — Multi-magasin agent assignment is broken (2 critical bugs)
+Context:
+This is a public SaaS platform. Each user must be able to set up multiple magasins (boutiques) and assign agents per-magasin with custom lead distribution percentages. Right now both behaviors are broken:
+BUG 1 — Custom percentages are ignored
+I assigned 50% to agent A, 25% to agent B, 25% to agent C in the same magasin. When 60 orders come in a day, I expect ~30/15/15. Instead orders distribute roughly 33/33/33 (or whatever defaultPct resolves to). My percentages are not respected.
+BUG 2 — Orders from Magasin 2 go to agents of Magasin 1
+I created Magasin 2, assigned ONE specific agent to it (only that agent should handle confirmation for Magasin 2). But orders coming in for Magasin 2 are still being assigned to agents of Magasin 1, even though those agents are NOT linked to Magasin 2. The platform completely ignores the per-magasin agent linking from the Magasins page.
+
+ROOT CAUSE
+File: server/storage.ts — function getNextAgent (line ~1822)
+File: shared/schema.ts — orders table is missing magasinId
+File: server/routes.ts — every place that calls getNextAgent(storeId, ...) is missing the magasin context
+Two structural problems:
+
+orders table has no magasinId column. When a webhook order arrives (Shopify, YouCan, Google Sheets, etc.), there's no field to record which magasin it belongs to, so we can never filter the right agents downstream.
+getNextAgent(storeId, productId, customerCity) only knows about the global storeId (the SaaS account). It does:
+
+ts   const storeAgents = await db.select().from(users)
+     .where(and(eq(users.storeId, storeId), eq(users.role, 'agent'), eq(users.isActive, 1)));
+This pulls every agent of the account, regardless of which magasin they belong to. The stores.agentIds array (set in the Magasins modal) is never read.
+
+Percentage bug: at line ~1946:
+
+ts   const targetPct = Math.max(0.1, setting?.leadPercentage ?? defaultPct);
+If storeAgentSettings.leadPercentage row is missing OR is 0/null for an agent, the code falls back to defaultPct = 100 / eligibleAgents.length, which silently overrides the user's configured percentages. There's also no validation that percentages across eligible agents in a magasin sum to 100.
+
+FIX — Step by step
+Step 1 — Add magasinId to the orders table
+In shared/schema.ts, inside export const orders = pgTable("orders", { ... }), add:
+tsmagasinId: integer("magasin_id").references(() => stores.id),
+(nullable so existing rows are not broken). Place it near storeId.
+Then create a Drizzle migration:
+bashnpm run db:push
+Step 2 — Resolve magasinId from the integration on every order ingress
+The boutique (magasin) is already known via storeIntegrations.magasinId on the integration row. Every webhook handler in server/routes.ts already loads the integration. After loading it, set magasinId on the order before insert.
+Find every call to storage.getNextAgent(...) (there are roughly 7 — see lines ~3156, 3273, 3339, 3394, 3536, 3747, 3917 in server/routes.ts). For each call:
+a. Determine magasinId from the surrounding context:
+
+For webhook handlers (Shopify, YouCan, Google Sheets, etc.): use integration.magasinId
+For manual order creation from the dashboard: use the magasinId from the request body (the new-order modal already lets the user pick a magasin)
+Fallback: null
+
+b. Pass it as a new parameter:
+tsconst nextAgentId = await storage.getNextAgent(storeId, magasinId, firstProductId, parsed.customerCity);
+c. Persist it on the inserted order:
+tsawait storage.createOrder({ ...orderData, magasinId, assignedToId: nextAgentId, ... });
+Step 3 — Rewrite getNextAgent to be magasin-aware
+In server/storage.ts, change the signature and the agent filter. Replace the existing getNextAgent (around line 1822) with this version:
+tsasync getNextAgent(
+  storeId: number,
+  magasinId: number | null,
+  productId?: number,
+  customerCity?: string
+): Promise<number | null> {
+  // 1. Load all agents of the SaaS account
+  const accountAgents = await db.select().from(users)
+    .where(and(eq(users.storeId, storeId), eq(users.role, 'agent'), eq(users.isActive, 1)));
+  if (accountAgents.length === 0) return null;
+
+  // 2. CRITICAL: filter to only agents linked to THIS magasin
+  let storeAgents = accountAgents;
+  if (magasinId) {
+    const [magasinRow] = await db.select().from(stores)
+      .where(eq(stores.id, magasinId)).limit(1);
+    const linkedAgentIds: number[] = Array.isArray(magasinRow?.agentIds) ? magasinRow.agentIds.map(Number) : [];
+    if (linkedAgentIds.length > 0) {
+      storeAgents = accountAgents.filter(a => linkedAgentIds.includes(a.id));
+    }
+    // if linkedAgentIds is empty, fall through to accountAgents (legacy magasins)
+  }
+  if (storeAgents.length === 0) return null;
+
+  // 3. Load per-store agent settings (role, percentage, products, regions)
+  const settings = await db.select().from(storeAgentSettings)
+    .where(eq(storeAgentSettings.storeId, storeId));
+  const settingsMap = new Map(settings.map(s => [s.agentId, s]));
+
+  // 4. Filter to confirmation-eligible roles
+  let eligibleAgents = storeAgents.filter(a => {
+    const setting = settingsMap.get(a.id);
+    if (!setting) return true;
+    return setting.roleInStore === 'confirmation' || setting.roleInStore === 'both';
+  });
+  if (eligibleAgents.length === 0) eligibleAgents = storeAgents;
+
+  // 5. Filter by allowed products (unchanged from current logic)
+  if (productId) {
+    const filtered = eligibleAgents.filter(a => {
+      const setting = settingsMap.get(a.id);
+      if (!setting) return true;
+      try {
+        const allowed: number[] = JSON.parse(setting.allowedProductIds || '[]');
+        return allowed.length === 0 || allowed.includes(productId);
+      } catch { return true; }
+    });
+    if (filtered.length > 0) eligibleAgents = filtered;
+  }
+
+  // 6. Filter by allowed regions (unchanged)
+  if (customerCity) {
+    const filtered = eligibleAgents.filter(a => {
+      const setting = settingsMap.get(a.id);
+      if (!setting) return true;
+      try {
+        const allowedRegions: string[] = JSON.parse(setting.allowedRegions || '[]');
+        if (allowedRegions.length === 0) return true;
+        const cityLower = customerCity.toLowerCase();
+        return allowedRegions.some(region => {
+          const kws = REGION_CITY_MAP[region] || [];
+          return kws.some(kw => cityLower.includes(kw));
+        });
+      } catch { return true; }
+    });
+    if (filtered.length > 0) eligibleAgents = filtered;
+  }
+
+  // 7. Pick distribution method from the OWNER user record
+  const [storeData] = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
+  const ownerId = storeData?.ownerId || null;
+  let distMethod = 'auto';
+  if (ownerId) {
+    const [owner] = await db.select({ distributionMethod: users.distributionMethod })
+      .from(users).where(eq(users.id, ownerId)).limit(1);
+    distMethod = owner?.distributionMethod || 'auto';
+  }
+  const lastAgentId = storeData?.lastAssignedAgentId || null;
+  console.log(`[DIST] store=${storeId} magasin=${magasinId} method=${distMethod} eligible=${eligibleAgents.map(a=>a.id)}`);
+
+  // 8a. AUTO = pure round-robin
+  if (distMethod === 'auto') {
+    const ids = eligibleAgents.map(a => a.id);
+    if (ids.length === 1) {
+      await db.update(stores).set({ lastAssignedAgentId: ids[0] }).where(eq(stores.id, storeId));
+      return ids[0];
+    }
+    const lastIdx = lastAgentId ? ids.indexOf(lastAgentId) : -1;
+    const nextId = ids[(lastIdx + 1) % ids.length];
+    await db.update(stores).set({ lastAssignedAgentId: nextId }).where(eq(stores.id, storeId));
+    return nextId;
+  }
+
+  // 8b. POURCENTAGE — respect user-configured percentages, scoped to this magasin
+  if (distMethod === 'pourcentage') {
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+
+    // Count today's orders per agent — SCOPED TO THIS MAGASIN if provided
+    const agentCounts = await Promise.all(eligibleAgents.map(async (agent) => {
+      const conditions: any[] = [
+        eq(orders.storeId, storeId),
+        eq(orders.assignedToId, agent.id),
+        gte(orders.createdAt, todayStart),
+      ];
+      if (magasinId) conditions.push(eq(orders.magasinId, magasinId));
+      const [row] = await db.select({ count: sql<number>`count(*)` })
+        .from(orders).where(and(...conditions));
+      return { agentId: agent.id, count: Number(row?.count || 0) };
+    }));
+
+    const totalToday = agentCounts.reduce((s, a) => s + a.count, 0);
+
+    // Compute target % per agent. CRITICAL: only fall back to defaultPct if
+    // there is NO setting row at all. A setting row with leadPercentage=0
+    // means the user explicitly excluded that agent — respect it.
+    const eligibleWithPct = eligibleAgents.map(a => {
+      const setting = settingsMap.get(a.id);
+      const hasExplicit = setting && setting.leadPercentage !== null && setting.leadPercentage !== undefined;
+      const pct = hasExplicit ? Number(setting!.leadPercentage) : (100 / eligibleAgents.length);
+      return { agentId: a.id, targetPct: pct };
+    });
+
+    // Normalize: if user-configured percentages don't sum to 100, scale them.
+    const sumPct = eligibleWithPct.reduce((s, a) => s + a.targetPct, 0);
+    if (sumPct > 0 && Math.abs(sumPct - 100) > 0.5) {
+      eligibleWithPct.forEach(a => { a.targetPct = (a.targetPct / sumPct) * 100; });
+    }
+
+    // Pick the agent with the largest deficit (target − current actual %)
+    let selectedAgentId: number | null = null;
+    let maxDeficit = -Infinity;
+    for (const { agentId, targetPct } of eligibleWithPct) {
+      if (targetPct <= 0) continue; // 0% = excluded
+      const currentCount = agentCounts.find(a => a.agentId === agentId)?.count || 0;
+      const projectedPct = ((currentCount + 1) / (totalToday + 1)) * 100;
+      const deficit = targetPct - projectedPct;
+      console.log(`[DIST-%] agent=${agentId} target=${targetPct.toFixed(1)}% today=${currentCount} deficit=${deficit.toFixed(1)}`);
+      if (deficit > maxDeficit) { maxDeficit = deficit; selectedAgentId = agentId; }
+    }
+
+    if (!selectedAgentId) selectedAgentId = eligibleAgents[0]?.id ?? null;
+    if (selectedAgentId) {
+      await db.update(stores).set({ lastAssignedAgentId: selectedAgentId }).where(eq(stores.id, storeId));
+    }
+    console.log(`[DIST-%] → selected=${selectedAgentId}`);
+    return selectedAgentId;
+  }
+
+  return eligibleAgents[0]?.id ?? null;
+}
+Step 4 — Update the interface signature
+In server/storage.ts line ~131, update the interface:
+tsgetNextAgent(storeId: number, magasinId: number | null, productId?: number, customerCity?: string): Promise<number | null>;
+Step 5 — Update every call site in server/routes.ts
+Search for storage.getNextAgent( and add the magasinId argument as the 2nd parameter at each call site:
+
+Webhook handlers (Shopify/YouCan/Sheets): magasinId = integration.magasinId || null
+Manual order from new-order modal: magasinId = req.body.magasinId || null
+AI agent flows: magasinId = order.magasinId || null
+
+Example transformation:
+ts// BEFORE
+const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);
+// AFTER
+const magasinId = integration?.magasinId || null;
+const nextAgentId = await storage.getNextAgent(storeId, magasinId, firstProductId, parsed.customerCity);
+// Make sure magasinId is also written to the inserted order:
+await storage.createOrder({ ...orderData, magasinId, assignedToId: nextAgentId });
+Step 6 — UI: validate percentage sum in the agent settings modal
+Wherever the user sets leadPercentage per agent in a magasin (the team/agent settings modal), show a small live indicator: "Total: 100%" in green when correct, red otherwise. Don't block save (server-side normalizes anyway), just inform.

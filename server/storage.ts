@@ -128,7 +128,7 @@ export interface IStorage {
 
   getAgentProducts(agentId: number): Promise<AgentProduct[]>;
   setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
-  getNextAgent(storeId: number, productId?: number, customerCity?: string): Promise<number | null>;
+  getNextAgent(storeId: number, magasinId: number | null, productId?: number, customerCity?: string): Promise<number | null>;
 
   getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]>;
   getAgentStoreSetting(agentId: number, storeId: number): Promise<StoreAgentSetting | undefined>;
@@ -1819,13 +1819,30 @@ export class DatabaseStorage implements IStorage {
     return await db.insert(agentProducts).values(values).returning();
   }
 
-  async getNextAgent(storeId: number, productId?: number, customerCity?: string): Promise<number | null> {
-    const storeAgents = await db.select().from(users)
+  async getNextAgent(storeId: number, magasinId: number | null, productId?: number, customerCity?: string): Promise<number | null> {
+    // 1. Load all agents of the SaaS account
+    const accountAgents = await db.select().from(users)
       .where(and(eq(users.storeId, storeId), eq(users.role, 'agent'), eq(users.isActive, 1)));
-    
+
+    if (accountAgents.length === 0) return null;
+
+    // 2. CRITICAL: filter to only agents linked to THIS magasin (per stores.agentIds).
+    //    If the magasin has no agents linked (empty array), fall through to all
+    //    account agents — preserves legacy behavior for unconfigured magasins.
+    let storeAgents = accountAgents;
+    if (magasinId) {
+      const [magasinRow] = await db.select().from(stores)
+        .where(eq(stores.id, magasinId)).limit(1);
+      const linkedAgentIds: number[] = Array.isArray(magasinRow?.agentIds)
+        ? (magasinRow!.agentIds as any[]).map(Number)
+        : [];
+      if (linkedAgentIds.length > 0) {
+        storeAgents = accountAgents.filter(a => linkedAgentIds.includes(a.id));
+      }
+    }
     if (storeAgents.length === 0) return null;
 
-    // Load per-store agent settings for role and lead percentage
+    // 3. Load per-store agent settings for role and lead percentage
     const settings = await db.select().from(storeAgentSettings)
       .where(eq(storeAgentSettings.storeId, storeId));
     const settingsMap = new Map(settings.map(s => [s.agentId, s]));
@@ -1895,7 +1912,7 @@ export class DatabaseStorage implements IStorage {
       distMethod = owner?.distributionMethod || 'auto';
     }
     const lastAgentId = storeData[0]?.lastAssignedAgentId || null;
-    console.log(`[DIST] store=${storeId} owner=${ownerId} method=${distMethod}`);
+    console.log(`[DIST] store=${storeId} magasin=${magasinId ?? 'none'} owner=${ownerId} method=${distMethod} eligible=[${eligibleAgents.map(a => a.id).join(',')}]`);
 
     if (distMethod === 'auto' || !distMethod) {
       // PURE ROUND-ROBIN: next agent after lastAssignedAgent
@@ -1917,20 +1934,23 @@ export class DatabaseStorage implements IStorage {
 
     } else if (distMethod === 'pourcentage') {
       // PERCENTAGE-BASED DISTRIBUTION (works for any number of agents)
-      // Uses today's assignments as the reference window — resets daily
+      // Uses today's assignments as the reference window — resets daily.
+      // SCOPED TO THIS MAGASIN if provided so multi-boutique accounts don't bleed counts.
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
 
       const agentCounts = await Promise.all(
         eligibleAgents.map(async (agent) => {
+          const conds: any[] = [
+            eq(orders.storeId, storeId),
+            eq(orders.assignedToId, agent.id),
+            gte(orders.createdAt, todayStart),
+          ];
+          if (magasinId) conds.push(eq(orders.magasinId, magasinId));
           const [row] = await db
             .select({ count: sql<number>`count(*)` })
             .from(orders)
-            .where(and(
-              eq(orders.storeId, storeId),
-              eq(orders.assignedToId, agent.id),
-              gte(orders.createdAt, todayStart),
-            ));
+            .where(and(...conds));
           return { agentId: agent.id, count: Number(row?.count || 0) };
         })
       );
@@ -1938,25 +1958,45 @@ export class DatabaseStorage implements IStorage {
       const totalToday = agentCounts.reduce((s, a) => s + a.count, 0);
       const defaultPct = 100 / eligibleAgents.length;
 
+      // Compute target % per agent. Only fall back to defaultPct when there is
+      // NO setting row at all. A setting row with leadPercentage=0 means the
+      // user explicitly excluded that agent — respect it.
+      const eligibleWithPct = eligibleAgents.map(a => {
+        const setting = settingsMap.get(a.id);
+        const hasExplicit = setting && setting.leadPercentage !== null && setting.leadPercentage !== undefined;
+        const pct = hasExplicit ? Number(setting!.leadPercentage) : defaultPct;
+        return { agentId: a.id, targetPct: pct };
+      });
+
+      // Normalize: if user-configured percentages don't sum to 100 (within 0.5),
+      // scale them so the deficit math is meaningful.
+      const sumPct = eligibleWithPct.reduce((s, a) => s + a.targetPct, 0);
+      if (sumPct > 0 && Math.abs(sumPct - 100) > 0.5) {
+        eligibleWithPct.forEach(a => { a.targetPct = (a.targetPct / sumPct) * 100; });
+      }
+
+      // Pick the agent with the largest deficit (target − projected actual %)
       let selectedAgentId: number | null = null;
       let maxDeficit = -Infinity;
 
-      for (const agent of eligibleAgents) {
-        const setting = settingsMap.get(agent.id);
-        const targetPct = Math.max(0.1, setting?.leadPercentage ?? defaultPct);
-        const currentCount = agentCounts.find(a => a.agentId === agent.id)?.count || 0;
-        const currentPct = totalToday === 0 ? 0 : (currentCount / (totalToday + 1)) * 100;
-        const deficit = targetPct - currentPct;
-        console.log(`[DIST-%] Agent ${agent.id}: target=${targetPct.toFixed(1)}% today=${currentCount} deficit=${deficit.toFixed(1)}`);
+      for (const { agentId, targetPct } of eligibleWithPct) {
+        if (targetPct <= 0) continue; // 0% = excluded, skip entirely
+        const currentCount = agentCounts.find(a => a.agentId === agentId)?.count || 0;
+        const projectedPct = ((currentCount + 1) / (totalToday + 1)) * 100;
+        const deficit = targetPct - projectedPct;
+        console.log(`[DIST-%] agent=${agentId} target=${targetPct.toFixed(1)}% today=${currentCount} projected=${projectedPct.toFixed(1)}% deficit=${deficit.toFixed(1)}`);
 
         if (deficit > maxDeficit) {
           maxDeficit = deficit;
-          selectedAgentId = agent.id;
+          selectedAgentId = agentId;
         }
       }
 
-      if (!selectedAgentId && eligibleAgents.length > 0) {
-        selectedAgentId = eligibleAgents[0].id;
+      // Strict semantic: if every agent was explicitly excluded (0%), return null
+      // rather than silently overriding the user's intent. Caller will leave the
+      // order unassigned. The [DIST-%] log lines above make this visible.
+      if (!selectedAgentId) {
+        console.warn(`[DIST-%] All eligible agents have target=0% — order will remain unassigned`);
       }
 
       if (selectedAgentId) {

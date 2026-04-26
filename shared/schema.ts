@@ -94,6 +94,7 @@ export const productVariants = pgTable("product_variants", {
 export const orders = pgTable("orders", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
+  magasinId: integer("magasin_id").references(() => stores.id),
   orderNumber: text("order_number").notNull(),
   customerName: text("customer_name").notNull(),
   customerPhone: text("customer_phone").notNull(),

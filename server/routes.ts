@@ -3129,8 +3129,10 @@ export async function registerRoutes(
       const mediaBuyer = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
       console.log(`[Attribution] Order=${parsed.orderNumber} UTM="${parsed.utmSource}" → Code=${parsed.buyerCode || 'none'} Platform=${parsed.trafficPlatform || 'none'} → Buyer=${mediaBuyer ? mediaBuyer.username + ' (#' + mediaBuyer.id + ')' : 'NOT FOUND'}`);
 
+      const webhookMagasinId = integration?.magasinId ?? null;
       const order = await storage.createOrder({
         storeId,
+        magasinId: webhookMagasinId,
         orderNumber: parsed.orderNumber,
         customerName: parsed.customerName,
         customerPhone: parsed.customerPhone,
@@ -3153,7 +3155,7 @@ export async function registerRoutes(
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
       const firstProductId = orderItemsToCreate.find(i => i.productId)?.productId ?? undefined;
-      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity);
+      const nextAgentId = await storage.getNextAgent(storeId, webhookMagasinId, firstProductId, parsed.customerCity);
       if (nextAgentId) {
         await storage.assignOrder(order.id, nextAgentId);
       }
@@ -3258,8 +3260,10 @@ export async function registerRoutes(
         console.warn("[CityMatch] Auto-match skipped:", cityErr.message);
       }
 
+      const tokenMagasinId = magasinId ?? null;
       const order = await storage.createOrder({
-        storeId, orderNumber: parsed.orderNumber, customerName: parsed.customerName,
+        storeId, magasinId: tokenMagasinId,
+        orderNumber: parsed.orderNumber, customerName: parsed.customerName,
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
         customerCity: resolvedCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: provider, comment: parsed.comment,
@@ -3270,7 +3274,7 @@ export async function registerRoutes(
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
-      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, resolvedCity);
+      const nextAgentId = await storage.getNextAgent(storeId, tokenMagasinId, firstProductId, resolvedCity);
       if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
 
       await storage.incrementMonthlyOrders(storeId);
@@ -3331,15 +3335,17 @@ export async function registerRoutes(
       const orderItems = matched ? [{ productId: matched.id, quantity: 1, price: totalPrice, orderId: 0 }] : [];
       console.log("━━━ NEW WEBHOOK ARRIVED (GSheets) ━━━");
       console.log(`[Webhook] Customer: ${customerName} | Phone: ${customerPhone} | Product: ${productName}`);
+      const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
+      const gsheetsMagasinId = integration?.magasinId ?? null;
       const order = await storage.createOrder({
-        storeId, orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        storeId, magasinId: gsheetsMagasinId,
+        orderNumber, customerName, customerPhone, customerAddress, customerCity,
         status: 'nouveau', totalPrice, productCost: matched ? matched.costPrice : 0,
         shippingCost: 0, adSpend: 0, source: 'gsheets', comment: null,
-      }, orderItems);
-      const nextAgentId = await storage.getNextAgent(storeId, matched?.id, customerCity);
+      } as any, orderItems);
+      const nextAgentId = await storage.getNextAgent(storeId, gsheetsMagasinId, matched?.id, customerCity);
       if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
       await storage.incrementMonthlyOrders(storeId);
-      const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: 'gsheets', action: 'order_synced', status: 'success', message: `Commande Google Sheets ${orderNumber} importée` });
       // Real-time push
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName, status: 'nouveau', source: 'gsheets' });
@@ -3386,15 +3392,17 @@ export async function registerRoutes(
       const storeProducts = await storage.getProductsByStore(storeId);
       const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
       const orderItems = matched ? [{ productId: matched.id, quantity, price: matched.sellingPrice || totalPrice, orderId: 0 }] : [];
+      const integration = await storage.getIntegrationByProvider(storeId, "gsheets");
+      const gsheetsApiMagasinId = integration?.magasinId ?? null;
       const order = await storage.createOrder({
-        storeId, orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        storeId, magasinId: gsheetsApiMagasinId,
+        orderNumber, customerName, customerPhone, customerAddress, customerCity,
         status: "nouveau", totalPrice, productCost: matched ? matched.costPrice : 0,
         shippingCost: 0, adSpend: 0, source: "gsheets", comment: null,
-      }, orderItems);
-      const nextAgentId = await storage.getNextAgent(storeId, matched?.id, customerCity);
+      } as any, orderItems);
+      const nextAgentId = await storage.getNextAgent(storeId, gsheetsApiMagasinId, matched?.id, customerCity);
       if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
       await storage.incrementMonthlyOrders(storeId);
-      const integration = await storage.getIntegrationByProvider(storeId, "gsheets");
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: "gsheets", action: "order_synced", status: "success", message: `Commande Google Sheets ${orderNumber} importée (API key)` });
       console.log(`[GSheets-API] New order #${orderNumber} for store ${storeId} — ${customerName} / ${customerPhone}`);
       res.json({ success: true, orderId: order.id });
@@ -3530,10 +3538,11 @@ export async function registerRoutes(
       console.log(`[SHOPIFY WEBHOOK] Product match — ${orderItemsToCreate.length}/${parsed.lineItems.length} items matched`);
 
       // ── 7. Agent assignment ───────────────────────────────────────────────────
+      const shopifyMagasinId = integration.magasinId ?? null;
       let nextAgentId: number | null = null;
       try {
         const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
-        nextAgentId = await storage.getNextAgent(storeId, firstProductId, parsed.customerCity || "");
+        nextAgentId = await storage.getNextAgent(storeId, shopifyMagasinId, firstProductId, parsed.customerCity || "");
       } catch (_) {}
       let mediaBuyer: any = null;
       try {
@@ -3545,6 +3554,7 @@ export async function registerRoutes(
       try {
         order = await storage.createOrder({
           storeId,
+          magasinId: shopifyMagasinId,
           orderNumber: parsed.orderNumber,
           customerName: parsed.customerName,
           customerPhone: parsed.customerPhone || "",
@@ -3683,6 +3693,7 @@ export async function registerRoutes(
           price: z.number().min(0),
           quantity: z.number().min(1),
         })).optional().default([]),
+        magasinId: z.number().nullable().optional(),
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
@@ -3690,6 +3701,15 @@ export async function registerRoutes(
       const limitCheck = await storage.checkOrderLimit(storeId);
       if (!limitCheck.allowed) {
         return res.status(403).json({ message: `Limite de commandes atteinte (${limitCheck.current}/${limitCheck.limit}).` });
+      }
+
+      // Validate magasinId belongs to this user's account (prevents cross-tenant spoofing)
+      const requestedMagasinId = (data as any).magasinId ?? null;
+      if (requestedMagasinId) {
+        const ownedMagasins = await storage.getStoresByOwner(req.user!.id);
+        if (!ownedMagasins.some(m => m.id === requestedMagasinId)) {
+          return res.status(403).json({ message: "Magasin non autorisé" });
+        }
       }
 
       const totalPriceCents = Math.round(data.totalPrice * 100);
@@ -3712,8 +3732,10 @@ export async function registerRoutes(
         }
       }
 
+      const manualMagasinId = (data as any).magasinId ?? null;
       const order = await storage.createOrder({
         storeId,
+        magasinId: manualMagasinId,
         orderNumber,
         customerName: data.customerName,
         customerPhone: data.customerPhone,
@@ -3744,7 +3766,7 @@ export async function registerRoutes(
         await storage.updateOrderStatus(order.id, 'confirme');
       }
 
-      const agentId = data.agentId || await storage.getNextAgent(storeId, undefined, data.customerCity);
+      const agentId = data.agentId || await storage.getNextAgent(storeId, manualMagasinId, undefined, data.customerCity);
       if (agentId) await storage.assignOrder(order.id, agentId);
 
       await storage.incrementMonthlyOrders(storeId);
@@ -3871,6 +3893,7 @@ export async function registerRoutes(
         })).min(1),
         shippingCost: z.number().optional().default(0),
         comment: z.string().optional().default(''),
+        magasinId: z.number().nullable().optional(),
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
@@ -3880,6 +3903,15 @@ export async function registerRoutes(
         return res.status(403).json({
           message: `Limite de commandes atteinte (${limitCheck.current}/${limitCheck.limit}). Passez au plan Pro pour continuer.`,
         });
+      }
+
+      // Validate magasinId belongs to this user's account (prevents cross-tenant spoofing)
+      const requestedMagasinId2 = (data as any).magasinId ?? null;
+      if (requestedMagasinId2) {
+        const ownedMagasins = await storage.getStoresByOwner(req.user!.id);
+        if (!ownedMagasins.some(m => m.id === requestedMagasinId2)) {
+          return res.status(403).json({ message: "Magasin non autorisé" });
+        }
       }
 
       let totalPrice = data.shippingCost;
@@ -3897,8 +3929,10 @@ export async function registerRoutes(
       }
 
       const orderNumber = `MAN-${Date.now()}`;
+      const manualMagasinId2 = (data as any).magasinId ?? null;
       const order = await storage.createOrder({
         storeId,
+        magasinId: manualMagasinId2,
         orderNumber,
         customerName: data.customerName,
         customerPhone: data.customerPhone,
@@ -3911,10 +3945,10 @@ export async function registerRoutes(
         adSpend: 0,
         source: 'manual',
         comment: data.comment || null,
-      }, orderItemsToCreate);
+      } as any, orderItemsToCreate);
 
       const firstProductId = orderItemsToCreate.length > 0 ? orderItemsToCreate[0].productId : undefined;
-      const nextAgentId = await storage.getNextAgent(storeId, firstProductId, data.customerCity);
+      const nextAgentId = await storage.getNextAgent(storeId, manualMagasinId2, firstProductId, data.customerCity);
       if (nextAgentId) {
         await storage.assignOrder(order.id, nextAgentId);
       }
