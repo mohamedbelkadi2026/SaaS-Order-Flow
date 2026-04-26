@@ -274,10 +274,8 @@ function StoreModal({
   );
 
   const platformItems = (storeIntegrationsList || []).map((s: any) => ({
-    value: s.provider,
-    label: s.provider === 'shopify'
-      ? (s.connectionName || s.storeName || 'shopify')
-      : s.provider,
+    value: String(s.id),
+    label: s.connectionName || s.storeName || s.provider || 'Sans nom',
   }));
 
   const isCreate = !title.includes("Modifier");
@@ -653,7 +651,13 @@ export default function Magasins() {
     setSelectedAgentIds(Array.isArray(store.agentIds) ? store.agentIds.map(Number) : []);
     setSelectedServices(Array.isArray(store.services) ? store.services : []);
     setSelectedCarriers(Array.isArray(store.linkedCarriers) ? store.linkedCarriers : []);
-    setSelectedPlatforms(Array.isArray(store.linkedPlatforms) ? store.linkedPlatforms : []);
+    setSelectedPlatforms(
+      Array.isArray(store.linkedPlatforms)
+        ? store.linkedPlatforms
+            .map((v: any) => String(v))
+            .filter((v: string) => /^\d+$/.test(v))
+        : []
+    );
     setNewLogoPreview(null);
   };
 
