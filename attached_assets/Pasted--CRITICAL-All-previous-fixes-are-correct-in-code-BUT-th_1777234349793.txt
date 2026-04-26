@@ -1,0 +1,133 @@
+
+🚨 CRITICAL — All previous fixes are correct in code BUT the database migration was never applied. This is why nothing works.
+Evidence (looked at backup.sql directly)
+The current production stores table is missing every column we added in code:
+sql-- Current production stores table (from backup.sql line 897):
+CREATE TABLE public.stores (
+    id, name, owner_id, last_assigned_agent_id, phone, website, ...
+    -- MISSING: distribution_method
+    -- MISSING: distribution_epoch
+    -- MISSING: agent_ids
+    -- MISSING: services
+    -- MISSING: linked_carriers
+    -- MISSING: linked_platforms
+);
+The orders table is also missing magasin_id. The users table has distribution_method but it's never the source we read in the per-magasin path.
+So when the engine runs:
+
+SELECT distribution_method FROM stores WHERE id = ? → returns nothing useful → distMethod falls back to "auto"
+SELECT distribution_epoch FROM stores WHERE id = ? → NULL → window resets to "today 00:00"
+SELECT count(*) FROM orders WHERE magasin_id = ? → counts 0 rows because magasin_id was never written
+
+Result: every order goes through plain round-robin no matter what percentages I set in the UI. The UI saves leadPercentage to store_agent_settings correctly, but the engine never enters the percentage branch because it reads distMethod = "auto".
+Fix plan — apply the schema once, then verify
+Step 1 — Run the migration explicitly
+In the Replit shell:
+bashnpm run db:push
+If db:push reports "no changes" (Drizzle sometimes thinks the schema matches when it doesn't), force-add the columns with raw SQL. Open the database tab in Replit and run:
+sql-- stores: missing per-magasin columns
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS distribution_method text DEFAULT 'auto';
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS distribution_epoch timestamp DEFAULT now();
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS agent_ids jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS services jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS linked_carriers jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE stores ADD COLUMN IF NOT EXISTS linked_platforms jsonb DEFAULT '[]'::jsonb;
+
+-- orders: missing magasin scope
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES stores(id);
+
+-- backfill existing magasins so they have a sane epoch
+UPDATE stores SET distribution_epoch = now() WHERE distribution_epoch IS NULL;
+
+-- (optional but recommended) speed up the percentage count query
+CREATE INDEX IF NOT EXISTS idx_orders_assigned_magasin_created
+  ON orders (assigned_to_id, magasin_id, created_at);
+Step 2 — Verify in the database tab
+Run this and confirm every row appears:
+sqlSELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'stores'
+  AND column_name IN ('distribution_method','distribution_epoch','agent_ids','services','linked_carriers','linked_platforms');
+
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'orders' AND column_name = 'magasin_id';
+Expected: 6 rows from the first query, 1 row from the second. Don't proceed past this step until both pass.
+Step 3 — Verify the magasin's saved config is correct
+sqlSELECT id, name, distribution_method, distribution_epoch, agent_ids
+FROM stores
+WHERE owner_id = <your_owner_id>;
+For the magasin where you set percentages, distribution_method MUST be 'pourcentage'. If it's still 'auto', the Magasins modal isn't sending the field. Open client/src/pages/magasins.tsx, search for distributionMethod, and confirm it's:
+
+In the StoreForm type
+Initialized in defaultForm
+Read from store.distributionMethod in storeToForm
+Sent in buildPayload
+Wired to the <Select> in the UI
+
+Also open server/routes.ts and confirm the magasin POST + PATCH handlers extract distributionMethod from req.body and pass it to createStore / updateStore.
+Step 4 — Verify per-agent percentages are saved
+sqlSELECT agent_id, store_id, lead_percentage, role_in_store
+FROM store_agent_settings
+WHERE store_id = <your_storeId>;
+You should see naima=25, khawla=50, fatima=25. If lead_percentage is null or 50 across the board, the team modal isn't saving — see client/src/pages/team.tsx line ~343 (payload.leadPercentage = parseInt(editForm.leadPercentage)).
+Step 5 — Verify magasinId is being written on new orders
+After ingesting one fresh test order, run:
+sqlSELECT id, order_number, magasin_id, assigned_to_id, created_at
+FROM orders
+ORDER BY id DESC
+LIMIT 5;
+magasin_id MUST NOT be null for orders coming from a webhook on a configured integration. If it's null, the issue is in server/routes.ts — the createOrder({...}) call must include magasinId: integration.magasinId. Check every webhook handler (Shopify, YouCan, Google Sheets, manual).
+Step 6 — Reset and test live
+In SQL, bump the epoch so old orders are excluded from the count window:
+sqlUPDATE stores
+SET distribution_epoch = now(), last_assigned_agent_id = null
+WHERE id = <your magasin id>;
+Now inject 20 fresh orders and check the server logs. You should see lines like:
+[DIST] store=X magasin=Y method=pourcentage eligible=[A,B,C]
+[DIST-%] window since=2026-04-26T20:30:00.000Z magasin=Y
+[DIST-%] agent=A target=25.0% today=0 projected=100.0% deficit=-75.0
+[DIST-%] agent=B target=50.0% today=0 projected=100.0% deficit=-50.0
+[DIST-%] agent=C target=25.0% today=0 projected=100.0% deficit=-75.0
+[DIST-%] → Selected: B
+If you see method=auto instead of method=pourcentage, Step 3 is still broken — go back and fix the Magasins modal save path. If you see method=pourcentage but the distribution still skews, paste the next 20 log lines and we'll debug from real numbers.
+Step 7 — Add a "diagnostic" endpoint (one-time, useful for debugging)
+Add this admin-only route in server/routes.ts:
+tsapp.get("/api/_debug/distribution/:magasinId", requireAuth, async (req, res) => {
+  const id = Number(req.params.magasinId);
+  const [magasin] = await db.select().from(stores).where(eq(stores.id, id)).limit(1);
+  const settings = await db.select().from(storeAgentSettings).where(eq(storeAgentSettings.storeId, magasin.ownerId ? /* parent */ id : id));
+  const sinceEpoch = magasin?.distributionEpoch ?? new Date(0);
+  const counts = await db.select({
+    agentId: orders.assignedToId,
+    count: sql<number>`count(*)`,
+  }).from(orders)
+    .where(and(eq(orders.magasinId, id), gte(orders.createdAt, sinceEpoch)))
+    .groupBy(orders.assignedToId);
+
+  res.json({
+    magasin: { id: magasin?.id, name: magasin?.name, distributionMethod: magasin?.distributionMethod, distributionEpoch: magasin?.distributionEpoch, agentIds: magasin?.agentIds },
+    perAgentSettings: settings.map(s => ({ agentId: s.agentId, leadPercentage: s.leadPercentage, roleInStore: s.roleInStore })),
+    countsSinceEpoch: counts,
+  });
+});
+Call it: GET /api/_debug/distribution/<magasinId>. The response tells you in one shot whether the magasin is configured for pourcentage, what each agent's target % is, and how many orders each has received since the epoch. If anything is off here, the UI/save layer is broken; if everything looks right but distribution still skews, the engine is broken.
+ACCEPTANCE CRITERIA
+
+✅ \d stores in psql shows distribution_method, distribution_epoch, agent_ids, services, linked_carriers, linked_platforms.
+✅ \d orders shows magasin_id column.
+✅ My test magasin has distribution_method = 'pourcentage' in the DB.
+✅ Server log shows method=pourcentage (not auto) when an order arrives for that magasin.
+✅ With percentages 50/25/25 and a fresh epoch, 20 new orders distribute ~10/5/5 (±2).
+✅ Old orders from before the epoch do NOT appear in the count.
+✅ The /api/_debug/distribution/:magasinId endpoint returns matching numbers.
+
+COMMIT & PUSH
+bashgit add server/storage.ts server/routes.ts shared/schema.ts client/
+git commit -m "fix(distribution): apply missing schema migration + add debug endpoint
+
+- ALTER TABLE applied for stores (distribution_method, distribution_epoch, agent_ids, services, linked_carriers, linked_platforms)
+- ALTER TABLE applied for orders.magasin_id
+- Backfill distribution_epoch = now() on existing magasins
+- Add idx_orders_assigned_magasin_created index
+- Add GET /api/_debug/distribution/:magasinId for live config inspection"
+git push

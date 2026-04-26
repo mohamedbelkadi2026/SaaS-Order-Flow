@@ -6,8 +6,8 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
-import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations } from "@shared/schema";
-import { eq, and, gte, lt, count, desc } from "drizzle-orm";
+import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings } from "@shared/schema";
+import { eq, and, gte, lt, count, desc, sql } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
 import archiver from "archiver";
@@ -5268,6 +5268,69 @@ export async function registerRoutes(
     for (const m of owned) await storage.resetDistribution(m.id);
     console.log(`[DIST-EPOCH] manual reset-all → ${owned.length} magasin(s) by user=${req.user!.id}`);
     res.json({ success: true, count: owned.length, distributionEpoch: new Date().toISOString() });
+  });
+
+  // ── Live distribution-config inspector ────────────────────────────────────
+  // GET /api/_debug/distribution/:magasinId
+  // One-shot snapshot answering: "is this magasin actually configured for
+  // pourcentage in the DB, and how many orders has each agent received since
+  // the current epoch?" Useful when production behaviour disagrees with the UI.
+  // Admin-only AND scoped to the caller's owned magasins (no cross-tenant peek).
+  app.get("/api/_debug/distribution/:magasinId", requireAdmin, async (req, res) => {
+    try {
+      const magasinId = Number(req.params.magasinId);
+      if (!Number.isFinite(magasinId) || magasinId <= 0) {
+        return res.status(400).json({ message: "magasinId invalide" });
+      }
+
+      const [magasin] = await db.select().from(stores).where(eq(stores.id, magasinId)).limit(1);
+      if (!magasin) return res.status(404).json({ message: "Magasin non trouvé" });
+
+      // Tenant guard — the caller must own this magasin (or it must BE their store).
+      if (magasin.ownerId !== req.user!.id && magasinId !== req.user!.storeId) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+
+      // Per-agent settings keyed on this magasin (NOT the parent owner store).
+      const settings = await db
+        .select()
+        .from(storeAgentSettings)
+        .where(eq(storeAgentSettings.storeId, magasinId));
+
+      // Order counts since the current distribution epoch (the window that
+      // the percentage engine actually uses to compute "today's projected %").
+      const sinceEpoch = magasin.distributionEpoch ?? new Date(0);
+      const counts = await db
+        .select({
+          agentId: orders.assignedToId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(orders)
+        .where(and(eq(orders.magasinId, magasinId), gte(orders.createdAt, sinceEpoch)))
+        .groupBy(orders.assignedToId);
+
+      res.json({
+        magasin: {
+          id: magasin.id,
+          name: magasin.name,
+          ownerId: magasin.ownerId,
+          distributionMethod: magasin.distributionMethod,
+          distributionEpoch: magasin.distributionEpoch,
+          agentIds: magasin.agentIds,
+        },
+        perAgentSettings: settings.map((s: any) => ({
+          agentId: s.agentId,
+          leadPercentage: s.leadPercentage,
+          roleInStore: s.roleInStore,
+          allowedProductIds: s.allowedProductIds,
+          allowedRegions: s.allowedRegions,
+        })),
+        countsSinceEpoch: counts,
+      });
+    } catch (err) {
+      console.error('[DIST-DEBUG]', err);
+      res.status(500).json({ message: "Erreur interne", error: String(err) });
+    }
   });
 
   app.delete("/api/magasins/:id", requireAdmin, async (req, res) => {

@@ -303,6 +303,16 @@ export async function initializeDatabase(): Promise<void> {
       console.log('[Migration] stores.distribution_method one-shot repair already applied (skipped)');
     }
 
+    // ── 6e-ter. perf index for the percentage engine's count query ──────────
+    // The "% method" engine runs SELECT count(*) FROM orders WHERE assigned_to_id=?
+    // AND magasin_id=? AND created_at >= distribution_epoch on every webhook
+    // order. This composite index makes that lookup O(log n) instead of a scan.
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_assigned_magasin_created
+        ON public.orders (assigned_to_id, magasin_id, created_at);
+    `);
+    console.log('[Migration] idx_orders_assigned_magasin_created ensured ✅');
+
     // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.email_verification_codes (
