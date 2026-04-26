@@ -149,6 +149,8 @@ export interface IStorage {
   getStoresByOwner(userId: number): Promise<Store[]>;
   updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined>;
   deleteStore(id: number): Promise<void>;
+  bumpDistributionEpoch(magasinId: number): Promise<void>;
+  resetDistribution(magasinId: number): Promise<void>;
 
   createAdSpendEntry(data: InsertAdSpendNew & { userId?: number | null }): Promise<AdSpendNewEntry>;
   getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string })[]>;
@@ -1934,17 +1936,41 @@ export class DatabaseStorage implements IStorage {
 
     } else if (distMethod === 'pourcentage') {
       // PERCENTAGE-BASED DISTRIBUTION (works for any number of agents)
-      // Uses today's assignments as the reference window — resets daily.
-      // SCOPED TO THIS MAGASIN if provided so multi-boutique accounts don't bleed counts.
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
+      // Reference window: count assignments made AFTER the magasin's distribution_epoch
+      // (last time percentages / agent linking / dist method was changed). This ensures
+      // changing percentages mid-day, adding new agents, or rebalancing does NOT make
+      // historical orders distort the math. Falls back to today 00:00 when no epoch.
+      let windowStart = new Date();
+      windowStart.setHours(0, 0, 0, 0);
+
+      if (magasinId) {
+        const [magasinRow] = await db
+          .select({ distributionEpoch: stores.distributionEpoch })
+          .from(stores)
+          .where(eq(stores.id, magasinId))
+          .limit(1);
+        if (magasinRow?.distributionEpoch) {
+          windowStart = new Date(magasinRow.distributionEpoch);
+        }
+      } else {
+        const [storeRow] = await db
+          .select({ distributionEpoch: stores.distributionEpoch })
+          .from(stores)
+          .where(eq(stores.id, storeId))
+          .limit(1);
+        if (storeRow?.distributionEpoch) {
+          windowStart = new Date(storeRow.distributionEpoch);
+        }
+      }
+
+      console.log(`[DIST-%] window since=${windowStart.toISOString()} magasin=${magasinId ?? 'none'}`);
 
       const agentCounts = await Promise.all(
         eligibleAgents.map(async (agent) => {
           const conds: any[] = [
             eq(orders.storeId, storeId),
             eq(orders.assignedToId, agent.id),
-            gte(orders.createdAt, todayStart),
+            gte(orders.createdAt, windowStart),
           ];
           if (magasinId) conds.push(eq(orders.magasinId, magasinId));
           const [row] = await db
@@ -2177,6 +2203,18 @@ export class DatabaseStorage implements IStorage {
   async updateStore(id: number, data: Partial<InsertStore>): Promise<Store | undefined> {
     const [updated] = await db.update(stores).set(data).where(eq(stores.id, id)).returning();
     return updated;
+  }
+
+  async bumpDistributionEpoch(magasinId: number): Promise<void> {
+    await db.update(stores).set({ distributionEpoch: new Date() }).where(eq(stores.id, magasinId));
+  }
+
+  async resetDistribution(magasinId: number): Promise<void> {
+    // Manual "réinitialiser la distribution" — wipes the percentage count window AND
+    // the round-robin pointer, so the next order starts from a clean slate.
+    await db.update(stores)
+      .set({ distributionEpoch: new Date(), lastAssignedAgentId: null })
+      .where(eq(stores.id, magasinId));
   }
 
   async deleteStore(id: number): Promise<void> {

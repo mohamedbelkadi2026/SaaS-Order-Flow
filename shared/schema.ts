@@ -30,6 +30,11 @@ export const stores = pgTable("stores", {
   services: jsonb("services").$type<string[]>().default([]),
   linkedCarriers: jsonb("linked_carriers").$type<string[]>().default([]),
   linkedPlatforms: jsonb("linked_platforms").$type<string[]>().default([]),
+  // Updated whenever distribution method, leadPercentage, agent linking, or
+  // role-in-store changes for this magasin. getNextAgent counts only orders
+  // created AFTER this timestamp — so percentage rebalances are not poisoned
+  // by historical data when the user changes config mid-day or adds agents.
+  distributionEpoch: timestamp("distribution_epoch").defaultNow(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

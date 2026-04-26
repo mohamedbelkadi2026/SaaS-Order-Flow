@@ -218,6 +218,18 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] orders.magasin_id column ensured ✅');
 
+    // ── 6d. stores.distribution_epoch — reference window for percentage engine ─
+    await pool.query(`
+      ALTER TABLE public.stores
+        ADD COLUMN IF NOT EXISTS distribution_epoch TIMESTAMP DEFAULT NOW();
+    `);
+    // Backfill any existing NULL epochs so the very first percentage call
+    // doesn't degrade to "today 00:00" fallback.
+    await pool.query(`
+      UPDATE public.stores SET distribution_epoch = NOW() WHERE distribution_epoch IS NULL;
+    `);
+    console.log('[Migration] stores.distribution_epoch ensured ✅');
+
     // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.email_verification_codes (

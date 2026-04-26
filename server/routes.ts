@@ -420,6 +420,26 @@ function parseWebhookOrder(provider: string, payload: any) {
   throw new Error(`Unknown provider: ${provider}`);
 }
 
+// Bump distribution_epoch on every magasin AFFECTED by a change to this agent.
+// A magasin is affected when:
+//   - its agentIds explicitly contains this agentId, OR
+//   - its agentIds is empty (legacy fallback = "all account agents are eligible")
+// Returns the number of magasins bumped (for logging).
+async function bumpAgentRelatedEpochs(ownerId: number, agentId: number): Promise<number> {
+  try {
+    const owned = await storage.getStoresByOwner(ownerId);
+    const affected = owned.filter(m => {
+      const ids = Array.isArray((m as any).agentIds) ? (m as any).agentIds.map(Number) : [];
+      return ids.length === 0 || ids.includes(agentId);
+    });
+    for (const m of affected) await storage.bumpDistributionEpoch(m.id);
+    return affected.length;
+  } catch (err) {
+    console.warn('[DIST-EPOCH] bumpAgentRelatedEpochs failed (non-fatal):', err);
+    return 0;
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -1595,6 +1615,13 @@ export async function registerRoutes(
           settingsPayload.commissionRate = req.body.commissionRate;
         }
         await storage.upsertStoreAgentSetting(user.id, storeId, settingsPayload);
+      }
+
+      // Adding an agent changes the eligible pool for legacy "all-agents" magasins
+      // (and any magasin that later links them); bump their windows now.
+      if (userRole === 'agent') {
+        const n = await bumpAgentRelatedEpochs(req.user!.id, user.id);
+        console.log(`[DIST-EPOCH] agent ${user.id} created → bumped ${n} magasin(s)`);
       }
 
       const { password: _, ...safeUser } = user;
@@ -4363,6 +4390,15 @@ export async function registerRoutes(
         await storage.updateUser(userId, userPayload);
       }
 
+      // Did anything that affects distribution change? Track for epoch bump below.
+      const distAffected =
+        data.distributionMethod !== undefined ||
+        data.leadPercentage !== undefined ||
+        data.roleInStore !== undefined ||
+        data.allowedProductIds !== undefined ||
+        data.allowedRegions !== undefined ||
+        data.isActive !== undefined;
+
       if (agent.role === 'agent') {
         const settingsPayload: any = {};
         if (data.roleInStore !== undefined) settingsPayload.roleInStore = data.roleInStore;
@@ -4372,6 +4408,26 @@ export async function registerRoutes(
         if (data.commissionRate !== undefined) settingsPayload.commissionRate = data.commissionRate;
         if (Object.keys(settingsPayload).length > 0) {
           await storage.upsertStoreAgentSetting(userId, admin.storeId!, settingsPayload);
+        }
+      }
+
+      // Bump distribution_epoch on every magasin affected by this change so the
+      // percentage engine doesn't poison fresh % targets with historical counts.
+      if (distAffected) {
+        if (data.distributionMethod !== undefined) {
+          // Account-wide method change → bump every owned magasin.
+          try {
+            const ownedMagasins = await storage.getStoresByOwner(admin.id);
+            for (const m of ownedMagasins) await storage.bumpDistributionEpoch(m.id);
+            console.log(`[DIST-EPOCH] distributionMethod change → bumped ${ownedMagasins.length} magasin(s)`);
+          } catch (err) {
+            console.warn('[DIST-EPOCH] bump failed (non-fatal):', err);
+          }
+        } else if (agent.role === 'agent') {
+          // Agent-level change → bump magasins where this agent is linked
+          // (incl. legacy magasins with empty agentIds = "all agents").
+          const n = await bumpAgentRelatedEpochs(admin.id, userId);
+          console.log(`[DIST-EPOCH] agent ${userId} settings change → bumped ${n} magasin(s)`);
         }
       }
 
@@ -4391,6 +4447,9 @@ export async function registerRoutes(
     if (agent.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
     if (agent.role === 'owner') return res.status(400).json({ message: "Impossible de supprimer le propriétaire" });
     await storage.deleteUser(agentId);
+    // Removing an agent changes the eligible pool — reset windows on affected magasins.
+    const n = await bumpAgentRelatedEpochs(req.user!.id, agentId);
+    console.log(`[DIST-EPOCH] agent ${agentId} deleted → bumped ${n} magasin(s)`);
     res.json({ message: "Supprimé" });
   });
 
@@ -4441,6 +4500,16 @@ export async function registerRoutes(
       if (data.allowedRegions !== undefined) payload.allowedRegions = JSON.stringify(data.allowedRegions);
       if (data.commissionRate !== undefined) payload.commissionRate = data.commissionRate;
       const result = await storage.upsertStoreAgentSetting(agentId, storeId, payload);
+      // Any of role / lead% / allowed products / allowed regions affects distribution.
+      const distChanged =
+        data.roleInStore !== undefined ||
+        data.leadPercentage !== undefined ||
+        data.allowedProductIds !== undefined ||
+        data.allowedRegions !== undefined;
+      if (distChanged) {
+        const n = await bumpAgentRelatedEpochs(req.user!.id, agentId);
+        console.log(`[DIST-EPOCH] /store-settings change for agent ${agentId} → bumped ${n} magasin(s)`);
+      }
       res.json(result);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
@@ -5156,7 +5225,42 @@ export async function registerRoutes(
       if (req.body[key] !== undefined) updateData[key] = req.body[key];
     }
     const updated = await storage.updateStore(storeId, updateData);
+
+    // If the eligible-agent pool or platform linking changed, bump the magasin's
+    // distribution_epoch so fresh percentages aren't poisoned by historical orders.
+    const distFieldsChanged = ['agentIds', 'linkedPlatforms'].some(f => req.body[f] !== undefined);
+    if (distFieldsChanged) {
+      try {
+        await storage.bumpDistributionEpoch(storeId);
+        console.log(`[DIST-EPOCH] magasin ${storeId} agentIds/linkedPlatforms change → epoch bumped`);
+      } catch (err) {
+        console.warn('[DIST-EPOCH] bump failed (non-fatal):', err);
+      }
+    }
+
     res.json(updated);
+  });
+
+  // Manual reset of distribution counter (admin-only, scoped to one magasin).
+  // Wipes the percentage count window AND the round-robin pointer.
+  app.post("/api/magasins/:id/reset-distribution", requireAdmin, async (req, res) => {
+    const magasinId = Number(req.params.id);
+    const magasin = await storage.getStore(magasinId);
+    if (!magasin) return res.status(404).json({ message: "Magasin non trouvé" });
+    if (magasin.ownerId !== req.user!.id && magasinId !== req.user!.storeId) {
+      return res.status(403).json({ message: "Accès refusé" });
+    }
+    await storage.resetDistribution(magasinId);
+    console.log(`[DIST-EPOCH] manual reset → magasin=${magasinId} by user=${req.user!.id}`);
+    res.json({ success: true, distributionEpoch: new Date().toISOString() });
+  });
+
+  // "Reset all my magasins" — convenience for the Team page header button.
+  app.post("/api/magasins/reset-distribution-all", requireAdmin, async (req, res) => {
+    const owned = await storage.getStoresByOwner(req.user!.id);
+    for (const m of owned) await storage.resetDistribution(m.id);
+    console.log(`[DIST-EPOCH] manual reset-all → ${owned.length} magasin(s) by user=${req.user!.id}`);
+    res.json({ success: true, count: owned.length, distributionEpoch: new Date().toISOString() });
   });
 
   app.delete("/api/magasins/:id", requireAdmin, async (req, res) => {

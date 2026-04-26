@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp } from "lucide-react";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp, RotateCcw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils";
 
@@ -462,15 +462,57 @@ export default function Team() {
     }));
   };
 
+  // Last distribution reset (max distributionEpoch across owned magasins).
+  const { data: ownedMagasins = [] } = useQuery<any[]>({ queryKey: ['/api/magasins'] });
+  const lastResetAt = ownedMagasins
+    .map(m => m.distributionEpoch ? new Date(m.distributionEpoch).getTime() : 0)
+    .reduce((a, b) => Math.max(a, b), 0);
+  const lastResetLabel = lastResetAt > 0
+    ? new Date(lastResetAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  const resetDistributionMutation = useMutation({
+    mutationFn: async () => apiRequest('POST', '/api/magasins/reset-distribution-all'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/magasins'] });
+      toast({ title: "Distribution réinitialisée", description: "Les compteurs repartent de zéro pour tous vos magasins." });
+    },
+    onError: (err: any) => {
+      toast({ title: "Erreur", description: err?.message || "Échec de la réinitialisation", variant: "destructive" });
+    },
+  });
+
+  const handleResetDistribution = () => {
+    if (!confirm("Réinitialiser la distribution sur tous vos magasins ?\n\nLes commandes futures seront équilibrées selon les pourcentages actuels. Les commandes passées ne seront plus comptées dans le calcul.")) return;
+    resetDistributionMutation.mutate();
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-display font-bold uppercase" data-testid="text-team-title">Liste des membres</h1>
           <p className="text-muted-foreground mt-1">Gestion de l'équipe / Membres</p>
+          {lastResetLabel && (
+            <p className="text-xs text-muted-foreground mt-1" data-testid="text-distribution-epoch">
+              Dernière réinitialisation enregistrée : <span className="font-medium">{lastResetLabel}</span> — les commandes antérieures à la date de réinitialisation de chaque magasin ne sont pas comptées.
+            </p>
+          )}
         </div>
 
-        <Dialog open={open} onOpenChange={setOpen}>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={handleResetDistribution}
+            disabled={resetDistributionMutation.isPending}
+            className="rounded-md px-3 py-2 flex items-center gap-2"
+            data-testid="button-reset-distribution"
+          >
+            {resetDistributionMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+            Réinitialiser la distribution
+          </Button>
+
+          <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
             <Button data-testid="button-add-member" className="bg-primary hover:bg-primary/90 text-white rounded-md px-4 py-2 flex items-center gap-2">
               <UserPlus className="w-4 h-4" /> Ajouter un membre
@@ -689,6 +731,7 @@ export default function Team() {
             </div>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">

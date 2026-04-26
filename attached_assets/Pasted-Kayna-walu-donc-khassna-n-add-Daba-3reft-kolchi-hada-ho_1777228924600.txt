@@ -1,0 +1,126 @@
+Kayna walu — donc khassna n-add. Daba 3reft kolchi, hada howa l-prompt l-final 7la l-mochkila dyalek mzyan:
+
+CRITICAL FIX — Lead percentages should apply ONLY to NEW orders going forward, not retroactively count old orders
+My real-world scenario
+I have agent A and agent B at 50/50 for 15 days. They processed ~1000 orders together. Today I want to:
+
+Add agent C
+Change percentages to A=50%, B=25%, C=25%
+
+What I expect: Starting from the moment I save these new percentages, every NEW order coming in should be distributed 50/25/25. The 1000 old orders should NOT be re-counted in the math.
+What's happening now: The percentage engine looks at orders going back to today's 00:00:00 and uses those counts as the reference window. If old data is in the window, the engine sees A is "ahead" of its target and starves A while flooding B and C — completely the wrong behavior. Worse, the screenshot from earlier (16 assigned orders → naima 4 / khawla 10 / fatima 2 instead of 4/8/4) is the same bug: history is poisoning the present.
+This is a public SaaS — every user will hire/fire/reassign agents constantly. The system MUST treat percentage changes as a clean slate going forward.
+Files involved
+
+shared/schema.ts — add a "percentages last changed" timestamp per magasin
+server/storage.ts — getNextAgent (line ~1822), specifically the percentage block (lines ~1935-2009)
+server/routes.ts — the agent settings PATCH handler (line ~4344) and the magasin distribution-method update
+client/src/pages/team.tsx — the agent edit modal that saves leadPercentage
+client/src/pages/magasins.tsx — when distribution method is changed on a magasin
+
+Root cause
+In server/storage.ts line 1939-1949:
+tsconst todayStart = new Date();
+todayStart.setHours(0, 0, 0, 0);
+
+const agentCounts = await Promise.all(
+  eligibleAgents.map(async (agent) => {
+    const conds: any[] = [
+      eq(orders.storeId, storeId),
+      eq(orders.assignedToId, agent.id),
+      gte(orders.createdAt, todayStart),     // ← this is the window
+    ];
+    if (magasinId) conds.push(eq(orders.magasinId, magasinId));
+    ...
+  })
+);
+Two problems with that window:
+
+It's today 00:00, not "since percentages were last changed". So if I change percentages at 3pm, the engine still counts every order assigned today since midnight.
+It counts ALL orders regardless of status — so an agent who processed orders, marked them "livré" or "suivi", still has their count held against them in the percentage math.
+
+FIX — Use a "percentage epoch" timestamp per magasin
+Step 1 — Schema: add distributionEpoch to the stores (magasins) table
+In shared/schema.ts, add the column on the stores table (alongside distributionMethod from the previous fix):
+tsdistributionEpoch: timestamp("distribution_epoch").defaultNow(),
+// Updated whenever distribution method, leadPercentage, or agent linking
+// changes for this magasin. getNextAgent counts only orders created AFTER
+// this timestamp — so percentage rebalances are not poisoned by historical data.
+Run npm run db:push.
+Step 2 — Bump distributionEpoch on every relevant config change
+In server/routes.ts, write a tiny helper near the top of the routes file:
+tsasync function bumpDistributionEpoch(magasinId: number | null) {
+  if (!magasinId) return;
+  await storage.updateMagasinDistributionEpoch(magasinId, new Date());
+}
+Add the corresponding storage method in server/storage.ts:
+tsasync updateMagasinDistributionEpoch(magasinId: number, when: Date): Promise<void> {
+  await db.update(stores).set({ distributionEpoch: when }).where(eq(stores.id, magasinId));
+}
+Call bumpDistributionEpoch(magasinId) from the following endpoints, AFTER the DB write succeeds:
+
+PATCH agent settings (/api/users/:id agent update, line ~4344) — when leadPercentage changes, bump the epoch for every magasin where this agent is linked (since the agent could be in multiple magasins). Loop:
+
+ts   if (data.leadPercentage !== undefined) {
+     const magasins = await storage.getMagasinsForAgent(userId, admin.storeId!);
+     for (const m of magasins) await bumpDistributionEpoch(m.id);
+   }
+Add getMagasinsForAgent in storage:
+ts   async getMagasinsForAgent(agentId: number, storeId: number) {
+     const rows = await db.select().from(stores).where(eq(stores.storeId /* parent */, storeId));
+     // Adjust this query to your stores schema. Filter rows whose `agentIds` array contains `agentId`.
+     return rows.filter(r => Array.isArray(r.agentIds) && r.agentIds.map(Number).includes(agentId));
+   }
+
+PATCH magasin (the create/update magasin endpoint in server/routes.ts ~5094-5118) — when distributionMethod, agentIds, or linkedPlatforms changes, bump the epoch for that magasin. Compare old vs new before bumping so we don't reset the epoch on unrelated edits like changing the logo.
+Manual reset button — expose a route POST /api/magasins/:id/reset-distribution that just calls bumpDistributionEpoch(id) and clears lastAssignedAgentId. Admin-only. Wire it to a button in the Team page header: "Réinitialiser la distribution".
+
+Step 3 — Use distributionEpoch as the count window in getNextAgent
+In server/storage.ts, replace the percentage block's window source. Replace lines 1939-1956 with:
+ts// Reference window: count assignments made AFTER the last config change.
+// This ensures changing percentages doesn't make old orders distort the math.
+let windowStart = new Date(); windowStart.setHours(0, 0, 0, 0); // legacy default = today
+
+if (magasinId) {
+  const [magasinRow] = await db
+    .select({ distributionEpoch: stores.distributionEpoch })
+    .from(stores).where(eq(stores.id, magasinId)).limit(1);
+  if (magasinRow?.distributionEpoch) {
+    windowStart = new Date(magasinRow.distributionEpoch);
+  }
+}
+
+const agentCounts = await Promise.all(
+  eligibleAgents.map(async (agent) => {
+    const conds: any[] = [
+      eq(orders.storeId, storeId),
+      eq(orders.assignedToId, agent.id),
+      gte(orders.createdAt, windowStart),
+    ];
+    if (magasinId) conds.push(eq(orders.magasinId, magasinId));
+    const [row] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(orders)
+      .where(and(...conds));
+    return { agentId: agent.id, count: Number(row?.count || 0) };
+  })
+);
+
+console.log(`[DIST-%] window since=${windowStart.toISOString()} magasin=${magasinId ?? 'none'}`);
+That's the whole fix in the engine. Everything else (target % computation, deficit math) stays as-is and now works correctly because the count window is honest.
+Step 4 — Show the user when distribution was last reset
+In the Team page (or the magasin settings panel), show a small line under the percentage table:
+
+"Distribution réinitialisée le DD/MM/YYYY HH:mm — les commandes avant cette date ne sont pas comptées."
+
+Read it from magasin.distributionEpoch. This is critical UX — it answers the question "why did my percentages just rebalance?" without the user having to read code.
+Step 5 — When admin presses the reset button, also clear lastAssignedAgentId
+The reset endpoint:
+tsapp.post("/api/magasins/:id/reset-distribution", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  // verify admin owns this magasin (cross-tenant guard)
+  await db.update(stores)
+    .set({ distributionEpoch: new Date(), lastAssignedAgentId: null })
+    .where(eq(stores.id, id));
+  res.json({ success: true });
+});
