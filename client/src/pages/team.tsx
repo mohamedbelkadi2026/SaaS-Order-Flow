@@ -337,12 +337,14 @@ export default function Team() {
     } else if (editingAgent.role === 'agent') {
       payload.paymentType = editForm.paymentType;
       payload.paymentAmount = editForm.paymentAmount ? Math.round(parseFloat(editForm.paymentAmount) * 100) : 0;
-      payload.distributionMethod = editForm.distributionMethod;
+      // distributionMethod is configured per-MAGASIN now (not per-agent).
+      // We still send the per-agent rule values so they can be used by whichever
+      // magasin chooses that strategy.
       payload.roleInStore = editForm.roleInStore;
       payload.commissionRate = editForm.commissionRate ? parseInt(editForm.commissionRate) : 0;
-      if (editForm.distributionMethod === "pourcentage") payload.leadPercentage = parseInt(editForm.leadPercentage) || 50;
-      if (editForm.distributionMethod === "produit") payload.allowedProductIds = editForm.allowedProductIds;
-      if (editForm.distributionMethod === "region") payload.allowedRegions = editForm.allowedRegions;
+      payload.leadPercentage = parseInt(editForm.leadPercentage) || 50;
+      payload.allowedProductIds = editForm.allowedProductIds;
+      payload.allowedRegions = editForm.allowedRegions;
     }
     updateAgentMutation.mutate({ agentId: editingAgent.id, payload });
   };
@@ -370,12 +372,13 @@ export default function Team() {
       } else {
         payload.paymentType = formData.paymentType;
         payload.paymentAmount = formData.paymentAmount ? Math.round(parseFloat(formData.paymentAmount) * 100) : 0;
-        payload.distributionMethod = formData.distributionMethod;
+        // distributionMethod is configured per-MAGASIN now. Always send all
+        // per-agent rule values so any magasin can pick its own strategy.
         payload.roleInStore = formData.roleInStore;
         payload.commissionRate = formData.commissionRate ? parseInt(formData.commissionRate) : 0;
-        if (formData.distributionMethod === "pourcentage") payload.leadPercentage = parseInt(formData.leadPercentage) || 50;
-        if (formData.distributionMethod === "produit") payload.allowedProductIds = formData.allowedProductIds;
-        if (formData.distributionMethod === "region") payload.allowedRegions = formData.allowedRegions;
+        payload.leadPercentage = parseInt(formData.leadPercentage) || 50;
+        payload.allowedProductIds = formData.allowedProductIds;
+        payload.allowedRegions = formData.allowedRegions;
       }
       await createAgent.mutateAsync(payload);
       toast({ title: "Membre ajouté", description: `${formData.username} a été ajouté avec succès` });
@@ -663,23 +666,46 @@ export default function Team() {
                   <p className="text-xs text-muted-foreground">Round Robin: les commandes sont assignées automatiquement aux agents actifs à tour de rôle.</p>
                 )}
 
-                {formData.distributionMethod === "pourcentage" && (
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center border rounded-lg overflow-hidden bg-background">
-                      <span className="px-3 py-2.5 text-sm font-bold bg-muted text-muted-foreground border-r">%</span>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={formData.leadPercentage}
-                        onChange={e => setFormData(d => ({ ...d, leadPercentage: e.target.value }))}
-                        className="border-none shadow-none h-10 w-32 focus-visible:ring-0 text-sm"
-                        placeholder="50"
-                      />
+                {formData.distributionMethod === "pourcentage" && (() => {
+                  const otherAgentsSum = (agents || [])
+                    .filter((a: any) => a.role === 'agent')
+                    .reduce((sum: number, a: any) => {
+                      const setting = (agentSettings as any[]).find((s: any) => s.agentId === a.id);
+                      return sum + (setting?.leadPercentage || 0);
+                    }, 0);
+                  const newValue = parseInt(formData.leadPercentage) || 0;
+                  const total = otherAgentsSum + newValue;
+                  const isOk = total >= 99 && total <= 101;
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center border rounded-lg overflow-hidden bg-background">
+                          <span className="px-3 py-2.5 text-sm font-bold bg-muted text-muted-foreground border-r">%</span>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={formData.leadPercentage}
+                            onChange={e => setFormData(d => ({ ...d, leadPercentage: e.target.value }))}
+                            className="border-none shadow-none h-10 w-32 focus-visible:ring-0 text-sm"
+                            placeholder="50"
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">% des nouveaux leads sera assigné à cet agent.</p>
+                      </div>
+                      <p
+                        className={cn("text-xs font-semibold", isOk ? "text-green-600" : "text-red-600")}
+                        data-testid="text-percentage-sum-create"
+                      >
+                        Total des pourcentages des agents : {total}%
+                        {!isOk && " — devrait être 100%"}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">
+                        S'applique aux magasins en mode « Pourcentage ». La méthode de distribution se configure dans Magasins.
+                      </p>
                     </div>
-                    <p className="text-xs text-muted-foreground">% des nouveaux leads sera assigné à cet agent.</p>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {formData.distributionMethod === "produit" && (
                   <div className="space-y-2">
@@ -851,14 +877,16 @@ export default function Team() {
                   <TableCell>
                     {agent.role === 'agent' ? (
                       <div className="text-xs space-y-1">
-                        <Badge variant="outline" className="text-[10px] bg-gray-50 text-gray-600 border-gray-200 capitalize">{agent.distributionMethod || 'auto'}</Badge>
-                        {agent.distributionMethod === 'pourcentage' && setting && (
-                          <div className="flex items-center gap-1 text-muted-foreground">
+                        {/* Per-agent rule values configured in this magasin.
+                            The active method is chosen on the magasin row, so we
+                            just show whatever rule values exist for this agent. */}
+                        {setting && typeof setting.leadPercentage === 'number' && setting.leadPercentage > 0 && (
+                          <div className="flex items-center gap-1 text-muted-foreground" data-testid={`pct-agent-${agent.id}`}>
                             <Percent className="w-3 h-3" />
                             <span>{setting.leadPercentage}%</span>
                           </div>
                         )}
-                        {agent.distributionMethod === 'region' && setting && (() => {
+                        {setting && (() => {
                           try {
                             const regions: string[] = JSON.parse(setting.allowedRegions || '[]');
                             if (regions.length === 0) return null;
@@ -885,6 +913,13 @@ export default function Team() {
                             );
                           } catch { return null; }
                         })()}
+                        {(!setting || (
+                          (!setting.leadPercentage || setting.leadPercentage === 0) &&
+                          (!setting.allowedRegions || setting.allowedRegions === '[]') &&
+                          (!setting.allowedProductIds || setting.allowedProductIds === '[]')
+                        )) && (
+                          <span className="text-[10px] text-muted-foreground italic">Aucune règle</span>
+                        )}
                       </div>
                     ) : <span className="text-xs text-muted-foreground">-</span>}
                   </TableCell>
@@ -1164,20 +1199,43 @@ export default function Team() {
                       </button>
                     ))}
                   </div>
-                  {editForm.distributionMethod === "pourcentage" && (
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={editForm.leadPercentage}
-                        onChange={e => setEditForm(d => ({ ...d, leadPercentage: e.target.value }))}
-                        className="w-24 h-9"
-                        data-testid="input-edit-lead-percentage"
-                      />
-                      <span className="text-sm text-muted-foreground">% des leads assignés</span>
-                    </div>
-                  )}
+                  {editForm.distributionMethod === "pourcentage" && (() => {
+                    const otherAgentsSum = (agents || [])
+                      .filter((a: any) => a.role === 'agent' && a.id !== editingAgent.id)
+                      .reduce((sum: number, a: any) => {
+                        const setting = (agentSettings as any[]).find((s: any) => s.agentId === a.id);
+                        return sum + (setting?.leadPercentage || 0);
+                      }, 0);
+                    const newValue = parseInt(editForm.leadPercentage) || 0;
+                    const total = otherAgentsSum + newValue;
+                    const isOk = total >= 99 && total <= 101;
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={editForm.leadPercentage}
+                            onChange={e => setEditForm(d => ({ ...d, leadPercentage: e.target.value }))}
+                            className="w-24 h-9"
+                            data-testid="input-edit-lead-percentage"
+                          />
+                          <span className="text-sm text-muted-foreground">% des leads assignés</span>
+                        </div>
+                        <p
+                          className={cn("text-xs font-semibold", isOk ? "text-green-600" : "text-red-600")}
+                          data-testid="text-percentage-sum-edit"
+                        >
+                          Total des pourcentages des agents : {total}%
+                          {!isOk && " — devrait être 100%"}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">
+                          S'applique aux magasins en mode « Pourcentage ». La méthode se configure dans Magasins.
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 

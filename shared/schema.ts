@@ -30,6 +30,11 @@ export const stores = pgTable("stores", {
   services: jsonb("services").$type<string[]>().default([]),
   linkedCarriers: jsonb("linked_carriers").$type<string[]>().default([]),
   linkedPlatforms: jsonb("linked_platforms").$type<string[]>().default([]),
+  // Per-magasin distribution method. Each magasin in the same account can use
+  // a different rule ('auto' | 'pourcentage' | 'produit' | 'region'). The
+  // engine reads THIS field first; users.distributionMethod is kept only as
+  // legacy fallback when no magasin context is supplied.
+  distributionMethod: text("distribution_method").default("auto"),
   // Updated whenever distribution method, leadPercentage, agent linking, or
   // role-in-store changes for this magasin. getNextAgent counts only orders
   // created AFTER this timestamp — so percentage rebalances are not poisoned

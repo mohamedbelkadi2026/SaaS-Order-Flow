@@ -1,0 +1,87 @@
+CRITICAL FIX — Lead percentages (50/25/25) are completely ignored, distribution still falls back to round-robin
+Real-world evidence (from my screenshots):
+
+Configured: naima 25%, khawla 50%, fatima 25%
+Actual result on 16 assigned orders: naima 4 (25%), khawla 10 (62.5%), fatima 2 (12.5%)
+Khawla took 10 orders out of 16 when she should have taken 8. The percentages are not being respected at all — the engine silently falls back to round-robin / auto.
+
+
+ROOT CAUSE — Two interlocking bugs
+Bug A: distributionMethod is being saved on the wrong row.
+In client/src/pages/team.tsx (line 340) and the PATCH handler in server/routes.ts (line ~4358), when an admin sets the distribution method to "pourcentage" on an agent, the code writes:
+tsuserPayload.distributionMethod = data.distributionMethod;  // server/routes.ts:4358
+await storage.updateUser(userId, userPayload);             // ← writes to the AGENT's user row
+But getNextAgent reads distributionMethod from the store owner, not from the agent (server/storage.ts:1903-1912):
+tsconst ownerId = storeData[0]?.ownerId || null;
+const [owner] = await db.select({ distributionMethod: users.distributionMethod })
+  .from(users).where(eq(users.id, ownerId)).limit(1);
+distMethod = owner?.distributionMethod || 'auto';
+So the admin sets "pourcentage" on the agent → owner's row stays "auto" → engine reads "auto" → percentage logic is never executed → silent round-robin → percentages ignored. This is exactly what the screenshots show.
+Bug B: distributionMethod is global per-account, not per-magasin.
+This is a public SaaS — every user runs multiple magasins. A single global distributionMethod on the owner's row means a user cannot say "Magasin 1 = pourcentage 50/25/25" while "Magasin 2 = round-robin". This is a hard blocker for multi-magasin onboarding.
+
+FIX — Move distributionMethod to the magasin level
+Step 1 — Schema change
+In shared/schema.ts, on the stores table (the magasins table), add the field next to the existing magasin config columns:
+tsdistributionMethod: text("distribution_method").notNull().default("auto"),
+//   'auto' | 'pourcentage' | 'produit' | 'region'
+Run:
+bashnpm run db:push
+Step 2 — Read distribution method from the magasin, not the owner
+In server/storage.ts, inside getNextAgent, replace the owner-lookup block (around lines 1900-1914) with a magasin-first lookup that falls back to the account-level legacy value only when no magasin context is supplied:
+ts// Resolve distribution method — prefer per-magasin setting, fallback to owner (legacy)
+let distMethod: string = 'auto';
+if (magasinId) {
+  const [magasinRow] = await db
+    .select({ distributionMethod: stores.distributionMethod })
+    .from(stores).where(eq(stores.id, magasinId)).limit(1);
+  if (magasinRow?.distributionMethod) distMethod = magasinRow.distributionMethod;
+} else {
+  // Legacy fallback: read from owner's user row (back-compat for old data)
+  const [storeData] = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
+  const ownerId = storeData?.ownerId || null;
+  if (ownerId) {
+    const [owner] = await db
+      .select({ distributionMethod: users.distributionMethod })
+      .from(users).where(eq(users.id, ownerId)).limit(1);
+    distMethod = owner?.distributionMethod || 'auto';
+  }
+}
+
+// lastAssignedAgentId still comes from the parent store row
+const [storeRow] = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
+const lastAgentId = storeRow?.lastAssignedAgentId || null;
+
+console.log(`[DIST] store=${storeId} magasin=${magasinId ?? 'none'} method=${distMethod} eligible=[${eligibleAgents.map(a => a.id).join(',')}]`);
+Step 3 — Persist distributionMethod on the magasin from the Magasins modal
+In the Magasins create/edit form (client/src/pages/magasins.tsx), add a small selector under "Configuration de livraison":
+tsx<div className="space-y-1.5">
+  <Label className="text-xs text-muted-foreground">Méthode de distribution</Label>
+  <Select value={form.distributionMethod || 'auto'} onValueChange={(v) => setForm(d => ({ ...d, distributionMethod: v }))}>
+    <SelectTrigger><SelectValue /></SelectTrigger>
+    <SelectContent>
+      <SelectItem value="auto">Auto (round-robin)</SelectItem>
+      <SelectItem value="pourcentage">Pourcentage (par agent)</SelectItem>
+      <SelectItem value="produit">Par produit</SelectItem>
+      <SelectItem value="region">Par région</SelectItem>
+    </SelectContent>
+  </Select>
+</div>
+Add distributionMethod to the StoreForm type and to defaultForm. Include it in buildPayload (line ~577-592), in storeToForm (line ~563), and in the create/update API endpoints in server/routes.ts (around lines 5094-5118).
+Step 4 — Stop writing distributionMethod to agent rows
+In client/src/pages/team.tsx, remove the payload.distributionMethod = editForm.distributionMethod; line (around line 340) — it's a leftover. The team modal should keep leadPercentage, roleInStore, allowedProductIds, allowedRegions, commissionRate (all per-magasin agent settings), but NOT distributionMethod.
+In server/routes.ts PATCH handlers (around lines 4307, 4358, 4324), remove every line that copies distributionMethod into userPayload. Distribution method now lives on the magasin only.
+Step 5 — Validate that percentages on agents in a magasin sum to 100
+In the team agent-edit modal, when distributionMethod === 'pourcentage', show a small live indicator below the percentage input:
+
+"Total des pourcentages dans ce magasin : X%" — green when between 99 and 101, red otherwise.
+
+Compute by summing leadPercentage across all agents in that magasin (you can pass them as a prop from the parent). This is informational — the server-side normalization in getNextAgent already handles non-100 sums by scaling, but the warning helps users catch mistakes.
+Step 6 — Reset today's assignment counters AFTER fixing percentages
+The old orders (the 16 already in the screenshot) were assigned under the broken logic. They will keep skewing the today-window calculation in getNextAgent because the percentage engine reads agentCounts from orders.createdAt >= todayStart.
+Add a button in the Team page header: "Réinitialiser le compteur du jour". It should:
+
+Clear lastAssignedAgentId on the relevant magasin (set to null)
+Be admin-only
+
+This does NOT delete orders. It just clears the "memory" of past assignments so the next batch is distributed fresh against the configured percentages.

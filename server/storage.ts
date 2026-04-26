@@ -1899,22 +1899,43 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // ── Get store + owner's distribution method + last assigned agent ──
-    // distributionMethod is configured on the store OWNER's user record
-    // (stores.ownerId → users.distributionMethod). Falls back to 'auto'.
-    const storeData = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
-    const ownerId = storeData[0]?.ownerId || null;
+    // ── Resolve distribution method ────────────────────────────────────────
+    // Prefer the per-MAGASIN setting (stores.distributionMethod for the
+    // specific magasin handling this order). Fallback chain:
+    //   1. magasin.distributionMethod (when magasinId is supplied)
+    //   2. parent store.distributionMethod (no magasin context)
+    //   3. owner.distributionMethod (LEGACY — pre-multi-magasin accounts)
+    //   4. 'auto'
     let distMethod: string = 'auto';
-    if (ownerId) {
-      const [owner] = await db
-        .select({ distributionMethod: users.distributionMethod })
-        .from(users)
-        .where(eq(users.id, ownerId))
+    if (magasinId) {
+      const [magasinRow] = await db
+        .select({ distributionMethod: stores.distributionMethod })
+        .from(stores)
+        .where(eq(stores.id, magasinId))
         .limit(1);
-      distMethod = owner?.distributionMethod || 'auto';
+      if (magasinRow?.distributionMethod) distMethod = magasinRow.distributionMethod;
+    } else {
+      const [storeRow] = await db
+        .select({ distributionMethod: stores.distributionMethod, ownerId: stores.ownerId })
+        .from(stores)
+        .where(eq(stores.id, storeId))
+        .limit(1);
+      if (storeRow?.distributionMethod && storeRow.distributionMethod !== 'auto') {
+        distMethod = storeRow.distributionMethod;
+      } else if (storeRow?.ownerId) {
+        const [owner] = await db
+          .select({ distributionMethod: users.distributionMethod })
+          .from(users)
+          .where(eq(users.id, storeRow.ownerId))
+          .limit(1);
+        distMethod = owner?.distributionMethod || storeRow.distributionMethod || 'auto';
+      }
     }
-    const lastAgentId = storeData[0]?.lastAssignedAgentId || null;
-    console.log(`[DIST] store=${storeId} magasin=${magasinId ?? 'none'} owner=${ownerId} method=${distMethod} eligible=[${eligibleAgents.map(a => a.id).join(',')}]`);
+
+    // lastAssignedAgentId still lives on the parent store row (round-robin pointer).
+    const [storeRow] = await db.select({ lastAssignedAgentId: stores.lastAssignedAgentId }).from(stores).where(eq(stores.id, storeId)).limit(1);
+    const lastAgentId = storeRow?.lastAssignedAgentId || null;
+    console.log(`[DIST] store=${storeId} magasin=${magasinId ?? 'none'} method=${distMethod} eligible=[${eligibleAgents.map(a => a.id).join(',')}]`);
 
     if (distMethod === 'auto' || !distMethod) {
       // PURE ROUND-ROBIN: next agent after lastAssignedAgent

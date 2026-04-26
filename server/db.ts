@@ -230,6 +230,79 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] stores.distribution_epoch ensured ✅');
 
+    // ── 6e. stores.distribution_method — per-magasin distribution rule ──────
+    // Previously this lived on users.distribution_method (account-wide). We
+    // move it to the magasin level so a single account can run different
+    // strategies per magasin.
+    //
+    // CRITICAL: column is added WITHOUT a default first. If we added it with
+    // DEFAULT 'auto', existing rows would be back-filled to 'auto' immediately
+    // and the subsequent IS NULL backfill from owner would never fire — so
+    // legacy users with owner.distribution_method='pourcentage' would silently
+    // lose their config. The correct sequence is:
+    //   1. ADD COLUMN (no default) → existing rows get NULL
+    //   2. UPDATE FROM owner where NULL → legacy values copied
+    //   3. UPDATE remaining NULLs to 'auto' → orphans handled
+    //   4. ALTER … SET DEFAULT 'auto' → future inserts get 'auto'
+    // Step 2/3 are idempotent on re-runs because no rows are NULL anymore.
+    await pool.query(`
+      ALTER TABLE public.stores
+        ADD COLUMN IF NOT EXISTS distribution_method TEXT;
+    `);
+    await pool.query(`
+      UPDATE public.stores s
+      SET distribution_method = COALESCE(u.distribution_method, 'auto')
+      FROM public.users u
+      WHERE s.owner_id = u.id
+        AND s.distribution_method IS NULL;
+    `);
+    await pool.query(`
+      UPDATE public.stores SET distribution_method = 'auto' WHERE distribution_method IS NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE public.stores ALTER COLUMN distribution_method SET DEFAULT 'auto';
+    `);
+    console.log('[Migration] stores.distribution_method ensured ✅ (back-filled from owner)');
+
+    // ── 6e-bis. one-shot corrective backfill ────────────────────────────────
+    // An earlier version of the migration above used `DEFAULT 'auto'` on the
+    // ADD COLUMN, which made existing rows non-NULL immediately and caused the
+    // "IS NULL" backfill to silently no-op. Any DB that already ran that
+    // broken version has stores.distribution_method='auto' even when the
+    // owner had set 'pourcentage' / 'produit' / 'region'. This block repairs
+    // those stores exactly once, guarded by a tiny migration-state table so
+    // it never runs twice (which would clobber a user's deliberate later
+    // choice of 'auto' on a magasin).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS public._migration_state (
+        key         TEXT PRIMARY KEY,
+        applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    const repairKey = 'stores_distmethod_repair_v1';
+    const { rows: alreadyRun } = await pool.query(
+      `SELECT 1 FROM public._migration_state WHERE key = $1 LIMIT 1`,
+      [repairKey],
+    );
+    if (alreadyRun.length === 0) {
+      const repaired = await pool.query(`
+        UPDATE public.stores s
+        SET distribution_method = u.distribution_method
+        FROM public.users u
+        WHERE s.owner_id = u.id
+          AND s.distribution_method = 'auto'
+          AND u.distribution_method IS NOT NULL
+          AND u.distribution_method <> 'auto';
+      `);
+      await pool.query(
+        `INSERT INTO public._migration_state (key) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [repairKey],
+      );
+      console.log(`[Migration] stores.distribution_method one-shot repair ✅ (${repaired.rowCount ?? 0} stores reconciled from owner)`);
+    } else {
+      console.log('[Migration] stores.distribution_method one-shot repair already applied (skipped)');
+    }
+
     // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.email_verification_codes (

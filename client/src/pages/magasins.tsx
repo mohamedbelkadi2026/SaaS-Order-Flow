@@ -39,6 +39,8 @@ const SERVICES_OPTIONS = [
   { value: "suivi", label: "Suivi" },
 ];
 
+type DistMethod = "auto" | "pourcentage" | "produit" | "region";
+
 interface StoreForm {
   name: string;
   phone: string;
@@ -50,12 +52,14 @@ interface StoreForm {
   isRamassage: boolean;
   whatsappTemplate: string;
   packagingCost: number;
+  distributionMethod: DistMethod;
 }
 
 const defaultForm: StoreForm = {
   name: "", phone: "0600000000", website: "https://example.com",
   facebook: "", instagram: "", canOpen: true, isStock: false, isRamassage: true,
   whatsappTemplate: "", packagingCost: 0,
+  distributionMethod: "auto",
 };
 
 // ---- Reusable inline multi-select dropdown ----
@@ -446,6 +450,21 @@ function StoreModal({
                 <Truck className="w-4 h-4" />
                 <h3 className="font-semibold text-base">Configuration de livraison</h3>
               </div>
+              <div className="space-y-1.5 mb-4">
+                <Label className="text-xs text-muted-foreground">Méthode de distribution des commandes</Label>
+                <select
+                  data-testid="select-distribution-method"
+                  value={form.distributionMethod}
+                  onChange={e => setForm(f => ({ ...f, distributionMethod: e.target.value as DistMethod }))}
+                  className="w-full h-10 px-3 rounded-lg border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                >
+                  <option value="auto">Auto (round-robin)</option>
+                  <option value="pourcentage">Pourcentage (par agent)</option>
+                  <option value="produit">Par produit</option>
+                  <option value="region">Par région</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground">Définit comment les commandes de CE magasin sont assignées aux agents.</p>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label className="text-xs text-muted-foreground">Société de livraison</Label>
@@ -595,6 +614,9 @@ export default function Magasins() {
     isRamassage: store.isRamassage === 1,
     whatsappTemplate: store.whatsappTemplate || "",
     packagingCost: Math.round((store.packagingCost || 0) / 100),
+    distributionMethod: (["auto", "pourcentage", "produit", "region"].includes(store.distributionMethod)
+      ? store.distributionMethod
+      : "auto") as DistMethod,
   });
 
   // Build payload including multi-select state
@@ -613,6 +635,7 @@ export default function Magasins() {
     services: selectedServices,
     linkedCarriers: selectedCarriers,
     linkedPlatforms: selectedPlatforms,
+    distributionMethod: f.distributionMethod,
   });
 
   const handleLogoUpload = async (storeId: number, base64: string) => {

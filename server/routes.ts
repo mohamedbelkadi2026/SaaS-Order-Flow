@@ -1596,19 +1596,22 @@ export async function registerRoutes(
         buyerCode: (userRole === 'media_buyer' && data.buyerCode) ? data.buyerCode.trim().toUpperCase() : null,
       } as any);
 
-      // Save store-specific agent settings (role, distribution rules) — agents only
+      // Save store-specific agent settings (role, distribution rules) — agents only.
+      // Persist ALL rule values unconditionally — distribution method now lives
+      // on the magasin (stores.distributionMethod), not on the agent. Whichever
+      // method a magasin picks, the corresponding rule will already be set.
       if (userRole === 'agent') {
         const settingsPayload: any = {
           roleInStore: (req.body.roleInStore as string) || "confirmation",
         };
-        const distMethod = data.distributionMethod || "auto";
-        if (distMethod === "pourcentage") {
-          settingsPayload.leadPercentage = req.body.leadPercentage || 100;
+        if (typeof req.body.leadPercentage === 'number' || typeof req.body.leadPercentage === 'string') {
+          const lp = parseInt(String(req.body.leadPercentage));
+          if (!isNaN(lp)) settingsPayload.leadPercentage = lp;
         }
-        if (distMethod === "produit" && Array.isArray(req.body.allowedProductIds)) {
+        if (Array.isArray(req.body.allowedProductIds)) {
           settingsPayload.allowedProductIds = JSON.stringify(req.body.allowedProductIds);
         }
-        if (distMethod === "region" && Array.isArray(req.body.allowedRegions)) {
+        if (Array.isArray(req.body.allowedRegions)) {
           settingsPayload.allowedRegions = JSON.stringify(req.body.allowedRegions);
         }
         if (typeof req.body.commissionRate === 'number') {
@@ -4382,7 +4385,10 @@ export async function registerRoutes(
       if (data.phone !== undefined) userPayload.phone = data.phone;
       if (data.paymentType !== undefined) userPayload.paymentType = data.paymentType;
       if (data.paymentAmount !== undefined) userPayload.paymentAmount = data.paymentAmount;
-      if (data.distributionMethod !== undefined) userPayload.distributionMethod = data.distributionMethod;
+      // NOTE: distributionMethod is intentionally NOT copied to the user row.
+      // It now lives on stores.distributionMethod (per-magasin). Any value sent
+      // here from older clients is ignored — the magasins endpoint is the
+      // single source of truth.
       if (data.isActive !== undefined) userPayload.isActive = data.isActive;
       if (data.buyerCode !== undefined) userPayload.buyerCode = data.buyerCode ? data.buyerCode.trim().toUpperCase() : null;
 
@@ -4391,8 +4397,11 @@ export async function registerRoutes(
       }
 
       // Did anything that affects distribution change? Track for epoch bump below.
+      // distributionMethod is intentionally OMITTED — it now lives on the
+      // magasin row, not on the user. Stale clients that still send it will
+      // be ignored upstream (no-op in userPayload) and we no longer trigger
+      // a global account-wide reset from this endpoint.
       const distAffected =
-        data.distributionMethod !== undefined ||
         data.leadPercentage !== undefined ||
         data.roleInStore !== undefined ||
         data.allowedProductIds !== undefined ||
@@ -4413,22 +4422,11 @@ export async function registerRoutes(
 
       // Bump distribution_epoch on every magasin affected by this change so the
       // percentage engine doesn't poison fresh % targets with historical counts.
-      if (distAffected) {
-        if (data.distributionMethod !== undefined) {
-          // Account-wide method change → bump every owned magasin.
-          try {
-            const ownedMagasins = await storage.getStoresByOwner(admin.id);
-            for (const m of ownedMagasins) await storage.bumpDistributionEpoch(m.id);
-            console.log(`[DIST-EPOCH] distributionMethod change → bumped ${ownedMagasins.length} magasin(s)`);
-          } catch (err) {
-            console.warn('[DIST-EPOCH] bump failed (non-fatal):', err);
-          }
-        } else if (agent.role === 'agent') {
-          // Agent-level change → bump magasins where this agent is linked
-          // (incl. legacy magasins with empty agentIds = "all agents").
-          const n = await bumpAgentRelatedEpochs(admin.id, userId);
-          console.log(`[DIST-EPOCH] agent ${userId} settings change → bumped ${n} magasin(s)`);
-        }
+      // distributionMethod is no longer a per-user concept (now per-magasin),
+      // so the only path here is agent-level rule changes.
+      if (distAffected && agent.role === 'agent') {
+        const n = await bumpAgentRelatedEpochs(admin.id, userId);
+        console.log(`[DIST-EPOCH] agent ${userId} settings change → bumped ${n} magasin(s)`);
       }
 
       const updated = await storage.getUserById(userId);
@@ -5194,8 +5192,10 @@ export async function registerRoutes(
   });
 
   app.post("/api/magasins", requireAdmin, async (req, res) => {
-    const { name, phone, website, facebook, instagram, logoUrl, canOpen, isStock, isRamassage, whatsappTemplate, agentIds, services, linkedCarriers, linkedPlatforms } = req.body;
+    const { name, phone, website, facebook, instagram, logoUrl, canOpen, isStock, isRamassage, whatsappTemplate, agentIds, services, linkedCarriers, linkedPlatforms, distributionMethod } = req.body;
     if (!name) return res.status(400).json({ message: "Nom requis" });
+    const allowedDistMethods = ['auto', 'pourcentage', 'produit', 'region'];
+    const distM = allowedDistMethods.includes(distributionMethod) ? distributionMethod : 'auto';
     const newStore = await storage.createStore({
       name, ownerId: req.user!.id,
       phone: phone || null, website: website || null, facebook: facebook || null,
@@ -5203,7 +5203,8 @@ export async function registerRoutes(
       isStock: isStock ?? 0, isRamassage: isRamassage ?? 0, whatsappTemplate: whatsappTemplate || null,
       agentIds: agentIds || [], services: services || [],
       linkedCarriers: linkedCarriers || [], linkedPlatforms: linkedPlatforms || [],
-    });
+      distributionMethod: distM,
+    } as any);
     await storage.createSubscription({ storeId: newStore.id, plan: 'starter', monthlyLimit: 1500, pricePerMonth: 20000, currentMonthOrders: 0, isActive: 1 });
     res.json(newStore);
   });
@@ -5219,16 +5220,22 @@ export async function registerRoutes(
       'name', 'phone', 'website', 'facebook', 'instagram', 'logoUrl',
       'canOpen', 'isStock', 'isRamassage', 'whatsappTemplate', 'packagingCost',
       'agentIds', 'services', 'linkedCarriers', 'linkedPlatforms',
+      'distributionMethod',
     ];
+    const allowedDistMethods = ['auto', 'pourcentage', 'produit', 'region'];
     const updateData: any = {};
     for (const key of allowedFields) {
       if (req.body[key] !== undefined) updateData[key] = req.body[key];
     }
+    if (updateData.distributionMethod !== undefined && !allowedDistMethods.includes(updateData.distributionMethod)) {
+      return res.status(400).json({ message: "Méthode de distribution invalide" });
+    }
     const updated = await storage.updateStore(storeId, updateData);
 
-    // If the eligible-agent pool or platform linking changed, bump the magasin's
-    // distribution_epoch so fresh percentages aren't poisoned by historical orders.
-    const distFieldsChanged = ['agentIds', 'linkedPlatforms'].some(f => req.body[f] !== undefined);
+    // If the eligible-agent pool, platform linking, OR the per-magasin
+    // distribution method changed, bump the magasin's distribution_epoch so
+    // fresh percentages aren't poisoned by historical orders.
+    const distFieldsChanged = ['agentIds', 'linkedPlatforms', 'distributionMethod'].some(f => req.body[f] !== undefined);
     if (distFieldsChanged) {
       try {
         await storage.bumpDistributionEpoch(storeId);
