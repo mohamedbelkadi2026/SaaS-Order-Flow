@@ -1880,10 +1880,22 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // ── Get store distribution method + last assigned agent ──
+    // ── Get store + owner's distribution method + last assigned agent ──
+    // distributionMethod is configured on the store OWNER's user record
+    // (stores.ownerId → users.distributionMethod). Falls back to 'auto'.
     const storeData = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
-    const distMethod = storeData[0]?.distributionMethod || 'auto';
+    const ownerId = storeData[0]?.ownerId || null;
+    let distMethod: string = 'auto';
+    if (ownerId) {
+      const [owner] = await db
+        .select({ distributionMethod: users.distributionMethod })
+        .from(users)
+        .where(eq(users.id, ownerId))
+        .limit(1);
+      distMethod = owner?.distributionMethod || 'auto';
+    }
     const lastAgentId = storeData[0]?.lastAssignedAgentId || null;
+    console.log(`[DIST] store=${storeId} owner=${ownerId} method=${distMethod}`);
 
     if (distMethod === 'auto' || !distMethod) {
       // PURE ROUND-ROBIN: next agent after lastAssignedAgent
