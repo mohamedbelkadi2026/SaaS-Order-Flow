@@ -1,0 +1,123 @@
+🚨 STOP — Don't write more code. The database migration was never applied. That's the only reason percentages don't work.
+Proof (I read your backup.sql line by line)
+The backup.sql you shipped (timestamped 2026-04-26 20:14, AFTER all the previous fixes) shows the production database is still on the OLD schema:
+sql-- Line 897 — stores table is missing 6 columns:
+CREATE TABLE public.stores (
+    id, name, owner_id, last_assigned_agent_id, phone, website, ...
+    -- ❌ NO distribution_method
+    -- ❌ NO distribution_epoch
+    -- ❌ NO agent_ids
+    -- ❌ NO services
+    -- ❌ NO linked_carriers
+    -- ❌ NO linked_platforms
+);
+
+-- Line 527 — orders table is missing magasin_id:
+CREATE TABLE public.orders (
+    id, store_id, order_number, ...
+    -- ❌ NO magasin_id
+);
+
+-- Line 1482 — store_agent_settings has only ONE row from March:
+-- agent_id=2, store_id=1, lead_percentage=100
+-- (you have 3 agents in the UI but only 1 setting row in DB — this is unrelated, just shows the data is stale)
+The TypeScript code I gave you in previous prompts is correct. The Drizzle schema in shared/schema.ts is correct. But none of those columns exist in the actual Postgres database, so:
+
+UPDATE stores SET distribution_method = 'pourcentage' → silently writes nothing useful (column doesn't exist → query fails OR Drizzle skips the field)
+getNextAgent reads magasin.distributionMethod → gets undefined → falls back to 'auto' → pure round-robin
+getNextAgent reads magasin.distributionEpoch → gets undefined → window resets to "today 00:00" → counts polluted by old orders
+"Réinitialiser la distribution" runs UPDATE stores SET distribution_epoch = now() → fails silently (column doesn't exist)
+The percentage block runs WHERE orders.magasin_id = ? → Postgres error OR returns 0 always
+
+That's why nothing changed even after the previous fix. The code was right. The schema wasn't.
+What to do — apply the migration NOW
+Step 1 — Open the Replit Database tab and run THIS exact SQL
+Paste it into the SQL runner. Don't skip any line. Don't use npm run db:push — Drizzle's diff has been wrong on this DB before, that's how we got here. Use raw SQL:
+sqlBEGIN;
+
+-- 1. stores: per-magasin config columns
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_method text DEFAULT 'auto';
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_epoch timestamp DEFAULT now();
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS agent_ids jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS services jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_carriers jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_platforms jsonb DEFAULT '[]'::jsonb;
+
+-- 2. orders: scope new orders to a magasin
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- 3. backfill: every existing magasin gets a fresh epoch right now
+UPDATE public.stores SET distribution_epoch = now() WHERE distribution_epoch IS NULL;
+
+-- 4. index for the percentage count query (fast even with 100k+ orders)
+CREATE INDEX IF NOT EXISTS idx_orders_assigned_magasin_created
+  ON public.orders (assigned_to_id, magasin_id, created_at);
+
+COMMIT;
+Step 2 — Verify the migration worked (run this immediately after)
+sql-- This MUST return 6 rows. If it returns less, the ALTER TABLE didn't run.
+SELECT column_name FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'stores'
+  AND column_name IN ('distribution_method','distribution_epoch','agent_ids','services','linked_carriers','linked_platforms')
+ORDER BY column_name;
+
+-- This MUST return 1 row.
+SELECT column_name FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'magasin_id';
+If either query returns fewer rows than expected, stop and investigate before going further — the migration silently failed (permissions, transaction rollback, etc).
+Step 3 — Configure the magasin and reset the epoch
+sql-- See what magasins you have
+SELECT id, name, owner_id, distribution_method, distribution_epoch FROM public.stores;
+
+-- For each magasin where you want pourcentage distribution, set it explicitly:
+UPDATE public.stores
+SET distribution_method = 'pourcentage',
+    distribution_epoch = now(),
+    last_assigned_agent_id = NULL
+WHERE id = <your magasin id>;
+
+-- Confirm:
+SELECT id, name, distribution_method, distribution_epoch FROM public.stores WHERE id = <your magasin id>;
+Step 4 — Save percentages from the UI again
+The current store_agent_settings table has only ONE row (from March). Open the Team page and re-save the percentages for naima (25), khawla (50), fatima (25). After saving, run:
+sqlSELECT agent_id, store_id, role_in_store, lead_percentage
+FROM public.store_agent_settings
+WHERE store_id = <your storeId>
+ORDER BY agent_id;
+You should now see THREE rows with the right percentages. If you still only see one row, the team modal isn't iterating properly — but I'd bet the migration step alone fixes this once distribution_method is no longer null.
+Step 5 — Test with a fresh order
+After the migration is applied and percentages are saved, inject ONE test order for that magasin (manually from the dashboard or via webhook). Then immediately check:
+sql-- The new order MUST have magasin_id set
+SELECT id, order_number, store_id, magasin_id, assigned_to_id, created_at
+FROM public.orders
+ORDER BY id DESC LIMIT 5;
+
+-- And the server log must show:
+-- [DIST] store=X magasin=Y method=pourcentage eligible=[A,B,C]
+-- [DIST-%] window since=2026-04-26T... magasin=Y
+-- [DIST-%] agent=A target=25.0% ...
+-- [DIST-%] → Selected: ...
+If magasin_id is NULL on the new order, the webhook handler isn't passing integration.magasinId to createOrder. That's a code bug we'd then fix separately — but check this AFTER the migration, not before.
+If the log says method=auto instead of method=pourcentage, Step 3 is incomplete — re-run the UPDATE.
+Step 6 — Use the debug endpoint to confirm everything
+Hit this in your browser (logged in as admin):
+GET /api/_debug/distribution/<magasinId>
+You should see JSON like:
+json{
+  "magasin": {
+    "id": 1,
+    "name": "TajerGrow",
+    "distributionMethod": "pourcentage",
+    "distributionEpoch": "2026-04-26T22:30:00.000Z",
+    "agentIds": [2, 5, 7]
+  },
+  "perAgentSettings": [
+    { "agentId": 2, "leadPercentage": 25, "roleInStore": "both" },
+    { "agentId": 5, "leadPercentage": 50, "roleInStore": "both" },
+    { "agentId": 7, "leadPercentage": 25, "roleInStore": "both" }
+  ],
+  "countsSinceEpoch": []
+}
+If distributionMethod is "auto" here, Step 3 wasn't done. If perAgentSettings is empty or has wrong percentages, Step 4 wasn't done. If countsSinceEpoch shows old high counts, the epoch isn't being respected — re-run the UPDATE in Step 3.
+NO CODE CHANGES NEEDED
+Don't touch server/storage.ts, server/routes.ts, or shared/schema.ts for this round. The code is already correct. The fix is 100% on the database side — apply the SQL, restart the server, retest.
