@@ -56,7 +56,7 @@ export interface IStorage {
   deleteOrder(id: number, storeId: number): Promise<void>;
   bulkDeleteOrders(ids: number[], storeId: number): Promise<number>;
   createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order>;
-  updateOrderStatus(id: number, status: string): Promise<Order | undefined>;
+  updateOrderStatus(id: number, status: string, actorId?: number | null): Promise<Order | undefined>;
   assignOrder(id: number, agentId: number | null): Promise<Order | undefined>;
 
   getAdSpend(storeId: number, date?: string): Promise<AdSpendEntry[]>;
@@ -124,7 +124,7 @@ export interface IStorage {
   checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }>;
   checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }>;
 
-  getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
+  getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
 
   getAgentProducts(agentId: number): Promise<AgentProduct[]>;
   setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
@@ -702,15 +702,24 @@ export class DatabaseStorage implements IStorage {
   // Return statuses that restore stock when transitioning FROM delivered
   private readonly RETURN_STATUSES = new Set(['retourné', 'refused', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)', 'Annulé']);
 
-  async updateOrderStatus(id: number, status: string): Promise<Order | undefined> {
+  async updateOrderStatus(id: number, status: string, actorId?: number | null): Promise<Order | undefined> {
     return await db.transaction(async (tx) => {
       const [currentOrder] = await tx.select().from(orders).where(eq(orders.id, id));
       if (!currentOrder) return undefined;
 
       const prevStatus = currentOrder.status;
 
+      // Stamp last_action_at / last_action_by ONLY when a human acted (actorId
+      // is provided by the route handler). System-driven calls (webhooks,
+      // sync jobs, auto-confirmation) omit actorId and don't bump the stamp.
+      const setPayload: Record<string, any> = { status, updatedAt: new Date() };
+      if (actorId != null) {
+        setPayload.lastActionAt = new Date();
+        setPayload.lastActionBy = actorId;
+      }
+
       const [updated] = await tx.update(orders)
-        .set({ status, updatedAt: new Date() })
+        .set(setPayload)
         .where(eq(orders.id, id))
         .returning();
 
@@ -1099,8 +1108,16 @@ export class DatabaseStorage implements IStorage {
     return order;
   }
 
-  async updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined> {
-    const [updated] = await db.update(orders).set({ ...data, updatedAt: new Date() }).where(eq(orders.id, id)).returning();
+  async updateOrder(id: number, data: Partial<InsertOrder>, actorId?: number | null): Promise<Order | undefined> {
+    // Stamp last_action_at / last_action_by ONLY for human-driven mutations
+    // (route handler passes actorId = req.user.id). Webhooks / sync jobs /
+    // auto-confirmation omit it so they don't pollute the daily action count.
+    const setPayload: Record<string, any> = { ...data, updatedAt: new Date() };
+    if (actorId != null) {
+      setPayload.lastActionAt = new Date();
+      setPayload.lastActionBy = actorId;
+    }
+    const [updated] = await db.update(orders).set(setPayload).where(eq(orders.id, id)).returning();
     return updated;
   }
 
@@ -1622,16 +1639,41 @@ export class DatabaseStorage implements IStorage {
     return { isExpired, isLimitReached, isBlocked, reason, current: sub.currentMonthOrders, limit: effectiveLimit, plan: sub.plan };
   }
 
-  async getAgentPerformance(storeId: number): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
+  async getAgentPerformance(
+    storeId: number,
+    options?: { magasinId?: number | null; date?: string },
+  ): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
+    // Count agent ACTIONS taken on a given day (default: today, store local time
+    // assumed UTC for now). We group by `last_action_by` (the human who last
+    // touched the order) — NOT `assigned_to_id` — so the column reflects real
+    // work done that day, not the historical assignment pool.
+    //
+    // `magasinId` (optional) lets the Team page narrow stats to a single
+    // magasin so an owner can see "today, agent X handled N orders in
+    // magasin Y".
+    const dateStr = options?.date || new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const dayStart = new Date(`${dateStr}T00:00:00.000Z`);
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+    const conditions = [
+      eq(orders.storeId, storeId),
+      sql`${orders.lastActionBy} IS NOT NULL`,
+      sql`${orders.lastActionAt} >= ${dayStart}`,
+      sql`${orders.lastActionAt} < ${dayEnd}`,
+    ];
+    if (options?.magasinId != null) {
+      conditions.push(eq(orders.magasinId, options.magasinId));
+    }
+
     const result = await db.select({
-      agentId: orders.assignedToId,
+      agentId: orders.lastActionBy,
       total: count(),
       confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'))`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
     }).from(orders)
-      .where(and(eq(orders.storeId, storeId), sql`${orders.assignedToId} IS NOT NULL`))
-      .groupBy(orders.assignedToId);
+      .where(and(...conditions))
+      .groupBy(orders.lastActionBy);
 
     return result.map(r => ({
       agentId: r.agentId!,

@@ -453,6 +453,52 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] marketing_campaigns columns ensured ✅');
 
+    // ── orders.last_action_at / last_action_by — agent action tracking ────────
+    // Stamped on every human status/comment mutation (NOT on creation or
+    // auto-assign). Powers the Team page "Actions du jour" column so we count
+    // agent ACTIONS taken today (per-magasin filterable) instead of all-time
+    // assignments. Distribution math is untouched.
+    await client.query(`
+      ALTER TABLE public.orders
+        ADD COLUMN IF NOT EXISTS last_action_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS last_action_by INTEGER REFERENCES public.users(id);
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_last_action_by_at
+        ON public.orders (last_action_by, last_action_at);
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_magasin_last_action_at
+        ON public.orders (magasin_id, last_action_at);
+    `);
+    console.log('[Migration] orders.last_action_at / last_action_by ensured ✅');
+
+    // One-shot backfill so historical orders that were already actioned (i.e.
+    // status moved past 'nouveau') show up in the new "Actions du jour" view
+    // for the day they were last touched. Guarded so it never runs twice.
+    const backfillKey = 'orders_last_action_backfill_v1';
+    const { rows: backfillDone } = await pool.query(
+      `SELECT 1 FROM public._migration_state WHERE key = $1 LIMIT 1`,
+      [backfillKey],
+    );
+    if (backfillDone.length === 0) {
+      const backfilled = await pool.query(`
+        UPDATE public.orders
+        SET last_action_at = updated_at,
+            last_action_by = assigned_to_id
+        WHERE status <> 'nouveau'
+          AND last_action_at IS NULL
+          AND assigned_to_id IS NOT NULL;
+      `);
+      await pool.query(
+        `INSERT INTO public._migration_state (key) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [backfillKey],
+      );
+      console.log(`[Migration] orders.last_action_at one-shot backfill ✅ (${backfilled.rowCount ?? 0} orders stamped from updated_at)`);
+    } else {
+      console.log('[Migration] orders.last_action_at one-shot backfill already applied (skipped)');
+    }
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);

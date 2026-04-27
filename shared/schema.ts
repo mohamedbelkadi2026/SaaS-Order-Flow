@@ -139,6 +139,8 @@ export const orders = pgTable("orders", {
   wasAbandoned: integer("was_abandoned").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
+  lastActionAt: timestamp("last_action_at"),
+  lastActionBy: integer("last_action_by").references(() => users.id),
   pickupDate: timestamp("pickup_date"),
   carrierId: integer("carrier_id"),
   carrierName: text("carrier_name"),

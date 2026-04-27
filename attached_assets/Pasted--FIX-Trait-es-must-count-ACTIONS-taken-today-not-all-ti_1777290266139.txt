@@ -1,0 +1,161 @@
+🎯 FIX — "Traitées" must count ACTIONS taken today (not all-time orders) + show per-magasin
+My understanding of how the platform should behave
+There are TWO separate concepts that are currently conflated:
+1. Distribution math (getNextAgent): When I change percentages, the engine should rebalance from the moment of the change forward. Old orders should NOT influence the new distribution. This already works correctly via distributionEpoch — the engine reads windowStart = magasin.distributionEpoch and counts only orders created after it. Good.
+2. UI "Performance" column on the Team page: The "Traitées" number must show how many orders the agent took action on today (changed status, confirmed, etc.) — not the all-time count of orders ever assigned to them. The current code shows count(*) of all assigned orders ever, which is misleading and inflates as the platform ages.
+These two systems must NOT share the same counter — that was the source of all the confusion. Distribution uses its own epoch-windowed count internally; the UI display uses an action-based daily count.
+Files to change
+
+shared/schema.ts — track when an agent last acted on each order
+server/storage.ts — rewrite getAgentPerformance to count actions, optionally per-magasin
+server/routes.ts — accept optional ?magasinId=&date= query params
+client/src/pages/team.tsx — date picker + magasin filter + display
+
+
+Step 1 — Track agent actions properly
+Add a lastActionAt and lastActionBy column on orders. Every time an agent changes the status of an order (confirms, marks delivered, cancels, comments, etc.), set:
+tslastActionAt: new Date(),
+lastActionBy: req.user.id,
+In shared/schema.ts, add to the orders table:
+tslastActionAt: timestamp("last_action_at"),
+lastActionBy: integer("last_action_by").references(() => users.id),
+Apply directly via SQL (don't rely on db:push):
+sqlALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS last_action_at timestamp,
+  ADD COLUMN IF NOT EXISTS last_action_by integer REFERENCES public.users(id);
+
+CREATE INDEX IF NOT EXISTS idx_orders_last_action
+  ON public.orders (last_action_by, last_action_at);
+Step 2 — Stamp lastActionAt on every status update
+In server/routes.ts, find the order PATCH/status-update handlers (search updateOrderStatus, PATCH /api/orders/:id, confirme, delivered). Every place that mutates orders.status, orders.commentStatus, or orders.comment must also set:
+tsconst updates: any = {
+  status: newStatus,
+  // ... other fields ...
+  lastActionAt: new Date(),
+  lastActionBy: req.user.id,
+};
+Do NOT stamp lastActionAt when the order is first created or when the system auto-assigns an agent — only when a human acts on it. Initial creation is not an "action" by the agent.
+Step 3 — Rewrite getAgentPerformance to count today's actions, scoped per magasin
+In server/storage.ts line 1610, replace the function:
+tsasync getAgentPerformance(
+  storeId: number,
+  options?: { magasinId?: number | null; date?: string }   // date in YYYY-MM-DD
+): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
+  // Default window = today (00:00 → 23:59:59 in server time)
+  const dayStart = new Date();
+  if (options?.date) {
+    const [y, m, d] = options.date.split('-').map(Number);
+    dayStart.setFullYear(y, m - 1, d);
+  }
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+
+  const conds: any[] = [
+    eq(orders.storeId, storeId),
+    sql`${orders.lastActionBy} IS NOT NULL`,
+    gte(orders.lastActionAt, dayStart),
+    lt(orders.lastActionAt, dayEnd),
+  ];
+  if (options?.magasinId) conds.push(eq(orders.magasinId, options.magasinId));
+
+  const result = await db.select({
+    agentId: orders.lastActionBy,                      // ← group by who ACTED, not who's assigned
+    total: count(),
+    confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'))`,
+    delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
+    cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
+  }).from(orders)
+    .where(and(...conds))
+    .groupBy(orders.lastActionBy);
+
+  return result.map(r => ({
+    agentId: r.agentId!,
+    total: Number(r.total),
+    confirmed: Number(r.confirmed),
+    delivered: Number(r.delivered),
+    cancelled: Number(r.cancelled),
+  }));
+}
+Update the interface signature on line 127 to match the new options arg.
+Step 4 — Endpoint accepts the new query params
+In server/routes.ts line 4314:
+tsapp.get("/api/agents/performance", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const magasinId = req.query.magasinId ? Number(req.query.magasinId) : null;
+  const date = (req.query.date as string) || undefined;  // YYYY-MM-DD, defaults to today
+  res.json(await storage.getAgentPerformance(storeId, { magasinId, date }));
+});
+Step 5 — Hook + Team page UI
+In client/src/hooks/use-store-data.ts line 458, update the hook:
+tsexport function useAgentPerformance(magasinId?: number | null, date?: string) {
+  const params = new URLSearchParams();
+  if (magasinId) params.set('magasinId', String(magasinId));
+  if (date) params.set('date', date);
+  const qs = params.toString();
+  return useQuery({
+    queryKey: ["/api/agents/performance", magasinId ?? 'all', date ?? 'today'],
+    queryFn: async () => {
+      const res = await fetch(`/api/agents/performance${qs ? `?${qs}` : ''}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+  });
+}
+In client/src/pages/team.tsx, add at the top of the page (above the stats cards):
+tsxconst [perfMagasinId, setPerfMagasinId] = useState<number | null>(null);
+const [perfDate, setPerfDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+const { data: magasinsData } = useMagasins();
+const { data: performance } = useAgentPerformance(perfMagasinId, perfDate);
+
+// In the JSX, render:
+<div className="flex items-center gap-3 mb-4">
+  <div className="space-y-1">
+    <Label className="text-xs">Date des actions</Label>
+    <Input type="date" value={perfDate} onChange={e => setPerfDate(e.target.value)} className="w-44" />
+  </div>
+  <div className="space-y-1">
+    <Label className="text-xs">Magasin</Label>
+    <Select value={perfMagasinId ? String(perfMagasinId) : 'all'} onValueChange={v => setPerfMagasinId(v === 'all' ? null : Number(v))}>
+      <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="all">Tous les magasins</SelectItem>
+        {(magasinsData || []).map((m: any) => (
+          <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  </div>
+  <p className="text-xs text-muted-foreground self-end pb-1">
+    "Traitées" = nombre de commandes sur lesquelles l'agent a effectué une action ce jour-là.
+  </p>
+</div>
+Also rename the column header in the table from PERFORMANCE to ACTIONS DU JOUR so users understand what they're seeing.
+Step 6 — Make sure the distribution flow is unaffected
+Don't touch getNextAgent. The percentage distribution already uses its own internal counter via distributionEpoch. After this change:
+
+getNextAgent keeps using windowStart = magasin.distributionEpoch to compute target % for new orders — old orders before the epoch are correctly ignored. ✅
+getAgentPerformance (UI display) now uses today's lastActionAt window and stops over-counting historical assignments. ✅
+
+These two systems are now decoupled, which is what they should have been from the start.
+Step 7 — Auto-bump epoch on percentage change is already wired
+When an admin changes leadPercentage, bumpAgentRelatedEpochs is already called (server/routes.ts ~4428). So saving new percentages already resets the distribution counter to fresh. After step 1-3, the UI "Traitées" will show 0 right after the change too (because no agent has acted on a NEW order yet today), giving the user a clean "starting from zero" feel.
+Step 8 — Reset existing orders' lastActionAt
+Run once after deploying:
+sql-- For orders that already have a status beyond "nouveau", treat the updatedAt as the action timestamp.
+-- This gives a reasonable starting point so today's filter isn't empty.
+UPDATE public.orders
+SET last_action_at = updated_at,
+    last_action_by = assigned_to_id
+WHERE status != 'nouveau' AND last_action_at IS NULL AND assigned_to_id IS NOT NULL;
+
+ACCEPTANCE CRITERIA
+
+✅ Open Team page with date = today, magasin = "Tous les magasins". "Traitées" shows agents' actions taken today only — not the cumulative all-time count.
+✅ Select a specific magasin from the dropdown → numbers refresh to reflect only that magasin's orders.
+✅ Pick yesterday's date → see yesterday's actions.
+✅ When I change percentages from 50/25/25 to 30/40/30 and click "Réinitialiser la distribution", the next 4 fresh orders distribute according to the new ratios — the old 66 orders before the reset do NOT skew the new distribution.
+✅ Right after a reset, "Traitées" stays at whatever today's actions are — it does NOT jump back to historical totals.
+✅ When an agent confirms an order, the order's last_action_at and last_action_by columns get updated.
+✅ Server log still shows [DIST-%] window since=<epoch> confirming distribution uses its own counter independently from the UI display.
+✅ No TypeScript errors.

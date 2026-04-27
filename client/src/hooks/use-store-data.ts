@@ -455,11 +455,18 @@ export function useUpdateSubscription() {
   });
 }
 
-export function useAgentPerformance() {
+export function useAgentPerformance(magasinId?: number | null, date?: string) {
+  // Build a stable query string so React Query keys deduplicate correctly.
+  // `magasinId === null` means "all magasins" (matches the server default).
+  const params = new URLSearchParams();
+  if (magasinId != null) params.set("magasinId", String(magasinId));
+  if (date) params.set("date", date);
+  const qs = params.toString();
+  const url = qs ? `/api/agents/performance?${qs}` : "/api/agents/performance";
   return useQuery({
-    queryKey: ["/api/agents/performance"],
+    queryKey: ["/api/agents/performance", magasinId ?? "all", date ?? "today"],
     queryFn: async () => {
-      const res = await fetch("/api/agents/performance", { credentials: "include" });
+      const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch agent performance");
       return res.json();
     },

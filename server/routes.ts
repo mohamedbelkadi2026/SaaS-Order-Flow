@@ -1524,7 +1524,7 @@ export async function registerRoutes(
       if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Access denied" });
       const { status } = api.orders.updateStatus.input.parse(req.body);
       const previousStatus = order.status;
-      const updated = await storage.updateOrderStatus(orderId, status);
+      const updated = await storage.updateOrderStatus(orderId, status, req.user!.id);
       if (!updated) return res.status(404).json({ message: "Order not found" });
       if (status === 'delivered' && previousStatus !== 'delivered') {
         await storage.syncCustomerOnDelivery(order.storeId, {
@@ -1557,6 +1557,10 @@ export async function registerRoutes(
       const { agentId } = api.orders.assign.input.parse(req.body);
       const updated = await storage.assignOrder(orderId, agentId);
       if (!updated) return res.status(404).json({ message: "Order not found" });
+      // Stamp the action: a manual reassignment by an admin counts as a
+      // human action on this order (different from system auto-assign at
+      // order-creation time, which goes through getNextAgent and is silent).
+      await storage.updateOrder(orderId, {}, req.user!.id);
       res.json(updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
@@ -4034,7 +4038,7 @@ export async function registerRoutes(
       // Route status changes through updateOrderStatus for proper stock handling
       if (data.status && data.status !== order.status) {
         console.log(`[PATCH /api/orders/${orderId}] Updating status ${order.status} → ${data.status}`);
-        await storage.updateOrderStatus(orderId, data.status);
+        await storage.updateOrderStatus(orderId, data.status, req.user!.id);
 
         if (data.status === 'delivered') {
           await storage.syncCustomerOnDelivery(order.storeId!, {
@@ -4313,7 +4317,13 @@ export async function registerRoutes(
   // ============================================================
   app.get("/api/agents/performance", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    res.json(await storage.getAgentPerformance(storeId));
+    // Optional filters from the Team page UI:
+    //   ?magasinId=12  → only orders belonging to that magasin
+    //   ?date=YYYY-MM-DD → action window (defaults to today on the server)
+    const magasinIdRaw = req.query.magasinId as string | undefined;
+    const magasinId = magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : null;
+    const date = (req.query.date as string | undefined) || undefined;
+    res.json(await storage.getAgentPerformance(storeId, { magasinId, date }));
   });
 
   // ============================================================

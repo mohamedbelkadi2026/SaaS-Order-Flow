@@ -329,10 +329,20 @@ function MediaBuyersSummaryTable() {
 
 export default function Team() {
   const { data: agents, isLoading } = useAgents();
-  const { data: performance } = useAgentPerformance();
   const { data: products } = useProducts();
   const { data: agentSettings = [] } = useAgentStoreSettings();
   const { data: magasins = [] } = useMagasins();
+  // ── "Actions du jour" filter state ──────────────────────────────────────
+  // Default: today, all magasins. The owner can narrow to one magasin or
+  // pick another date to audit a specific day's work. The hook re-fetches
+  // automatically on change because both values are part of the query key.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [perfDate, setPerfDate] = useState<string>(todayStr);
+  const [perfMagasinId, setPerfMagasinId] = useState<string>("all");
+  const { data: performance } = useAgentPerformance(
+    perfMagasinId === "all" ? null : Number(perfMagasinId),
+    perfDate,
+  );
   const createAgent = useCreateAgent();
   const upsertAgentPercentages = useUpsertAgentMagasinPercentages();
   const deleteAgent = useDeleteAgent();
@@ -900,6 +910,52 @@ export default function Team() {
         </div>
       </div>
 
+      {/* ── "Actions du jour" filters ──────────────────────────────────────
+          Owner picks a date and (optionally) narrows to one magasin. The
+          stats cards + the agent table's "ACTIONS DU JOUR" column both
+          react to this filter. */}
+      <div className="flex flex-col sm:flex-row sm:items-end gap-3 sm:gap-4">
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="perf-date" className="text-[11px] font-bold text-muted-foreground uppercase">Jour</Label>
+          <Input
+            id="perf-date"
+            type="date"
+            value={perfDate}
+            max={todayStr}
+            onChange={(e) => setPerfDate(e.target.value || todayStr)}
+            className="h-9 w-[160px]"
+            data-testid="input-perf-date"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="perf-magasin" className="text-[11px] font-bold text-muted-foreground uppercase">Magasin</Label>
+          <Select value={perfMagasinId} onValueChange={setPerfMagasinId}>
+            <SelectTrigger id="perf-magasin" className="h-9 w-[200px]" data-testid="select-perf-magasin">
+              <SelectValue placeholder="Tous les magasins" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all" data-testid="option-perf-magasin-all">Tous les magasins</SelectItem>
+              {magasins.map((m: any) => (
+                <SelectItem key={m.id} value={String(m.id)} data-testid={`option-perf-magasin-${m.id}`}>
+                  {m.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {(perfDate !== todayStr || perfMagasinId !== "all") && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-9 text-xs gap-1"
+            onClick={() => { setPerfDate(todayStr); setPerfMagasinId("all"); }}
+            data-testid="button-perf-reset"
+          >
+            <RotateCcw className="w-3.5 h-3.5" /> Réinitialiser
+          </Button>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
           <div>
@@ -943,7 +999,7 @@ export default function Team() {
               <TableHead>RÔLE</TableHead>
               <TableHead>PAIEMENT</TableHead>
               <TableHead>RÉPARTITION</TableHead>
-              <TableHead>PERFORMANCE</TableHead>
+              <TableHead>ACTIONS DU JOUR</TableHead>
               <TableHead>STATUT</TableHead>
               <TableHead className="text-right">ACTIONS</TableHead>
             </TableRow>
@@ -1068,7 +1124,7 @@ export default function Team() {
                       <div className="space-y-1 text-xs">
                         <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
                           <span className="text-muted-foreground">Traitées:</span>
-                          <span className="font-semibold">{stats.total}</span>
+                          <span className="font-semibold" data-testid={`text-actions-total-${agent.id}`}>{stats.total}</span>
                           <span className="text-muted-foreground">Confirmées:</span>
                           <Badge variant="outline" className="text-[10px] bg-green-50 text-green-700 border-green-200 h-4 w-fit" data-testid={`text-confirm-rate-${agent.id}`}>{confirmRate}%</Badge>
                           <span className="text-muted-foreground">Livrées:</span>
@@ -1076,7 +1132,7 @@ export default function Team() {
                         </div>
                       </div>
                     ) : (
-                      <span className="text-xs text-muted-foreground">{agent.role === 'owner' ? '-' : 'Aucune commande'}</span>
+                      <span className="text-xs text-muted-foreground">{agent.role === 'owner' ? '-' : 'Aucune action'}</span>
                     )}
                   </TableCell>
                   <TableCell>
