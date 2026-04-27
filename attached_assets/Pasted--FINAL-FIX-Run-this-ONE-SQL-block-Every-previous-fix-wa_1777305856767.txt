@@ -1,0 +1,144 @@
+🚨 FINAL FIX — Run this ONE SQL block. Every previous fix was correct in code; the database has been silently rejecting them all because not a single migration ever ran.
+Proof (read your own backup.sql)
+The columns added by your last 6 fix attempts do NOT exist in production. I checked every CREATE TABLE in the dump:
+TableColumn expected by codeIn DB?storesdistribution_method❌storesdistribution_epoch❌storesagent_ids❌storesservices❌storeslinked_carriers❌storeslinked_platforms❌ordersmagasin_id❌orderslast_action_at❌orderslast_action_by❌store_agent_settingsmagasin_id❌
+Every percentage you set in the UI fires an INSERT/UPDATE that mentions magasin_id in store_agent_settings. Postgres rejects the column, the server's try/catch swallows it, and the UI shows success while nothing was written. That's why khawla keeps eating every order: getNextAgent reads zero per-agent percentages, falls back to defaultPct = 100/3, and round-robin picks her every other turn.
+Action: open Replit → Database → SQL runner → paste this whole block
+sqlBEGIN;
+
+-- ============================================================
+-- 1. stores: per-magasin configuration columns
+-- ============================================================
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_method text DEFAULT 'auto';
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_epoch  timestamp DEFAULT now();
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS agent_ids           jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS services            jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_carriers     jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_platforms    jsonb DEFAULT '[]'::jsonb;
+
+-- ============================================================
+-- 2. orders: magasin scope + action tracking
+-- ============================================================
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS magasin_id     integer REFERENCES public.stores(id);
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_at timestamp;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_by integer REFERENCES public.users(id);
+
+-- ============================================================
+-- 3. store_agent_settings: per-magasin override
+-- ============================================================
+ALTER TABLE public.store_agent_settings ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- Drop any conflicting old uniqueness constraint, then recreate it on
+-- (agent_id, store_id, magasin_id). NULL magasin_id = account-wide default.
+ALTER TABLE public.store_agent_settings
+  DROP CONSTRAINT IF EXISTS store_agent_settings_agent_id_store_id_key;
+
+DROP INDEX IF EXISTS store_agent_settings_agent_store_uniq;
+CREATE UNIQUE INDEX IF NOT EXISTS store_agent_settings_agent_store_magasin_uniq
+  ON public.store_agent_settings (agent_id, store_id, COALESCE(magasin_id, 0));
+
+-- ============================================================
+-- 4. Indexes for performance
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_orders_magasin_id        ON public.orders (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_orders_assigned_magasin  ON public.orders (assigned_to_id, magasin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_last_action       ON public.orders (last_action_by, last_action_at);
+CREATE INDEX IF NOT EXISTS idx_store_agent_magasin      ON public.store_agent_settings (magasin_id);
+
+-- ============================================================
+-- 5. Backfill: existing orders get magasin_id from their integration source
+-- ============================================================
+UPDATE public.orders o
+SET magasin_id = si.magasin_id
+FROM public.store_integrations si
+WHERE o.store_id = si.store_id
+  AND si.magasin_id IS NOT NULL
+  AND o.magasin_id IS NULL
+  AND o.source = si.provider;
+
+-- ============================================================
+-- 6. Backfill: every magasin gets a fresh epoch right now
+-- ============================================================
+UPDATE public.stores SET distribution_epoch = now() WHERE distribution_epoch IS NULL;
+
+-- ============================================================
+-- 7. Verify everything landed
+-- ============================================================
+COMMIT;
+
+-- Run these read-only checks AFTER commit. Each must return rows:
+
+-- Should return 6:
+SELECT count(*) AS stores_new_cols FROM information_schema.columns
+WHERE table_schema='public' AND table_name='stores'
+  AND column_name IN ('distribution_method','distribution_epoch','agent_ids','services','linked_carriers','linked_platforms');
+
+-- Should return 3:
+SELECT count(*) AS orders_new_cols FROM information_schema.columns
+WHERE table_schema='public' AND table_name='orders'
+  AND column_name IN ('magasin_id','last_action_at','last_action_by');
+
+-- Should return 1:
+SELECT count(*) AS sas_new_col FROM information_schema.columns
+WHERE table_schema='public' AND table_name='store_agent_settings'
+  AND column_name='magasin_id';
+Expected output of the 3 verification queries: 6, 3, 1. If any returns a smaller number, the migration didn't apply — paste the error here and stop.
+After the SQL completes successfully
+Step A — Restart the server
+In Replit, click Stop → Run. Don't skip this. The server caches schema metadata at startup.
+Step B — Re-save your percentages
+Open the Team page → edit each agent → set the per-magasin percentages again (50% / 25% / 25%). This time the INSERT INTO store_agent_settings (..., magasin_id) VALUES (...) will succeed because the column now exists.
+Step C — Verify percentages were actually saved
+In the Database tab:
+sqlSELECT agent_id, store_id, magasin_id, lead_percentage, role_in_store
+FROM public.store_agent_settings
+WHERE store_id = (SELECT store_id FROM public.users WHERE email='virtuelzon@gmail.com')
+ORDER BY agent_id, magasin_id;
+You should see one row per (agent, magasin) combo with the correct lead_percentage. If magasin_id is NULL on every row, the UI didn't send per-magasin data — open the modal again and confirm the per-magasin grid is visible.
+Step D — Reset the distribution counter for each magasin
+sqlUPDATE public.stores
+SET distribution_epoch = now(), last_assigned_agent_id = NULL
+WHERE id IN (SELECT id FROM public.stores);
+Step E — Test with 4 fresh orders
+Inject 4 test orders for one magasin. Expected with 50/25/25:
+
+khawla: 2 orders
+naima: 1 order
+fatima: 1 order
+
+Server logs should now show:
+[DIST] store=X magasin=Y method=pourcentage eligible=[A,B,C]
+[DIST-%] window since=<recent timestamp>
+[DIST-%] agent=A target=50.0% today=0 deficit=49.0
+[DIST-%] agent=B target=25.0% today=0 deficit=24.0
+[DIST-%] agent=C target=25.0% today=0 deficit=24.0
+[DIST-%] → Selected: A
+If logs show method=auto instead of pourcentage, run:
+sqlUPDATE public.stores SET distribution_method = 'pourcentage' WHERE id = <your magasin id>;
+Step F — Boutique column
+The Boutique column will now populate too because orders.magasin_id exists. Hard-refresh the Mes Commandes page (Ctrl+Shift+R) to bust the localStorage cache. New orders coming in will all have magasin_id set automatically.
+DO NOT change any code
+Don't touch shared/schema.ts, server/storage.ts, server/routes.ts, or any client file in this round. The code has been correct for the last 4 commits. The blocker has always been the missing migration.
+Commit this migration to git so it's tracked
+bashmkdir -p migrations
+# Save the SQL block above as:
+#   migrations/2026_04_27_full_multi_magasin_schema.sql
+git add migrations/
+git commit -m "chore(db): apply full multi-magasin migration
+
+- stores: distribution_method, distribution_epoch, agent_ids, services, linked_carriers, linked_platforms
+- orders: magasin_id, last_action_at, last_action_by
+- store_agent_settings: magasin_id with composite uniqueness
+- backfill orders.magasin_id from store_integrations.magasin_id
+- backfill stores.distribution_epoch = now() for existing rows
+- indexes for fast distribution math and Boutique column queries"
+git push
+Acceptance criteria (final)
+
+✅ All 3 verification queries return 6, 3, 1.
+✅ Setting khawla 50% / naima 25% / fatima 25% in the UI persists — confirmed by SELECT FROM store_agent_settings.
+✅ 4 fresh orders distribute 2/1/1, not 4/0/0 or 1/2/1.
+✅ Server log shows method=pourcentage (not auto) and per-agent target percentages match what you set.
+✅ Boutique column on Mes Commandes shows the green Shopify icon + magasin name on every row.
+✅ Top "Toutes les boutiques" filter narrows the list correctly.
+✅ Pressing "Réinitialiser la distribution" successfully writes distribution_epoch = now() (no silent failure).
