@@ -1,0 +1,41 @@
+🎯 FIX — Boutique column code is correct, but localStorage is loading an OLD column list that doesn't include "boutique"What's happeningRead client/src/pages/all-orders.tsx line 111-117:
+tsfunction getStoredColumns(): string[] {
+  try {
+    const stored = localStorage.getItem('tajergrow_all_columns');
+    if (stored) return JSON.parse(stored);   // ← returns the OLD list, no "boutique" inside
+  } catch {}
+  return DEFAULT_VISIBLE;                    // ← never reached when localStorage exists
+}Every user who used the platform BEFORE the Boutique column was added has a JSON array saved in their browser's localStorage like:
+["code","destinataire","telephone","ville","produit","actionBy","comment", ...]The new code added "boutique" to DEFAULT_VISIBLE, but getStoredColumns() short-circuits and returns the stale list — so the column never appears for these users. New users (with empty localStorage) DO see it. That's why my screenshot has no Boutique column even though the code is correct.This is a permanent bug going forward: every new column added in the future will be invisible to existing users until they manually reset.Fix — Make getStoredColumns() merge stored prefs with the current defaultIn client/src/pages/all-orders.tsx, replace the getStoredColumns function (lines 111-117) with a version that ADDS any new columns from DEFAULT_VISIBLE that aren't in the stored list:tsfunction getStoredColumns(): string[] {
+  try {
+    const stored = localStorage.getItem('tajergrow_all_columns');
+    if (stored) {
+      const parsed: string[] = JSON.parse(stored);
+      // Merge: keep user's existing order + visibility, then append any
+      // new columns that have been added to DEFAULT_VISIBLE since they
+      // last customized. This means future new columns auto-appear once
+      // for every user without losing their personalization.
+      const merged = [...parsed];
+      for (const col of DEFAULT_VISIBLE) {
+        if (!merged.includes(col)) merged.push(col);
+      }
+      // Also drop any keys that no longer exist in ALL_COLUMNS (cleanup)
+      const validKeys = new Set(ALL_COLUMNS.map(c => c.key));
+      return merged.filter(k => validKeys.has(k));
+    }
+  } catch {}
+  return DEFAULT_VISIBLE;
+}This is the standard pattern for forward-compatible column persistence. After this change:
+Existing users keep their custom column order and visibility
+The new boutique column appears automatically (appended to the end of their list)
+Any future new columns will also appear automatically without manual reset
+Removed columns are silently filtered out
+Same pattern for mes commandes pageIf client/src/pages/orders.tsx (the agent's "Mes Commandes" view) has its own getStoredColumns with the same bug, apply the same fix there. Search for localStorage.getItem in any orders page and patch it the same way.Also: clear stale visibility in the column-visibility menuIf the user's column-visibility menu lets them check/uncheck columns, make sure the new boutique checkbox appears as checked by default when first added. The merge above handles this because we append it to the visibility list.Backend reminder (separate, still required)The magasin_id SQL migration from the previous prompt is STILL required. Without it, order.magasin will be null and the new column will show "—" everywhere. Both fixes are needed:
+✅ This frontend fix (so the column actually displays)
+✅ The SQL ALTER TABLE orders ADD COLUMN magasin_id (so the column has data to display)
+If you've already run the SQL, skip step 2. If not, run both.ACCEPTANCE CRITERIA
+✅ Hard refresh (Ctrl+Shift+R) the Toutes les commandes page → Boutique column now appears between Produit and Action By.
+✅ The column shows the green Shopify icon + magasin name (Promomarkett, Anakio, etc.) for orders that have a magasin_id.
+✅ The top "Toutes les boutiques" dropdown filters orders correctly.
+✅ User's previous custom column order/visibility is preserved (their Frais de Livraison, Référence, UTM Source preferences stay where they were).
+✅ No need to ask users to "reset columns" — the column auto-appears.

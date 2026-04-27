@@ -108,10 +108,77 @@ function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
 }
 
+const COLUMNS_KEY = 'tajergrow_all_columns';
+// Snapshot of which defaults this browser had already "seen" the last time
+// columns were reconciled. Used to tell a brand-new default column (auto-
+// append it) apart from a default the user explicitly hid (don't re-add).
+const KNOWN_DEFAULTS_KEY = 'tajergrow_all_columns_known_defaults';
+// Baseline of defaults that already existed when this fix was first deployed
+// (April 2026). Used ONLY for legacy users who don't yet have a
+// KNOWN_DEFAULTS_KEY entry. Anything in DEFAULT_VISIBLE that is NOT in this
+// baseline is treated as a brand-new column and auto-appended once. Without
+// this baseline we can't distinguish "user hid this default" from "this
+// default didn't exist when the user last customized". Add new keys to
+// DEFAULT_VISIBLE freely going forward — do NOT update this baseline.
+const LEGACY_BASELINE_DEFAULTS = ['code','destinataire','telephone','ville','produit','actionBy','comment','derniereAction','status','prix','adresse','reference','source','action'];
+
 function getStoredColumns(): string[] {
   try {
-    const stored = localStorage.getItem('tajergrow_all_columns');
-    if (stored) return JSON.parse(stored);
+    const stored = localStorage.getItem(COLUMNS_KEY);
+    if (!stored) return DEFAULT_VISIBLE;
+
+    const parsedRaw: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsedRaw)) return DEFAULT_VISIBLE;
+    const parsed: string[] = parsedRaw.filter((k): k is string => typeof k === 'string');
+
+    // Read the previous "known defaults" snapshot. Anything in DEFAULT_VISIBLE
+    // that wasn't in this snapshot is treated as a brand-new column added
+    // since the user last customized → auto-append. Anything that WAS known
+    // but is absent from `parsed` was deliberately hidden by the user → skip.
+    let known: string[] = [];
+    try {
+      const rawKnown = localStorage.getItem(KNOWN_DEFAULTS_KEY);
+      if (rawKnown) {
+        const parsedKnown = JSON.parse(rawKnown);
+        if (Array.isArray(parsedKnown)) {
+          known = parsedKnown.filter((k): k is string => typeof k === 'string');
+        }
+      }
+    } catch {}
+
+    // Bootstrap for legacy users (no KNOWN_DEFAULTS_KEY yet): use the
+    // hardcoded baseline of defaults that existed at deploy time, NOT the
+    // user's `parsed` list. Otherwise any default the user had hidden (like
+    // UTM Source / Adresse) would be misclassified as "new" and re-added —
+    // that's exactly the regression the previous version caused.
+    const knownSet = new Set(known.length > 0 ? known : LEGACY_BASELINE_DEFAULTS);
+    const validKeys = new Set(ALL_COLUMNS.map(c => c.key));
+
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    // 1. Keep the user's existing order + visibility intact.
+    for (const k of parsed) {
+      if (validKeys.has(k) && !seen.has(k)) {
+        merged.push(k);
+        seen.add(k);
+      }
+    }
+    // 2. Append only truly new defaults (in DEFAULT_VISIBLE but never seen).
+    for (const col of DEFAULT_VISIBLE) {
+      if (!knownSet.has(col) && !seen.has(col) && validKeys.has(col)) {
+        merged.push(col);
+        seen.add(col);
+      }
+    }
+
+    // Persist the new "known" snapshot so future renders can distinguish
+    // future-new columns from user-hidden ones. Best-effort — if quota is
+    // full or storage is disabled, the merge still returns a correct list.
+    try {
+      localStorage.setItem(KNOWN_DEFAULTS_KEY, JSON.stringify(DEFAULT_VISIBLE));
+    } catch {}
+
+    return merged;
   } catch {}
   return DEFAULT_VISIBLE;
 }
