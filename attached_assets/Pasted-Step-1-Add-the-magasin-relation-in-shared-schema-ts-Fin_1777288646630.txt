@@ -1,0 +1,111 @@
+Step 1 — Add the magasin relation in shared/schema.ts
+Find ordersRelations (around line 363) and ADD a magasin relation alongside the existing store and agent:
+tsexport const ordersRelations = relations(orders, ({ one, many }) => ({
+  store: one(stores, {
+    fields: [orders.storeId],
+    references: [stores.id],
+    relationName: 'order_parent_store',
+  }),
+  magasin: one(stores, {
+    fields: [orders.magasinId],
+    references: [stores.id],
+    relationName: 'order_magasin',
+  }),
+  agent: one(users, {
+    fields: [orders.assignedToId],
+    references: [users.id],
+  }),
+  items: many(orderItems),
+  followUpLogs: many(orderFollowUpLogs),
+}));
+The two relations both target stores (same table) so Drizzle requires distinct relationName values. Also update the inverse on storesRelations if it exists — add magasinOrders: many(orders, { relationName: 'order_magasin' }) and adjust the existing one to orders: many(orders, { relationName: 'order_parent_store' }).
+Step 2 — Make the orders query include magasin
+In server/storage.ts, find the orders fetcher used by the all-orders page (search for getAllOrders, getOrdersByStore, or wherever the GET endpoint pulls from). Wherever the existing query loads with: { agent: true, items: { with: { product: true } } }, add magasin: true so the boutique data is included:
+tsconst result = await db.query.orders.findMany({
+  where: ...,
+  with: {
+    agent: true,
+    magasin: true,             // ← add this
+    items: { with: { product: true } },
+    ...
+  },
+  orderBy: ...,
+});
+This change is required in every fetcher that feeds the all-orders page. After the change, each order object returned by the API will have an order.magasin field shaped like { id, name, ... } — or null if magasin_id is null.
+Step 3 — Add the column to the all-orders page
+In client/src/pages/all-orders.tsx:
+3a — Add to ALL_COLUMNS (around line 84). Insert a new entry between actionBy and comment so the boutique column lives near the agent name (logical grouping):
+tsconst ALL_COLUMNS = [
+  { key: 'code', label: 'Code', locked: false },
+  { key: 'destinataire', label: 'Destinataire', locked: false },
+  { key: 'telephone', label: 'Téléphone', locked: false },
+  { key: 'ville', label: 'Ville', locked: false },
+  { key: 'produit', label: 'Produit', locked: false },
+  { key: 'boutique', label: 'Boutique', locked: false },   // ← add
+  { key: 'actionBy', label: 'Action By', locked: false },
+  // ... rest stays the same
+] as const;
+3b — Add it to DEFAULT_VISIBLE (line 104) so it shows by default:
+tsconst DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','boutique','actionBy','comment','derniereAction','status','prix','adresse','reference','source','action'];
+3c — Add the filter clause to filteredOrders (around line 295):
+tsif (colFilters.boutique) {
+  const name = (o.magasin?.name || '').toLowerCase();
+  if (!name.includes(colFilters.boutique.toLowerCase())) return false;
+}
+3d — Add the table header (around line 713, between produit and actionBy):
+tsx{isColVisible('boutique') && (
+  <TableHead className="text-[11px] font-semibold uppercase tracking-wider">
+    <div>Boutique</div>
+    {showInlineFilters && renderColFilter('boutique', 'Filtr...')}
+  </TableHead>
+)}
+3e — Add the cell render (around line 798, between produit and actionBy). Show the Shopify-style green icon + magasin name, matching the look you have on the Intégrations page:
+tsx{isColVisible('boutique') && (
+  <TableCell className="whitespace-nowrap text-[11px]">
+    {order.magasin?.name ? (
+      <div className="flex items-center gap-1.5">
+        <div className="w-5 h-5 rounded-md bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+          <SiShopify className="w-3 h-3 text-[#95BF47]" />
+        </div>
+        <span className="font-medium">{order.magasin.name}</span>
+      </div>
+    ) : (
+      <span className="text-muted-foreground">—</span>
+    )}
+  </TableCell>
+)}
+At the top of the file, ensure the icon is imported:
+tsimport { SiShopify } from "react-icons/si";
+Step 4 — Bonus: top-of-page magasin filter dropdown
+Above the table (next to the existing status/date filters), add a dropdown to quickly filter ALL orders by magasin without typing. This is faster than the inline search for users with 5+ magasins:
+tsx// Near the other filter selects at the top of the page:
+const { data: magasinsData } = useMagasins();
+
+<Select
+  value={colFilters.boutique || 'all'}
+  onValueChange={(v) => setColFilters(prev => ({ ...prev, boutique: v === 'all' ? '' : v }))}
+>
+  <SelectTrigger className="w-[180px]">
+    <SelectValue placeholder="Toutes les boutiques" />
+  </SelectTrigger>
+  <SelectContent>
+    <SelectItem value="all">Toutes les boutiques</SelectItem>
+    {(magasinsData || []).map((m: any) => (
+      <SelectItem key={m.id} value={m.name}>{m.name}</SelectItem>
+    ))}
+  </SelectContent>
+</Select>
+Add useMagasins to the import block at the top:
+tsimport { useMagasins } from "@/hooks/use-store-data";
+Step 5 — Type safety
+Wherever the row type is declared as any, that's fine for now. If TypeScript complains about order.magasin, extend the order type with:
+tstype OrderWithMagasin = any & { magasin?: { id: number; name: string } | null };
+
+ACCEPTANCE CRITERIA
+
+✅ The "Toutes les commandes" table now shows a Boutique column with the green Shopify icon and the magasin name.
+✅ Orders without a magasin_id show "—".
+✅ Typing in the inline Filtr... field of the Boutique column filters rows live by magasin name.
+✅ The top dropdown "Toutes les boutiques" filters the whole table to one magasin in one click.
+✅ The Boutique column appears in the column-visibility menu so users can hide it.
+✅ No TypeScript errors. No console errors. Table still scrolls horizontally on small screens.

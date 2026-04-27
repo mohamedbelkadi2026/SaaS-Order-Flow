@@ -407,19 +407,33 @@ export class DatabaseStorage implements IStorage {
   }
 
   private async hydrateOrders(allOrders: Order[]): Promise<OrderWithDetails[]> {
+    if (allOrders.length === 0) return [];
+
+    const magasinIds = Array.from(new Set(
+      allOrders.map(o => (o as any).magasinId).filter((id): id is number => typeof id === 'number')
+    ));
+    const magasinRows = magasinIds.length > 0
+      ? await db.select({ id: stores.id, name: stores.name }).from(stores).where(inArray(stores.id, magasinIds))
+      : [];
+    const magasinById = new Map(magasinRows.map(m => [m.id, m]));
+
     const ordersWithDetails: OrderWithDetails[] = [];
     for (const order of allOrders) {
       const orderItemsList = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
       const agent = order.assignedToId ? (await db.select().from(users).where(eq(users.id, order.assignedToId)))[0] : null;
-      
+
       const itemsWithProducts = await Promise.all(orderItemsList.map(async (item) => {
         const [product] = await db.select().from(products).where(eq(products.id, item.productId));
         return { ...item, product };
       }));
-      
+
+      const mid = (order as any).magasinId as number | null | undefined;
+      const magasin = (mid && magasinById.get(mid)) || null;
+
       ordersWithDetails.push({
         ...order,
         agent,
+        magasin,
         items: itemsWithProducts
       });
     }

@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAllOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useFilterOptions } from "@/hooks/use-store-data";
+import { useAllOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useFilterOptions, useMagasins } from "@/hooks/use-store-data";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { formatCurrency } from "@/lib/utils";
 import { StatusBadge, ORDER_STATUSES } from "@/components/ui/status-badge";
@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogD
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, ListOrdered, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { SiWhatsapp } from "react-icons/si";
+import { SiWhatsapp, SiShopify } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
@@ -87,6 +87,7 @@ const ALL_COLUMNS = [
   { key: 'telephone', label: 'Téléphone', locked: false },
   { key: 'ville', label: 'Ville', locked: false },
   { key: 'produit', label: 'Produit', locked: false },
+  { key: 'boutique', label: 'Boutique', locked: false },
   { key: 'actionBy', label: 'Action By', locked: false },
   { key: 'comment', label: 'Comment', locked: false },
   { key: 'livraison', label: 'Livraison', locked: false },
@@ -101,7 +102,7 @@ const ALL_COLUMNS = [
   { key: 'action', label: 'Action', locked: true },
 ] as const;
 
-const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','actionBy','comment','derniereAction','status','prix','adresse','reference','source','action'];
+const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','boutique','actionBy','comment','derniereAction','status','prix','adresse','reference','source','action'];
 
 function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
@@ -171,6 +172,7 @@ export default function AllOrders() {
   const { data, isLoading } = useAllOrders(filters);
   const { data: agents } = useAgents();
   const { data: filterOptions } = useFilterOptions();
+  const { data: magasinsData } = useMagasins();
   const { data: shippingIntegrations } = useIntegrations("shipping");
   const updateStatus = useUpdateOrderStatus();
   const assignAgent = useAssignAgent();
@@ -308,6 +310,10 @@ export default function AllOrders() {
       if (colFilters.actionBy) {
         const agentName = o.agent?.username || '';
         if (!agentName.toLowerCase().includes(colFilters.actionBy.toLowerCase())) return false;
+      }
+      if (colFilters.boutique) {
+        const name = (o.magasin?.name || '').toLowerCase();
+        if (!name.includes(colFilters.boutique.toLowerCase())) return false;
       }
       return true;
     });
@@ -606,6 +612,25 @@ export default function AllOrders() {
             </Select>
           </div>
 
+          {/* ── Boutique ── */}
+          <div className="flex flex-col shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Boutique</span>
+            <Select
+              value={colFilters.boutique || 'all'}
+              onValueChange={(v) => setColFilters(prev => ({ ...prev, boutique: v === 'all' ? '' : v }))}
+            >
+              <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[160px]" data-testid="all-filter-boutique">
+                <SelectValue placeholder="Toutes les boutiques" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Toutes les boutiques</SelectItem>
+                {(magasinsData || []).map((m: any) => (
+                  <SelectItem key={m.id} value={m.name}>{m.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* ── Type service ── */}
           <div className="flex flex-col shrink-0">
             <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Type service</span>
@@ -710,6 +735,7 @@ export default function AllOrders() {
                 {isColVisible('telephone') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Téléphone</div>{showInlineFilters && renderColFilter('telephone', 'Filtr...')}</TableHead>}
                 {isColVisible('ville') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Ville</div>{showInlineFilters && renderColFilter('ville', 'Filtr...')}</TableHead>}
                 {isColVisible('produit') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Produit</div>{showInlineFilters && renderColFilter('produit', 'Filtr...')}</TableHead>}
+                {isColVisible('boutique') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Boutique</div>{showInlineFilters && renderColFilter('boutique', 'Filtr...')}</TableHead>}
                 {isColVisible('actionBy') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Action By</div>{showInlineFilters && renderColFilter('actionBy', 'Filtr...')}</TableHead>}
                 {isColVisible('comment') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Comment</TableHead>}
                 {isColVisible('livraison') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Livraison</TableHead>}
@@ -795,6 +821,20 @@ export default function AllOrders() {
                       )}
                       {isColVisible('ville') && <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>}
                       {isColVisible('produit') && <TableCell className="max-w-[120px] truncate text-[11px]">{productName}</TableCell>}
+                      {isColVisible('boutique') && (
+                        <TableCell className="whitespace-nowrap text-[11px]" data-testid={`text-boutique-${order.id}`}>
+                          {order.magasin?.name ? (
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-5 h-5 rounded-md bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+                                <SiShopify className="w-3 h-3 text-[#95BF47]" />
+                              </div>
+                              <span className="font-medium">{order.magasin.name}</span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                      )}
                       {isColVisible('actionBy') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
                           {agentName !== '-' ? (

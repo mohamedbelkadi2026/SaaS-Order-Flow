@@ -345,7 +345,8 @@ export const customersRelations = relations(customers, ({ one }) => ({
 export const storesRelations = relations(stores, ({ many }) => ({
   users: many(users),
   products: many(products),
-  orders: many(orders),
+  orders: many(orders, { relationName: 'order_parent_store' }),
+  magasinOrders: many(orders, { relationName: 'order_magasin' }),
   customers: many(customers),
   subscriptions: many(subscriptions),
   agentSettings: many(storeAgentSettings),
@@ -364,6 +365,12 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
   store: one(stores, {
     fields: [orders.storeId],
     references: [stores.id],
+    relationName: 'order_parent_store',
+  }),
+  magasin: one(stores, {
+    fields: [orders.magasinId],
+    references: [stores.id],
+    relationName: 'order_magasin',
   }),
   agent: one(users, {
     fields: [orders.assignedToId],
@@ -537,6 +544,7 @@ export type ProductWithVariants = Product & {
 
 export type OrderWithDetails = Order & {
   agent?: User | null;
+  magasin?: { id: number; name: string } | null;
   items: (OrderItem & { product: Product })[];
 };
 
