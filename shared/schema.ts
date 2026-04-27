@@ -279,13 +279,17 @@ export const agentProducts = pgTable("agent_products", {
 });
 
 // New table: per-store agent configuration (role, lead %, allowed products)
+// magasinId scopes the row:
+//   - NULL  → account-wide default (role, allowed products/regions, commission, fallback %)
+//   - <id>  → per-magasin override (currently used for leadPercentage only)
 export const storeAgentSettings = pgTable("store_agent_settings", {
   id: serial("id").primaryKey(),
   agentId: integer("agent_id").references(() => users.id).notNull(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
+  magasinId: integer("magasin_id").references(() => stores.id),
   // 'confirmation' | 'suivi' | 'both'
   roleInStore: text("role_in_store").notNull().default("confirmation"),
-  // 0-100, used for weighted lead distribution
+  // 0-100, used for weighted lead distribution (per-magasin when magasinId is set)
   leadPercentage: integer("lead_percentage").notNull().default(100),
   // JSON array of product IDs, e.g. '[1,2,3]'. Empty array means all products allowed.
   allowedProductIds: text("allowed_product_ids").notNull().default("[]"),

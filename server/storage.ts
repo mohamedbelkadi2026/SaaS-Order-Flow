@@ -15,7 +15,7 @@ import {
   type StockLog,
   type Payment, type InsertPayment,
 } from "@shared/schema";
-import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or } from "drizzle-orm";
+import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or, isNull } from "drizzle-orm";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -130,9 +130,10 @@ export interface IStorage {
   setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
   getNextAgent(storeId: number, magasinId: number | null, productId?: number, customerCity?: string): Promise<number | null>;
 
-  getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]>;
-  getAgentStoreSetting(agentId: number, storeId: number): Promise<StoreAgentSetting | undefined>;
-  upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string }): Promise<StoreAgentSetting>;
+  getStoreAgentSettings(storeId: number, magasinId?: number | null): Promise<StoreAgentSetting[]>;
+  getAgentStoreSetting(agentId: number, storeId: number, magasinId?: number | null): Promise<StoreAgentSetting | undefined>;
+  upsertStoreAgentSetting(agentId: number, storeId: number, magasinId: number | null, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting>;
+  getAgentMagasinSettings(agentId: number, storeId: number): Promise<StoreAgentSetting[]>;
 
   getOrderFollowUpLogs(orderId: number): Promise<OrderFollowUpLog[]>;
   createOrderFollowUpLog(data: InsertOrderFollowUpLog): Promise<OrderFollowUpLog>;
@@ -1858,10 +1859,34 @@ export class DatabaseStorage implements IStorage {
     }
     if (storeAgents.length === 0) return null;
 
-    // 3. Load per-store agent settings for role and lead percentage
-    const settings = await db.select().from(storeAgentSettings)
+    // 3. Load per-store agent settings for role and lead percentage.
+    //
+    // The table now has TWO row types per agent:
+    //   - magasin_id IS NULL  → account-wide default (role, allowed products/regions,
+    //     commission, fallback %).
+    //   - magasin_id = <X>    → per-magasin override (currently leadPercentage only).
+    //
+    // For role/products/regions filters we want the account-wide default. For
+    // leadPercentage in the % engine we want the magasin-specific row, falling
+    // back to the default when no magasin row exists.
+    const allSettings = await db.select().from(storeAgentSettings)
       .where(eq(storeAgentSettings.storeId, storeId));
-    const settingsMap = new Map(settings.map(s => [s.agentId, s]));
+    const defaultSettings = allSettings.filter(s => s.magasinId == null);
+    const settingsMap = new Map(defaultSettings.map(s => [s.agentId, s]));
+    // Map (agentId → leadPercentage) preferring the per-magasin row, then the default.
+    const pctMap = new Map<number, number>();
+    if (magasinId) {
+      for (const s of allSettings) {
+        if (s.magasinId === magasinId && s.leadPercentage !== null && s.leadPercentage !== undefined) {
+          pctMap.set(s.agentId, Number(s.leadPercentage));
+        }
+      }
+    }
+    for (const s of defaultSettings) {
+      if (!pctMap.has(s.agentId) && s.leadPercentage !== null && s.leadPercentage !== undefined) {
+        pctMap.set(s.agentId, Number(s.leadPercentage));
+      }
+    }
 
     // Filter agents to only those with a confirmation role (confirmation or both)
     let eligibleAgents = storeAgents.filter(a => {
@@ -2020,12 +2045,12 @@ export class DatabaseStorage implements IStorage {
       const defaultPct = 100 / eligibleAgents.length;
 
       // Compute target % per agent. Only fall back to defaultPct when there is
-      // NO setting row at all. A setting row with leadPercentage=0 means the
-      // user explicitly excluded that agent — respect it.
+      // NO setting row at all (neither a per-magasin override nor an account-
+      // wide default). A setting row with leadPercentage=0 means the user
+      // explicitly excluded that agent — respect it.
       const eligibleWithPct = eligibleAgents.map(a => {
-        const setting = settingsMap.get(a.id);
-        const hasExplicit = setting && setting.leadPercentage !== null && setting.leadPercentage !== undefined;
-        const pct = hasExplicit ? Number(setting!.leadPercentage) : defaultPct;
+        const explicit = pctMap.get(a.id);
+        const pct = explicit !== undefined ? explicit : defaultPct;
         return { agentId: a.id, targetPct: pct };
       });
 
@@ -2075,30 +2100,49 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async getStoreAgentSettings(storeId: number): Promise<StoreAgentSetting[]> {
-    return await db.select().from(storeAgentSettings)
-      .where(eq(storeAgentSettings.storeId, storeId));
+  // When magasinId is undefined → returns ALL rows for the store (legacy behavior).
+  // When magasinId is null      → returns ONLY the account-wide default rows (magasin_id IS NULL).
+  // When magasinId is a number  → returns ONLY rows for that specific magasin.
+  async getStoreAgentSettings(storeId: number, magasinId?: number | null): Promise<StoreAgentSetting[]> {
+    const conds: any[] = [eq(storeAgentSettings.storeId, storeId)];
+    if (magasinId === null) conds.push(isNull(storeAgentSettings.magasinId));
+    else if (typeof magasinId === 'number') conds.push(eq(storeAgentSettings.magasinId, magasinId));
+    return await db.select().from(storeAgentSettings).where(and(...conds));
   }
 
-  async getAgentStoreSetting(agentId: number, storeId: number): Promise<StoreAgentSetting | undefined> {
-    const [setting] = await db.select().from(storeAgentSettings)
-      .where(and(eq(storeAgentSettings.agentId, agentId), eq(storeAgentSettings.storeId, storeId)));
+  async getAgentStoreSetting(agentId: number, storeId: number, magasinId?: number | null): Promise<StoreAgentSetting | undefined> {
+    const conds: any[] = [
+      eq(storeAgentSettings.agentId, agentId),
+      eq(storeAgentSettings.storeId, storeId),
+    ];
+    if (magasinId === null || magasinId === undefined) conds.push(isNull(storeAgentSettings.magasinId));
+    else conds.push(eq(storeAgentSettings.magasinId, magasinId));
+    const [setting] = await db.select().from(storeAgentSettings).where(and(...conds));
     return setting;
   }
 
-  async upsertStoreAgentSetting(agentId: number, storeId: number, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting> {
-    const existing = await this.getAgentStoreSetting(agentId, storeId);
+  async upsertStoreAgentSetting(agentId: number, storeId: number, magasinId: number | null, data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }): Promise<StoreAgentSetting> {
+    const existing = await this.getAgentStoreSetting(agentId, storeId, magasinId);
     if (existing) {
       const [updated] = await db.update(storeAgentSettings)
         .set({ ...data })
-        .where(and(eq(storeAgentSettings.agentId, agentId), eq(storeAgentSettings.storeId, storeId)))
+        .where(eq(storeAgentSettings.id, existing.id))
         .returning();
       return updated;
     }
     const [created] = await db.insert(storeAgentSettings)
-      .values({ agentId, storeId, ...data })
+      .values({ agentId, storeId, magasinId, ...data })
       .returning();
     return created;
+  }
+
+  // Returns all per-magasin rows for a single agent (used by Team page % grid).
+  async getAgentMagasinSettings(agentId: number, storeId: number): Promise<StoreAgentSetting[]> {
+    return await db.select().from(storeAgentSettings)
+      .where(and(
+        eq(storeAgentSettings.agentId, agentId),
+        eq(storeAgentSettings.storeId, storeId),
+      ));
   }
 
   async getOrderFollowUpLogs(orderId: number): Promise<OrderFollowUpLog[]> {

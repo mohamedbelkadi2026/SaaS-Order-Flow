@@ -423,6 +423,25 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] retargeting_leads table verified/created ✅');
 
+    // ── store_agent_settings.magasin_id — per-magasin lead percentage ─────────
+    // Existing rows (magasin_id = NULL) act as the "account-wide default" row
+    // (role, allowed products/regions, commission, fallback %). New per-magasin
+    // rows hold a magasinId and override only the leadPercentage at the
+    // magasin level. Composite uniqueness: (agentId, storeId, magasinId).
+    await client.query(`
+      ALTER TABLE public.store_agent_settings
+        ADD COLUMN IF NOT EXISTS magasin_id INTEGER REFERENCES public.stores(id);
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_store_agent_settings_agent_store_magasin
+        ON public.store_agent_settings (agent_id, store_id, COALESCE(magasin_id, 0));
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_store_agent_settings_magasin
+        ON public.store_agent_settings (magasin_id);
+    `);
+    console.log('[Migration] store_agent_settings.magasin_id ensured ✅');
+
     // ── marketing_campaigns — missing columns ─────────────────────────────────
     await client.query(`
       ALTER TABLE public.marketing_campaigns

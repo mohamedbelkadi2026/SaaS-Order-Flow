@@ -1,0 +1,195 @@
+🎯 ROOT CAUSE — Lead percentages are stored GLOBALLY per agent, not per-magasin
+I read the code carefully and found the actual structural bug. The previous fixes correctly moved distributionMethod, agentIds, and distributionEpoch to the per-magasin level. But leadPercentage was never moved. It still lives on store_agent_settings.storeId which is the parent account (admin.storeId), not the magasin.
+Proof in the code
+server/routes.ts line 4419:
+tsawait storage.upsertStoreAgentSetting(userId, admin.storeId!, settingsPayload);
+//                                            ^^^^^^^^^^^^^^^
+//                                            parent account ID, NOT magasinId
+server/storage.ts line 1849 (inside getNextAgent):
+tsconst settings = await db.select().from(storeAgentSettings)
+  .where(eq(storeAgentSettings.storeId, storeId));   // ← reads parent, ignores magasin
+So even if the user sets:
+
+Magasin 1: khawla 50%, naima 25%, fatima 25%
+Magasin 2: khawla 100%
+
+…the database physically can only store ONE row per agent (because of how store_agent_settings is keyed). Whichever value was saved last overwrites the other. There's effectively only one global percentage per agent across the whole account.
+Symptom (matches my screenshot exactly)
+Total assigned = 66, distributed 26/21/19 ≈ 39%/32%/29%. That looks suspiciously close to round-robin (33/33/33), NOT 50/25/25. This happens because:
+
+The single global percentage row IS being read (so getNextAgent enters the pourcentage branch).
+But the distributionEpoch reset clears lastAssignedAgentId, the count window resets to fresh, and with all agents at 0 count → all three have the same maximum deficit on the first order. Tiebreaker is array order, so the first agent in eligibleAgents keeps winning until the deficit shifts.
+With three agents all at 50/25/25 (or whatever was stored last), the deficit math eventually equalizes to roughly even distribution — NOT the configured ratios — when there's only one global setting fighting against multi-magasin counts being commingled.
+
+THE FIX — Make store_agent_settings per-magasin
+This is the correct architectural fix. After this, an agent can have different roles + different percentages in different magasins, which is what a multi-tenant SaaS needs.
+Step 1 — Schema: add magasin_id to store_agent_settings
+In shared/schema.ts, find the storeAgentSettings table definition and add a magasinId column:
+tsexport const storeAgentSettings = pgTable("store_agent_settings", {
+  id: serial("id").primaryKey(),
+  agentId: integer("agent_id").notNull(),
+  storeId: integer("store_id").notNull(),         // parent account (kept for tenant scoping)
+  magasinId: integer("magasin_id"),               // ← NEW: per-magasin scope (nullable for legacy)
+  roleInStore: text("role_in_store").notNull().default("confirmation"),
+  leadPercentage: integer("lead_percentage").notNull().default(100),
+  allowedProductIds: text("allowed_product_ids").notNull().default("[]"),
+  allowedRegions: text("allowed_regions").notNull().default("[]"),
+  commissionRate: integer("commission_rate").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+Step 2 — Apply the SQL migration directly (do NOT trust db:push — last time it didn't apply)
+Open the Replit Database tab and run:
+sqlBEGIN;
+
+ALTER TABLE public.store_agent_settings ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- Drop any old single-key uniqueness, then enforce the new (agent, magasin) uniqueness.
+-- Allow a NULL magasin_id row to coexist as the "account-wide default" legacy fallback.
+DROP INDEX IF EXISTS store_agent_settings_agent_store_uniq;
+CREATE UNIQUE INDEX IF NOT EXISTS store_agent_settings_agent_magasin_uniq
+  ON public.store_agent_settings (agent_id, COALESCE(magasin_id, 0));
+
+CREATE INDEX IF NOT EXISTS idx_store_agent_settings_magasin
+  ON public.store_agent_settings (magasin_id);
+
+COMMIT;
+Verify:
+sqlSELECT column_name FROM information_schema.columns
+WHERE table_name='store_agent_settings' AND column_name='magasin_id';
+-- must return 1 row
+Step 3 — upsertStoreAgentSetting becomes per-magasin
+In server/storage.ts (line ~2075), update the signature and the upsert key:
+tsasync upsertStoreAgentSetting(
+  agentId: number,
+  storeId: number,
+  magasinId: number | null,         // ← NEW
+  data: { roleInStore?: string; leadPercentage?: number; allowedProductIds?: string; allowedRegions?: string; commissionRate?: number }
+): Promise<StoreAgentSetting> {
+  const existing = await db.select().from(storeAgentSettings)
+    .where(and(
+      eq(storeAgentSettings.agentId, agentId),
+      eq(storeAgentSettings.storeId, storeId),
+      magasinId == null
+        ? isNull(storeAgentSettings.magasinId)
+        : eq(storeAgentSettings.magasinId, magasinId),
+    ))
+    .limit(1);
+
+  if (existing[0]) {
+    const [updated] = await db.update(storeAgentSettings)
+      .set({ ...data })
+      .where(eq(storeAgentSettings.id, existing[0].id))
+      .returning();
+    return updated;
+  }
+  const [created] = await db.insert(storeAgentSettings)
+    .values({ agentId, storeId, magasinId, ...data })
+    .returning();
+  return created;
+}
+Update the interface declaration on line ~135 to match the new signature.
+Step 4 — getNextAgent reads per-magasin settings, with graceful fallback
+In server/storage.ts line 1848, replace the settings load with a magasin-scoped + fallback read:
+ts// 3. Load per-magasin agent settings, falling back to legacy account-level (magasin_id IS NULL)
+const settingsConditions: any[] = [eq(storeAgentSettings.storeId, storeId)];
+const settings = await db.select().from(storeAgentSettings).where(and(...settingsConditions));
+
+// Build a per-agent map: prefer magasin-scoped row, fall back to legacy NULL row
+const settingsMap = new Map<number, typeof settings[number]>();
+for (const s of settings) {
+  const isMatch = magasinId ? s.magasinId === magasinId : s.magasinId == null;
+  const isLegacy = s.magasinId == null;
+  const existing = settingsMap.get(s.agentId);
+  if (isMatch || (!existing && isLegacy)) {
+    settingsMap.set(s.agentId, s);
+  }
+}
+This resolves: "if a magasin-specific setting exists, use it; otherwise fall back to the global default row (magasin_id IS NULL)."
+Step 5 — Team page: edit percentages PER MAGASIN, not globally
+This is the biggest UX change. In client/src/pages/team.tsx, the agent-edit modal currently shows ONE percentage field. It must show one percentage field PER magasin the agent is linked to.
+Replace the single <Input value={editForm.leadPercentage}> with a small grid:
+tsx<div className="space-y-2">
+  <Label>Pourcentages par magasin</Label>
+  {linkedMagasins.length === 0 ? (
+    <p className="text-xs text-muted-foreground">Cet agent n'est lié à aucun magasin. Liez-le depuis la page Magasins.</p>
+  ) : (
+    <div className="space-y-1.5">
+      {linkedMagasins.map((m: any) => (
+        <div key={m.id} className="flex items-center gap-2">
+          <span className="flex-1 text-sm">{m.name}</span>
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            className="w-20"
+            value={editForm.percentagesByMagasin[m.id] ?? 50}
+            onChange={(e) => setEditForm(d => ({
+              ...d,
+              percentagesByMagasin: { ...d.percentagesByMagasin, [m.id]: Number(e.target.value) }
+            }))}
+          />
+          <span className="text-xs">%</span>
+        </div>
+      ))}
+      {/* Live sum indicator per magasin */}
+      <p className="text-xs text-muted-foreground">
+        Conseil : la somme des pourcentages des agents d'un même magasin doit être 100%.
+      </p>
+    </div>
+  )}
+</div>
+Where linkedMagasins is computed from the magasins where agentIds includes editingAgent.id. Pull magasins via useMagasins().
+On save, send an array of per-magasin entries:
+tspayload.percentagesByMagasin = editForm.percentagesByMagasin;
+// shape: { "1": 50, "2": 25, ... } where keys are magasin IDs
+Step 6 — Server: PATCH agent endpoint accepts the per-magasin map
+In server/routes.ts (around line 4374), extend the zod schema and the save loop:
+tsconst schema = z.object({
+  // ... existing fields ...
+  percentagesByMagasin: z.record(z.string(), z.number().min(0).max(100)).optional(),
+});
+
+// After existing settings save:
+if (data.percentagesByMagasin && Object.keys(data.percentagesByMagasin).length > 0) {
+  for (const [magasinIdStr, pct] of Object.entries(data.percentagesByMagasin)) {
+    const magasinIdNum = Number(magasinIdStr);
+    // Tenant guard: confirm magasin belongs to this admin's account
+    const [magasin] = await db.select().from(stores)
+      .where(and(eq(stores.id, magasinIdNum), eq(stores.ownerId, admin.id))).limit(1);
+    if (!magasin) continue;
+
+    await storage.upsertStoreAgentSetting(userId, admin.storeId!, magasinIdNum, {
+      leadPercentage: pct,
+      // role / products / regions optionally apply per-magasin too if you want
+    });
+    // bump the affected magasin's epoch so old counts don't skew the new %
+    await bumpDistributionEpoch(magasinIdNum);
+  }
+}
+Step 7 — Display: Team page percentage column should show per-magasin breakdown
+Where the table currently shows % 50%, replace with a small list:
+Magasin 1: 50%
+Magasin 2: 25%
+Pull the per-magasin settings from a new endpoint GET /api/users/:id/magasin-settings that returns [{ magasinId, magasinName, leadPercentage, roleInStore }, ...].
+Step 8 — Use the debug endpoint to verify
+After all changes:
+GET /api/_debug/distribution/<magasinId>
+Should return per-agent settings filtered to that magasin only. Each agent's leadPercentage should reflect what you set in the per-magasin grid.
+Step 9 — Reset epoch one final time
+sqlUPDATE public.stores
+SET distribution_epoch = now(),
+    last_assigned_agent_id = NULL
+WHERE owner_id = <your owner_id>;
+Then inject 20 fresh orders into Magasin 1. Distribution should now match the per-magasin percentages exactly.
+
+ACCEPTANCE CRITERIA
+
+✅ \d store_agent_settings shows magasin_id column.
+✅ Team page agent-edit modal shows ONE percentage row per linked magasin (not a single global field).
+✅ Setting khawla 50% in Magasin 1 and 100% in Magasin 2 saves both rows in store_agent_settings.
+✅ Order arriving on Magasin 1's webhook → distribution respects Magasin 1's percentages, not Magasin 2's.
+✅ Server logs show [DIST-%] agent=X target=50.0% ... matching the per-magasin config.
+✅ Resetting Magasin 1's epoch does NOT affect Magasin 2's count window.
+✅ /api/_debug/distribution/<magasinId> returns the right percentages for that magasin.
+✅ No TypeScript errors. Existing legacy data (settings with magasin_id IS NULL) still works as account-wide fallback.
+

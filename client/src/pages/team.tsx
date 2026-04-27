@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings } from "@/hooks/use-store-data";
+import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 import { queryClient } from "@/lib/queryClient";
@@ -79,7 +79,115 @@ const defaultForm = {
   commissionRate: "",
   memberType: "agent" as "agent" | "media_buyer",
   buyerCode: "",
+  percentagesByMagasin: {} as Record<number, number>,
 };
+
+// Per-magasin lead percentage grid for the agent edit modal.
+// Loads existing per-magasin rows on mount, seeds the parent state once, and
+// shows a column-validity hint (each magasin's column must sum to ~100%).
+function PerMagasinPercentageGrid({
+  agentId, magasins, values, onChange,
+}: {
+  agentId: number;
+  magasins: any[];
+  values: Record<number, number>;
+  onChange: (next: Record<number, number>) => void;
+}) {
+  const { data: existing = [], isLoading } = useAgentMagasinPercentages(agentId);
+  const { data: agentSettings = [] } = useAgentStoreSettings();
+  const { data: agents = [] } = useAgents();
+
+  // Magasins this agent is linked to (per stores.agentIds). If a magasin's
+  // agentIds is empty, fall back to "all account agents" — matches getNextAgent.
+  const linkedMagasins = (magasins || []).filter((m: any) => {
+    const ids: number[] = Array.isArray(m.agentIds) ? m.agentIds.map(Number) : [];
+    return ids.length === 0 || ids.includes(agentId);
+  });
+
+  // One-shot: seed the controlled state from the server response the first
+  // time it loads (only if the parent hasn't been touched yet).
+  const [seeded, setSeeded] = useState(false);
+  useEffect(() => {
+    if (seeded || isLoading) return;
+    const seed: Record<number, number> = {};
+    for (const row of existing) seed[row.magasinId] = row.leadPercentage;
+    onChange({ ...seed, ...values });
+    setSeeded(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, existing, seeded]);
+
+  if (isLoading) {
+    return <p className="text-xs text-muted-foreground">Chargement…</p>;
+  }
+  if (linkedMagasins.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Cet agent n'est lié à aucun magasin. Liez-le depuis la page Magasins pour configurer ses pourcentages.
+      </p>
+    );
+  }
+
+  // For each magasin, compute the sum of percentages of all agents linked to
+  // that magasin (using the new per-magasin row when available, falling back
+  // to the legacy account-wide leadPercentage in agentSettings).
+  const otherAgentSettings = (agentSettings as any[]).filter((s: any) => s.agentId !== agentId);
+
+  return (
+    <div className="space-y-3" data-testid="grid-magasin-percentages">
+      <p className="text-xs text-muted-foreground">
+        Définissez le % de leads que cet agent doit recevoir par magasin. Le total de chaque magasin (tous agents confondus) doit être 100%.
+      </p>
+      <div className="grid gap-2">
+        {linkedMagasins.map((m: any) => {
+          const linkedAgentIds: number[] = Array.isArray(m.agentIds) ? m.agentIds.map(Number) : [];
+          const eligibleAgents = (agents || []).filter((a: any) => {
+            if (a.role !== 'agent') return false;
+            if (linkedAgentIds.length === 0) return true;
+            return linkedAgentIds.includes(a.id);
+          });
+          const otherSum = eligibleAgents
+            .filter((a: any) => a.id !== agentId)
+            .reduce((sum: number, a: any) => {
+              const setting = otherAgentSettings.find((s: any) => s.agentId === a.id);
+              return sum + (setting?.leadPercentage || 0);
+            }, 0);
+          const me = Number(values[m.id] ?? 0);
+          const total = otherSum + me;
+          const isOk = total >= 99 && total <= 101;
+          return (
+            <div
+              key={m.id}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-background"
+              data-testid={`row-magasin-pct-${m.id}`}
+            >
+              <span className="flex-1 text-sm font-medium truncate">{m.name || `Magasin #${m.id}`}</span>
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                value={String(values[m.id] ?? "")}
+                placeholder="0"
+                onChange={e => {
+                  const v = e.target.value === "" ? 0 : Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                  onChange({ ...values, [m.id]: v });
+                }}
+                className="w-20 h-9 text-right"
+                data-testid={`input-magasin-pct-${m.id}`}
+              />
+              <span className="text-xs text-muted-foreground w-6">%</span>
+              <span
+                className={cn("text-[11px] font-semibold w-28 text-right", isOk ? "text-green-600" : "text-red-600")}
+                data-testid={`text-magasin-pct-total-${m.id}`}
+              >
+                Total: {total}%
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function MultiSelectDropdown({
   label, search, setSearch, items, selected, onToggle, renderItem, noItemsText,
@@ -224,7 +332,9 @@ export default function Team() {
   const { data: performance } = useAgentPerformance();
   const { data: products } = useProducts();
   const { data: agentSettings = [] } = useAgentStoreSettings();
+  const { data: magasins = [] } = useMagasins();
   const createAgent = useCreateAgent();
+  const upsertAgentPercentages = useUpsertAgentMagasinPercentages();
   const deleteAgent = useDeleteAgent();
   const setAgentProducts = useSetAgentProducts();
   const { toast } = useToast();
@@ -316,6 +426,9 @@ export default function Team() {
       commissionRate: setting?.commissionRate != null ? String(setting.commissionRate) : "",
       memberType: agent.role === 'media_buyer' ? 'media_buyer' : 'agent',
       buyerCode: agent.buyerCode || "",
+      // Reset the per-magasin map; PerMagasinPercentageGrid seeds it from the
+      // server response on first load (one-shot useEffect).
+      percentagesByMagasin: {},
     });
     setEditOpen(true);
   };
@@ -342,10 +455,37 @@ export default function Team() {
       // magasin chooses that strategy.
       payload.roleInStore = editForm.roleInStore;
       payload.commissionRate = editForm.commissionRate ? parseInt(editForm.commissionRate) : 0;
-      payload.leadPercentage = parseInt(editForm.leadPercentage) || 50;
+      // leadPercentage is now per-magasin and saved via a separate endpoint
+      // below — no longer sent in the user PATCH payload.
       payload.allowedProductIds = editForm.allowedProductIds;
       payload.allowedRegions = editForm.allowedRegions;
     }
+
+    // Save per-magasin percentages first (only when in % mode and there's data
+    // to write), then update the rest of the user record. We don't block the
+    // user save on the percentages save — both errors will surface via toast.
+    const isAgent = editingAgent.role === 'agent';
+    const hasPctData =
+      isAgent &&
+      editForm.distributionMethod === 'pourcentage' &&
+      Object.keys(editForm.percentagesByMagasin || {}).length > 0;
+
+    if (hasPctData) {
+      try {
+        await upsertAgentPercentages.mutateAsync({
+          agentId: editingAgent.id,
+          percentages: editForm.percentagesByMagasin,
+        });
+      } catch (err: any) {
+        toast({
+          title: "Erreur pourcentages",
+          description: err?.message?.replace(/^\d+:\s*/, '') || "Impossible d'enregistrer les pourcentages par magasin",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     updateAgentMutation.mutate({ agentId: editingAgent.id, payload });
   };
 
@@ -1199,43 +1339,14 @@ export default function Team() {
                       </button>
                     ))}
                   </div>
-                  {editForm.distributionMethod === "pourcentage" && (() => {
-                    const otherAgentsSum = (agents || [])
-                      .filter((a: any) => a.role === 'agent' && a.id !== editingAgent.id)
-                      .reduce((sum: number, a: any) => {
-                        const setting = (agentSettings as any[]).find((s: any) => s.agentId === a.id);
-                        return sum + (setting?.leadPercentage || 0);
-                      }, 0);
-                    const newValue = parseInt(editForm.leadPercentage) || 0;
-                    const total = otherAgentsSum + newValue;
-                    const isOk = total >= 99 && total <= 101;
-                    return (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <Input
-                            type="number"
-                            min="0"
-                            max="100"
-                            value={editForm.leadPercentage}
-                            onChange={e => setEditForm(d => ({ ...d, leadPercentage: e.target.value }))}
-                            className="w-24 h-9"
-                            data-testid="input-edit-lead-percentage"
-                          />
-                          <span className="text-sm text-muted-foreground">% des leads assignés</span>
-                        </div>
-                        <p
-                          className={cn("text-xs font-semibold", isOk ? "text-green-600" : "text-red-600")}
-                          data-testid="text-percentage-sum-edit"
-                        >
-                          Total des pourcentages des agents : {total}%
-                          {!isOk && " — devrait être 100%"}
-                        </p>
-                        <p className="text-[11px] text-muted-foreground">
-                          S'applique aux magasins en mode « Pourcentage ». La méthode se configure dans Magasins.
-                        </p>
-                      </div>
-                    );
-                  })()}
+                  {editForm.distributionMethod === "pourcentage" && (
+                    <PerMagasinPercentageGrid
+                      agentId={editingAgent.id}
+                      magasins={magasins as any[]}
+                      values={editForm.percentagesByMagasin}
+                      onChange={(next) => setEditForm(d => ({ ...d, percentagesByMagasin: next }))}
+                    />
+                  )}
                 </div>
               )}
 

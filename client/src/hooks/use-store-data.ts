@@ -743,6 +743,35 @@ export function useAgentStoreSettings() {
   });
 }
 
+export function useAgentMagasinPercentages(agentId: number | null) {
+  return useQuery<{ magasinId: number; leadPercentage: number }[]>({
+    queryKey: ["/api/agents", agentId, "magasin-percentages"],
+    queryFn: async () => {
+      if (!agentId) return [];
+      const res = await fetch(`/api/agents/${agentId}/magasin-percentages`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch agent magasin percentages");
+      return res.json();
+    },
+    enabled: !!agentId,
+  });
+}
+
+export function useUpsertAgentMagasinPercentages() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ agentId, percentages }: { agentId: number; percentages: Record<number, number> }) => {
+      const stringKeyed: Record<string, number> = {};
+      for (const [k, v] of Object.entries(percentages)) stringKeyed[String(k)] = v;
+      const res = await apiRequest("PUT", `/api/agents/${agentId}/magasin-percentages`, { percentages: stringKeyed });
+      return res.json();
+    },
+    onSuccess: (_data, { agentId }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agents", agentId, "magasin-percentages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agents/store-settings"] });
+    },
+  });
+}
+
 export function useUpsertAgentStoreSetting() {
   const queryClient = useQueryClient();
   return useMutation({

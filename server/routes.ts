@@ -1617,7 +1617,7 @@ export async function registerRoutes(
         if (typeof req.body.commissionRate === 'number') {
           settingsPayload.commissionRate = req.body.commissionRate;
         }
-        await storage.upsertStoreAgentSetting(user.id, storeId, settingsPayload);
+        await storage.upsertStoreAgentSetting(user.id, storeId, null, settingsPayload);
       }
 
       // Adding an agent changes the eligible pool for legacy "all-agents" magasins
@@ -4416,7 +4416,7 @@ export async function registerRoutes(
         if (data.allowedRegions !== undefined) settingsPayload.allowedRegions = JSON.stringify(data.allowedRegions);
         if (data.commissionRate !== undefined) settingsPayload.commissionRate = data.commissionRate;
         if (Object.keys(settingsPayload).length > 0) {
-          await storage.upsertStoreAgentSetting(userId, admin.storeId!, settingsPayload);
+          await storage.upsertStoreAgentSetting(userId, admin.storeId!, null, settingsPayload);
         }
       }
 
@@ -4497,7 +4497,7 @@ export async function registerRoutes(
       if (data.allowedProductIds !== undefined) payload.allowedProductIds = JSON.stringify(data.allowedProductIds);
       if (data.allowedRegions !== undefined) payload.allowedRegions = JSON.stringify(data.allowedRegions);
       if (data.commissionRate !== undefined) payload.commissionRate = data.commissionRate;
-      const result = await storage.upsertStoreAgentSetting(agentId, storeId, payload);
+      const result = await storage.upsertStoreAgentSetting(agentId, storeId, null, payload);
       // Any of role / lead% / allowed products / allowed regions affects distribution.
       const distChanged =
         data.roleInStore !== undefined ||
@@ -4509,6 +4509,70 @@ export async function registerRoutes(
         console.log(`[DIST-EPOCH] /store-settings change for agent ${agentId} → bumped ${n} magasin(s)`);
       }
       res.json(result);
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ============================================================
+  // PER-MAGASIN LEAD PERCENTAGES (one row per agent × magasin)
+  // ============================================================
+  // Returns the per-magasin percentages already configured for an agent.
+  // Shape: [{ magasinId, leadPercentage }]
+  app.get("/api/agents/:id/magasin-percentages", requireAuth, async (req, res) => {
+    const agentId = Number(req.params.id);
+    const storeId = req.user!.storeId!;
+    const agent = await storage.getUserById(agentId);
+    if (!agent || agent.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+    const rows = await storage.getAgentMagasinSettings(agentId, storeId);
+    const perMagasin = rows
+      .filter((r: any) => r.magasinId != null)
+      .map((r: any) => ({ magasinId: r.magasinId, leadPercentage: r.leadPercentage }));
+    res.json(perMagasin);
+  });
+
+  // Bulk-write per-magasin percentages for one agent.
+  // Body: { percentages: { [magasinId: number]: number } }
+  // Each magasinId must be a magasin owned by the admin's account.
+  app.put("/api/agents/:id/magasin-percentages", requireAdmin, async (req, res) => {
+    try {
+      const agentId = Number(req.params.id);
+      const storeId = req.user!.storeId!;
+      const agent = await storage.getUserById(agentId);
+      if (!agent || agent.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+      if (agent.role !== 'agent') return res.status(400).json({ message: "Cet utilisateur n'est pas un agent" });
+
+      const schema = z.object({
+        percentages: z.record(z.string(), z.number().min(0).max(100)),
+      });
+      const { percentages } = schema.parse(req.body);
+
+      // Validate every magasin belongs to this account.
+      const ownedMagasins = await storage.getStoresByOwner(req.user!.id);
+      const ownedIds = new Set(ownedMagasins.map(m => m.id));
+      const entries = Object.entries(percentages);
+      for (const [magasinIdStr] of entries) {
+        const mid = Number(magasinIdStr);
+        if (!ownedIds.has(mid)) {
+          return res.status(403).json({ message: `Magasin ${mid} non autorisé` });
+        }
+      }
+
+      // Upsert one row per magasin.
+      for (const [magasinIdStr, pct] of entries) {
+        const mid = Number(magasinIdStr);
+        await storage.upsertStoreAgentSetting(agentId, storeId, mid, { leadPercentage: pct });
+      }
+
+      // Bump distribution_epoch on every magasin we touched so the % engine
+      // doesn't poison fresh % targets with historical counts.
+      for (const [magasinIdStr] of entries) {
+        await storage.bumpDistributionEpoch(Number(magasinIdStr));
+      }
+      console.log(`[DIST-EPOCH] /magasin-percentages agent=${agentId} → bumped ${entries.length} magasin(s)`);
+
+      res.json({ ok: true, count: entries.length });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
