@@ -47,7 +47,7 @@ export interface IStorage {
   getOrder(id: number): Promise<OrderWithDetails | undefined>;
   getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
-    utmSource?: string; utmCampaign?: string;
+    utmSource?: string; utmCampaign?: string; magasinId?: number;
     dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
@@ -462,7 +462,7 @@ export class DatabaseStorage implements IStorage {
 
   async getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
-    utmSource?: string; utmCampaign?: string;
+    utmSource?: string; utmCampaign?: string; magasinId?: number;
     dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
     const conditions: any[] = [eq(orders.storeId, storeId)];
@@ -536,6 +536,9 @@ export class DatabaseStorage implements IStorage {
     }
     if (filters.utmCampaign) {
       conditions.push(eq(orders.utmCampaign, filters.utmCampaign));
+    }
+    if (filters.magasinId) {
+      conditions.push(eq(orders.magasinId, filters.magasinId));
     }
     if (filters.dateFrom || filters.dateTo) {
       const dateCol = filters.dateType === 'updatedAt'

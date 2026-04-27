@@ -532,7 +532,15 @@ export async function registerRoutes(
 
   app.get("/api/stats/filter-options", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
-    const allOrders = await storage.getOrdersByStore(storeId);
+    const { magasinId } = req.query as Record<string, string>;
+    let allOrders = await storage.getOrdersByStore(storeId);
+    // When a magasin is selected on the dashboard, narrow the dropdown
+    // options (cities, sources, etc.) to that magasin's data so users don't
+    // see options that won't match anything once the magasin filter applies.
+    if (magasinId && magasinId !== 'all') {
+      const mid = Number(magasinId);
+      allOrders = allOrders.filter(o => (o as any).magasinId === mid);
+    }
     const storeProducts = await storage.getProductsByStore(storeId);
     const storeAgents = (await storage.getUsersByStore(storeId)).filter(u => u.role === 'agent');
 
@@ -557,8 +565,9 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     const currentUser = req.user!;
     const isAgent = currentUser.role === 'agent';
-    const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign } = req.query as Record<string, string>;
+    const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign, magasinId } = req.query as Record<string, string>;
     let { agentId } = req.query as Record<string, string>;
+    console.log(`[STATS] storeId=${storeId} magasinId=${magasinId ?? 'all'} city=${city ?? 'all'} agent=${agentId ?? 'all'}`);
 
     let agentPermissions: Record<string, boolean> = {};
     if (isAgent) {
@@ -591,6 +600,10 @@ export async function registerRoutes(
     }
     if (utmCampaign && utmCampaign !== 'all') {
       allOrders = allOrders.filter(o => (o as any).utmCampaign === utmCampaign);
+    }
+    if (magasinId && magasinId !== 'all') {
+      const mid = Number(magasinId);
+      allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
     if (dateFrom) {
       const from = new Date(dateFrom);
@@ -1099,6 +1112,7 @@ export async function registerRoutes(
 
   app.get("/api/orders/filtered", requireAuth, async (req, res) => {
     const user = req.user!;
+    const magasinIdRaw = req.query.magasinId as string | undefined;
     const filters = {
       status: req.query.status as string | undefined,
       agentId: req.query.agentId ? Number(req.query.agentId) : undefined,
@@ -1106,6 +1120,7 @@ export async function registerRoutes(
       source: req.query.source as string | undefined,
       utmSource: req.query.utmSource as string | undefined,
       utmCampaign: req.query.utmCampaign as string | undefined,
+      magasinId: magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
       dateFrom: req.query.dateFrom as string | undefined,
       dateTo: req.query.dateTo as string | undefined,
       dateType: req.query.dateType as string | undefined,
@@ -1122,6 +1137,7 @@ export async function registerRoutes(
 
   app.get("/api/orders/all", requireAuth, async (req, res) => {
     const user = req.user!;
+    const magasinIdRaw = req.query.magasinId as string | undefined;
     const filters = {
       status: req.query.status as string | undefined,
       agentId: req.query.agentId ? Number(req.query.agentId) : undefined,
@@ -1129,6 +1145,7 @@ export async function registerRoutes(
       source: req.query.source as string | undefined,
       utmSource: req.query.utmSource as string | undefined,
       utmCampaign: req.query.utmCampaign as string | undefined,
+      magasinId: magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
       dateFrom: req.query.dateFrom as string | undefined,
       dateTo: req.query.dateTo as string | undefined,
       search: req.query.search as string | undefined,

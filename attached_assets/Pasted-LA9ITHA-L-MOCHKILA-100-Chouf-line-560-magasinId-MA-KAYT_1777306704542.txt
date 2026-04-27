@@ -1,0 +1,70 @@
+LA9ITHA L-MOCHKILA 100%!
+Chouf line 560 — magasinId MA-KAYT-DESTRUCTURED-CH men req.query! Filters kollha mawjoud:
+
+city ✅
+productId ✅
+agentId ✅
+source ✅
+shippingProvider ✅
+utmSource ✅
+utmCampaign ✅
+❌ magasinId MISSING
+
+Donc client ka-y-pass magasinId=37 l server, walakin server ka-y-ignore-h totalement! Stats kayrj3o kif kif b la3rad anna magasin filter ma daztch.
+Daba 3reft mochkila exactly. Hada howa l-prompt l-final, direct w 9sira:
+
+FIX — Dashboard "Tous les Magasins" filter is silently ignored by the API
+Root cause (1 line in 1 file)
+server/routes.ts line 560 — the destructure of req.query doesn't include magasinId:
+tsconst { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign } = req.query as Record<string, string>;
+//   ❌ no magasinId here
+The client correctly sends ?magasinId=37 (line 103 of dashboard.tsx), but the server never reads it. So the orders array is never filtered by magasin and the stats stay identical regardless of which magasin you pick — exactly what's happening in my screenshot (12 commandes total whether I pick "Tous", "Anakio", or "Promomarkett").
+Fix — server/routes.ts /api/stats/filtered endpoint
+Replace line 560 with:
+tsconst { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign, magasinId } = req.query as Record<string, string>;
+Then add the filter clause among the others (immediately after the utmCampaign filter, around line 594):
+tsif (magasinId && magasinId !== 'all') {
+  const mid = Number(magasinId);
+  allOrders = allOrders.filter(o => (o as any).magasinId === mid);
+}
+That's the entire fix for the dashboard. Two added lines.
+Same bug almost certainly exists on /api/filter-options
+Open server/routes.ts and search for every endpoint that accepts the same filter set (/api/filter-options, /api/orders/all, /api/dashboard/stats, anything that destructures req.query for city/productId/source). For each one, add magasinId to the destructure AND add the matching .filter() clause. If they're already correct, leave them alone — but check explicitly, don't assume.
+To find them quickly:
+bashgrep -n "city, productId" server/routes.ts
+grep -n "shippingProvider, utmSource" server/routes.ts
+Each match is a candidate that probably needs the same 2-line patch.
+Per-magasin stats also need to scope agent assignment counts
+In dashboard.tsx, the "STATISTIQUES CONFIRMATION" panel shows per-agent traitées/confirmées numbers. When a magasin is selected, those numbers should only count orders for that magasin — not the agent's total across all magasins.
+Look for where useAgentPerformance() is called in dashboard.tsx and pass the selected magasin:
+tsconst { data: performance } = useAgentPerformance(
+  filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+  // date param omitted → defaults to today
+);
+If the hook signature doesn't accept a magasinId yet, that's the same fix from the previous Performance prompt — pass it through to /api/agents/performance?magasinId=X and the server endpoint already handles it (line 4314-4326 in routes.ts from your last zip).
+Verify after deploy
+
+Pick "Anakio" in the magasin dropdown → "COMMANDES" card MUST drop to only Anakio orders.
+Pick "Promomarkett" → numbers MUST change to that magasin's numbers.
+Pick "Tous les Magasins" → back to full account totals.
+The "STATISTIQUES CONFIRMATION" and "STATISTIQUES LIVRAISON" panels must also reflect the chosen magasin.
+Server log: [STATS] storeId=X magasinId=37 should appear when a magasin is selected. Add a one-line log at the top of the endpoint:
+
+tsconsole.log(`[STATS] storeId=${storeId} magasinId=${magasinId ?? 'all'} city=${city ?? 'all'}`);
+Reminder — orders.magasin_id migration must already be applied
+This filter only works if the orders.magasin_id column exists AND is populated. If you haven't run the SQL migration from the previous prompt, run it first — without it, every order has magasinId = null and the new filter clause will return zero rows for any specific magasin.
+Quick check:
+sqlSELECT
+  count(*) AS total,
+  count(magasin_id) AS with_magasin,
+  count(*) - count(magasin_id) AS without_magasin
+FROM public.orders;
+with_magasin must be > 0 for the filter to do anything visible.
+Commit
+bashgit add server/routes.ts client/src/pages/dashboard.tsx
+git commit -m "fix(dashboard): respect magasinId filter on /api/stats/filtered
+
+- /api/stats/filtered now reads and applies the magasinId query param
+- Per-agent confirmation/livraison stats also scoped to selected magasin
+- Add log line for debugging which magasin scope was applied"
+git push

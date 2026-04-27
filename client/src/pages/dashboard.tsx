@@ -234,9 +234,18 @@ export default function Dashboard() {
 
 
   const { data: stats, isLoading } = useFilteredStats(activeFilters);
-  const { data: filterOptions } = useFilterOptions();
+  // Pass selected magasin so dropdown options match what the magasin actually has.
+  const { data: filterOptions } = useFilterOptions(
+    filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+  );
   const { data: agents } = useAgents();
-  const { data: agentPerf } = useAgentPerformance();
+  // Scope the per-agent confirmation/livraison panel to the chosen magasin
+  // so the numbers match the rest of the dashboard. When "Tous les magasins"
+  // is selected, pass null to fetch the cross-magasin total. Date is left
+  // omitted so the hook keeps its default (today).
+  const { data: agentPerf } = useAgentPerformance(
+    filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+  );
   const { data: agentSettings = [] } = useAgentStoreSettings();
   const { data: magasins = [] } = useMagasins();
 

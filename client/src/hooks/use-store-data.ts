@@ -12,11 +12,18 @@ export function useDashboardStats() {
   });
 }
 
-export function useFilterOptions() {
+export function useFilterOptions(magasinId?: number | null) {
+  // When a magasin is selected on the dashboard, narrow the dropdown options
+  // (cities, sources, UTM, etc.) to that magasin's data so the UI doesn't
+  // surface choices that won't match anything once the magasin filter applies.
+  const params = new URLSearchParams();
+  if (magasinId != null) params.set('magasinId', String(magasinId));
+  const qs = params.toString();
+  const url = `/api/stats/filter-options${qs ? `?${qs}` : ''}`;
   return useQuery({
-    queryKey: ["/api/stats/filter-options"],
+    queryKey: ["/api/stats/filter-options", qs],
     queryFn: async () => {
-      const res = await fetch("/api/stats/filter-options", { credentials: "include" });
+      const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch filter options");
       return res.json();
     },
