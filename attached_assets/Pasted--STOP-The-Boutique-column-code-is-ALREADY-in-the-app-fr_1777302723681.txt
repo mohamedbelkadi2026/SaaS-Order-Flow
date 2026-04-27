@@ -1,0 +1,86 @@
+🚨 STOP — The Boutique column code is ALREADY in the app (frontend + backend). The DB is missing the column.
+I just read your latest zip (__25_) line by line. Here's exactly what I found:
+✅ Frontend (client/src/pages/all-orders.tsx) — Boutique column added, top filter dropdown wired, inline filter wired. All correct.
+✅ Schema (shared/schema.ts) — magasin relation added on orders, OrderWithDetails type includes magasin. All correct.
+✅ Storage (server/storage.ts) — hydrateOrders reads magasinId and joins to stores to attach { id, name }. All correct.
+✅ API (server/routes.ts) — /api/orders/all returns hydrated orders. All correct.
+❌ Database (backup.sql line 527 — your live production DB) — the orders table has 38 columns and magasin_id is NOT one of them.
+sql-- This is your actual production orders table:
+CREATE TABLE public.orders (
+    id, store_id, order_number, customer_name, customer_phone, ...
+    -- ❌ NO magasin_id
+    -- ❌ NO last_action_at
+    -- ❌ NO last_action_by
+);
+Because the column doesn't exist:
+
+hydrateOrders reads (order as any).magasinId → returns undefined
+Code does (mid && magasinById.get(mid)) || null → always null
+API responds with magasin: null for every order
+Frontend renders the "—" dash for every row
+Top filter dropdown shows "—" rows hidden the moment you pick any boutique
+
+The previous "schema migration" instructions were never actually run on the production database. We need to run them as raw SQL now, in the Replit Database tab — not via npm run db:push (which has been silently skipping these changes).
+Apply this SQL right now (Replit → Database → SQL runner)
+Paste it as one block. Don't skip lines.
+sqlBEGIN;
+
+-- 1. orders.magasin_id (the missing column that breaks the Boutique feature)
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- 2. orders action tracking (for the "Traitées" / today's-actions feature)
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS last_action_at timestamp,
+  ADD COLUMN IF NOT EXISTS last_action_by integer REFERENCES public.users(id);
+
+-- 3. Indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_orders_magasin_id ON public.orders (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_orders_last_action ON public.orders (last_action_by, last_action_at);
+
+-- 4. Backfill: set magasin_id on existing orders by joining through the integration
+--    that produced them (Shopify webhook key, etc). For most setups this works:
+UPDATE public.orders o
+SET magasin_id = si.magasin_id
+FROM public.store_integrations si
+WHERE o.store_id = si.store_id
+  AND si.magasin_id IS NOT NULL
+  AND o.magasin_id IS NULL
+  AND o.source = si.provider;
+
+-- 5. (Optional) For accounts with only one magasin, attribute everything to it
+UPDATE public.orders o
+SET magasin_id = (
+  SELECT s.id FROM public.stores s
+  WHERE s.owner_id IN (SELECT id FROM public.users WHERE store_id = o.store_id AND role = 'owner')
+  LIMIT 1
+)
+WHERE o.magasin_id IS NULL;
+
+COMMIT;
+Verify it actually applied
+Run these immediately after — both must return rows:
+sqlSELECT column_name FROM information_schema.columns
+WHERE table_schema='public' AND table_name='orders' AND column_name='magasin_id';
+-- expected: 1 row
+
+SELECT column_name FROM information_schema.columns
+WHERE table_schema='public' AND table_name='orders'
+  AND column_name IN ('last_action_at','last_action_by');
+-- expected: 2 rows
+
+SELECT id, order_number, magasin_id FROM public.orders ORDER BY id DESC LIMIT 10;
+-- expected: at least some recent orders should have magasin_id populated
+If any of these queries return zero rows where they should return data, stop and paste the error here — the migration didn't apply (most likely a permission or transaction-rollback issue).
+After the SQL runs
+Restart the Replit server. Open Mes Commandes. The Boutique column should now show the green Shopify icon and the magasin name (Promomarkett, Anakio, etc.) on every order. The top "Toutes les boutiques" dropdown should filter rows correctly.
+For NEW orders coming in via webhook, the code already correctly sets magasinId: integration.magasinId — that part has been right all along, it just had nowhere to write.
+DO NOT change any code in this round
+Don't touch shared/schema.ts, server/storage.ts, client/src/pages/all-orders.tsx. The code is correct. The database wasn't. This is a database-only fix.
+Commit the migration script for future deploys
+Save the SQL above as migrations/20260427_add_magasin_id_and_action_tracking.sql and commit it to git so the migration is reproducible:
+bashmkdir -p migrations
+# (paste the SQL into the file)
+git add migrations/20260427_add_magasin_id_and_action_tracking.sql
+git commit -m "chore(db): add migration for orders.magasin_id + action tracking columns"
+git push
