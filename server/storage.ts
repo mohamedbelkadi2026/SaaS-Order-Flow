@@ -16,6 +16,7 @@ import {
   type Payment, type InsertPayment,
 } from "@shared/schema";
 import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or, isNull } from "drizzle-orm";
+import { alias as aliasedTable } from "drizzle-orm/pg-core";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -159,7 +160,7 @@ export interface IStorage {
   resetDistribution(magasinId: number): Promise<void>;
 
   createAdSpendEntry(data: InsertAdSpendNew & { userId?: number | null }): Promise<AdSpendNewEntry>;
-  getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string })[]>;
+  getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean; magasinId?: number | null }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string; magasinName?: string | null })[]>;
   deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void>;
   getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number>;
 
@@ -167,14 +168,14 @@ export interface IStorage {
   upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry>;
   deleteAdSpendEntry(id: number, storeId: number): Promise<void>;
   getAdminAdSpendList(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]>;
-  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
     byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
     byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
     ordersCount: number;
   }>;
-  getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
+  getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string, magasinId?: number): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }>;
@@ -2412,7 +2413,7 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
-  async getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string })[]> {
+  async getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean; magasinId?: number | null }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string; magasinName?: string | null })[]> {
     const conditions: any[] = [eq(adSpend.storeId, storeId)];
     if (opts?.source && opts.source !== 'all') conditions.push(eq(adSpend.source, opts.source));
     if (opts?.dateFrom) conditions.push(sql`${adSpend.date} >= ${opts.dateFrom}`);
@@ -2425,16 +2426,27 @@ export class DatabaseStorage implements IStorage {
     if (opts?.userId !== undefined && opts?.userId !== null && !opts?.allUsers) {
       conditions.push(eq(adSpend.userId as any, opts.userId));
     }
+    // magasinId filter: numeric → exact match. Legacy NULL rows are excluded
+    // when a specific magasin is picked (they show only under "Tous les magasins").
+    if (opts?.magasinId !== undefined && opts?.magasinId !== null) {
+      conditions.push(eq((adSpend as any).magasinId, opts.magasinId));
+    }
+    // Self-join stores to surface the magasin name for the table column.
+    // Aliased so it doesn't collide with adSpend.storeId (also FK to stores).
+    const magasinTable = aliasedTable(stores, 'magasin_join');
     const rows = await db.select({
       id: adSpend.id, storeId: adSpend.storeId, userId: (adSpend as any).userId,
+      magasinId: (adSpend as any).magasinId,
       productId: adSpend.productId,
       source: adSpend.source, date: adSpend.date, amount: adSpend.amount,
       productSellingPrice: adSpend.productSellingPrice, createdAt: adSpend.createdAt,
       productName: products.name,
       userName: users.username,
+      magasinName: magasinTable.name,
     }).from(adSpend)
       .leftJoin(products, eq(adSpend.productId, products.id))
       .leftJoin(users, eq((adSpend as any).userId, users.id))
+      .leftJoin(magasinTable, eq((adSpend as any).magasinId, magasinTable.id))
       .where(and(...conditions))
       .orderBy(desc(adSpend.date));
     return rows as any[];
@@ -2543,6 +2555,7 @@ export class DatabaseStorage implements IStorage {
     dateTo?: string,
     productId?: number,
     mediaBuyerIdFilter?: number,
+    magasinId?: number,
   ): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
@@ -2558,6 +2571,7 @@ export class DatabaseStorage implements IStorage {
     if (dateFrom) orderConds.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
     if (dateTo) orderConds.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
     if (mediaBuyerIdFilter) orderConds.push(eq(orders.mediaBuyerId, mediaBuyerIdFilter));
+    if (magasinId) orderConds.push(eq(orders.magasinId, magasinId));
     let deliveredOrders = await db.select().from(orders).where(and(...orderConds));
 
     // Product filter: keep only orders that have an item for the given product
@@ -2608,6 +2622,8 @@ export class DatabaseStorage implements IStorage {
     if (mediaBuyerIdFilter) legacyConds.push(eq(adSpendTracking.mediaBuyerId, mediaBuyerIdFilter));
     // When a product is selected, only include legacy ad spend explicitly tagged for that product
     if (productId) legacyConds.push(eq(adSpendTracking.productId, productId));
+    // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
+    if (magasinId) legacyConds.push(eq((adSpendTracking as any).magasinId, magasinId));
     const legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId }).from(adSpendTracking).where(and(...legacyConds));
     // Legacy adSpendTracking amounts are stored in DH → multiply by 100 to convert to centimes
     const legacyTotal = legacyAdSpend.reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
@@ -2619,6 +2635,8 @@ export class DatabaseStorage implements IStorage {
     if (mediaBuyerIdFilter) newAdConds.push(eq((adSpend as any).userId, mediaBuyerIdFilter));
     // When a product is selected, only include ad spend entries for that product
     if (productId) newAdConds.push(eq(adSpend.productId, productId));
+    // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
+    if (magasinId) newAdConds.push(eq((adSpend as any).magasinId, magasinId));
     const newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId }).from(adSpend).where(and(...newAdConds));
     const newAdTotal = newAdEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
@@ -2672,7 +2690,7 @@ export class DatabaseStorage implements IStorage {
     return { revenue, productCost, shippingCost, packagingCost: packagingCostTotal, agentCommissions, adSpend: totalAdSpend, netProfit, byBuyer, byAgent, ordersCount: deliveredOrders.length };
   }
 
-  async getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<{
+  async getMediaBuyerProfit(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string, magasinId?: number): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }> {
@@ -2683,12 +2701,14 @@ export class DatabaseStorage implements IStorage {
     const allLeadConditions: any[] = [eq(orders.storeId, storeId), eq(orders.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) allLeadConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
     if (dateTo) allLeadConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp + interval '1 day' - interval '1 second'`);
+    if (magasinId) allLeadConditions.push(eq(orders.magasinId, magasinId));
     const allLeads = await db.select({ id: orders.id }).from(orders).where(and(...allLeadConditions));
 
     // Delivered orders only — strict filter
     const orderConditions: any[] = [eq(orders.storeId, storeId), eq(orders.status, 'delivered'), eq(orders.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
     if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp + interval '1 day' - interval '1 second'`);
+    if (magasinId) orderConditions.push(eq(orders.magasinId, magasinId));
     const buyerOrders = await db.select().from(orders).where(and(...orderConditions));
 
     // Agent commission rates lookup
@@ -2715,6 +2735,7 @@ export class DatabaseStorage implements IStorage {
     const adSpendConditions: any[] = [eq(adSpendTracking.storeId, storeId), eq(adSpendTracking.mediaBuyerId, mediaBuyerId)];
     if (dateFrom) adSpendConditions.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adSpendConditions.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
+    if (magasinId) adSpendConditions.push(eq((adSpendTracking as any).magasinId, magasinId));
     const legacyEntries = await db.select({ amount: adSpendTracking.amount }).from(adSpendTracking).where(and(...adSpendConditions));
     const legacyAdSpend = legacyEntries.reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
 
@@ -2722,6 +2743,7 @@ export class DatabaseStorage implements IStorage {
     const newAdSpendConditions: any[] = [eq(adSpend.storeId, storeId), eq((adSpend as any).userId, mediaBuyerId)];
     if (dateFrom) newAdSpendConditions.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) newAdSpendConditions.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
+    if (magasinId) newAdSpendConditions.push(eq((adSpend as any).magasinId, magasinId));
     const newEntries = await db.select({ amount: adSpend.amount }).from(adSpend).where(and(...newAdSpendConditions));
     const newAdSpendTotal = newEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 

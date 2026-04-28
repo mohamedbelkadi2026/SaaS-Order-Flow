@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useProducts, useAgents } from "@/hooks/use-store-data";
+import { useProducts, useAgents, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -28,12 +28,13 @@ const SOURCE_STYLES: Record<string, string> = {
 };
 
 type Tab = "source" | "produit";
-const defaultFilters = { source: "all", productId: "all", dateFrom: "", dateTo: "", userId: "all" };
+const defaultFilters = { source: "all", productId: "all", dateFrom: "", dateTo: "", userId: "all", magasinId: "all" };
 
 export default function Publicites() {
   const { user } = useAuth();
   const { data: products = [] } = useProducts();
   const { data: agents = [] } = useAgents();
+  const { data: magasins = [] } = useMagasins();
   const { toast } = useToast();
   const qc = useQueryClient();
   const isAdmin = user?.role === "owner" || user?.role === "admin";
@@ -49,6 +50,7 @@ export default function Publicites() {
     productId: "none",
     amount: "",
     productSellingPrice: "",
+    magasinId: "",
   });
   const [saving, setSaving] = useState(false);
 
@@ -67,6 +69,7 @@ export default function Publicites() {
       if (applied.dateFrom) p.set("dateFrom", applied.dateFrom);
       if (applied.dateTo) p.set("dateTo", applied.dateTo);
       if (isAdmin && applied.userId !== "all") p.set("userId", applied.userId);
+      if (applied.magasinId !== "all") p.set("magasinId", applied.magasinId);
       const res = await fetch(`/api/publicites?${p}`, { credentials: "include" });
       if (!res.ok) throw new Error("Erreur serveur");
       return res.json();
@@ -92,7 +95,16 @@ export default function Publicites() {
     setApplied(defaultFilters);
   }
   function openModal() {
-    setForm({ date: new Date().toISOString().split("T")[0], source: AD_SOURCES[0], productId: "none", amount: "", productSellingPrice: "" });
+    // Preset modal magasin to whatever is selected in the top filter — saves
+    // a click for the common "I'm filtering by Anakio, add an Anakio expense" flow.
+    setForm({
+      date: new Date().toISOString().split("T")[0],
+      source: AD_SOURCES[0],
+      productId: "none",
+      amount: "",
+      productSellingPrice: "",
+      magasinId: filters.magasinId !== "all" ? filters.magasinId : "",
+    });
     setModalOpen(true);
   }
 
@@ -100,9 +112,12 @@ export default function Publicites() {
     if (!form.date || !form.source || !form.amount) {
       toast({ title: "Veuillez remplir tous les champs requis", variant: "destructive" }); return;
     }
+    if (!form.magasinId) {
+      toast({ title: "Veuillez sélectionner un magasin", variant: "destructive" }); return;
+    }
     setSaving(true);
     try {
-      const body: any = { date: form.date, source: form.source, amount: Number(form.amount) };
+      const body: any = { date: form.date, source: form.source, amount: Number(form.amount), magasinId: Number(form.magasinId) };
       if (tab === "produit" && form.productId !== "none") body.productId = Number(form.productId);
       if (tab === "produit" && form.productSellingPrice) body.productSellingPrice = Number(form.productSellingPrice);
       await apiRequest("POST", "/api/publicites", body);
@@ -145,7 +160,8 @@ export default function Publicites() {
     },
   ];
 
-  const colCount = tab === "produit" ? (isAdmin ? 7 : 6) : (isAdmin ? 5 : 4);
+  // +1 for the new Magasin column (shown to all users)
+  const colCount = tab === "produit" ? (isAdmin ? 8 : 7) : (isAdmin ? 6 : 5);
 
   return (
     <div className="space-y-5 animate-in fade-in duration-300">
@@ -239,6 +255,18 @@ export default function Publicites() {
             </Select>
           )}
 
+          <Select value={filters.magasinId} onValueChange={v => setFilters(f => ({ ...f, magasinId: v }))}>
+            <SelectTrigger className="w-full sm:w-auto sm:min-w-[160px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-magasin">
+              <SelectValue placeholder="Tous les magasins" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tous les magasins</SelectItem>
+              {(magasins as any[]).map((m: any) => (
+                <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Select value={filters.source} onValueChange={v => setFilters(f => ({ ...f, source: v }))}>
             <SelectTrigger className="w-full sm:w-auto sm:min-w-[150px] h-8 text-xs bg-white dark:bg-card border-border/60" data-testid="filter-source">
               <SelectValue placeholder="Source de traffic" />
@@ -259,7 +287,7 @@ export default function Publicites() {
           </div>
 
           <Button size="sm" onClick={applyFilters} className="h-8 px-4 text-xs" data-testid="btn-filtrer">Filtrer</Button>
-          {(applied.source !== "all" || applied.productId !== "all" || applied.dateFrom || applied.dateTo || applied.userId !== "all") && (
+          {(applied.source !== "all" || applied.productId !== "all" || applied.dateFrom || applied.dateTo || applied.userId !== "all" || applied.magasinId !== "all") && (
             <Button size="sm" variant="ghost" onClick={() => { setFilters(defaultFilters); setApplied(defaultFilters); }} className="h-8 px-3 text-xs text-muted-foreground">
               Réinitialiser
             </Button>
@@ -274,6 +302,7 @@ export default function Publicites() {
             <TableHeader>
               <TableRow className="bg-muted/30">
                 {isAdmin && <TableHead className="text-xs font-bold uppercase tracking-wide">Ajouté par</TableHead>}
+                <TableHead className="text-xs font-bold uppercase tracking-wide">Magasin</TableHead>
                 {tab === "produit" && <TableHead className="text-xs font-bold uppercase tracking-wide">Produit</TableHead>}
                 <TableHead className="text-xs font-bold uppercase tracking-wide">Source</TableHead>
                 <TableHead className="text-xs font-bold uppercase tracking-wide">Date</TableHead>
@@ -308,6 +337,9 @@ export default function Publicites() {
                       <span className="font-medium">{e.userName || "Inconnu"}</span>
                     </TableCell>
                   )}
+                  <TableCell className="text-sm" data-testid={`cell-magasin-${e.id}`}>
+                    {e.magasinName || <span className="text-muted-foreground">—</span>}
+                  </TableCell>
                   {tab === "produit" && (
                     <TableCell className="text-sm">{e.productName || <span className="text-muted-foreground">—</span>}</TableCell>
                   )}
@@ -379,6 +411,9 @@ export default function Publicites() {
                     <span className="text-xs text-muted-foreground">{e.date}</span>
                   </div>
                   {isAdmin && <p className="text-xs font-semibold text-foreground mb-0.5">{e.userName || "Inconnu"}</p>}
+                  <p className="text-xs text-muted-foreground mb-0.5">
+                    Magasin: <span className="font-medium text-foreground">{e.magasinName || "—"}</span>
+                  </p>
                   {tab === "produit" && e.productName && <p className="text-sm font-medium truncate mb-1">{e.productName}</p>}
                   {tab === "produit" && e.productSellingPrice && (
                     <p className="text-xs text-muted-foreground">Prix produit: <span className="font-medium">{formatCurrency(e.productSellingPrice)}</span></p>
@@ -420,6 +455,21 @@ export default function Publicites() {
             </Button>
           </div>
           <div className="px-6 py-5 space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-sm font-semibold">
+                Magasin <span className="text-red-500">*</span>
+              </Label>
+              <Select value={form.magasinId} onValueChange={v => setForm(f => ({ ...f, magasinId: v }))}>
+                <SelectTrigger className="h-9 text-sm" data-testid="modal-magasin">
+                  <SelectValue placeholder="Sélectionner un magasin" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(magasins as any[]).map((m: any) => (
+                    <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="space-y-1.5">
               <Label className="text-sm font-semibold">Date</Label>
               <Input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} className="h-9 text-sm" data-testid="modal-date" />

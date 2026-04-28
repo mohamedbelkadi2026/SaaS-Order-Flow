@@ -1,0 +1,245 @@
+FEATURE — Per-magasin ad spend (Publicités): pick magasin + source + product, profit calculated separately per magasinWhat I wantOn the Publicités page:
+
+The "Ajouter une dépense" modal must include a Magasin selector (Anakio / Promomarkett / etc.) — required field.
+The page header must have a Magasin filter (top of page: "Tous les magasins" / "Anakio" / "Promomarkett") that scopes the table AND the totals.
+Profit calculation per magasin must use only that magasin's ad spend × only that magasin's delivered orders. Today the engine adds total ad spend to total revenue across all magasins → wrong numbers.
+Existing rows without a magasin keep working (they show under "Tous les magasins" only).
+This unblocks the multi-magasin promise: each magasin gets its own honest ROI.Files to change
+shared/schema.ts — add magasin_id to ad_spend and ad_spend_tracking
+Apply the SQL migration (don't trust db:push — run raw ALTER TABLE)
+server/routes.ts — /api/publicites POST + GET accept and filter by magasinId
+server/storage.ts — getAdSpendEntries, getNetProfit, getMediaBuyerProfit honor magasinId scope
+client/src/pages/publicites.tsx — magasin field in the modal + magasin filter at the top
+client/src/pages/dashboard.tsx — already has filters.magasinId; just confirm the profit endpoints receive it
+Step 1 — SchemaIn shared/schema.ts:
+tsexport const adSpend = pgTable("ad_spend", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  magasinId: integer("magasin_id").references(() => stores.id),  // ← ADD
+  userId: integer("user_id").references(() => users.id),
+  productId: integer("product_id").references(() => products.id),
+  source: text("source").notNull(),
+  date: text("date").notNull(),
+  amount: integer("amount").notNull().default(0),
+  productSellingPrice: integer("product_selling_price"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// And the legacy table too
+export const adSpendTracking = pgTable("ad_spend_tracking", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").references(() => stores.id).notNull(),
+  magasinId: integer("magasin_id").references(() => stores.id),  // ← ADD
+  mediaBuyerId: integer("media_buyer_id").references(() => users.id),
+  productId: integer("product_id").references(() => products.id),
+  date: text("date").notNull(),
+  amount: integer("amount").notNull().default(0),
+  source: text("source"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+});Step 2 — Run SQL in Replit Database tabsqlBEGIN;
+
+ALTER TABLE public.ad_spend          ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+ALTER TABLE public.ad_spend_tracking ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+CREATE INDEX IF NOT EXISTS idx_ad_spend_magasin            ON public.ad_spend (magasin_id, date);
+CREATE INDEX IF NOT EXISTS idx_ad_spend_tracking_magasin   ON public.ad_spend_tracking (magasin_id, date);
+
+-- Backfill: if the account has exactly ONE magasin, attribute all existing
+-- ad spend rows to it. For multi-magasin accounts, leave NULL — admin will
+-- need to assign each row manually OR they'll show only under "Tous les magasins".
+UPDATE public.ad_spend a
+SET magasin_id = (
+  SELECT id FROM public.stores s
+  WHERE s.owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)
+  LIMIT 1
+)
+WHERE a.magasin_id IS NULL
+  AND (SELECT count(*) FROM public.stores
+       WHERE owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)) = 1;
+
+UPDATE public.ad_spend_tracking a
+SET magasin_id = (
+  SELECT id FROM public.stores s
+  WHERE s.owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)
+  LIMIT 1
+)
+WHERE a.magasin_id IS NULL
+  AND (SELECT count(*) FROM public.stores
+       WHERE owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)) = 1;
+
+COMMIT;
+
+-- Verify
+SELECT column_name FROM information_schema.columns
+WHERE table_schema='public' AND column_name='magasin_id'
+  AND table_name IN ('ad_spend', 'ad_spend_tracking');
+-- Expect 2 rows.Step 3 — Backend: accept and filter by magasinIn server/routes.ts:POST /api/publicites (line 1764) — accept magasinId:
+tsapp.post("/api/publicites", requireAuth, async (req, res) => {
+  const user = req.user!;
+  const storeId = user.storeId!;
+  const { source, date, amount, productId, productSellingPrice, magasinId } = req.body;
+  if (!source || !date || amount === undefined) return res.status(400).json({ message: "Champs requis manquants" });
+
+  // Validate magasinId belongs to this account if provided
+  let validatedMagasinId: number | null = null;
+  if (magasinId) {
+    const owned = await storage.getStoresByOwner(req.user!.id);
+    if (!owned.some(m => m.id === Number(magasinId))) {
+      return res.status(403).json({ message: "Magasin non autorisé" });
+    }
+    validatedMagasinId = Number(magasinId);
+  }
+
+  const amountCents = Math.round(Number(amount) * 100);
+  const pspCents = productSellingPrice ? Math.round(Number(productSellingPrice) * 100) : null;
+
+  const entry = await storage.createAdSpendEntry({
+    storeId,
+    magasinId: validatedMagasinId,
+    userId: user.id,
+    source,
+    date,
+    amount: amountCents,
+    productId: productId ? Number(productId) : null,
+    productSellingPrice: pspCents,
+  });
+  res.json(entry);
+});GET /api/publicites — filter by magasin:
+tsapp.get("/api/publicites", requireAuth, async (req, res) => {
+  // ... existing setup ...
+  const { productId, source, dateFrom, dateTo, tab, userId, magasinId } = req.query as Record<string, string>;
+  const opts: any = { source, dateFrom, dateTo };
+  if (tab === 'source') opts.productId = null;
+  else if (productId && productId !== 'all') opts.productId = Number(productId);
+  if (magasinId && magasinId !== 'all') opts.magasinId = Number(magasinId);  // ← ADD
+  // ... rest unchanged ...
+});In server/storage.ts, update getAdSpendEntries to honor magasinId:
+tsasync getAdSpendEntries(storeId: number, opts: {
+  productId?: number | null;
+  source?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  userId?: number;
+  allUsers?: boolean;
+  magasinId?: number | null;   // ← ADD
+}) {
+  const conds: any[] = [eq(adSpend.storeId, storeId)];
+  if (opts.productId === null) conds.push(sql`${adSpend.productId} IS NULL`);
+  else if (opts.productId !== undefined) conds.push(eq(adSpend.productId, opts.productId));
+  if (opts.source && opts.source !== 'all') conds.push(eq(adSpend.source, opts.source));
+  if (opts.dateFrom) conds.push(gte(adSpend.date, opts.dateFrom));
+  if (opts.dateTo)   conds.push(lte(adSpend.date, opts.dateTo));
+  if (!opts.allUsers && opts.userId) conds.push(eq(adSpend.userId, opts.userId));
+  if (opts.magasinId != null) conds.push(eq(adSpend.magasinId, opts.magasinId));   // ← ADD
+  return await db.select().from(adSpend).where(and(...conds)).orderBy(desc(adSpend.createdAt));
+}Step 4 — Profit engine respects magasin scopeIn server/storage.ts, find getNetProfit (or whichever function totals revenue minus ad spend). Change the signature to accept magasinId and apply it to BOTH the orders query AND the ad spend sum:tsasync getNetProfit(storeId: number, options?: {
+  dateFrom?: string;
+  dateTo?: string;
+  magasinId?: number | null;   // ← ADD
+}) {
+  const orderConds: any[] = [
+    eq(orders.storeId, storeId),
+    eq(orders.status, 'delivered'),
+  ];
+  if (options?.dateFrom) orderConds.push(gte(orders.createdAt, new Date(options.dateFrom)));
+  if (options?.dateTo)   orderConds.push(lte(orders.createdAt, new Date(`${options.dateTo}T23:59:59`)));
+  if (options?.magasinId) orderConds.push(eq(orders.magasinId, options.magasinId));   // ← ADD
+
+  const deliveredOrders = await db.select().from(orders).where(and(...orderConds));
+
+  const adConds: any[] = [eq(adSpend.storeId, storeId)];
+  if (options?.dateFrom) adConds.push(gte(adSpend.date, options.dateFrom));
+  if (options?.dateTo)   adConds.push(lte(adSpend.date, options.dateTo));
+  if (options?.magasinId) adConds.push(eq(adSpend.magasinId, options.magasinId));   // ← ADD
+  const adRows = await db.select().from(adSpend).where(and(...adConds));
+  const totalAdSpend = adRows.reduce((s, r) => s + (r.amount || 0), 0);
+
+  // ... rest of revenue / cost calculation unchanged ...
+}Update the /api/publicites/profit (or whatever the dashboard's profit endpoint is) to read magasinId from query params and pass it through:tsapp.get("/api/publicites/profit", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const { dateFrom, dateTo, magasinId } = req.query as Record<string, string>;
+  const result = await storage.getNetProfit(storeId, {
+    dateFrom,
+    dateTo,
+    magasinId: magasinId && magasinId !== 'all' ? Number(magasinId) : null,
+  });
+  res.json(result);
+});Same for /api/media-buyer/profit and any other profit-related endpoint.Step 5 — Frontend: Publicités pageIn client/src/pages/publicites.tsx:Add magasin to defaults and form:
+tsconst defaultFilters = { source: "all", productId: "all", dateFrom: "", dateTo: "", userId: "all", magasinId: "all" };
+
+// inside component:
+const [form, setForm] = useState({
+  date: new Date().toISOString().split("T")[0],
+  source: AD_SOURCES[0],
+  productId: "none",
+  amount: "",
+  productSellingPrice: "",
+  magasinId: "",   // ← ADD (empty = required validation will catch)
+});
+
+const { data: magasins = [] } = useMagasins();Top-of-page magasin filter (next to the existing source/date filters):
+tsx<Select value={filters.magasinId} onValueChange={v => setFilters(f => ({ ...f, magasinId: v }))}>
+  <SelectTrigger className="h-9 text-sm w-[180px]">
+    <SelectValue />
+  </SelectTrigger>
+  <SelectContent>
+    <SelectItem value="all">Tous les magasins</SelectItem>
+    {(magasins as any[]).map(m => (
+      <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+    ))}
+  </SelectContent>
+</Select>Apply this filter when calling the API — add magasinId to the applied URLSearchParams in the publicites query.Modal: magasin field (REQUIRED) — insert at the top of the modal body, before the date field:
+tsx<div className="space-y-1.5">
+  <Label className="text-sm font-semibold">
+    Magasin <span className="text-red-500">*</span>
+  </Label>
+  <Select value={form.magasinId} onValueChange={v => setForm(f => ({ ...f, magasinId: v }))}>
+    <SelectTrigger className="h-9 text-sm" data-testid="modal-magasin">
+      <SelectValue placeholder="Sélectionner un magasin" />
+    </SelectTrigger>
+    <SelectContent>
+      {(magasins as any[]).map(m => (
+        <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+      ))}
+    </SelectContent>
+  </Select>
+</div>Validate before submit (line 100 area):
+tsif (!form.date || !form.source || !form.amount) {
+  toast({ title: "Champs requis manquants", variant: "destructive" });
+  return;
+}
+if (!form.magasinId) {
+  toast({ title: "Veuillez sélectionner un magasin", variant: "destructive" });
+  return;
+}
+
+const body: any = {
+  date: form.date,
+  source: form.source,
+  amount: Number(form.amount),
+  magasinId: Number(form.magasinId),   // ← ADD
+};
+if (tab === "produit" && form.productId !== "none") body.productId = Number(form.productId);
+if (tab === "produit" && form.productSellingPrice) body.productSellingPrice = Number(form.productSellingPrice);Show magasin column in the entries table so the admin can see at a glance which magasin each row belongs to:
+tsx<TableHead>Magasin</TableHead>
+// in body:
+<TableCell>
+  {(magasins as any[]).find((m: any) => m.id === entry.magasinId)?.name || '—'}
+</TableCell>Reset modal magasin to current top-filter on open (so if I'm viewing Anakio and click +Add, it pre-selects Anakio):
+tsconst openModal = () => {
+  setForm(f => ({
+    ...f,
+    magasinId: filters.magasinId !== 'all' ? filters.magasinId : '',
+  }));
+  setModalOpen(true);
+};Step 6 — Dashboard: ROI cards already accept filters.magasinIdYou added filters.magasinId to the dashboard in a previous prompt. Confirm the profit fetch includes it. Find the call to /api/publicites/profit (or /api/media-buyer/profit) in dashboard.tsx and add the param:
+tsif (filters.magasinId !== 'all') params.set('magasinId', filters.magasinId);Acceptance criteria
+✅ "Ajouter une dépense" modal: Magasin selector at top, required, defaults to current page filter if set.
+✅ Top filter "Tous les magasins / Anakio / Promomarkett" filters the entries table AND the totals card.
+✅ The entries table has a Magasin column showing the magasin name (or "—" for legacy NULL rows).
+✅ Pick "Anakio" → totals reflect only Anakio ad spend; pick "Promomarkett" → only Promomarkett.
+✅ Dashboard ROI: with magasin = Anakio, the calculation is (Anakio delivered revenue − Anakio costs − Anakio ad spend) / Anakio ad spend. Same for Promomarkett.
+✅ Existing legacy rows (no magasin_id) still appear when filter = "Tous", hidden otherwise.
+✅ Server log on save: [AD-SPEND] storeId=X magasinId=Y source=Facebook amount=15000.
+✅ No TypeScript errors. Media buyer view unaffected (they only see their own entries).

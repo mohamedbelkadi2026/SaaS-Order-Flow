@@ -162,6 +162,7 @@ export const orderItems = pgTable("order_items", {
 export const adSpendTracking = pgTable("ad_spend_tracking", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
+  magasinId: integer("magasin_id").references(() => stores.id),
   mediaBuyerId: integer("media_buyer_id").references(() => users.id),
   productId: integer("product_id").references(() => products.id),
   date: text("date").notNull(),
@@ -174,6 +175,7 @@ export const adSpendTracking = pgTable("ad_spend_tracking", {
 export const adSpend = pgTable("ad_spend", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),
+  magasinId: integer("magasin_id").references(() => stores.id),
   userId: integer("user_id").references(() => users.id),
   productId: integer("product_id").references(() => products.id),
   source: text("source").notNull(),

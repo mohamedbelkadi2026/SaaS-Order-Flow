@@ -196,11 +196,14 @@ export default function Dashboard() {
     enabled: isMediaBuyer,
   });
   const { data: mbProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
-    queryKey: ['/api/media-buyer/profit', mbDateRange.from, mbDateRange.to],
+    queryKey: ['/api/media-buyer/profit', mbDateRange.from, mbDateRange.to, filters.magasinId],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (mbDateRange.from) params.set('dateFrom', mbDateRange.from);
       if (mbDateRange.to) params.set('dateTo', mbDateRange.to);
+      // Honour the dashboard top-bar magasin filter so the ROI card matches
+      // the rest of the dashboard's per-magasin scope.
+      if (filters.magasinId !== 'all') params.set('magasinId', filters.magasinId);
       const qs = params.toString();
       const res = await fetch(`/api/media-buyer/profit${qs ? `?${qs}` : ''}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch profit');
@@ -210,9 +213,12 @@ export default function Dashboard() {
   });
 
   const { data: adminPersonalProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
-    queryKey: ['/api/media-buyer/profit-admin-personal'],
+    queryKey: ['/api/media-buyer/profit-admin-personal', filters.magasinId],
     queryFn: async () => {
-      const res = await fetch('/api/media-buyer/profit', { credentials: 'include' });
+      const params = new URLSearchParams();
+      if (filters.magasinId !== 'all') params.set('magasinId', filters.magasinId);
+      const qs = params.toString();
+      const res = await fetch(`/api/media-buyer/profit${qs ? `?${qs}` : ''}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },

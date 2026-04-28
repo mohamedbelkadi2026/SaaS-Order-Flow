@@ -218,6 +218,55 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] orders.magasin_id column ensured ✅');
 
+    // ── 6c-bis. ad_spend(_tracking).magasin_id — per-magasin ad spend scoping ──
+    // Same pattern as orders.magasin_id: nullable FK to stores(id). Existing
+    // rows are NULL until either (a) the single-magasin backfill below tags
+    // them, or (b) the admin re-files them via the Publicités UI. The profit
+    // engine respects this column so each magasin gets an honest ROI.
+    await client.query(`
+      ALTER TABLE public.ad_spend
+        ADD COLUMN IF NOT EXISTS magasin_id INTEGER REFERENCES public.stores(id);
+    `);
+    await client.query(`
+      ALTER TABLE public.ad_spend_tracking
+        ADD COLUMN IF NOT EXISTS magasin_id INTEGER REFERENCES public.stores(id);
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_ad_spend_magasin
+        ON public.ad_spend (magasin_id, date);
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_ad_spend_tracking_magasin
+        ON public.ad_spend_tracking (magasin_id, date);
+    `);
+    // Single-magasin backfill: if the account that owns this ad_spend row's
+    // store_id has exactly ONE magasin, attribute the row to that magasin.
+    // Multi-magasin accounts are left NULL — the admin will reassign in UI.
+    // Idempotent: only updates rows where magasin_id IS NULL.
+    await client.query(`
+      UPDATE public.ad_spend a
+      SET magasin_id = (
+        SELECT id FROM public.stores s
+        WHERE s.owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)
+        LIMIT 1
+      )
+      WHERE a.magasin_id IS NULL
+        AND (SELECT count(*) FROM public.stores
+             WHERE owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)) = 1;
+    `);
+    await client.query(`
+      UPDATE public.ad_spend_tracking a
+      SET magasin_id = (
+        SELECT id FROM public.stores s
+        WHERE s.owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)
+        LIMIT 1
+      )
+      WHERE a.magasin_id IS NULL
+        AND (SELECT count(*) FROM public.stores
+             WHERE owner_id = (SELECT owner_id FROM public.stores WHERE id = a.store_id LIMIT 1)) = 1;
+    `);
+    console.log('[Migration] ad_spend(_tracking).magasin_id ensured ✅ (single-magasin backfill applied)');
+
     // ── 6d. stores.distribution_epoch — reference window for percentage engine ─
     await pool.query(`
       ALTER TABLE public.stores

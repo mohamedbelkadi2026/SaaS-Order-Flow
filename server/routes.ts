@@ -1745,10 +1745,12 @@ export async function registerRoutes(
     const user = req.user!;
     const storeId = user.storeId!;
     const isAdmin = user.role === 'owner' || user.role === 'admin';
-    const { productId, source, dateFrom, dateTo, tab, userId } = req.query as Record<string, string>;
+    const { productId, source, dateFrom, dateTo, tab, userId, magasinId } = req.query as Record<string, string>;
     const opts: any = { source, dateFrom, dateTo };
     if (tab === 'source') opts.productId = null;
     else if (productId && productId !== 'all') opts.productId = Number(productId);
+    // Per-magasin scope: 'all' (or absent) = no filter; numeric = restrict to that magasin
+    if (magasinId && magasinId !== 'all') opts.magasinId = Number(magasinId);
     if (isAdmin) {
       // Admin can filter by a specific user or see all
       if (userId && userId !== 'all') opts.userId = Number(userId);
@@ -1764,12 +1766,26 @@ export async function registerRoutes(
   app.post("/api/publicites", requireAuth, async (req, res) => {
     const user = req.user!;
     const storeId = user.storeId!;
-    const { source, date, amount, productId, productSellingPrice } = req.body;
+    const { source, date, amount, productId, productSellingPrice, magasinId } = req.body;
     if (!source || !date || amount === undefined) return res.status(400).json({ message: "Champs requis manquants" });
+
+    // magasinId is required so each ad spend row attributes to one magasin →
+    // honest per-magasin ROI. Validate the magasin belongs to this account
+    // (owner_id matches the requester's account-level user) so a malicious
+    // user can't write spend rows against another tenant's magasin id.
+    if (!magasinId) {
+      return res.status(400).json({ message: "Magasin requis" });
+    }
+    const owned = await storage.getStoresByOwner(user.id);
+    if (!owned.some((m: any) => m.id === Number(magasinId))) {
+      return res.status(403).json({ message: "Magasin non autorisé" });
+    }
+
     const amountCents = Math.round(Number(amount) * 100);
     const pspCents = productSellingPrice ? Math.round(Number(productSellingPrice) * 100) : null;
     const entry = await storage.createAdSpendEntry({
       storeId,
+      magasinId: Number(magasinId),
       userId: user.id,
       source,
       date,
@@ -1799,7 +1815,8 @@ export async function registerRoutes(
     const dateTo = req.query.dateTo as string | undefined;
     const productId = req.query.productId && req.query.productId !== 'all' ? Number(req.query.productId) : undefined;
     const mediaBuyerIdFilter = req.query.mediaBuyerId && req.query.mediaBuyerId !== 'all' ? Number(req.query.mediaBuyerId) : undefined;
-    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter));
+    const magasinIdFilter = req.query.magasinId && req.query.magasinId !== 'all' ? Number(req.query.magasinId) : undefined;
+    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter));
   });
 
   app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {
@@ -1815,7 +1832,11 @@ export async function registerRoutes(
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
     const mediaBuyerId = user.role === 'media_buyer' ? user.id : (req.query.buyerId ? Number(req.query.buyerId) : user.id);
-    res.json(await storage.getMediaBuyerProfit(storeId, mediaBuyerId, dateFrom, dateTo));
+    // Honour per-magasin scope from the dashboard top filter (treat 'all' / missing as undefined).
+    const rawMagasin = req.query.magasinId;
+    const parsedMagasin = rawMagasin && rawMagasin !== 'all' ? Number(rawMagasin) : undefined;
+    const magasinId = Number.isFinite(parsedMagasin) ? parsedMagasin : undefined;
+    res.json(await storage.getMediaBuyerProfit(storeId, mediaBuyerId, dateFrom, dateTo, magasinId));
   });
 
   // ============================================================
