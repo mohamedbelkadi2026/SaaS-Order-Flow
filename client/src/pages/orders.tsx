@@ -16,7 +16,7 @@ import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogD
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { SiWhatsapp } from "react-icons/si";
+import { SiWhatsapp, SiShopify } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
 import { DateRangePicker } from "@/components/date-range-picker";
@@ -162,6 +162,7 @@ const ALL_COLUMNS = [
   { key: 'telephone', label: 'Téléphone', locked: false },
   { key: 'ville', label: 'Ville', locked: false },
   { key: 'produit', label: 'Produit', locked: false },
+  { key: 'boutique', label: 'Boutique', locked: false },
   { key: 'actionBy', label: 'Action By', locked: false },
   { key: 'comment', label: 'Comment', locked: false },
   { key: 'livraison', label: 'Livraison', locked: false },
@@ -177,7 +178,10 @@ const ALL_COLUMNS = [
   { key: 'action', label: 'Action', locked: true },
 ] as const;
 
-const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','comment','livraison','derniereAction','status','prix','adresse','reference','source','action'];
+// NOTE: 'boutique' is intentionally NOT added to LEGACY_BASELINE_DEFAULTS below.
+// That's how the knownDefaults bootstrap auto-appends it once for legacy
+// users while still respecting any defaults they had explicitly hidden.
+const DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','boutique','comment','livraison','derniereAction','status','prix','adresse','reference','source','action'];
 
 const COLUMNS_KEY = 'tajergrow_columns';
 // Snapshot of which defaults this browser had already "seen" the last time
@@ -583,6 +587,10 @@ export default function Orders() {
       if (colFilters.actionBy) {
         const agentName = o.agent?.username || '';
         if (!agentName.toLowerCase().includes(colFilters.actionBy.toLowerCase())) return false;
+      }
+      if (colFilters.boutique) {
+        const name = ((o as any).magasin?.name || '').toLowerCase();
+        if (!name.includes(colFilters.boutique.toLowerCase())) return false;
       }
       return true;
     });
@@ -1150,6 +1158,7 @@ export default function Orders() {
                 {isColVisible('telephone') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Téléphone</div>{showInlineFilters && renderColFilter('telephone', 'Filtr...')}</TableHead>}
                 {isColVisible('ville') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Ville</div>{showInlineFilters && renderColFilter('ville', 'Filtr...')}</TableHead>}
                 {isColVisible('produit') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Produit</div>{showInlineFilters && renderColFilter('produit', 'Filtr...')}</TableHead>}
+                {isColVisible('boutique') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Boutique</div>{showInlineFilters && renderColFilter('boutique', 'Filtr...')}</TableHead>}
                 {isColVisible('actionBy') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Action By</div>{showInlineFilters && renderColFilter('actionBy', 'Filtr...')}</TableHead>}
                 {isColVisible('comment') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Comment</TableHead>}
                 {isColVisible('livraison') && <TableHead>Frais de livraison</TableHead>}
@@ -1248,6 +1257,20 @@ export default function Orders() {
                       )}
                       {isColVisible('ville') && <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>}
                       {isColVisible('produit') && <TableCell className="max-w-[120px] truncate text-[11px]">{productName}</TableCell>}
+                      {isColVisible('boutique') && (
+                        <TableCell className="whitespace-nowrap text-[11px]" data-testid={`text-boutique-${order.id}`}>
+                          {(order as any).magasin?.name ? (
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-5 h-5 rounded-md bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+                                <SiShopify className="w-3 h-3 text-[#95BF47]" />
+                              </div>
+                              <span className="font-medium">{(order as any).magasin.name}</span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                      )}
                       {isColVisible('actionBy') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
                           {agentName !== '-' ? (

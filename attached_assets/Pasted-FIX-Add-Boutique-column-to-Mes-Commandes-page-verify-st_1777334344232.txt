@@ -1,0 +1,85 @@
+FIX — Add Boutique column to "Mes Commandes" page + verify status options
+Two changes in client/src/pages/orders.tsx
+Change 1 — Add Boutique column
+The boutique column is missing entirely from the Mes Commandes page (only exists on Toutes les commandes). Add it in the same 3 places as the other page.
+1a. Add to ALL_COLUMNS (line 159) — insert between produit and actionBy:
+tsconst ALL_COLUMNS = [
+  { key: 'code', label: 'Code', locked: false },
+  { key: 'destinataire', label: 'Destinataire', locked: false },
+  { key: 'telephone', label: 'Téléphone', locked: false },
+  { key: 'ville', label: 'Ville', locked: false },
+  { key: 'produit', label: 'Produit', locked: false },
+  { key: 'boutique', label: 'Boutique', locked: false },   // ← ADD
+  { key: 'actionBy', label: 'Action By', locked: false },
+  // ... rest unchanged
+] as const;
+1b. Add to DEFAULT_VISIBLE (line 180):
+tsconst DEFAULT_VISIBLE = ['code','destinataire','telephone','ville','produit','boutique','comment','livraison','derniereAction','status','prix','adresse','reference','source','action'];
+1c. Forward-compat getStoredColumns so existing users see the new column without resetting localStorage. Replace the function (line 182-188) with:
+tsfunction getStoredColumns(): string[] {
+  try {
+    const stored = localStorage.getItem('tajergrow_columns');
+    if (stored) {
+      const parsed: string[] = JSON.parse(stored);
+      const merged = [...parsed];
+      for (const col of DEFAULT_VISIBLE) {
+        if (!merged.includes(col)) merged.push(col);
+      }
+      const validKeys = new Set(ALL_COLUMNS.map(c => c.key));
+      return merged.filter(k => validKeys.has(k));
+    }
+  } catch {}
+  return DEFAULT_VISIBLE;
+}
+This is the same pattern from the all-orders fix — without it, anyone who used the page before this commit will keep seeing the OLD column list cached in their browser.
+1d. Add the table header (around line 1087, between produit and actionBy):
+tsx{isColVisible('boutique') && (
+  <TableHead className="text-[11px] font-semibold uppercase tracking-wider">
+    <div>Boutique</div>
+    {showInlineFilters && renderColFilter('boutique', 'Filtr...')}
+  </TableHead>
+)}
+1e. Add the cell render in the row body. Find where the produit cell is rendered (search for isColVisible('produit')) and add immediately after it:
+tsx{isColVisible('boutique') && (
+  <TableCell className="whitespace-nowrap text-[11px]" data-testid={`text-boutique-${order.id}`}>
+    {(order as any).magasin?.name ? (
+      <div className="flex items-center gap-1.5">
+        <div className="w-5 h-5 rounded-md bg-[#95BF47]/10 flex items-center justify-center shrink-0">
+          <SiShopify className="w-3 h-3 text-[#95BF47]" />
+        </div>
+        <span className="font-medium">{(order as any).magasin.name}</span>
+      </div>
+    ) : (
+      <span className="text-muted-foreground">—</span>
+    )}
+  </TableCell>
+)}
+1f. Add the icon import at the top of the file:
+tsimport { SiShopify } from "react-icons/si";
+1g. Add the inline filter clause. Find the colFilters filter chain (search for if (colFilters.actionBy) in orders.tsx) and add right after it:
+tsif (colFilters.boutique) {
+  const name = ((o as any).magasin?.name || '').toLowerCase();
+  if (!name.includes(colFilters.boutique.toLowerCase())) return false;
+}
+Change 2 — "Pas de réponse" status
+The page already supports four numbered "Pas de réponse" statuses (1-4) via STATUS_DROPDOWN_OPTIONS (lines 96-99). They should already appear in the status dropdown. If you want a single generic "Pas de réponse" (without a number) added as well, insert ONE entry above "Pas de réponse 1" (around line 96):
+ts{ value: 'Pas de réponse',                label: 'Pas de réponse'             },
+{ value: 'Pas de réponse 1',              label: 'Pas de réponse 1'           },
+// ...
+And the same in ALL_ORDER_STATUSES (around line 141, above 'Pas de réponse 1'):
+ts{ value: 'Pas de réponse',                label: 'Pas de réponse'             },
+Also update client/src/components/ui/status-badge.tsx so the new status renders with a color (around line 96, copy the rose color used for the numbered variants):
+ts{ value: 'Pas de réponse',                label: 'Pas de réponse',                color: C.rose    },
+If the four numbered variants are sufficient and the user just hadn't realized they were there, this section can be skipped — the dropdown already lists them. Verify what was actually missing by opening the status select on a row and checking if "Pas de réponse 1" through "Pas de réponse 4" appear.
+Backend — confirm magasin is hydrated on the orders this page receives
+The Mes Commandes page calls a different orders endpoint than All Orders (probably /api/orders instead of /api/orders/all). Check that it also returns order.magasin. Search:
+bashgrep -n "useOrders\b" client/src/hooks/use-store-data.ts
+Find the URL it hits, then in server/routes.ts find that endpoint and confirm it routes through hydrateOrders (which already attaches magasin: { id, name }). If the endpoint uses a raw db.select().from(orders) instead of going through storage, switch it to use storage.getOrdersByStore(storeId) so the hydration runs.
+Acceptance criteria
+
+✅ Open Mes Commandes → hard-refresh (Ctrl+Shift+R) → Boutique column appears between Produit and Action By, with the green Shopify icon and the magasin name (Promomarkett, Anakio).
+✅ The inline Filtr... field on Boutique works.
+✅ The column visibility menu shows "Boutique" as a checkable item.
+✅ Existing users who customized their column visibility keep their preferences and ALSO see the new column (forward-compat merge).
+✅ The status dropdown on each row shows the four numbered "Pas de réponse 1-4" variants. If a generic "Pas de réponse" was added, it appears at the top of that group.
+✅ No TypeScript errors.
