@@ -349,6 +349,12 @@ export default function Orders() {
   const [, params] = useRoute("/orders/:filter");
   const filterKey = params?.filter || "";
   const urlStatus = STATUS_MAP[filterKey] || (filterKey ? filterKey : "nouveau");
+  // Pages where the driver/livreur info is relevant: any carrier-flow page.
+  // Once the order has been picked up by a courier, the driver phone is useful
+  // everywhere downstream (chasing a delivery, asking why it bounced, etc.) —
+  // not only on Suivi des Colis. Pre-handoff pages (Nouveaux, Confirmés…)
+  // never have a driver, so the block stays hidden there naturally.
+  const showDriverInfo = ['suivi_group', 'in_progress', 'delivered', 'refused'].includes(urlStatus);
   const { data: storeData } = useStore();
   const whatsappLink = (phone: string, order: any) => buildWhatsappLink(phone, order, storeData?.whatsappTemplate);
   const { user } = useAuth();
@@ -1295,7 +1301,7 @@ export default function Orders() {
                             <span className="truncate" title={order.comment || order.commentStatus || ''}>
                               {order.comment || order.commentStatus || '-'}
                             </span>
-                            {urlStatus === 'suivi_group' && (order as any).driverPhone && (
+                            {showDriverInfo && (order as any).driverPhone && (
                               <a
                                 href={`tel:${(order as any).driverPhone}`}
                                 className="flex items-center gap-1 text-[11px] text-blue-600 font-semibold hover:underline"
@@ -1360,8 +1366,8 @@ export default function Orders() {
                               </SelectContent>
                             </Select>
                           )}
-                          {/* Livreur info — show in Suivi des Colis */}
-                          {urlStatus === 'suivi_group' && ((order as any).driverPhone || (order as any).driverName) && (
+                          {/* Livreur info — shown on every carrier-flow page (En cours, Suivi, Livrées, Refusées) */}
+                          {showDriverInfo && ((order as any).driverPhone || (order as any).driverName) && (
                             <div className="flex items-center gap-1.5 mt-1">
                               <span className="text-[10px] text-muted-foreground">🚴</span>
                               {(order as any).driverName && (

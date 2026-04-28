@@ -1,0 +1,82 @@
+FIX — Driver phone (numéro livreur) only shows on "Suivi des colis". Make it show on every carrier-related page.
+Problem
+In client/src/pages/orders.tsx, the driver phone is conditional on urlStatus === 'suivi_group'. So it appears on the Suivi des Colis page but NOT on:
+
+En cours (urlStatus === 'in_progress')
+Livrées (urlStatus === 'delivered')
+Refusées (urlStatus === 'refused')
+
+Once an order has a tracking number and a driver assigned, the driver phone is useful in every downstream view — call the driver to chase a delivery, ask why it bounced, etc.
+Fix — replace the narrow urlStatus === 'suivi_group' check with a broader one
+At the top of client/src/pages/orders.tsx, near where urlStatus is computed (around line 280), add a derived flag:
+ts// Pages where the driver/livreur info is relevant: any carrier-flow page.
+// The driver only exists once the order has been picked up by a courier.
+const showDriverInfo = ['suivi_group', 'in_progress', 'delivered', 'refused'].includes(urlStatus);
+Then replace the two existing urlStatus === 'suivi_group' driver checks with showDriverInfo:
+Line ~1289 — change:
+tsx{urlStatus === 'suivi_group' && (order as any).driverPhone && (
+to:
+tsx{showDriverInfo && (order as any).driverPhone && (
+Line ~1355 — change:
+tsx{urlStatus === 'suivi_group' && ((order as any).driverPhone || (order as any).driverName) && (
+to:
+tsx{showDriverInfo && ((order as any).driverPhone || (order as any).driverName) && (
+That's the minimal change. The same render markup (icon + name + clickable tel: link) now appears on all four pages whenever the order has a driver attached.
+Optional: also surface the driver in all-orders.tsx
+If you want it visible on Toutes les commandes too (independent of which sub-page the user is on), add the same JSX block in the comment cell of client/src/pages/all-orders.tsx. Search for where order.comment || order.commentStatus is rendered and append the driver block underneath it — no showDriverInfo gate, just check (order as any).driverPhone directly.
+Optional: make it a column
+If you want a dedicated column instead of cramming it under "Comment", add to ALL_COLUMNS:
+ts{ key: 'livreur', label: 'Livreur', locked: false },
+Add to DEFAULT_VISIBLE (only if you want it on by default — otherwise users can enable it via the column-visibility menu):
+tsconst DEFAULT_VISIBLE = [..., 'livreur', ...];
+Header:
+tsx{isColVisible('livreur') && (
+  <TableHead className="text-[11px] font-semibold uppercase tracking-wider">
+    <div>Livreur</div>
+    {showInlineFilters && renderColFilter('livreur', 'Filtr...')}
+  </TableHead>
+)}
+Cell:
+tsx{isColVisible('livreur') && (
+  <TableCell className="whitespace-nowrap text-[11px]">
+    {(order as any).driverPhone || (order as any).driverName ? (
+      <div className="flex flex-col">
+        {(order as any).driverName && (
+          <span className="font-medium">{(order as any).driverName}</span>
+        )}
+        {(order as any).driverPhone && (
+          
+            href={`tel:${(order as any).driverPhone}`}
+            className="text-blue-600 hover:underline flex items-center gap-1"
+            onClick={e => e.stopPropagation()}
+          >
+            <Phone className="w-2.5 h-2.5" />
+            {(order as any).driverPhone}
+          </a>
+        )}
+      </div>
+    ) : (
+      <span className="text-muted-foreground">—</span>
+    )}
+  </TableCell>
+)}
+Filter clause (in the colFilters filter chain):
+tsif (colFilters.livreur) {
+  const phone = (order as any).driverPhone || '';
+  const name  = (order as any).driverName  || '';
+  if (!`${phone} ${name}`.toLowerCase().includes(colFilters.livreur.toLowerCase())) return false;
+}
+Apply the same getStoredColumns merge pattern from previous prompts so existing users' localStorage doesn't hide the new column.
+Reminder — driver_name / driver_phone columns must exist in DB
+This fix relies on orders.driver_name and orders.driver_phone columns. They were part of the migration block from earlier prompts. If you didn't run that ALTER TABLE, run it now in Replit Database tab:
+sqlALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_name  text DEFAULT '';
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_phone text DEFAULT '';
+Without those columns, order.driverPhone is always undefined and the new conditions render nothing.
+Acceptance criteria
+
+✅ On En cours, Suivi des Colis, Livrées, Refusées → driver phone (and name if available) shows on every order that has them.
+✅ On Nouveaux, Confirmés, Injoignables, etc → driver block stays hidden (those pages predate the carrier handoff).
+✅ Tapping the phone link opens the dialer (tel: link).
+✅ e.stopPropagation() still prevents the row from opening when the user just wanted to call.
+✅ Optional column on All Orders (if you went that route) sortable/filterable like the others.
+✅ No TypeScript errors.
