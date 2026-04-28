@@ -1,0 +1,228 @@
+FIX — Méthode de répartition: clarify Auto, allow flexible percentages, link agent to products, link agent to regions
+What I want
+1. Auto = pure round-robin. 1 commande / agent / round, regardless of how many agents (3, 5, 10…). Already works in code — just make UI explanation clear.
+2. Pourcentage = flexible ratios that work however the user sets them. The UI currently scolds the user for not summing to 100% — that's wrong. The engine already normalizes. The right behavior: ratios are RELATIVE weights. 70/15/15 → A gets 70% of leads, B gets 15%, C gets 15%. 50/25/25 → 2/1/1. 5/2/2 → also 50/20/20 (engine normalizes). User shouldn't have to math their way to 100.
+3. Produit = pick which products this agent handles. Orders containing those products go to this agent only.
+4. Région = pick which regions this agent handles. Orders to those regions go to this agent only. Region → city mapping is already in server/storage.ts (REGION_CITY_MAP) — wire the UI to use it.
+
+Files to change
+
+client/src/pages/team.tsx — fix percentage UI explanation + add Produit and Région tabs
+server/storage.ts — confirm percentage normalization works (already correct, just verify)
+
+Step 1 — Update the percentage UI to show RATIOS, not forced 100%
+In client/src/pages/team.tsx, around line 138, replace the explanation paragraph:
+tsx<p className="text-xs text-muted-foreground">
+  Définissez le poids relatif de cet agent par magasin. Les pourcentages sont
+  des <strong>ratios</strong> — pas besoin que la somme fasse exactement 100%.
+  Si trois agents ont 70 / 15 / 15, le premier reçoit 70% des leads. Si vous
+  mettez 5 / 2 / 2, c'est exactement la même répartition (50% / 20% / 20%).
+  Mettez 0 pour exclure l'agent de ce magasin.
+</p>
+Replace the isOk = total >= 99 && total <= 101 validation with a non-blocking informational hint. The right of each input row (around line 175) currently shows "Total: X%" — keep it but reframe:
+tsx{/* Show normalized share, not "must be 100%" */}
+<span className={`text-xs font-medium tabular-nums ${total > 0 ? 'text-muted-foreground' : 'text-orange-600'}`}>
+  {total > 0
+    ? `Part de cet agent: ${Math.round((me / total) * 100)}%`
+    : 'Aucun agent configuré pour ce magasin'
+  }
+</span>
+This now shows the agent's TRUE share (after normalization), not a "100% required" warning. Setting 70 with two siblings at 15 each shows "Part de cet agent: 70%" — exactly what the user expects.
+The save button stays enabled regardless of sum. The engine handles normalization.
+Step 2 — Confirm engine normalization (already correct)
+In server/storage.ts around line 2108, this block already exists:
+tsconst sumPct = eligibleWithPct.reduce((s, a) => s + a.targetPct, 0);
+if (sumPct > 0 && Math.abs(sumPct - 100) > 0.5) {
+  eligibleWithPct.forEach(a => { a.targetPct = (a.targetPct / sumPct) * 100; });
+}
+That's correct. Add a console log so it's visible during testing:
+tsif (sumPct > 0 && Math.abs(sumPct - 100) > 0.5) {
+  console.log(`[DIST-%] Normalizing: sum=${sumPct.toFixed(1)} → scaling to 100`);
+  eligibleWithPct.forEach(a => { a.targetPct = (a.targetPct / sumPct) * 100; });
+}
+Step 3 — Produit tab (already partially exists, needs wiring)
+In team.tsx find the Méthode de répartition tabs (Auto / % / Produit / Région — line ~1395 area). The Produit tab content should:
+tsx{repartitionMethod === 'produit' && (
+  <div className="space-y-3 mt-3">
+    <p className="text-xs text-muted-foreground">
+      Sélectionnez les produits pris en charge par cet agent. Les commandes
+      contenant ces produits seront automatiquement attribuées à cet agent
+      (en plus des règles de pourcentage si elles s'appliquent).
+    </p>
+    <div className="space-y-1.5 max-h-64 overflow-y-auto rounded-lg border p-2">
+      {(products as any[]).map((p: any) => {
+        const checked = (editForm.allowedProductIds || []).includes(p.id);
+        return (
+          <label
+            key={p.id}
+            className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-accent cursor-pointer"
+            data-testid={`product-row-${p.id}`}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={(e) => {
+                setEditForm(d => ({
+                  ...d,
+                  allowedProductIds: e.target.checked
+                    ? [...(d.allowedProductIds || []), p.id]
+                    : (d.allowedProductIds || []).filter((id: number) => id !== p.id),
+                }));
+              }}
+            />
+            <span className="text-sm flex-1 truncate">{p.name}</span>
+            <span className="text-xs text-muted-foreground">
+              Stock: {p.stock ?? '—'}
+            </span>
+          </label>
+        );
+      })}
+      {(products as any[]).length === 0 && (
+        <p className="text-xs text-muted-foreground p-3 text-center">
+          Aucun produit en stock. Ajoutez des produits depuis la page Produits.
+        </p>
+      )}
+    </div>
+    <div className="flex gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setEditForm(d => ({ ...d, allowedProductIds: (products as any[]).map((p: any) => p.id) }))}
+      >
+        Tout sélectionner
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setEditForm(d => ({ ...d, allowedProductIds: [] }))}
+      >
+        Tout désélectionner
+      </Button>
+    </div>
+  </div>
+)}
+Make sure editForm.allowedProductIds: number[] is in the form state (around line 80) and is included in the save payload as allowedProductIds. The server endpoint already accepts it (server/routes.ts line 4422). The engine already filters by it (getNextAgent around line 1965).
+Step 4 — Région tab
+tsx{repartitionMethod === 'region' && (
+  <div className="space-y-3 mt-3">
+    <p className="text-xs text-muted-foreground">
+      Sélectionnez les régions du Maroc prises en charge par cet agent. Les
+      commandes des villes appartenant à ces régions seront attribuées à cet
+      agent. Les villes correspondantes sont reconnues automatiquement.
+    </p>
+    <div className="space-y-1.5 max-h-72 overflow-y-auto rounded-lg border p-2">
+      {MOROCCAN_REGIONS.map((region) => {
+        const checked = (editForm.allowedRegions || []).includes(region.value);
+        const cities = REGION_PREVIEW[region.value] || [];
+        return (
+          <label
+            key={region.value}
+            className="flex items-start gap-2 px-2 py-2 rounded hover:bg-accent cursor-pointer"
+            data-testid={`region-row-${region.value}`}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              className="mt-1"
+              onChange={(e) => {
+                setEditForm(d => ({
+                  ...d,
+                  allowedRegions: e.target.checked
+                    ? [...(d.allowedRegions || []), region.value]
+                    : (d.allowedRegions || []).filter((r: string) => r !== region.value),
+                }));
+              }}
+            />
+            <div className="flex-1">
+              <span className="text-sm font-medium">{region.label}</span>
+              <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                {cities.slice(0, 5).join(', ')}{cities.length > 5 ? `, +${cities.length - 5}` : ''}
+              </p>
+            </div>
+          </label>
+        );
+      })}
+    </div>
+    <div className="flex gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setEditForm(d => ({ ...d, allowedRegions: MOROCCAN_REGIONS.map(r => r.value) }))}
+      >
+        Tout le Maroc
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setEditForm(d => ({ ...d, allowedRegions: [] }))}
+      >
+        Effacer
+      </Button>
+    </div>
+  </div>
+)}
+Add a constant near the top of the file (next to MOROCCAN_REGIONS) so the user sees a preview of which cities each region covers:
+ts// Preview of cities per region. Mirrors server/storage.ts REGION_CITY_MAP
+// for UX. The engine does the actual matching server-side.
+const REGION_PREVIEW: Record<string, string[]> = {
+  tanger: ['Tanger', 'Tétouan', 'Al Hoceima', 'Chefchaouen', 'Larache', 'Ouazzane', 'Mdiq', 'Fnideq'],
+  oriental: ['Oujda', 'Nador', 'Berkane', 'Taourirt', 'Jerada', 'Guercif', 'Figuig'],
+  'fes-meknes': ['Fès', 'Meknès', 'Ifrane', 'Taza', 'Sefrou', 'Boulemane', 'El Hajeb'],
+  rabat: ['Rabat', 'Salé', 'Kénitra', 'Skhirat', 'Témara', 'Khémisset'],
+  'beni-mellal': ['Béni Mellal', 'Khénifra', 'Azilal', 'Khouribga', 'Fquih Ben Salah', 'Kasba Tadla'],
+  casablanca: ['Casablanca', 'Settat', 'Mohammedia', 'Benslimane', 'El Jadida', 'Berrechid', 'Mediouna', 'Nouaceur'],
+  marrakech: ['Marrakech', 'Safi', 'Essaouira', 'Chichaoua', 'Al Haouz', 'Kelaâ', 'Youssoufia'],
+  draa: ['Errachidia', 'Ouarzazate', 'Midelt', 'Tinghir', 'Zagora'],
+  souss: ['Agadir', 'Tiznit', 'Taroudant', 'Chtouka', 'Inezgane', 'Aït Melloul', 'Tata'],
+  guelmim: ['Guelmim', 'Tan-Tan', 'Sidi Ifni', 'Assa', 'Zag'],
+  laayoune: ['Laâyoune', 'Boujdour', 'Smara', 'Tarfaya'],
+  dakhla: ['Dakhla', 'Aousserd', 'Oued Dahab'],
+};
+The actual matching happens server-side via REGION_CITY_MAP in server/storage.ts. This client-side REGION_PREVIEW is purely for display. Make sure both lists stay in sync if you add new cities.
+Step 5 — Save payload includes both arrays
+Around line 487 (the save handler), confirm the API call sends allowedProductIds and allowedRegions:
+tsconst payload: any = {
+  username: editForm.username,
+  email:    editForm.email,
+  phone:    editForm.phone,
+  paymentType:   editForm.paymentType,
+  paymentAmount: parseFloat(editForm.paymentAmount) || 0,
+  commissionRate: parseFloat(editForm.commissionRate) || 0,
+  roleInStore:   editForm.specialty,
+  isActive:      editForm.isActive ? 1 : 0,
+  allowedProductIds: editForm.allowedProductIds || [],
+  allowedRegions:    editForm.allowedRegions    || [],
+};
+await updateUser.mutateAsync({ userId: editingId!, data: payload });
+
+// Then per-magasin percentages (separate endpoint):
+if (Object.keys(editForm.percentagesByMagasin || {}).length > 0) {
+  await upsertAgentPercentages.mutateAsync({
+    agentId: editingId!,
+    percentages: editForm.percentagesByMagasin,
+  });
+}
+The server's PUT /api/users/:id already accepts both fields (line 4422-4423) and stores them via upsertStoreAgentSetting on the legacy magasin_id IS NULL row, which acts as the account-wide default for product/region rules.
+Step 6 — Auto explanation in the UI (small clarification)
+In the Auto tab content, add a brief explainer:
+tsx{repartitionMethod === 'auto' && (
+  <p className="text-xs text-muted-foreground p-3 rounded-lg bg-muted/30">
+    Distribution équitable. Chaque agent reçoit une commande à tour de rôle,
+    quel que soit le nombre d'agents (3 → A, B, C, A, B, C…).
+  </p>
+)}
+
+Acceptance criteria
+
+✅ Auto: 3 agents linked to a magasin → 6 incoming orders distribute as A=2, B=2, C=2 in alternating order.
+✅ Pourcentage 70/15/15 → 100 orders distribute roughly as A=70, B=15, C=15. UI no longer says "doit être 100%".
+✅ Pourcentage 5/2/2 → distributes EXACTLY like 50/20/20 (engine normalizes). UI shows "Part de cet agent: 50%" / "20%" / "20%" so the user sees the effective ratio.
+✅ Produit tab: list of products with checkboxes + stock indicator. Selecting a subset means orders for those products go preferentially to this agent.
+✅ Région tab: 12 Moroccan regions with city previews. Selecting a subset means orders to those cities go to this agent.
+✅ Saving the agent persists allowedProductIds + allowedRegions on the legacy default row.
+✅ Engine logs show [DIST-%] Normalizing: sum=10 → scaling to 100 when ratios don't sum to 100.
+✅ No regression on existing 50/25/25 setups.
