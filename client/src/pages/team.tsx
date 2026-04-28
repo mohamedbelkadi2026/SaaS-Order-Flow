@@ -54,6 +54,24 @@ const MOROCCAN_REGIONS = [
   { value: "dakhla", label: "Région Dakhla-Oued Ed-Dahab" },
 ];
 
+// Preview of cities per region. Mirrors server/storage.ts REGION_CITY_MAP for
+// UX only — the actual city → region matching happens server-side. Keep the
+// two lists in sync if you add new cities to a region.
+const REGION_PREVIEW: Record<string, string[]> = {
+  tanger: ['Tanger', 'Tétouan', 'Al Hoceima', 'Chefchaouen', 'Larache', 'Ouazzane', 'Mdiq', 'Fnideq'],
+  oriental: ['Oujda', 'Nador', 'Berkane', 'Taourirt', 'Jerada', 'Guercif', 'Figuig'],
+  'fes-meknes': ['Fès', 'Meknès', 'Ifrane', 'Taza', 'Sefrou', 'Boulemane', 'El Hajeb'],
+  rabat: ['Rabat', 'Salé', 'Kénitra', 'Skhirat', 'Témara', 'Khémisset'],
+  'beni-mellal': ['Béni Mellal', 'Khénifra', 'Azilal', 'Khouribga', 'Fquih Ben Salah', 'Kasba Tadla'],
+  casablanca: ['Casablanca', 'Settat', 'Mohammedia', 'Benslimane', 'El Jadida', 'Berrechid', 'Mediouna', 'Nouaceur'],
+  marrakech: ['Marrakech', 'Safi', 'Essaouira', 'Chichaoua', 'Al Haouz', 'Kelaâ', 'Youssoufia'],
+  draa: ['Errachidia', 'Ouarzazate', 'Midelt', 'Tinghir', 'Zagora'],
+  souss: ['Agadir', 'Tiznit', 'Taroudant', 'Chtouka', 'Inezgane', 'Aït Melloul', 'Tata'],
+  guelmim: ['Guelmim', 'Tan-Tan', 'Sidi Ifni', 'Assa', 'Zag'],
+  laayoune: ['Laâyoune', 'Boujdour', 'Smara', 'Tarfaya'],
+  dakhla: ['Dakhla', 'Aousserd', 'Oued Dahab'],
+};
+
 const ROLE_LABELS: Record<string, string> = {
   confirmation: "Confirmation",
   suivi: "Suivi",
@@ -135,7 +153,11 @@ function PerMagasinPercentageGrid({
   return (
     <div className="space-y-3" data-testid="grid-magasin-percentages">
       <p className="text-xs text-muted-foreground">
-        Définissez le % de leads que cet agent doit recevoir par magasin. Le total de chaque magasin (tous agents confondus) doit être 100%.
+        Définissez le poids relatif de cet agent par magasin. Les pourcentages
+        sont des <strong>ratios</strong> — pas besoin que la somme fasse
+        exactement 100%. Si trois agents ont 70 / 15 / 15, le premier reçoit
+        70% des leads. Si vous mettez 5 / 2 / 2, c'est exactement la même
+        répartition (50% / 20% / 20%). Mettez 0 pour exclure l'agent de ce magasin.
       </p>
       <div className="grid gap-2">
         {linkedMagasins.map((m: any) => {
@@ -153,7 +175,9 @@ function PerMagasinPercentageGrid({
             }, 0);
           const me = Number(values[m.id] ?? 0);
           const total = otherSum + me;
-          const isOk = total >= 99 && total <= 101;
+          // Show the agent's TRUE share after normalization — much friendlier
+          // than scolding the user for not totaling 100. Engine normalizes anyway.
+          const sharePct = total > 0 ? Math.round((me / total) * 100) : 0;
           return (
             <div
               key={m.id}
@@ -176,10 +200,15 @@ function PerMagasinPercentageGrid({
               />
               <span className="text-xs text-muted-foreground w-6">%</span>
               <span
-                className={cn("text-[11px] font-semibold w-28 text-right", isOk ? "text-green-600" : "text-red-600")}
+                className={cn(
+                  "text-[11px] font-semibold w-36 text-right tabular-nums",
+                  total > 0 ? "text-muted-foreground" : "text-orange-600"
+                )}
                 data-testid={`text-magasin-pct-total-${m.id}`}
               >
-                Total: {total}%
+                {total > 0
+                  ? `Part de cet agent: ${sharePct}%`
+                  : "Aucun agent configuré"}
               </span>
             </div>
           );
@@ -424,7 +453,18 @@ export default function Team() {
     },
   });
 
-  const agentSettingsMap = new Map((agentSettings as any[]).map((s: any) => [s.agentId, s]));
+  // /api/agents/store-settings returns BOTH the legacy default row (magasinId
+  // IS NULL) and any per-magasin rows. We only want the default row here —
+  // it carries account-wide fields (roleInStore, allowedProductIds,
+  // allowedRegions, leadPercentage). Collapsing all rows into one map would
+  // let a per-magasin row randomly shadow the default and wipe selections
+  // from the edit modal. Per-magasin percentages are loaded separately via
+  // useAgentMagasinPercentages.
+  const agentSettingsMap = new Map(
+    (agentSettings as any[])
+      .filter((s: any) => s.magasinId == null)
+      .map((s: any) => [s.agentId, s])
+  );
 
   const openEditDialog = (agent: any) => {
     const setting = agentSettingsMap.get(agent.id);
@@ -826,7 +866,10 @@ export default function Team() {
                 </div>
 
                 {formData.distributionMethod === "auto" && (
-                  <p className="text-xs text-muted-foreground">Round Robin: les commandes sont assignées automatiquement aux agents actifs à tour de rôle.</p>
+                  <p className="text-xs text-muted-foreground p-3 rounded-lg bg-muted/30">
+                    Distribution équitable. Chaque agent reçoit une commande à
+                    tour de rôle, quel que soit le nombre d'agents (3 → A, B, C, A, B, C…).
+                  </p>
                 )}
 
                 {formData.distributionMethod === "pourcentage" && (() => {
@@ -838,7 +881,10 @@ export default function Team() {
                     }, 0);
                   const newValue = parseInt(formData.leadPercentage) || 0;
                   const total = otherAgentsSum + newValue;
-                  const isOk = total >= 99 && total <= 101;
+                  // Ratios don't have to sum to 100 — engine normalizes. Show
+                  // the agent's effective share so the user understands the
+                  // outcome of their numbers.
+                  const sharePct = total > 0 ? Math.round((newValue / total) * 100) : 0;
                   return (
                     <div className="space-y-2">
                       <div className="flex items-center gap-2">
@@ -846,22 +892,25 @@ export default function Team() {
                           <span className="px-3 py-2.5 text-sm font-bold bg-muted text-muted-foreground border-r">%</span>
                           <Input
                             type="number"
-                            min={1}
-                            max={100}
+                            min={0}
                             value={formData.leadPercentage}
                             onChange={e => setFormData(d => ({ ...d, leadPercentage: e.target.value }))}
                             className="border-none shadow-none h-10 w-32 focus-visible:ring-0 text-sm"
                             placeholder="50"
                           />
                         </div>
-                        <p className="text-xs text-muted-foreground">% des nouveaux leads sera assigné à cet agent.</p>
+                        <p className="text-xs text-muted-foreground">Poids relatif de cet agent (les pourcentages sont des <strong>ratios</strong>).</p>
                       </div>
                       <p
-                        className={cn("text-xs font-semibold", isOk ? "text-green-600" : "text-red-600")}
+                        className={cn(
+                          "text-xs font-semibold tabular-nums",
+                          total > 0 ? "text-muted-foreground" : "text-orange-600"
+                        )}
                         data-testid="text-percentage-sum-create"
                       >
-                        Total des pourcentages des agents : {total}%
-                        {!isOk && " — devrait être 100%"}
+                        {total > 0
+                          ? `Part de cet agent: ${sharePct}% (somme actuelle: ${total})`
+                          : "Aucun agent configuré"}
                       </p>
                       <p className="text-[11px] text-muted-foreground">
                         S'applique aux magasins en mode « Pourcentage ». La méthode de distribution se configure dans Magasins.
@@ -1408,6 +1457,12 @@ export default function Team() {
                       </button>
                     ))}
                   </div>
+                  {editForm.distributionMethod === "auto" && (
+                    <p className="text-xs text-muted-foreground p-3 rounded-lg bg-muted/30">
+                      Distribution équitable. Chaque agent reçoit une commande à
+                      tour de rôle, quel que soit le nombre d'agents (3 → A, B, C, A, B, C…).
+                    </p>
+                  )}
                   {editForm.distributionMethod === "pourcentage" && (
                     <PerMagasinPercentageGrid
                       agentId={editingAgent.id}
@@ -1415,6 +1470,133 @@ export default function Team() {
                       values={editForm.percentagesByMagasin}
                       onChange={(next) => setEditForm(d => ({ ...d, percentagesByMagasin: next }))}
                     />
+                  )}
+                  {editForm.distributionMethod === "produit" && (
+                    <div className="space-y-3 mt-3">
+                      <p className="text-xs text-muted-foreground">
+                        Sélectionnez les produits pris en charge par cet agent.
+                        Les commandes contenant ces produits seront automatiquement
+                        attribuées à cet agent (en plus des règles de pourcentage
+                        si elles s'appliquent).
+                      </p>
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto rounded-lg border p-2">
+                        {((products as any[]) || []).map((p: any) => {
+                          const checked = (editForm.allowedProductIds || []).includes(p.id);
+                          return (
+                            <label
+                              key={p.id}
+                              className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-accent cursor-pointer"
+                              data-testid={`product-row-${p.id}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  setEditForm(d => ({
+                                    ...d,
+                                    allowedProductIds: e.target.checked
+                                      ? [...(d.allowedProductIds || []), p.id]
+                                      : (d.allowedProductIds || []).filter((id: number) => id !== p.id),
+                                  }));
+                                }}
+                              />
+                              <span className="text-sm flex-1 truncate">{p.name}</span>
+                              <span className="text-xs text-muted-foreground">
+                                Stock: {p.stock ?? '—'}
+                              </span>
+                            </label>
+                          );
+                        })}
+                        {((products as any[]) || []).length === 0 && (
+                          <p className="text-xs text-muted-foreground p-3 text-center">
+                            Aucun produit en stock. Ajoutez des produits depuis la page Produits.
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="button-product-select-all"
+                          onClick={() => setEditForm(d => ({ ...d, allowedProductIds: ((products as any[]) || []).map((p: any) => p.id) }))}
+                        >
+                          Tout sélectionner
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="button-product-clear"
+                          onClick={() => setEditForm(d => ({ ...d, allowedProductIds: [] }))}
+                        >
+                          Tout désélectionner
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {editForm.distributionMethod === "region" && (
+                    <div className="space-y-3 mt-3">
+                      <p className="text-xs text-muted-foreground">
+                        Sélectionnez les régions du Maroc prises en charge par
+                        cet agent. Les commandes des villes appartenant à ces
+                        régions seront attribuées à cet agent. Les villes
+                        correspondantes sont reconnues automatiquement.
+                      </p>
+                      <div className="space-y-1.5 max-h-72 overflow-y-auto rounded-lg border p-2">
+                        {MOROCCAN_REGIONS.map((region) => {
+                          const checked = (editForm.allowedRegions || []).includes(region.value);
+                          const cities = REGION_PREVIEW[region.value] || [];
+                          return (
+                            <label
+                              key={region.value}
+                              className="flex items-start gap-2 px-2 py-2 rounded hover:bg-accent cursor-pointer"
+                              data-testid={`region-row-${region.value}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                className="mt-1"
+                                onChange={(e) => {
+                                  setEditForm(d => ({
+                                    ...d,
+                                    allowedRegions: e.target.checked
+                                      ? [...(d.allowedRegions || []), region.value]
+                                      : (d.allowedRegions || []).filter((r: string) => r !== region.value),
+                                  }));
+                                }}
+                              />
+                              <div className="flex-1">
+                                <span className="text-sm font-medium">{region.label}</span>
+                                <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                                  {cities.slice(0, 5).join(', ')}{cities.length > 5 ? `, +${cities.length - 5}` : ''}
+                                </p>
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="button-region-select-all"
+                          onClick={() => setEditForm(d => ({ ...d, allowedRegions: MOROCCAN_REGIONS.map(r => r.value) }))}
+                        >
+                          Tout le Maroc
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="button-region-clear"
+                          onClick={() => setEditForm(d => ({ ...d, allowedRegions: [] }))}
+                        >
+                          Effacer
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

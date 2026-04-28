@@ -2154,6 +2154,9 @@ export class DatabaseStorage implements IStorage {
       // scale them so the deficit math is meaningful.
       const sumPct = eligibleWithPct.reduce((s, a) => s + a.targetPct, 0);
       if (sumPct > 0 && Math.abs(sumPct - 100) > 0.5) {
+        // Ratios don't sum to 100 — treat them as relative weights so the user
+        // can write 70/15/15 or 5/2/2 and get the same effective distribution.
+        console.log(`[DIST-%] Normalizing: sum=${sumPct.toFixed(1)} → scaling to 100`);
         eligibleWithPct.forEach(a => { a.targetPct = (a.targetPct / sumPct) * 100; });
       }
 
