@@ -1,0 +1,311 @@
+FIX — When a carrier webhook arrives for a tracking number the platform doesn't recognize, AUTO-CREATE the order from the carrier's data
+My situation
+I have ~100 orders that I shipped to Digylog/Maystro/Ameex 3 days ago, BEFORE the platform's webhook integration was set up. Now the carrier API has all the data (customer name, phone, address, city, price, current status) but the platform's database doesn't even know these orders exist. So:
+
+Webhook arrives with tracking=SB9A3675N, phone=0707835334, status=En cours de réception au hub de livraison
+Platform tries to match by tracking → not found
+Platform tries by ref → not found
+Webhook gets logged as "No Match" and abandoned
+The order never appears in the platform, even though the carrier knows everything
+
+What I want: the webhook itself should create the order in the platform, pulling missing fields (name, address, city, price) directly from the carrier's API. From that point forward, every status update flows through normally.
+
+Files to change
+
+server/routes.ts — extend processCarrierWebhook with auto-create fallback
+server/services/carrier-service.ts — add a fetchOrderDetails(provider, trackingNumber, account) helper that returns full customer data, not just status
+server/storage.ts — add createOrderFromCarrier(...) helper
+
+
+Step 1 — fetchOrderDetails per carrier
+In server/services/carrier-service.ts, add a new generic exported function that returns full order info for one tracking number. For Digylog, it already has the right endpoint:
+tsexport async function fetchOrderDetails(
+  provider: string,
+  trackingNumber: string,
+  account: any
+): Promise<{
+  status: string | null;
+  rawStatus: string | null;
+  customerName?: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  customerCity?: string;
+  totalPrice?: number;            // in centimes
+  shippingCost?: number;           // in centimes
+  driverName?: string;
+  driverPhone?: string;
+  rawPayload?: any;
+} | null> {
+  const p = provider.toLowerCase().trim();
+
+  if (p === 'digylog') {
+    // Reuse the existing /order/:tracking/infos call
+    const apiKey    = (account as any).apiKey;
+    const customUrl = (account as any).apiUrl || undefined;
+    const base = (customUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '').replace(/api\.digylog\.ma/i, 'api.digylog.com');
+
+    const resp = await axios.get(`${base}/order/${encodeURIComponent(trackingNumber)}/infos`, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    if (resp.status !== 200 || !resp.data) return null;
+    const b = resp.data;
+
+    // Re-use the same status-mapping logic that's already in trackDigylogShipment.
+    // For brevity, call the existing helper and merge in customer fields:
+    const tracked = await trackDigylogShipment(trackingNumber, apiKey, customUrl);
+
+    return {
+      status:     tracked.status,
+      rawStatus:  tracked.rawStatus,
+      customerName:    b.name        || b.client_name  || b.customer_name || '',
+      customerPhone:   b.phone       || b.tel          || b.client_phone  || '',
+      customerAddress: b.address     || b.adresse      || '',
+      customerCity:    b.city        || b.ville        || '',
+      totalPrice:      b.price       ? Math.round(parseFloat(b.price) * 100)       : undefined,
+      shippingCost:    b.deliveryCost ? Math.round(parseFloat(b.deliveryCost) * 100) : undefined,
+      driverName:      tracked.driverName,
+      driverPhone:     tracked.driverPhone,
+      rawPayload:      b,
+    };
+  }
+
+  // Add Ameex / others by mirroring the same shape from trackAmeexShipment + the Ameex order-info endpoint.
+  if (p === 'ameex') {
+    // Implement when ready. For now return null so the caller falls back to "log as orphan".
+    return null;
+  }
+
+  return null;
+}
+Step 2 — createOrderFromCarrier in storage
+In server/storage.ts, add a helper that creates a minimal order from carrier-provided data. Default agent assignment goes through normal getNextAgent so multi-magasin distribution still works.
+tsasync createOrderFromCarrier(params: {
+  storeId: number;
+  magasinId?: number | null;
+  provider: string;
+  trackingNumber: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress?: string;
+  customerCity?: string;
+  totalPrice?: number;        // centimes
+  shippingCost?: number;      // centimes
+  status?: string;            // already mapped to internal status
+  rawStatus?: string;
+}): Promise<Order> {
+  // Use the tracking number as the order_number to keep it unique and obvious in the UI
+  const orderNumber = `EXT-${params.trackingNumber}`;
+  const assignedToId = await this.getNextAgent(
+    params.storeId, params.magasinId ?? null, undefined, params.customerCity
+  );
+
+  const [created] = await db.insert(orders).values({
+    storeId: params.storeId,
+    magasinId: params.magasinId ?? null,
+    orderNumber,
+    customerName: params.customerName || 'Client (importé)',
+    customerPhone: params.customerPhone || '',
+    customerAddress: params.customerAddress || '',
+    customerCity: params.customerCity || '',
+    totalPrice: params.totalPrice ?? 0,
+    shippingCost: params.shippingCost ?? 0,
+    trackNumber: params.trackingNumber,
+    shippingProvider: params.provider,
+    status: params.status || 'Attente De Ramassage',
+    commentStatus: params.rawStatus || '',
+    source: `${params.provider}_webhook`,
+    assignedToId,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as any).returning();
+  return created;
+}
+Step 3 — Extend processCarrierWebhook to auto-create
+In server/routes.ts, around line 2650 where the "No match" branch currently logs and returns, replace it with:
+tsif (!order) {
+  console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" — attempting auto-create from carrier API`);
+
+  // Try to fetch full details from the carrier so we can create the order
+  let details: Awaited<ReturnType<typeof fetchOrderDetails>> = null;
+  try {
+    const accounts = await storage.getCarrierAccounts(storeId, carrierName);
+    const account = accounts[0];
+    if (account && trackingNumber) {
+      const { fetchOrderDetails } = await import("./services/carrier-service");
+      details = await fetchOrderDetails(carrierName, trackingNumber, account);
+    }
+  } catch (e: any) {
+    console.warn(`[WEBHOOK-AUTO-CREATE] Failed to fetch details: ${e?.message}`);
+  }
+
+  if (details && details.customerPhone) {
+    // We got enough to create the order
+    // Resolve the magasin: if there's exactly one magasin in this account use it,
+    // otherwise leave magasinId null so the admin can assign it later.
+    const magasins = await storage.getStoresByOwner(/* owner of storeId */);
+    const magasinId = magasins.length === 1 ? magasins[0].id : null;
+
+    order = await storage.createOrderFromCarrier({
+      storeId,
+      magasinId,
+      provider: carrierName,
+      trackingNumber: trackingNumber!,
+      customerName:    details.customerName    || 'Client (importé)',
+      customerPhone:   details.customerPhone,
+      customerAddress: details.customerAddress,
+      customerCity:    details.customerCity,
+      totalPrice:      details.totalPrice,
+      shippingCost:    details.shippingCost,
+      status:          details.status || 'Attente De Ramassage',
+      rawStatus:       details.rawStatus || rawText,
+    });
+    matchedBy = `auto_created_from_${carrierName}_api`;
+
+    await storage.createIntegrationLog({
+      storeId, integrationId: null, provider: carrierName,
+      action: 'webhook_auto_created', status: 'ok',
+      message: `✓ Commande créée automatiquement depuis ${carrierName} — tracking: "${trackingNumber}" — client: "${details.customerName}"`,
+      payload: rawPayload.slice(0, 1000),
+    });
+    console.log(`[WEBHOOK-AUTO-CREATE]: Created order #${order.id} from ${carrierName} for tracking="${trackingNumber}"`);
+  } else {
+    // Still nothing — log as orphan
+    await storage.createIntegrationLog({
+      storeId, integrationId: null, provider: carrierName,
+      action: 'webhook_no_match', status: 'fail',
+      message: `⚠️ Commande introuvable et impossible à créer — tracking: "${trackingNumber}" | ref: "${orderNumber}" | statut: "${rawText}"`,
+      payload: rawPayload.slice(0, 1000),
+    });
+    return { tracked: false };
+  }
+}
+The rest of the function (status update, follow-up log creation) is already correct and now operates on the freshly-created order.
+Step 4 — Backfill button: "Importer toutes les commandes Digylog"
+For my 100 historical orders that arrived BEFORE I set up the webhook, add a manual one-shot endpoint that pulls the full list from the carrier and creates them all. This is different from "sync statuses for existing orders" — it's "import orders that don't exist yet".
+tsapp.post("/api/shipping/:provider/import-historical", requireAuth, requireActiveSubscription, async (req, res) => {
+  try {
+    const provider = req.params.provider.toLowerCase();
+    const storeId = req.user!.storeId!;
+    const { since } = req.body || {};   // optional ISO date — only import orders created after this date
+
+    const accounts = await storage.getCarrierAccounts(storeId, provider);
+    const account = accounts[0];
+    if (!account) return res.status(400).json({ message: `Aucun compte ${provider} configuré.` });
+
+    // Carrier-specific list endpoint. For Digylog: GET /api/v2/seller/orders?from=YYYY-MM-DD
+    const { listOrdersFromCarrier } = await import("./services/carrier-service");
+    const carrierOrders = await listOrdersFromCarrier(provider, account, { since });
+    if (!carrierOrders || carrierOrders.length === 0) {
+      return res.json({ created: 0, skipped: 0, message: "Aucune commande à importer." });
+    }
+
+    const magasins = await storage.getStoresByOwner(req.user!.id);
+    const magasinId = magasins.length === 1 ? magasins[0].id : null;
+
+    let created = 0, skipped = 0;
+    for (const co of carrierOrders) {
+      // Skip if already in platform (matched by tracking)
+      const existing = await storage.getOrderByTrackingNumber(storeId, co.trackingNumber);
+      if (existing) { skipped++; continue; }
+
+      await storage.createOrderFromCarrier({
+        storeId,
+        magasinId,
+        provider,
+        trackingNumber: co.trackingNumber,
+        customerName:    co.customerName,
+        customerPhone:   co.customerPhone,
+        customerAddress: co.customerAddress,
+        customerCity:    co.customerCity,
+        totalPrice:      co.totalPrice,
+        shippingCost:    co.shippingCost,
+        status:          co.status,
+        rawStatus:       co.rawStatus,
+      });
+      created++;
+    }
+    res.json({ created, skipped, total: carrierOrders.length });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+});
+In carrier-service.ts, add listOrdersFromCarrier:
+tsexport async function listOrdersFromCarrier(
+  provider: string,
+  account: any,
+  options?: { since?: string }
+): Promise<Array<any>> {
+  if (provider.toLowerCase() === 'digylog') {
+    const apiKey = (account as any).apiKey;
+    const base = ((account as any).apiUrl || 'https://api.digylog.com/api/v2/seller').replace(/\/+$/, '');
+    const params: any = {};
+    if (options?.since) params.from = options.since;
+
+    const resp = await axios.get(`${base}/orders`, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+      params,
+      timeout: 30000,
+      httpsAgent: SSL_AGENT,
+    });
+
+    const list = resp.data?.data || resp.data?.orders || resp.data || [];
+    return list.map((o: any) => ({
+      trackingNumber: o.traking || o.tracking || o.code,
+      customerName:   o.name      || '',
+      customerPhone:  o.phone     || '',
+      customerAddress: o.address  || '',
+      customerCity:   o.city      || '',
+      totalPrice:     o.price        ? Math.round(parseFloat(o.price) * 100)        : 0,
+      shippingCost:   o.deliveryCost ? Math.round(parseFloat(o.deliveryCost) * 100) : 0,
+      rawStatus:      o.status || '',
+      // Map raw status to internal status using the same logic as trackDigylogShipment
+      status: mapDigylogStatus(o.status || ''),
+    }));
+  }
+  return [];
+}
+
+function mapDigylogStatus(rawText: string): string {
+  const rawLow = rawText.toLowerCase();
+  if (
+    rawLow === 'livré' || rawLow === 'livre' || rawLow === 'livrée' ||
+    rawLow === 'remis au client' || rawLow.includes('distribu')
+  ) return 'delivered';
+  if (rawLow.includes('retour') && !rawLow.includes('en cours')) return 'retourné';
+  if (rawLow.includes('refus') || rawLow.includes('annul')) return 'refused';
+  if (rawLow.includes('ramass') || rawLow.includes('attente')) return 'Attente De Ramassage';
+  return 'in_progress';
+}
+Step 5 — UI button on the shipping integrations page
+Next to "Synchroniser Digylog" add another button:
+tsx<Button
+  variant="default"
+  onClick={async () => {
+    if (!confirm("Importer toutes les commandes depuis Digylog ? Les commandes déjà présentes seront ignorées.")) return;
+    const res = await apiRequest("POST", "/api/shipping/digylog/import-historical", {});
+    const data = await res.json();
+    toast({
+      title: "Import Digylog terminé",
+      description: `${data.created} commande(s) créée(s), ${data.skipped} déjà présente(s).`,
+    });
+    queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
+  }}
+>
+  Importer commandes historiques
+</Button>
+
+ACCEPTANCE CRITERIA
+
+✅ Webhook arrives with a tracking number that doesn't exist in the platform → platform fetches details from carrier API → creates the order with customer name, phone, address, city, price, and current status → next status updates flow normally.
+✅ Click "Importer commandes historiques" on the Digylog card → all my 100 historical orders appear in Mes Commandes with the correct status from Digylog.
+✅ A second click does nothing for orders already imported (skipped count goes up, created stays 0).
+✅ Auto-created orders are correctly attributed to a magasin if the account has only one; otherwise magasin_id is null and the admin can assign it manually.
+✅ Auto-created orders get distributed to agents through the normal getNextAgent so percentages still apply.
+✅ Server logs [WEBHOOK-AUTO-CREATE]: Created order #X from digylog for tracking="..." clearly distinguishing the path.
+✅ No TypeScript errors. Existing webhook flows (real-platform orders) unaffected.
+

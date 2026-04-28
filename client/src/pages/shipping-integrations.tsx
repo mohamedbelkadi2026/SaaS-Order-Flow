@@ -1692,6 +1692,35 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         Synchroniser Digylog
                       </Button>
                     )}
+                    {providerId === "digylog" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-indigo-300 text-indigo-700 hover:bg-indigo-50 font-semibold"
+                        onClick={async () => {
+                          if (!window.confirm("Importer toutes les commandes Digylog ? Les commandes déjà présentes seront ignorées.")) return;
+                          try {
+                            const res = await apiRequest("POST", "/api/shipping/digylog/import-historical", {});
+                            const data = await res.json();
+                            toast({
+                              title: "✅ Import Digylog terminé",
+                              description: `${data.created ?? 0} commande(s) créée(s), ${data.skipped ?? 0} déjà présente(s).`,
+                            });
+                            qc.invalidateQueries({ queryKey: ["/api/orders/all"] });
+                            qc.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+                            qc.invalidateQueries({ queryKey: ["/api/orders"] });
+                            qc.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+                            qc.invalidateQueries({ queryKey: ["/api/agents/my-stats"] });
+                          } catch (e: any) {
+                            toast({ title: "Erreur d'import Digylog", description: e.message, variant: "destructive" });
+                          }
+                        }}
+                        data-testid={`button-digylog-import-historical-${acct.id}`}
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 mr-1" />
+                        Importer commandes historiques
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="outline"

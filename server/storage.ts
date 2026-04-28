@@ -213,6 +213,7 @@ export interface IStorage {
   phoneHasOrdersInStore(storeId: number, phone: string): Promise<boolean>;
   updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; leadQuantity?: number; createdOrderId?: number }): Promise<void>;
   createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number; quantity?: number }): Promise<import("@shared/schema").Order>;
+  createOrderFromCarrier(params: { storeId: number; magasinId?: number | null; provider: string; trackingNumber: string; customerName: string; customerPhone: string; customerAddress?: string; customerCity?: string; totalPrice?: number; shippingCost?: number; status?: string; rawStatus?: string; }): Promise<import("@shared/schema").Order>;
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
@@ -3049,6 +3050,71 @@ export class DatabaseStorage implements IStorage {
   async updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; leadQuantity?: number; createdOrderId?: number }) {
     const { aiConversations } = await import("@shared/schema");
     await db.update(aiConversations).set(data as any).where(eq(aiConversations.id, convId));
+  }
+
+  /**
+   * Create a minimal order from carrier-side data. Used when a webhook arrives
+   * for a tracking number we don't have in the DB yet (orders shipped before
+   * the integration was wired up), or by the "Importer commandes historiques"
+   * batch import. Goes through getNextAgent so multi-magasin distribution
+   * percentages still apply.
+   */
+  async createOrderFromCarrier(params: {
+    storeId: number;
+    magasinId?: number | null;
+    provider: string;
+    trackingNumber: string;
+    customerName: string;
+    customerPhone: string;
+    customerAddress?: string;
+    customerCity?: string;
+    totalPrice?: number;
+    shippingCost?: number;
+    status?: string;
+    rawStatus?: string;
+  }): Promise<import("@shared/schema").Order> {
+    // Idempotency guard — if an order with this tracking already exists for the
+    // store, return it instead of creating a duplicate. Defends against
+    // double-clicked imports and webhooks that race with the import button.
+    if (params.trackingNumber) {
+      const existing = await this.getOrderByTrackingNumber(params.storeId, params.trackingNumber);
+      if (existing) {
+        console.log(`[createOrderFromCarrier] Order already exists for tracking="${params.trackingNumber}" (id=${existing.id}) — returning existing.`);
+        return existing;
+      }
+    }
+
+    const orderNumber = `EXT-${params.trackingNumber}`;
+    let assignedToId: number | null = null;
+    try {
+      assignedToId = await this.getNextAgent(
+        params.storeId,
+        params.magasinId ?? null,
+        undefined,
+        params.customerCity,
+      );
+    } catch (e: any) {
+      console.warn(`[createOrderFromCarrier] getNextAgent failed: ${e?.message}`);
+    }
+
+    const [created] = await db.insert(orders).values({
+      storeId:          params.storeId,
+      magasinId:        params.magasinId ?? null,
+      orderNumber,
+      customerName:     params.customerName  || 'Client (importé)',
+      customerPhone:    params.customerPhone || '',
+      customerAddress:  params.customerAddress || '',
+      customerCity:     params.customerCity    || '',
+      totalPrice:       params.totalPrice ?? 0,
+      shippingCost:     params.shippingCost ?? 0,
+      trackNumber:      params.trackingNumber,
+      shippingProvider: params.provider,
+      status:           params.status || 'Attente De Ramassage',
+      commentStatus:    params.rawStatus || '',
+      source:           `${params.provider}_webhook`,
+      assignedToId:     assignedToId ?? undefined,
+    } as any).returning();
+    return created;
   }
 
   async createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number; quantity?: number }): Promise<import("@shared/schema").Order> {

@@ -1314,6 +1314,181 @@ export async function getDigylogDeliveryCost(
 }
 
 /**
+ * Map a Digylog raw status string ("Livré", "En cours de livraison", …) to one of
+ * our internal statuses. Kept in sync with the inline mapping inside
+ * `trackDigylogShipment` — extract here so importers/auto-create paths can reuse it.
+ */
+export function mapDigylogStatus(rawText: string): string {
+  const rawLow = (rawText || '').toLowerCase().trim();
+  if (!rawLow) return 'Attente De Ramassage';
+  if (
+    rawLow === 'livré' || rawLow === 'livre' || rawLow === 'livrée' ||
+    rawLow === 'livrée *' || rawLow === 'livré *' ||
+    rawLow === 'livraison effectuée' ||
+    rawLow === 'remis au client' || rawLow === 'remis au client *' ||
+    rawLow === 'delivered' || rawLow.includes('distribu')
+  ) return 'delivered';
+  if (rawLow.includes('retour') && !rawLow.includes('en cours')) return 'retourné';
+  if (rawLow.includes('refus') || rawLow.includes('annul')) return 'refused';
+  if (rawLow.includes('injoignable') || rawLow.includes('absent')) return 'Injoignable';
+  if (rawLow.includes('ramass') || rawLow.includes('attente')) return 'Attente De Ramassage';
+  if (rawLow.includes('livr') || rawLow.includes('cours de livr')) return 'in_progress';
+  return 'in_progress';
+}
+
+/**
+ * Fetch full order details (customer name, phone, address, city, price, status)
+ * for a single tracking number. Used by the webhook auto-create path so that
+ * orders shipped BEFORE the integration was configured can be backfilled into
+ * the platform from the carrier's data.
+ *
+ * Returns `null` when the carrier doesn't expose a per-order detail endpoint
+ * yet — callers fall back to "log as orphan".
+ */
+export async function fetchOrderDetails(
+  provider: string,
+  trackingNumber: string,
+  account: any
+): Promise<{
+  status: string | null;
+  rawStatus: string | null;
+  customerName?: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  customerCity?: string;
+  totalPrice?: number;
+  shippingCost?: number;
+  driverName?: string;
+  driverPhone?: string;
+  rawPayload?: any;
+} | null> {
+  const p = (provider || '').toLowerCase().trim();
+
+  if (p === 'digylog') {
+    const apiKey    = (account as any).apiKey;
+    const customUrl = (account as any).apiUrl || undefined;
+    if (!apiKey) return null;
+
+    const base = (customUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '').replace(/api\.digylog\.ma/i, 'api.digylog.com');
+
+    const resp = await axios.get(`${base}/order/${encodeURIComponent(trackingNumber)}/infos`, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    if (resp.status !== 200 || !resp.data) {
+      console.warn(`[FETCH-DETAILS] Digylog ${trackingNumber} → HTTP ${resp.status}`);
+      return null;
+    }
+    const b = resp.data;
+
+    const tracked = await trackDigylogShipment(trackingNumber, apiKey, customUrl);
+
+    const priceCentimes = (val: any): number | undefined => {
+      if (val === null || val === undefined || val === '') return undefined;
+      const n = parseFloat(String(val));
+      return isNaN(n) ? undefined : Math.round(n * 100);
+    };
+
+    return {
+      status:    tracked.status,
+      rawStatus: tracked.rawStatus,
+      customerName:    b.name        || b.client_name  || b.customer_name || '',
+      customerPhone:   b.phone       || b.tel          || b.client_phone  || '',
+      customerAddress: b.address     || b.adresse      || '',
+      customerCity:    b.city        || b.ville        || '',
+      totalPrice:      priceCentimes(b.price ?? b.amount ?? b.cod),
+      shippingCost:    priceCentimes(b.deliveryCost ?? b.frais_livraison ?? b.port),
+      driverName:      tracked.driverName,
+      driverPhone:     tracked.driverPhone,
+      rawPayload:      b,
+    };
+  }
+
+  // Ameex (and other carriers) not implemented yet — caller logs as orphan.
+  return null;
+}
+
+/**
+ * List all orders the carrier has shipped on behalf of the merchant. Used by the
+ * "Importer commandes historiques" button to backfill orders that were shipped
+ * BEFORE the integration was wired up.
+ *
+ * Returns an empty array for carriers without a list endpoint yet.
+ */
+export async function listOrdersFromCarrier(
+  provider: string,
+  account: any,
+  options?: { since?: string }
+): Promise<Array<{
+  trackingNumber: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  customerCity: string;
+  totalPrice: number;
+  shippingCost: number;
+  rawStatus: string;
+  status: string;
+}>> {
+  const p = (provider || '').toLowerCase().trim();
+
+  if (p === 'digylog') {
+    const apiKey    = (account as any).apiKey;
+    const customUrl = (account as any).apiUrl || undefined;
+    if (!apiKey) return [];
+
+    const base = (customUrl || 'https://api.digylog.com/api/v2/seller')
+      .replace(/\/+$/, '').replace(/api\.digylog\.ma/i, 'api.digylog.com');
+
+    const params: any = {};
+    if (options?.since) params.from = options.since;
+
+    const resp = await axios.get(`${base}/orders`, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+      params,
+      timeout: 30000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+
+    if (resp.status !== 200) {
+      console.warn(`[LIST-ORDERS] Digylog HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 200)}`);
+      return [];
+    }
+
+    const list: any[] = resp.data?.data || resp.data?.orders || (Array.isArray(resp.data) ? resp.data : []);
+    const priceCentimes = (val: any): number => {
+      if (val === null || val === undefined || val === '') return 0;
+      const n = parseFloat(String(val));
+      return isNaN(n) ? 0 : Math.round(n * 100);
+    };
+
+    return list
+      .map((o: any) => {
+        const trackingNumber = String(o.traking || o.tracking || o.code || '').trim();
+        return {
+          trackingNumber,
+          customerName:    String(o.name    || o.client_name || o.customer_name || ''),
+          customerPhone:   String(o.phone   || o.tel         || o.client_phone  || ''),
+          customerAddress: String(o.address || o.adresse     || ''),
+          customerCity:    String(o.city    || o.ville       || ''),
+          totalPrice:      priceCentimes(o.price ?? o.amount ?? o.cod),
+          shippingCost:    priceCentimes(o.deliveryCost ?? o.frais_livraison ?? o.port),
+          rawStatus:       String(o.status || o.etat || ''),
+          status:          mapDigylogStatus(String(o.status || o.etat || '')),
+        };
+      })
+      .filter((o) => o.trackingNumber.length > 0);
+  }
+
+  return [];
+}
+
+/**
  * Generic per-carrier tracker dispatcher.
  * Add a new branch here when a new carrier-tracking helper is exported above.
  * Returned shape is intentionally narrow so callers (sync loop) can stay carrier-agnostic.

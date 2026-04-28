@@ -2685,15 +2685,65 @@ export async function registerRoutes(
     }
 
     if (!order) {
-      console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" order="${orderNumber}"`);
-      // Log the miss so it's visible in the Journal
-      await storage.createIntegrationLog({
-        storeId, integrationId: null, provider: carrierName,
-        action: 'webhook_no_match', status: 'fail',
-        message: `⚠️ Commande introuvable — tracking: "${trackingNumber}" | ref: "${orderNumber}" | statut: "${rawText}"`,
-        payload: rawPayload.slice(0, 1000),
-      });
-      return { tracked: false };
+      console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" order="${orderNumber}" — attempting auto-create from carrier API`);
+
+      // ── Auto-create fallback ──────────────────────────────────────────────
+      // Pull full order details from the carrier so historical orders (shipped
+      // before the webhook was wired up) materialize in the platform.
+      let details: Awaited<ReturnType<typeof import("./services/carrier-service").fetchOrderDetails>> = null;
+      let carrierAccount: any = null;
+      try {
+        if (trackingNumber) {
+          const accounts = await storage.getCarrierAccounts(storeId, carrierName);
+          carrierAccount = accounts[0];
+          if (carrierAccount) {
+            const { fetchOrderDetails } = await import("./services/carrier-service");
+            details = await fetchOrderDetails(carrierName, trackingNumber, carrierAccount);
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[WEBHOOK-AUTO-CREATE] Failed to fetch details: ${e?.message}`);
+      }
+
+      if (details && details.customerPhone && trackingNumber) {
+        // Resolve magasin with tenant-isolation validation (rejects accounts
+        // pointing at a magasin outside the store's owner scope).
+        const magasinId = await resolveSafeMagasinId(storeId, (carrierAccount as any)?.magasinId);
+
+        order = await storage.createOrderFromCarrier({
+          storeId,
+          magasinId,
+          provider:        carrierName,
+          trackingNumber:  trackingNumber!,
+          customerName:    details.customerName    || 'Client (importé)',
+          customerPhone:   details.customerPhone,
+          customerAddress: details.customerAddress,
+          customerCity:    details.customerCity,
+          totalPrice:      details.totalPrice,
+          shippingCost:    details.shippingCost,
+          status:          details.status || 'Attente De Ramassage',
+          rawStatus:       details.rawStatus || rawText,
+        });
+        matchedBy = `auto_created_from_${carrierName}_api`;
+
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: carrierName,
+          action: 'webhook_auto_created', status: 'success',
+          message: `✓ Commande créée automatiquement depuis ${carrierName} — tracking: "${trackingNumber}" — client: "${details.customerName || 'Client (importé)'}"`,
+          payload: rawPayload.slice(0, 1000),
+        });
+        console.log(`[WEBHOOK-AUTO-CREATE]: Created order #${order.id} from ${carrierName} for tracking="${trackingNumber}"`);
+        // Fall through — the rest of processCarrierWebhook now operates on the freshly-created order.
+      } else {
+        // Still nothing — log as orphan.
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: carrierName,
+          action: 'webhook_no_match', status: 'fail',
+          message: `⚠️ Commande introuvable et impossible à créer — tracking: "${trackingNumber}" | ref: "${orderNumber}" | statut: "${rawText}"`,
+          payload: rawPayload.slice(0, 1000),
+        });
+        return { tracked: false };
+      }
     }
 
     console.log(`[WEBHOOK-RESULT]: Order found — id=${order.id} orderNumber=${(order as any).orderNumber} (matched by ${matchedBy})`);
@@ -5215,6 +5265,53 @@ export async function registerRoutes(
   // from running at the same time (e.g. user clicks "Sync" while auto-sync is still working).
   const inFlightSyncs = new Set<string>();
 
+  // Same pattern, separate set, for the historical-import endpoint.
+  const inFlightImports = new Set<string>();
+
+  /**
+   * Resolve a safe magasinId for a webhook/import context. Returns null if the
+   * candidate magasinId would cross tenant boundaries. Without this, a carrier
+   * account configured (or tampered with) to point at someone else's magasin
+   * would stamp orders with that magasin — a multi-tenant isolation breach.
+   *
+   * Falls back to: if the store owner has exactly one magasin, use that.
+   */
+  async function resolveSafeMagasinId(
+    storeId: number,
+    candidateMagasinId: number | null | undefined,
+    fallbackOwnerId?: number,
+  ): Promise<number | null> {
+    try {
+      if (candidateMagasinId) {
+        const [parent, candidate] = await Promise.all([
+          storage.getStore(storeId),
+          storage.getStore(candidateMagasinId),
+        ]);
+        const parentOwner = (parent as any)?.ownerId;
+        const candOwner   = (candidate as any)?.ownerId;
+        if (parent && candidate && parentOwner && parentOwner === candOwner) {
+          return candidateMagasinId;
+        }
+        console.warn(`[MAGASIN-ISOLATION] Rejected magasinId=${candidateMagasinId} for storeId=${storeId} — owner mismatch (parent=${parentOwner}, magasin=${candOwner})`);
+      }
+
+      // Fallback: single-magasin heuristic
+      let ownerId = fallbackOwnerId;
+      if (ownerId == null) {
+        const ownerStore = await storage.getStore(storeId);
+        ownerId = (ownerStore as any)?.ownerId;
+      }
+      if (ownerId) {
+        const owned = await storage.getStoresByOwner(ownerId);
+        const magasins = owned.filter((s: any) => s.id !== storeId);
+        if (magasins.length === 1) return magasins[0].id;
+      }
+    } catch (e: any) {
+      console.warn(`[resolveSafeMagasinId] failed: ${e?.message}`);
+    }
+    return null;
+  }
+
   /**
    * Internal helper — pure function used by both:
    *   - the generic POST /api/shipping/:provider/sync route
@@ -5361,6 +5458,93 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error('[CARRIER-SYNC]', err?.message);
       res.status(500).json({ message: err?.message || 'Sync failed' });
+    }
+  });
+
+  /**
+   * POST /api/shipping/:provider/import-historical
+   * One-shot backfill — pulls the full order list from the carrier and creates any
+   * orders that don't exist in the platform yet. Different from `/sync` which only
+   * updates statuses on orders that already exist.
+   *
+   * Optional body: { since?: ISO date } — only import orders shipped after that date.
+   */
+  app.post("/api/shipping/:provider/import-historical", requireAuth, requireActiveSubscription, async (req, res) => {
+    try {
+      const provider = String(req.params.provider || '').toLowerCase();
+      const storeId = req.user!.storeId!;
+      const { since } = req.body || {};
+
+      if (since !== undefined && since !== null && since !== '') {
+        const d = new Date(since);
+        if (isNaN(d.getTime())) {
+          return res.status(400).json({ message: `Paramètre "since" invalide (date attendue, reçu: ${since}).` });
+        }
+      }
+
+      // In-memory lock — prevents double-click / concurrent imports from
+      // racing into duplicate inserts before the per-row idempotency check fires.
+      const lockKey = `${storeId}:${provider}`;
+      if (inFlightImports.has(lockKey)) {
+        return res.status(409).json({ message: `Un import ${provider} est déjà en cours. Patientez quelques secondes.` });
+      }
+
+      const accounts = await storage.getCarrierAccounts(storeId, provider);
+      const account = accounts[0];
+      if (!account) {
+        return res.status(400).json({ message: `Aucun compte ${provider} configuré.` });
+      }
+
+      inFlightImports.add(lockKey);
+      try {
+        const { listOrdersFromCarrier } = await import("./services/carrier-service");
+        const carrierOrders = await listOrdersFromCarrier(provider, account, { since });
+        if (!carrierOrders || carrierOrders.length === 0) {
+          return res.json({ created: 0, skipped: 0, total: 0, message: `Aucune commande à importer depuis ${provider}.` });
+        }
+
+        // Resolve magasin with tenant-isolation validation (rejects accounts
+        // pointing at a magasin outside the user's owner scope).
+        const magasinId = await resolveSafeMagasinId(storeId, (account as any).magasinId, req.user!.id);
+
+        let created = 0, skipped = 0;
+        const errors: Array<{ trackingNumber: string; message: string }> = [];
+
+        for (const co of carrierOrders) {
+          try {
+            // Pre-check kept for the counter; createOrderFromCarrier also
+            // re-checks internally as a last-line idempotency guard.
+            const existing = await storage.getOrderByTrackingNumber(storeId, co.trackingNumber);
+            if (existing) { skipped++; continue; }
+
+            await storage.createOrderFromCarrier({
+              storeId,
+              magasinId,
+              provider,
+              trackingNumber:  co.trackingNumber,
+              customerName:    co.customerName,
+              customerPhone:   co.customerPhone,
+              customerAddress: co.customerAddress,
+              customerCity:    co.customerCity,
+              totalPrice:      co.totalPrice,
+              shippingCost:    co.shippingCost,
+              status:          co.status,
+              rawStatus:       co.rawStatus,
+            });
+            created++;
+          } catch (e: any) {
+            errors.push({ trackingNumber: co.trackingNumber, message: e?.message || 'unknown' });
+          }
+        }
+
+        console.log(`[IMPORT-HISTORICAL] provider=${provider} storeId=${storeId} total=${carrierOrders.length} created=${created} skipped=${skipped} errors=${errors.length}`);
+        res.json({ created, skipped, total: carrierOrders.length, errors });
+      } finally {
+        inFlightImports.delete(lockKey);
+      }
+    } catch (err: any) {
+      console.error('[IMPORT-HISTORICAL]', err?.message);
+      res.status(500).json({ message: err?.message || 'Import failed' });
     }
   });
 
