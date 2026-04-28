@@ -2165,6 +2165,17 @@ export async function registerRoutes(
 
       res.json(acct);
 
+      // Fire-and-forget: pull live status for every existing order shipped via this
+      // carrier so historical (pre-integration) orders catch up automatically.
+      queueMicrotask(async () => {
+        try {
+          const r = await syncCarrierOrdersInternal(storeId, carrierName);
+          console.log(`[AUTO-SYNC] Triggered after creating ${carrierName} account for storeId=${storeId} → checked=${r.synced} updated=${r.updated} errors=${r.errors.length}`);
+        } catch (e: any) {
+          console.warn(`[AUTO-SYNC] Failed for storeId=${storeId} provider=${carrierName}: ${e?.message}`);
+        }
+      });
+
       // Background: sync Ameex cities right after account creation
       if (carrierName.toLowerCase() === 'ameex' && acct.apiKey) {
         (async () => {
@@ -5197,6 +5208,159 @@ export async function registerRoutes(
       res.json({ synced: ameexOrders.length, updated, details });
     } catch (err) {
       throw err;
+    }
+  });
+
+  // In-memory guard — prevents two carrier-sync loops for the same (store, provider)
+  // from running at the same time (e.g. user clicks "Sync" while auto-sync is still working).
+  const inFlightSyncs = new Set<string>();
+
+  /**
+   * Internal helper — pure function used by both:
+   *   - the generic POST /api/shipping/:provider/sync route
+   *   - the fire-and-forget auto-sync triggered when a carrier account is created
+   *
+   * Pulls live status from the carrier for every order in `storeId` that:
+   *   - is shipped via `provider`
+   *   - has a tracking number
+   *   - is not in a terminal state (delivered / refused / Retour Recu)
+   *
+   * Throttled to ~5 req/s (200ms gap) to avoid hammering carrier APIs.
+   * Returns `accountMissing: true` when the store has no account for this provider —
+   * callers can map that to a 400 (HTTP) or just log (auto-sync).
+   * Returns `skipped: true` when another sync for the same key is already running.
+   */
+  async function syncCarrierOrdersInternal(
+    storeId: number,
+    provider: string,
+    options?: { magasinId?: number; since?: string }
+  ): Promise<{
+    synced: number;
+    updated: number;
+    details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }>;
+    errors: Array<{ orderId: number; message: string }>;
+    message?: string;
+    accountMissing?: boolean;
+    skipped?: boolean;
+  }> {
+    const p = (provider || '').toLowerCase();
+    const lockKey = `${storeId}:${p}`;
+    if (inFlightSyncs.has(lockKey)) {
+      return { synced: 0, updated: 0, details: [], errors: [], skipped: true, message: `Une synchro ${p} est déjà en cours.` };
+    }
+
+    const accounts = await storage.getCarrierAccounts(storeId, p);
+    const account = accounts[0];
+    if (!account) {
+      return { synced: 0, updated: 0, details: [], errors: [], accountMissing: true, message: `Aucun compte ${p} configuré.` };
+    }
+
+    inFlightSyncs.add(lockKey);
+    try {
+      return await runSyncLoop(p, storeId, account, options);
+    } finally {
+      inFlightSyncs.delete(lockKey);
+    }
+  }
+
+  async function runSyncLoop(
+    p: string,
+    storeId: number,
+    account: any,
+    options?: { magasinId?: number; since?: string }
+  ): Promise<{
+    synced: number;
+    updated: number;
+    details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }>;
+    errors: Array<{ orderId: number; message: string }>;
+    message?: string;
+  }> {
+
+    const { trackByCarrier } = await import("./services/carrier-service");
+
+    const allOrders = await storage.getOrdersByStore(storeId);
+    let candidates = allOrders.filter((o: any) =>
+      (o.shippingProvider || '').toLowerCase() === p &&
+      o.trackNumber &&
+      !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+    );
+    if (options?.magasinId) {
+      candidates = candidates.filter((o: any) => o.magasinId === Number(options.magasinId));
+    }
+    if (options?.since) {
+      const sinceDate = new Date(options.since);
+      candidates = candidates.filter((o: any) => o.createdAt && new Date(o.createdAt) >= sinceDate);
+    }
+
+    if (candidates.length === 0) {
+      return { synced: 0, updated: 0, details: [], errors: [], message: `Aucune commande ${p} à synchroniser.` };
+    }
+
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+    let updated = 0;
+    const errors: Array<{ orderId: number; message: string }> = [];
+    const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
+
+    for (const order of candidates) {
+      try {
+        const result = await trackByCarrier(p, order.trackNumber!, account);
+        if (result.error) {
+          errors.push({ orderId: order.id, message: result.error });
+        } else if (result.status && result.status !== order.status) {
+          await storage.updateOrderStatus(order.id, result.status);
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: `${p} Sync`,
+            note:      `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
+          });
+          details.push({
+            orderId: order.id,
+            trackingNumber: order.trackNumber!,
+            oldStatus: order.status || '',
+            newStatus: result.status,
+          });
+          updated++;
+        }
+      } catch (e: any) {
+        errors.push({ orderId: order.id, message: e?.message || 'Unknown error' });
+      }
+      await sleep(200);
+    }
+
+    console.log(`[CARRIER-SYNC] provider=${p} storeId=${storeId} checked=${candidates.length} updated=${updated} errors=${errors.length}`);
+    return { synced: candidates.length, updated, details, errors };
+  }
+
+  /**
+   * POST /api/shipping/:provider/sync
+   * Generic, carrier-agnostic bulk-sync. Optional body: { since?: ISO, magasinId?: number }.
+   * The legacy /api/shipping/ameex/sync and /api/shipping/digylog/sync routes still exist
+   * for back-compat (the digylog one also persists driver info + delivery cost).
+   */
+  app.post("/api/shipping/:provider/sync", requireAuth, requireActiveSubscription, async (req, res) => {
+    try {
+      const provider = String(req.params.provider || '').toLowerCase();
+      const storeId = req.user!.storeId!;
+      const { since, magasinId } = req.body || {};
+
+      // Validate `since` early — silently filtering on an invalid date hides bugs.
+      if (since !== undefined && since !== null && since !== '') {
+        const d = new Date(since);
+        if (isNaN(d.getTime())) {
+          return res.status(400).json({ message: `Paramètre "since" invalide (date attendue, reçu: ${since}).` });
+        }
+      }
+
+      const result = await syncCarrierOrdersInternal(storeId, provider, { since, magasinId });
+      if (result.accountMissing) {
+        return res.status(400).json({ message: result.message });
+      }
+      // skipped (concurrent sync) and "no candidates" both return 200 — they're not errors.
+      res.json(result);
+    } catch (err: any) {
+      console.error('[CARRIER-SYNC]', err?.message);
+      res.status(500).json({ message: err?.message || 'Sync failed' });
     }
   });
 

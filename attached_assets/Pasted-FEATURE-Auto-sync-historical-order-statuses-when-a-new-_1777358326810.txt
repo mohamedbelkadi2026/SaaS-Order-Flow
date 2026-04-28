@@ -1,0 +1,247 @@
+FEATURE — Auto-sync historical order statuses when a new carrier integration is added
+My problem
+3 days ago I shipped ~100 orders to my carrier (Maystro / Speedaf / Ameex / etc.). Today I just connected the carrier's webhook integration. New orders shipped from now on will sync automatically via webhook — perfect. But the 100 historical orders are stuck on the status they had 3 days ago: most are "expédié", but in reality the carrier has updated them to "delivered", "retourné", "en cours de distribution", etc.
+I need:
+
+An auto-sync the moment I save a new carrier integration — pull live status for every existing order with shipping_provider = <new carrier> and track_number set, update the DB.
+A manual "Synchroniser maintenant" button on the shipping-integrations page (already exists for Ameex/Digylog — extend the pattern to all supported carriers).
+The dashboard stats refresh automatically after the sync completes so the cards show the new numbers without me hitting reload.
+
+Files involved
+
+server/routes.ts — new generic sync endpoint + auto-sync trigger on integration create
+server/services/carrier-service.ts — uniform trackByCarrier(provider, trackingNumber, account) dispatcher
+client/src/pages/shipping-integrations.tsx — single "Synchroniser maintenant" button per integration card
+client/src/hooks/use-store-data.ts — invalidate stats after a successful sync
+
+
+Step 1 — Generic dispatcher in carrier-service.ts
+At the bottom of the file, add a single function that picks the right tracker by provider name:
+tsexport async function trackByCarrier(
+  provider: string,
+  trackingNumber: string,
+  account: any
+): Promise<{ status: string | null; rawStatus: string | null; error?: string }> {
+  const p = provider.toLowerCase().trim();
+
+  if (p === 'ameex') {
+    return await trackAmeexShipment(
+      trackingNumber,
+      (account as any).apiKey,
+      (account as any).apiUrl || undefined
+    );
+  }
+
+  if (p === 'digylog') {
+    return await trackDigylogShipment(
+      trackingNumber,
+      (account as any).apiKey,
+      (account as any).apiUrl || undefined
+    );
+  }
+
+  // Add any other carriers you've already integrated below. For unsupported
+  // carriers, return a clear "not implemented" so the sync loop can skip them.
+  return { status: null, rawStatus: null, error: `Carrier "${provider}" sync not implemented yet` };
+}
+If trackDigylogShipment doesn't already exist as an exported helper, wrap whatever the Digylog sync currently calls into a function that returns the same shape: { status, rawStatus, error? }. Don't duplicate logic — extract the existing Digylog-tracking block into a function and call it from the dispatcher.
+Step 2 — One generic sync endpoint in routes.ts
+Below the existing /api/shipping/ameex/sync (line 5125), add a generic version that takes the carrier as a path parameter:
+ts/**
+ * POST /api/shipping/:provider/sync
+ * Pull live status from the carrier for every order in this store that:
+ *   - is shipped via :provider
+ *   - has a tracking number
+ *   - is not in a terminal state (delivered / refused / Retour Recu)
+ *
+ * Optional body: { since?: ISO date string }  // if set, only orders shipped after that date are synced
+ *                { magasinId?: number }       // if set, only orders for that magasin are synced
+ */
+app.post("/api/shipping/:provider/sync", requireAuth, requireActiveSubscription, async (req, res) => {
+  try {
+    const provider = req.params.provider.toLowerCase();
+    const storeId = req.user!.storeId!;
+    const { since, magasinId } = req.body || {};
+
+    const accounts = await storage.getCarrierAccounts(storeId, provider);
+    const account = accounts[0];
+    if (!account) {
+      return res.status(400).json({ message: `Aucun compte ${provider} configuré.` });
+    }
+
+    let allOrders = await storage.getOrdersByStore(storeId);
+    let candidates = allOrders.filter((o: any) =>
+      (o.shippingProvider || '').toLowerCase() === provider &&
+      o.trackNumber &&
+      !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+    );
+    if (magasinId) {
+      candidates = candidates.filter((o: any) => o.magasinId === Number(magasinId));
+    }
+    if (since) {
+      const sinceDate = new Date(since);
+      candidates = candidates.filter((o: any) => o.createdAt && new Date(o.createdAt) >= sinceDate);
+    }
+
+    if (candidates.length === 0) {
+      return res.json({ synced: 0, updated: 0, message: `Aucune commande ${provider} à synchroniser.` });
+    }
+
+    let updated = 0;
+    const errors: any[] = [];
+    const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
+
+    // Throttle to avoid hammering carrier APIs (200ms between requests = 5 rps)
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+    for (const order of candidates) {
+      try {
+        const result = await trackByCarrier(provider, order.trackNumber!, account);
+        if (result.error) {
+          errors.push({ orderId: order.id, message: result.error });
+          continue;
+        }
+        if (result.status && result.status !== order.status) {
+          await storage.updateOrderStatus(order.id, result.status);
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: `${provider} Sync`,
+            note:      `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
+          });
+          details.push({
+            orderId: order.id,
+            trackingNumber: order.trackNumber!,
+            oldStatus: order.status || '',
+            newStatus: result.status,
+          });
+          updated++;
+        }
+      } catch (e: any) {
+        errors.push({ orderId: order.id, message: e?.message || 'Unknown error' });
+      }
+      await sleep(200);
+    }
+
+    console.log(`[CARRIER-SYNC] provider=${provider} storeId=${storeId} checked=${candidates.length} updated=${updated} errors=${errors.length}`);
+    res.json({ synced: candidates.length, updated, details, errors });
+  } catch (err: any) {
+    console.error('[CARRIER-SYNC]', err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+The existing Ameex- and Digylog-specific endpoints can stay (for back-compat) or be removed — both URLs route through the same generic logic now.
+Step 3 — Auto-sync when a new carrier integration is created
+Find the POST endpoint that creates a new shipping integration / carrier account. Search:
+bashgrep -n "carrier-accounts\|/api/shipping/.*POST\|createCarrierAccount" server/routes.ts | head
+After the row is successfully inserted into the DB, fire the sync in the background (don't await — we don't want to make the user wait):
+ts// ... after `await storage.createCarrierAccount(...)` succeeds:
+
+// Fire-and-forget: sync historical orders for this carrier so the user
+// sees up-to-date statuses without doing anything else.
+queueMicrotask(async () => {
+  try {
+    const fakeReq: any = { user: req.user, params: { provider }, body: {} };
+    const fakeRes: any = { json: () => {}, status: () => fakeRes };
+    // Reuse the route handler logic by extracting it into a helper function
+    // OR: directly call an internal function syncCarrierOrders(storeId, provider)
+    await syncCarrierOrdersInternal(storeId, provider);
+    console.log(`[AUTO-SYNC] Triggered after creating ${provider} account for storeId=${storeId}`);
+  } catch (e: any) {
+    console.warn(`[AUTO-SYNC] Failed for storeId=${storeId} provider=${provider}: ${e.message}`);
+  }
+});
+
+res.json({ ok: true, account });
+To avoid duplicating logic, extract the body of the sync endpoint into a plain function:
+ts// At module level:
+async function syncCarrierOrdersInternal(
+  storeId: number,
+  provider: string,
+  options?: { magasinId?: number; since?: string }
+) {
+  // ... same logic as the route body, but no req/res ...
+  // returns { synced, updated, details, errors }
+}
+Then the route handler simply calls it and JSON-encodes the result.
+Step 4 — UI: one "Synchroniser maintenant" button per integration card
+In client/src/pages/shipping-integrations.tsx, the existing Ameex and Digylog buttons (lines ~1504, 1521) duplicate the same pattern. Replace them with a single helper that takes a provider name:
+tsxconst [syncingProvider, setSyncingProvider] = useState<string | null>(null);
+const queryClient = useQueryClient();
+
+const syncCarrier = async (provider: string) => {
+  setSyncingProvider(provider);
+  try {
+    const res = await apiRequest("POST", `/api/shipping/${provider}/sync`, {});
+    const data = await res.json();
+    toast({
+      title: `✅ ${provider} synchronisé`,
+      description: `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
+    });
+    if ((data.errors || []).length > 0) {
+      toast({
+        title: `⚠️ ${data.errors.length} erreur(s) lors de la synchro`,
+        description: data.errors.slice(0, 3).map((e: any) => `#${e.orderId}: ${e.message}`).join('\n'),
+        variant: "default",
+      });
+    }
+    // Refresh dashboards & order lists so KPIs reflect the new statuses
+    queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/orders/all"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/agents/my-stats"] });
+  } catch (e: any) {
+    toast({ title: `Erreur ${provider}`, description: e.message, variant: "destructive" });
+  } finally {
+    setSyncingProvider(null);
+  }
+};
+Render a button on every carrier integration card:
+tsx<Button
+  size="sm"
+  variant="outline"
+  onClick={() => syncCarrier(account.provider)}
+  disabled={syncingProvider === account.provider}
+>
+  {syncingProvider === account.provider ? "Synchronisation…" : "Synchroniser maintenant"}
+</Button>
+Where account.provider is 'ameex', 'digylog', etc. — the same name used by the carrier endpoint dispatcher.
+Step 5 — Optional: scheduled sync every 30 minutes
+For long-tail accuracy, add a cron-style background loop. If the project has a server bootstrap file (server/index.ts):
+ts// run every 30 minutes
+setInterval(async () => {
+  try {
+    const all = await storage.getAllStoresWithActiveCarriers();
+    for (const { storeId, providers } of all) {
+      for (const provider of providers) {
+        await syncCarrierOrdersInternal(storeId, provider).catch(() => {});
+      }
+    }
+  } catch (e: any) {
+    console.warn('[BG-SYNC]', e.message);
+  }
+}, 30 * 60 * 1000);
+Implement getAllStoresWithActiveCarriers in storage:
+tsasync getAllStoresWithActiveCarriers(): Promise<{ storeId: number; providers: string[] }[]> {
+  const accounts = await db.select({
+    storeId: shippingAccounts.storeId,
+    provider: shippingAccounts.provider,
+  }).from(shippingAccounts).where(eq(shippingAccounts.active, true));
+  const map = new Map<number, Set<string>>();
+  for (const { storeId, provider } of accounts) {
+    if (!map.has(storeId)) map.set(storeId, new Set());
+    map.get(storeId)!.add(provider);
+  }
+  return [...map.entries()].map(([storeId, providers]) => ({ storeId, providers: [...providers] }));
+}
+This is optional but ideal for SaaS — guarantees fresh statuses without users clicking anything.
+Step 6 — Don't forget rate limits and timeouts
+Inside the loop, axios calls in carrier-service.ts already have a 20-second timeout. With 100 orders + 200ms throttle, worst case is ~40 seconds. That's fine for a manual button click but the auto-sync on integration creation should be queueMicrotask'd as shown so the create endpoint returns immediately.
+ACCEPTANCE CRITERIA
+
+✅ Save a new shipping integration (e.g., Ameex with API key) → background sync starts, server log shows [AUTO-SYNC] Triggered after creating ameex account for storeId=X.
+✅ Within ~1 minute, refresh Mes Commandes → orders shipped 3 days ago that are now "delivered" at the carrier show "Livré" in the platform.
+✅ Click "Synchroniser maintenant" on any carrier card → toast shows X commande(s) vérifiées, Y mise(s) à jour. Order list refreshes automatically.
+✅ Dashboard cards (CONFIRMÉES / LIVRÉES / EN COURS) recalculate after the sync without manual reload.
+✅ If the carrier API rate-limits or returns errors, individual order errors are shown in a separate toast — the sync doesn't abort.
+✅ Server log shows [CARRIER-SYNC] provider=ameex storeId=1 checked=87 updated=23 errors=0.

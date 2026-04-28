@@ -1497,39 +1497,53 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     }),
   });
 
-  const [ameexSyncPending, setAmeexSyncPending] = useState(false);
-  const handleAmeexSync = async () => {
-    setAmeexSyncPending(true);
+  // Generic single-button sync — works for any carrier the dispatcher supports.
+  // Refreshes order lists & dashboard stats so KPIs reflect the new statuses without a manual reload.
+  const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
+  const syncCarrier = async (provider: string, opts?: { endpoint?: string; successTitle?: string; errorTitle?: string }) => {
+    const endpoint = opts?.endpoint || `/api/shipping/${provider}/sync`;
+    setSyncingProvider(provider);
     try {
-      const res = await apiRequest("POST", "/api/shipping/ameex/sync", {});
+      const res = await apiRequest("POST", endpoint, {});
       const data = await res.json();
       toast({
-        title: "✅ Statuts synchronisés",
+        title: opts?.successTitle || `✅ ${provider} synchronisé`,
         description: `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
       });
+      if (Array.isArray(data.errors) && data.errors.length > 0) {
+        toast({
+          title: `⚠️ ${data.errors.length} erreur(s) lors de la synchro`,
+          description: data.errors.slice(0, 3).map((e: any) => `#${e.orderId}: ${e.message}`).join('\n'),
+        });
+      }
+      // Refresh dashboards & order lists so the cards & tables show new statuses immediately.
+      qc.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders/all"] });
+      qc.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+      qc.invalidateQueries({ queryKey: ["/api/agents/my-stats"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
     } catch (e: any) {
-      toast({ title: "Erreur de synchronisation", description: e.message, variant: "destructive" });
+      toast({ title: opts?.errorTitle || `Erreur ${provider}`, description: e.message, variant: "destructive" });
     } finally {
-      setAmeexSyncPending(false);
+      setSyncingProvider(null);
     }
   };
 
-  const [digylogSyncPending, setDigylogSyncPending] = useState(false);
-  const handleDigylogSync = async () => {
-    setDigylogSyncPending(true);
-    try {
-      const res = await apiRequest("POST", "/api/shipping/digylog/sync", {});
-      const data = await res.json();
-      toast({
-        title: "✅ Statuts Digylog synchronisés",
-        description: `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
-      });
-    } catch (e: any) {
-      toast({ title: "Erreur de synchronisation Digylog", description: e.message, variant: "destructive" });
-    } finally {
-      setDigylogSyncPending(false);
-    }
-  };
+  // Ameex now uses the new generic endpoint (gains 200ms throttle + per-order errors[] toast).
+  const ameexSyncPending = syncingProvider === "ameex";
+  const handleAmeexSync = () => syncCarrier("ameex", {
+    successTitle: "✅ Statuts synchronisés",
+    errorTitle: "Erreur de synchronisation",
+  });
+
+  // Digylog stays on its specific endpoint — that route also persists driver info
+  // and delivery cost, which the generic endpoint doesn't do.
+  const digylogSyncPending = syncingProvider === "digylog";
+  const handleDigylogSync = () => syncCarrier("digylog", {
+    endpoint: "/api/shipping/digylog/sync",
+    successTitle: "✅ Statuts Digylog synchronisés",
+    errorTitle: "Erreur de synchronisation Digylog",
+  });
 
   const safeTab = Math.min(activeTab, Math.max(0, accounts.length - 1));
   const acct = accounts[safeTab] || null;

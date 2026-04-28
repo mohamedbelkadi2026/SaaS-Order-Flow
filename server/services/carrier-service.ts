@@ -1312,3 +1312,34 @@ export async function getDigylogDeliveryCost(
     return null;
   }
 }
+
+/**
+ * Generic per-carrier tracker dispatcher.
+ * Add a new branch here when a new carrier-tracking helper is exported above.
+ * Returned shape is intentionally narrow so callers (sync loop) can stay carrier-agnostic.
+ */
+export async function trackByCarrier(
+  provider: string,
+  trackingNumber: string,
+  account: any
+): Promise<{ status: string | null; rawStatus: string | null; error?: string }> {
+  const p = (provider || '').toLowerCase().trim();
+  const apiKey  = (account as any)?.apiKey;
+  const apiUrl  = (account as any)?.apiUrl || undefined;
+
+  if (!apiKey) {
+    return { status: null, rawStatus: null, error: `Compte ${provider} sans clé API.` };
+  }
+
+  if (p === 'ameex') {
+    const r = await trackAmeexShipment(trackingNumber, apiKey, apiUrl);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
+  if (p === 'digylog') {
+    const r = await trackDigylogShipment(trackingNumber, apiKey, apiUrl);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
+  return { status: null, rawStatus: null, error: `Carrier "${provider}" sync not implemented yet` };
+}
