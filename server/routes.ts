@@ -5049,11 +5049,26 @@ export async function registerRoutes(
       const { trackDigylogShipment } = await import("./services/carrier-service");
 
       const allOrders = await storage.getOrdersByStore(storeId);
-      const digylogOrders = allOrders.filter((o: any) =>
-        o.shippingProvider === "digylog" &&
-        o.trackNumber &&
-        !["delivered", "refused", "Retour Recu"].includes(o.status || "")
-      );
+
+      // Digylog tracking format: starts with S followed by 7+ alphanumeric chars (e.g. "SB9A3675N").
+      // Used to recover orphan orders that have a Digylog-format tracking number but
+      // no shippingProvider tag (created via webhook, CSV import, or a partial /shipping flow
+      // that crashed before persisting the provider).
+      const looksLikeDigylogTracking = (t: string): boolean => /^S[A-Z0-9]{6,}$/i.test(t);
+
+      // Lenient match: include any order that
+      //   (a) has a tracking number,
+      //   (b) is not in a terminal state, AND
+      //   (c) is either tagged as 'digylog', has no shippingProvider yet (and looks Digylog),
+      //       or otherwise matches Digylog's format.
+      const digylogOrders = allOrders.filter((o: any) => {
+        if (!o.trackNumber) return false;
+        if (["delivered", "refused", "Retour Recu"].includes(o.status || "")) return false;
+        const provider = (o.shippingProvider || "").toLowerCase().trim();
+        if (provider === "digylog") return true;
+        if (provider === "" && looksLikeDigylogTracking(o.trackNumber)) return true;
+        return false;
+      });
 
       if (digylogOrders.length === 0) {
         return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Digylog à synchroniser." });
@@ -5130,24 +5145,48 @@ export async function registerRoutes(
             } as any);
           }
 
-          if (result.status && result.status !== order.status) {
-            await storage.updateOrderStatus(order.id, result.status);
-            const updateData: any = { commentStatus: result.rawStatus || result.status };
-            // Best-effort delivery cost lookup; never blocks the loop on its own errors.
-            try {
-              const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
-              const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
-              if (cost && cost > 0) updateData.shippingCost = cost;
-            } catch {}
-            await storage.updateOrder(order.id, updateData);
-            await storage.createOrderFollowUpLog({
-              orderId:   order.id,
-              agentId:   null,
-              agentName: "Digylog Sync",
-              note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
-            });
-            details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
-            updated++;
+          if (result.status) {
+            const statusChanged = result.status !== order.status;
+            const providerEmpty = !(order as any).shippingProvider || String((order as any).shippingProvider).trim() === "";
+            const updateData: any = {};
+
+            // ALWAYS mirror the carrier's raw text into commentStatus so the Suivi tab
+            // shows what Digylog actually said, even when the mapped status is unchanged.
+            if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
+              updateData.commentStatus = result.rawStatus;
+            }
+
+            // Backfill shippingProvider on the first successful sync of an orphan order.
+            // After this, the strict-match path picks it up too.
+            if (providerEmpty) {
+              updateData.shippingProvider = "digylog";
+              console.log(`[DIGYLOG-SYNC] backfilled shippingProvider for order #${(order as any).orderNumber} (tracking=${order.trackNumber})`);
+            }
+
+            if (statusChanged) {
+              await storage.updateOrderStatus(order.id, result.status);
+              // Best-effort delivery cost lookup; never blocks the loop on its own errors.
+              try {
+                const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
+                const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
+                if (cost && cost > 0) updateData.shippingCost = cost;
+              } catch {}
+            }
+
+            if (Object.keys(updateData).length > 0) {
+              await storage.updateOrder(order.id, updateData);
+            }
+
+            if (statusChanged) {
+              await storage.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: "Digylog Sync",
+                note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
+              });
+              details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
+              updated++;
+            }
           }
         } catch (e: any) {
           // Thrown exception (vs returned error) — classify the same way.
@@ -5313,11 +5352,19 @@ export async function registerRoutes(
       const customUrl = (account as any).apiUrl || undefined;
 
       const allOrders = await storage.getOrdersByStore(storeId);
-      const ameexOrders = allOrders.filter((o: any) =>
-        o.shippingProvider === "ameex" &&
-        o.trackNumber &&
-        !["delivered", "refused", "Retour Recu"].includes(o.status || "")
-      );
+
+      // Lenient match for Ameex too: provider tagged as 'ameex' OR provider empty.
+      // Excludes orphans whose tracking format clearly belongs to Digylog (S + 7+ chars)
+      // so we don't waste tracking calls on cross-carrier pollution.
+      const looksLikeDigylogTracking = (t: string): boolean => /^S[A-Z0-9]{6,}$/i.test(t);
+      const ameexOrders = allOrders.filter((o: any) => {
+        if (!o.trackNumber) return false;
+        if (["delivered", "refused", "Retour Recu"].includes(o.status || "")) return false;
+        const provider = (o.shippingProvider || "").toLowerCase().trim();
+        if (provider === "ameex") return true;
+        if (provider === "" && !looksLikeDigylogTracking(o.trackNumber)) return true;
+        return false;
+      });
 
       if (ameexOrders.length === 0) {
         return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Ameex à synchroniser." });
@@ -5373,16 +5420,34 @@ export async function registerRoutes(
             }
             continue;
           }
-          if (result.status && result.status !== order.status) {
-            await storage.updateOrderStatus(order.id, result.status);
-            await storage.createOrderFollowUpLog({
-              orderId:   order.id,
-              agentId:   null,
-              agentName: "Ameex Sync",
-              note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
-            });
-            details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
-            updated++;
+          if (result.status) {
+            const statusChanged = result.status !== order.status;
+            const providerEmpty = !(order as any).shippingProvider || String((order as any).shippingProvider).trim() === "";
+            const updateData: any = {};
+
+            if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
+              updateData.commentStatus = result.rawStatus;
+            }
+            if (providerEmpty) {
+              updateData.shippingProvider = "ameex";
+              console.log(`[AMEEX-SYNC] backfilled shippingProvider for order #${(order as any).orderNumber} (tracking=${order.trackNumber})`);
+            }
+            if (statusChanged) {
+              await storage.updateOrderStatus(order.id, result.status);
+            }
+            if (Object.keys(updateData).length > 0) {
+              await storage.updateOrder(order.id, updateData);
+            }
+            if (statusChanged) {
+              await storage.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: "Ameex Sync",
+                note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
+              });
+              details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
+              updated++;
+            }
           }
         } catch (e: any) {
           if (isOutageError(e?.message)) {

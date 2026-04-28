@@ -1,0 +1,120 @@
+FIX — Sync skips orders that have a tracking number but no shippingProvider set
+Problem (from your screenshots)
+Order SB9A3675N:
+
+✅ Has trackNumber = SB9A3675N (visible in column "Numéro de Suivi")
+✅ Exists in Digylog (status: "En cours de réception au hub de livraison")
+❌ Status in platform = "Non envoyée" — never updated
+❌ Sync says: "0 commande mise à jour"
+
+Root cause
+server/routes.ts line 4991-4995 — sync filter requires shippingProvider === "digylog":
+tsconst digylogOrders = allOrders.filter((o: any) =>
+  o.shippingProvider === "digylog" &&     // ← this excludes the order
+  o.trackNumber &&
+  !["delivered", "refused", "Retour Recu"].includes(o.status || "")
+);
+But this order has shippingProvider = NULL (or empty) because:
+
+It was created via webhook auto-create OR
+Shipping was triggered but updateOrderShipping didn't run completely (carrier responded but error somewhere) OR
+It was imported manually with a track number but no provider set
+
+Either way, the user clearly intends this to be a Digylog order — the tracking number format SB... is Digylog's, the carrier card on the integrations page is Digylog. Sync should be lenient: if there's a Digylog account configured, try every order with a tracking number that LOOKS Digylog or has no provider set yet.
+Fix — Lenient filter + auto-fill shippingProvider on first successful sync
+In server/routes.ts around line 4991, replace the filter with this version:
+tsconst allOrders = await storage.getOrdersByStore(storeId);
+
+// Lenient match: include any order that
+//   (a) has a tracking number,
+//   (b) is not in a terminal state, AND
+//   (c) is either tagged as 'digylog' OR has no shippingProvider yet
+//       OR has a tracking number matching Digylog's format (starts with S + alphanumeric).
+//
+// This catches orders that were created via webhook, CSV import, or a partial
+// shipping flow where shippingProvider was never persisted.
+const digylogOrders = allOrders.filter((o: any) => {
+  if (!o.trackNumber) return false;
+  if (['delivered', 'refused', 'Retour Recu'].includes(o.status || '')) return false;
+
+  const providerMatches = (o.shippingProvider || '').toLowerCase() === 'digylog';
+  const providerEmpty   = !o.shippingProvider || o.shippingProvider.trim() === '';
+  const looksLikeDigylog = /^S[A-Z0-9]{6,}$/.test(o.trackNumber); // Digylog format: S + 7+ chars
+
+  return providerMatches || (providerEmpty && looksLikeDigylog);
+});
+In the loop body, when Digylog returns a successful status, ALSO backfill shippingProvider if it's currently empty:
+tsfor (const order of digylogOrders) {
+  try {
+    const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
+
+    // Detect API outage early
+    const responseBody = String(result.rawStatus ?? '');
+    if (result.error || responseBody.includes('<!DOCTYPE') || responseBody.includes('Internal Server Error')) {
+      apiDownErrors.push(`${order.trackNumber}: API down`);
+      errored++;
+      if (apiDownErrors.length >= 3) break;
+      continue;
+    }
+
+    if (result.status) {
+      const updates: Record<string, any> = {};
+
+      // Status changed?
+      if (result.status !== order.status) {
+        updates.status = result.status;
+      }
+
+      // shippingProvider missing? backfill so future syncs match the strict path
+      if (!order.shippingProvider || order.shippingProvider.trim() === '') {
+        updates.shippingProvider = 'digylog';
+      }
+
+      // Carrier raw text always mirrored into commentStatus for the Suivi tab
+      updates.commentStatus = result.rawStatus || '';
+
+      if (Object.keys(updates).length > 0) {
+        await storage.updateOrder(order.id, updates as any);
+
+        if (updates.status) {
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: 'Digylog Sync',
+            note:      `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
+          });
+          updated++;
+        }
+      }
+    }
+  } catch (e: any) {
+    errored++;
+  }
+  await new Promise(r => setTimeout(r, 200));
+}
+Same fix on the Ameex sync path
+server/routes.ts around line 5095 has the same strict filter for Ameex. Apply the same lenient logic, but with the Ameex tracking format (typically alphanumeric without the S prefix). If you don't know the format, drop the regex check and use just providerEmpty:
+tsconst providerMatches = (o.shippingProvider || '').toLowerCase() === 'ameex';
+const providerEmpty   = !o.shippingProvider || o.shippingProvider.trim() === '';
+return providerMatches || providerEmpty;  // Try every untagged tracking number
+Manual one-shot SQL backfill (run this once now)
+While you wait for the code deploy, you can fix existing orders right now via SQL. In Replit Database tab:
+sql-- Tag every order with a Digylog-format tracking number as Digylog
+UPDATE public.orders
+SET shipping_provider = 'digylog'
+WHERE track_number ~ '^S[A-Z0-9]{6,}$'
+  AND (shipping_provider IS NULL OR shipping_provider = '');
+
+-- See how many got tagged
+SELECT count(*) AS tagged FROM public.orders
+WHERE shipping_provider = 'digylog' AND track_number ~ '^S[A-Z0-9]{6,}$';
+After this, the EXISTING strict sync filter will pick them up without code change. The code fix above is for permanent prevention.
+ACCEPTANCE CRITERIA
+
+✅ Click "Synchroniser Digylog" → toast says "X vérifiées, Y mises à jour" with Y > 0 if any tracking changed.
+✅ Order SB9A3675N flips from "Non envoyée" to "En cours de réception au hub de livraison" (or whatever Digylog says now).
+✅ The order's shippingProvider is now 'digylog' in the DB so future syncs match the strict path.
+✅ The "Comment" / "Suivi" column on Mes Commandes shows the carrier's exact text.
+✅ A new follow-up log entry is added: "Statut synchronisé: ... → in_progress".
+✅ No regression on orders that already had shippingProvider='digylog' correctly set.
+✅ When Digylog API returns 500, sync aborts cleanly after 3 errors instead of hammering.
