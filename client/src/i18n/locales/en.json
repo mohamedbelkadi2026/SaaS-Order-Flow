@@ -27,6 +27,7 @@
     "unreachable": "Unreachable",
     "cancelled": "Cancelled",
     "voicemail": "Voicemail",
+    "pasReponse": "No Answer",
     "inProgress": "In Transit",
     "tracking": "Package Tracking",
     "delivered": "Delivered",

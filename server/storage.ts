@@ -489,6 +489,10 @@ export class DatabaseStorage implements IStorage {
     if (filters.status) {
       if (filters.status === 'annule_group') {
         conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
+      } else if (filters.status === 'pas_reponse_group') {
+        // Matches "Pas de réponse 1" through "Pas de réponse 4"
+        // and any future numbered variants without code changes.
+        conditions.push(sql`${orders.status} LIKE 'Pas de réponse%'`);
       } else if (filters.status === 'suivi_group') {
         // Primary: any order that has been shipped (has a tracking number) and isn't in a terminal state.
         // This catches orders whose carrier sent a custom status not in our internal status list.

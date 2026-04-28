@@ -622,6 +622,7 @@ export async function registerRoutes(
     const ADMIN_CONFIRMED = new Set(['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
+    let pasReponse = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
 
     // Fetch store packaging cost and agent commission rates for accurate profit calc
@@ -651,6 +652,8 @@ export async function registerRoutes(
       else if (o.status === 'Annulé (faux numéro)') annuleFauxNumero++;
       else if (o.status === 'Annulé (double)') annuleDouble++;
       else if (o.status === 'boite vocale') boiteVocale++;
+      // Pas de réponse 1/2/3/4 grouped count for sidebar badge
+      if (typeof o.status === 'string' && o.status.startsWith('Pas de réponse')) pasReponse++;
 
       // confirme = ALL confirmed statuses: 'confirme' + 'expédié' + 'delivered'
       if (ADMIN_CONFIRMED.has(o.status)) confirme++;
@@ -847,6 +850,7 @@ export async function registerRoutes(
     res.json({
       totalOrders, nouveau, confirme, inProgress, cancelled, delivered, refused,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
+      pasReponse,
       confirmationRate, deliveryRate,
       totalShipped,
       deliveredShipped,
@@ -1064,6 +1068,8 @@ export async function registerRoutes(
       const ordersList = await storage.getOrdersByAgent(user.id);
       if (status === 'annule_group') {
         res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé'))));
+      } else if (status === 'pas_reponse_group') {
+        res.json(includeShippingCost(ordersList.filter(o => (o.status || '').startsWith('Pas de réponse'))));
       } else if (status === 'suivi_group') {
         res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
@@ -1086,6 +1092,9 @@ export async function registerRoutes(
       if (status === 'annule_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o => o.status?.startsWith('Annulé'))));
+      } else if (status === 'pas_reponse_group') {
+        const ordersList = await storage.getOrdersByStore(user.storeId!);
+        res.json(includeShippingCost(ordersList.filter(o => (o.status || '').startsWith('Pas de réponse'))));
       } else if (status === 'suivi_group') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o =>
@@ -4812,9 +4821,11 @@ export async function registerRoutes(
 
       // ── KPI summary (filtered) ─────────────────────────────────────
       let nouveauCount = 0;
+      let pasReponseCount = 0;
       for (const o of agentOrders) {
         const s = (o.status ?? '').toLowerCase().trim();
         if (s === 'nouveau' || s === 'new') nouveauCount++;
+        if (s.startsWith('pas de réponse')) pasReponseCount++;
       }
       const total = agentOrders.length;
       const confirme = buckets.confirme;
@@ -4839,6 +4850,7 @@ export async function registerRoutes(
         refused,
         en_cours,
         nouveau: nouveauCount,
+        pasReponse: pasReponseCount,
         confirmRate,
         deliverRate,
       });

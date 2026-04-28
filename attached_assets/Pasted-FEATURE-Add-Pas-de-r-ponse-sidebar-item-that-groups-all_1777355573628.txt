@@ -1,0 +1,112 @@
+FEATURE — Add "Pas de réponse" sidebar item that groups all 4 numbered variants
+What I want
+A new sidebar item Pas de réponse under Mes Commandes that, when clicked, shows every order whose status is Pas de réponse 1, Pas de réponse 2, Pas de réponse 3, or Pas de réponse 4 — all in one page, with a red badge count like Nouveaux has.
+This is the same pattern already used for Annulés (groups all Annulé (fake) / Annulé (faux numéro) / Annulé (double) via the annule_group magic value) and Suivi des Colis (groups carrier-in-transit statuses via suivi_group). I want a pas_reponse_group that mirrors them.
+
+Files to change
+1. client/src/components/layout/app-layout.tsx
+Add the menu item in ORDER_SUB_ITEMS (around line 93). Insert it between "Boite vocale" and "En cours" so the flow is logical:
+tsconst ORDER_SUB_ITEMS = [
+  { name: "Nouveaux",       href: "/orders",             badge: true },
+  { name: "Confirmés",      href: "/orders/confirme" },
+  { name: "Injoignables",   href: "/orders/injoignable" },
+  { name: "Annulés",        href: "/orders/annules" },
+  { name: "Boite vocale",   href: "/orders/boite-vocale" },
+  { name: "Pas de réponse", href: "/orders/pas-reponse", badge: 'pasReponse' }, // ← ADD
+  { name: "En cours",       href: "/orders/en-cours" },
+  { name: "Suivi des Colis",href: "/orders/suivi" },
+  { name: "Livrées",        href: "/orders/livrees" },
+  { name: "Refusées",       href: "/orders/refuses" },
+];
+Read a new badge count alongside newOrdersCount (around line 493):
+tsconst newOrdersCount: number = ordersStats?.nouveau ?? 0;
+const pasReponseCount: number = ordersStats?.pasReponse ?? 0;   // ← ADD
+Render the badge wherever Nouveaux's badge is rendered (around line 685). Find the block:
+tsx{sub.name === "Nouveaux" && newOrdersCount > 0 && (
+  <span className="...">{newOrdersCount}</span>
+)}
+Add right after it:
+tsx{sub.name === "Pas de réponse" && pasReponseCount > 0 && (
+  <span className="...same red badge classes as Nouveaux...">{pasReponseCount}</span>
+)}
+If ORDER_SUB_ITEMS_TRANSLATIONS (around line 138) maps each name to a translation key, add an entry there too:
+ts"Pas de réponse": "orderSub.pasReponse",
+2. client/src/pages/orders.tsx
+Add to STATUS_MAP (line 61) — this is the URL-slug to status-token mapping:
+tsconst STATUS_MAP: Record<string, string> = {
+  nouvelles: "nouveau",
+  confirme: "confirme",
+  injoignable: "Injoignable",
+  annules: "annule_group",
+  "boite-vocale": "boite vocale",
+  "pas-reponse": "pas_reponse_group",     // ← ADD
+  "en-cours": "in_progress",
+  suivi: "suivi_group",
+  livrees: "delivered",
+  refuses: "refused",
+};
+Add to TITLE_MAP (line 73):
+ts"pas-reponse": "PAS DE RÉPONSE",
+3. server/storage.ts
+Handle the new group in the orders filter logic (around line 489). Add a third branch alongside the existing annule_group and suivi_group:
+tsif (filters.status) {
+  if (filters.status === 'annule_group') {
+    conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
+  } else if (filters.status === 'suivi_group') {
+    // ... existing logic unchanged ...
+  } else if (filters.status === 'pas_reponse_group') {
+    // ← ADD: matches "Pas de réponse 1" through "Pas de réponse 4"
+    // and any future numbered variants without code changes.
+    conditions.push(sql`${orders.status} LIKE 'Pas de réponse%'`);
+  } else {
+    conditions.push(eq(orders.status, filters.status));
+  }
+}
+4. server/routes.ts — same pattern, two places
+Around lines 1052 and 1073 there are two sibling blocks that do if (status === 'annule_group') ... else if (status === 'suivi_group') .... Add the pas_reponse_group branch to BOTH:
+tsif (status === 'annule_group') {
+  // ... existing ...
+} else if (status === 'suivi_group') {
+  // ... existing ...
+} else if (status === 'pas_reponse_group') {
+  conditions.push(sql`${orders.status} LIKE 'Pas de réponse%'`);
+}
+5. server/routes.ts — badge count for the sidebar
+The sidebar badge reads from an existing endpoint that returns { nouveau, confirme, delivered, ... }. Find the place where nouveauCount is computed (line 4797 area):
+tslet nouveauCount = 0;
+for (const o of agentOrders) {
+  const s = (o.status ?? '').toLowerCase().trim();
+  if (s === 'nouveau' || s === 'new') nouveauCount++;
+}
+Extend the same loop to also count Pas de réponse*:
+tslet nouveauCount = 0;
+let pasReponseCount = 0;          // ← ADD
+for (const o of agentOrders) {
+  const s = (o.status ?? '').toLowerCase().trim();
+  if (s === 'nouveau' || s === 'new') nouveauCount++;
+  if (s.startsWith('pas de réponse')) pasReponseCount++;   // ← ADD
+}
+And include it in the JSON response (around line 4811):
+tsres.json({
+  // ... existing fields ...
+  nouveau: nouveauCount,
+  pasReponse: pasReponseCount,    // ← ADD
+  confirmRate,
+  deliverRate,
+});
+If there's a parallel endpoint that the admin/owner role uses (search nouveauCount for other matches), apply the same addition there.
+6. Optional: same group key on the All Orders page
+If client/src/pages/all-orders.tsx also has a status filter dropdown, add an option:
+tsx<SelectItem value="pas_reponse_group">Pas de réponse (1-4)</SelectItem>
+This keeps the All Orders view consistent with the sidebar grouping.
+
+Acceptance criteria
+
+✅ Open sidebar → Mes Commandes is expanded → new item "Pas de réponse" appears between "Boite vocale" and "En cours".
+✅ Red badge on the new item shows the total count of Pas de réponse 1/2/3/4 orders.
+✅ Click the item → URL becomes /orders/pas-reponse → page header shows "PAS DE RÉPONSE" → table lists all 4 variants together.
+✅ The status column in those rows still shows the specific variant (1, 2, 3, or 4) — we group only at the listing level, the per-row status is preserved.
+✅ Marking a Nouveau order as "Pas de réponse 1" makes it disappear from Nouveaux and appear in Pas de réponse — and the badge count updates after the standard refetch interval.
+✅ The four individual numbered statuses also continue to work in the row-level status dropdown — no behavior removed.
+✅ No TypeScript errors.
+
