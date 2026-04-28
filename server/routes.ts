@@ -4432,6 +4432,18 @@ export async function registerRoutes(
     res.json(await storage.getAgentPerformance(storeId, { magasinId, date }));
   });
 
+  // Dashboard "Performance de l'Équipe" — assignment-based metrics in a date
+  // window. Distinct from /api/agents/performance, which counts today's
+  // actions and returns 0% on quiet days.
+  app.get("/api/agents/performance-by-assignment", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const magasinIdRaw = req.query.magasinId as string | undefined;
+    const magasinId = magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : null;
+    const dateFrom = (req.query.dateFrom as string | undefined) || null;
+    const dateTo   = (req.query.dateTo   as string | undefined) || null;
+    res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo }));
+  });
+
   // ============================================================
   // MEDIA BUYER ENDPOINTS
   // ============================================================

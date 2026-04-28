@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useAgents, useCreateAgent, useAgentPerformance, useDeleteAgent, useProducts, useAgentProducts, useSetAgentProducts, useAgentStoreSettings, useMagasins, useAgentMagasinPercentages, useUpsertAgentMagasinPercentages } from "@/hooks/use-store-data";
 import { cn } from "@/lib/utils";
@@ -343,6 +343,19 @@ export default function Team() {
     perfMagasinId === "all" ? null : Number(perfMagasinId),
     perfDate,
   );
+
+  // When the owner narrows by magasin, also narrow the agents table to those
+  // who actually have a settings row for that magasin. Otherwise the filter
+  // would update the "Traitées" column to zero for every agent who isn't in
+  // that magasin, which is misleading — better to hide them entirely.
+  const visibleAgents = useMemo(() => {
+    if (!agents) return [];
+    if (perfMagasinId === "all") return agents;
+    const magasinId = Number(perfMagasinId);
+    return agents.filter((a: any) =>
+      (agentSettings || []).some((s: any) => s.agentId === a.id && s.magasinId === magasinId)
+    );
+  }, [agents, agentSettings, perfMagasinId]);
   const createAgent = useCreateAgent();
   const upsertAgentPercentages = useUpsertAgentMagasinPercentages();
   const deleteAgent = useDeleteAgent();
@@ -1011,7 +1024,7 @@ export default function Team() {
                   Aucun membre. Cliquez "Ajouter un membre" pour commencer.
                 </TableCell>
               </TableRow>
-            ) : agents.map((agent: any) => {
+            ) : visibleAgents.map((agent: any) => {
               const stats = getAgentStats(agent.id);
               const confirmRate = stats.total > 0 ? Math.round((stats.confirmed / stats.total) * 100) : 0;
               const deliveryRate = stats.total > 0 ? Math.round((stats.delivered / stats.total) * 100) : 0;

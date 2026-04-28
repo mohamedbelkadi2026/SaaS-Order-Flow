@@ -125,6 +125,11 @@ export interface IStorage {
   checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }>;
 
   getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
+  // Like getAgentPerformance but groups by `assigned_to_id` over a date range
+  // of `created_at`. Powers the Dashboard's "Performance de l'Équipe" panel
+  // where the question is "out of all orders ASSIGNED to this agent in the
+  // window, how many are confirmed/delivered?" — not "what did they touch today".
+  getAgentPerformanceByAssignment(storeId: number, options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
 
   getAgentProducts(agentId: number): Promise<AgentProduct[]>;
   setAgentProducts(agentId: number, storeId: number, productIds: number[]): Promise<AgentProduct[]>;
@@ -1686,6 +1691,46 @@ export class DatabaseStorage implements IStorage {
     return result.map(r => ({
       agentId: r.agentId!,
       total: Number(r.total),
+      confirmed: Number(r.confirmed),
+      delivered: Number(r.delivered),
+      cancelled: Number(r.cancelled),
+    }));
+  }
+
+  async getAgentPerformanceByAssignment(
+    storeId: number,
+    options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null },
+  ): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
+    // Counts orders ASSIGNED to each agent in a created_at window.
+    // Different question than getAgentPerformance (which counts today's actions):
+    // here the denominator is the agent's full assignment pool in the date range,
+    // so the Dashboard's confirmation rate doesn't read 0% just because nobody
+    // touched anything today.
+    const conditions: any[] = [
+      eq(orders.storeId, storeId),
+      sql`${orders.assignedToId} IS NOT NULL`,
+    ];
+    if (options?.magasinId != null) conditions.push(eq(orders.magasinId, options.magasinId));
+    if (options?.dateFrom)          conditions.push(gte(orders.createdAt, new Date(`${options.dateFrom}T00:00:00.000Z`)));
+    if (options?.dateTo)            conditions.push(lte(orders.createdAt, new Date(`${options.dateTo}T23:59:59.999Z`)));
+
+    // 'confirmed' counts every order that progressed past confirmation:
+    // confirme + every downstream carrier state that proves the agent's call
+    // led to a real shipment (in_progress, expédié, Attente De Ramassage, delivered, refused/retourné).
+    const rows = await db.select({
+      agentId:   orders.assignedToId,
+      total:     count(),
+      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme','confirmé','expédié','in_progress','Attente De Ramassage','delivered','refused','retourné'))`,
+      delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
+      cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)','Annulé (faux numéro)','Annulé (double)'))`,
+    })
+      .from(orders)
+      .where(and(...conditions))
+      .groupBy(orders.assignedToId);
+
+    return rows.map(r => ({
+      agentId:   r.agentId!,
+      total:     Number(r.total),
       confirmed: Number(r.confirmed),
       delivered: Number(r.delivered),
       cancelled: Number(r.cancelled),

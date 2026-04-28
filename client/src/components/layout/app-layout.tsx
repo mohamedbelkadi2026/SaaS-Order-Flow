@@ -484,8 +484,20 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     queryKey: ["/api/agents/store-settings"],
     enabled: isAgent,
   });
-  const myAgentSetting = agentSettingsData?.find((s: any) => s.agentId === user?.id);
-  const agentSpecialty = myAgentSetting?.roleInStore || 'confirmation';
+  // Union across all magasins: an agent can be 'confirmation' in Magasin A and
+  // 'suivi' in Magasin B. The sidebar must show items for any role they hold
+  // anywhere — otherwise we'd hide tabs they need to do part of their job.
+  const myRoles = new Set(
+    (agentSettingsData || [])
+      .filter((s: any) => s.agentId === user?.id)
+      .map((s: any) => s.roleInStore)
+  );
+  const agentSpecialty: 'confirmation' | 'suivi' | 'both' =
+    myRoles.has('both') || (myRoles.has('confirmation') && myRoles.has('suivi'))
+      ? 'both'
+      : myRoles.has('suivi')
+        ? 'suivi'
+        : 'confirmation';
 
   /* New-orders count for badge */
   const { data: ordersStats } = useQuery<any>({

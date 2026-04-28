@@ -1,0 +1,109 @@
+FIX — 3 separate fixes for agent role-based UI + correct confirmation rateMochkila 1 — Sidebar items per agent roleIn client/src/components/layout/app-layout.tsx line 488, the agent specialty is read from a SINGLE store_agent_settings row. But with multi-magasin, an agent can be confirmation in Magasin 1 and suivi in Magasin 2. Use the union of all roles across magasins.Replace line 487-488:
+tsconst myAgentSetting = agentSettingsData?.find((s: any) => s.agentId === user?.id);
+const agentSpecialty = myAgentSetting?.roleInStore || 'confirmation';With:
+ts// Union across all magasins: if agent is 'both' anywhere, treat as both;
+// if agent has 'confirmation' in any magasin AND 'suivi' in any magasin → 'both';
+// if only 'confirmation' rows → 'confirmation'; only 'suivi' rows → 'suivi'.
+const myRoles = new Set(
+  (agentSettingsData || [])
+    .filter((s: any) => s.agentId === user?.id)
+    .map((s: any) => s.roleInStore)
+);
+const agentSpecialty: 'confirmation' | 'suivi' | 'both' =
+  myRoles.has('both') || (myRoles.has('confirmation') && myRoles.has('suivi'))
+    ? 'both'
+    : myRoles.has('suivi')
+      ? 'suivi'
+      : 'confirmation';Also confirm the sidebar split is correct — if your ORDER_SUB_ITEMS has the new "Pas de réponse" entry, make sure it's classified as confirmation (it's part of the agent's calling workflow, not the carrier suivi):Around line 532-535:
+tsif (agentSpecialty === 'confirmation') {
+  return ORDER_SUB_ITEMS.filter(s =>
+    !['Suivi des Colis', 'En cours', 'Livrées', 'Refusées'].includes(s.name)
+  );
+  // implicitly keeps: Nouveaux, Confirmés, Injoignables, Annulés, Boite vocale, Pas de réponse
+}
+return ORDER_SUB_ITEMS.filter(s =>
+  ['En cours', 'Suivi des Colis', 'Livrées', 'Refusées'].includes(s.name)
+);That's already mostly right — just verify "Boite vocale" and "Pas de réponse" stay in the confirmation set. If they're in the explicit allow-list of the suivi branch, move them.Mochkila 2 — Magasin filter on Team page hides commandes for confirmation/suivi agentsWhen an admin or media buyer filters the Team page by magasin, they should see ALL agents who have access to that magasin. The current scope filters too aggressively. In client/src/pages/team.tsx, find where the agent list is computed for the table — there's likely a .filter(a => a.linkedMagasins.includes(selectedMagasin)) style line. Replace with:tsxconst visibleAgents = useMemo(() => {
+  if (!agents) return [];
+  if (!selectedMagasin || selectedMagasin === 'all') return agents;
+  return agents.filter((a: any) => {
+    // Agent is visible in this magasin if they have any setting row for it
+    const settingsForMagasin = (agentSettingsData || [])
+      .filter((s: any) => s.agentId === a.id && s.magasinId === selectedMagasin);
+    return settingsForMagasin.length > 0;
+  });
+}, [agents, agentSettingsData, selectedMagasin]);For the "Toutes les commandes" filter dropdown, media buyers should also see the magasin filter — same UI as admin. Search for the role check around the filter dropdown and remove any if (!isAdmin) return null that hides the dropdown for media buyers. They get to see all magasins they have access to, just like admins.Mochkila 3 — Dashboard "Confirmation rate = 0%" while agent has 2 confirmées + 2 en_coursIn server/storage.ts, getAgentPerformance (line 1649) counts only orders with last_action_by IS NOT NULL filtered to today's window. That's correct for the Team page's "actions today" stat, but the Dashboard's agentPerf is using the same endpoint and so it inherits that "today-only / actions-only" filter — which excludes:
+
+Orders where status was changed by carrier sync (no actor stamp)
+Orders confirmed yesterday or earlier
+Orders assigned but not yet actioned
+So if the agent has 4 orders assigned (2 confirme + 2 in_progress), but only confirmed today → total = 2, confirmed = 2 → 100% (looks fine).
+But if the 2 in_progress orders flipped to in_progress via webhook (no actor) → total = 2, confirmed = 2 → 100% (also fine).
+But if zero actions were taken today → total = 0, confirmed = 0 → confirmRate = NaN, displayed as 0%.Add a SECOND endpoint that the Dashboard uses, scoped to assigned orders within a date range (not "actions today"):In server/routes.ts, add:tsapp.get("/api/agents/performance-by-assignment", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const magasinId = req.query.magasinId ? Number(req.query.magasinId) : null;
+  const dateFrom = (req.query.dateFrom as string) || null;
+  const dateTo   = (req.query.dateTo   as string) || null;
+  const result = await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo });
+  res.json(result);
+});And in server/storage.ts:tsasync getAgentPerformanceByAssignment(
+  storeId: number,
+  options?: { magasinId?: number | null; dateFrom?: string | null; dateTo?: string | null }
+): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]> {
+  const conditions: any[] = [
+    eq(orders.storeId, storeId),
+    sql`${orders.assignedToId} IS NOT NULL`,
+  ];
+  if (options?.magasinId)  conditions.push(eq(orders.magasinId, options.magasinId));
+  if (options?.dateFrom)   conditions.push(gte(orders.createdAt, new Date(`${options.dateFrom}T00:00:00`)));
+  if (options?.dateTo)     conditions.push(lte(orders.createdAt, new Date(`${options.dateTo}T23:59:59`)));
+
+  const rows = await db.select({
+    agentId:   orders.assignedToId,
+    total:     sql<number>`count(*)`,
+    confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme','confirmé','delivered','livré','livrée','in_progress','expédié','Attente De Ramassage'))`,
+    delivered: sql<number>`count(*) filter (where ${orders.status} in ('delivered','livré','livrée'))`,
+    cancelled: sql<number>`count(*) filter (where ${orders.status} like 'Annulé%')`,
+  })
+    .from(orders)
+    .where(and(...conditions))
+    .groupBy(orders.assignedToId);
+
+  return rows.map(r => ({
+    agentId:   r.agentId!,
+    total:     Number(r.total),
+    confirmed: Number(r.confirmed),
+    delivered: Number(r.delivered),
+    cancelled: Number(r.cancelled),
+  }));
+}In client/src/hooks/use-store-data.ts, add the hook:
+tsexport function useAgentPerformanceByAssignment(magasinId?: number | null, dateFrom?: string, dateTo?: string) {
+  const params = new URLSearchParams();
+  if (magasinId != null) params.set("magasinId", String(magasinId));
+  if (dateFrom)          params.set("dateFrom", dateFrom);
+  if (dateTo)            params.set("dateTo", dateTo);
+  const qs = params.toString();
+  return useQuery({
+    queryKey: ["/api/agents/performance-by-assignment", magasinId ?? "all", dateFrom ?? "", dateTo ?? ""],
+    queryFn: async () => {
+      const res = await fetch(`/api/agents/performance-by-assignment${qs ? `?${qs}` : ''}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed");
+      return res.json();
+    },
+  });
+}In client/src/pages/dashboard.tsx, swap the dashboard's "Performance de l'Équipe" section to use the new hook:
+ts// Around the existing useAgentPerformance call:
+const { data: agentPerf } = useAgentPerformanceByAssignment(
+  filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+  filters.dateFrom || undefined,
+  filters.dateTo   || undefined,
+);Keep useAgentPerformance (the actions-today version) for the Team page "Traitées" column where today's actions are the right metric. The Dashboard's overview is about assignment-level performance — different question, different endpoint.Acceptance criteria
+✅ Confirmation-only agent → sidebar shows: Nouveaux, Confirmés, Injoignables, Annulés, Boite vocale, Pas de réponse. Doesn't show: En cours, Suivi des Colis, Livrées, Refusées.
+✅ Suivi-only agent → sidebar shows: En cours, Suivi des Colis, Livrées, Refusées. Doesn't show the confirmation set.
+✅ Both → sidebar shows everything.
+✅ Agent with confirmation in Magasin A and suivi in Magasin B → sidebar shows everything (union).
+✅ Team page filter by magasin → shows agents who have a setting row in that magasin.
+✅ Media buyer can see the magasin filter on Toutes les commandes.
+✅ Dashboard "Performance de l'Équipe" → agent with 2 confirmées + 2 en_cours = 4 total, displays 50% confirmation (2 confirmed out of 4 total). Not 0%.
+✅ Date range filter and magasin filter on dashboard apply to the new endpoint correctly.
+✅ Team page "Traitées" column unchanged — still uses today's last_action_at.

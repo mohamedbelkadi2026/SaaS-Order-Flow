@@ -1,4 +1,4 @@
-import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformance, useAgentStoreSettings, useMagasins } from "@/hooks/use-store-data";
+import { useFilteredStats, useFilterOptions, useAgents, useAgentPerformanceByAssignment, useAgentStoreSettings, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/utils";
@@ -240,11 +240,13 @@ export default function Dashboard() {
   );
   const { data: agents } = useAgents();
   // Scope the per-agent confirmation/livraison panel to the chosen magasin
-  // so the numbers match the rest of the dashboard. When "Tous les magasins"
-  // is selected, pass null to fetch the cross-magasin total. Date is left
-  // omitted so the hook keeps its default (today).
-  const { data: agentPerf } = useAgentPerformance(
+  // and date window so the numbers match the rest of the dashboard. Uses the
+  // assignment-based endpoint (denominator = orders assigned in window), not
+  // the actions-today endpoint — otherwise quiet days show 0% confirmation.
+  const { data: agentPerf } = useAgentPerformanceByAssignment(
     filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+    filters.dateFrom || undefined,
+    filters.dateTo   || undefined,
   );
   const { data: agentSettings = [] } = useAgentStoreSettings();
   const { data: magasins = [] } = useMagasins();

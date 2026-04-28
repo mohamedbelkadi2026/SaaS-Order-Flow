@@ -462,6 +462,25 @@ export function useUpdateSubscription() {
   });
 }
 
+// Dashboard variant: groups by `assigned_to_id` over a created_at window.
+// The Team page should keep using `useAgentPerformance` for the "Traitées"
+// column since that one is about today's actions.
+export function useAgentPerformanceByAssignment(magasinId?: number | null, dateFrom?: string, dateTo?: string) {
+  const params = new URLSearchParams();
+  if (magasinId != null) params.set("magasinId", String(magasinId));
+  if (dateFrom)          params.set("dateFrom", dateFrom);
+  if (dateTo)            params.set("dateTo", dateTo);
+  const qs = params.toString();
+  return useQuery({
+    queryKey: ["/api/agents/performance-by-assignment", magasinId ?? "all", dateFrom ?? "", dateTo ?? ""],
+    queryFn: async () => {
+      const res = await fetch(`/api/agents/performance-by-assignment${qs ? `?${qs}` : ''}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch agent performance by assignment");
+      return res.json();
+    },
+  });
+}
+
 export function useAgentPerformance(magasinId?: number | null, date?: string) {
   // Build a stable query string so React Query keys deduplicate correctly.
   // `magasinId === null` means "all magasins" (matches the server default).
