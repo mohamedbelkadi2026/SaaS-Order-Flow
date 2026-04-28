@@ -1,0 +1,28 @@
+FIX — Remove the red badge count from the "Pas de réponse" sidebar item
+I want the sidebar item to show only the text "Pas de réponse" — no red badge with a count next to it. The Nouveaux item should keep its badge (that one I want), but Pas de réponse should be plain text like "Confirmés" or "Injoignables".
+File: client/src/components/layout/app-layout.tsx
+Step 1 — Remove the badge flag from the menu entry
+Find ORDER_SUB_ITEMS. The current entry probably looks like:
+ts{ name: "Pas de réponse", href: "/orders/pas-reponse", badge: 'pasReponse' },
+Change it to:
+ts{ name: "Pas de réponse", href: "/orders/pas-reponse" },
+(Just remove the badge field entirely.)
+Step 2 — Remove the JSX that renders the badge
+Search the file for pasReponseCount. There will be a render block that looks roughly like:
+tsx{sub.name === "Pas de réponse" && pasReponseCount > 0 && (
+  <span className="...red badge classes...">{pasReponseCount}</span>
+)}
+Delete that entire block. The Nouveaux equivalent (sub.name === "Nouveaux" && newOrdersCount > 0) must stay — only remove the Pas de réponse one.
+Step 3 — (Optional cleanup) Remove the count variable too
+If pasReponseCount is declared at the top of the component but no longer used anywhere, delete its declaration:
+tsconst pasReponseCount: number = ordersStats?.pasReponse ?? 0;   // ← delete this line
+This isn't strictly necessary — TypeScript will just flag it as unused — but removing it keeps the file clean.
+Step 4 — (Optional) Stop returning the count from the API
+In server/routes.ts near line 4811 there's pasReponse: pasReponseCount in the JSON response of /api/agents/my-stats. You can leave it (harmless) or remove it for cleanliness. Same for the let pasReponseCount = 0 and the if (s.startsWith('pas de réponse')) pasReponseCount++; lines in the same endpoint. Up to you — these don't affect the UI now that the front no longer reads them.
+Acceptance criteria
+
+✅ Open sidebar → "Pas de réponse" appears as plain text, no red badge, even when there are matching orders.
+✅ Clicking it still navigates to /orders/pas-reponse and lists all Pas de réponse 1/2/3/4 orders correctly.
+✅ Nouveaux still shows its red badge.
+✅ No TypeScript errors.
+

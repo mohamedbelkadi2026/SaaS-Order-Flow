@@ -96,7 +96,7 @@ const ORDER_SUB_ITEMS = [
   { name: "Injoignables",   href: "/orders/injoignable" },
   { name: "Annulés",        href: "/orders/annules" },
   { name: "Boite vocale",   href: "/orders/boite-vocale" },
-  { name: "Pas de réponse", href: "/orders/pas-reponse", badge: 'pasReponse' },
+  { name: "Pas de réponse", href: "/orders/pas-reponse" },
   { name: "En cours",       href: "/orders/en-cours" },
   { name: "Suivi des Colis",href: "/orders/suivi" },
   { name: "Livrées",        href: "/orders/livrees" },
@@ -493,7 +493,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     enabled: !isMediaBuyer,
   });
   const newOrdersCount: number = ordersStats?.nouveau ?? 0;
-  const pasReponseCount: number = ordersStats?.pasReponse ?? 0;
 
   /* Recent orders for notifications panel */
   const { data: recentOrders } = useQuery<any[]>({
@@ -691,15 +690,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                             style={{ background: '#ef4444', color: '#fff' }}
                           >
                             {newOrdersCount}
-                          </span>
-                        )}
-                        {sub.name === "Pas de réponse" && pasReponseCount > 0 && (
-                          <span
-                            className="ml-2 shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold leading-none px-1.5 py-0.5 min-w-[20px]"
-                            style={{ background: '#ef4444', color: '#fff' }}
-                            data-testid="badge-pas-reponse"
-                          >
-                            {pasReponseCount}
                           </span>
                         )}
                       </Link>
