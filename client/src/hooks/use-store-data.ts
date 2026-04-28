@@ -12,10 +12,12 @@ export function useDashboardStats() {
   });
 }
 
-export function useFilterOptions(magasinId?: number | null) {
+export function useFilterOptions(magasinId?: number | null, enabled: boolean = true) {
   // When a magasin is selected on the dashboard, narrow the dropdown options
   // (cities, sources, UTM, etc.) to that magasin's data so the UI doesn't
   // surface choices that won't match anything once the magasin filter applies.
+  // `enabled` lets media-buyer-only screens skip this admin-scoped endpoint
+  // (which 403s for media buyers and otherwise trips the global error boundary).
   const params = new URLSearchParams();
   if (magasinId != null) params.set('magasinId', String(magasinId));
   const qs = params.toString();
@@ -27,10 +29,13 @@ export function useFilterOptions(magasinId?: number | null) {
       if (!res.ok) throw new Error("Failed to fetch filter options");
       return res.json();
     },
+    enabled,
+    retry: false,
+    throwOnError: false,
   });
 }
 
-export function useFilteredStats(filters: Record<string, string>) {
+export function useFilteredStats(filters: Record<string, string>, enabled: boolean = true) {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
     if (value && value !== 'all') params.set(key, value);
@@ -44,6 +49,9 @@ export function useFilteredStats(filters: Record<string, string>) {
       if (!res.ok) throw new Error("Failed to fetch filtered stats");
       return res.json();
     },
+    enabled,
+    retry: false,
+    throwOnError: false,
   });
 }
 
@@ -115,7 +123,7 @@ export function useProducts() {
   });
 }
 
-export function useAgents() {
+export function useAgents(enabled: boolean = true) {
   return useQuery({
     queryKey: ["/api/agents"],
     queryFn: async () => {
@@ -123,6 +131,9 @@ export function useAgents() {
       if (!res.ok) throw new Error("Failed to fetch agents");
       return res.json();
     },
+    enabled,
+    retry: false,
+    throwOnError: false,
   });
 }
 
@@ -465,7 +476,12 @@ export function useUpdateSubscription() {
 // Dashboard variant: groups by `assigned_to_id` over a created_at window.
 // The Team page should keep using `useAgentPerformance` for the "Traitées"
 // column since that one is about today's actions.
-export function useAgentPerformanceByAssignment(magasinId?: number | null, dateFrom?: string, dateTo?: string) {
+export function useAgentPerformanceByAssignment(
+  magasinId?: number | null,
+  dateFrom?: string,
+  dateTo?: string,
+  enabled: boolean = true,
+) {
   const params = new URLSearchParams();
   if (magasinId != null) params.set("magasinId", String(magasinId));
   if (dateFrom)          params.set("dateFrom", dateFrom);
@@ -478,6 +494,9 @@ export function useAgentPerformanceByAssignment(magasinId?: number | null, dateF
       if (!res.ok) throw new Error("Failed to fetch agent performance by assignment");
       return res.json();
     },
+    enabled,
+    retry: false,
+    throwOnError: false,
   });
 }
 
@@ -587,7 +606,7 @@ export function useActiveCarrierAccounts() {
   });
 }
 
-export function useMagasins() {
+export function useMagasins(enabled: boolean = true) {
   return useQuery({
     queryKey: ["/api/magasins"],
     queryFn: async () => {
@@ -595,6 +614,9 @@ export function useMagasins() {
       if (!res.ok) throw new Error("Failed to fetch magasins");
       return res.json();
     },
+    enabled,
+    retry: false,
+    throwOnError: false,
   });
 }
 
@@ -765,7 +787,7 @@ export function useBulkShip() {
   });
 }
 
-export function useAgentStoreSettings() {
+export function useAgentStoreSettings(enabled: boolean = true) {
   return useQuery({
     queryKey: ["/api/agents/store-settings"],
     queryFn: async () => {
@@ -773,6 +795,9 @@ export function useAgentStoreSettings() {
       if (!res.ok) throw new Error("Failed to fetch agent store settings");
       return res.json();
     },
+    enabled,
+    retry: false,
+    throwOnError: false,
   });
 }
 

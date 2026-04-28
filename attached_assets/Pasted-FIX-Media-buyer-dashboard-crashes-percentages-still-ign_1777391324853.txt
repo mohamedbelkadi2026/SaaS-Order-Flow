@@ -1,0 +1,102 @@
+FIX — Media buyer dashboard crashes + percentages still ignored (root cause = admin-only queries fire for media buyer + likely missing migration)
+Mochkila 1 — Dashboard crash for media buyer
+In client/src/pages/dashboard.tsx, four queries fire without an enabled flag, so they run for every role including media buyer. Several of those endpoints are admin-only and return 403, which throws inside React Query and trips the error boundary → "Une erreur inattendue".
+Fix — add enabled guards (around lines 236, 246, 249, 250)
+tsconst { data: stats, isLoading } = useFilteredStats(activeFilters);
+// → restrict to admin/owner/agent (NOT media buyer)
+// becomes:
+const { data: stats, isLoading } = useFilteredStats(activeFilters, !isMediaBuyer);
+The hook needs an optional enabled parameter. In client/src/hooks/use-store-data.ts, find useFilteredStats and add it:
+tsexport function useFilteredStats(filters: Record<string, string>, enabled: boolean = true) {
+  // ... existing body ...
+  return useQuery({
+    queryKey: [...],
+    queryFn: async () => {...},
+    enabled,                   // ← ADD
+  });
+}
+Same change for useFilterOptions, useAgentPerformance, useAgentStoreSettings, useMagasins. Each takes an optional enabled last argument. Then in dashboard.tsx:
+tsconst { data: filterOptions } = useFilterOptions(
+  filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+  !isMediaBuyer,
+);
+const { data: agents }          = useAgents(!isMediaBuyer);
+const { data: agentPerf }       = useAgentPerformance(
+  filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+  undefined,
+  !isMediaBuyer,
+);
+const { data: agentSettings = [] } = useAgentStoreSettings(!isMediaBuyer);
+const { data: magasins = [] }      = useMagasins(!isMediaBuyer);
+For commissions queries (useCommissionsSummary, etc.), same treatment if any are unconditional.
+Belt-and-suspenders — add retry: false and throwOnError: false to those hooks
+So that even if one slips through, a 403 doesn't trip the global error boundary. In each hook:
+tsreturn useQuery({
+  queryKey: [...],
+  queryFn: async () => {...},
+  enabled,
+  retry: false,
+  throwOnError: false,        // React Query v5 (or `useErrorBoundary: false` in v4)
+});
+This contains failures to the affected card instead of nuking the whole dashboard.
+
+Mochkila 2 — Percentages 50/25/25 still distribute equally
+Same engine code as before but the symptom suggests pctMap is empty when it runs. There are 3 possible causes; we'll cover all of them in one pass.
+Cause A — store_agent_settings.magasin_id column missing in production
+Run this in Replit SQL runner to verify:
+sqlSELECT column_name FROM information_schema.columns
+WHERE table_schema='public' AND table_name='store_agent_settings' AND column_name='magasin_id';
+-- Must return 1 row. If 0 rows, the migration didn't apply — re-run it now.
+If it returns 0 rows, run:
+sqlALTER TABLE public.store_agent_settings ADD COLUMN magasin_id integer REFERENCES public.stores(id);
+ALTER TABLE public.store_agent_settings DROP CONSTRAINT IF EXISTS store_agent_settings_agent_id_store_id_key;
+DROP INDEX IF EXISTS store_agent_settings_agent_store_uniq;
+CREATE UNIQUE INDEX store_agent_settings_agent_store_magasin_uniq
+  ON public.store_agent_settings (agent_id, store_id, COALESCE(magasin_id, 0));
+Then re-save the percentages from the UI — the saves you did before silently failed because the column didn't exist.
+Cause B — Magasin's distribution_method is still 'auto'
+The engine only enters the percentage branch when stores.distribution_method = 'pourcentage'. Verify in SQL:
+sqlSELECT id, name, distribution_method FROM public.stores;
+For each magasin where you want percentage distribution:
+sqlUPDATE public.stores SET distribution_method = 'pourcentage' WHERE id = <magasin_id>;
+The Magasins UI should have a "Méthode de distribution" dropdown — make sure it's set to "Pourcentage" and saved.
+Cause C — Percentages were saved but on the wrong row
+After re-saving in the UI, verify the actual stored values:
+sqlSELECT
+  u.username AS agent,
+  s.name     AS magasin,
+  sas.magasin_id,
+  sas.lead_percentage,
+  sas.role_in_store
+FROM public.store_agent_settings sas
+LEFT JOIN public.users u  ON u.id = sas.agent_id
+LEFT JOIN public.stores s ON s.id = sas.magasin_id
+WHERE sas.store_id = <your storeId>
+ORDER BY agent, magasin NULLS FIRST;
+You should see rows with magasin_id = <magasin> and the right lead_percentage. If you only see rows with magasin_id = NULL, the UI wrote to the legacy default row instead of per-magasin — that means the team page still calls the old single-percentage endpoint. Check that the team modal calls useUpsertAgentMagasinPercentages (the per-magasin hook), not the older single-row update.
+Cause D — Distribution epoch + lastAssignedAgentId need a reset after re-saving
+Old orders pre-config still skew the count window. Once percentages are correctly stored, run:
+sqlUPDATE public.stores
+SET distribution_epoch = now(),
+    last_assigned_agent_id = NULL
+WHERE distribution_method = 'pourcentage';
+Now inject 4 fresh test orders for that magasin → expected with 50/25/25: 2 / 1 / 1. Server logs MUST show:
+[DIST] storeId=X magasinId=Y method=pourcentage eligible=[A,B,C]
+[DIST-%] window since=...
+[DIST-%] agent=A target=50.0% today=0 deficit=49.0
+[DIST-%] agent=B target=25.0% today=0 deficit=24.0
+[DIST-%] agent=C target=25.0% today=0 deficit=24.0
+[DIST-%] selected=A
+If you see target=33.3% for everyone → pctMap is empty → re-check Cause A (column missing) OR re-save percentages.
+If you see method=auto instead of method=pourcentage → re-check Cause B.
+
+Acceptance criteria
+
+✅ Media buyer logs in → dashboard renders without "Une erreur inattendue".
+✅ Media buyer sees their own stats card, top products, daily chart — no admin-only sections.
+✅ Server logs show NO 403s on /api/stats/filtered, /api/agents/performance, /api/agents/store-settings, /api/magasins for the media buyer (the hooks are disabled).
+✅ SELECT magasin_id FROM information_schema.columns WHERE table_name='store_agent_settings' returns 1 row.
+✅ Re-saved percentages show up correctly per-magasin in the SQL inspection query.
+✅ 4 fresh test orders distribute 2/1/1 (±0) for 50/25/25.
+✅ Logs show [DIST-%] target=50.0% not target=33.3% for the 50% agent.
+✅ No regression for admin/owner dashboard — same data, same charts.

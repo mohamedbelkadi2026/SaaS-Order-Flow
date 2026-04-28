@@ -228,17 +228,28 @@ export default function Dashboard() {
       const r = await fetch(`/api/stats/commissions-summary?${params}`, { credentials: 'include' });
       return r.json();
     },
-    enabled: !isAgent,
+    // Owners/admins only — route is requireAdmin on the server. Previously
+    // `!isAgent` also let media buyers fire this and trip the error boundary
+    // on the 403. The dedicated commissions card is hidden from media buyers
+    // anyway (line ~1175 sits inside !isAgent && !isMediaBuyer blocks).
+    enabled: isAdminUser,
+    retry: false,
+    throwOnError: false,
   });
   const totalCommissionsOwed = commissionsSummary?.reduce((sum, a) => sum + Number(a.totalOwed), 0) ?? 0;
 
 
-  const { data: stats, isLoading } = useFilteredStats(activeFilters);
+  // Skip admin-only queries entirely for media buyers — those endpoints 403
+  // for them, and an unhandled 403 throws inside React Query and trips the
+  // global error boundary ("Une erreur inattendue"). The media buyer view is
+  // rendered separately at line ~349 from a dedicated /api/media-buyer/stats.
+  const { data: stats, isLoading } = useFilteredStats(activeFilters, !isMediaBuyer);
   // Pass selected magasin so dropdown options match what the magasin actually has.
   const { data: filterOptions } = useFilterOptions(
     filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
+    !isMediaBuyer,
   );
-  const { data: agents } = useAgents();
+  const { data: agents } = useAgents(!isMediaBuyer);
   // Scope the per-agent confirmation/livraison panel to the chosen magasin
   // and date window so the numbers match the rest of the dashboard. Uses the
   // assignment-based endpoint (denominator = orders assigned in window), not
@@ -247,9 +258,10 @@ export default function Dashboard() {
     filters.magasinId !== 'all' ? Number(filters.magasinId) : null,
     filters.dateFrom || undefined,
     filters.dateTo   || undefined,
+    !isMediaBuyer,
   );
-  const { data: agentSettings = [] } = useAgentStoreSettings();
-  const { data: magasins = [] } = useMagasins();
+  const { data: agentSettings = [] } = useAgentStoreSettings(!isMediaBuyer);
+  const { data: magasins = [] } = useMagasins(!isMediaBuyer);
 
   const handleDatePreset = (preset: string) => {
     if (preset === 'custom') {
@@ -1165,7 +1177,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {!isAgent && totalCommissionsOwed > 0 && (
+      {isAdminUser && totalCommissionsOwed > 0 && (
         <Card className="rounded-xl border-0 shadow-md overflow-hidden" style={{ background: 'linear-gradient(135deg, #C5A059 0%, #a8853f 100%)' }} data-testid="card-commissions-summary">
           <CardContent className="p-4 flex items-center justify-between flex-wrap gap-3">
             <div className="flex items-center gap-3">
