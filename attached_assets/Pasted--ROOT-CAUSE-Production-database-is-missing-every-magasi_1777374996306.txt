@@ -1,0 +1,187 @@
+
+🚨 ROOT CAUSE — Production database is missing every magasin_id column. Code writes to columns that don't exist, fails silently, orders get NULL magasin.
+Verified from your backup.sql
+sql-- store_integrations table in production:
+CREATE TABLE public.store_integrations (
+    id, store_id, provider, type, credentials, is_active, created_at
+    -- ❌ NO magasin_id
+);
+
+-- orders table in production:
+CREATE TABLE public.orders (...)
+    -- ❌ NO magasin_id
+
+-- store_agent_settings table in production:
+CREATE TABLE public.store_agent_settings (...)
+    -- ❌ NO magasin_id
+Why Anakio orders disappear from "Toutes les commandes"
+
+Anakio Shopify webhook arrives at the platform
+Code reads integration.magasinId → undefined because the column doesn't exist in production
+shopifyMagasinId = undefined ?? null = null
+storage.createOrder({ ..., magasinId: null }) → INSERT either fails silently or writes the order with NULL magasinId
+In "Toutes les commandes", filtering by magasinId = 42 returns 0 rows because no order has that value
+Promomarkett orders show up only if their magasinId was set BEFORE the column went missing, OR if you have a single magasin and the query has a fallback
+
+This is the same root cause as every previous bug:
+
+Boutique column shows "—" for every row
+Per-magasin percentages don't persist
+Distribution method falls back to auto
+Sync filters by missing fields
+Anakio orders are invisible
+
+One missing migration breaks every multi-magasin feature simultaneously.
+Fix — apply this SQL in Replit Database tab. Don't trust db:push. It has been silently failing for 6+ commits.
+sqlBEGIN;
+
+-- ============================================================================
+-- STORE_INTEGRATIONS — link an integration to a specific magasin
+-- ============================================================================
+ALTER TABLE public.store_integrations
+  ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- ============================================================================
+-- STORES — per-magasin distribution config
+-- ============================================================================
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_method     text      DEFAULT 'auto';
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_epoch      timestamp DEFAULT now();
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS agent_ids               jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS services                jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_carriers         jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_platforms        jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS last_assigned_agent_id  integer;
+
+-- ============================================================================
+-- ORDERS — magasin scope, action tracking, carrier+driver fields
+-- ============================================================================
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS magasin_id     integer    REFERENCES public.stores(id);
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_at timestamp;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_by integer    REFERENCES public.users(id);
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS carrier_id     integer;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS carrier_name   text;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_name    text       DEFAULT '';
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_phone   text       DEFAULT '';
+
+-- ============================================================================
+-- STORE_AGENT_SETTINGS — per-magasin overrides
+-- ============================================================================
+ALTER TABLE public.store_agent_settings
+  ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+ALTER TABLE public.store_agent_settings DROP CONSTRAINT IF EXISTS store_agent_settings_agent_id_store_id_key;
+DROP INDEX IF EXISTS store_agent_settings_agent_store_uniq;
+DROP INDEX IF EXISTS store_agent_settings_agent_magasin_uniq;
+DROP INDEX IF EXISTS store_agent_settings_agent_store_magasin_uniq;
+CREATE UNIQUE INDEX store_agent_settings_agent_store_magasin_uniq
+  ON public.store_agent_settings (agent_id, store_id, COALESCE(magasin_id, 0));
+
+-- ============================================================================
+-- INDEXES
+-- ============================================================================
+CREATE INDEX IF NOT EXISTS idx_orders_magasin_id        ON public.orders (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_orders_assigned_magasin  ON public.orders (assigned_to_id, magasin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_last_action       ON public.orders (last_action_by, last_action_at);
+CREATE INDEX IF NOT EXISTS idx_store_integrations_mag   ON public.store_integrations (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_store_agent_magasin      ON public.store_agent_settings (magasin_id);
+
+-- ============================================================================
+-- BACKFILL — link integrations to the right magasin
+-- ============================================================================
+-- For accounts with exactly ONE magasin, attribute every integration to it
+UPDATE public.store_integrations si
+SET magasin_id = (
+  SELECT id FROM public.stores
+  WHERE owner_id = (SELECT owner_id FROM public.stores WHERE id = si.store_id LIMIT 1)
+  LIMIT 1
+)
+WHERE si.magasin_id IS NULL
+  AND (SELECT count(*) FROM public.stores
+       WHERE owner_id = (SELECT owner_id FROM public.stores WHERE id = si.store_id LIMIT 1)) = 1;
+
+-- For multi-magasin accounts, you MUST manually link each integration in the UI:
+--   Open Intégrations page → click each Shopify card → assign the right magasin → save.
+-- The fix below ensures the UI's save actually persists this time.
+
+-- ============================================================================
+-- BACKFILL — set magasin_id on existing orders
+-- ============================================================================
+UPDATE public.orders o
+SET magasin_id = si.magasin_id
+FROM public.store_integrations si
+WHERE o.store_id = si.store_id
+  AND si.magasin_id IS NOT NULL
+  AND o.magasin_id  IS NULL
+  AND o.source      = si.provider;
+
+UPDATE public.stores SET distribution_epoch = now() WHERE distribution_epoch IS NULL;
+
+COMMIT;
+
+-- ============================================================================
+-- VERIFY
+-- ============================================================================
+SELECT 'store_integrations.magasin_id (expect 1)' AS check, count(*) AS got FROM information_schema.columns
+WHERE table_schema='public' AND table_name='store_integrations' AND column_name='magasin_id';
+
+SELECT 'orders.magasin_id (expect 1)' AS check, count(*) AS got FROM information_schema.columns
+WHERE table_schema='public' AND table_name='orders' AND column_name='magasin_id';
+
+SELECT 'orders backfilled' AS check, count(magasin_id) AS got_with_magasin, count(*) AS got_total FROM public.orders;
+
+-- See your integrations after backfill
+SELECT si.id, si.provider, si.store_id, si.magasin_id, m.name AS magasin_name
+FROM public.store_integrations si
+LEFT JOIN public.stores m ON m.id = si.magasin_id;
+Expected verification:
+
+store_integrations.magasin_id: got=1
+orders.magasin_id: got=1
+orders backfilled: at least some orders should have non-null magasin_id
+
+After the SQL completes
+
+Restart the server in Replit (Stop → Run).
+Open Intégrations page → click on the Anakio Shopify card → confirm "Magasin lié" = Anakio → save. This is the moment the integration finally gets magasin_id = 42 written to the DB.
+Verify:
+
+sqlSELECT id, provider, magasin_id FROM public.store_integrations;
+You should see two rows, one with magasin_id for Promomarkett, one for Anakio.
+
+Now incoming Shopify webhooks will correctly tag each order to its magasin.
+Backfill historical orders manually (one-time SQL). For orders whose webhook URL contains the magasin_id hint:
+
+sql-- Tag all Anakio orders by their webhook URL pattern (if your URL embeds magasinId in query string)
+-- Adjust the pattern based on what your webhook URL looks like.
+-- Or simpler: use the integration's magasin_id directly:
+UPDATE public.orders o
+SET magasin_id = 42
+WHERE o.source = 'shopify'
+  AND o.magasin_id IS NULL
+  AND EXISTS (
+    SELECT 1 FROM public.store_integrations si
+    WHERE si.store_id = o.store_id
+      AND si.provider = 'shopify'
+      AND si.magasin_id = 42
+      -- Match orders by some other criterion. If you only have ONE Anakio webhook
+      -- URL and you know which orders came through it, you'll need to look at
+      -- the raw webhook log or use a different signal (date range, source URL, etc.)
+  );
+A simpler ground-truth approach: look at the raw Shopify webhook payload domain (each webhook is sent from a specific Shopify store domain, e.g. anakio.myshopify.com). If you log raw payloads, you can match by domain. Otherwise, accept that you'll need a mass UPDATE per integration.
+Code change (small) — make sure UI's save actually writes magasin_id
+In server/routes.ts, find the integration POST/PATCH endpoint (search createIntegration or updateIntegration). Confirm magasinId from req.body is included in the INSERT/UPDATE. If not, add it:
+tsconst { provider, type, credentials, magasinId } = req.body;
+await storage.createIntegration({
+  storeId, provider, type, credentials,
+  magasinId: magasinId || null,    // ← ensure this is passed
+});
+After the SQL runs, this line will actually persist to the DB. Before, even if it was passed, Postgres rejected it.
+Acceptance criteria
+
+✅ Verification queries return the expected counts.
+✅ Each row in store_integrations shows the correct magasin_id matching the magasin you linked in the UI.
+✅ A new Shopify order coming in via the Anakio webhook has magasin_id = 42 in the DB.
+✅ "Toutes les commandes" with magasin filter "Anakio" shows the Anakio orders.
+✅ "Toutes les commandes" with magasin filter "Promomarkett" shows the Promomarkett orders.
+✅ "Tous les magasins" shows everything.
+✅ Boutique column on each row displays the correct magasin name.

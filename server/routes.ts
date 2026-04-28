@@ -1888,13 +1888,32 @@ export async function registerRoutes(
       const schema = z.object({
         credentials: z.record(z.string()).optional(),
         isActive: z.number().optional(),
+        // Allow re-linking an existing integration to a different magasin.
+        // Accept null to explicitly clear the link, or a number to set it.
+        magasinId: z.number().nullable().optional(),
       });
       const data = schema.parse(req.body);
+
+      // Cross-tenant guard: if the caller is trying to link this integration to a
+      // specific magasin, verify that magasin belongs to the same owner as the
+      // requesting user. Without this, a malicious user could re-link their own
+      // integration to another tenant's store by guessing a stores.id.
+      if (data.magasinId !== undefined && data.magasinId !== null) {
+        const targetStore = await storage.getStore(data.magasinId);
+        if (!targetStore || targetStore.ownerId !== req.user!.id) {
+          return res.status(403).json({ message: "Magasin invalide ou non autorisé." });
+        }
+      }
+
       const updateData: any = {};
       if (data.credentials) updateData.credentials = JSON.stringify(data.credentials);
       if (data.isActive !== undefined) updateData.isActive = data.isActive;
+      if (data.magasinId !== undefined) updateData.magasinId = data.magasinId;
 
       const updated = await storage.updateIntegration(id, updateData);
+      if (data.magasinId !== undefined) {
+        console.log(`[INTEGRATION-PATCH] integrationId=${id} re-linked to magasinId=${data.magasinId ?? 'null'} by userId=${req.user!.id}`);
+      }
       await storage.createIntegrationLog({
         storeId: req.user!.storeId!, integrationId: id, provider: integration.provider,
         action: 'integration_updated', status: 'success',
