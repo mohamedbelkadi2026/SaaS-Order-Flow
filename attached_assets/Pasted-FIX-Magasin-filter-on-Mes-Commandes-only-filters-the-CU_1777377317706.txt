@@ -1,0 +1,45 @@
+FIX — Magasin filter on Mes Commandes only filters the CURRENT page (25 rows), not the whole DB
+Problem
+In client/src/pages/orders.tsx, the magasin filter is applied client-side on ordersList, which only contains the 25 orders of the current page. Anakio orders that exist in pages 2, 3, 4… are never seen by the filter, so the user has to manually browse every page to find them.
+The server endpoint /api/orders/filtered already supports magasinId (line 544 of server/storage.ts). The fix is just to send it.
+File: client/src/pages/orders.tsx
+Change 1 — pass magasinId to the server in actualFilters (line ~374)
+Add magasinId to the memo so the query refetches when it changes:
+tsconst actualFilters = useMemo(() => ({
+  ...filters,
+  status: filters.statusFilter || urlStatus,
+  dateFrom: dateRange.from,
+  dateTo: dateRange.to,
+  magasinId: selectedMagasin ?? undefined,   // ← ADD
+}), [filters, urlStatus, dateRange, selectedMagasin]);   // ← ADD selectedMagasin to deps
+Change 2 — remove the client-side magasin filter (line ~571)
+Delete this line entirely:
+tsif (selectedMagasin) visible = visible.filter((o: any) => o.magasinId === selectedMagasin);
+And remove selectedMagasin from the dependency array on line 599 since it's no longer used in that memo:
+ts}, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds]);
+//                                                              ↑ removed selectedMagasin
+Change 3 — reset to page 1 when the magasin changes
+Otherwise, switching from "Promomarkett" to "Anakio" while on page 4 may show "no results" if Anakio has fewer pages. In the Select onValueChange handler at line ~1004:
+tsx<Select
+  value={selectedMagasin ? String(selectedMagasin) : 'all'}
+  onValueChange={(v) => {
+    setSelectedMagasin(v === 'all' ? null : Number(v));
+    setFilters(f => ({ ...f, page: 1 }));     // ← ADD: reset pagination
+  }}
+>
+Same fix on the All Orders page
+client/src/pages/all-orders.tsx may have the same client-side filter pattern. Search for colFilters.boutique and magasinId === selectedMagasin. If a client-side filter exists there too, replace it the same way:
+
+Add magasinId to the filter object passed to useAllOrders / useFilteredOrders
+Remove the client-side .filter() line
+Reset page to 1 on magasin change
+
+The server's getFilteredOrders already handles this — the fix is purely about sending the parameter.
+Acceptance criteria
+
+✅ Open Mes Commandes → pick "Anakio" from the magasin dropdown → table immediately shows only Anakio orders, total count reflects the actual number of Anakio orders across all pages.
+✅ Pagination at the bottom reflects ONLY Anakio's pages (e.g. "Page 1 of 3" if Anakio has 60 orders at limit=25).
+✅ Switching from "Anakio" → "Promomarkett" jumps back to page 1.
+✅ Switching to "Tous les Magasins" shows the full list with original pagination.
+✅ Status, agent, search filters all continue to work and combine correctly with the magasin filter.
+✅ No TypeScript errors. No console warnings about stale state.

@@ -371,21 +371,25 @@ export default function Orders() {
   });
   const [dateRange, setDateRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
 
+  const { data: magasins } = useMagasins();
+  const [selectedMagasin, setSelectedMagasin] = useState<number | null>(null);
+
   const actualFilters = useMemo(() => ({
     ...filters,
     // statusFilter overrides tab-level urlStatus (lets user drill into a specific carrier status)
     status: filters.statusFilter || urlStatus,
     dateFrom: dateRange.from,
     dateTo: dateRange.to,
+    // Magasin filter MUST go to the server — otherwise we'd only filter the
+    // current page (25 rows) and miss orders living on later pages.
+    magasinId: selectedMagasin ?? undefined,
     // For media buyers, the backend scopes orders to their ID + UTM pattern automatically
     // Do NOT override utmSource here — it breaks deep tracking (CODE*PLATFORM) matching
-  }), [filters, urlStatus, dateRange]);
+  }), [filters, urlStatus, dateRange, selectedMagasin]);
 
   const { data, isLoading } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();
   const { data: filterOptions } = useFilterOptions();
-  const { data: magasins } = useMagasins();
-  const [selectedMagasin, setSelectedMagasin] = useState<number | null>(null);
   const { data: shippingIntegrations } = useIntegrations("shipping");
   const updateStatus = useUpdateOrderStatus();
   const assignAgent = useAssignAgent();
@@ -568,7 +572,7 @@ export default function Orders() {
   const filteredOrders = useMemo(() => {
     let visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
     if (showDuplicatesOnly) visible = visible.filter((o: any) => (o.duplicateCount ?? 1) > 1);
-    if (selectedMagasin) visible = visible.filter((o: any) => o.magasinId === selectedMagasin);
+    // selectedMagasin is now applied server-side via actualFilters — no client filter here.
     if (!Object.values(colFilters).some(v => v)) return visible;
     return visible.filter((o: any) => {
       if (colFilters.code && !((o as any).trackNumber || o.orderNumber || '').toLowerCase().includes(colFilters.code.toLowerCase())) return false;
@@ -596,7 +600,7 @@ export default function Orders() {
       }
       return true;
     });
-  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds, selectedMagasin]);
+  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds]);
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -1001,7 +1005,12 @@ export default function Orders() {
           {Array.isArray(magasins) && magasins.length > 1 && (
             <div className="flex flex-col shrink-0">
               <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Magasin</span>
-              <Select value={selectedMagasin ? String(selectedMagasin) : 'all'} onValueChange={(v) => setSelectedMagasin(v === 'all' ? null : Number(v))}>
+              <Select value={selectedMagasin ? String(selectedMagasin) : 'all'} onValueChange={(v) => {
+                setSelectedMagasin(v === 'all' ? null : Number(v));
+                // Reset pagination — otherwise switching magasins while on page 4
+                // can show "no results" if the new magasin has fewer pages.
+                setFilters(f => ({ ...f, page: 1 }));
+              }}>
                 <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[140px]" data-testid="filter-magasin">
                   <SelectValue placeholder="Tous les Magasins" />
                 </SelectTrigger>
