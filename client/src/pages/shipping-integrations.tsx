@@ -1506,9 +1506,20 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     try {
       const res = await apiRequest("POST", endpoint, {});
       const data = await res.json();
+
+      // Carrier API outage (3+ HTTP-5xx in a row) → show a clear destructive toast.
+      if (data.apiDown) {
+        toast({
+          title: `⚠️ API ${provider} indisponible`,
+          description: data.message || `Le transporteur renvoie des erreurs. Réessayez plus tard.`,
+          variant: 'destructive',
+        });
+        return;
+      }
+
       toast({
         title: opts?.successTitle || `✅ ${provider} synchronisé`,
-        description: `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
+        description: data.message || `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
       });
       if (Array.isArray(data.errors) && data.errors.length > 0) {
         toast({
@@ -1693,33 +1704,59 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                       </Button>
                     )}
                     {providerId === "digylog" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="border-indigo-300 text-indigo-700 hover:bg-indigo-50 font-semibold"
-                        onClick={async () => {
-                          if (!window.confirm("Importer toutes les commandes Digylog ? Les commandes déjà présentes seront ignorées.")) return;
-                          try {
-                            const res = await apiRequest("POST", "/api/shipping/digylog/import-historical", {});
-                            const data = await res.json();
-                            toast({
-                              title: "✅ Import Digylog terminé",
-                              description: `${data.created ?? 0} commande(s) créée(s), ${data.skipped ?? 0} déjà présente(s).`,
-                            });
-                            qc.invalidateQueries({ queryKey: ["/api/orders/all"] });
-                            qc.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-                            qc.invalidateQueries({ queryKey: ["/api/orders"] });
-                            qc.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
-                            qc.invalidateQueries({ queryKey: ["/api/agents/my-stats"] });
-                          } catch (e: any) {
-                            toast({ title: "Erreur d'import Digylog", description: e.message, variant: "destructive" });
-                          }
-                        }}
-                        data-testid={`button-digylog-import-historical-${acct.id}`}
-                      >
-                        <RefreshCw className="w-3.5 h-3.5 mr-1" />
-                        Importer commandes historiques
-                      </Button>
+                      <>
+                        <input
+                          type="file"
+                          accept=".csv,text/csv"
+                          style={{ display: "none" }}
+                          id={`digylog-csv-input-${acct.id}`}
+                          data-testid={`input-digylog-csv-${acct.id}`}
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            // Reset input so re-uploading the same file fires onChange again.
+                            e.target.value = '';
+                            if (!file) return;
+                            try {
+                              const fd = new FormData();
+                              fd.append('file', file);
+                              fd.append('provider', 'digylog');
+                              const res = await fetch('/api/shipping/import-csv', {
+                                method: 'POST',
+                                body: fd,
+                                credentials: 'include',
+                              });
+                              const data = await res.json();
+                              if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+                              toast({
+                                title: "✅ Import CSV terminé",
+                                description: `${data.created ?? 0} créée(s), ${data.skipped ?? 0} déjà présente(s), ${data.errors ?? 0} erreur(s).`,
+                              });
+                              qc.invalidateQueries({ queryKey: ["/api/orders/all"] });
+                              qc.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+                              qc.invalidateQueries({ queryKey: ["/api/orders"] });
+                              qc.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+                              qc.invalidateQueries({ queryKey: ["/api/agents/my-stats"] });
+                            } catch (err: any) {
+                              toast({
+                                title: "Erreur d'import CSV",
+                                description: err.message,
+                                variant: "destructive",
+                              });
+                            }
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-indigo-300 text-indigo-700 hover:bg-indigo-50 font-semibold"
+                          onClick={() => document.getElementById(`digylog-csv-input-${acct.id}`)?.click()}
+                          data-testid={`button-digylog-import-csv-${acct.id}`}
+                          title="Exportez vos commandes depuis le tableau de bord Digylog en CSV, puis importez-les ici."
+                        >
+                          <RefreshCw className="w-3.5 h-3.5 mr-1" />
+                          Importer commandes (CSV)
+                        </Button>
+                      </>
                     )}
                     <Button
                       size="sm"

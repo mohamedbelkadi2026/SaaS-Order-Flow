@@ -5027,11 +5027,22 @@ export async function registerRoutes(
   });
 
   app.post("/api/shipping/digylog/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    // Guard: respond ONCE. Without this, an early return + a later res.json from the
+    // sync loop both fire and Express throws ERR_HTTP_HEADERS_SENT. That used to
+    // happen whenever Digylog API stalled long enough for the framework's 25s timeout
+    // wrapper to also send a response.
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
     try {
       const storeId = req.user!.storeId!;
       const accounts = await storage.getCarrierAccounts(storeId, "digylog");
       const account = accounts[0];
-      if (!account) return res.status(400).json({ message: "Aucun compte Digylog configuré." });
+      if (!account) return safeJson(400, { message: "Aucun compte Digylog configuré." });
 
       const apiKey = (account as any).apiKey;
       const customUrl = (account as any).apiUrl || undefined;
@@ -5045,69 +5056,137 @@ export async function registerRoutes(
       );
 
       if (digylogOrders.length === 0) {
-        return res.json({ synced: 0, updated: 0, message: "Aucune commande Digylog à synchroniser." });
+        return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Digylog à synchroniser." });
       }
+
+      // Wall-clock budget: stop processing before the 25s framework timeout fires.
+      // Worst-case Digylog tracking call is 15s + 200ms throttle, so 20s budget
+      // guarantees we always emit a response. BATCH_SIZE is a hard cap on top.
+      const BATCH_SIZE = 10;
+      const BUDGET_MS = 20_000;
+      const startedAt = Date.now();
+      const batch = digylogOrders.slice(0, BATCH_SIZE);
 
       let updated = 0;
-      const details: any[] = [];
+      let processed = 0;          // orders we actually attempted (for accurate `remaining`)
+      let trackingErrors = 0;     // bad tracking / "No status found" — DO NOT trip apiDown
+      const apiDownErrors: string[] = []; // explicit outage markers only
+      const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
 
-      for (const order of digylogOrders) {
-        const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
-        console.log(`[DIGYLOG-SYNC-DEBUG] order=${(order as any).orderNumber} result.deliveryCost=${result.deliveryCost} order.shippingCost=${(order as any).shippingCost}`);
+      // True iff the carrier-service signalled an explicit API outage (HTML/5xx response,
+      // network failure). Bad-tracking errors like "No status found" are excluded so
+      // a few unknown trackings don't poison the whole batch.
+      const isOutageError = (msg: string | undefined | null, rawStatus?: string | null): boolean => {
+        if (typeof rawStatus === 'string' && rawStatus.includes('<!DOCTYPE')) return true;
+        if (!msg) return false;
+        const m = msg.toLowerCase();
+        return (
+          m.includes('indisponible') ||
+          m.includes('http 5') ||
+          m.includes('econnrefused') ||
+          m.includes('etimedout') ||
+          m.includes('econnreset') ||
+          m.includes('enotfound') ||
+          m.includes('socket hang up')
+        );
+      };
 
-        // Always save deliveryCost if returned directly from tracking and not yet set
-        if (result.deliveryCost && result.deliveryCost > 0 && !(order as any).shippingCost) {
-          await storage.updateOrder(order.id, { shippingCost: result.deliveryCost });
-          console.log(`[DIGYLOG-SYNC] DeliveryCost #${(order as any).orderNumber}: ${result.deliveryCost} centimes`);
+      for (const order of batch) {
+        // Stop before we blow past the framework timeout. Whatever was processed
+        // is reported back, the rest goes into `remaining`.
+        if (Date.now() - startedAt > BUDGET_MS) {
+          console.warn(`[DIGYLOG-SYNC] budget exhausted after ${processed}/${batch.length} orders`);
+          break;
         }
+        processed++;
 
-        // Persist livreur (driver) info returned by Digylog /infos
-        if (result.driverPhone || result.driverName) {
-          await storage.updateOrder(order.id, {
-            driverPhone: result.driverPhone || undefined,
-            driverName:  result.driverName  || undefined,
-          } as any);
-          console.log(`[DIGYLOG-DRIVER-SAVED] Order #${(order as any).orderNumber} → ${result.driverName} ${result.driverPhone}`);
-        }
+        try {
+          const result = await trackDigylogShipment(order.trackNumber!, apiKey, customUrl);
 
-        if (result.status && result.status !== order.status) {
-          await storage.updateOrderStatus(order.id, result.status);
-          const updateData: any = { commentStatus: result.rawStatus || result.status };
-          // Auto-fetch delivery cost from Digylog
-          try {
-            const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
-            const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
-            if (cost && cost > 0) {
-              updateData.shippingCost = cost;
-              console.log(`[DIGYLOG-SYNC] Order #${(order as any).orderNumber} → deliveryCost=${cost} centimes`);
+          if (result.error || (typeof result.rawStatus === 'string' && result.rawStatus.includes('<!DOCTYPE'))) {
+            if (isOutageError(result.error, result.rawStatus)) {
+              apiDownErrors.push(`${order.trackNumber}: ${result.error || 'API HTML response'}`);
+              if (apiDownErrors.length >= 3) {
+                console.warn(`[DIGYLOG-SYNC] aborting batch — 3+ consecutive Digylog API outages`);
+                break;
+              }
+            } else {
+              // e.g. "No status found" for a tracking Digylog hasn't picked up yet.
+              trackingErrors++;
             }
-          } catch {}
-          await storage.updateOrder(order.id, updateData);
-          await storage.createOrderFollowUpLog({
-            orderId: order.id,
-            agentId: null,
-            agentName: "Digylog Sync",
-            note: `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
-          });
-          details.push({ orderId: order.id, trackingNumber: order.trackNumber, oldStatus: order.status, newStatus: result.status });
-          updated++;
-        }
-        // Also update shippingCost if order is delivered but shippingCost is 0
-        if ((result.status === 'delivered' || order.status === 'delivered') && !(order as any).shippingCost) {
-          try {
-            const networkId = (account as any).settings?.digylogNetworkId || 1;
-            const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
-            if (cost && cost > 0) {
-              await storage.updateOrder(order.id, { shippingCost: cost });
-              console.log(`[DIGYLOG-SYNC] DeliveryCost updated for #${(order as any).orderNumber}: ${cost}`);
+            continue;
+          }
+
+          // Persist deliveryCost if returned directly from tracking (and not yet set).
+          if (result.deliveryCost && result.deliveryCost > 0 && !(order as any).shippingCost) {
+            await storage.updateOrder(order.id, { shippingCost: result.deliveryCost });
+          }
+
+          // Persist livreur info from Digylog /infos.
+          if (result.driverPhone || result.driverName) {
+            await storage.updateOrder(order.id, {
+              driverPhone: result.driverPhone || undefined,
+              driverName:  result.driverName  || undefined,
+            } as any);
+          }
+
+          if (result.status && result.status !== order.status) {
+            await storage.updateOrderStatus(order.id, result.status);
+            const updateData: any = { commentStatus: result.rawStatus || result.status };
+            // Best-effort delivery cost lookup; never blocks the loop on its own errors.
+            try {
+              const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
+              const cost = await getDigylogDeliveryCost(order.trackNumber!, apiKey, networkId, customUrl);
+              if (cost && cost > 0) updateData.shippingCost = cost;
+            } catch {}
+            await storage.updateOrder(order.id, updateData);
+            await storage.createOrderFollowUpLog({
+              orderId:   order.id,
+              agentId:   null,
+              agentName: "Digylog Sync",
+              note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
+            });
+            details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
+            updated++;
+          }
+        } catch (e: any) {
+          // Thrown exception (vs returned error) — classify the same way.
+          if (isOutageError(e?.message)) {
+            apiDownErrors.push(`${order.trackNumber}: ${e?.message}`);
+            if (apiDownErrors.length >= 3) {
+              console.warn(`[DIGYLOG-SYNC] aborting batch — 3+ thrown outage errors`);
+              break;
             }
-          } catch {}
+          } else {
+            trackingErrors++;
+          }
         }
+        await new Promise(r => setTimeout(r, 200));
       }
 
-      console.log(`[DIGYLOG-SYNC] storeId=${storeId}: checked ${digylogOrders.length}, updated ${updated}`);
-      res.json({ synced: digylogOrders.length, updated, details });
-    } catch (err) { throw err; }
+      const apiDown = apiDownErrors.length >= 3;
+      const remaining = digylogOrders.length - processed;
+      console.log(`[DIGYLOG-SYNC] storeId=${storeId} processed=${processed}/${batch.length} updated=${updated} apiDownErrors=${apiDownErrors.length} trackingErrors=${trackingErrors} remaining=${remaining} apiDown=${apiDown}`);
+
+      return safeJson(200, {
+        synced: processed,
+        updated,
+        errored: apiDownErrors.length + trackingErrors,
+        apiDownErrors: apiDownErrors.length,
+        trackingErrors,
+        remaining,
+        apiDown,
+        details,
+        message: apiDown
+          ? "L'API Digylog renvoie des erreurs 500. Réessayez dans quelques minutes."
+          : remaining > 0
+          ? `${processed} commande(s) traitée(s), ${updated} mise(s) à jour${trackingErrors > 0 ? `, ${trackingErrors} sans statut` : ''}. Encore ${remaining} en attente — recliquez pour continuer.`
+          : `${updated} commande(s) mise(s) à jour${trackingErrors > 0 ? ` (${trackingErrors} sans statut)` : ''}. Toutes les commandes Digylog sont synchronisées.`,
+      });
+    } catch (err: any) {
+      console.error('[DIGYLOG-SYNC] fatal', err?.message);
+      return safeJson(500, { message: err?.message || 'Sync Digylog failed' });
+    }
   });
 
   // One-time fix: revert orders wrongly marked as "delivered" due to bad status mapping
@@ -5213,13 +5292,21 @@ export async function registerRoutes(
    * fetches their live status from Ameex, and updates the DB when status changed.
    */
   app.post("/api/shipping/ameex/sync", requireAuth, requireActiveSubscription, async (req, res) => {
+    // Same single-response guard as the Digylog handler.
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
     try {
       const storeId = req.user!.storeId!;
 
       const accounts = await storage.getCarrierAccounts(storeId, "ameex");
       const account = accounts[0];
       if (!account) {
-        return res.status(400).json({ message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
+        return safeJson(400, { message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
       }
 
       const apiKey    = (account as any).apiKey;
@@ -5233,31 +5320,106 @@ export async function registerRoutes(
       );
 
       if (ameexOrders.length === 0) {
-        return res.json({ synced: 0, updated: 0, message: "Aucune commande Ameex à synchroniser." });
+        return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Ameex à synchroniser." });
       }
+
+      // Wall-clock budget. Ameex per-call timeout is 45s — much higher than Digylog —
+      // so the budget is the real safety net here. BATCH_SIZE is a soft cap.
+      const BATCH_SIZE = 10;
+      const BUDGET_MS = 20_000;
+      const startedAt = Date.now();
+      const batch = ameexOrders.slice(0, BATCH_SIZE);
 
       let updated = 0;
+      let processed = 0;
+      let trackingErrors = 0;
+      const apiDownErrors: string[] = [];
       const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
 
-      for (const order of ameexOrders) {
-        const result = await trackAmeexShipment(order.trackNumber!, apiKey, customUrl);
-        if (result.status && result.status !== order.status) {
-          await storage.updateOrderStatus(order.id, result.status);
-          await storage.createOrderFollowUpLog({
-            orderId:   order.id,
-            agentId:   null,
-            agentName: "Ameex Sync",
-            note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
-          });
-          details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
-          updated++;
+      // Same outage classifier as Digylog: only HTTP-5xx / network failures count as
+      // "API down". A tracking number Ameex doesn't recognise is NOT outage.
+      const isOutageError = (msg: string | undefined | null): boolean => {
+        if (!msg) return false;
+        const m = msg.toLowerCase();
+        return (
+          m.includes('indisponible') ||
+          m.includes('http 5') ||
+          m.includes('econnrefused') ||
+          m.includes('etimedout') ||
+          m.includes('econnreset') ||
+          m.includes('enotfound') ||
+          m.includes('socket hang up')
+        );
+      };
+
+      for (const order of batch) {
+        if (Date.now() - startedAt > BUDGET_MS) {
+          console.warn(`[AMEEX-SYNC] budget exhausted after ${processed}/${batch.length} orders`);
+          break;
         }
+        processed++;
+
+        try {
+          const result = await trackAmeexShipment(order.trackNumber!, apiKey, customUrl);
+          if (result.error) {
+            if (isOutageError(result.error)) {
+              apiDownErrors.push(`${order.trackNumber}: ${result.error}`);
+              if (apiDownErrors.length >= 3) {
+                console.warn(`[AMEEX-SYNC] aborting batch — 3+ consecutive Ameex API outages`);
+                break;
+              }
+            } else {
+              trackingErrors++;
+            }
+            continue;
+          }
+          if (result.status && result.status !== order.status) {
+            await storage.updateOrderStatus(order.id, result.status);
+            await storage.createOrderFollowUpLog({
+              orderId:   order.id,
+              agentId:   null,
+              agentName: "Ameex Sync",
+              note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
+            });
+            details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
+            updated++;
+          }
+        } catch (e: any) {
+          if (isOutageError(e?.message)) {
+            apiDownErrors.push(`${order.trackNumber}: ${e?.message}`);
+            if (apiDownErrors.length >= 3) {
+              console.warn(`[AMEEX-SYNC] aborting batch — 3+ thrown outage errors`);
+              break;
+            }
+          } else {
+            trackingErrors++;
+          }
+        }
+        await new Promise(r => setTimeout(r, 200));
       }
 
-      console.log(`[AMEEX-SYNC] storeId=${storeId}: checked ${ameexOrders.length}, updated ${updated}`);
-      res.json({ synced: ameexOrders.length, updated, details });
-    } catch (err) {
-      throw err;
+      const apiDown = apiDownErrors.length >= 3;
+      const remaining = ameexOrders.length - processed;
+      console.log(`[AMEEX-SYNC] storeId=${storeId} processed=${processed}/${batch.length} updated=${updated} apiDownErrors=${apiDownErrors.length} trackingErrors=${trackingErrors} remaining=${remaining} apiDown=${apiDown}`);
+
+      return safeJson(200, {
+        synced: processed,
+        updated,
+        errored: apiDownErrors.length + trackingErrors,
+        apiDownErrors: apiDownErrors.length,
+        trackingErrors,
+        remaining,
+        apiDown,
+        details,
+        message: apiDown
+          ? "L'API Ameex renvoie des erreurs. Réessayez dans quelques minutes."
+          : remaining > 0
+          ? `${processed} commande(s) traitée(s), ${updated} mise(s) à jour${trackingErrors > 0 ? `, ${trackingErrors} sans statut` : ''}. Encore ${remaining} en attente — recliquez pour continuer.`
+          : `${updated} commande(s) mise(s) à jour${trackingErrors > 0 ? ` (${trackingErrors} sans statut)` : ''}. Toutes les commandes Ameex sont synchronisées.`,
+      });
+    } catch (err: any) {
+      console.error('[AMEEX-SYNC] fatal', err?.message);
+      return safeJson(500, { message: err?.message || 'Sync Ameex failed' });
     }
   });
 
@@ -5458,6 +5620,131 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error('[CARRIER-SYNC]', err?.message);
       res.status(500).json({ message: err?.message || 'Sync failed' });
+    }
+  });
+
+  /**
+   * POST /api/shipping/import-csv
+   * Manual backfill via CSV — works around carriers (Digylog/Maystro) that
+   * don't expose a "list all orders" endpoint. The merchant exports their
+   * shipped orders from the carrier's dashboard, then uploads the CSV here.
+   *
+   * Accepts both `,` and `;` delimiters (Digylog French exports use `;`).
+   * Required column: tracking. Everything else is best-effort.
+   */
+  const csvImportUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB is enough for ~30k rows
+  });
+  app.post("/api/shipping/import-csv", requireAuth, requireActiveSubscription, csvImportUpload.single('file'), async (req: any, res: any) => {
+    try {
+      const provider = String(req.body?.provider || 'digylog').toLowerCase();
+      const storeId = req.user!.storeId!;
+      if (!req.file) return res.status(400).json({ message: 'Fichier CSV manquant.' });
+
+      const csvText = req.file.buffer.toString('utf-8').replace(/^\uFEFF/, ''); // strip BOM
+      const lines = csvText.split(/\r?\n/).filter((l: string) => l.trim().length > 0);
+      if (lines.length < 2) return res.status(400).json({ message: 'CSV vide ou sans données.' });
+
+      // Detect delimiter from the header row.
+      const firstLine = lines[0];
+      const delim = firstLine.includes(';') ? ';' : (firstLine.includes('\t') ? '\t' : ',');
+
+      // Tiny CSV parser that respects "quoted, fields, with, commas".
+      const parseRow = (line: string): string[] => {
+        const out: string[] = [];
+        let cur = '';
+        let inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"' ) {
+            if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+            else inQ = !inQ;
+          } else if (ch === delim && !inQ) {
+            out.push(cur); cur = '';
+          } else cur += ch;
+        }
+        out.push(cur);
+        return out.map(s => s.trim());
+      };
+
+      const headers = parseRow(firstLine).map(h => h.toLowerCase().replace(/^"|"$/g, ''));
+      const colIdx = (...names: string[]) => {
+        for (const n of names) {
+          const i = headers.indexOf(n);
+          if (i >= 0) return i;
+        }
+        return -1;
+      };
+      const TRACK = colIdx('tracking','traking','code','tracking_number','trackingnumber','barcode','code_suivi');
+      const NAME  = colIdx('name','nom','client','customer','customer_name','client_name');
+      const PHONE = colIdx('phone','tel','telephone','téléphone','gsm','mobile','customer_phone');
+      const ADDR  = colIdx('address','adresse','customer_address');
+      const CITY  = colIdx('city','ville','customer_city');
+      const PRICE = colIdx('price','prix','total','amount','cod');
+      const STAT  = colIdx('status','statut','etat','état');
+      const FRAIS = colIdx('deliverycost','delivery_cost','frais_livraison','frais','port','shipping_cost');
+
+      if (TRACK < 0) {
+        return res.status(400).json({
+          message: `Colonne 'tracking' introuvable dans le CSV. Colonnes détectées: ${headers.join(', ')}`,
+        });
+      }
+
+      const { mapDigylogStatus } = await import("./services/carrier-service");
+
+      // Resolve magasin with tenant-isolation validation.
+      const accounts = await storage.getCarrierAccounts(storeId, provider);
+      const candidateMagasinId = accounts[0] ? (accounts[0] as any).magasinId : null;
+      const magasinId = await resolveSafeMagasinId(storeId, candidateMagasinId, req.user!.id);
+
+      const parseMoney = (val: string | undefined): number => {
+        if (!val) return 0;
+        const cleaned = val.replace(/[^\d.,-]/g, '').replace(',', '.');
+        const n = parseFloat(cleaned);
+        return isNaN(n) ? 0 : Math.round(n * 100);
+      };
+
+      let created = 0, skipped = 0, errors = 0;
+      const errorDetails: Array<{ row: number; tracking: string; message: string }> = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        try {
+          const cells = parseRow(lines[i]);
+          const tracking = (cells[TRACK] || '').replace(/^"|"$/g, '').trim();
+          if (!tracking) { errors++; errorDetails.push({ row: i + 1, tracking: '', message: 'tracking vide' }); continue; }
+
+          const existing = await storage.getOrderByTrackingNumber(storeId, tracking);
+          if (existing) { skipped++; continue; }
+
+          const rawStatus = STAT >= 0 ? (cells[STAT] || '') : '';
+          await storage.createOrderFromCarrier({
+            storeId,
+            magasinId,
+            provider,
+            trackingNumber: tracking,
+            customerName:    NAME  >= 0 ? (cells[NAME]  || 'Client (CSV)') : 'Client (CSV)',
+            customerPhone:   PHONE >= 0 ? (cells[PHONE] || '') : '',
+            customerAddress: ADDR  >= 0 ? (cells[ADDR]  || '') : '',
+            customerCity:    CITY  >= 0 ? (cells[CITY]  || '') : '',
+            totalPrice:      PRICE >= 0 ? parseMoney(cells[PRICE]) : 0,
+            shippingCost:    FRAIS >= 0 ? parseMoney(cells[FRAIS]) : 0,
+            status:          mapDigylogStatus(rawStatus),
+            rawStatus,
+          });
+          created++;
+        } catch (e: any) {
+          errors++;
+          errorDetails.push({ row: i + 1, tracking: '', message: e?.message || 'unknown' });
+          console.warn(`[CSV-IMPORT] row ${i + 1} failed: ${e?.message}`);
+        }
+      }
+
+      console.log(`[CSV-IMPORT] storeId=${storeId} provider=${provider} total=${lines.length - 1} created=${created} skipped=${skipped} errors=${errors}`);
+      res.json({ created, skipped, errors, total: lines.length - 1, errorDetails: errorDetails.slice(0, 10) });
+    } catch (err: any) {
+      console.error('[CSV-IMPORT] fatal', err?.message);
+      res.status(500).json({ message: err?.message || 'Import CSV failed' });
     }
   });
 

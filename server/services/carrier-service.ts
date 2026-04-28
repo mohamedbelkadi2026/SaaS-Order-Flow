@@ -1151,6 +1151,22 @@ export async function trackDigylogShipment(
     console.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${histResp.status}: ${JSON.stringify(histResp.data).slice(0, 300)}`);
     console.log(`[DIGYLOG-HISTORICS-FULL] ${trackingNumber} → ${JSON.stringify(histResp.data)}`);
 
+    // Detect Digylog API outage: server returned an HTML error page instead of JSON.
+    // Without this guard the function falls through to /infos and re-burns 15s on a dead API.
+    {
+      const responseBody = typeof histResp.data === 'string' ? histResp.data : JSON.stringify(histResp.data ?? '');
+      if (
+        histResp.status >= 500 ||
+        responseBody.includes('<!DOCTYPE') ||
+        responseBody.includes('<html') ||
+        responseBody.toLowerCase().includes('internal server error') ||
+        responseBody.toLowerCase().includes('an error occurred')
+      ) {
+        console.warn(`[DIGYLOG-TRACK] ${trackingNumber} → API DOWN (HTTP ${histResp.status}, HTML/5xx response)`);
+        return { status: null, rawStatus: null, rawResponse: null, deliveryCost: null, error: `Digylog API indisponible (HTTP ${histResp.status})` };
+      }
+    }
+
     if (histResp.status === 200 && histResp.data) {
       const body = histResp.data;
       const records = Array.isArray(body) ? body : (body.data || body.historics || body.orders || []);
@@ -1213,6 +1229,21 @@ export async function trackDigylogShipment(
 
     console.log(`[DIGYLOG-TRACK] ${trackingNumber} → infos HTTP ${infosResp.status}: ${JSON.stringify(infosResp.data).slice(0, 300)}`);
     console.log(`[DIGYLOG-INFOS-FULL] ${trackingNumber}: ${JSON.stringify(infosResp.data)}`);
+
+    // Same outage detection on the /infos fallback.
+    {
+      const responseBody = typeof infosResp.data === 'string' ? infosResp.data : JSON.stringify(infosResp.data ?? '');
+      if (
+        infosResp.status >= 500 ||
+        responseBody.includes('<!DOCTYPE') ||
+        responseBody.includes('<html') ||
+        responseBody.toLowerCase().includes('internal server error') ||
+        responseBody.toLowerCase().includes('an error occurred')
+      ) {
+        console.warn(`[DIGYLOG-TRACK] ${trackingNumber} → /infos API DOWN (HTTP ${infosResp.status}, HTML/5xx response)`);
+        return { status: null, rawStatus: null, rawResponse: null, deliveryCost: null, error: `Digylog API indisponible (HTTP ${infosResp.status})` };
+      }
+    }
 
     if (infosResp.status === 200 && infosResp.data) {
       const body = infosResp.data;

@@ -1,0 +1,243 @@
+Wakha sahbi, daba mochkila wadiha 100% men logs.
+Ach kayna f l-7a9i9a (men logs)
+Chouf had l-line:
+[DIGYLOG-TRACK] S870B8E6S → infos HTTP 500: <!DOCTYPE html>... "Oops! An Error Occurred"
+Digylog API dyalhom 7achlat (bug f leur side, machi f code dyalek!). Kolchi requests li ka-y3eyt-iw l Digylog ka-yrj3o HTTP 500 + HTML page machi JSON.
+W kayna mochkila tanya:
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+Hadi mochkila f code dyalek — res.json() ka-y-call mararate f nafs request (timeout + sync result).
+W mochkila talta:
+[TIMEOUT] POST /api/shipping/digylog/sync timed out after 25s
+Ki Digylog API ka-yt-9adda 9 ayyam → endpoint dyalek ka-y-timeout f 25s ba3d ma traverse-it ghir 4 commandes.
+W "Importer commandes historiques" ka-y-rj3 0 commandes 7it endpoint GET /orders dyal Digylog MA-KAYNCH (ya machi exposed lik, ya bagain returns 500 too).
+Daba ach kha-ndir
+Hada howa l-prompt l-final, direct w pragmatique:
+
+FIX — Digylog API is returning HTTP 500 for tracking calls. Make sync resilient + offer manual CSV import as fallback.
+What the logs show
+Every [DIGYLOG-TRACK] line returns HTTP 500 with an HTML error page from Digylog's own server. This is happening on Digylog's side — your code is doing the right thing, the carrier API is broken/down (or you've hit a rate limit, or the API key has wrong scope).
+Two real bugs in our code that the broken API exposed:
+
+Cannot set headers after they are sent to the client — sync endpoint sends a response, then sends another one when the timeout finishes. Two res.json() calls in one request.
+Request timeout after 25s — sync calls Digylog sequentially with 200ms throttle. With ~20 orders × 15s timeout per call, total time exceeds the 25s express timeout.
+Import historical returns 0 — Digylog doesn't expose a public "list all orders" endpoint, so GET /orders returns nothing usable. We need a different approach for backfill.
+
+
+Fix 1 — Stop the double-response crash
+In server/routes.ts, the sync endpoint (around line 4939) needs an early return after the timeout/error path. Find the handler and replace it with this version:
+tsapp.post("/api/shipping/digylog/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+  // Guard: respond ONCE. Set this flag the moment we send anything back.
+  let responded = false;
+  const safeJson = (status: number, body: any) => {
+    if (responded || res.headersSent) return;
+    responded = true;
+    res.status(status).json(body);
+  };
+
+  try {
+    const storeId = req.user!.storeId!;
+    const accounts = await storage.getCarrierAccounts(storeId, 'digylog');
+    const account = accounts[0];
+    if (!account) return safeJson(400, { message: "Aucun compte Digylog configuré." });
+
+    const allOrders = await storage.getOrdersByStore(storeId);
+    const candidates = allOrders.filter((o: any) =>
+      (o.shippingProvider || '').toLowerCase() === 'digylog' &&
+      o.trackNumber &&
+      !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+    );
+
+    if (candidates.length === 0) {
+      return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Digylog à synchroniser." });
+    }
+
+    // Don't try to track everything in one request. Process up to N orders
+    // per click; user can re-click for the rest. Frees the request thread.
+    const BATCH_SIZE = 10;
+    const batch = candidates.slice(0, BATCH_SIZE);
+    const remaining = candidates.length - batch.length;
+
+    let updated = 0, errored = 0;
+    const apiDownErrors: string[] = [];
+
+    for (const order of batch) {
+      try {
+        const result = await trackDigylogShipment(order.trackNumber!, (account as any).apiKey, (account as any).apiUrl);
+
+        // CRITICAL: detect Digylog API outage early and skip the rest of the batch
+        if (result.error || (result.rawStatus && result.rawStatus.includes('<!DOCTYPE'))) {
+          apiDownErrors.push(`${order.trackNumber}: ${result.error || 'API HTML response'}`);
+          errored++;
+          // If we've hit 3+ HTTP-500s, abort the whole batch — no point hammering a dead API
+          if (apiDownErrors.length >= 3) {
+            console.warn(`[DIGYLOG-SYNC] aborting batch: 3+ consecutive API errors`);
+            break;
+          }
+          continue;
+        }
+
+        if (result.status && result.status !== order.status) {
+          await storage.updateOrderStatus(order.id, result.status);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id,
+            agentId: null,
+            agentName: 'Digylog Sync',
+            note: `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
+          });
+          updated++;
+        }
+      } catch (e: any) {
+        errored++;
+        apiDownErrors.push(`${order.trackNumber}: ${e?.message}`);
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    console.log(`[DIGYLOG-SYNC] storeId=${storeId} batch=${batch.length} updated=${updated} errored=${errored} remaining=${remaining}`);
+
+    return safeJson(200, {
+      synced: batch.length,
+      updated,
+      errored,
+      remaining,
+      apiDown: apiDownErrors.length >= 3,
+      message: apiDownErrors.length >= 3
+        ? "L'API Digylog renvoie des erreurs 500. Réessayez dans quelques minutes."
+        : remaining > 0
+        ? `${batch.length} commande(s) traitée(s), ${updated} mise(s) à jour. Encore ${remaining} en attente — recliquez pour continuer.`
+        : `${updated} commande(s) mise(s) à jour. Toutes les commandes Digylog sont synchronisées.`,
+    });
+  } catch (err: any) {
+    console.error('[DIGYLOG-SYNC] fatal', err.message);
+    return safeJson(500, { message: err.message });
+  }
+});
+Apply the same safeJson pattern to the Ameex sync endpoint and the generic /api/shipping/:provider/sync endpoint. Search for res.json inside any route that loops over orders and wrap them all.
+Fix 2 — Detect HTML-error responses early in trackDigylogShipment
+In server/services/carrier-service.ts, inside trackDigylogShipment, the response check is currently only if (resp.status === 200). But when Digylog returns HTML, it's a 500 — we need to short-circuit and return a clean error so the caller knows it's API down, not a bad tracking number:
+Find the block right after the axios call:
+tsconsole.log(`[DIGYLOG-TRACK] ${trackingNumber} → HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 300)}`);
+Add right after it:
+ts// Detect Digylog API outage: server returned HTML instead of JSON
+const responseBody = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data || '');
+if (responseBody.includes('<!DOCTYPE') || responseBody.includes('Internal Server Error')) {
+  console.warn(`[DIGYLOG-TRACK] ${trackingNumber} → API DOWN (HTTP ${resp.status} HTML response)`);
+  return { status: null, rawStatus: null, rawResponse: null, deliveryCost: null, error: `Digylog API is currently unavailable (HTTP ${resp.status})` };
+}
+Do the same in the /infos fallback branch lower in the file. This prevents the function from continuing to parse <html>... as if it were a status string.
+Fix 3 — Importer commandes historiques — switch to CSV upload
+GET /orders doesn't exist on Digylog's public API, which is why the import returned 0. The realistic path is: export your orders from Digylog's dashboard as CSV, then upload that CSV here — the platform parses it and creates orders. This is what every other Moroccan SaaS (Youcan/Stockini/etc.) does because Digylog/Maystro don't offer bulk-list endpoints.
+Replace the "Importer commandes historiques" button with an upload flow:
+tsx<input
+  type="file"
+  accept=".csv"
+  onChange={async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('provider', 'digylog');
+    const res = await fetch('/api/shipping/import-csv', { method: 'POST', body: fd, credentials: 'include' });
+    const data = await res.json();
+    toast({
+      title: '✅ Import terminé',
+      description: `${data.created} créées, ${data.skipped} déjà présentes, ${data.errors} erreurs.`,
+    });
+    queryClient.invalidateQueries({ queryKey: ['/api/orders/all'] });
+  }}
+  style={{ display: 'none' }}
+  id="digylog-csv-input"
+/>
+<Button onClick={() => document.getElementById('digylog-csv-input')?.click()}>
+  Importer commandes (CSV)
+</Button>
+Add the endpoint in server/routes.ts:
+tsapp.post("/api/shipping/import-csv", requireAuth, upload.single('file'), async (req: any, res: any) => {
+  try {
+    const { provider } = req.body;
+    const storeId = req.user!.storeId!;
+    if (!req.file) return res.status(400).json({ message: 'Fichier manquant' });
+
+    const csvText = req.file.buffer.toString('utf-8');
+    const lines = csvText.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return res.status(400).json({ message: 'CSV vide' });
+
+    // Detect delimiter (Digylog exports use ; in French locale)
+    const delim = lines[0].includes(';') ? ';' : ',';
+    const headers = lines[0].split(delim).map(h => h.trim().toLowerCase().replace(/^"|"$/g, ''));
+
+    // Common Digylog CSV columns: tracking, name/nom, phone/tel, address/adresse, city/ville, price/prix, status/statut, deliveryCost/frais
+    const colIdx = (...names: string[]) => names.map(n => headers.indexOf(n)).find(i => i >= 0) ?? -1;
+    const TRACK = colIdx('tracking','traking','code','trackingnumber');
+    const NAME  = colIdx('name','nom','client','customer');
+    const PHONE = colIdx('phone','tel','telephone','gsm','mobile');
+    const ADDR  = colIdx('address','adresse');
+    const CITY  = colIdx('city','ville');
+    const PRICE = colIdx('price','prix','total');
+    const STAT  = colIdx('status','statut','etat');
+    const FRAIS = colIdx('deliverycost','frais_livraison','frais','port');
+
+    if (TRACK < 0) return res.status(400).json({ message: `Colonne 'tracking' introuvable. Colonnes détectées: ${headers.join(', ')}` });
+
+    const magasins = await storage.getStoresByOwner(req.user!.id);
+    const magasinId = magasins.length === 1 ? magasins[0].id : null;
+
+    let created = 0, skipped = 0, errors = 0;
+    for (let i = 1; i < lines.length; i++) {
+      try {
+        const cells = lines[i].split(delim).map(c => c.trim().replace(/^"|"$/g, ''));
+        const tracking = cells[TRACK];
+        if (!tracking) { errors++; continue; }
+
+        const existing = await storage.getOrderByTrackingNumber(storeId, tracking);
+        if (existing) { skipped++; continue; }
+
+        await storage.createOrderFromCarrier({
+          storeId,
+          magasinId,
+          provider: provider || 'digylog',
+          trackingNumber: tracking,
+          customerName:    NAME  >= 0 ? cells[NAME]  : 'Client (CSV)',
+          customerPhone:   PHONE >= 0 ? cells[PHONE] : '',
+          customerAddress: ADDR  >= 0 ? cells[ADDR]  : '',
+          customerCity:    CITY  >= 0 ? cells[CITY]  : '',
+          totalPrice:      PRICE >= 0 ? Math.round(parseFloat(cells[PRICE] || '0') * 100) : 0,
+          shippingCost:    FRAIS >= 0 ? Math.round(parseFloat(cells[FRAIS] || '0') * 100) : 0,
+          status:          mapDigylogStatus(STAT >= 0 ? cells[STAT] : ''),
+          rawStatus:       STAT >= 0 ? cells[STAT] : '',
+        });
+        created++;
+      } catch (e: any) {
+        console.warn(`[CSV-IMPORT] row ${i} failed: ${e?.message}`);
+        errors++;
+      }
+    }
+
+    console.log(`[CSV-IMPORT] storeId=${storeId} provider=${provider} created=${created} skipped=${skipped} errors=${errors}`);
+    res.json({ created, skipped, errors, total: lines.length - 1 });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+});
+Add multer for the upload at the top of routes.ts (already used elsewhere in the codebase — confirm with grep multer server/routes.ts):
+tsimport multer from 'multer';
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+Fix 4 — Surface Digylog API status to the user
+Right now when Digylog is down, the user clicks Sync and gets cryptic timeouts. After Fix 1, the response includes apiDown: true. In the toast handler, treat that specially:
+tsxif (data.apiDown) {
+  toast({
+    title: '⚠️ API Digylog indisponible',
+    description: "Digylog renvoie des erreurs 500. Réessayez plus tard ou utilisez l'import CSV.",
+    variant: 'destructive',
+  });
+  return;
+}
+ACCEPTANCE CRITERIA
+
+✅ When Digylog API is down, clicking "Synchroniser Digylog" returns a clean toast in <3 seconds: "API Digylog indisponible". No more 25s timeout, no more ERR_HTTP_HEADERS_SENT in the logs.
+✅ When Digylog API is up, the sync processes 10 orders per click, shows "X traitées, Y mises à jour, Z restantes — recliquez pour continuer" if there are more.
+✅ Re-clicking sync continues from where it left off (next 10 orders).
+✅ "Importer commandes (CSV)" button opens a file picker. Selecting a CSV exported from Digylog dashboard creates the missing orders in the platform.
+✅ CSV import skips orders with tracking numbers already in the platform.
+✅ No duplicate res.json() calls in any sync endpoint — the safeJson guard prevents it.
+✅ No TypeScript errors.
