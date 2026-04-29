@@ -11,6 +11,7 @@ import { startRecoveryJob } from "./recovery-job";
 import { initSocket } from "./socket";
 import { autoStartBaileys, autoStartDevices } from "./baileys-service";
 import { db, pool, initializeDatabase } from "./db";
+import { runMigrations } from "./migrate";
 import { users } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import path from "path";
@@ -218,6 +219,21 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // ── Run pending migrations BEFORE accepting traffic ───────────────────────
+  // Versioned, transaction-wrapped runner over the /migrations folder. Every
+  // .sql file is applied at most once (tracked in public._migrations) and
+  // re-runs are no-ops. If a migration fails, this throws and the process
+  // exits — Railway then keeps the previous deploy serving traffic instead
+  // of bringing the app up with a broken schema.
+  try {
+    console.log("[BOOT] Checking for pending migrations…");
+    await runMigrations(process.env.DATABASE_URL ?? "");
+  } catch (err: any) {
+    console.error("[BOOT] Migration failed — aborting boot. Previous deploy stays live.");
+    console.error(err);
+    process.exit(1);
+  }
+
   // ── Register ALL routes BEFORE opening the port ───────────────────────────
   // This guarantees no request can arrive before routes are wired up.
   // (Health probes above are exempt — they're synchronous and always available.)

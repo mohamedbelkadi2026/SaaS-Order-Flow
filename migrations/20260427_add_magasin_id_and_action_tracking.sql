@@ -14,7 +14,7 @@
 -- idempotent (every statement uses IF NOT EXISTS) so it's safe to re-run.
 -- ──────────────────────────────────────────────────────────────────────────
 
-BEGIN;
+-- (transaction now managed by server/migrate.ts)
 
 -- 1. orders.magasin_id — links each order to the magasin (sub-store) it
 --    belongs to. New orders coming in via webhook already set this from
@@ -84,7 +84,7 @@ WHERE status <> 'nouveau'
   AND last_action_at IS NULL
   AND assigned_to_id IS NOT NULL;
 
-COMMIT;
+-- (transaction now managed by server/migrate.ts)
 
 -- ──────────────────────────────────────────────────────────────────────────
 -- Verification queries — run these after the COMMIT above.

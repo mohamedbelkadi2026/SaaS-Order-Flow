@@ -13,7 +13,7 @@
 --   This migration adds every column that has been introduced since the
 --   original schema, so a fresh production DB catches up in a single pass.
 -- ============================================================================
-BEGIN;
+-- (transaction now managed by server/migrate.ts)
 
 -- ============================================================================
 -- STORES — per-magasin config
@@ -75,7 +75,7 @@ WHERE o.store_id    = si.store_id
 -- Make sure every store has a distribution epoch so per-magasin percentages start counting.
 UPDATE public.stores SET distribution_epoch = now() WHERE distribution_epoch IS NULL;
 
-COMMIT;
+-- (transaction now managed by server/migrate.ts)
 
 -- ============================================================================
 -- VERIFY — every row below MUST match its expected count.

@@ -1,0 +1,278 @@
+
+FEATURE — Automated database migrations: Replit pushes to GitHub → Railway auto-deploys → migration runs automatically against Railway Postgres
+My setup
+
+Replit = code editor only. I push code to GitHub from here.
+GitHub = source of truth.
+Railway = production hosting. It pulls from GitHub on every push and redeploys. The Postgres database lives on Railway.
+tajergrow.com = my domain pointing to the Railway service.
+
+My problem
+For weeks, I've been pasting SQL migration blocks here, and Replit Agent has been running them against the Replit-local Postgres (which is unused). My production database on Railway never received any of those ALTER TABLE statements. Result: every multi-magasin feature in the codebase is silently broken because the columns don't exist in the live DB.
+What I want
+A migration system that runs automatically on Railway every time I deploy. Specifically:
+
+A migrations/ folder at the repo root containing every pending ALTER TABLE / CREATE INDEX / UPDATE as a numbered .sql file.
+A migration runner script that, on Railway boot, scans the folder and applies any migration that hasn't been applied yet (tracked in a _migrations table).
+The Railway start command runs the migrator BEFORE the web server starts.
+Idempotent — re-running the same migration is safe (uses IF NOT EXISTS, etc.).
+Logs every migration as it runs so I can see in Railway logs exactly what was applied.
+Backfills the existing missing schema in one initial migration so the production DB catches up to the codebase immediately.
+
+
+Files to create / change
+1. migrations/0001_complete_schema_catchup.sql — NEW
+This is the catch-up migration. Every column that's been declared in shared/schema.ts over the last 6 commits but never added to production DB.
+sql-- ============================================================================
+-- 0001_complete_schema_catchup
+-- Adds all columns the TypeScript schema declares but production DB lacks.
+-- Idempotent — safe to re-run.
+-- ============================================================================
+
+-- STORES — per-magasin distribution config + multi-magasin metadata
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_method     text      DEFAULT 'auto';
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_epoch      timestamp DEFAULT now();
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS agent_ids               jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS services                jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_carriers         jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_platforms        jsonb     DEFAULT '[]'::jsonb;
+
+-- ORDERS — magasin scope, action tracking, carrier+driver fields
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS magasin_id     integer    REFERENCES public.stores(id);
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_at timestamp;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_by integer    REFERENCES public.users(id);
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS carrier_id     integer;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS carrier_name   text;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_name    text       DEFAULT '';
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_phone   text       DEFAULT '';
+
+-- STORE_INTEGRATIONS — link integration to specific magasin
+ALTER TABLE public.store_integrations ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- STORE_AGENT_SETTINGS — per-magasin overrides
+ALTER TABLE public.store_agent_settings ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+ALTER TABLE public.store_agent_settings DROP CONSTRAINT IF EXISTS store_agent_settings_agent_id_store_id_key;
+DROP INDEX IF EXISTS store_agent_settings_agent_store_uniq;
+DROP INDEX IF EXISTS store_agent_settings_agent_magasin_uniq;
+DROP INDEX IF EXISTS store_agent_settings_agent_store_magasin_uniq;
+CREATE UNIQUE INDEX store_agent_settings_agent_store_magasin_uniq
+  ON public.store_agent_settings (agent_id, store_id, COALESCE(magasin_id, 0));
+
+-- AD_SPEND — per-magasin ad tracking
+ALTER TABLE public.ad_spend          ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+ALTER TABLE public.ad_spend_tracking ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- INDEXES for query performance
+CREATE INDEX IF NOT EXISTS idx_orders_magasin_id        ON public.orders (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_orders_assigned_magasin  ON public.orders (assigned_to_id, magasin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_last_action       ON public.orders (last_action_by, last_action_at);
+CREATE INDEX IF NOT EXISTS idx_orders_track_provider    ON public.orders (shipping_provider, track_number);
+CREATE INDEX IF NOT EXISTS idx_store_integrations_mag   ON public.store_integrations (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_store_agent_magasin      ON public.store_agent_settings (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_ad_spend_magasin         ON public.ad_spend (magasin_id, date);
+CREATE INDEX IF NOT EXISTS idx_ad_spend_track_magasin   ON public.ad_spend_tracking (magasin_id, date);
+
+-- One-shot: flip every magasin to 'pourcentage' so the percentages in the UI take effect
+-- (only on first apply; subsequent runs leave it alone since the column already exists)
+UPDATE public.stores SET distribution_method = 'pourcentage' WHERE distribution_method = 'auto';
+UPDATE public.stores SET distribution_epoch  = now()         WHERE distribution_epoch IS NULL;
+2. server/migrate.ts — NEW migration runner
+tsimport { Pool } from 'pg';
+import { readdirSync, readFileSync } from 'fs';
+import { join, basename } from 'path';
+
+/**
+ * Lightweight migration runner.
+ * - Reads every .sql file in /migrations sorted by filename
+ * - Applies any not yet recorded in the _migrations table
+ * - Each migration runs in its own transaction
+ * - Idempotent: rerunning a migration that's already applied is a no-op
+ *
+ * Naming convention: NNNN_description.sql (e.g. 0001_add_magasin_id.sql)
+ */
+export async function runMigrations(connectionString: string): Promise<void> {
+  const pool = new Pool({
+    connectionString,
+    // Railway requires SSL for external connections; for in-network DB, this also works
+    ssl: connectionString.includes('railway') || connectionString.includes('rlwy.net')
+      ? { rejectUnauthorized: false }
+      : false,
+  });
+
+  try {
+    // Bootstrap the tracking table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS public._migrations (
+        id          serial PRIMARY KEY,
+        filename    text   NOT NULL UNIQUE,
+        applied_at  timestamp NOT NULL DEFAULT now(),
+        checksum    text
+      );
+    `);
+
+    const migrationsDir = join(process.cwd(), 'migrations');
+    let files: string[];
+    try {
+      files = readdirSync(migrationsDir)
+        .filter(f => f.endsWith('.sql'))
+        .sort(); // lexicographic = numeric prefix order
+    } catch (e: any) {
+      if (e.code === 'ENOENT') {
+        console.log('[MIGRATE] No /migrations folder — skipping');
+        return;
+      }
+      throw e;
+    }
+
+    if (files.length === 0) {
+      console.log('[MIGRATE] No migration files to apply');
+      return;
+    }
+
+    const { rows: applied } = await pool.query<{ filename: string }>(
+      'SELECT filename FROM public._migrations'
+    );
+    const appliedSet = new Set(applied.map(r => r.filename));
+
+    let count = 0;
+    for (const file of files) {
+      if (appliedSet.has(file)) {
+        console.log(`[MIGRATE] ✓ ${file} (already applied)`);
+        continue;
+      }
+
+      const sql = readFileSync(join(migrationsDir, file), 'utf-8');
+      console.log(`[MIGRATE] → Applying ${file} (${sql.length} bytes)…`);
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(sql);
+        await client.query(
+          'INSERT INTO public._migrations (filename) VALUES ($1)',
+          [file]
+        );
+        await client.query('COMMIT');
+        console.log(`[MIGRATE] ✓ ${file} applied successfully`);
+        count++;
+      } catch (err: any) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error(`[MIGRATE] ✗ ${file} FAILED — rolled back`);
+        console.error(`[MIGRATE]   ${err.message}`);
+        throw err; // halt boot — do NOT start the server with a broken schema
+      } finally {
+        client.release();
+      }
+    }
+
+    console.log(`[MIGRATE] Done. ${count} new migration(s) applied.`);
+  } finally {
+    await pool.end();
+  }
+}
+3. server/index.ts — call the runner BEFORE starting the server
+Find the top of server/index.ts (or wherever the express app boots). Add right at the start, before app.listen or any other initialization:
+tsimport { runMigrations } from './migrate';
+
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error('[BOOT] DATABASE_URL is not set — refusing to start');
+  process.exit(1);
+}
+
+// ── Run pending migrations BEFORE accepting traffic ─────────────────────
+// This guarantees that by the time the web server is up, the schema matches
+// what the codebase expects. If a migration fails, the server does not start —
+// Railway will keep the previous deploy serving traffic.
+(async () => {
+  try {
+    console.log('[BOOT] Checking for pending migrations…');
+    await runMigrations(DATABASE_URL);
+  } catch (err: any) {
+    console.error('[BOOT] Migration failed — aborting boot. Previous deploy stays live.');
+    console.error(err);
+    process.exit(1);
+  }
+
+  // Now bring up the rest: express app, websockets, background sync, etc.
+  // (whatever your existing boot code already does)
+  // ...
+})();
+If your boot code is already wrapped in a function (bootstrap(), start(), etc.), call runMigrations as the first line of that function and await it.
+4. package.json — make sure pg is installed
+If it isn't already (it should be — Drizzle uses it), add it:
+bashnpm install pg
+npm install -D @types/pg
+5. Railway start command — should already work
+Railway's default start command is npm start, which runs your existing build entry. As long as server/index.ts is the entry, the migrate call runs on every boot. No Railway config change needed.
+If your Railway has a custom start command (Settings → Service → "Start Command"), make sure it points to the same entry.
+
+How this changes my workflow
+Adding a new migration in the future
+bash# In Replit, create the file:
+migrations/0002_add_pas_de_reponse_index.sql
+
+# Inside it:
+CREATE INDEX IF NOT EXISTS idx_orders_pas_de_reponse
+  ON public.orders (status)
+  WHERE status LIKE 'Pas de réponse%';
+
+# Commit + push:
+git add migrations/0002_add_pas_de_reponse_index.sql
+git commit -m "db: index for Pas de réponse filter"
+git push
+Railway picks up the push, deploys, runs migrations automatically. The boot log shows:
+[MIGRATE] ✓ 0001_complete_schema_catchup.sql (already applied)
+[MIGRATE] → Applying 0002_add_pas_de_reponse_index.sql (143 bytes)…
+[MIGRATE] ✓ 0002_add_pas_de_reponse_index.sql applied successfully
+That's it. No SSH. No Database UI. Code + schema travel together through the same git history.
+What never happens again
+
+❌ Replit Agent runs SQL on the wrong database
+❌ Code references columns that don't exist in production
+❌ Manual ALTER TABLE in Railway's dashboard
+❌ "Did the migration apply?" guesswork
+
+
+Acceptance criteria
+
+✅ /migrations/0001_complete_schema_catchup.sql exists and contains all the schema fixes from the last 6 commits.
+✅ server/migrate.ts exists with the runner.
+✅ server/index.ts calls runMigrations(DATABASE_URL) before starting the express server.
+✅ On the next Railway deploy, the boot logs show:
+
+   [BOOT] Checking for pending migrations…
+   [MIGRATE] → Applying 0001_complete_schema_catchup.sql…
+   [MIGRATE] ✓ 0001_complete_schema_catchup.sql applied successfully
+   [MIGRATE] Done. 1 new migration(s) applied.
+
+✅ Railway Postgres now has every column the codebase expects. Verification (run in Railway DB UI):
+
+sql   SELECT column_name FROM information_schema.columns
+   WHERE table_schema='public' AND table_name='stores'
+     AND column_name IN ('distribution_method','distribution_epoch','agent_ids');
+   -- Expect 3 rows
+
+✅ A second deploy without adding any new migration shows:
+
+   [MIGRATE] ✓ 0001_complete_schema_catchup.sql (already applied)
+   [MIGRATE] Done. 0 new migration(s) applied.
+
+✅ tajergrow.com works as expected: percentages 50/25/25 are respected, Boutique column shows magasin name, Anakio orders appear, etc.
+✅ A failing migration aborts the boot — Railway keeps the previous deploy live (no broken state goes online).
+
+
+Commit
+bashgit add migrations/ server/migrate.ts server/index.ts package.json
+git commit -m "feat(db): automated migrations system — Railway runs SQL on every deploy
+
+- Add /migrations folder with versioned .sql files
+- New server/migrate.ts: lightweight idempotent runner using pg
+- server/index.ts runs migrations BEFORE booting the web server
+- _migrations tracking table records what's been applied
+- Failed migration aborts boot — previous deploy stays live (no half-applied state)
+- 0001 catch-up migration: adds 25+ columns from 6 commits worth of schema drift
+  (distribution_method, magasin_id everywhere, driver_phone, ad_spend.magasin_id, etc.)
+- Production DB and code now travel through the same git history"
+git push

@@ -25,7 +25,7 @@
 -- _migration_state guard table that the startup hooks rely on.
 -- ============================================================================
 
-BEGIN;
+-- (transaction now managed by server/migrate.ts)
 
 -- ----------------------------------------------------------------------------
 -- 1. stores: per-magasin configuration
@@ -99,7 +99,7 @@ SET distribution_method = 'pourcentage'
 WHERE distribution_method = 'auto'
   AND id IN (SELECT DISTINCT magasin_id FROM public.store_integrations WHERE magasin_id IS NOT NULL);
 
-COMMIT;
+-- (transaction now managed by server/migrate.ts)
 
 -- ============================================================================
 -- 8. Verification — all four counts MUST hit the expected value

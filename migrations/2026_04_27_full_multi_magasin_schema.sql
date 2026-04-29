@@ -25,7 +25,7 @@
 --   3. Verify with the read-only SELECTs at the bottom of this file.
 -- ──────────────────────────────────────────────────────────────────────────
 
-BEGIN;
+-- (transaction now managed by server/migrate.ts)
 
 -- ============================================================
 -- 1. stores: per-magasin configuration columns
@@ -82,7 +82,7 @@ WHERE o.store_id = si.store_id
 -- ============================================================
 UPDATE public.stores SET distribution_epoch = now() WHERE distribution_epoch IS NULL;
 
-COMMIT;
+-- (transaction now managed by server/migrate.ts)
 
 -- ============================================================
 -- 7. Verify everything landed (run AFTER commit)
