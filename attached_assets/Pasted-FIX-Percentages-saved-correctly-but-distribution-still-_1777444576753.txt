@@ -1,0 +1,110 @@
+FIX — Percentages saved correctly but distribution still round-robin → magasin's distribution_method is still 'auto'
+Diagnosis
+From your logs:
+[{"magasinId":37,"leadPercentage":50},{"magasinId":42,"leadPercentage":100}]
+Per-magasin percentages ARE saved correctly per agent.
+From your screenshot:
+
+Distribution alternates khawla / naima / fatima evenly = round-robin
+50/25/25 ratio NOT respected
+
+Root cause
+The engine in server/storage.ts line 2004 reads distribution_method from the magasin row (Promomarkett, Anakio). It's still set to 'auto'. Until you flip it to 'pourcentage' per magasin, the engine never enters the percentage branch — it falls through to round-robin on line 2028.
+Fix in 3 steps
+Step 1 — Quick SQL one-shot (run NOW in Replit Database tab)
+sql-- Set distribution method to 'pourcentage' for every magasin in your account
+UPDATE public.stores
+SET distribution_method = 'pourcentage'
+WHERE owner_id IS NULL OR owner_id IN (SELECT id FROM public.users WHERE role IN ('owner', 'admin'));
+
+-- Or target specific magasins if you only want some on percentage:
+-- UPDATE public.stores SET distribution_method = 'pourcentage' WHERE id IN (37, 42);
+
+-- Reset epoch + last assigned so the new distribution starts fresh
+UPDATE public.stores
+SET distribution_epoch = now(),
+    last_assigned_agent_id = NULL
+WHERE distribution_method = 'pourcentage';
+
+-- Verify
+SELECT id, name, distribution_method, distribution_epoch FROM public.stores;
+After this, every new order on Promomarkett/Anakio will hit the percentage engine.
+Step 2 — UI fix: surface the magasin's distribution method on the Team page so admins don't get confused
+Right now the user sets percentages on the Team page assuming "this is enough" — but the magasin-level distribution_method lives on the Magasins page. Two pages, one logical setting → user pain.
+In client/src/pages/team.tsx, at the top of the page (above the agents table), add a banner that shows the current distribution method per magasin and warns if it's still auto:
+tsxconst { data: magasins = [] } = useMagasins();
+
+const magasinsOnAuto = (magasins as any[]).filter(m => (m.distributionMethod || 'auto') === 'auto');
+
+return (
+  <div>
+    {/* ... existing stats cards ... */}
+
+    {magasinsOnAuto.length > 0 && (
+      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-4">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+              {magasinsOnAuto.length === 1
+                ? `Le magasin "${magasinsOnAuto[0].name}" est en distribution automatique (round-robin).`
+                : `${magasinsOnAuto.length} magasins sont en distribution automatique (round-robin).`}
+            </p>
+            <p className="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1">
+              Les pourcentages que vous définissez ici ne seront PAS appliqués tant que la méthode du magasin reste sur "Auto".
+              Ouvrez la page <Link href="/magasins" className="underline font-medium">Magasins</Link> et changez la méthode de distribution en "Pourcentage".
+            </p>
+            <ul className="mt-2 space-y-0.5">
+              {magasinsOnAuto.map((m: any) => (
+                <li key={m.id} className="text-xs">
+                  <span className="font-medium">{m.name}</span> — méthode actuelle :{' '}
+                  <span className="px-1.5 py-0.5 rounded bg-amber-200/60 dark:bg-amber-800/40 font-mono">{m.distributionMethod || 'auto'}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ... existing agents table ... */}
+  </div>
+);
+This is the single most important UX fix here — without it, every admin will repeatedly hit this exact bug.
+Step 3 — Add a quick toggle next to each magasin in the Team page
+So admins can flip the method without leaving Team. Add a small action column:
+tsx// In the magasinsOnAuto banner, add a "Activer maintenant" button per magasin:
+{magasinsOnAuto.map((m: any) => (
+  <div key={m.id} className="flex items-center justify-between text-xs gap-2 py-1">
+    <span><span className="font-medium">{m.name}</span> — méthode : <code>auto</code></span>
+    <Button
+      size="sm"
+      variant="default"
+      onClick={async () => {
+        await apiRequest("PUT", `/api/magasins/${m.id}`, { distributionMethod: 'pourcentage' });
+        toast({ title: `${m.name} : distribution par pourcentage activée` });
+        queryClient.invalidateQueries({ queryKey: ['/api/magasins'] });
+      }}
+    >
+      Activer pourcentage
+    </Button>
+  </div>
+))}
+The PUT /api/magasins/:id endpoint already accepts distributionMethod (line 5094 in routes.ts). On success, the magasin's distribution_method changes to 'pourcentage', the epoch is bumped (via the existing route handler logic), and the next order goes through the % engine.
+Step 4 — Add console log to make this debuggable forever
+In server/storage.ts line 2026, the existing [DIST] log already shows method=auto vs method=pourcentage. After running step 1, watch the next 5 orders' logs — you should see:
+[DIST] store=X magasin=37 method=pourcentage eligible=[A,B,C]
+[DIST-%] window since=2026-04-29T05:30:00.000Z magasin=37
+[DIST-%] agent=A target=50.0% today=0 projected=100.0% deficit=-50.0
+[DIST-%] agent=B target=25.0% today=0 projected=100.0% deficit=-75.0
+[DIST-%] agent=C target=25.0% today=0 projected=100.0% deficit=-75.0
+[DIST-%] → Selected: A
+If you still see method=auto, step 1 didn't apply — re-run the SQL.
+Acceptance criteria
+
+✅ SQL verification: SELECT distribution_method FROM stores; shows pourcentage for every active magasin.
+✅ Inject 10 fresh test orders on Promomarkett with khawla 50% / naima 25% / fatima 25%. Distribution: ~5/2/3 or 5/3/2 (±1).
+✅ Server log shows method=pourcentage not method=auto for those orders.
+✅ Team page banner disappears once all magasins are on pourcentage.
+✅ "Activer pourcentage" button on the banner works (one click → switch).
+✅ Round-robin alternation pattern (k/n/f/k/n/f) STOPS — replaced by ratio-respecting pattern.

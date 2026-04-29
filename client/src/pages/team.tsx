@@ -15,7 +15,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
-import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp, RotateCcw } from "lucide-react";
+import { UserPlus, ShoppingBag, CheckCircle, Truck, Activity, Trash2, Package, X, Save, Loader2, Search, MapPin, Percent, ShieldCheck, Pencil, Link2, TrendingUp, RotateCcw, AlertTriangle } from "lucide-react";
+import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { formatCurrency } from "@/lib/utils";
 
@@ -1017,6 +1018,92 @@ export default function Team() {
           </Button>
         )}
       </div>
+
+      {(() => {
+        // Surface magasins still on round-robin (auto) when the user has
+        // configured per-agent percentages. Until the magasin's
+        // distribution_method is flipped to 'pourcentage', the engine never
+        // enters the % branch and the ratios are ignored. Two pages, one
+        // logical setting → guide the user from here.
+        const magasinsOnAuto = (magasins as any[]).filter(
+          (m: any) => (m.distributionMethod || "auto") === "auto"
+        );
+        const anyPercentagesSet = (agentSettings as any[]).some(
+          (s: any) => s.magasinId != null && (s.leadPercentage || 0) > 0
+        );
+        if (magasinsOnAuto.length === 0 || !anyPercentagesSet) return null;
+        return (
+          <div
+            className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-4"
+            data-testid="banner-magasins-on-auto"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                  {magasinsOnAuto.length === 1
+                    ? `Le magasin "${magasinsOnAuto[0].name}" est en distribution automatique (round-robin).`
+                    : `${magasinsOnAuto.length} magasins sont en distribution automatique (round-robin).`}
+                </p>
+                <p className="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1">
+                  Les pourcentages que vous avez définis ne seront pas appliqués
+                  tant que la méthode du magasin reste sur « Auto ». Activez la
+                  distribution par pourcentage ci-dessous, ou ouvrez la page{" "}
+                  <Link href="/magasins" className="underline font-medium" data-testid="link-magasins">
+                    Magasins
+                  </Link>{" "}
+                  pour plus d'options.
+                </p>
+                <ul className="mt-3 space-y-1.5">
+                  {magasinsOnAuto.map((m: any) => (
+                    <li
+                      key={m.id}
+                      className="flex items-center justify-between gap-3 text-xs bg-white/60 dark:bg-amber-950/40 rounded-md px-3 py-2"
+                    >
+                      <span className="truncate">
+                        <span className="font-medium">{m.name}</span>
+                        <span className="text-muted-foreground"> — méthode actuelle : </span>
+                        <span className="px-1.5 py-0.5 rounded bg-amber-200/60 dark:bg-amber-800/40 font-mono">
+                          {m.distributionMethod || "auto"}
+                        </span>
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        className="shrink-0"
+                        data-testid={`button-activate-pourcentage-${m.id}`}
+                        onClick={async () => {
+                          try {
+                            await apiRequest("PATCH", `/api/magasins/${m.id}`, {
+                              distributionMethod: "pourcentage",
+                            });
+                            toast({
+                              title: `${m.name} : distribution par pourcentage activée`,
+                              description:
+                                "Les prochaines commandes respecteront les ratios définis.",
+                            });
+                            queryClient.invalidateQueries({ queryKey: ["/api/magasins"] });
+                          } catch (err: any) {
+                            toast({
+                              title: "Erreur",
+                              description:
+                                err?.message?.replace(/^\d+:\s*/, "") ||
+                                "Impossible d'activer la distribution par pourcentage.",
+                              variant: "destructive",
+                            });
+                          }
+                        }}
+                      >
+                        Activer pourcentage
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <Card className="p-4 border-border/50 shadow-sm flex items-center justify-between">
