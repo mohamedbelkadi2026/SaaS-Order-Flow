@@ -1,0 +1,170 @@
+🚨 STOP — Migration HAS NEVER ACTUALLY RUN. I just verified your live backup.sql from zip 28 (the one you uploaded today).
+Direct proof (cannot be argued)
+I read your backup.sql line-by-line. Here is what your production stores table looks like RIGHT NOW:
+CREATE TABLE public.stores (
+    id integer NOT NULL,
+    name text NOT NULL,
+    owner_id integer,
+    last_assigned_agent_id integer,
+    phone, website, facebook, instagram, other_social,
+    logo_url, cover_image_url,
+    can_open, is_stock, is_ramassage,
+    whatsapp_template, whatsapp_template_custom, whatsapp_template_shipping,
+    whatsapp_default_enabled, whatsapp_custom_enabled, whatsapp_shipping_enabled,
+    webhook_key, packaging_cost, created_at
+);
+That's it. 23 columns total. None of them is distribution_method, distribution_epoch, agent_ids, services, linked_carriers, or linked_platforms.
+The TypeScript schema in shared/schema.ts declares these columns. The code reads magasin.distributionMethod. But Postgres returns undefined because the column physically does not exist. Code falls through to the 'auto' default. Round-robin runs. Percentages get ignored.
+Every prompt I gave you for the last 3 days about percentages, multi-magasin, sync, drivers, magasin filter — they all required this migration. Without it, the code I wrote can't function. The Replit Agent has been telling you "I ran the migration" but it has not actually run.
+THE ONE THING THAT MATTERS — paste this exact SQL into Replit's Database tab → SQL Runner → click Run
+Do NOT use db:push. Do NOT trust the Agent's claim. Open the Database panel manually and paste this:
+sqlBEGIN;
+
+-- ============================================================================
+-- STORES — per-magasin distribution config + multi-magasin metadata
+-- ============================================================================
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_method     text      DEFAULT 'auto';
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS distribution_epoch      timestamp DEFAULT now();
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS agent_ids               jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS services                jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_carriers         jsonb     DEFAULT '[]'::jsonb;
+ALTER TABLE public.stores ADD COLUMN IF NOT EXISTS linked_platforms        jsonb     DEFAULT '[]'::jsonb;
+
+-- ============================================================================
+-- ORDERS — magasin scope, action tracking, carrier+driver fields
+-- ============================================================================
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS magasin_id     integer    REFERENCES public.stores(id);
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_at timestamp;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS last_action_by integer    REFERENCES public.users(id);
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS carrier_id     integer;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS carrier_name   text;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_name    text       DEFAULT '';
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS driver_phone   text       DEFAULT '';
+
+-- ============================================================================
+-- STORE_INTEGRATIONS — link integration to specific magasin
+-- ============================================================================
+ALTER TABLE public.store_integrations ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- ============================================================================
+-- STORE_AGENT_SETTINGS — per-magasin overrides (THE critical piece)
+-- ============================================================================
+ALTER TABLE public.store_agent_settings ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+ALTER TABLE public.store_agent_settings DROP CONSTRAINT IF EXISTS store_agent_settings_agent_id_store_id_key;
+DROP INDEX IF EXISTS store_agent_settings_agent_store_uniq;
+DROP INDEX IF EXISTS store_agent_settings_agent_magasin_uniq;
+DROP INDEX IF EXISTS store_agent_settings_agent_store_magasin_uniq;
+CREATE UNIQUE INDEX store_agent_settings_agent_store_magasin_uniq
+  ON public.store_agent_settings (agent_id, store_id, COALESCE(magasin_id, 0));
+
+-- ============================================================================
+-- AD_SPEND — per-magasin ad tracking
+-- ============================================================================
+ALTER TABLE public.ad_spend          ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+ALTER TABLE public.ad_spend_tracking ADD COLUMN IF NOT EXISTS magasin_id integer REFERENCES public.stores(id);
+
+-- ============================================================================
+-- INDEXES for query performance
+-- ============================================================================
+CREATE INDEX IF NOT EXISTS idx_orders_magasin_id        ON public.orders (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_orders_assigned_magasin  ON public.orders (assigned_to_id, magasin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_last_action       ON public.orders (last_action_by, last_action_at);
+CREATE INDEX IF NOT EXISTS idx_orders_track_provider   ON public.orders (shipping_provider, track_number);
+CREATE INDEX IF NOT EXISTS idx_store_integrations_mag   ON public.store_integrations (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_store_agent_magasin      ON public.store_agent_settings (magasin_id);
+CREATE INDEX IF NOT EXISTS idx_ad_spend_magasin         ON public.ad_spend (magasin_id, date);
+CREATE INDEX IF NOT EXISTS idx_ad_spend_track_magasin   ON public.ad_spend_tracking (magasin_id, date);
+
+-- ============================================================================
+-- CRITICAL — flip every magasin to 'pourcentage' since you've already set %
+-- ============================================================================
+UPDATE public.stores SET distribution_method = 'pourcentage';
+UPDATE public.stores SET distribution_epoch = now();
+UPDATE public.stores SET last_assigned_agent_id = NULL;
+
+COMMIT;
+
+-- ============================================================================
+-- VERIFICATION — every count below MUST match the expected value
+-- ============================================================================
+SELECT 'stores cols (expect 6)' AS check, count(*) AS got FROM information_schema.columns
+WHERE table_schema='public' AND table_name='stores'
+  AND column_name IN ('distribution_method','distribution_epoch','agent_ids','services','linked_carriers','linked_platforms');
+
+SELECT 'orders cols (expect 7)' AS check, count(*) AS got FROM information_schema.columns
+WHERE table_schema='public' AND table_name='orders'
+  AND column_name IN ('magasin_id','last_action_at','last_action_by','carrier_id','carrier_name','driver_name','driver_phone');
+
+SELECT 'store_integrations.magasin_id (expect 1)' AS check, count(*) AS got FROM information_schema.columns
+WHERE table_schema='public' AND table_name='store_integrations' AND column_name='magasin_id';
+
+SELECT 'store_agent_settings.magasin_id (expect 1)' AS check, count(*) AS got FROM information_schema.columns
+WHERE table_schema='public' AND table_name='store_agent_settings' AND column_name='magasin_id';
+
+SELECT 'ad_spend.magasin_id (expect 1)' AS check, count(*) AS got FROM information_schema.columns
+WHERE table_schema='public' AND table_name='ad_spend' AND column_name='magasin_id';
+
+-- Show actual values
+SELECT id, name, distribution_method, distribution_epoch FROM public.stores;
+Expected output of verification
+stores cols (expect 6)                      | 6
+orders cols (expect 7)                      | 7
+store_integrations.magasin_id (expect 1)    | 1
+store_agent_settings.magasin_id (expect 1)  | 1
+ad_spend.magasin_id (expect 1)              | 1
+
+ id |    name      | distribution_method | distribution_epoch
+----+--------------+---------------------+--------------------
+ 37 | Promomarkett | pourcentage         | 2026-04-29 ...
+ 42 | Anakio       | pourcentage         | 2026-04-29 ...
+If ANY count is lower than expected → paste the exact Postgres error message and I'll diagnose. Do not proceed past this step.
+After the SQL succeeds
+
+Restart the Replit server (Stop → Run). This is mandatory — the schema cache must reset.
+Re-save your percentages from the Team page UI. The previous saves silently failed because magasin_id didn't exist; this time they'll persist for real.
+
+khawla → Promomarkett 50%, Anakio 100%
+naima → Promomarkett 25%, Anakio 0% (or whatever you want)
+fatima → Promomarkett 25%, Anakio 0%
+
+
+Verify percentages persisted:
+
+sqlSELECT
+  u.username AS agent,
+  s.name     AS magasin,
+  sas.magasin_id,
+  sas.lead_percentage
+FROM public.store_agent_settings sas
+LEFT JOIN public.users u  ON u.id = sas.agent_id
+LEFT JOIN public.stores s ON s.id = sas.magasin_id
+WHERE sas.lead_percentage IS NOT NULL
+ORDER BY agent, magasin;
+You should see 6 rows with magasin_id = 37 or 42 and the right percentages.
+
+Inject 8 fresh test orders into Promomarkett (pick "Promomarkett" in the Boutique dropdown when adding orders, or use real Shopify webhook traffic). Expected with 50/25/25: khawla=4, naima=2, fatima=2.
+Watch server logs for [DIST-%] lines:
+
+[DIST] storeId=X magasinId=37 method=pourcentage eligible=[3,5,7]
+[DIST-%] target=50.0% agent=3 today=0 deficit=50
+[DIST-%] target=25.0% agent=5 today=0 deficit=25
+[DIST-%] target=25.0% agent=7 today=0 deficit=25
+[DIST-%] selected=3 (highest deficit)
+If the logs say method=pourcentage ✅ → percentages are now respected. The 50/25/25 distribution will be visible.
+If the logs still say method=auto ❌ → the SQL UPDATE public.stores SET distribution_method = 'pourcentage' didn't apply. Re-check.
+About the warning banner in screenshot 1
+Once distribution_method = 'pourcentage' is correctly set in the DB (step in the SQL above), the banner will disappear automatically — it only renders for magasins where distributionMethod === 'auto'. So this isn't a separate fix; it's a downstream consequence of the migration finally landing.
+Why I'm asking you to do this manually
+For 3 days, you've been pasting prompts that ask "the Agent" to run SQL. Either the Agent never executed it, or it executed db:push (which silently fails for these specific column changes), or it hit a permission error and reported success anyway. There is no way for me to verify from outside.
+The Replit Database tab → SQL Runner is the ONLY path I can tell you with certainty will work. It's a separate UI that runs raw SQL against the production database directly. Open the panel yourself, paste the block, click Run, paste the verification output back here.
+
+Once the verification queries return the expected counts, every previous prompt I gave you starts working immediately:
+
+✅ Banner disappears
+✅ 50/25/25 distribution respects ratios
+✅ Boutique column shows magasin name
+✅ Anakio orders appear in Toutes les commandes
+✅ Driver phone syncs correctly
+✅ Per-magasin ad spend works
+✅ Multi-magasin filter on dashboard works
