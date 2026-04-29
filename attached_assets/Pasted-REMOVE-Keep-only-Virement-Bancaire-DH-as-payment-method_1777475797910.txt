@@ -1,0 +1,86 @@
+REMOVE — Keep only "Virement Bancaire (DH)" as payment method on the checkout page
+On the Finaliser votre abonnement page (client/src/pages/checkout.tsx), I want to keep ONLY the Virement Bancaire option in DH. Remove everything else: PayPal accordion, Polar.sh accordion, and the DH/USD currency switcher (since DH is the only currency we'll accept now).
+Don't change anything else — keep the bank details card, the receipt upload flow, the success/error states, and the entire /billing page intact.
+
+File: client/src/pages/checkout.tsx
+Change 1 — Remove the currency switcher (around line 336-353)
+Delete the whole block:
+tsx{/* Currency Switcher */}
+<div className="bg-white rounded-2xl p-4 border border-zinc-100 flex items-center gap-3">
+  <span className="text-sm text-zinc-500 font-medium">Devise :</span>
+  <div className="flex rounded-xl overflow-hidden border border-zinc-200">
+    {(["dh", "usd"] as const).map((c) => ( … ))}
+  </div>
+  <span className="ml-auto text-lg font-bold" style={{ color: NAVY }}>{displayAmount}/mois</span>
+</div>
+Replace it with a simple price display (so the user still sees what they're about to pay):
+tsx{/* Plan amount */}
+<div className="bg-white rounded-2xl p-4 border border-zinc-100 flex items-center justify-between">
+  <span className="text-sm text-zinc-500 font-medium">Montant à payer</span>
+  <span className="text-lg font-bold" style={{ color: NAVY }}>{amountDh} DH/mois</span>
+</div>
+Change 2 — Force currency to "dh" and drop the state hook (around line 125-126)
+Change:
+tsconst [openMethod, setOpenMethod] = useState<Method>("paypal");
+const [currency, setCurrency]    = useState<"dh" | "usd">("dh");
+to:
+tsconst [openMethod, setOpenMethod] = useState<Method>("bank");   // ← bank is now the only option
+const currency = "dh" as const;                                  // ← fixed, no setter needed
+Change 3 — Remove the PayPal accordion (around lines 362-397)
+Delete the whole block from {/* ─── PayPal ──── */} through the closing </AccordionItem> of that accordion.
+Change 4 — Remove the Polar.sh accordion (around lines 399-442)
+Delete the whole block from {/* ─── Polar.sh ──── */} through its closing </AccordionItem>.
+Change 5 — Tighten the Method type (around line 43)
+Change:
+tstype Method = "paypal" | "polar" | "bank";
+to:
+tstype Method = "bank";
+Change 6 — Remove now-unused imports / constants / helpers
+After the deletions above, the following will be unused. Remove them so the file stays clean:
+
+The PAYPAL_CLIENT_ID constant (line 14)
+The POLAR_URLS object (line 15)
+The whole PayPalCheckoutButtons component (line 59 onwards, until its closing })
+The handlePolarClick function (line 210)
+The amountUsd const (line 307)
+The displayAmount const (line 308)
+The <PayPalScriptProvider> wrapper if it now wraps nothing useful — check around line 311-315 and unwrap if the only child was the PayPal accordion
+
+Imports to remove (top of file): PayPalScriptProvider, PayPalButtons from @paypal/react-paypal-js, ExternalLink, Zap, AlertCircle, and any other lucide-react icons that were only used inside the PayPal/Polar blocks. Run tsc after to catch any leftovers.
+Change 7 — submitMutation.mutateAsync calls
+The bank-receipt submit path calls:
+tsawait submitMutation.mutateAsync({ method: "bank", receiptUrl: url });
+That stays as-is. Just remove the polar one (line 217):
+tssubmitMutation.mutate({ method: "polar" });
+Change 8 — Optional: the page no longer needs the AccordionItem layout
+Since there's only one method now, the user shouldn't have to "open" anything. You can either:
+Option A (minimal change): Keep the AccordionItem for "bank" exactly as it is. It will be auto-open since openMethod defaults to "bank" and there's no other option to switch to.
+Option B (cleaner UX): Replace the <AccordionItem> wrapper around the bank block with a plain card so it's always visible without the toggle chevron:
+tsx<div className="bg-white rounded-2xl p-5 border border-zinc-100">
+  <div className="flex items-center gap-3 mb-4">
+    <Building2 className="w-5 h-5 text-emerald-600" />
+    <h2 className="font-bold text-zinc-800">Virement Bancaire</h2>
+    <span className="ml-auto text-sm font-semibold" style={{ color: NAVY }}>{amountDh} DH</span>
+  </div>
+  {/* … existing space-y-5 content (bank details card, montant à virer, file upload, submit button) goes here unchanged … */}
+</div>
+Pick whichever feels right. Option A is the safer mechanical change.
+
+What to leave alone
+
+✅ Bank details (RIB / IBAN / SWIFT) constant BANK_DETAILS
+✅ Receipt upload flow (fileInputRef, handleDrop, receiptFile, etc.)
+✅ submitMutation for method: "bank"
+✅ Success state, error toasts, hasPendingPayment banner
+✅ The /billing page list itself (this prompt only touches /checkout)
+✅ Backend payment endpoints — they stay so existing pending payments and webhooks still resolve
+
+Acceptance criteria
+
+✅ Open /checkout?plan=... → user sees only "Virement Bancaire" with the bank details, amount in DH, receipt upload, and submit button.
+✅ No PayPal accordion, no Polar.sh accordion, no DH/USD switcher.
+✅ Amount always displayed as XXX DH/mois.
+✅ Existing receipt upload + submission flow works exactly as before.
+✅ hasPendingPayment warning still appears when applicable.
+✅ TypeScript compiles cleanly — no unused imports, no Method typing errors.
+✅ /billing page (the one that lists plans) unchanged.
