@@ -909,7 +909,24 @@ export default function AllOrders() {
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
-                      {isColVisible('comment') && <TableCell className="max-w-[120px] truncate text-muted-foreground text-[11px]">{order.comment || order.commentStatus || "-"}</TableCell>}
+                      {isColVisible('comment') && (
+                        <TableCell className="max-w-[160px] text-muted-foreground text-[11px]">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="truncate flex-1 min-w-0">{order.comment || order.commentStatus || "-"}</span>
+                            {(order as any).driverPhone && (
+                              <a
+                                href={`tel:${(order as any).driverPhone}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-[10px] text-blue-700 dark:text-blue-300 hover:bg-blue-100"
+                                title={`Livreur: ${(order as any).driverName || (order as any).driverPhone}`}
+                                data-testid={`chip-driver-${order.id}`}
+                              >
+                                🏍️ {(order as any).driverPhone}
+                              </a>
+                            )}
+                          </div>
+                        </TableCell>
+                      )}
                       {isColVisible('livraison') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
                           {(() => {

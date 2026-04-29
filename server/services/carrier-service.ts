@@ -1182,17 +1182,82 @@ export async function trackDigylogShipment(
         ''
       ).toString().trim();
 
-      // Try to extract driver phone from historics COMMENT field
+      // Try to extract driver phone + name from historics COMMENT field.
+      // Historics are returned newest-first, so the first record yielding a
+      // phone is the most recent driver assignment. We try several patterns
+      // because Digylog comments are free-text and inconsistent across
+      // accounts.
       const allRecords = Array.isArray(records) ? records : [];
       let histDriverPhone = "";
+      let histDriverName  = "";
+
+      // Driver-context keywords. We only accept "bare number" matches when one
+      // of these keywords appears in the same comment, otherwise we'd happily
+      // pick up the customer's phone (which often shows up in delivery notes).
+      const DRIVER_CTX = /(livreur|driver|chauffeur|affect[ée]|assign[ée]|sous[-\s]?traitant|coursier)/i;
+
       for (const rec of allRecords) {
-        const commentText = rec?.comment || rec?.COMMENT || rec?.note || rec?.newvalue || "";
-        const phoneMatch = String(commentText).match(/[Tt]él[ée]phone[e]?[:\s]+([0-9]{8,10})/);
-        if (phoneMatch) {
-          histDriverPhone = phoneMatch[1].trim();
-          console.log(`[DRIVER-HISTORICS] ${trackingNumber} → phone="${histDriverPhone}" from comment="${commentText}"`);
-          break;
+        const commentText = String(
+          rec?.comment || rec?.COMMENT || rec?.note || rec?.newvalue || rec?.location || ""
+        );
+        if (!commentText) continue;
+        const hasDriverCtx = DRIVER_CTX.test(commentText);
+
+        // Strategy 1 — explicit "téléphone:" / "tél:" / "phone:" prefix.
+        // The prefix itself is the driver-context signal, so no extra gate.
+        // Require exactly 9 (with country code stripped) or 10 digits.
+        if (!histDriverPhone) {
+          const m = commentText.match(
+            /(?:t[ée]l[ée]phone|t[ée]l|phone)\s*[:=\-]?\s*\+?(?:212|0)?([0-9\s.-]{8,12})/i
+          );
+          if (m) {
+            const cleaned = m[1].replace(/\D/g, "");
+            if (cleaned.length === 10 && /^0[67]/.test(cleaned)) {
+              histDriverPhone = cleaned;
+            } else if (cleaned.length === 9 && /^[67]/.test(cleaned)) {
+              histDriverPhone = "0" + cleaned;
+            }
+          }
         }
+
+        // Strategy 2 — bare 10-digit Moroccan mobile (06xx or 07xx). Only
+        // accept if a driver-context keyword is present in the comment.
+        if (!histDriverPhone && hasDriverCtx) {
+          const m = commentText.match(/(?:^|[^0-9])(0[67][0-9]{8})(?:[^0-9]|$)/);
+          if (m) histDriverPhone = m[1];
+        }
+
+        // Strategy 3 — international format +212 6/7 xxxxxxx, with a trailing
+        // boundary to avoid swallowing into longer numeric strings. Also
+        // gated on driver-context keyword presence.
+        if (!histDriverPhone && hasDriverCtx) {
+          const m = commentText.match(/\+?212[\s.-]?([67][0-9]{8})(?:[^0-9]|$)/);
+          if (m) histDriverPhone = "0" + m[1];
+        }
+
+        // Driver name — common assignment patterns. Strip mixed-in digits
+        // and trailing separator chunks (e.g. "Hassan - 0607394948").
+        if (!histDriverName) {
+          const nameM =
+            commentText.match(/(?:affect[ée]|assign[ée])\s*(?:à|a)?\s*([A-Za-zÀ-ÿ' .-]{3,40})/i) ||
+            commentText.match(/(?:livreur|driver|chauffeur)\s*[:=\-]?\s*([A-Za-zÀ-ÿ' .-]{3,40})/i);
+          if (nameM) {
+            const cleaned = nameM[1]
+              .trim()
+              .replace(/[\d+]/g, "")
+              .replace(/[\-:,].*$/, "")
+              .trim();
+            if (cleaned.length >= 2) histDriverName = cleaned;
+          }
+        }
+
+        if (histDriverPhone) break;
+      }
+
+      if (histDriverPhone || histDriverName) {
+        console.log(
+          `[DRIVER-HISTORICS] ${trackingNumber} → phone="${histDriverPhone}" name="${histDriverName}"`
+        );
       }
 
       if (rawText) {
@@ -1212,7 +1277,7 @@ export async function trackDigylogShipment(
         else if (rawLow.includes('ramass') || rawLow.includes('attente')) { mappedStatus = 'Attente De Ramassage'; }
 
         console.log(`[DIGYLOG-TRACK] ${trackingNumber} → rawStatus="${rawText}" mapped="${mappedStatus}"`);
-        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost: null, driverPhone: histDriverPhone };
+        return { status: mappedStatus, rawStatus: rawText, rawResponse: body, deliveryCost: null, driverPhone: histDriverPhone, driverName: histDriverName };
       }
     }
 
@@ -1274,12 +1339,57 @@ export async function trackDigylogShipment(
         const deliveryCostRaw = body?.deliveryCost ?? body?.frais_livraison ?? body?.port ?? null;
         const deliveryCost = deliveryCostRaw ? Math.round(parseFloat(String(deliveryCostRaw)) * 100) : null;
 
-        // Extract driver phone from Digylog /infos response
-        const driverPhone = body?.livreur_phone || body?.livreur_tel || body?.driver_phone ||
-                           body?.livreur?.phone || body?.livreur?.telephone ||
-                           body?.courier_phone || "";
-        const driverName = body?.livreur_name || body?.livreur?.name ||
-                          body?.livreur?.nom || body?.courier_name || "";
+        // Extract driver phone + name from Digylog /infos response. Account
+        // configurations vary — some return top-level fields, some nest the
+        // driver under livreur/driver/affecteA/assigned_to. Cover all the
+        // shapes we've seen in the wild.
+        let driverPhone =
+          body?.livreur_phone || body?.livreur_tel || body?.driver_phone ||
+          body?.livreur?.phone || body?.livreur?.telephone ||
+          body?.driver?.phone  || body?.driver?.tel ||
+          body?.affecteA?.phone || body?.affecte_a_phone ||
+          body?.assigned_to?.phone || body?.courier_phone || "";
+
+        let driverName =
+          body?.livreur_name || body?.livreur?.name || body?.livreur?.nom ||
+          body?.driver_name  || body?.driver?.name  ||
+          body?.affecteA?.name || body?.affecte_a_name ||
+          body?.assigned_to?.name || body?.courier_name || "";
+
+        // If neither field gave us a phone, fall back to scanning any
+        // free-text fields the response might carry (some accounts only
+        // expose driver info inside comment/note/last_status). Same
+        // false-positive guard as the historics path: bare numbers are only
+        // accepted when a driver-context keyword is present.
+        if (!driverPhone) {
+          const freeText = String(
+            body?.comment || body?.note || body?.last_status || body?.location || ""
+          );
+          if (freeText) {
+            const hasDriverCtx =
+              /(livreur|driver|chauffeur|affect[ée]|assign[ée]|sous[-\s]?traitant|coursier)/i.test(
+                freeText
+              );
+            // Strategy 1 — explicit prefix is its own context signal
+            const prefixed = freeText.match(
+              /(?:t[ée]l[ée]phone|t[ée]l|phone)\s*[:=\-]?\s*\+?(?:212|0)?([0-9\s.-]{8,12})/i
+            );
+            if (prefixed) {
+              const cleaned = prefixed[1].replace(/\D/g, "");
+              if (cleaned.length === 10 && /^0[67]/.test(cleaned)) driverPhone = cleaned;
+              else if (cleaned.length === 9 && /^[67]/.test(cleaned)) driverPhone = "0" + cleaned;
+            }
+            // Bare-number strategies — gated on driver context
+            if (!driverPhone && hasDriverCtx) {
+              const bare = freeText.match(/(?:^|[^0-9])(0[67][0-9]{8})(?:[^0-9]|$)/);
+              if (bare) driverPhone = bare[1];
+            }
+            if (!driverPhone && hasDriverCtx) {
+              const intl = freeText.match(/\+?212[\s.-]?([67][0-9]{8})(?:[^0-9]|$)/);
+              if (intl) driverPhone = "0" + intl[1];
+            }
+          }
+        }
 
         console.log(`[DIGYLOG-DRIVER] ${trackingNumber} → phone="${driverPhone}" name="${driverName}" raw keys=${Object.keys(body).join(',')}`);
 

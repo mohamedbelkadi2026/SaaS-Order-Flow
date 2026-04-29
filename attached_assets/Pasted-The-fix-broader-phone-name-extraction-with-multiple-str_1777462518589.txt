@@ -1,0 +1,114 @@
+The fix — broader phone+name extraction with multiple strategies
+In server/services/carrier-service.ts around line 1170, replace the historics extraction block with this version:
+tsconst allRecords = Array.isArray(records) ? records : [];
+let histDriverPhone = "";
+let histDriverName  = "";
+
+// Strategy: scan every record's comment/note text. Try multiple patterns.
+// Stop at the first record that yields a phone — historics are newest-first
+// so this gets the most recent driver assignment.
+for (const rec of allRecords) {
+  const commentText = String(
+    rec?.comment || rec?.COMMENT || rec?.note || rec?.newvalue || rec?.location || ""
+  );
+  if (!commentText) continue;
+
+  // Strategy 1 — explicit "téléphone:" / "tél:" / "tel:" prefix
+  let m = commentText.match(/(?:t[ée]l[ée]phone|t[ée]l|phone)\s*[:=\-]?\s*\+?(?:212|0)?([0-9\s.-]{8,12})/i);
+  if (m) {
+    const cleaned = m[1].replace(/\D/g, '');
+    if (cleaned.length >= 8 && cleaned.length <= 10) {
+      histDriverPhone = cleaned.length === 9 ? '0' + cleaned : cleaned;
+    }
+  }
+
+  // Strategy 2 — bare 10-digit Moroccan mobile (06xx or 07xx)
+  if (!histDriverPhone) {
+    m = commentText.match(/(?:^|[^0-9])(0[67][0-9]{8})(?:[^0-9]|$)/);
+    if (m) histDriverPhone = m[1];
+  }
+
+  // Strategy 3 — international format +212 6/7 xxxxxxx
+  if (!histDriverPhone) {
+    m = commentText.match(/\+?212[\s.-]?([67][0-9]{8})/);
+    if (m) histDriverPhone = '0' + m[1];
+  }
+
+  // Strategy: extract driver name when the comment mentions an assignment.
+  // Common patterns: "Affecté à Karim", "Livreur: Hassan", "Assigné à Mohamed",
+  //                  "Driver: Karim 0607...", "Hassan - 0607394948"
+  if (!histDriverName) {
+    const nameM =
+      commentText.match(/(?:affect[ée]|assign[ée])\s*(?:à|a)?\s*([A-Za-zÀ-ÿ' .-]{3,40})/i) ||
+      commentText.match(/(?:livreur|driver|chauffeur)\s*[:=\-]?\s*([A-Za-zÀ-ÿ' .-]{3,40})/i);
+    if (nameM) {
+      histDriverName = nameM[1].trim()
+        .replace(/[\d+]/g, '')           // strip phone digits if mixed in
+        .replace(/[\-:,].*$/, '')        // strip trailing separator + phone
+        .trim();
+      if (histDriverName.length < 2) histDriverName = "";
+    }
+  }
+
+  if (histDriverPhone) break;
+}
+
+console.log(`[DRIVER-HISTORICS] ${trackingNumber} → phone="${histDriverPhone}" name="${histDriverName}"`);
+Then update the return statement on line 1199 to include driverName:
+tsreturn {
+  status: mappedStatus,
+  rawStatus: rawText,
+  rawResponse: body,
+  deliveryCost: null,
+  driverPhone: histDriverPhone,
+  driverName:  histDriverName,        // ← ADD
+};
+Belt-and-suspenders — also extract from /order/:tracking/infos payload
+Some Digylog accounts return driver info on the /infos endpoint as a top-level field rather than buried in comments. Around line 1247, broaden the field name search:
+tsconst driverPhone = body?.livreur_phone || body?.livreur_tel || body?.driver_phone ||
+                    body?.driver?.phone || body?.livreur?.phone ||
+                    body?.driver?.tel   || body?.livreur?.tel   ||
+                    body?.affecteA?.phone || body?.affecte_a_phone ||
+                    body?.assigned_to?.phone || "";
+
+const driverName  = body?.livreur_name  || body?.livreur?.name  ||
+                    body?.driver_name   || body?.driver?.name   ||
+                    body?.affecteA?.name || body?.affecte_a_name ||
+                    body?.assigned_to?.name || "";
+Then if neither field gave us a phone, run the same regex extraction on body.comment, body.note, body.last_status, body.location — anywhere Digylog might stuff free text.
+Show in the order row (compact icon)
+In client/src/pages/orders.tsx, in the row render where the comment cell shows status text, add a small driver chip when present:
+tsx{(order as any).driverPhone && (
+  
+    href={`tel:${(order as any).driverPhone}`}
+    onClick={(e) => e.stopPropagation()}
+    className="inline-flex items-center gap-1 ml-2 px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-[10px] text-blue-700 dark:text-blue-300 hover:bg-blue-100"
+    title={`Livreur: ${(order as any).driverName || (order as any).driverPhone}`}
+  >
+    🏍️ {(order as any).driverPhone}
+  </a>
+)}
+Place this inside the COMMENT or DERNIÈRE ACTION cell so it's always visible. Same in all-orders.tsx.
+Re-run sync to backfill existing orders
+After deploying the regex fix:
+
+Open shipping integrations page
+Click "Synchroniser Digylog"
+Wait for the toast — driver phones from historics will now be parsed for orders that previously had nothing
+Refresh Mes Commandes — driver chip appears on every applicable row
+
+Acceptance criteria
+
+✅ Sync extracts driver phone from Digylog comments containing patterns like:
+
+Livreur: 0681044735 Hassan
+Affecté à Karim — 0607394948
+Plain 0681044735 in any comment line
+
+
+✅ When a name is extractable from the comment, it's saved as driverName.
+✅ Order details modal shows the LIVREUR ASSIGNÉ block with name (when available), phone, Appeler + WhatsApp buttons.
+✅ Each order row shows a small 🏍️ chip with the phone number when a driver is assigned — clickable to call.
+✅ For orders with no driver in the carrier system, no chip is shown, no empty block in the modal.
+✅ No false positives — regex doesn't pick up customer phone or random numbers from status comments.
+✅ Server log shows [DRIVER-HISTORICS] tracking → phone="0681..." name="Hassan" on every successful extraction.
