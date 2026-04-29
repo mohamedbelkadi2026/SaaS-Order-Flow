@@ -55,10 +55,8 @@ import ProfitAnalyzer from "@/pages/profit-analyzer";
 import CheckoutPage from "@/pages/checkout";
 import AutomationPage from "@/pages/automation";
 import VerifyEmailPage from "@/pages/verify-email";
-import LpBuilder from "@/pages/lp-builder";
 import LpView from "@/pages/lp-view";
 import DeliveryStats from "@/pages/delivery-stats";
-import ProductResearch from "@/pages/product-research";
 
 // ── Purely public paths — always rendered, no auth/verification check ─────────
 // Any path listed here is served directly from AppRouter before any auth logic.
@@ -79,7 +77,6 @@ const PRIVATE_PREFIXES = [
   "/invoices", "/billing", "/profitability", "/integrations",
   "/admin", "/media-buyers", "/mes-depenses", "/publicites",
   "/profile", "/calculator", "/checkout", "/automation", "/profit-analyzer",
-  "/lp-builder",
 ];
 
 function isPrivatePath(path: string) {
@@ -255,11 +252,9 @@ function ProtectedRoutes() {
               <Route path="/profile" component={Profile} />
               <Route path="/calculator" component={Calculator} />
               <Route path="/profit-analyzer" component={ProfitAnalyzer} />
-              <Route path="/lp-builder" component={LpBuilder} />
               <Route path="/checkout" component={CheckoutPage} />
               <Route path="/automation" component={AutomationPage} />
               <Route path="/delivery-stats" component={DeliveryStats} />
-              <Route path="/product-research" component={ProductResearch} />
               <Route component={NotFound} />
             </Switch>
           </Suspense>

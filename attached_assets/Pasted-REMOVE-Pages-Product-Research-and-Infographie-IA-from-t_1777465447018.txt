@@ -1,0 +1,37 @@
+REMOVE — Pages "Product Research" and "Infographie IA" from the platform
+I want to fully hide these two pages from users. Do not change anything else — keep all backend logic, all other pages, all features intact. We'll just unwire them from the UI and from the router so users can no longer reach them.
+The page files themselves stay on disk (don't delete client/src/pages/product-research.tsx or client/src/pages/lp-builder.tsx) so that re-enabling later is a one-commit revert. Backend routes (/api/lp-builder/* and /api/product-research/*) also stay on disk for the same reason — without UI access they're effectively dead.
+File 1 — client/src/components/layout/app-layout.tsx
+Around lines 80-81, remove these two entries from the admin/owner nav array:
+tsx{ name: "Product Research",       href: "/product-research", icon: Video        },
+{ name: "Infographie IA",          href: "/lp-builder",    icon: Wand2           },
+Just delete those two lines. Don't touch anything before or after.
+If Video and Wand2 icons are now unused after the deletion, TypeScript / lint will warn — clean up the import line at the top of the file by removing them from the lucide-react import. If they're still used elsewhere in this file, leave them.
+File 2 — client/src/App.tsx
+Around lines 258 and 262, remove the two <Route> declarations:
+tsx<Route path="/lp-builder" component={LpBuilder} />
+<Route path="/product-research" component={ProductResearch} />
+Around lines 58 and 61, remove the imports:
+tsximport LpBuilder from "@/pages/lp-builder";
+import ProductResearch from "@/pages/product-research";
+Around line 82, in the MEDIA_BUYER_ALLOWED_PATHS (or whatever array contains the path strings), remove:
+tsx"/lp-builder",
+if it's there.
+What to leave alone
+
+✅ Don't delete client/src/pages/product-research.tsx
+✅ Don't delete client/src/pages/lp-builder.tsx
+✅ Don't delete the /api/lp-builder/* or /api/product-research/* routes in server/routes.ts
+✅ Don't touch server/storage.ts, schema, or any DB tables related to LP pages
+✅ Don't touch any other nav item, route, or page
+
+The two URLs /product-research and /lp-builder will now route to the app's default 404 / fallback. If someone bookmarks them they'll see the not-found state — that's fine.
+Acceptance criteria
+
+✅ Admin sidebar no longer shows "Product Research" or "Infographie IA".
+✅ Visiting https://www.tajergrow.com/product-research shows the 404 / not-found page.
+✅ Visiting https://www.tajergrow.com/lp-builder shows the 404 / not-found page.
+✅ Every other sidebar item still works.
+✅ Every other page renders identically to before.
+✅ Build passes — no unused-import warnings related to Video / Wand2 / LpBuilder / ProductResearch.
+✅ Page files (product-research.tsx, lp-builder.tsx) still exist on disk untouched.
