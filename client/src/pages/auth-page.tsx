@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation } from "wouter";
 import {
-  Loader2, Store, Lock, Mail, User, ShieldAlert, Crown, Check,
+  Loader2, Store, Lock, Mail, User, ShieldAlert, Check,
   Eye, EyeOff, Phone,
 } from "lucide-react";
 import { setLanguage } from "@/i18n";
@@ -245,9 +245,14 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
         {/* ── Left panel: Features (desktop only) ─────────── */}
         <div className="hidden lg:flex flex-col gap-8 px-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: GOLD }}>
-              <Crown className="w-5 h-5 text-white" />
-            </div>
+            <img
+              src="/logo.png"
+              alt="Tajergrow"
+              width={40}
+              height={40}
+              className="w-10 h-10 rounded-xl shadow"
+              data-testid="img-auth-logo-desktop"
+            />
             <span className="text-2xl font-black text-white" style={{ fontFamily: isArabic ? "'Cairo',sans-serif" : "'Playfair Display',serif" }}>
               TajerGrow
             </span>
@@ -302,9 +307,14 @@ export default function AuthPage({ initialTab = "login" }: { initialTab?: "login
 
           {/* Mobile logo */}
           <div className="flex lg:hidden items-center justify-center gap-3 mb-1">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: GOLD }}>
-              <Crown className="w-4 h-4 text-white" />
-            </div>
+            <img
+              src="/logo.png"
+              alt="Tajergrow"
+              width={36}
+              height={36}
+              className="w-9 h-9 rounded-xl shadow"
+              data-testid="img-auth-logo-mobile"
+            />
             <span className="text-xl font-black text-white" style={{ fontFamily: isArabic ? "'Cairo',sans-serif" : "'Playfair Display',serif" }}>
               TajerGrow
             </span>

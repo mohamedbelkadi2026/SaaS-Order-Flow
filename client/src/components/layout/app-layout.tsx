@@ -552,12 +552,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Logo bar */}
       <div className="flex items-center justify-between px-5 py-4 shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,0.12)' }}>
         <div className="flex items-center gap-2.5">
-          <div
-            className="w-8 h-8 rounded-lg flex items-center justify-center font-extrabold text-base shadow"
-            style={{ background: '#fff', color: 'hsl(220 72% 38%)' }}
-          >
-            T
-          </div>
+          <img
+            src="/logo.png"
+            alt="Tajergrow"
+            width={32}
+            height={32}
+            className="w-8 h-8 rounded-lg shadow"
+            data-testid="img-sidebar-logo"
+          />
           <span className="font-display font-extrabold text-base tracking-wide text-white">TajerGrow</span>
         </div>
         {onClose && (

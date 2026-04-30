@@ -6,7 +6,7 @@ import agentConfirmationImg from "@assets/agent_confmation_1776178471899.png";
 import agentMediaBuyerImg from "@assets/agent_media_buyer_1776178471899.png";
 import {
   BarChart3, Package, Smartphone, Truck, Target, TrendingUp,
-  Check, ChevronRight, Star, Zap, Shield, Crown,
+  Check, ChevronRight, Star, Zap, Shield,
   ShoppingCart, Users, Activity, ArrowRight, Menu, X,
   Mail, MapPin,
 } from "lucide-react";
@@ -517,9 +517,14 @@ export default function LandingPage() {
             {/* Logo — links to dashboard for verified users, landing page for everyone else */}
             <Link href="/" data-testid="link-logo-nav">
               <div className="flex items-center gap-2.5 cursor-pointer group">
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center transition-opacity group-hover:opacity-80" style={{ background: GOLD }}>
-                  <Crown className="w-4 h-4 text-white" />
-                </div>
+                <img
+                  src="/logo.png"
+                  alt="Tajergrow"
+                  width={32}
+                  height={32}
+                  className="w-8 h-8 rounded-lg transition-opacity group-hover:opacity-80"
+                  data-testid="img-landing-logo-nav"
+                />
                 <span className="text-xl font-bold text-white transition-opacity group-hover:opacity-80" style={{ fontFamily: "'Playfair Display', serif", letterSpacing: "-0.02em" }}>
                   TajerGrow
                 </span>
@@ -1109,12 +1114,15 @@ export default function LandingPage() {
             {/* Brand column (spans 2 on lg) */}
             <div className="lg:col-span-2 text-center sm:text-left">
               <Link href="/" className="inline-flex items-center gap-2.5 mb-4 group" data-testid="link-logo-footer">
-                <div
-                  className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-opacity group-hover:opacity-80"
-                  style={{ background: `linear-gradient(135deg, ${GOLD}, #d4b06a)`, boxShadow: "0 4px 12px rgba(197,160,89,0.4)" }}
-                >
-                  <Crown className="w-4 h-4 text-white" />
-                </div>
+                <img
+                  src="/logo.png"
+                  alt="Tajergrow"
+                  width={36}
+                  height={36}
+                  className="w-9 h-9 rounded-xl flex-shrink-0 transition-opacity group-hover:opacity-80"
+                  style={{ boxShadow: "0 4px 12px rgba(30,27,75,0.4)" }}
+                  data-testid="img-landing-logo-footer"
+                />
                 <span
                   className="text-2xl font-bold text-white transition-opacity group-hover:opacity-80"
                   style={{ fontFamily: "'Playfair Display', serif" }}

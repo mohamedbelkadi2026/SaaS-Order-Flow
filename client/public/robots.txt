@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /super-admin
+Disallow: /checkout
+
+Sitemap: https://www.tajergrow.com/sitemap.xml

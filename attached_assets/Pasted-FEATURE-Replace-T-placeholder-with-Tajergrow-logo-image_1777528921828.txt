@@ -1,0 +1,175 @@
+FEATURE — Replace "T" placeholder with Tajergrow logo image across sidebar, login, landing, favicon, and social sharesI have a proper logo now (uploaded as client/public/logo.png — a 1024×1024 PNG, navy background #1E1B4B with gold "T + arrow" symbol). I want it used everywhere.Step 1 — Save the logo fileThe logo file is attached. Save it at client/public/logo.png. This is the master image — every size below derives from it.Step 2 — Generate favicon set from the masterInstall sharp once:
+bashnpm install -D sharpCreate scripts/generate-favicons.mjs:
+jsimport sharp from 'sharp';
+import { join } from 'path';
+
+const SRC  = 'client/public/logo.png';
+const DEST = 'client/public';
+
+const sizes = [
+  { name: 'favicon-16x16.png',      size: 16  },
+  { name: 'favicon-32x32.png',      size: 32  },
+  { name: 'favicon-48x48.png',      size: 48  },
+  { name: 'favicon.png',            size: 192 },
+  { name: 'apple-touch-icon.png',   size: 180 },
+  { name: 'android-chrome-192.png', size: 192 },
+  { name: 'android-chrome-512.png', size: 512 },
+];
+
+for (const { name, size } of sizes) {
+  await sharp(SRC).resize(size, size, { fit: 'contain' }).png().toFile(join(DEST, name));
+  console.log(`✓ ${name}`);
+}
+
+// og-image.png: 1200×630 with logo on left + wordmark on right (for WhatsApp/FB share previews)
+const logoBuf = await sharp(SRC).resize(400, 400, { fit: 'contain' }).png().toBuffer();
+await sharp({
+  create: { width: 1200, height: 630, channels: 4, background: { r: 30, g: 27, b: 75, alpha: 1 } }
+})
+  .composite([
+    { input: logoBuf, top: 115, left: 100 },
+    { input: Buffer.from(`
+        <svg xmlns="http://www.w3.org/2000/svg" width="650" height="200">
+          <text x="0" y="100" font-family="Inter, sans-serif" font-size="92" font-weight="800" fill="#FFFFFF">Tajergrow</text>
+          <text x="0" y="160" font-family="Inter, sans-serif" font-size="30" font-weight="500" fill="#C5A059">Gestion e-commerce au Maroc</text>
+        </svg>
+      `), top: 215, left: 540 },
+  ])
+  .png()
+  .toFile(join(DEST, 'og-image.png'));
+console.log('✓ og-image.png');Run once after saving the master logo:
+bashnode scripts/generate-favicons.mjsThis generates 8 image files. Commit them all.Step 3 — Replace the "T" placeholder in the sidebarIn client/src/components/layout/app-layout.tsx around line 555-560, replace:tsx<div
+  className="w-8 h-8 rounded-lg flex items-center justify-center font-extrabold text-base shadow"
+  style={{ background: '#fff', color: 'hsl(220 72% 38%)' }}
+>
+  T
+</div>with:tsx<img
+  src="/logo.png"
+  alt="Tajergrow"
+  className="w-8 h-8 rounded-lg shadow"
+  width={32}
+  height={32}
+/>The wordmark <span>TajerGrow</span> next to it stays as-is.Step 4 — Add the logo to the login / signup pagesFind the login page (client/src/pages/login.tsx, or auth.tsx, or wherever the login form is). Above the form, add:tsx<div className="flex justify-center mb-6">
+  <img src="/logo.png" alt="Tajergrow" className="w-20 h-20 rounded-2xl shadow-lg" />
+</div>Same for signup / forgot-password / reset-password pages if those exist as separate files.Step 5 — Add the logo to the public landing pageIf a /landing, /home, or / route exists outside the authenticated app shell, place the logo at the top of its hero section:tsx<header className="flex items-center gap-3">
+  <img src="/logo.png" alt="Tajergrow" className="w-12 h-12 rounded-xl" />
+  <span className="text-2xl font-extrabold tracking-wide" style={{ color: '#1E1B4B' }}>Tajergrow</span>
+</header>If there's no landing page yet, skip this step — it'll be added when the landing is built.Step 6 — Replace client/index.html head with full SEO + favicon metahtml<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+
+    <title>Tajergrow — Gestion de commandes e-commerce au Maroc</title>
+    <meta name="description" content="Tajergrow est la plateforme SaaS marocaine pour gérer vos commandes COD, agents de confirmation, livreurs, intégrations Shopify/YouCan/Digylog/Ameex en un seul endroit." />
+    <meta name="keywords" content="gestion commandes Maroc, SaaS e-commerce, COD Maroc, Shopify Maroc, YouCan, Digylog, Ameex, dropshipping Maroc" />
+    <link rel="canonical" href="https://www.tajergrow.com/" />
+    <meta name="theme-color" content="#1E1B4B" />
+
+    <!-- Favicons -->
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48x48.png" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+
+    <!-- iOS home screen -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="Tajergrow" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+    <!-- Android / PWA -->
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Open Graph (WhatsApp / Facebook / LinkedIn share preview) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Tajergrow" />
+    <meta property="og:title" content="Tajergrow — Gestion de commandes e-commerce au Maroc" />
+    <meta property="og:description" content="La plateforme SaaS marocaine pour gérer vos commandes COD, agents, livreurs, et intégrations en un seul endroit." />
+    <meta property="og:url" content="https://www.tajergrow.com/" />
+    <meta property="og:image" content="https://www.tajergrow.com/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="fr_FR" />
+    <meta property="og:locale:alternate" content="ar_MA" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Tajergrow — Gestion de commandes e-commerce au Maroc" />
+    <meta name="twitter:description" content="La plateforme SaaS marocaine pour gérer vos commandes COD, agents, livreurs, et intégrations en un seul endroit." />
+    <meta name="twitter:image" content="https://www.tajergrow.com/og-image.png" />
+
+    <!-- Robots -->
+    <meta name="robots" content="index, follow" />
+
+    <!-- Structured Data (Google rich result) -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "Tajergrow",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "Web",
+      "description": "Plateforme SaaS marocaine de gestion de commandes e-commerce, COD, et intégrations transporteurs.",
+      "url": "https://www.tajergrow.com/",
+      "offers": { "@type": "Offer", "priceCurrency": "MAD", "price": "299" }
+    }
+    </script>
+
+    <!-- Fonts (kept) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Cairo:wght@300..900&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>Step 7 — Add client/public/site.webmanifestjson{
+  "name": "Tajergrow",
+  "short_name": "Tajergrow",
+  "description": "Plateforme SaaS marocaine de gestion de commandes e-commerce",
+  "icons": [
+    { "src": "/android-chrome-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/android-chrome-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "theme_color": "#1E1B4B",
+  "background_color": "#ffffff",
+  "display": "standalone",
+  "start_url": "/",
+  "lang": "fr"
+}Step 8 — Add client/public/robots.txtUser-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /admin
+Disallow: /super-admin
+Disallow: /checkout
+
+Sitemap: https://www.tajergrow.com/sitemap.xmlStep 9 — Add client/public/sitemap.xmlxml<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://www.tajergrow.com/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>Acceptance criteria
+✅ Logo file present at client/public/logo.png (master) plus 7 derived sizes.
+✅ Sidebar shows the actual logo image (not the white "T" box) in the same 32×32 spot.
+✅ Login page has the logo centered above the form at 80×80.
+✅ Browser tab shows the logo as favicon.
+✅ Bookmark dropdown in Chrome / Safari shows the logo.
+✅ Sharing https://www.tajergrow.com/ on WhatsApp shows: logo + "Tajergrow — Gestion de commandes..." title + description.
+✅ Adding the site to iOS home screen uses the rounded apple-touch-icon (no generic screenshot).
+✅ All image files are < 100 KB combined.
+✅ node scripts/generate-favicons.mjs is repeatable — re-run after editing logo.png and all sizes regenerate.
+Commitbashgit add client/public/logo.png client/public/favicon*.png client/public/apple-touch-icon.png client/public/android-chrome-*.png client/public/og-image.png client/public/site.webmanifest client/public/robots.txt client/public/sitemap.xml client/index.html client/src/components/layout/app-layout.tsx scripts/generate-favicons.mjs package.json
+git commit -m "feat(branding): replace T placeholder with real Tajergrow logo everywhere
+
+- Master logo at client/public/logo.png
+- Generated 7 favicon/touch-icon sizes via sharp script (repeatable)
+- og-image.png (1200x630) for WhatsApp/Facebook share previews
+- Sidebar header now uses <img src=/logo.png>, not text 'T'
+- Login page shows logo above the form
+- Full SEO meta tags in index.html (title, description, OG, Twitter, JSON-LD)
+- robots.txt + sitemap.xml + site.webmanifest for indexing & PWA install"
+git push

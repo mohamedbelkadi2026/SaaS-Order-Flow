@@ -72,6 +72,11 @@ async function main() {
 
   const targets = [
     { name: "logo-master.png",        size: 1024, bg: TRANSPARENT },
+    // /logo.png is the canonical 1024² brand image referenced by the React UI
+    // (sidebar, login, landing, footer) and by social-share crawlers as a
+    // fallback. Identical bytes to logo-master.png — duplicated so URL paths
+    // stay short and obvious in JSX (`src="/logo.png"`).
+    { name: "logo.png",               size: 1024, bg: TRANSPARENT },
     { name: "favicon-16x16.png",      size: 16,   bg: TRANSPARENT },
     { name: "favicon-32x32.png",      size: 32,   bg: TRANSPARENT },
     { name: "favicon-48x48.png",      size: 48,   bg: TRANSPARENT },
