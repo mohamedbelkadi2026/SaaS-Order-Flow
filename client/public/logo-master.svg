@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Tajergrow logo">
+  <title>Tajergrow</title>
+
+  <!-- Navy rounded square background -->
+  <rect width="1024" height="1024" rx="144" fill="#1E1B4B"/>
+
+  <!-- T crossbar (gold) -->
+  <rect x="240" y="304" width="544" height="128" rx="20" fill="#C5A059"/>
+
+  <!-- T stem (gold) -->
+  <rect x="448" y="304" width="128" height="528" rx="20" fill="#C5A059"/>
+
+  <!-- Growth arrow (gold) rising up-right out of the crossbar.
+       Drawn as a single closed polygon for crisp corners at every size:
+         tip → right wing → shaft (diagonal band) → left wing → close.
+       The shaft tail sits INSIDE the crossbar so the two shapes merge
+       seamlessly into one continuous "T-with-rising-arrow" silhouette. -->
+  <polygon
+    points="912,192 912,336 875,299 685,411 615,341 805,229 768,192"
+    fill="#C5A059"/>
+</svg>
