@@ -44,3 +44,8 @@ waitForPort = 5000
 [agent]
 expertMode = true
 stack = "FULLSTACK_JS"
+
+[userenv]
+
+[userenv.shared]
+SUPER_ADMIN_EMAIL = "mehamadchalabi100@gmail.com"

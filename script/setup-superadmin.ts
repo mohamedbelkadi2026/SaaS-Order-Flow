@@ -12,19 +12,48 @@ async function hashPassword(password: string): Promise<string> {
   return `${buf.toString("hex")}.${salt}`;
 }
 
-const SUPER_ADMIN_EMAIL = "mehamadchalabi100@gmail.com";
-const SUPER_ADMIN_PASSWORD = "AdminGrow2026!";
-const SUPER_ADMIN_USERNAME = "TajerGrow Admin";
+// ── Credentials are read from env only — fail closed if missing. ────────────
+// Set these in your shell/CI before running:
+//   SUPER_ADMIN_EMAIL=admin@example.com
+//   SUPER_ADMIN_PASSWORD='<a strong password you generated>'
+//   SUPER_ADMIN_USERNAME='Admin Display Name'   # optional
+//
+// On Replit: add them in Secrets (or `export` in the shell) before
+// running `tsx script/setup-superadmin.ts`.
+// On Railway: set them as Variables, then run via Railway's run-command UI.
+const SUPER_ADMIN_EMAIL    = process.env.SUPER_ADMIN_EMAIL;
+const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD;
+const SUPER_ADMIN_USERNAME = process.env.SUPER_ADMIN_USERNAME || "TajerGrow Admin";
+
+if (!SUPER_ADMIN_EMAIL || !SUPER_ADMIN_PASSWORD) {
+  console.error("=========================================================");
+  console.error("[Setup] Refusing to run — missing required env vars.");
+  console.error("[Setup] Required: SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD");
+  console.error("[Setup] Optional: SUPER_ADMIN_USERNAME");
+  console.error("[Setup]");
+  console.error("[Setup] Example:");
+  console.error("[Setup]   SUPER_ADMIN_EMAIL=you@example.com \\");
+  console.error("[Setup]   SUPER_ADMIN_PASSWORD='your-strong-password' \\");
+  console.error("[Setup]   tsx script/setup-superadmin.ts");
+  console.error("=========================================================");
+  process.exit(1);
+}
+
+// Light strength check so the script doesn't accept "abc" by accident.
+if (SUPER_ADMIN_PASSWORD.length < 12) {
+  console.error("[Setup] SUPER_ADMIN_PASSWORD must be at least 12 characters.");
+  process.exit(1);
+}
 
 async function main() {
   console.log("[Setup] Checking super admin account...");
 
-  const hashedPassword = await hashPassword(SUPER_ADMIN_PASSWORD);
+  const hashedPassword = await hashPassword(SUPER_ADMIN_PASSWORD!);
 
   const [existingUser] = await db
     .select()
     .from(users)
-    .where(eq(users.email, SUPER_ADMIN_EMAIL));
+    .where(eq(users.email, SUPER_ADMIN_EMAIL!));
 
   if (existingUser) {
     await db
@@ -36,7 +65,7 @@ async function main() {
         isActive: 1,
         username: SUPER_ADMIN_USERNAME,
       })
-      .where(eq(users.email, SUPER_ADMIN_EMAIL));
+      .where(eq(users.email, SUPER_ADMIN_EMAIL!));
     console.log(`[Setup] Super admin updated: ${SUPER_ADMIN_EMAIL}`);
   } else {
     let storeId: number | null = null;
@@ -68,7 +97,7 @@ async function main() {
 
     await db.insert(users).values({
       username: SUPER_ADMIN_USERNAME,
-      email: SUPER_ADMIN_EMAIL,
+      email: SUPER_ADMIN_EMAIL!,
       password: hashedPassword,
       role: "owner",
       storeId,
@@ -79,9 +108,9 @@ async function main() {
     console.log(`[Setup] Super admin created: ${SUPER_ADMIN_EMAIL}`);
   }
 
-  console.log("[Setup] Done. You can now log in with:");
-  console.log(`  Email:    ${SUPER_ADMIN_EMAIL}`);
-  console.log(`  Password: ${SUPER_ADMIN_PASSWORD}`);
+  console.log("[Setup] Done. You can now log in with the email above.");
+  // Note: we deliberately do NOT echo the password back to stdout —
+  // it should already be in your env / secret manager.
   process.exit(0);
 }
 

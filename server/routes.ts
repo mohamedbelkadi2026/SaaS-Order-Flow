@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
-import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings } from "@shared/schema";
+import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
 import { eq, and, gte, lt, count, desc, sql } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -928,11 +928,21 @@ export async function registerRoutes(
 
   app.put("/api/user/password", requireAuth, async (req, res) => {
     try {
+      // Apply the same password policy as signup — see passwordSchema in
+      // shared/schema.ts (min 8, 1 uppercase, 1 digit). Keeps the rule
+      // consistent across all password-setting flows.
       const schema = z.object({
-        currentPassword: z.string().min(1),
-        newPassword: z.string().min(6),
+        currentPassword: z.string().min(1, "Mot de passe actuel requis"),
+        newPassword: passwordSchema,
       });
-      const { currentPassword, newPassword } = schema.parse(req.body);
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          message: parsed.error.errors[0]?.message || "Données invalides",
+          errors: parsed.error.flatten(),
+        });
+      }
+      const { currentPassword, newPassword } = parsed.data;
       const [user] = await db.select().from(users).where(eq(users.id, req.user!.id));
       if (!user) return res.status(404).json({ message: "Utilisateur introuvable" });
       const valid = await comparePasswords(currentPassword, user.password);
@@ -2001,9 +2011,10 @@ export async function registerRoutes(
       if (!userStores.find(s => s.id === storeId)) {
         return res.status(403).json({ message: "Ce magasin ne vous appartient pas" });
       }
-      // Generate a unique webhook key and mark as verified immediately
+      // Generate a unique webhook key and mark as verified immediately.
+      // 32 bytes = 64-char hex = 256 bits of entropy.
       const { randomBytes } = await import("crypto");
-      const webhookKey = randomBytes(20).toString("hex");
+      const webhookKey = randomBytes(32).toString("hex");
       const credentials = JSON.stringify({ verified: true, canOpen, ramassage, stock });
       const integration = await storage.createIntegration({
         storeId,
@@ -2169,7 +2180,10 @@ export async function registerRoutes(
       const apiSecret = cleanKey(rawApiSecret) || null;
 
       const { randomUUID } = await import("crypto");
-      const webhookToken = `${carrierName}-${storeId}-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+      // 32 hex chars from randomBytes = 128 bits of entropy. Combined with
+      // the carrier+store prefix, the full token is ~40+ chars and unguessable.
+      const { randomBytes: _rb } = await import("crypto");
+      const webhookToken = `${carrierName}-${storeId}-${_rb(16).toString("hex")}`;
 
       // Auto-number the connection if no name given
       const existing = await storage.getCarrierAccounts(storeId, carrierName);
@@ -2714,7 +2728,14 @@ export async function registerRoutes(
     // ── Cross-store fallback: URL may have wrong storeId ─────────────────
     // If no order was found in the specified store, search ALL stores.
     // Digylog may be using a webhook URL that was configured with the wrong storeId.
-    if (!order && trackingNumber) {
+    //
+    // SECURITY (P0-7): For carriers that authenticate via webhook token
+    // (Ameex), we DISABLE this cross-store fallback. With auth in place,
+    // a valid token for store A must NEVER mutate orders in store B —
+    // even if a tracking number happens to collide. Tenant isolation is
+    // strictly enforced for tokened carriers.
+    const TOKENED_CARRIERS_FOR_FALLBACK = new Set(["ameex"]);
+    if (!order && trackingNumber && !TOKENED_CARRIERS_FOR_FALLBACK.has(carrierName.toLowerCase())) {
       console.warn(`[WEBHOOK-FLEXIBLE]: Not found in store ${storeId} — trying cross-store search for tracking="${trackingNumber}"`);
       const crossOrder = await storage.getOrderByTrackingNumberAnyStore(trackingNumber);
       if (crossOrder) {
@@ -2722,6 +2743,8 @@ export async function registerRoutes(
         order = crossOrder;
         matchedBy = `tracking_number="${trackingNumber}" (cross-store, URL had storeId=${storeId})`;
       }
+    } else if (!order && trackingNumber && TOKENED_CARRIERS_FOR_FALLBACK.has(carrierName.toLowerCase())) {
+      console.warn(`[WEBHOOK-SEC] ${carrierName} store=${storeId}: order not found, cross-store fallback DISABLED for tokened carrier (tenant isolation)`);
     }
 
     if (!order) {
@@ -3030,6 +3053,47 @@ export async function registerRoutes(
 
     const storeId     = Number(req.params.storeId);
     const carrierName = req.params.carrierName.toLowerCase();
+
+    // ── Webhook auth (P0-7) ─────────────────────────────────────────────────
+    // For carriers that support a webhook token (Ameex), require it to be
+    // passed via X-Webhook-Token header OR ?token=… query param, and verify
+    // it against the store's active carrier_account.webhookToken row. This
+    // closes the route-shadowing gap where unauthenticated POSTs to this
+    // generic URL would otherwise reach processCarrierWebhook.
+    //
+    // Other carriers (Digylog, etc.) currently don't expose a webhook
+    // secret at the carrier side, so we skip the header check for them
+    // and rely on the existing storeId+carrier-account validation below.
+    // TODO: extend this check to all carriers once each one supports a
+    // configurable webhook token at the carrier side.
+    const TOKENED_CARRIERS = new Set(["ameex"]);
+    if (TOKENED_CARRIERS.has(carrierName)) {
+      const headerToken = (req.header("x-webhook-token") || "").trim();
+      const queryToken  = (typeof req.query.token === "string" ? req.query.token : "").trim();
+      const provided    = headerToken || queryToken;
+      if (!provided || provided.length < 18) {
+        console.warn(`[CARRIER-WEBHOOK-SEC] ${carrierName} store=${storeId} missing/short token — rejected`);
+        return res.status(401).json({ message: "Webhook token required" });
+      }
+      try {
+        const [validAcct] = await db
+          .select()
+          .from(carrierAccounts)
+          .where(and(
+            eq(carrierAccounts.storeId, storeId),
+            eq(carrierAccounts.carrierName, carrierName),
+            eq(carrierAccounts.webhookToken, provided),
+            eq(carrierAccounts.isActive, 1),
+          ));
+        if (!validAcct) {
+          console.warn(`[CARRIER-WEBHOOK-SEC] ${carrierName} store=${storeId} invalid token — rejected`);
+          return res.status(401).json({ message: "Invalid webhook token" });
+        }
+      } catch (lookupErr) {
+        console.error("[CARRIER-WEBHOOK-SEC] token lookup failed:", lookupErr);
+        return res.status(500).json({ message: "Webhook auth error" });
+      }
+    }
 
     // Ping log — written even if the rest fails, so it appears in the Logs tab
     if (storeId && !isNaN(storeId)) {
@@ -3351,9 +3415,19 @@ export async function registerRoutes(
     const provider = req.params.provider;
     const webhookKey = req.params.webhookKey;
     const magasinId = req.query.magasin_id ? Number(req.query.magasin_id) : undefined;
+    // ── Webhook key sanity check ──────────────────────────────────────────
+    // Reject obviously-short keys before doing any DB lookup. New keys are
+    // 64 chars; the legacy minimum is 12 chars. Anything shorter is junk.
+    if (!webhookKey || webhookKey.length < 12) {
+      console.warn(`[WEBHOOK-SEC] ${provider} webhook with short/missing key — rejected`);
+      return res.status(401).json({ message: "Invalid webhook key" });
+    }
     try {
       const store = await storage.getStoreByWebhookKey(webhookKey);
-      if (!store) return res.status(404).json({ message: "Invalid webhook key" });
+      if (!store) {
+        console.warn(`[WEBHOOK-SEC] ${provider} unknown webhook key: ${webhookKey.slice(0, 8)}…`);
+        return res.status(404).json({ message: "Invalid webhook key" });
+      }
       const storeId = store.id;
 
       const payload = req.body;
@@ -3474,9 +3548,16 @@ export async function registerRoutes(
   // Google Sheets webhook
   app.post("/api/webhooks/gsheets/:webhookKey", async (req, res) => {
     const webhookKey = req.params.webhookKey;
+    if (!webhookKey || webhookKey.length < 12) {
+      console.warn("[WEBHOOK-SEC] gsheets webhook with short/missing key — rejected");
+      return res.status(401).json({ message: "Invalid webhook key" });
+    }
     try {
       const store = await storage.getStoreByWebhookKey(webhookKey);
-      if (!store) return res.status(404).json({ message: "Invalid webhook key" });
+      if (!store) {
+        console.warn(`[WEBHOOK-SEC] gsheets unknown webhook key: ${webhookKey.slice(0, 8)}…`);
+        return res.status(404).json({ message: "Invalid webhook key" });
+      }
       const storeId = store.id;
       const data = req.body;
       const customerName = data.name || data.customer_name || data['Nom'] || '';
@@ -3529,9 +3610,18 @@ export async function registerRoutes(
   app.post("/api/integrations/google-sheets/webhook", async (req, res) => {
     const apiKey = (req.headers["x-api-key"] || req.body?.apiKey || "").toString().trim();
     if (!apiKey) return res.status(401).json({ success: false, message: "Missing X-Api-Key header" });
+    // Reject obviously-short keys before any DB lookup (same threshold
+    // as the other webhook routes — see P0-7 in replit.md).
+    if (apiKey.length < 12) {
+      console.warn("[WEBHOOK-SEC] gsheets API-key webhook with short key — rejected");
+      return res.status(401).json({ success: false, message: "Invalid API key" });
+    }
     try {
       const store = await storage.getStoreByWebhookKey(apiKey);
-      if (!store) return res.status(403).json({ success: false, message: "Invalid API key" });
+      if (!store) {
+        console.warn(`[WEBHOOK-SEC] gsheets API-key unknown: ${apiKey.slice(0, 8)}…`);
+        return res.status(403).json({ success: false, message: "Invalid API key" });
+      }
       const storeId = store.id;
       const data = req.body || {};
       const customerName    = (data.name    || data.nom    || data.customer_name   || "").toString().trim();
@@ -3606,6 +3696,11 @@ export async function registerRoutes(
   // logging the raw body before any route logic runs (Railway-visible immediately).
   app.post("/api/webhooks/shopify/order/:webhookKey", async (req, res) => {
     const { webhookKey } = req.params;
+    // Reject obviously-short keys before any DB lookup.
+    if (!webhookKey || webhookKey.length < 12) {
+      console.warn("[WEBHOOK-SEC] shopify webhook with short/missing key — rejected");
+      return res.status(401).json({ message: "Invalid webhook key" });
+    }
     // Normalise key — trim whitespace, lowercase for safe comparison
     const normKey = webhookKey.trim().toLowerCase();
 
@@ -3613,7 +3708,7 @@ export async function registerRoutes(
       // ── 1. Key & integration lookup ──────────────────────────────────────────
       const integration = await storage.getIntegrationByWebhookKey(normKey);
       if (!integration || integration.provider !== "shopify") {
-        console.error(`[WEBHOOK ERROR]: Store not found for key: ${normKey}`);
+        console.warn(`[WEBHOOK-SEC] shopify unknown webhook key: ${normKey.slice(0, 8)}…`);
         return res.status(404).json({ message: "Webhook key not found" });
       }
       console.log(`[SHOPIFY WEBHOOK] ✓ Key matched — integrationId: ${integration.id} | storeId: ${integration.storeId} | isActive: ${integration.isActive}`);
@@ -5960,6 +6055,27 @@ export async function registerRoutes(
   app.post("/api/webhooks/shipping/ameex/:token", async (req, res) => {
     try {
       const { token } = req.params;
+      // ── Webhook authentication ──────────────────────────────────────────
+      // Reject obviously-short/missing tokens, then validate against the
+      // carrier_accounts.webhookToken column. Without this, anyone who
+      // can guess a tracking number can flip an order's status.
+      if (!token || token.length < 18) {
+        console.warn("[AMEEX-WEBHOOK] short/missing token — rejected");
+        return res.status(401).json({ message: "Invalid webhook token" });
+      }
+      const [carrierAccount] = await db
+        .select()
+        .from(carrierAccounts)
+        .where(and(eq(carrierAccounts.webhookToken, token), eq(carrierAccounts.carrierName, "ameex")));
+      if (!carrierAccount) {
+        console.warn(`[AMEEX-WEBHOOK] unknown token: ${token.slice(0, 12)}…`);
+        return res.status(401).json({ message: "Invalid webhook token" });
+      }
+      if (carrierAccount.isActive === 0) {
+        console.warn(`[AMEEX-WEBHOOK] token belongs to inactive account #${carrierAccount.id}`);
+        return res.status(401).json({ message: "Carrier account inactive" });
+      }
+
       const body = req.body || {};
 
       const trackingNumber: string | undefined =
@@ -5971,9 +6087,11 @@ export async function registerRoutes(
         return res.status(400).json({ message: "tracking_number required" });
       }
 
-      const order = await storage.getOrderByTrackingNumberAnyStore(trackingNumber);
+      // Scope the lookup to the carrier account's store so a tracking
+      // collision between two stores can't cross-update orders.
+      const order = await storage.getOrderByTrackingNumber(carrierAccount.storeId, trackingNumber);
       if (!order) {
-        console.warn(`[AMEEX-WEBHOOK] Order not found for tracking=${trackingNumber}`);
+        console.warn(`[AMEEX-WEBHOOK] Order not found for tracking=${trackingNumber} in store=${carrierAccount.storeId}`);
         return res.json({ success: true, matched: false });
       }
 
@@ -5997,26 +6115,14 @@ export async function registerRoutes(
     }
   });
 
-  /**
-   * POST /api/webhooks/carrier/:storeId/ameex
-   * Ameex push notifications using storeId in the URL (e.g. /api/webhooks/carrier/37/ameex).
-   * Routes through the shared processCarrierWebhook handler for full Ameex field support.
-   */
-  app.post("/api/webhooks/carrier/:storeId/ameex", async (req, res) => {
-    try {
-      const storeId = Number(req.params.storeId);
-      if (!storeId || isNaN(storeId)) {
-        return res.status(400).json({ message: "storeId invalide dans l'URL" });
-      }
-      const body = req.body || {};
-      console.log(`[AMEEX-WEBHOOK-V2] store=${storeId} keys=${Object.keys(body).join(', ')}`);
-      const result = await processCarrierWebhook(storeId, 'ameex', body);
-      res.json({ success: true, ...result });
-    } catch (err) {
-      console.error('[AMEEX-WEBHOOK-V2] Error:', err);
-      res.status(500).json({ message: "Webhook processing failed" });
-    }
-  });
+  // NOTE (P0-7 cleanup): the previous duplicate route
+  //   POST /api/webhooks/carrier/:storeId/ameex
+  // has been REMOVED. POST/PUT/etc. requests to that URL are handled by
+  // the generic, token-authenticated route registered earlier:
+  //   app.all("/api/webhooks/carrier/:storeId/:carrierName")
+  // Removing the duplicate prevents future regressions if route order
+  // ever changes (a duplicate registered LATER would be shadowed by the
+  // generic one and silently bypass auth).
 
   app.post("/api/magasins/:id/logo", requireAdmin, async (req, res) => {
     const storeId = Number(req.params.id);
@@ -7780,9 +7886,18 @@ export async function registerRoutes(
   /* ── Abandoned checkout webhook (generic + Shopify) ───────────── */
   app.post("/api/webhooks/abandoned-checkout/:webhookKey", async (req: any, res: any) => {
     try {
+      const webhookKey: string = req.params.webhookKey || "";
+      // Reject short keys BEFORE acknowledging — don't 200-OK garbage.
+      if (webhookKey.length < 12) {
+        console.warn("[WEBHOOK-SEC] abandoned-checkout webhook with short/missing key — rejected");
+        return res.status(401).json({ message: "Invalid webhook key" });
+      }
       res.status(200).json({ ok: true });
-      const store = await storage.getStoreByWebhookKey(req.params.webhookKey);
-      if (!store) return;
+      const store = await storage.getStoreByWebhookKey(webhookKey);
+      if (!store) {
+        console.warn(`[WEBHOOK-SEC] abandoned-checkout unknown key: ${webhookKey.slice(0, 8)}…`);
+        return;
+      }
 
       const body = req.body;
       // Support both Shopify abandoned checkout format and generic format

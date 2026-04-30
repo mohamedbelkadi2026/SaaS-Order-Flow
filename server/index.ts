@@ -17,9 +17,21 @@ import { eq } from "drizzle-orm";
 import path from "path";
 import fs from "fs";
 
-const SUPER_ADMIN_EMAIL = "mehamadchalabi100@gmail.com";
+// SUPER_ADMIN_EMAIL — read from env (Railway → Variables on prod, Replit
+// shared secrets on dev). The auto-seed only runs when this is set; if the
+// env var is missing, existing super admins keep their flag and we just
+// log a loud warning so deployers notice.
+const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL;
+if (!SUPER_ADMIN_EMAIL) {
+  console.error("=========================================================");
+  console.error("[BOOT] SUPER_ADMIN_EMAIL environment variable is not set!");
+  console.error("[BOOT] Add it in Railway → Variables → Redeploy (prod),");
+  console.error("[BOOT] or in Replit Secrets (dev). Auto-seed is skipped.");
+  console.error("=========================================================");
+}
 
 async function ensureSuperAdmin() {
+  if (!SUPER_ADMIN_EMAIL) return; // skip silently if not configured
   try {
     const [user] = await db.select().from(users).where(eq(users.email, SUPER_ADMIN_EMAIL));
     if (user && !user.isSuperAdmin) {
@@ -156,6 +168,43 @@ const authLimiter = rateLimit({
 app.use("/api/auth/login",  authLimiter);
 app.use("/api/auth/signup", authLimiter);
 
+// ── General API rate limit ────────────────────────────────────────────────────
+// 200 requests per minute per IP is plenty for a logged-in user clicking
+// around the UI but stops scrapers cold. Webhooks are exempt because
+// carriers (Shopify, YouCan, Digylog, Ameex…) can legitimately flood us
+// during traffic spikes.
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Trop de requêtes. Veuillez patienter une minute." },
+  // IMPORTANT: this middleware is mounted at "/api/", which means Express
+  // strips the mount path before invoking it — so `req.path` here is
+  // "/webhooks/..." (without the /api prefix). Use req.originalUrl to
+  // reliably match the full incoming URL.
+  skip: (req) => req.originalUrl.startsWith("/api/webhooks/"),
+});
+app.use("/api/", apiLimiter);
+
+// ── Stricter limit on heavy / scraping-prone endpoints ────────────────────────
+// Order/dashboard/stats/exports endpoints either return large datasets or
+// are computationally expensive. 30/min is enough for a real user (one
+// every two seconds) but blocks data-scraping bursts.
+const heavyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Trop de requêtes sur cette ressource. Veuillez patienter." },
+});
+app.use("/api/orders/all",         heavyLimiter);
+app.use("/api/orders/filtered",    heavyLimiter);
+app.use("/api/dashboard",          heavyLimiter);
+app.use("/api/stats",              heavyLimiter);
+app.use("/api/agents/performance", heavyLimiter);
+app.use("/api/exports",            heavyLimiter);
+
 // ── Body parsers (MUST come before any route handlers) ───────────────────────
 app.use(
   express.json({
@@ -266,10 +315,29 @@ app.use((req, res, next) => {
   });
 
   // ── Simplified public Digylog webhook — /api/webhook/digylog/public ─────────
-  // No auth, no token, no storeId required. Always returns 200.
-  // Use this URL in Digylog webhook settings:
-  //   https://<your-domain>/api/webhook/digylog/public
+  // SECURITY (P0-7): This endpoint was previously fully public. It now
+  // REQUIRES a shared secret passed as either:
+  //   - HTTP header:  X-Webhook-Token: <DIGYLOG_PUBLIC_TOKEN>
+  //   - Query param:  ?token=<DIGYLOG_PUBLIC_TOKEN>
+  //
+  // The expected token must be set in env var DIGYLOG_PUBLIC_TOKEN on
+  // both Replit AND Railway. If the env var is unset, the endpoint is
+  // disabled (returns 503) so we never accept unauthenticated webhooks.
+  // Configure the same token in your Digylog dashboard's webhook URL.
   app.post("/api/webhook/digylog/public", async (req: Request, res: Response) => {
+    const expected = (process.env.DIGYLOG_PUBLIC_TOKEN || "").trim();
+    if (!expected || expected.length < 24) {
+      console.warn("[DIGYLOG-PUBLIC-SEC] DIGYLOG_PUBLIC_TOKEN not set or too short (<24) — endpoint disabled. Set env var on Replit + Railway.");
+      return res.status(503).json({ message: "Webhook endpoint not configured" });
+    }
+    const headerToken = (req.header("x-webhook-token") || "").trim();
+    const queryToken  = (typeof req.query.token === "string" ? req.query.token : "").trim();
+    const provided    = headerToken || queryToken;
+    if (!provided || provided.length < 24 || provided !== expected) {
+      console.warn("[DIGYLOG-PUBLIC-SEC] missing/invalid token — rejected");
+      return res.status(401).json({ message: "Invalid webhook token" });
+    }
+
     const rawBody  = JSON.stringify(req.body);
     const bodyKeys = Object.keys(req.body || {}).join(', ') || '(empty)';
 

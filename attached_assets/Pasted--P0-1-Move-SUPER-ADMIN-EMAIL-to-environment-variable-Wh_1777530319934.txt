@@ -1,0 +1,519 @@
+
+🛡️ P0-1 — Move SUPER_ADMIN_EMAIL to environment variable
+Why
+Hardcoded email f code = visible f GitHub, ma tt-3y-rch sahel, sensitive info in version control.
+File: server/index.ts
+Around line 19, replace:
+tsconst SUPER_ADMIN_EMAIL = "mehamadchalabi100@gmail.com";
+with:
+tsconst SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL;
+
+if (!SUPER_ADMIN_EMAIL) {
+  console.error('=========================================================');
+  console.error('[BOOT] SUPER_ADMIN_EMAIL environment variable is not set!');
+  console.error('[BOOT] Add it in Railway → Variables → Redeploy.');
+  console.error('=========================================================');
+  // Don't crash — keep existing super admin functional, just no auto-seed
+}
+Then in ensureSuperAdmin() function, add a guard:
+tsasync function ensureSuperAdmin() {
+  if (!SUPER_ADMIN_EMAIL) return;  // skip silently if not configured
+  try {
+    // ... rest unchanged
+  }
+}
+Add to Railway
+In Railway dashboard → Service → Variables → New variable:
+
+Key: SUPER_ADMIN_EMAIL
+Value: mehamadchalabi100@gmail.com
+
+Click "Add" → Railway redeploys automatically.
+Acceptance criteria
+
+✅ Variable set in Railway
+✅ Boot logs show no SUPER_ADMIN_EMAIL not set warning
+✅ Code in GitHub no longer contains the email string
+✅ Super admin still functions normally
+
+Commit
+bashgit add server/index.ts
+git commit -m "security: move SUPER_ADMIN_EMAIL to environment variable"
+git push
+
+🛡️ P0-2 — Fix email enumeration on login
+Why
+Currently login distinguishes "Email incorrect" vs "Mot de passe incorrect" → attackers can enumerate which emails are registered → targeted phishing.
+File: server/auth.ts
+Around line 100-110, replace:
+tsasync (email, password, done) => {
+  try {
+    const user = await storage.getUserByEmail(email);
+    if (!user) return done(null, false, { message: "Email incorrect" });
+    if (!user.password) return done(null, false, { message: "Mot de passe non configuré" });
+    const valid = await comparePasswords(password, user.password);
+    if (!valid) return done(null, false, { message: "Mot de passe incorrect" });
+    if (user.isActive === 0 && !user.isSuperAdmin) return done(null, false, { message: "Votre compte est suspendu. Veuillez contacter l'administration." });
+    return done(null, user);
+  } catch (err) {
+    return done(err);
+  }
+}
+With:
+tsasync (email, password, done) => {
+  // Generic message — never tell attackers which step failed.
+  // Constant-time comparison even when user doesn't exist (timing attack defense).
+  const GENERIC_FAIL = { message: "Email ou mot de passe incorrect" };
+  const DUMMY_HASH = "0".repeat(128) + "." + "0".repeat(32); // valid format, won't match anything
+
+  try {
+    const user = await storage.getUserByEmail(email);
+
+    // Always run the password comparison, even for non-existent users.
+    // Prevents timing attacks that could detect whether the email exists.
+    const passwordToCheck = user?.password || DUMMY_HASH;
+    const valid = await comparePasswords(password, passwordToCheck).catch(() => false);
+
+    if (!user || !user.password || !valid) {
+      return done(null, false, GENERIC_FAIL);
+    }
+
+    if (user.isActive === 0 && !user.isSuperAdmin) {
+      return done(null, false, { message: "Votre compte est suspendu. Veuillez contacter l'administration." });
+    }
+
+    return done(null, user);
+  } catch (err) {
+    return done(err);
+  }
+}
+Acceptance criteria
+
+✅ Login with wrong email → "Email ou mot de passe incorrect"
+✅ Login with right email + wrong password → same message
+✅ Suspended account → distinct "Votre compte est suspendu" (this one's OK to differentiate, since attacker already had the right password)
+✅ Login response time consistent (~80-150ms) regardless of email existence
+
+Commit
+bashgit add server/auth.ts
+git commit -m "security: prevent email enumeration on login (generic error + constant-time)"
+git push
+
+🛡️ P0-3 — Add session regeneration on login
+Why
+Without regenerating session ID on login, attackers can fixate a session before user logs in, then hijack it after.
+File: server/routes.ts (or wherever the login endpoint lives)
+Find the login endpoint (search passport.authenticate('local'). Replace the success handler to regenerate:
+tsapp.post("/api/auth/login", (req, res, next) => {
+  passport.authenticate("local", (err: any, user: any, info: any) => {
+    if (err) return next(err);
+    if (!user) return res.status(401).json({ message: info?.message || "Échec de connexion" });
+
+    // ── SECURITY: regenerate session ID after successful auth ─────────────
+    // Prevents session fixation attacks. The pre-login session is destroyed,
+    // a fresh one is created, and the user is logged into the fresh one.
+    req.session.regenerate((regenErr) => {
+      if (regenErr) return next(regenErr);
+      req.login(user, (loginErr) => {
+        if (loginErr) return next(loginErr);
+        // Save the session before sending response (avoid race conditions)
+        req.session.save((saveErr) => {
+          if (saveErr) return next(saveErr);
+          res.json({ user: { id: user.id, email: user.email, role: user.role, username: user.username } });
+        });
+      });
+    });
+  })(req, res, next);
+});
+Also: on logout, destroy the session (not just remove user):
+tsapp.post("/api/auth/logout", (req, res) => {
+  req.logout((err) => {
+    if (err) return res.status(500).json({ message: err.message });
+    req.session.destroy(() => {
+      res.clearCookie('connect.sid');
+      res.json({ ok: true });
+    });
+  });
+});
+Acceptance criteria
+
+✅ Inspect cookies before login: connect.sid = X
+✅ Login successfully → cookies show connect.sid = Y (different value)
+✅ Logout → cookie cleared from browser
+✅ User stays logged in across page refreshes after login (no regression)
+
+Commit
+bashgit add server/routes.ts
+git commit -m "security: regenerate session on login + destroy on logout (fixation defense)"
+git push
+
+🛡️ P0-4 — Add API-wide rate limiting
+Why
+Currently only /api/auth/login and /api/auth/signup are rate-limited. Every other endpoint is open. Attackers can:
+
+DoS database
+Scrape entire orders list
+Enumerate users / phone numbers
+
+File: server/index.ts
+Around line 154 (after the existing authLimiter block), add:
+ts// ── General API rate limit ────────────────────────────────────────────────
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,    // 1 minute
+  max: 200,                // 200 requests/minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Trop de requêtes. Veuillez patienter." },
+  // Skip webhooks — carriers can flood us legitimately
+  skip: (req) => req.path.startsWith('/api/webhooks/'),
+});
+
+// ── Stricter limit on heavy / scraping-prone endpoints ────────────────────
+const heavyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Trop de requêtes sur cette ressource." },
+});
+
+// Apply general limit to all /api/ routes
+app.use("/api/", apiLimiter);
+
+// Then stricter limits on specific patterns
+app.use("/api/orders/all",        heavyLimiter);
+app.use("/api/orders/filtered",   heavyLimiter);
+app.use("/api/dashboard",         heavyLimiter);
+app.use("/api/stats",             heavyLimiter);
+app.use("/api/agents/performance", heavyLimiter);
+app.use("/api/exports",           heavyLimiter);
+IMPORTANT: Order matters. The general apiLimiter must come BEFORE the specific heavyLimiter registrations so requests pass through both. Express applies them in registration order.
+Also, the existing authLimiter (line 148) should stay — it's stricter than the general one for login/signup specifically.
+Acceptance criteria
+
+✅ Make 250 requests to /api/orders/all in 1 minute → after request 30, get 429 Too Many Requests
+✅ Make 250 requests to /api/products in 1 minute → after request 200, get 429
+✅ Webhook endpoint /api/webhooks/digylog/... accepts unlimited requests (legitimate carrier traffic)
+✅ Login still limited to 20/15min as before (auth limiter unchanged)
+✅ Headers RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset returned on every response
+
+Commit
+bashgit add server/index.ts
+git commit -m "security: API-wide rate limiting (200/min general + 30/min on heavy endpoints)"
+git push
+
+🛡️ P0-5 — Stronger password policy with Zod validation
+Why
+Currently any password is accepted. Users picking "123456" → trivially brute-forceable.
+Files to change
+
+shared/schema.ts — add password validator
+server/routes.ts — apply on signup + password change
+
+Step 1 — shared/schema.ts
+At the bottom of the file, add:
+tsimport { z } from 'zod';
+
+/**
+ * Password policy:
+ * - Minimum 8 characters
+ * - At least one uppercase letter
+ * - At least one lowercase letter
+ * - At least one digit
+ * - Maximum 128 characters (DoS prevention on hash)
+ */
+export const passwordSchema = z.string()
+  .min(8,  'Le mot de passe doit contenir au moins 8 caractères')
+  .max(128, 'Le mot de passe est trop long')
+  .regex(/[A-Z]/, 'Au moins une majuscule')
+  .regex(/[a-z]/, 'Au moins une minuscule')
+  .regex(/[0-9]/, 'Au moins un chiffre');
+
+export const emailSchema = z.string()
+  .email('Email invalide')
+  .max(254, 'Email trop long')
+  .transform(s => s.toLowerCase().trim());
+Step 2 — server/routes.ts — apply on signup
+Find signup endpoint. Validate body before creating user:
+tsimport { passwordSchema, emailSchema } from '@shared/schema';
+import { z } from 'zod';
+
+const signupSchema = z.object({
+  email:    emailSchema,
+  password: passwordSchema,
+  username: z.string().min(2).max(80).trim(),
+  phone:    z.string().regex(/^(\+212|0)[5-7][0-9]{8}$/, 'Numéro invalide').optional(),
+});
+
+app.post("/api/auth/signup", authLimiter, async (req, res) => {
+  // Validate input shape FIRST
+  const parsed = signupSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const firstError = parsed.error.errors[0]?.message || 'Données invalides';
+    return res.status(400).json({ message: firstError, errors: parsed.error.flatten() });
+  }
+  const data = parsed.data;
+
+  // Check if email already exists
+  const existing = await storage.getUserByEmail(data.email);
+  if (existing) {
+    return res.status(400).json({ message: "Un compte avec cet email existe déjà" });
+  }
+
+  // Hash + create — explicit field whitelist (NO mass assignment)
+  const hashedPassword = await hashPassword(data.password);
+  const user = await storage.createUser({
+    email:        data.email,
+    password:     hashedPassword,
+    username:     data.username,
+    phone:        data.phone || null,
+    role:         'owner',          // ← server-controlled, never from req.body
+    isSuperAdmin: 0,                 // ← server-controlled
+    isActive:     1,
+  });
+
+  // ... rest of existing flow (verification email, login, etc.)
+});
+Step 3 — Apply on password change endpoint
+Find any endpoint where users change passwords (search for comparePasswords and hashPassword together):
+tsconst changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword:     passwordSchema,
+});
+
+app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+  const parsed = changePasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: parsed.error.errors[0]?.message });
+  }
+  // ... rest unchanged
+});
+Acceptance criteria
+
+✅ Signup with password "123" → rejected with "Au moins 8 caractères"
+✅ Signup with "password123" → rejected with "Au moins une majuscule"
+✅ Signup with "Password123" → succeeds
+✅ Email is automatically lowercased + trimmed
+✅ Phone number validated against Moroccan format
+✅ Mass assignment blocked: passing isSuperAdmin: 1 in body → user still created with isSuperAdmin: 0
+✅ Existing users with weak passwords can still log in (no migration disruption)
+
+Commit
+bashgit add shared/schema.ts server/routes.ts
+git commit -m "security: enforce password policy + email validation + signup whitelist (no mass assignment)"
+git push
+
+🛡️ P0-6 — Whitelist all db.insert / db.update payloads (mass assignment defense)
+Why
+The biggest privilege-escalation vulnerability in many SaaS. Without explicit field whitelisting, an attacker passes extra fields in JSON body and they get written to the database.
+Example:
+bash# Update profile → tries to make self super admin
+curl -X PUT https://www.tajergrow.com/api/users/me \
+  -H "Cookie: connect.sid=..." \
+  -d '{"username":"Hassan","isSuperAdmin":1,"role":"admin"}'
+If the endpoint does db.update(users).set(req.body) → attacker becomes super admin.
+What to do
+This is a systematic audit, not a single edit. Search the codebase for risky patterns:
+bash# Run these greps to find candidates:
+grep -rn "db\.insert.*\.values(req\.body" server/
+grep -rn "db\.update.*\.set(req\.body" server/
+grep -rn "\.\.\.req\.body" server/
+Each match needs to be reviewed and replaced with explicit field destructuring.
+Pattern to apply
+BEFORE (vulnerable):
+tsapp.put("/api/users/:id", requireAuth, async (req, res) => {
+  await db.update(users).set(req.body).where(eq(users.id, req.params.id));
+  res.json({ ok: true });
+});
+AFTER (safe):
+tsimport { z } from 'zod';
+
+const updateUserSchema = z.object({
+  username: z.string().min(2).max(80).optional(),
+  phone:    z.string().regex(/^(\+212|0)[5-7][0-9]{8}$/).optional(),
+  email:    z.string().email().optional(),
+  // NOTE: role, isSuperAdmin, isActive, storeId are NOT in this schema —
+  // users can't change those via this endpoint.
+});
+
+app.put("/api/users/:id", requireAuth, async (req, res) => {
+  // Permission check
+  const targetId = Number(req.params.id);
+  if (req.user!.id !== targetId && !req.user!.isSuperAdmin) {
+    return res.status(403).json({ message: "Accès refusé" });
+  }
+
+  // Validate input
+  const parsed = updateUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ errors: parsed.error.flatten() });
+  }
+
+  // Update with whitelisted fields only
+  await db.update(users).set(parsed.data).where(eq(users.id, targetId));
+  res.json({ ok: true });
+});
+Critical endpoints to audit (priority order)
+Apply the pattern above to each:
+
+PUT /api/users/:id — must NOT accept role, isSuperAdmin, isActive
+POST /api/users (admin creates user) — must whitelist; force storeId = req.user.storeId
+POST /api/auth/signup — already done in P0-5
+PUT /api/orders/:id — must NOT accept storeId, magasinId (these are determined by order's origin)
+POST /api/orders — must force storeId = req.user.storeId
+PUT /api/agents/:id/magasin-percentages — must verify caller can manage these magasins
+PUT /api/stores/:id — must verify caller owns this store
+POST /api/products + PUT /api/products/:id — must force storeId
+POST /api/publicites — already partially done; verify magasinId belongs to caller
+POST /api/integrations + updates — must NOT let user choose arbitrary magasinId
+
+Generic helper to make this pattern reusable
+Create server/utils/validate.ts:
+tsimport type { Request, Response, NextFunction } from 'express';
+import type { z } from 'zod';
+
+/**
+ * Middleware: validates req.body against a Zod schema.
+ * On success, replaces req.body with the parsed (typed, sanitized) value.
+ * On failure, returns 400 with detailed error info.
+ */
+export function validateBody<T extends z.ZodTypeAny>(schema: T) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const result = schema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({
+        message: result.error.errors[0]?.message || 'Validation failed',
+        errors: result.error.flatten(),
+      });
+    }
+    req.body = result.data;
+    next();
+  };
+}
+
+/**
+ * Permission helper: ensures the caller can act on the given store.
+ * Throws 403 otherwise.
+ */
+export function requireStoreOwnership(storeId: number) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ message: 'Non authentifié' });
+    if ((req.user as any).isSuperAdmin) return next();
+    if ((req.user as any).storeId === storeId) return next();
+    return res.status(403).json({ message: 'Magasin non autorisé' });
+  };
+}
+Use it like:
+tsapp.put("/api/users/:id", requireAuth, validateBody(updateUserSchema), async (req, res) => {
+  // req.body is now typed & safe
+});
+Acceptance criteria
+
+✅ At least the 10 endpoints listed above use explicit field whitelisting
+✅ Attempting to set isSuperAdmin: 1 via any endpoint → field ignored, user stays non-admin
+✅ Attempting to set storeId to another store via order/product creation → field ignored, server forces caller's storeId
+✅ All schemas live in shared/schema.ts so frontend can also validate
+✅ TypeScript build passes — no implicit any from req.body
+
+Commit
+This is a big one. Split into logical chunks:
+bash# Chunk 1: helper + users
+git add server/utils/validate.ts server/routes.ts shared/schema.ts
+git commit -m "security: validateBody helper + whitelist user mutations (no mass assignment)"
+
+# Chunk 2: orders + products
+git add server/routes.ts
+git commit -m "security: whitelist order + product mutations (server forces storeId)"
+
+# Chunk 3: stores + magasin + integrations
+git add server/routes.ts
+git commit -m "security: whitelist store/magasin/integration mutations + ownership check"
+
+git push
+
+🛡️ P0-7 — Webhook secret tokens for Digylog/Ameex (no signature support from carriers)
+Why
+Shopify and YouCan webhooks are HMAC-verified. Digylog and Ameex don't offer HMAC signatures. Currently anyone who knows your webhook URL can POST fake updates.
+The defense: long random tokens in the URL itself, rotated periodically.
+File: shared/schema.ts — add webhook secret per integration
+Already have webhook_key column on integrations. Verify it's used and is long-random:
+ts// In storeIntegrations table:
+webhookKey: text("webhook_key"),  // exists already
+File: server/routes.ts — verify the URL token before processing
+Find the Digylog webhook route (search app.post("/api/webhooks/digylog/):
+tsapp.post("/api/webhooks/digylog/:webhookKey", async (req, res) => {
+  const { webhookKey } = req.params;
+
+  // ── SECURITY: webhook key must be present and at least 32 chars ──────────
+  if (!webhookKey || webhookKey.length < 32) {
+    console.warn('[WEBHOOK-SEC] Digylog webhook with short/missing key — rejected');
+    return res.status(401).json({ message: 'Invalid webhook key' });
+  }
+
+  // Find the integration by webhook key (constant-time comparison via DB lookup)
+  const integration = await storage.getIntegrationByWebhookKey('digylog', webhookKey);
+  if (!integration) {
+    console.warn('[WEBHOOK-SEC] Unknown Digylog webhook key:', webhookKey.slice(0, 8) + '...');
+    return res.status(401).json({ message: 'Unknown webhook' });
+  }
+
+  // ── SECURITY: optional IP allowlist ───────────────────────────────────────
+  // If you know Digylog's outbound IPs, restrict here. Else, comment out.
+  // const DIGYLOG_IPS = ['1.2.3.4', '5.6.7.8'];
+  // const clientIp = req.headers['cf-connecting-ip'] || req.ip;
+  // if (!DIGYLOG_IPS.includes(clientIp as string)) {
+  //   return res.status(403).json({ message: 'IP not allowed' });
+  // }
+
+  // ── SECURITY: rate limit per integration (suspicious activity detection) ─
+  // If this single integration is being hit 100+ times/min, something's wrong.
+  // (Implement via Redis counter; or skip for now and add later.)
+
+  // Now safe to process
+  return processDigylogWebhook(req, res, integration);
+});
+Add storage method:
+tsasync getIntegrationByWebhookKey(provider: string, webhookKey: string) {
+  const [row] = await db.select().from(storeIntegrations).where(
+    and(
+      eq(storeIntegrations.provider, provider),
+      eq(storeIntegrations.webhookKey, webhookKey),
+    )
+  );
+  return row;
+}
+Same pattern for Ameex
+tsapp.post("/api/webhooks/ameex/:webhookKey", async (req, res) => {
+  const { webhookKey } = req.params;
+  if (!webhookKey || webhookKey.length < 32) {
+    return res.status(401).json({ message: 'Invalid webhook key' });
+  }
+  const integration = await storage.getIntegrationByWebhookKey('ameex', webhookKey);
+  if (!integration) return res.status(401).json({ message: 'Unknown webhook' });
+  return processAmeexWebhook(req, res, integration);
+});
+When integrations are created — generate strong webhook keys
+Find the integration POST endpoint (search createIntegration). When creating a new integration:
+tsimport { randomBytes } from 'crypto';
+
+const webhookKey = randomBytes(32).toString('hex');  // 64-char hex string
+
+await storage.createIntegration({
+  storeId,
+  provider,
+  webhookKey,  // ← strong, unguessable
+  // ...
+});
+If existing integrations have short keys, regenerate them once via a one-time admin endpoint or migration. Old short keys will fail the length check above — admin needs to recreate the integration.
+Acceptance criteria
+
+✅ POSTing to /api/webhooks/digylog/abc (short key) → 401 immediately, no DB lookup
+✅ POSTing to /api/webhooks/digylog/<valid 64-char key> with valid payload → processes normally
+✅ POSTing with random 64-char string → 401 "Unknown webhook"
+✅ New integrations get a 64-char hex webhook key on creation
+✅ Server logs [WEBHOOK-SEC] warnings on any rejection so you can monitor abuse
+
+Commit
+bashgit add server/routes.ts server/storage.ts shared/schema.ts
+git commit -m "security: webhook key validation for Digylog/Ameex (length + lookup + logging)"
+git push

@@ -4,8 +4,9 @@ import { Express } from "express";
 import session from "express-session";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
+import { z } from "zod";
 import { storage } from "./storage";
-import { User } from "@shared/schema";
+import { User, passwordSchema, emailSchema, moroccanPhoneSchema } from "@shared/schema";
 import { pool } from "./db";
 import connectPgSimple from "connect-pg-simple";
 import { generateOTP, sendVerificationEmail, sendTestEmail } from "./services/mailer";
@@ -99,13 +100,36 @@ export function setupAuth(app: Express) {
     new LocalStrategy(
       { usernameField: "email" },
       async (email, password, done) => {
+        // ── Anti-enumeration auth ─────────────────────────────────────────
+        // Same generic message + same average response time whether the
+        // email exists, the password is wrong, or the account has no
+        // password. Without this, attackers can probe the database for
+        // valid email addresses to use in targeted phishing campaigns.
+        const GENERIC_FAIL = { message: "Email ou mot de passe incorrect" };
+        // Valid <hashHex>.<saltHex> shape — scrypt will run, won't ever match.
+        const DUMMY_HASH = "0".repeat(128) + "." + "0".repeat(32);
+
         try {
           const user = await storage.getUserByEmail(email);
-          if (!user) return done(null, false, { message: "Email incorrect" });
-          if (!user.password) return done(null, false, { message: "Mot de passe non configuré" });
-          const valid = await comparePasswords(password, user.password);
-          if (!valid) return done(null, false, { message: "Mot de passe incorrect" });
-          if (user.isActive === 0 && !user.isSuperAdmin) return done(null, false, { message: "Votre compte est suspendu. Veuillez contacter l'administration." });
+
+          // Always run the password comparison to keep timing constant
+          // across the "user-doesn't-exist" and "user-exists-bad-password"
+          // branches. The .catch swallows the rare malformed-hash case.
+          const passwordToCheck = user?.password || DUMMY_HASH;
+          const valid = await comparePasswords(password, passwordToCheck).catch(() => false);
+
+          if (!user || !user.password || !valid) {
+            return done(null, false, GENERIC_FAIL);
+          }
+
+          // Suspended account: distinct message is OK here — the attacker
+          // already proved they know a valid email + password pair.
+          if (user.isActive === 0 && !user.isSuperAdmin) {
+            return done(null, false, {
+              message: "Votre compte est suspendu. Veuillez contacter l'administration.",
+            });
+          }
+
           return done(null, user);
         } catch (err) {
           return done(err);
@@ -127,32 +151,51 @@ export function setupAuth(app: Express) {
     }
   });
 
+  // ── Signup payload schema ──────────────────────────────────────────────
+  // Whitelisted fields only — role / isSuperAdmin / isActive / storeId can
+  // never be set from the request body, even if the client tries to inject
+  // them (Zod strips unknown fields by default).
+  const signupSchema = z.object({
+    storeName: z.string().min(1, "Nom du magasin requis").max(100).trim(),
+    username:  z.string().min(2, "Nom d'utilisateur trop court").max(80).trim(),
+    email:     emailSchema,
+    password:  passwordSchema,
+    phone:     moroccanPhoneSchema.optional(),
+    language:  z.enum(["fr", "ar", "en"]).optional(),
+  });
+
   app.post("/api/auth/signup", async (req, res, next) => {
     try {
-      const { storeName, username, email, password, language, phone } = req.body;
-
-      if (!storeName || !username || !email || !password) {
-        return res.status(400).json({ message: "Tous les champs sont requis" });
+      const parsed = signupSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const firstError = parsed.error.errors[0]?.message || "Données invalides";
+        return res.status(400).json({ message: firstError, errors: parsed.error.flatten() });
       }
-      const preferredLanguage = ["fr", "ar", "en"].includes(language) ? language : "fr";
+      const data = parsed.data;
+      const preferredLanguage = data.language ?? "fr";
 
-      const existingUser = await storage.getUserByEmail(email);
+      const existingUser = await storage.getUserByEmail(data.email);
       if (existingUser) {
         return res.status(400).json({ message: "Cet email est déjà utilisé" });
       }
 
-      const hashedPassword = await hashPassword(password);
-      const store = await storage.createStore({ name: storeName });
+      const hashedPassword = await hashPassword(data.password);
+      const store = await storage.createStore({ name: data.storeName });
+      // Explicit field whitelist — server controls role/isSuperAdmin/isActive.
       const user = await storage.createUser({
-        username,
-        email,
-        phone: phone || null,
-        password: hashedPassword,
-        role: "owner",
-        storeId: store.id,
+        username:        data.username,
+        email:           data.email,
+        phone:           data.phone || null,
+        password:        hashedPassword,
+        role:            "owner",
+        storeId:         store.id,
         isEmailVerified: 0,
+        isSuperAdmin:    0,
+        isActive:        1,
         preferredLanguage,
       });
+      // Re-bind locals so the rest of the handler keeps working unchanged.
+      const email = data.email;
 
       // Backfill ownerId now that we have the user's ID
       await storage.updateStore(store.id, { ownerId: user.id });
@@ -305,7 +348,15 @@ export function setupAuth(app: Express) {
       if (!req.isAuthenticated()) return res.status(401).json({ message: "Non authentifié" });
       if (!req.user!.isSuperAdmin) return res.status(403).json({ message: "Super admin requis" });
 
-      const target = "mehamadchalabi100@gmail.com";
+      // Read target from env — no hardcoded fallback. If the env var is
+      // unset on Railway, this endpoint refuses to run rather than
+      // leaking the legacy super-admin address into source code.
+      const target = process.env.SUPER_ADMIN_EMAIL;
+      if (!target) {
+        return res.status(500).json({
+          message: "SUPER_ADMIN_EMAIL n'est pas configuré sur le serveur",
+        });
+      }
       const result = await sendTestEmail(target);
 
       if (result.success) {
@@ -344,15 +395,34 @@ export function setupAuth(app: Express) {
         return res.status(401).json({ message: info?.message || "Identifiants incorrects" });
       }
 
-      console.log(`[LOGIN] Credentials valid for user ${user.id}, saving session...`);
-      req.login(user, (loginErr) => {
-        if (loginErr) {
-          console.error("[LOGIN_ERROR] Session save error:", loginErr.message, loginErr.stack);
-          return res.status(500).json({ message: "Erreur lors de la sauvegarde de session", detail: loginErr.message });
+      console.log(`[LOGIN] Credentials valid for user ${user.id}, regenerating session...`);
+
+      // ── Session fixation defence ────────────────────────────────────
+      // Always issue a fresh session id on successful auth. If an
+      // attacker pre-set the cookie before login, that session is
+      // destroyed here and the user logs into a fresh one.
+      req.session.regenerate((regenErr) => {
+        if (regenErr) {
+          console.error("[LOGIN_ERROR] Session regenerate error:", regenErr.message);
+          return res.status(500).json({ message: "Erreur lors de la régénération de session" });
         }
-        console.log(`[LOGIN] ✓ User ${user.id} (${email}) logged in successfully`);
-        const { password: _, ...safeUser } = user;
-        return res.json(safeUser);
+        req.login(user, (loginErr) => {
+          if (loginErr) {
+            console.error("[LOGIN_ERROR] Session save error:", loginErr.message, loginErr.stack);
+            return res.status(500).json({ message: "Erreur lors de la sauvegarde de session", detail: loginErr.message });
+          }
+          // Persist the session before responding so the client never gets
+          // a Set-Cookie that hasn't been written to PG yet.
+          req.session.save((saveErr) => {
+            if (saveErr) {
+              console.error("[LOGIN_ERROR] Session save error:", saveErr.message);
+              return res.status(500).json({ message: "Erreur lors de la sauvegarde de session" });
+            }
+            console.log(`[LOGIN] ✓ User ${user.id} (${email}) logged in successfully`);
+            const { password: _, ...safeUser } = user;
+            return res.json(safeUser);
+          });
+        });
       });
     })(req, res, next);
   });
@@ -360,7 +430,15 @@ export function setupAuth(app: Express) {
   app.post("/api/auth/logout", (req, res) => {
     req.logout((err) => {
       if (err) return res.status(500).json({ message: "Erreur lors de la déconnexion" });
-      res.json({ message: "Déconnecté" });
+      // Destroy the server-side session row + clear the client cookie so
+      // the browser can't replay the (now invalid) session id.
+      req.session.destroy((destroyErr) => {
+        if (destroyErr) {
+          console.warn("[LOGOUT] session.destroy failed (non-fatal):", destroyErr.message);
+        }
+        res.clearCookie("connect.sid");
+        res.json({ message: "Déconnecté" });
+      });
     });
   });
 

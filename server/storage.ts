@@ -284,8 +284,10 @@ export class DatabaseStorage implements IStorage {
     const store = await this.getStore(storeId);
     if (!store) throw new Error("Store not found");
     if (store.webhookKey) return store.webhookKey;
+    // 32 bytes = 64-char hex = 256 bits of entropy. Unguessable.
+    // Older stores keep their existing shorter keys until they regenerate.
     const { randomBytes } = await import('crypto');
-    const key = randomBytes(9).toString('base64url').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12).padEnd(12, '0');
+    const key = randomBytes(32).toString('hex');
     await db.update(stores).set({ webhookKey: key }).where(eq(stores.id, storeId));
     return key;
   }

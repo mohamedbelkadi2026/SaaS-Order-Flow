@@ -720,3 +720,26 @@ export const recoverySettings = pgTable("recovery_settings", {
 export const insertRecoverySettingsSchema = createInsertSchema(recoverySettings).omit({ id: true, updatedAt: true });
 export type RecoverySetting = typeof recoverySettings.$inferSelect;
 export type InsertRecoverySetting = z.infer<typeof insertRecoverySettingsSchema>;
+
+// ─── Auth validation schemas (shared with frontend) ────────────────────────
+// Password policy:
+//   - 8 to 128 characters (max prevents DoS on hash function)
+//   - At least one uppercase, one lowercase, one digit
+// Existing users with weaker passwords keep working; only NEW passwords
+// (signup + password change) are validated against this.
+export const passwordSchema = z.string()
+  .min(8,   "Le mot de passe doit contenir au moins 8 caractères")
+  .max(128, "Le mot de passe est trop long")
+  .regex(/[A-Z]/, "Au moins une majuscule requise")
+  .regex(/[a-z]/, "Au moins une minuscule requise")
+  .regex(/[0-9]/, "Au moins un chiffre requis");
+
+// Email schema — RFC-bounded length, lowercase + trim normalisation.
+export const emailSchema = z.string()
+  .email("Email invalide")
+  .max(254, "Email trop long")
+  .transform((s) => s.toLowerCase().trim());
+
+// Moroccan phone format (+212 5/6/7 XXXXXXXX or 0 5/6/7 XXXXXXXX).
+export const moroccanPhoneSchema = z.string()
+  .regex(/^(\+212|0)[5-7][0-9]{8}$/, "Numéro de téléphone marocain invalide");

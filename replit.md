@@ -3,6 +3,35 @@
 ## Overview
 TajerGrow is a SaaS Order Management System (OMS) for the Moroccan COD (Cash on Delivery) e-commerce market with AI Recovery System, Profit Analyzer Pro, and LP Builder. Built with React+Vite frontend, Node.js/Express backend, and PostgreSQL database.
 
+## Security Hardening (P0 audit – April 2026)
+The following P0 mitigations are live in dev and required for prod:
+
+- **P0-1**: `SUPER_ADMIN_EMAIL` is read from `process.env`. Set it in Railway → Variables (prod) and in Replit Secrets (dev). Without it, super-admin auto-seed is skipped and a loud `[BOOT]` warning is logged.
+- **P0-2**: Login returns the same generic message (`"Email ou mot de passe incorrect"`) for unknown email and bad password, with constant-time comparison via a dummy hash. Stops user-enumeration probes.
+- **P0-3**: `req.session.regenerate()` runs on every successful login (defeats session-fixation), and `req.session.destroy()` + `clearCookie('connect.sid')` on logout.
+- **P0-4**: Two `express-rate-limit` layers — `apiLimiter` (200 req/min on `/api/*`, skips `/api/webhooks/*`) and `heavyLimiter` (30 req/min on `/api/orders/all|filtered`, `/api/dashboard`, `/api/stats`, `/api/agents/performance`, `/api/exports`). Auth endpoints keep the existing 20/15min `authLimiter`.
+- **P0-5**: Strong password policy + email/phone schemas in `shared/schema.ts`. Signup payload is parsed by a Zod `signupSchema` and `createUser` is called with an explicit field whitelist that always forces `role:'owner'`, `isSuperAdmin:0`, `isActive:1` — mass-assignment via request body is impossible.
+- **P0-6**: `server/utils/validate.ts` exports a reusable `validateBody` middleware and `requireStoreOwnership` helper. The audit confirmed the priority mutation endpoints (`PUT /api/users/:id`, `POST/PATCH /api/orders`, `POST/PATCH /api/products`, `POST/PATCH /api/integrations`, `PUT /api/agents/:id/magasin-percentages`) already derive `storeId` from `req.user` and parse with explicit Zod object schemas, so no refactor was required. Use `validateBody` for new mutation routes going forward.
+- **P0-7**: Webhook hardening across the board:
+  - All four `:webhookKey` routes (`/api/webhooks/:provider/order/:webhookKey`, `/api/webhooks/gsheets/:webhookKey`, `/api/webhooks/shopify/order/:webhookKey`, `/api/webhooks/abandoned-checkout/:webhookKey`) and the gsheets `:apiKey` route reject keys shorter than 12 chars with a 401 + `[WEBHOOK-SEC]` log before any DB lookup. New webhook keys are generated with `randomBytes(32).toString('hex')` (256 bits / 64 chars).
+  - **Ameex (tokened carrier)**: both `/api/webhooks/shipping/ameex/:token` and `/api/webhooks/carrier/:storeId/ameex` now require a 30-char token that must match an active `carrier_accounts.webhookToken` row for the URL store. The shared `processCarrierWebhook` disables its cross-store fallback for Ameex — a token for store A cannot mutate orders in store B even if tracking numbers collide.
+  - **Digylog public webhook** (`/api/webhook/digylog/public`): was previously fully unauthenticated. Now requires env var `DIGYLOG_PUBLIC_TOKEN` (≥24 chars). Caller passes it as `X-Webhook-Token` header or `?token=`. If env unset, endpoint returns 503. Configure the same value in your Digylog dashboard webhook URL.
+  - **Carrier webhook tokens**: bumped to `randomBytes(16).toString('hex')` (32 hex chars) per account, prefixed by carrier+store.
+
+### Required env vars (set on Replit Secrets AND Railway → Variables)
+- `SUPER_ADMIN_EMAIL` — your super-admin email; without it auto-seed is skipped.
+- `SUPER_ADMIN_PASSWORD` — used by `script/setup-superadmin.ts`; must be ≥12 chars.
+- `SESSION_SECRET` — already set; rotate periodically.
+- `DIGYLOG_PUBLIC_TOKEN` — shared secret for `/api/webhook/digylog/public` (≥24 chars). Configure same value in Digylog's webhook URL. **Action required**: generate one, add to env, update Digylog dashboard.
+
+### Security follow-ups (not in this batch)
+- **CRITICAL**: `backup.sql` in repo root contains a leaked third-party API key (`Chalabi2018$` in `store_integrations`) and an old super-admin password hash. Rotate the third-party key immediately, then remove `backup.sql` from git history (`git filter-repo` or BFG) before next prod deploy.
+- One-time admin migration to regenerate existing 12-char webhook keys to 64-char keys, then tighten the length check from `< 12` to `< 32`.
+- IP allowlist for all carrier webhooks (defence-in-depth on top of token auth).
+- Extend tokened-carrier auth from Ameex to Digylog generic route (currently Digylog generic route falls through to legacy carrier-account lookup without token verification).
+- Per-integration rate limiting via Redis when traffic warrants it.
+- Frontend password-strength indicator on the signup form.
+
 ## LP Builder Module
 Create mobile-first COD landing pages in a 3-step wizard:
 - **Step 1**: Product info (name, price, description) + 3 image upload slots (Hero / Features / Proof)
