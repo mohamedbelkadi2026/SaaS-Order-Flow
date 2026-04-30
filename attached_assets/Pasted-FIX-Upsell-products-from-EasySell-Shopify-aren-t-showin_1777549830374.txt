@@ -1,0 +1,170 @@
+FIX — Upsell products from EasySell/Shopify aren't showing in platform
+My problem
+Customer ordered through EasySell COD Form on Shopify with an upsell:
+
+Item 1: نشّافة الملابس HOMIDEC — 349 DH
+Item 2: قفازات التنظيف (upsell) — 49 DH
+Total in Shopify: 407.80 MAD
+
+In Tajergrow platform:
+
+Only 1 product shown
+Total: 349 DH (missing the 49 DH upsell)
+
+This affects every Shopify upsell app (EasySell, ReConvert, OneClickUpsell, etc.) and any platform that adds line items via cart manipulation. I need:
+
+ALL line items to be saved to the platform
+The product cell to show all product names (joined with +)
+The total to match the carrier total exactly
+Same fix applied to YouCan + WooCommerce webhooks
+
+Step 1 — Add diagnostic logging to identify what Shopify actually sends
+In server/routes.ts, find the Shopify webhook handler (search app.post("/api/webhooks/shopify). Right at the top, after the body is parsed, add:
+ts// ── DIAGNOSTIC: log every line item Shopify sends ─────────────────────────
+const lineItemsRaw = payload.line_items || [];
+console.log(`[SHOPIFY-WEBHOOK] order #${payload.order_number || payload.id} → ${lineItemsRaw.length} line items received`);
+lineItemsRaw.forEach((item: any, i: number) => {
+  console.log(`[SHOPIFY-WEBHOOK]   item ${i + 1}: title="${item.title}" qty=${item.quantity} price=${item.price} sku="${item.sku || 'none'}" properties=${JSON.stringify(item.properties || [])}`);
+});
+console.log(`[SHOPIFY-WEBHOOK] total_price=${payload.total_price} subtotal_price=${payload.subtotal_price}`);
+Deploy, place ONE more test order with upsell, then check Railway logs. You'll see something like:
+[SHOPIFY-WEBHOOK] order #6727 → 2 line items received
+[SHOPIFY-WEBHOOK]   item 1: title="نشّافة الملابس..." qty=1 price=349.00 sku="..."
+[SHOPIFY-WEBHOOK]   item 2: title="قفازات التنظيف..." qty=1 price=49.00 sku="..."
+[SHOPIFY-WEBHOOK] total_price=407.80 subtotal_price=398.00
+If you see 2 line items received, the webhook IS receiving everything → the bug is in our processing.
+If you see 1 line item received, EasySell is filtering — we'll need a different fix (apply via Shopify Admin API).
+Step 2 — Make sure line items are properly persisted
+In the Shopify parser around line 364, the code looks correct:
+tsconst lineItems = (payload.line_items || []).map((item: any) => ({
+  sku: item.sku || '',
+  title: item.title || '',
+  variantInfo: sanitizeVariant(item.variant_title),
+  quantity: item.quantity || 1,
+  price: Math.round(parseFloat(item.price || '0') * 100),
+}));
+But verify the storage layer actually creates ALL items. In server/routes.ts around line 3252, the for (const item of parsed.lineItems) loop creates orderItemsToCreate. After the loop, log:
+tsconsole.log(`[SHOPIFY-WEBHOOK] orderItemsToCreate.length=${orderItemsToCreate.length}`);
+orderItemsToCreate.forEach((i, idx) => console.log(`[SHOPIFY-WEBHOOK]   to create ${idx}: ${i.rawProductName} qty=${i.quantity} price=${i.price}`));
+After deploy + 1 test order, confirm 2 items go into orderItemsToCreate.
+Step 3 — Verify in DB
+After the test order arrives, run in Railway database UI:
+sqlSELECT o.id, o.order_number, o.raw_product_name, o.total_price, oi.id AS item_id,
+       oi.raw_product_name AS item_name, oi.quantity, oi.price
+FROM orders o
+LEFT JOIN order_items oi ON oi.order_id = o.id
+WHERE o.order_number = '6727';
+Expected: TWO rows (one per line item).
+If you see only ONE row → the issue is in storage.createOrder (it's not iterating the items array).
+If you see TWO rows → the issue is purely cosmetic (UI displays only the first one).
+Step 4 — Fix the UI to show ALL items joined
+In client/src/pages/orders.tsx line 1230, the rendering takes only the first item. Replace:
+tsxconst rawName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
+const rawVariant = order.items?.[0]?.variantInfo || '';
+const variantAlreadyInName = rawVariant && rawName.includes(rawVariant);
+const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null' && !variantAlreadyInName) ? `${rawName} - ${rawVariant}` : rawName;
+const totalQty = (order.items || []).reduce((s: number, i: any) => s + (i.quantity || 1), 0) || order.rawQuantity || 1;
+const productName = totalQty > 1 ? `${displayName} (x${totalQty})` : displayName;
+With:
+tsx// Build display name from ALL line items joined with " + " (handles upsells)
+const items = (order.items || []) as any[];
+let displayName: string;
+
+if (order.rawProductName && order.rawProductName.includes(' + ')) {
+  // Multi-item: trust the pre-joined name from webhook persistence
+  displayName = order.rawProductName;
+} else if (items.length > 1) {
+  // Reconstruct from items table
+  displayName = items.map((it) => {
+    const name = it.rawProductName || it.product?.name || '';
+    const v    = (it.variantInfo || '').trim();
+    const vClean = (v && v !== 'Default Title' && v !== 'null') ? ` - ${v}` : '';
+    const qty = it.quantity > 1 ? ` (x${it.quantity})` : '';
+    return `${name}${vClean}${qty}`;
+  }).filter(Boolean).join(' + ');
+} else {
+  // Single item path (current behavior, kept)
+  const rawName = order.rawProductName || items[0]?.rawProductName || items[0]?.product?.name || '-';
+  const rawVariant = items[0]?.variantInfo || '';
+  const variantAlreadyInName = rawVariant && rawName.includes(rawVariant);
+  const dn = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null' && !variantAlreadyInName)
+    ? `${rawName} - ${rawVariant}` : rawName;
+  const qty = (items[0]?.quantity || order.rawQuantity || 1);
+  displayName = qty > 1 ? `${dn} (x${qty})` : dn;
+}
+
+const productName = displayName;
+And widen the column so the joined name doesn't truncate aggressively. Around line 1276, change:
+tsx<TableCell className="max-w-[120px] truncate text-[11px]">{productName}</TableCell>
+to:
+tsx<TableCell className="text-[11px] align-top" title={productName}>
+  <div className="max-w-[200px] line-clamp-2">{productName}</div>
+</TableCell>
+This wraps to 2 lines instead of cutting off mid-word, and shows the full name on hover.
+Step 5 — Apply the same fix in all-orders.tsx
+Mirror the change in client/src/pages/all-orders.tsx if it has its own product cell. Search for rawProductName and apply the same multi-item rendering.
+Step 6 — Same fix in the order details modal
+In client/src/components/order-details-modal.tsx, find where products are listed. Make sure it iterates order.items and renders ALL of them, not just the first.
+tsx{(order.items || []).map((item: any, idx: number) => (
+  <div key={item.id ?? idx} className="border-b last:border-0 py-2">
+    <div className="font-semibold">{item.rawProductName || item.product?.name}</div>
+    {item.variantInfo && <div className="text-xs text-muted-foreground">{item.variantInfo}</div>}
+    <div className="text-xs">Quantité: {item.quantity} × {(item.price / 100).toFixed(2)} DH</div>
+  </div>
+))}
+Step 7 — Match total to Shopify exactly
+Check parsed.totalPrice (line 362 of routes.ts):
+tsconst totalPrice = Math.round(parseFloat(payload.total_price || '0') * 100);
+Shopify's total_price includes shipping + tax. If you want the platform to show the same 407.80 that Shopify shows, this is already correct — it captures the full total.
+If the platform shows 349.00 while Shopify shows 407.80, that means either:
+
+The webhook payload's total_price is wrong (rare — Shopify is reliable here)
+We're reading subtotal_price somewhere instead of total_price (search for both)
+
+Add a log:
+tsconsole.log(`[SHOPIFY-WEBHOOK] storing totalPrice=${parsed.totalPrice} (= ${parsed.totalPrice/100} DH)`);
+If it logs 40780, the storage is right and the UI is wrong. If it logs 34900, the parser is wrong.
+Step 8 — Same multi-item handling in YouCan + WooCommerce
+YouCan and WooCommerce parsers (lines 374-388 and 391-417) already collect all line items in their lineItems array. The downstream for (const item of parsed.lineItems) loop (line 3254) processes all of them. So storage-side: same fix as Shopify automatically applies.
+UI-side: the changes in Step 4-6 are provider-agnostic — they read order.items[] regardless of source.
+Step 9 — Verify EasySell webhook configuration
+In your Shopify admin → EasySell COD Form app settings → Webhooks tab:
+
+Verify the webhook URL points to your platform
+Verify the trigger is "Order created" (not "Order paid" — which never fires for COD)
+Verify "Include all line items" is checked if there's such a setting
+
+EasySell sometimes uses Shopify's Draft Order API which behaves slightly differently — if Step 1 shows only 1 item arriving, you'll need to switch to a different webhook source. In that case, also add this fallback:
+Step 10 (optional) — Pull missing items from Shopify Admin API
+If EasySell strips items, fetch the full order from Shopify Admin API:
+ts// After webhook handler creates the order from limited data, optionally enrich
+async function enrichOrderFromShopify(orderId: string, shop: string, accessToken: string) {
+  const res = await fetch(`https://${shop}/admin/api/2024-04/orders/${orderId}.json`, {
+    headers: { 'X-Shopify-Access-Token': accessToken },
+  });
+  if (!res.ok) return null;
+  const { order } = await res.json();
+  return order.line_items;  // full list
+}
+Call this if lineItemsRaw.length === 1 AND the order total doesn't match the single item's price. That's the signal that items are missing.
+ACCEPTANCE CRITERIA
+
+✅ Server logs show 2 line items received when an upsell order arrives
+✅ DB shows 2 rows in order_items for that order
+✅ Mes Commandes row shows: "نشّافة الملابس - HOMIDEC + قفازات التنظيف السلكية"
+✅ Hovering the product cell shows the full text
+✅ Order total matches Shopify (407.80 DH, not 349.00)
+✅ Order details modal lists BOTH products with quantities and prices
+✅ Same applies to YouCan + WooCommerce orders with multiple items / upsells
+
+COMMIT
+bashgit add server/routes.ts client/src/pages/orders.tsx client/src/pages/all-orders.tsx client/src/components/order-details-modal.tsx
+git commit -m "fix(webhooks): properly handle upsell line items from Shopify/YouCan/WooCommerce
+
+- Diagnostic logging for line_items.length on every webhook
+- Verify orderItemsToCreate matches incoming count
+- UI: render ALL items joined with ' + ', not just first
+- Product column wraps to 2 lines + tooltip with full name
+- Order details modal iterates over items[]
+- Total respects Shopify's total_price (includes upsell amount)"
+git push

@@ -1227,12 +1227,29 @@ export default function Orders() {
                 </TableRow>
               ) : (
                 filteredOrders.map((order: any) => {
-                  const rawName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '-';
-                  const rawVariant = order.items?.[0]?.variantInfo || '';
-                  const variantAlreadyInName = rawVariant && rawName.includes(rawVariant);
-                  const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null' && !variantAlreadyInName) ? `${rawName} - ${rawVariant}` : rawName;
-                  const totalQty = (order.items || []).reduce((s: number, i: any) => s + (i.quantity || 1), 0) || order.rawQuantity || 1;
-                  const productName = totalQty > 1 ? `${displayName} (x${totalQty})` : displayName;
+                  // Multi-item display (handles upsells from EasySell/ReConvert/etc.)
+                  // Each line item gets its own "Name - Variant (xQty)" segment,
+                  // joined with " + " so the customer sees every product on the order.
+                  const items = (order.items || []) as any[];
+                  let productName: string;
+                  if (order.rawProductName && order.rawProductName.includes(' + ')) {
+                    productName = order.rawProductName;
+                  } else if (items.length > 1) {
+                    productName = items.map((it) => {
+                      const name = it.rawProductName || it.product?.name || '';
+                      const v = (it.variantInfo || '').trim();
+                      const vClean = (v && v !== 'Default Title' && v !== 'null' && !name.includes(v)) ? ` - ${v}` : '';
+                      const qty = (it.quantity || 1) > 1 ? ` (x${it.quantity})` : '';
+                      return `${name}${vClean}${qty}`;
+                    }).filter(Boolean).join(' + ');
+                  } else {
+                    const rawName = order.rawProductName || items[0]?.rawProductName || items[0]?.product?.name || '-';
+                    const rawVariant = items[0]?.variantInfo || '';
+                    const variantAlreadyInName = rawVariant && rawName.includes(rawVariant);
+                    const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null' && !variantAlreadyInName) ? `${rawName} - ${rawVariant}` : rawName;
+                    const qty = items[0]?.quantity || order.rawQuantity || 1;
+                    productName = qty > 1 ? `${displayName} (x${qty})` : displayName;
+                  }
                   const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';
                   const agentName = order.agent?.username || '-';
                   return (
@@ -1273,7 +1290,11 @@ export default function Orders() {
                         </TableCell>
                       )}
                       {isColVisible('ville') && <TableCell className="whitespace-nowrap">{order.customerCity || "-"}</TableCell>}
-                      {isColVisible('produit') && <TableCell className="max-w-[120px] truncate text-[11px]">{productName}</TableCell>}
+                      {isColVisible('produit') && (
+                        <TableCell className="text-[11px] align-top" title={productName} data-testid={`text-product-${order.id}`}>
+                          <div className="max-w-[200px] line-clamp-2 break-words">{productName}</div>
+                        </TableCell>
+                      )}
                       {isColVisible('boutique') && (
                         <TableCell className="whitespace-nowrap text-[11px]" data-testid={`text-boutique-${order.id}`}>
                           {(order as any).magasin?.name ? (

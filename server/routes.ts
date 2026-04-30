@@ -3447,14 +3447,21 @@ export async function registerRoutes(
 
       const storeProducts = await storage.getProductsByStore(storeId);
       let productCost = 0;
-      const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
+      // FIX (upsells): persist EVERY line item, including unmatched upsells.
+      const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
       for (const item of parsed.lineItems) {
         const matched = storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title);
-        if (matched) {
-          orderItemsToCreate.push({ productId: matched.id, quantity: item.quantity, price: item.price });
-          productCost += matched.costPrice * item.quantity;
-        }
+        orderItemsToCreate.push({
+          productId: matched?.id ?? null,
+          quantity: item.quantity,
+          price: item.price,
+          rawProductName: item.title,
+          sku: item.sku || '',
+          variantInfo: (item as any).variantInfo || '',
+        });
+        if (matched) productCost += matched.costPrice * item.quantity;
       }
+      console.log(`[TOKEN-WEBHOOK ${provider}] orderItemsToCreate.length=${orderItemsToCreate.length} — matched=${orderItemsToCreate.filter(i => i.productId).length}/${parsed.lineItems.length}`);
 
       const rawProductName = parsed.lineItems.length > 0
         ? parsed.lineItems.map((li: any) => {
@@ -3724,6 +3731,20 @@ export async function registerRoutes(
       const topic = (req.headers["x-shopify-topic"] as string) || "";
       const isTestPing = !payload?.id || topic === "hmac-verification";
 
+      // ── DIAGNOSTIC: log every line item Shopify sends ────────────────────
+      // Critical for upsell apps (EasySell, ReConvert, OneClickUpsell) that
+      // add line items via cart manipulation. If the count is wrong here,
+      // it's an upstream issue (carrier app filtering); otherwise the issue
+      // is in our processing.
+      if (!isTestPing) {
+        const lineItemsRaw = Array.isArray(payload?.line_items) ? payload.line_items : [];
+        console.log(`[SHOPIFY-WEBHOOK] order #${payload.order_number || payload.id} → ${lineItemsRaw.length} line items received`);
+        lineItemsRaw.forEach((item: any, i: number) => {
+          console.log(`[SHOPIFY-WEBHOOK]   item ${i + 1}: title="${item.title}" qty=${item.quantity} price=${item.price} sku="${item.sku || 'none'}"`);
+        });
+        console.log(`[SHOPIFY-WEBHOOK] total_price=${payload.total_price} subtotal_price=${payload.subtotal_price}`);
+      }
+
       // ── 2. Always log every hit in integration_logs ───────────────────────────
       try {
         await storage.createIntegrationLog({
@@ -3777,21 +3798,42 @@ export async function registerRoutes(
       }
 
       // ── 6. Product matching (case-insensitive) ────────────────────────────────
+      // FIX (upsells): persist EVERY line item — including unmatched upsells
+      // added by EasySell / ReConvert / OneClickUpsell, etc. Previously we
+      // only pushed when a product matched, silently dropping upsell items.
       let storeProducts: any[] = [];
       try { storeProducts = await storage.getProductsByStore(storeId); } catch (_) {}
       let productCost = 0;
-      const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
+      const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
       for (const item of parsed.lineItems) {
         const matched = storeProducts.find(p =>
           (item.sku && p.sku && p.sku.toLowerCase() === item.sku.toLowerCase()) ||
           p.name.toLowerCase() === item.title.toLowerCase()
         );
-        if (matched) {
-          orderItemsToCreate.push({ productId: matched.id, quantity: item.quantity, price: item.price });
-          productCost += matched.costPrice * item.quantity;
-        }
+        orderItemsToCreate.push({
+          productId: matched?.id ?? null,
+          quantity: item.quantity,
+          price: item.price,
+          rawProductName: item.title,
+          sku: item.sku || '',
+          variantInfo: (item as any).variantInfo || '',
+        });
+        if (matched) productCost += matched.costPrice * item.quantity;
       }
-      console.log(`[SHOPIFY WEBHOOK] Product match — ${orderItemsToCreate.length}/${parsed.lineItems.length} items matched`);
+      console.log(`[SHOPIFY-WEBHOOK] orderItemsToCreate.length=${orderItemsToCreate.length} — matched=${orderItemsToCreate.filter(i => i.productId).length}/${parsed.lineItems.length}`);
+      orderItemsToCreate.forEach((i, idx) => console.log(`[SHOPIFY-WEBHOOK]   to create ${idx}: ${i.rawProductName} qty=${i.quantity} price=${i.price} matched=${!!i.productId}`));
+
+      // Build a joined display name from ALL line items (matches what the
+      // generic webhook handler does — keeps the orders table column readable).
+      const shopifyRawProductName = parsed.lineItems.length > 0
+        ? parsed.lineItems.map((li: any) => {
+            const v = (li.variantInfo || '').trim();
+            return v ? `${li.title} - ${v}` : li.title;
+          }).filter(Boolean).join(' + ')
+        : null;
+      const shopifyVariantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
+      const shopifyRawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
+      console.log(`[SHOPIFY-WEBHOOK] storing totalPrice=${parsed.totalPrice} (= ${(parsed.totalPrice / 100).toFixed(2)} DH) — joined name="${shopifyRawProductName}"`);
 
       // ── 7. Agent assignment ───────────────────────────────────────────────────
       const shopifyMagasinId = integration.magasinId ?? null;
@@ -3823,11 +3865,14 @@ export async function registerRoutes(
           adSpend: 0,
           source: "shopify",
           comment: parsed.comment || null,
+          rawProductName: shopifyRawProductName,
+          variantDetails: shopifyVariantDetails,
+          rawQuantity: shopifyRawQuantity,
           utmSource: parsed.utmSource || null,
           utmCampaign: parsed.utmCampaign || null,
           trafficPlatform: parsed.trafficPlatform || null,
           mediaBuyerId: mediaBuyer?.id || null,
-        } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+        } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
       } catch (dbErr: any) {
         console.error(`[DATABASE ERROR]: Failed to save webhook order: ${dbErr?.message || dbErr}`);
         return res.status(500).json({ message: "Failed to save order", detail: dbErr?.message });
@@ -3891,15 +3936,31 @@ export async function registerRoutes(
 
       const storeProducts = await storage.getProductsByStore(storeId);
       let productCost = 0;
-      const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
+      // FIX (upsells): persist EVERY line item, including unmatched upsells.
+      const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
 
       for (const item of parsed.lineItems) {
         const matchedProduct = storeProducts.find(p => (item.sku && p.sku === item.sku) || p.name === item.title);
-        if (matchedProduct) {
-          orderItemsToCreate.push({ productId: matchedProduct.id, quantity: item.quantity, price: item.price });
-          productCost += matchedProduct.costPrice * item.quantity;
-        }
+        orderItemsToCreate.push({
+          productId: matchedProduct?.id ?? null,
+          quantity: item.quantity,
+          price: item.price,
+          rawProductName: item.title,
+          sku: item.sku || '',
+          variantInfo: (item as any).variantInfo || '',
+        });
+        if (matchedProduct) productCost += matchedProduct.costPrice * item.quantity;
       }
+
+      // Joined display name from ALL line items (handles upsells in legacy path).
+      const legacyRawProductName = parsed.lineItems.length > 0
+        ? parsed.lineItems.map((li: any) => {
+            const v = (li.variantInfo || '').trim();
+            return v ? `${li.title} - ${v}` : li.title;
+          }).filter(Boolean).join(' + ')
+        : null;
+      const legacyVariantDetails = parsed.lineItems.map((li: any) => li.variantInfo).filter(Boolean).join(' | ') || null;
+      const legacyRawQuantity = parsed.lineItems.reduce((sum: number, li: any) => sum + (li.quantity || 1), 0) || null;
 
       const mediaBuyerShopify = parsed.buyerCode ? await storage.getMediaBuyerByCode(storeId, parsed.buyerCode) : null;
       console.log(`[Attribution] Order=${parsed.orderNumber} UTM="${parsed.utmSource}" → Code=${parsed.buyerCode || 'none'} Platform=${parsed.trafficPlatform || 'none'} → Buyer=${mediaBuyerShopify ? mediaBuyerShopify.username + ' (#' + mediaBuyerShopify.id + ')' : 'NOT FOUND'}`);
@@ -3909,10 +3970,13 @@ export async function registerRoutes(
         customerPhone: parsed.customerPhone, customerAddress: parsed.customerAddress,
         customerCity: parsed.customerCity, status: 'nouveau', totalPrice: parsed.totalPrice,
         productCost, shippingCost: 0, adSpend: 0, source: 'shopify', comment: parsed.comment,
+        rawProductName: legacyRawProductName,
+        variantDetails: legacyVariantDetails,
+        rawQuantity: legacyRawQuantity,
         utmSource: parsed.utmSource || null, utmCampaign: parsed.utmCampaign || null,
         trafficPlatform: parsed.trafficPlatform || null,
         mediaBuyerId: mediaBuyerShopify?.id || null,
-      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: 'shopify' });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });

@@ -50,6 +50,14 @@ Create mobile-first COD landing pages in a 3-step wizard:
 - **Currency**: MAD (Moroccan Dirham), all prices stored in cents
 - **Language**: Multi-language UI (FR/AR/EN) via i18next with RTL support for Arabic
 
+## Multi-Item Orders & Upsells (April 2026)
+Bug: Shopify webhooks (and EasySell-style upsell apps) were silently dropping any line item not present in the store's product catalog — e.g., a 2-item order (349 DH base + 49 DH upsell = 407.80 DH) appeared in the platform as a single 349 DH item.
+- **Root cause**: `if (matched) push(...)` filter in 3 webhook handlers in `server/routes.ts` (Shopify keyed webhook ~3796, generic token webhook ~3450, legacy Shopify webhook ~3940). Generic integration webhook at ~3316 already did it right.
+- **Backend fix**: All 3 handlers now persist EVERY line item with `productId: matched?.id ?? null`, plus `rawProductName/sku/variantInfo` per item. Order-level `rawProductName` / `variantDetails` / `rawQuantity` are computed from ALL items (joined with ` + `). `order_items.product_id` column is nullable so unmatched items insert cleanly.
+- **Cost accounting**: `productCost` only sums catalog-matched items. Unmatched upsells contribute 0 COGS (intentional — we don't know their cost). Add the upsell to your product catalog if you want COGS tracking.
+- **Frontend fix**: `orders.tsx` and `all-orders.tsx` list-table cells now render multi-item orders as `"Item1 - var1 (x1) + Item2 - var2 (x1)"` (was rendering only `items[0]`). Cell widened to `max-w-[200px]` with `line-clamp-2` and full text in tooltip. Order details modal already iterated all items (no change).
+- **Diagnostic logging**: `[SHOPIFY-WEBHOOK]` and `[TOKEN-WEBHOOK]` log tags now print every received line item + counts in server logs for future debugging.
+
 ## Smart Product Naming (Variant-Aware)
 Products are displayed everywhere as **"Product Name - Variant"** (e.g., "Mocassins ANAKIO - 43") when a variant exists.
 - **Data source**: `orderItems.variantInfo` (already populated from Shopify/YouCan webhooks via `sanitizeVariant()`); no new DB column needed
