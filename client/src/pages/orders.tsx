@@ -777,6 +777,13 @@ export default function Orders() {
     });
   };
 
+  // An order is shippable only if it's confirmed AND has no tracking number
+  // yet. Already-shipped rows must be unselectable in the UI to prevent the
+  // user from accidentally clicking "Expédier" twice (which would create
+  // duplicate tracking numbers in the carrier system).
+  const isOrderShippable = (o: any) => o?.status === 'confirme' && !o?.trackNumber;
+  const shippableOrders = filteredOrders.filter(isOrderShippable);
+
   const toggleSelect = (id: number) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -786,10 +793,12 @@ export default function Orders() {
   };
 
   const toggleAll = () => {
-    if (selectedIds.size === filteredOrders.length) {
+    // Only ever select rows that are actually shippable; never reach into
+    // already-shipped orders.
+    if (selectedIds.size >= shippableOrders.length && shippableOrders.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredOrders.map((o: any) => o.id)));
+      setSelectedIds(new Set(shippableOrders.map((o: any) => o.id)));
     }
   };
 
@@ -1168,7 +1177,13 @@ export default function Orders() {
             <TableHeader className="bg-muted/30">
               <TableRow>
                 <TableHead className="w-10 px-2">
-                  <Checkbox checked={selectedIds.size === filteredOrders.length && filteredOrders.length > 0} onCheckedChange={toggleAll} data-testid="checkbox-select-all" />
+                  <Checkbox
+                    checked={shippableOrders.length > 0 && selectedIds.size >= shippableOrders.length}
+                    onCheckedChange={toggleAll}
+                    disabled={shippableOrders.length === 0}
+                    title={shippableOrders.length === 0 ? "Aucune commande expédiable" : `Sélectionner ${shippableOrders.length} commande(s) expédiable(s)`}
+                    data-testid="checkbox-select-all"
+                  />
                 </TableHead>
                 {isColVisible('code') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Code</div>{showInlineFilters && renderColFilter('code', 'Filtr...')}</TableHead>}
                 {isColVisible('destinataire') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider"><div>Destinataire</div>{showInlineFilters && renderColFilter('destinataire', 'Filtr...')}</TableHead>}
@@ -1255,7 +1270,18 @@ export default function Orders() {
                   return (
                     <TableRow key={order.id} className="hover:bg-muted/20 transition-colors text-xs" data-testid={`row-order-${order.id}`}>
                       <TableCell className="px-2" onClick={e => e.stopPropagation()}>
-                        <Checkbox checked={selectedIds.has(order.id)} onCheckedChange={() => toggleSelect(order.id)} data-testid={`checkbox-order-${order.id}`} />
+                        {(() => {
+                          const shippable = isOrderShippable(order);
+                          return (
+                            <Checkbox
+                              checked={selectedIds.has(order.id)}
+                              onCheckedChange={() => toggleSelect(order.id)}
+                              disabled={!shippable}
+                              title={!shippable ? 'Cette commande a déjà été expédiée ou n\'est pas confirmée' : undefined}
+                              data-testid={`checkbox-order-${order.id}`}
+                            />
+                          );
+                        })()}
                       </TableCell>
                       {isColVisible('code') && (
                         <TableCell className="whitespace-nowrap font-mono text-[10px]">
@@ -1563,6 +1589,8 @@ export default function Orders() {
                       <Checkbox
                         checked={selectedIds.has(order.id)}
                         onCheckedChange={() => toggleSelect(order.id)}
+                        disabled={!isOrderShippable(order)}
+                        title={!isOrderShippable(order) ? 'Cette commande a déjà été expédiée ou n\'est pas confirmée' : undefined}
                         className="shrink-0 border-border"
                         data-testid={`checkbox-mobile-${order.id}`}
                       />

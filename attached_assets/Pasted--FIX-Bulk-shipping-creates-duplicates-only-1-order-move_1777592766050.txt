@@ -1,0 +1,126 @@
+🐛 FIX — Bulk shipping creates duplicates + only 1 order moves to "Suivi des Colis"
+Two bugs in one operation
+Bug 1: Already-shipped orders get re-shipped (DUPLICATE TRACKING NUMBERS)
+In server/storage.ts line 632-641, bulkShipOrders includes orders already in status 'expédié' and 'Attente De Ramassage' — meaning if a user clicks "Sélectionner tout" and the list contains orders already dispatched, the code re-sends them to Digylog. Carrier creates new tracking numbers → 2-3-4 duplicates per order in their system.
+Bug 2: Status update race condition
+In server/routes.ts line 1401-1404, after a successful carrier API call, the code does:
+tsdbUpdates.push(
+  storage.updateOrderShipping(order.id, trackingNumber, labelUrl!, provider),
+  storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
+);
+These two writes race each other because they're pushed into dbUpdates[] and executed in parallel later. Sometimes updateOrderShipping overwrites status, sometimes updateOrderStatus runs first then updateOrderShipping clobbers it back to 'confirme'. Result: only 1-2 orders out of 10 actually move statuses.
+The fix
+Step 1 — server/storage.ts line 632-641: ONLY 'confirme' is shippable, AND skip orders that already have a track number
+Replace bulkShipOrders with:
+tsasync bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]> {
+  if (orderIds.length === 0) return [];
+
+  const eligible = await db.select().from(orders)
+    .where(and(
+      inArray(orders.id, orderIds),
+      eq(orders.storeId, storeId),
+      // Only confirmed orders are shippable.
+      // Do NOT include 'expédié' or 'Attente De Ramassage' — those are
+      // already-shipped states and re-sending creates duplicate tracking
+      // numbers in the carrier's system.
+      eq(orders.status, 'confirme'),
+      // Defense-in-depth: even if status was wrongly left as 'confirme',
+      // a non-null track_number means the order was already dispatched.
+      sql`(${orders.trackNumber} IS NULL OR ${orders.trackNumber} = '')`,
+    ));
+
+  return eligible;
+}
+The change in plain language:
+
+Old: status ∈ {confirme, expédié, Attente De Ramassage} → eligible
+New: status = 'confirme' AND track_number IS empty → eligible
+
+This kills the duplicate-shipping bug at its source. Even if the user clicks "Expédier" 10 times in a row on the same selection, after the first successful pass every order has a track_number and is filtered out on subsequent passes.
+Step 2 — server/routes.ts line ~1399-1410: serialize the post-shipping DB writes per order
+The current code pushes both writes into dbUpdates[] and runs them via Promise.all later. That's the race. Replace the success branch (around line 1399-1414):
+ts} else {
+  console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber}`);
+
+  // ── Atomically persist tracking + status in ONE call ─────────────
+  // Doing this in a single update avoids the race where two parallel
+  // updates clobber each other's columns.
+  dbUpdates.push(
+    storage.updateOrder(order.id, {
+      trackNumber:       trackingNumber,
+      labelUrl:          labelUrl ?? null,
+      shippingProvider:  provider,
+      status:            'Attente De Ramassage',
+      lastActionAt:      new Date(),
+      lastActionBy:      user.id,
+    } as any)
+  );
+
+  const fee = (orderCreds as any).deliveryFee || 0;
+  if (fee > 0) {
+    dbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
+  }
+Important: storage.updateOrder already exists and accepts a partial Order. We're using ONE call that sets all five fields (trackNumber, labelUrl, shippingProvider, status, lastActionAt) atomically. No more split between updateOrderShipping + updateOrderStatus.
+Don't delete updateOrderShipping and updateOrderStatus — other parts of the codebase still call them. Just stop calling them in this specific bulk-ship loop.
+Step 3 — Verify updateOrder accepts these fields
+Open server/storage.ts, find async updateOrder. Confirm the function signature accepts a generic Partial<Order> and writes whatever fields are present. If it does, you're done. If it has explicit field whitelisting, add trackNumber, labelUrl, shippingProvider, status, lastActionAt, lastActionBy to that whitelist.
+Step 4 — Frontend should hide "Expédier" button on already-shipped orders
+In client/src/pages/orders.tsx, find the bulk-ship button / row checkbox logic. Add a guard so the user CAN'T select rows that are already shipped:
+tsx// Wherever the row checkbox is rendered
+const isShippable = order.status === 'confirme' && !order.trackNumber;
+
+<Checkbox
+  checked={selectedIds.has(order.id)}
+  disabled={!isShippable}
+  onCheckedChange={() => toggleSelect(order.id)}
+  title={!isShippable ? 'Cette commande a déjà été expédiée' : undefined}
+/>
+And the "Sélectionner tout" handler should only select shippable rows:
+tsxconst selectAllShippable = () => {
+  const shippable = filteredOrders.filter(
+    (o: any) => o.status === 'confirme' && !o.trackNumber
+  );
+  setSelectedIds(new Set(shippable.map((o: any) => o.id)));
+};
+Apply the same in all-orders.tsx.
+Step 5 — Add a clearer error message when a re-ship is attempted
+In server/routes.ts line 1245-1249, the existing message is generic. Make it specific:
+tsif (eligible.length === 0) {
+  const alreadyShipped = blockedOrders.filter((o: any) =>
+    !!o.trackNumber || o.status === 'expédié' || o.status === 'Attente De Ramassage'
+  ).length;
+
+  return res.status(400).json({
+    message: alreadyShipped > 0
+      ? `${alreadyShipped} commande(s) déjà expédiée(s). Seules les commandes "Confirmé" sans numéro de suivi peuvent être expédiées.`
+      : `Aucune commande éligible — ${blockedOrders.length} commande(s) bloquée(s) (statut requis: "Confirmé").`,
+  });
+}
+Acceptance criteria
+
+✅ Selecting 10 confirmed orders + clicking "Expédier" → all 10 get tracking numbers AND all 10 disappear from "Confirmées" tab AND all 10 appear in "Suivi des Colis".
+✅ Clicking "Expédier" again immediately on the same selection (e.g. user double-clicked) → returns 400 "déjà expédiée(s)" — does NOT create new tracking numbers in the carrier's system.
+✅ Mixing 10 confirmed orders + 5 already-shipped orders in one selection → bulk-ship endpoint processes the 10 confirmed ones, returns the 5 as blocked with a clear message.
+✅ The frontend grays out / disables checkboxes on already-shipped rows so the user can't select them at all.
+✅ "Sélectionner tout" on the Confirmées tab selects only orders with status='confirme' AND track_number IS NULL.
+✅ Server logs show [SHIPPING-LOG]: ✅ Order #X dispatched — tracking: TRACK123 exactly once per order, never twice.
+✅ DB query proves no duplicates:
+
+sql   SELECT track_number, count(*) FROM orders
+   WHERE track_number IS NOT NULL
+   GROUP BY track_number HAVING count(*) > 1;
+   -- Should return 0 rows
+Commit
+bashgit add server/storage.ts server/routes.ts client/src/pages/orders.tsx client/src/pages/all-orders.tsx
+git commit -m "fix(shipping): prevent duplicate dispatches + atomic status update on bulk-ship
+
+- bulkShipOrders: only status='confirme' AND track_number IS NULL is eligible
+  (previously included 'expédié' and 'Attente De Ramassage' which let already-shipped
+   orders be re-sent, creating duplicate tracking numbers in carrier system)
+- Atomic post-ship update: one updateOrder call sets trackNumber+labelUrl+status
+  together (previously two parallel updates raced — only first order's status
+  reliably moved to 'Attente De Ramassage', others stayed 'confirme')
+- Frontend disables checkboxes on already-shipped rows + 'Sélectionner tout' filters
+- Clearer error message when user re-clicks Expédier"
+git push
+

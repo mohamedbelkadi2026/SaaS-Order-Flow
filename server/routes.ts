@@ -1241,20 +1241,27 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Transporteur ${provider} non connecté. Ajoutez un compte dans Intégrations → Sociétés de Livraison.` });
       }
 
-      const SHIPPABLE_STATUSES = ['confirme', 'expédié', 'Attente De Ramassage'];
       const eligible = await storage.bulkShipOrders(orderIds, storeId);
 
-      // Identify blocked orders (requested but not eligible due to wrong status)
+      // Identify blocked orders (requested but not eligible — wrong status
+      // OR already has a tracking number, which means it was already shipped).
       const allRequested = await storage.getOrdersByIds(orderIds, storeId);
       const eligibleIds = new Set(eligible.map((o: any) => o.id));
       const blockedOrders = allRequested.filter((o: any) => !eligibleIds.has(o.id));
 
       if (eligible.length === 0 && blockedOrders.length === 0) {
-        return res.status(400).json({ message: "Aucune commande éligible (statut 'confirme' requis)" });
+        return res.status(400).json({ message: "Aucune commande éligible (statut 'Confirmé' requis, sans numéro de suivi)" });
       }
       if (eligible.length === 0) {
+        // Distinguish "already shipped" from "wrong status" so the user
+        // gets an actionable message instead of a generic one.
+        const alreadyShipped = blockedOrders.filter((o: any) =>
+          !!o.trackNumber || o.status === 'expédié' || o.status === 'Attente De Ramassage'
+        ).length;
         return res.status(400).json({
-          message: `Aucune commande éligible — ${blockedOrders.length} commande(s) bloquée(s) car non confirmées. Statuts autorisés: ${SHIPPABLE_STATUSES.join(', ')}.`,
+          message: alreadyShipped > 0
+            ? `${alreadyShipped} commande(s) déjà expédiée(s). Seules les commandes "Confirmé" sans numéro de suivi peuvent être expédiées.`
+            : `Aucune commande éligible — ${blockedOrders.length} commande(s) bloquée(s) (statut requis: "Confirmé").`,
         });
       }
 
@@ -1350,16 +1357,30 @@ export async function registerRoutes(
           for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
             const batch = eligible.slice(i, i + BATCH_SIZE);
 
+            // ── Precompute per-order context BEFORE Promise.allSettled ──
+            // Previously `resolvedCity` and `orderCreds` were only declared
+            // inside the inner `batch.map(order => {...})` arrow; the later
+            // `settled.forEach` referenced them out of scope, throwing
+            // "Cannot read properties of undefined" on every successful
+            // shipment. The throw broke the forEach mid-iteration and the
+            // subsequent `Promise.all([...dbUpdates, ...logUpdates])` was
+            // never reached → orders kept their tracking number AT THE
+            // CARRIER but stayed in 'confirme' on our side. This was the
+            // real reason "only 1-2 orders moved status".
+            const perOrderCtx = batch.map(order => {
+              const resolvedCity = getResolvedCity(order);
+              const orderCreds = getCredsForOrder(resolvedCity);
+              const bulkQty: number =
+                (order as any).rawQuantity
+                  ? Number((order as any).rawQuantity)
+                  : Array.isArray((order as any).items) && (order as any).items.length > 0
+                    ? ((order as any).items as any[]).reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0)
+                    : 1;
+              return { order, resolvedCity, orderCreds, bulkQty };
+            });
+
             const settled = await Promise.allSettled(
-              batch.map(order => {
-                const resolvedCity = getResolvedCity(order);
-                const orderCreds = getCredsForOrder(resolvedCity);
-                const bulkQty: number =
-                  (order as any).rawQuantity
-                    ? Number((order as any).rawQuantity)
-                    : Array.isArray((order as any).items) && (order as any).items.length > 0
-                      ? ((order as any).items as any[]).reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0)
-                      : 1;
+              perOrderCtx.map(({ order, resolvedCity, orderCreds, bulkQty }) => {
                 console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
                 console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId} qty=${bulkQty}`);
@@ -1390,7 +1411,7 @@ export async function registerRoutes(
             const logUpdates: Promise<unknown>[] = [];
 
             settled.forEach((outcome, idx) => {
-              const order = batch[idx];
+              const { order, resolvedCity, orderCreds } = perOrderCtx[idx];
               const ref   = (order as any).orderNumber || order.id;
 
               if (outcome.status === 'fulfilled' && outcome.value.success) {
@@ -1408,9 +1429,20 @@ export async function registerRoutes(
                   failedCount++;
                 } else {
                 console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber} (saved to track_number column)`);
+                // ── Atomic post-ship update ─────────────────────────────────────
+                // Previously this was 2 calls (updateOrderShipping +
+                // updateOrderStatus) pushed into dbUpdates and run via
+                // Promise.all. They raced: sometimes status was clobbered back
+                // to 'confirme', so only some orders moved to "Attente De
+                // Ramassage". One updateOrder call sets all fields together.
                 dbUpdates.push(
-                  storage.updateOrderShipping(order.id, trackingNumber, labelUrl!, provider),
-                  storage.updateOrderStatus(order.id, 'Attente De Ramassage'),
+                  storage.updateOrder(order.id, {
+                    trackNumber:      trackingNumber,
+                    labelLink:        labelUrl ?? null,
+                    shippingProvider: provider,
+                    carrierName:      provider,
+                    status:           'Attente De Ramassage',
+                  } as any)
                 );
                 const fee = (orderCreds as any).deliveryFee || 0;
                 if (fee > 0) {
@@ -6528,6 +6560,21 @@ export async function registerRoutes(
       if (!order) return res.status(404).json({ message: "Commande non trouvée" });
       if (order.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
 
+      // ── Re-ship guard ───────────────────────────────────────────────────
+      // Block already-shipped orders so the user can't accidentally create
+      // duplicate tracking numbers in the carrier system. Same eligibility
+      // rule as bulkShipOrders: status='confirme' AND no track number.
+      if (order.status !== 'confirme') {
+        return res.status(400).json({
+          message: `Commande #${order.orderNumber} a le statut "${order.status}" — seules les commandes "Confirmé" peuvent être expédiées.`,
+        });
+      }
+      if (order.trackNumber) {
+        return res.status(400).json({
+          message: `Commande #${order.orderNumber} a déjà été expédiée (suivi: ${order.trackNumber}). Réexpédition interdite pour éviter les doublons.`,
+        });
+      }
+
       // Smart dispatch: carrier accounts first, then legacy storeIntegrations
       const rawOrderCityForDispatch = (order.customerCity || '').trim();
       const creds = await storage.getAccountForShipping(storeId, provider, rawOrderCityForDispatch);
@@ -6614,8 +6661,16 @@ export async function registerRoutes(
       }
 
       console.log(`[SHIPPING-LOG]: ✅ Order #${order.orderNumber} dispatched via ${provider} — tracking: ${trackingNumber} (saved to track_number column)`);
-      await storage.updateOrderShipping(orderId, trackingNumber, labelUrl!, provider);
-      await storage.updateOrderStatus(orderId, 'Attente De Ramassage');
+      // Atomic single-update: same pattern as bulk-ship to avoid any chance
+      // of partial state where the tracking number is saved but status
+      // doesn't move (and vice versa).
+      await storage.updateOrder(orderId, {
+        trackNumber:      trackingNumber,
+        labelLink:        labelUrl ?? null,
+        shippingProvider: provider,
+        carrierName:      provider,
+        status:           'Attente De Ramassage',
+      } as any);
 
       await storage.createIntegrationLog({
         storeId, integrationId: null, provider,

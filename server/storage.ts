@@ -633,11 +633,19 @@ export class DatabaseStorage implements IStorage {
 
   async bulkShipOrders(orderIds: number[], storeId: number): Promise<Order[]> {
     if (orderIds.length === 0) return [];
+    // ── Eligibility for shipping ─────────────────────────────────────────
+    // Only orders with status='confirme' AND no existing track number are
+    // eligible. Previously this also accepted 'expédié' and 'Attente De
+    // Ramassage', which let already-shipped orders be re-sent to the
+    // carrier API → duplicate tracking numbers in the carrier system.
+    // The track_number guard is defense-in-depth: even if a 'confirme'
+    // row was wrongly left after a prior dispatch, we won't reship it.
     const eligible = await db.select().from(orders)
       .where(and(
         inArray(orders.id, orderIds),
         eq(orders.storeId, storeId),
-        inArray(orders.status, ['confirme', 'expédié', 'Attente De Ramassage'])
+        eq(orders.status, 'confirme'),
+        sql`(${orders.trackNumber} IS NULL OR ${orders.trackNumber} = '')`,
       ));
     return eligible;
   }

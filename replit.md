@@ -75,7 +75,11 @@ The bulk ship endpoint now processes orders **in parallel batches of 5** (instea
 
 - **10-second timeout per API call**: `AbortController` in `carrier-service.ts`; timeout errors return a clear message instead of hanging indefinitely.
 - **`Promise.allSettled()` batching**: 5 carrier API calls fire simultaneously. Failed orders in a batch don't block the remaining ones.
-- **Parallel DB writes**: After each batch resolves, `updateOrderShipping` + `updateOrderStatus` for all successful orders run in parallel via `Promise.all`, reducing DB round-trips.
+- **Atomic post-ship persistence**: After each batch resolves, a single `storage.updateOrder({trackNumber, labelLink, shippingProvider, carrierName, status: 'Attente De Ramassage'})` writes all fields together. (Previously two separate calls — `updateOrderShipping` + `updateOrderStatus` — raced and could leave orders with a tracking number but stuck in `confirme`.)
+
+### Bulk-ship hardening (April 2026)
+- **Re-ship guard**: `bulkShipOrders` (storage.ts) and `POST /api/orders/:id/ship` (routes.ts) both require `status='confirme'` AND `track_number` is null/empty. Prevents creating duplicate tracking numbers in Digylog/Ameex when a user accidentally re-clicks ship on dispatched orders. Frontend disables checkboxes on non-shippable rows in `orders.tsx` + `all-orders.tsx` (table + mobile card).
+- **Per-order context fix**: Bulk-ship loop now precomputes `perOrderCtx = batch.map(...) → {order, resolvedCity, orderCreds, bulkQty}` BEFORE `Promise.allSettled`, then destructures it inside `settled.forEach`. Previously `orderCreds`/`resolvedCity` were referenced out-of-scope, throwing mid-loop and silently aborting `Promise.all` on the DB updates — this was the actual root cause of "only some orders move status".
 - **SSE real-time progress**: After each batch the server broadcasts `shipping_progress` events (`{ done, total, shipped, failed }`) via `broadcastToStore`. A final broadcast includes `complete: true`.
 - **Frontend progress modal** (`orders.tsx`):
   - Clicking the truck icon opens a progress modal immediately (not a toast) and hides the selection modal.
