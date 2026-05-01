@@ -1391,12 +1391,18 @@ export async function registerRoutes(
             const perOrderCtx = batch.map(order => {
               const resolvedCity = getResolvedCity(order);
               const orderCreds = getCredsForOrder(resolvedCity);
-              const bulkQty: number =
-                (order as any).rawQuantity
-                  ? Number((order as any).rawQuantity)
-                  : Array.isArray((order as any).items) && (order as any).items.length > 0
-                    ? ((order as any).items as any[]).reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0)
-                    : 1;
+              // Sum items[].quantity FIRST (most accurate), fall back to
+              // rawQuantity only when items are missing (legacy orders).
+              const bulkQty: number = (() => {
+                const items = (order as any).items;
+                if (Array.isArray(items) && items.length > 0) {
+                  const sum = items.reduce((s: number, it: any) => s + (Number(it.quantity) || 1), 0);
+                  if (sum > 0) return sum;
+                }
+                const raw = Number((order as any).rawQuantity);
+                return raw > 0 ? raw : 1;
+              })();
+              console.log(`[SHIPPING-QTY] order=${order.id} items=${JSON.stringify((order as any).items?.map((i: any) => ({ p: i.rawProductName, q: i.quantity })))} → bulkQty=${bulkQty}`);
               return { order, resolvedCity, orderCreds, bulkQty };
             });
 
@@ -6838,13 +6844,17 @@ export async function registerRoutes(
         console.log(`[Ship] City auto-corrected: "${rawOrderCity}" → "${matchedCity}" for carrier ${provider}`);
       }
 
-      // ── Calculate total quantity ──────────────────────────────────
-      const orderQuantity: number =
-        (order as any).rawQuantity
-          ? Number((order as any).rawQuantity)
-          : Array.isArray(order.items) && order.items.length > 0
-            ? (order.items as any[]).reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0)
-            : 1;
+      // ── Calculate total quantity — items first, rawQuantity as fallback ──
+      const orderQuantity: number = (() => {
+        const items = order.items as any[] | undefined;
+        if (Array.isArray(items) && items.length > 0) {
+          const sum = items.reduce((s: number, it: any) => s + (Number(it.quantity) || 1), 0);
+          if (sum > 0) return sum;
+        }
+        const raw = Number((order as any).rawQuantity);
+        return raw > 0 ? raw : 1;
+      })();
+      console.log(`[SHIPPING-QTY] order=${orderId} items=${JSON.stringify((order.items as any[])?.map((i: any) => ({ p: i.rawProductName, q: i.quantity })))} → qty=${orderQuantity}`);
 
       // ── Call carrier API ──────────────────────────────────────────
       console.log(`[DIGYLOG-FINAL] order=${orderId} store="${(creds as any).digylogStoreName || (creds as any).carrierStoreName}" network=${(creds as any).digylogNetworkId} qty=${orderQuantity}`);

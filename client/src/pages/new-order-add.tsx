@@ -143,7 +143,13 @@ export default function NewOrderAdd() {
 
   const removeItem = (id: string) => setItems(prev => prev.filter(it => it.id !== id));
 
-  const itemsTotal = items.reduce((sum, it) => sum + it.price * it.quantity, 0);
+  const computedTotal = items.reduce((sum, it) => sum + it.price * it.quantity, 0);
+  const [overrideTotal, setOverrideTotal] = useState<string>('');
+
+  // Effective total: user-typed override takes precedence, else auto-computed.
+  const itemsTotal = overrideTotal.trim() !== ''
+    ? (Number(overrideTotal) || 0)
+    : computedTotal;
 
   const handleSubmit = async () => {
     if (!customerName.trim() || !customerPhone.trim()) {
@@ -405,14 +411,40 @@ export default function NewOrderAdd() {
             ))}
           </div>
 
-          {/* Total box */}
+          {/* Total box — editable for special offers / bundle pricing */}
           <div className="flex justify-end mt-5">
             <div className="w-64">
               <Label className="text-xs mb-1.5 block text-gray-600">Prix Total de la Commande (DH)</Label>
-              <div className="border-2 border-gray-200 rounded-lg px-4 py-3 bg-gray-50 text-right">
-                <span className="text-2xl font-bold text-gray-800">{itemsTotal.toFixed(2)}</span>
+              <div className="relative">
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={overrideTotal !== '' ? overrideTotal : computedTotal.toFixed(2)}
+                  onChange={e => setOverrideTotal(e.target.value)}
+                  className="text-2xl font-bold text-right pr-12 h-14"
+                  placeholder={computedTotal.toFixed(2)}
+                  data-testid="input-total-price"
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-gray-500">DH</span>
               </div>
-              <p className="text-[11px] text-gray-400 text-right mt-1">Le total est calculé automatiquement.</p>
+              <div className="flex items-center justify-between mt-1">
+                <p className="text-[11px] text-gray-400">
+                  {overrideTotal.trim() !== ''
+                    ? `Auto: ${computedTotal.toFixed(2)} DH`
+                    : 'Modifiable pour les offres spéciales'}
+                </p>
+                {overrideTotal.trim() !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setOverrideTotal('')}
+                    className="text-[11px] text-blue-600 hover:underline"
+                    data-testid="button-reset-total"
+                  >
+                    Réinitialiser
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

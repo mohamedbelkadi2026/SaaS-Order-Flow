@@ -1,0 +1,135 @@
+🐛 FIX — Quantity not preserved when shipping to Digylog + manual total override on Add OrderTwo related problemsBug 1: Bulk-ship sends qty=1 to Digylog when actual quantity is moreIn server/routes.ts line 1347-1352:
+tsconst bulkQty: number =
+  (order as any).rawQuantity
+    ? Number((order as any).rawQuantity)
+    : Array.isArray((order as any).items) && (order as any).items.length > 0
+      ? ((order as any).items as any[]).reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)
+      : 1;This prefers rawQuantity (a legacy field that's 1 for most webhook-imported orders) over items[].quantity (the truth). When a customer orders 6 units and rawQuantity happens to be 1, Digylog receives qty=1.The fix: always sum items[].quantity first, fall back to rawQuantity only when items array is missing or empty.Bug 2: Manual order form doesn't allow overriding the totalWhen I create an offer like "6 units @ 179 DH each = 550 DH special bundle", the form computes 179 × 6 = 1074 DH and there's no way to type 550. The field is read-only at line 413: <span>{itemsTotal.toFixed(2)}</span>.I want: total auto-calculated by default, but I can click and edit it manually. The system honors my manual value, not the auto.FixStep 1 — server/routes.ts line 1347-1352: prefer items sum over rawQuantityReplace with:tsconst bulkQty: number = (() => {
+  const items = (order as any).items;
+  if (Array.isArray(items) && items.length > 0) {
+    const sum = items.reduce((s: number, it: any) => s + (Number(it.quantity) || 1), 0);
+    if (sum > 0) return sum;
+  }
+  // Fallback for legacy orders that don't have items hydrated
+  const raw = Number((order as any).rawQuantity);
+  return raw > 0 ? raw : 1;
+})();
+
+console.log(`[SHIPPING-QTY] order=${order.id} items=${JSON.stringify((order as any).items?.map((i: any) => ({ p: i.rawProductName, q: i.quantity })))} → bulkQty=${bulkQty}`);The log line lets you verify in Railway logs that the right quantity is being sent. Pick one shipped order from logs after deploy and confirm the bulkQty matches what's in the platform UI.Step 2 — Same fix in single-order shipping endpointAround line 6394 in server/routes.ts, find the other shipOrderToCarrier call (single-order ship). Apply the SAME quantity computation:tsconst items = (order as any).items;
+const qty = Array.isArray(items) && items.length > 0
+  ? items.reduce((s: number, it: any) => s + (Number(it.quantity) || 1), 0)
+  : Math.max(1, Number((order as any).rawQuantity) || 1);
+
+const shipResult = await shipOrderToCarrier(provider, creds, {
+  // … existing fields …
+  quantity: qty,    // ← was wrong before, now sums items
+  // …
+});Step 3 — Hydrate items on every order before shippingThe above fix only works if order.items is populated when we read it. Verify the bulk-ship path actually loads items. In the function that prepares eligible orders for shipping (search for bulkShipOrders or the helper that returns rows to ship), make sure it includes orderItems hydration:ts// In server/storage.ts where bulkShipOrders or similar fetches orders:
+const eligibleHydrated = await this.hydrateOrders(eligible);
+return eligibleHydrated;If the existing bulkShipOrders returns raw orders without items, switch the route to call hydrateOrders on them before shipping. The hydrateOrders function already exists and attaches items to each order.Step 4 — Manual order form: allow total overrideIn client/src/pages/new-order-add.tsx:Around line 146, replace the read-only computation:
+tsconst itemsTotal = items.reduce((sum, it) => sum + it.price * it.quantity, 0);With an override-aware version:
+tsconst computedTotal = items.reduce((sum, it) => sum + it.price * it.quantity, 0);
+const [overrideTotal, setOverrideTotal] = useState<string>('');
+
+// Effective total: if user typed an override, use it; else use computed.
+const itemsTotal = overrideTotal.trim() !== ''
+  ? Number(overrideTotal) || 0
+  : computedTotal;
+
+// When items change and there's no override, the computed value flows through automatically.
+// When user types in the override field, it takes precedence.Then around line 408-417, replace the read-only total display with an editable input:
+tsx<div className="flex justify-end mt-5">
+  <div className="w-64">
+    <Label className="text-xs mb-1.5 block text-gray-600">
+      Prix Total de la Commande (DH)
+    </Label>
+    <div className="relative">
+      <Input
+        type="number"
+        step="0.01"
+        min="0"
+        value={overrideTotal !== '' ? overrideTotal : computedTotal.toFixed(2)}
+        onChange={(e) => setOverrideTotal(e.target.value)}
+        className="text-2xl font-bold text-right pr-12 h-14"
+        placeholder={computedTotal.toFixed(2)}
+      />
+      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-semibold text-gray-500">
+        DH
+      </span>
+    </div>
+    <div className="flex items-center justify-between mt-1">
+      <p className="text-[11px] text-gray-400">
+        {overrideTotal.trim() !== ''
+          ? `Auto: ${computedTotal.toFixed(2)} DH`
+          : 'Modifiable pour les offres spéciales'}
+      </p>
+      {overrideTotal.trim() !== '' && (
+        <button
+          type="button"
+          onClick={() => setOverrideTotal('')}
+          className="text-[11px] text-blue-600 hover:underline"
+        >
+          Réinitialiser
+        </button>
+      )}
+    </div>
+  </div>
+</div>When the user types 550 and the auto value would be 1074, the field stays at 550 and the helper text shows "Auto: 1074 DH" with a "Réinitialiser" link to revert to auto.Step 5 — Server: trust the client's totalPrice (don't recompute)In server/routes.ts, find the /api/orders/manual endpoint. Make sure it stores exactly what the client sent for totalPrice, doesn't recompute from items:tsconst totalPriceCents = Math.round(Number(req.body.totalPrice) * 100);
+if (!Number.isFinite(totalPriceCents) || totalPriceCents < 0) {
+  return res.status(400).json({ message: "Total invalide" });
+}
+
+await storage.createOrder({
+  // … other fields …
+  totalPrice: totalPriceCents,   // ← from client, trust the override
+  // DO NOT replace with sum(items.price * items.quantity)
+});If the existing endpoint computes totalPrice server-side from items, change it to use the client value as-is. Items keep their per-line price * quantity for inventory/COGS but the order-level totalPrice is authoritative.Step 6 — Show a clear breakdown in the order details modalWhen an order has totalPrice ≠ sum(items), surface it. In client/src/components/order-details-modal.tsx:tsxconst itemsSubtotal = (order.items || []).reduce(
+  (s: number, i: any) => s + ((i.price || 0) * (i.quantity || 1)),
+  0
+);
+const isOfferOrDiscount = Math.abs(itemsSubtotal - order.totalPrice) > 100; // > 1 DH
+
+{isOfferOrDiscount && (
+  <div className="text-xs bg-amber-50 dark:bg-amber-950/30 border border-amber-200 rounded p-2 mt-2">
+    <div className="flex justify-between">
+      <span>Sous-total articles:</span>
+      <span className="font-mono">{(itemsSubtotal / 100).toFixed(2)} DH</span>
+    </div>
+    <div className="flex justify-between font-semibold">
+      <span>Total facturé:</span>
+      <span className="font-mono">{(order.totalPrice / 100).toFixed(2)} DH</span>
+    </div>
+    <div className="flex justify-between text-amber-700 dark:text-amber-300 text-[10px] mt-1">
+      <span>Offre/remise:</span>
+      <span className="font-mono">−{((itemsSubtotal - order.totalPrice) / 100).toFixed(2)} DH</span>
+    </div>
+  </div>
+)}This way when someone (you, an agent, an accountant) opens the order, they immediately see "this customer paid 550 instead of 1074 because of an offer".Step 7 — Verify Digylog gets the right total even with overrideIn server/services/carrier-service.ts line 284:
+tsconst priceDH = +(input.totalPrice / 100).toFixed(2);This uses input.totalPrice which comes from the order's totalPrice field (the override-aware one). ✅ No change needed — once the order is created with totalPrice=550, shipping uses 550, not 1074.Acceptance criteria
+✅ Customer orders 6 units via Shopify webhook → order.items[0].quantity = 6 saved.
+✅ Bulk-ship → Digylog receives refs[0].quantity = 6 (visible in Digylog dashboard).
+✅ Server log shows [SHIPPING-QTY] order=X items=[...q:6] → bulkQty=6.
+✅ Manual order form: 6 units × 179 DH defaults total to 1074 DH.
+✅ Click the total field, type 550 → field shows 550, helper text shows "Auto: 1074 DH".
+✅ Submit → order created with totalPrice = 550, items[0].quantity = 6, items[0].price = 179.
+✅ Order details modal shows a yellow box: "Sous-total: 1074 DH | Total facturé: 550 DH | Offre: −524 DH".
+✅ Bulk-ship that order → Digylog receives price = 550, quantity = 6. Customer pays 550 on COD delivery.
+✅ "Réinitialiser" button on the manual form clears the override and reverts to auto-computed.
+Commitbashgit add server/routes.ts server/storage.ts client/src/pages/new-order-add.tsx client/src/components/order-details-modal.tsx
+git commit -m "fix(shipping+orders): preserve item quantity to carrier + manual total override
+
+Shipping fix:
+- bulkShipOrders qty calculation now sums items[].quantity FIRST,
+  falls back to rawQuantity only when items unavailable
+- Same fix applied to single-order ship endpoint
+- New [SHIPPING-QTY] log so we can verify what was actually sent
+- Ensures Digylog receives the true qty (e.g. 6 units, not legacy 1)
+
+Manual order form:
+- Total field is now editable to support special offers
+  (e.g. '6 units for 550 DH instead of 1074 DH')
+- Auto-computed value shown as placeholder + 'Réinitialiser' button
+- Server trusts client totalPrice (does not re-derive from items)
+- Order details modal flags discrepancies between items subtotal and total
+  with an amber 'Offre/remise' badge"
+git push

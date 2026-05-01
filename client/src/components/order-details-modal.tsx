@@ -752,6 +752,32 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                     style={{ backgroundColor: NAVY }}
                   >DH</span>
                 </div>
+                {/* Offer/discount badge — shown when total differs from items sum by > 1 DH */}
+                {(() => {
+                  const itemsSubtotal = (order.items || []).reduce(
+                    (s: number, i: any) => s + ((i.price || 0) * (i.quantity || 1)),
+                    0
+                  );
+                  const facture = order.totalPrice || 0;
+                  const isOffer = Math.abs(itemsSubtotal - facture) > 100;
+                  if (!isOffer) return null;
+                  return (
+                    <div className="text-xs bg-amber-50 dark:bg-amber-950/30 border border-amber-200 rounded p-2 mt-2" data-testid="badge-offer-discount">
+                      <div className="flex justify-between">
+                        <span>Sous-total articles:</span>
+                        <span className="font-mono">{(itemsSubtotal / 100).toFixed(2)} DH</span>
+                      </div>
+                      <div className="flex justify-between font-semibold">
+                        <span>Total facturé:</span>
+                        <span className="font-mono">{(facture / 100).toFixed(2)} DH</span>
+                      </div>
+                      <div className="flex justify-between text-amber-700 dark:text-amber-300 text-[10px] mt-1">
+                        <span>Offre/remise:</span>
+                        <span className="font-mono">−{((itemsSubtotal - facture) / 100).toFixed(2)} DH</span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </Field>
 
               <Field label="Taille / Variant">

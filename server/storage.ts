@@ -647,7 +647,9 @@ export class DatabaseStorage implements IStorage {
         eq(orders.status, 'confirme'),
         sql`(${orders.trackNumber} IS NULL OR ${orders.trackNumber} = '')`,
       ));
-    return eligible;
+    // Hydrate items so bulk-ship quantity sums items[].quantity correctly
+    // (without this, order.items is undefined and qty falls back to rawQuantity=1).
+    return this.hydrateOrders(eligible);
   }
 
   async getOrdersByIds(orderIds: number[], storeId: number): Promise<Order[]> {
