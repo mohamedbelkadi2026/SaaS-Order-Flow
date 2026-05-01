@@ -1,0 +1,223 @@
+🐛 FIX — Two related dashboard bugs: timezone shift on "Ce mois" + agent vs admin stats divergence
+Bug 1: "Ce mois" includes the previous month's last day
+When the user picks "Ce mois" on May 1st 2026, the filter resolves to 30/04/2026 → 01/05/2026 instead of 01/05/2026 → 01/05/2026. April 30th orders contaminate the count (e.g. 83 commandes shown when only ~5 are from May 1).
+Root cause in client/src/pages/dashboard.tsx around line 65:
+tsconst firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+new Date(2026, 4, 1) creates a Date at local midnight in Casablanca (UTC+1). When .toISOString() converts to UTC, it shifts back one hour → "2026-04-30T23:00:00.000Z". Slicing the first 10 chars gives "2026-04-30" instead of "2026-05-01".
+This bug affects every preset that uses .toISOString() on a locally-constructed Date.
+Bug 2: Same agent shows different numbers in admin view vs their own dashboard
+When an admin filters by agentId=khawla + Ce mois, the cards show: Commandes 42, Confirmées 19, Refusées 2.
+When khawla logs in and uses her own dashboard with the same period, the cards show: Commandes 42, Confirmées 9, Refusées 3.
+Same agent, same period, different numbers → contradictory data.
+Root cause: the two views hit two different endpoints:
+
+Admin view → /api/stats/filtered (computes from getOrdersByStore filtered by assignedToId)
+Agent view → /api/agents/my-stats (computes its own way, may filter differently)
+
+The two endpoints apply slightly different status grouping. For example, "Confirmées" might mean:
+
+/api/stats/filtered: status='confirme' OR status='expédié' OR status='delivered' OR ... (cumulative confirmed)
+/api/agents/my-stats: status='confirme' only (current state only)
+
+So the same orders are counted differently depending on which endpoint serves the page.
+
+Fix
+Step 1 — Replace ALL .toISOString().slice(0,10) calls with a timezone-safe formatter
+Add this helper at the top of client/src/pages/dashboard.tsx (and any other file that does the same thing):
+ts/**
+ * Format a Date as YYYY-MM-DD using LOCAL calendar date.
+ *
+ * Avoids the .toISOString() UTC shift that turns "May 1 00:00 Casablanca"
+ * into "April 30 23:00 UTC" → "2026-04-30".
+ */
+function ymd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+Then replace every .toISOString().slice(0, 10) in this file with ymd(...). Specifically the date-range computation function near the top:
+tscase 'today': {
+  return { dateFrom: ymd(now), dateTo: ymd(now) };
+}
+case 'yesterday': {
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  return { dateFrom: ymd(y), dateTo: ymd(y) };
+}
+case 'last_7_days': {
+  const start = new Date(now);
+  start.setDate(start.getDate() - 6);
+  return { dateFrom: ymd(start), dateTo: ymd(now) };
+}
+case 'this_month': {
+  const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+  return { dateFrom: ymd(firstDay), dateTo: ymd(now) };
+}
+case 'last_month': {
+  const firstDay = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastDay  = new Date(now.getFullYear(), now.getMonth(), 0);
+  return { dateFrom: ymd(firstDay), dateTo: ymd(lastDay) };
+}
+case 'this_year': {
+  const firstDay = new Date(now.getFullYear(), 0, 1);
+  return { dateFrom: ymd(firstDay), dateTo: ymd(now) };
+}
+default:
+  return { dateFrom: '', dateTo: '' };
+Apply the same fix in any other page that builds date ranges from Date objects. Search the codebase:
+bashgrep -rn "toISOString().slice(0, 10)" client/src/
+Replace each occurrence with ymd(). The functions that need it: dashboard, inventory, profit-analyzer, publicites, wallet, commissions, agent-performance.
+Step 2 — Make the agent's own dashboard use the SAME endpoint as the admin view
+Right now agents query /api/agents/my-stats — a separate endpoint with its own status mapping. Replace it with /api/stats/filtered?agentId=<self> so the math is byte-identical.
+In client/src/pages/dashboard.tsx, around line 135 where agentMyStats is fetched, change the URL:
+tsconst { data: agentMyStats, isLoading: agentStatsLoading } = useQuery<{
+  totalOrders: number;
+  confirme: number;
+  delivered: number;
+  cancelled: number;
+  refused: number;
+  inProgress: number;
+  nouveau: number;
+  // … etc — match the shape of /api/stats/filtered response
+}>({
+  queryKey: ['/api/stats/filtered', 'agent-self', agentFilters],
+  queryFn: async () => {
+    const params = new URLSearchParams();
+    params.set('agentId', String(user!.id));   // ← force self-scope
+    if (agentFilters.city !== 'all')      params.set('city', agentFilters.city);
+    if (agentFilters.productId !== 'all') params.set('productId', agentFilters.productId);
+
+    // Apply the same date logic as admin presets, using ymd() (no toISOString)
+    const range = computeAgentDateRange(agentFilters);
+    if (range.from) params.set('dateFrom', range.from);
+    if (range.to)   params.set('dateTo',   range.to);
+
+    const r = await fetch(`/api/stats/filtered?${params}`, { credentials: 'include' });
+    if (!r.ok) throw new Error('Failed to fetch');
+    return r.json();
+  },
+  enabled: isAgent,
+  refetchInterval: 60_000,
+});
+Where computeAgentDateRange is a small helper that converts the agent's dateRange preset ('today'|'7days'|'month'|'lastmonth'|'all'|'custom') into { from, to } strings — using ymd() not .toISOString():
+tsfunction computeAgentDateRange(f: { dateRange: string; dateFrom: string; dateTo: string }): { from?: string; to?: string } {
+  if (f.dateRange === 'custom') {
+    return { from: f.dateFrom || undefined, to: f.dateTo || undefined };
+  }
+  const now = new Date();
+  switch (f.dateRange) {
+    case 'today':     return { from: ymd(now), to: ymd(now) };
+    case 'yesterday': {
+      const y = new Date(now); y.setDate(y.getDate() - 1);
+      return { from: ymd(y), to: ymd(y) };
+    }
+    case '7days': {
+      const s = new Date(now); s.setDate(s.getDate() - 6);
+      return { from: ymd(s), to: ymd(now) };
+    }
+    case 'month':
+      return { from: ymd(new Date(now.getFullYear(), now.getMonth(), 1)), to: ymd(now) };
+    case 'lastmonth':
+      return {
+        from: ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)),
+        to:   ymd(new Date(now.getFullYear(), now.getMonth(), 0)),
+      };
+    case 'all':
+    default:
+      return {};
+  }
+}
+Step 3 — Update the field names where agentMyStats is consumed
+The /api/stats/filtered response uses totalOrders (not total), inProgress (not en_cours), and refused. Update lines 325-329:
+tsconst confirme    = isAgent ? (agentMyStats?.confirme    || 0) : (stats?.confirme    || 0);
+const cancelled   = isAgent ? (agentMyStats?.cancelled   || 0) : (stats?.cancelled   || 0);
+const inProgress  = isAgent ? (agentMyStats?.inProgress  || 0) : (stats?.inProgress  || 0);  // was en_cours
+const delivered   = isAgent ? (agentMyStats?.delivered   || 0) : (stats?.delivered   || 0);
+const refused     = isAgent ? (agentMyStats?.refused     || 0) : (stats?.refused     || 0);  // NEW shared variable
+const totalOrders = isAgent ? (agentMyStats?.totalOrders || 0) : (stats?.totalOrders || 0);  // was total
+And the Refusées card on line 1272 now reads from this single source:
+tsx<StatCard
+  title="Refusées"
+  value={refused}
+  icon={XCircle}
+  color={STATUS_COLORS.cancelled}
+  subtitle={`${totalOrders > 0 ? (refused / totalOrders * 100).toFixed(2) : 0}%`}
+/>
+Step 4 — Server side: ensure /api/stats/filtered honors agentId properly
+In server/routes.ts around line 564 (the /api/stats/filtered endpoint), verify the agentId param is applied. From the existing code at line 589-591:
+tsif (agentId && agentId !== 'all') {
+  allOrders = allOrders.filter(o => o.assignedToId === Number(agentId));
+}
+This applies the filter on the in-memory list, so all subsequent counts (confirme, delivered, refused, etc.) are agent-scoped. ✅
+But also enforce: when an agent calls this endpoint, they can ONLY see their own data. Add right after the existing role check:
+tsif (isAgent) {
+  // Agents can only query their own stats — silently override
+  agentId = String(currentUser.id);
+}
+This is already present (line 575-577 in the original code). Good — it was already there for show_store_orders permission. Make sure it covers all agent cases.
+Step 5 — Make the period badge under the page title use the LOCAL date format too
+Around line 1167 where the period banner renders, format dates the same way: prefer ymd() for storage, and use toLocaleDateString('fr-FR') for display:
+tsx<Badge variant="outline" className="mt-2 text-xs gap-1">
+  <Calendar className="w-3 h-3" />
+  {filters.dateFrom && filters.dateTo
+    ? `${new Date(filters.dateFrom).toLocaleDateString('fr-FR')} → ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+    : '...'}
+</Badge>
+When parsing back a YYYY-MM-DD string into a Date for display, JavaScript treats it as midnight UTC, which can also shift the displayed day. Wrap with a tiny helper:
+tsfunction parseLocalYMD(s: string): Date {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);  // local midnight, no UTC shift
+}
+
+// Use it:
+{parseLocalYMD(filters.dateFrom).toLocaleDateString('fr-FR')}
+Apply this in every toLocaleDateString call that takes a YYYY-MM-DD string from a date filter.
+Step 6 — Add a one-line Drizzle date filter clarity in the server
+In server/routes.ts line 608-616, the existing date filter:
+tsif (dateFrom) {
+  const from = new Date(dateFrom);
+  from.setHours(0, 0, 0, 0);
+  allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
+}
+if (dateTo) {
+  const to = new Date(dateTo);
+  to.setHours(23, 59, 59, 999);
+  allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
+}
+new Date('2026-05-01') is parsed as UTC midnight by JS — same trap. Fix:
+tsif (dateFrom) {
+  // Parse as local date (server is on Casablanca time via Railway env TZ=Africa/Casablanca)
+  const [y, m, d] = dateFrom.split('-').map(Number);
+  const from = new Date(y, m - 1, d, 0, 0, 0, 0);
+  allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
+}
+if (dateTo) {
+  const [y, m, d] = dateTo.split('-').map(Number);
+  const to = new Date(y, m - 1, d, 23, 59, 59, 999);
+  allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
+}
+Also set Railway environment variable TZ=Africa/Casablanca so the Node process treats local time correctly. In Railway dashboard → Variables → add TZ=Africa/Casablanca → redeploy.
+Acceptance criteria
+
+✅ On May 1 2026, picking "Ce mois" sets dateFrom=2026-05-01, dateTo=2026-05-01 (NOT 2026-04-30).
+✅ Period badge shows 01/05/2026 → 01/05/2026.
+✅ Cards show ONLY May 1 orders (~5), not 83.
+✅ Picking "Mois dernier" gives 2026-04-01 → 2026-04-30 (full April, no May leak).
+✅ Admin view filtering by agent=khawla shows the SAME numbers as khawla's own dashboard with the same period.
+✅ "Confirmées" count is identical in both views (whatever the underlying definition is).
+✅ "Refusées" count is identical in both views.
+✅ Total Commissions à Payer banner range matches the active filter (no hardcoded "this month").
+✅ Railway has TZ=Africa/Casablanca env var set.
+
+Commit
+bashgit add client/src/pages/dashboard.tsx server/routes.ts
+git commit -m "fix(dashboard): timezone-safe date presets + unify agent/admin stats source
+
+- New ymd() helper builds YYYY-MM-DD from LOCAL date (no toISOString UTC shift)
+- Fixes 'Ce mois' on May 1 returning 2026-04-30 instead of 2026-05-01
+- Agent dashboard now queries /api/stats/filtered?agentId=self instead of
+  /api/agents/my-stats — same endpoint, same math, same numbers as admin view
+- Server parses YYYY-MM-DD as local midnight (was UTC midnight)
+- Set TZ=Africa/Casablanca on Railway for consistent server-side date math"
+git push

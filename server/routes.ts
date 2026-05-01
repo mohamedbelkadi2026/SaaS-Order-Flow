@@ -621,13 +621,14 @@ export async function registerRoutes(
       allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
     if (dateFrom) {
-      const from = new Date(dateFrom);
-      from.setHours(0, 0, 0, 0);
+      // Parse as local calendar date (not UTC midnight) to avoid TZ shift
+      const [fy, fm, fd] = dateFrom.split('-').map(Number);
+      const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
     }
     if (dateTo) {
-      const to = new Date(dateTo);
-      to.setHours(23, 59, 59, 999);
+      const [ty, tm, td] = dateTo.split('-').map(Number);
+      const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
     }
 

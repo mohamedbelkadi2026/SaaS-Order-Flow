@@ -30,6 +30,27 @@ const MOROCCO_CITIES_FR = [
   'Essaouira', 'Azrou', 'Midelt', 'Tan-Tan', 'Zagora',
 ];
 
+/**
+ * Format a Date as YYYY-MM-DD using LOCAL calendar date.
+ * Avoids the .toISOString() UTC shift that turns "May 1 00:00 Casablanca"
+ * into "April 30 23:00 UTC" → "2026-04-30".
+ */
+function ymd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * Parse a YYYY-MM-DD string as LOCAL midnight (not UTC midnight).
+ * Use this before .toLocaleDateString() to avoid off-by-one-day display.
+ */
+function parseLocalYMD(s: string): Date {
+  const [y, mo, d] = s.split('-').map(Number);
+  return new Date(y, mo - 1, d);
+}
+
 // Brand-aligned status colors
 const STATUS_COLORS = {
   delivered:  '#10b981', // Emerald Green  — Success/Money
@@ -50,25 +71,31 @@ const PIE_COLORS = [
 
 function getDatePreset(preset: string): { dateFrom: string; dateTo: string } {
   const now = new Date();
-  const today = now.toISOString().slice(0, 10);
-  
   switch (preset) {
     case 'today':
-      return { dateFrom: today, dateTo: today };
+      return { dateFrom: ymd(now), dateTo: ymd(now) };
     case 'yesterday': {
       const y = new Date(now);
       y.setDate(y.getDate() - 1);
-      const yd = y.toISOString().slice(0, 10);
-      return { dateFrom: yd, dateTo: yd };
+      return { dateFrom: ymd(y), dateTo: ymd(y) };
+    }
+    case 'last_7_days': {
+      const start = new Date(now);
+      start.setDate(start.getDate() - 6);
+      return { dateFrom: ymd(start), dateTo: ymd(now) };
     }
     case 'this_month': {
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-      return { dateFrom: firstDay, dateTo: today };
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      return { dateFrom: ymd(firstDay), dateTo: ymd(now) };
     }
     case 'last_month': {
-      const firstDay = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
-      const lastDay = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
-      return { dateFrom: firstDay, dateTo: lastDay };
+      const firstDay = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastDay  = new Date(now.getFullYear(), now.getMonth(), 0);
+      return { dateFrom: ymd(firstDay), dateTo: ymd(lastDay) };
+    }
+    case 'this_year': {
+      const firstDay = new Date(now.getFullYear(), 0, 1);
+      return { dateFrom: ymd(firstDay), dateTo: ymd(now) };
     }
     default:
       return { dateFrom: '', dateTo: '' };
@@ -137,24 +164,23 @@ export default function Dashboard() {
     if (!isAgent) return;
     if (agentDateRange === 'custom') return; // custom dates flow directly to filters via inputs
     const now = new Date();
-    const fmt = (d: Date) => d.toISOString().slice(0, 10);
     let dateFrom = '';
     let dateTo = '';
 
     if (agentDateRange === 'today') {
-      dateFrom = dateTo = fmt(now);
+      dateFrom = dateTo = ymd(now);
     } else if (agentDateRange === 'yesterday') {
       const y = new Date(now); y.setDate(y.getDate() - 1);
-      dateFrom = dateTo = fmt(y);
+      dateFrom = dateTo = ymd(y);
     } else if (agentDateRange === '7days') {
       const f = new Date(now); f.setDate(f.getDate() - 6);
-      dateFrom = fmt(f); dateTo = fmt(now);
+      dateFrom = ymd(f); dateTo = ymd(now);
     } else if (agentDateRange === 'month') {
-      dateFrom = fmt(new Date(now.getFullYear(), now.getMonth(), 1));
-      dateTo = fmt(now);
+      dateFrom = ymd(new Date(now.getFullYear(), now.getMonth(), 1));
+      dateTo = ymd(now);
     } else if (agentDateRange === 'lastmonth') {
-      dateFrom = fmt(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-      dateTo = fmt(new Date(now.getFullYear(), now.getMonth(), 0));
+      dateFrom = ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      dateTo = ymd(new Date(now.getFullYear(), now.getMonth(), 0));
     } else if (agentDateRange === 'all') {
       dateFrom = ''; dateTo = '';
     }
@@ -173,37 +199,28 @@ export default function Dashboard() {
   }, [isAgent, user?.id]);
 
   const { data: agentMyStats, isLoading: agentStatsLoading } = useQuery<{
-    total: number;
+    totalOrders: number;
     confirme: number;
     delivered: number;
     cancelled: number;
     refused: number;
-    en_cours: number;
+    inProgress: number;
     nouveau: number;
     confirmRate: number;
-    deliverRate: number;
-    daily: { date: string; orders: number; confirmed?: number }[];
-    cities?: string[];
-    products?: { id?: number; name: string; total: number; confirmed: number; delivered: number }[];
+    deliveryRate: number;
   }>({
-    // Driven by the SAME filters as the rest of the dashboard so the agent's
-    // 8 stat cards stay in lock-step with the active period and city/product.
-    queryKey: ['/api/agents/my-stats', filters.dateFrom, filters.dateTo, filters.city, filters.productId, agentDateRange],
+    // Uses the SAME endpoint as the admin view — byte-identical math, no divergence.
+    queryKey: ['/api/stats/filtered', 'agent-self', filters.dateFrom, filters.dateTo, filters.city, filters.productId, agentDateRange],
     queryFn: async () => {
       const params = new URLSearchParams();
+      params.set('agentId', String(user!.id)); // force self-scope
       if (filters.city !== 'all') params.set('city', filters.city);
-      // Send the numeric product id; /api/agents/my-stats accepts both
-      // `productId` (new) and `product` (legacy by name).
-      if (filters.productId !== 'all') {
-        params.set('productId', filters.productId);
-      }
+      if (filters.productId !== 'all') params.set('productId', filters.productId);
       if (filters.dateFrom) {
         params.set('dateFrom', filters.dateFrom);
-        params.set('dateTo', filters.dateTo || new Date().toISOString().slice(0, 10));
-      } else if (agentDateRange === 'all') {
-        params.set('dateRange', 'all');
+        params.set('dateTo', filters.dateTo || ymd(new Date()));
       }
-      const r = await fetch(`/api/agents/my-stats?${params}`, { credentials: 'include' });
+      const r = await fetch(`/api/stats/filtered?${params}`, { credentials: 'include' });
       if (!r.ok) throw new Error('Failed to fetch');
       return r.json();
     },
@@ -381,11 +398,12 @@ export default function Dashboard() {
   // For agents: source the headline stat cards from the date-filtered
   // /api/agents/my-stats endpoint so the cards react to the filter bar.
   // For owners/media-buyers: keep the global /api/stats values.
-  const confirme    = isAgent ? (agentMyStats?.confirme  || 0) : (stats?.confirme    || 0);
-  const cancelled   = isAgent ? (agentMyStats?.cancelled || 0) : (stats?.cancelled   || 0);
-  const inProgress  = isAgent ? (agentMyStats?.en_cours  || 0) : (stats?.inProgress  || 0);
-  const delivered   = isAgent ? (agentMyStats?.delivered || 0) : (stats?.delivered   || 0);
-  const totalOrders = isAgent ? (agentMyStats?.total     || 0) : (stats?.totalOrders || 0);
+  const confirme    = isAgent ? (agentMyStats?.confirme    || 0) : (stats?.confirme    || 0);
+  const cancelled   = isAgent ? (agentMyStats?.cancelled   || 0) : (stats?.cancelled   || 0);
+  const inProgress  = isAgent ? (agentMyStats?.inProgress  || 0) : (stats?.inProgress  || 0);
+  const delivered   = isAgent ? (agentMyStats?.delivered   || 0) : (stats?.delivered   || 0);
+  const refused     = isAgent ? (agentMyStats?.refused     || 0) : (stats?.refused     || 0);
+  const totalOrders = isAgent ? (agentMyStats?.totalOrders || 0) : (stats?.totalOrders || 0);
 
   const confirmPct = totalOrders > 0 ? ((confirme / totalOrders) * 100).toFixed(2) : '0';
   const cancelPct = totalOrders > 0 ? ((cancelled / totalOrders) * 100).toFixed(2) : '0';
@@ -930,10 +948,10 @@ export default function Dashboard() {
               >
                 <Calendar className="w-3 h-3" />
                 {filters.dateFrom && filters.dateTo
-                  ? `${new Date(filters.dateFrom).toLocaleDateString('fr-FR')} → ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+                  ? `${parseLocalYMD(filters.dateFrom).toLocaleDateString('fr-FR')} → ${parseLocalYMD(filters.dateTo).toLocaleDateString('fr-FR')}`
                   : filters.dateFrom
-                    ? `À partir du ${new Date(filters.dateFrom).toLocaleDateString('fr-FR')}`
-                    : `Jusqu'au ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`}
+                    ? `À partir du ${parseLocalYMD(filters.dateFrom).toLocaleDateString('fr-FR')}`
+                    : `Jusqu'au ${parseLocalYMD(filters.dateTo).toLocaleDateString('fr-FR')}`}
               </Badge>
             )}
           </div>
@@ -1276,7 +1294,7 @@ export default function Dashboard() {
                 <p className="text-white text-2xl font-bold">{totalCommissionsOwed.toFixed(2)} DH</p>
                 <p className="text-xs text-white/70 mt-1">
                   {filters.dateFrom && filters.dateTo
-                    ? `Livraisons du ${new Date(filters.dateFrom).toLocaleDateString('fr-FR')} au ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+                    ? `Livraisons du ${parseLocalYMD(filters.dateFrom).toLocaleDateString('fr-FR')} au ${parseLocalYMD(filters.dateTo).toLocaleDateString('fr-FR')}`
                     : `Livraisons de ${new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}`}
                 </p>
               </div>
@@ -1354,10 +1372,10 @@ export default function Dashboard() {
         ) : null}
         <StatCard
           title="Refusées"
-          value={isAgent ? (agentMyStats?.refused || 0) : (stats?.refused || 0)}
+          value={refused}
           icon={XCircle}
           color={STATUS_COLORS.cancelled}
-          subtitle={`${totalOrders > 0 ? (((isAgent ? (agentMyStats?.refused || 0) : (stats?.refused || 0)) / totalOrders) * 100).toFixed(2) : 0}%`}
+          subtitle={`${totalOrders > 0 ? ((refused / totalOrders) * 100).toFixed(2) : 0}%`}
         />
         {canSeeRevenue && (
           <StatCard title="ROI / ROAS" value={null} icon={BarChart3} color="#C5A059" subtitle={
