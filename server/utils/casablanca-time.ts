@@ -45,3 +45,43 @@ export function casablancaTomorrow(now: Date = new Date()): string {
 export function casablancaHour(now: Date = new Date()): number {
   return parts(now).hour;
 }
+
+/**
+ * Convert a `scheduled_for` value (which can come back from pg as either a
+ * string YYYY-MM-DD or a JS Date depending on the driver/parser config) into
+ * a YYYY-MM-DD string. Returns null if the input is empty or unparseable.
+ */
+export function scheduledForToDateString(v: unknown): string | null {
+  if (!v) return null;
+  if (typeof v === "string") {
+    return /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null;
+  }
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    // Use UTC components — pg returns dates at UTC midnight, so getUTC* gives
+    // back the original calendar day without timezone-shift surprises.
+    const y = v.getUTCFullYear();
+    const m = String(v.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(v.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  return null;
+}
+
+/**
+ * Count `confirme_reporte` orders, splitting them into `dueSoon` (scheduled
+ * for today or tomorrow Casablanca-local) and `total`. Used by the sidebar
+ * badge.
+ */
+export function countConfirmeReporte(
+  ordersList: Array<{ status: string; scheduledFor?: unknown }>,
+  tomorrowCasablanca: string,
+): { dueSoon: number; total: number } {
+  let dueSoon = 0, total = 0;
+  for (const o of ordersList) {
+    if (o.status !== "confirme_reporte") continue;
+    total++;
+    const d = scheduledForToDateString(o.scheduledFor);
+    if (d && d <= tomorrowCasablanca) dueSoon++;
+  }
+  return { dueSoon, total };
+}

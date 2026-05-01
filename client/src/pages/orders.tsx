@@ -4,7 +4,7 @@ import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, use
 import { useAuth } from "@/hooks/use-auth";
 import { OrderDetailsModal } from "@/components/order-details-modal";
 import { CustomerHistoryModal } from "@/components/customer-history-modal";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, cn } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2, CalendarClock } from "lucide-react";
 import { SiWhatsapp, SiShopify } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
@@ -56,6 +56,29 @@ function getCarrierLogo(provider: string | null | undefined): string | null {
   if (!provider) return null;
   const key = provider.toLowerCase().replace(/\s+/g, '');
   return CARRIER_LOGOS[key] || CARRIER_LOGOS[provider.toLowerCase()] || null;
+}
+
+/**
+ * Returns YYYY-MM-DD for a given Date in the Africa/Casablanca timezone.
+ * Used to compare scheduled-for dates without timezone drift on the client.
+ */
+function casablancaDateStr(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Casablanca',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d);
+}
+
+/** Normalize a `scheduledFor` value (string from pg or Date) to YYYY-MM-DD. */
+function scheduledForToCasablancaDateStr(value: any): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    // pg `date` columns serialize as 'YYYY-MM-DD' — already shaped, no tz math needed.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+    return casablancaDateStr(new Date(value));
+  }
+  if (value instanceof Date) return casablancaDateStr(value);
+  return null;
 }
 
 const STATUS_MAP: Record<string, string> = {
@@ -577,12 +600,42 @@ export default function Orders() {
     return digits;
   };
 
+  // Casablanca date strings used for "Confirmé Reporté" sorting + urgency colors.
+  // Re-tick every 60s so day-boundary classification stays correct if a user
+  // leaves the tab open across midnight Casablanca time.
+  const [dayTick, setDayTick] = useState(() => casablancaDateStr(new Date()));
+  useEffect(() => {
+    const id = setInterval(() => {
+      const today = casablancaDateStr(new Date());
+      setDayTick(prev => (prev === today ? prev : today));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const casablancaToday = dayTick;
+  const casablancaTomorrow = useMemo(() => {
+    const t = new Date();
+    t.setUTCDate(t.getUTCDate() + 1);
+    return casablancaDateStr(t);
+  }, [dayTick]);
+
   const filteredOrders = useMemo(() => {
     let visible = hiddenOrderIds.size > 0 ? ordersList.filter((o: any) => !hiddenOrderIds.has(o.id)) : ordersList;
     if (showDuplicatesOnly) visible = visible.filter((o: any) => (o.duplicateCount ?? 1) > 1);
     // selectedMagasin is now applied server-side via actualFilters — no client filter here.
-    if (!Object.values(colFilters).some(v => v)) return visible;
-    return visible.filter((o: any) => {
+    const applyConfirmeReporteSort = (rows: any[]) => {
+      if (urlStatus !== 'confirme_reporte') return rows;
+      // Sort soonest first; rows without scheduledFor go to the end.
+      return [...rows].sort((a, b) => {
+        const aS = scheduledForToCasablancaDateStr(a.scheduledFor);
+        const bS = scheduledForToCasablancaDateStr(b.scheduledFor);
+        if (aS && bS) return aS.localeCompare(bS);
+        if (aS) return -1;
+        if (bS) return 1;
+        return 0;
+      });
+    };
+    if (!Object.values(colFilters).some(v => v)) return applyConfirmeReporteSort(visible);
+    const colFiltered = visible.filter((o: any) => {
       if (colFilters.code && !((o as any).trackNumber || o.orderNumber || '').toLowerCase().includes(colFilters.code.toLowerCase())) return false;
       if (colFilters.destinataire && !o.customerName?.toLowerCase().includes(colFilters.destinataire.toLowerCase())) return false;
       if (colFilters.telephone) {
@@ -608,7 +661,37 @@ export default function Orders() {
       }
       return true;
     });
-  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds]);
+    return applyConfirmeReporteSort(colFiltered);
+  }, [ordersList, colFilters, showDuplicatesOnly, hiddenOrderIds, urlStatus, dayTick]);
+
+  /**
+   * Urgency level for a Confirmé Reporté row, used both for the page banner
+   * counts and the left-border color on each table row.
+   *   'overdue'  → scheduledFor < today (red)
+   *   'due-soon' → scheduledFor in [today, tomorrow] (amber)
+   *   null       → not on this tab, no schedule, or further out
+   */
+  const reporteUrgency = (order: any): 'overdue' | 'due-soon' | null => {
+    if (urlStatus !== 'confirme_reporte') return null;
+    const s = scheduledForToCasablancaDateStr(order.scheduledFor);
+    if (!s) return null;
+    if (s < casablancaToday) return 'overdue';
+    if (s <= casablancaTomorrow) return 'due-soon';
+    return null;
+  };
+
+  // Counts for the in-page urgency banner on the Confirmé Reporté tab.
+  const reporteBannerCounts = useMemo(() => {
+    if (urlStatus !== 'confirme_reporte') return { overdue: 0, dueSoon: 0 };
+    let overdue = 0, dueSoon = 0;
+    for (const o of filteredOrders) {
+      const u = reporteUrgency(o);
+      if (u === 'overdue') overdue++;
+      else if (u === 'due-soon') dueSoon++;
+    }
+    return { overdue, dueSoon };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredOrders, urlStatus, casablancaToday, casablancaTomorrow]);
 
   useEffect(() => {
     setSelectedIds(prev => {
@@ -907,6 +990,36 @@ export default function Orders() {
           <h1 className="text-xl sm:text-2xl font-display font-bold uppercase tracking-tight" data-testid="text-orders-title">{pageTitle}</h1>
           <p className="text-muted-foreground text-xs mt-0.5">Commandes / {pageTitle}</p>
         </div>
+        {urlStatus === 'confirme_reporte' && (reporteBannerCounts.overdue + reporteBannerCounts.dueSoon) > 0 && (
+          <div
+            className={cn(
+              "flex items-start gap-2 px-3 py-2 rounded-lg border w-full sm:w-auto sm:max-w-md",
+              reporteBannerCounts.overdue > 0
+                ? "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900"
+                : "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900",
+            )}
+            data-testid="banner-confirme-reporte-urgency"
+          >
+            <CalendarClock
+              className={cn(
+                "w-4 h-4 mt-0.5 shrink-0",
+                reporteBannerCounts.overdue > 0 ? "text-red-600" : "text-amber-600",
+              )}
+            />
+            <div className="text-xs leading-tight">
+              {reporteBannerCounts.overdue > 0 && (
+                <div className="font-semibold text-red-900 dark:text-red-200" data-testid="text-banner-overdue">
+                  {reporteBannerCounts.overdue} en retard — à rappeler immédiatement
+                </div>
+              )}
+              {reporteBannerCounts.dueSoon > 0 && (
+                <div className="font-semibold text-amber-900 dark:text-amber-200" data-testid="text-banner-due-soon">
+                  {reporteBannerCounts.dueSoon} à reconfirmer aujourd'hui ou demain
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-1.5 shrink-0">
           {!isMediaBuyer && selectedIds.size > 0 && (
             <Badge variant="secondary" className="text-xs mr-1" data-testid="badge-selected-count">{selectedIds.size} sélectionnée(s)</Badge>
@@ -1270,7 +1383,15 @@ export default function Orders() {
                   const productRef = order.items?.[0]?.product?.sku || order.items?.map((i: any) => `qty:${i.quantity} #${i.productId}`).join(', ') || '-';
                   const agentName = order.agent?.username || '-';
                   return (
-                    <TableRow key={order.id} className="hover:bg-muted/20 transition-colors text-xs" data-testid={`row-order-${order.id}`}>
+                    <TableRow
+                      key={order.id}
+                      className={cn(
+                        "hover:bg-muted/20 transition-colors text-xs",
+                        reporteUrgency(order) === 'overdue' && "border-l-4 border-l-red-500",
+                        reporteUrgency(order) === 'due-soon' && "border-l-4 border-l-amber-500",
+                      )}
+                      data-testid={`row-order-${order.id}`}
+                    >
                       <TableCell className="px-2" onClick={e => e.stopPropagation()}>
                         {(() => {
                           const shippable = isOrderShippable(order);
@@ -1587,10 +1708,15 @@ export default function Orders() {
                 ? new Date(order.createdAt).toLocaleString('fr-MA', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short', year: 'numeric' })
                 : '—';
 
+              const cardUrgency = reporteUrgency(order);
               return (
                 <div
                   key={order.id}
-                  className="bg-white dark:bg-card rounded-2xl shadow-sm border border-border/40 overflow-hidden"
+                  className={cn(
+                    "bg-white dark:bg-card rounded-2xl shadow-sm border border-border/40 overflow-hidden",
+                    cardUrgency === 'overdue' && "border-l-4 border-l-red-500",
+                    cardUrgency === 'due-soon' && "border-l-4 border-l-amber-500",
+                  )}
                   data-testid={`card-order-${order.id}`}
                 >
                   {/* ── TOP BAR: checkbox + phone + call icons + status ── */}

@@ -402,3 +402,12 @@ Key design points:
   across `server/routes.ts` and `server/storage.ts` (stats, inventory,
   per-buyer/per-product/per-city counters) so dashboards count it as a
   confirmation.
+- **Due-soon alerts** (added 2026-05-01): Both `/api/stats` and
+  `/api/stats/filtered` return `confirmeReporteDueSoon` (orders whose
+  `scheduledFor <= casablancaTomorrow()`) and `confirmeReporteTotal`. The
+  sidebar shows an amber pulsing badge on the "Confirmé Reporté" item, the
+  header notifications panel surfaces an amber alert card, and the page itself
+  shows a banner + sorts orders by `scheduledFor` ASC + paints a left border
+  on each row/card (red = overdue, amber = due today/tomorrow). The page
+  re-evaluates Casablanca day boundaries every 60s so urgency stays correct
+  across midnight without a reload.

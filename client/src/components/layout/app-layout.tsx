@@ -42,6 +42,7 @@ import {
   MessageCircle,
   Rocket,
   CalendarX,
+  CalendarClock,
   Bot,
   BarChart3,
 } from "lucide-react";
@@ -87,9 +88,9 @@ const MEDIA_BUYER_NAV = [
 ] as const;
 
 const ORDER_SUB_ITEMS = [
-  { name: "Nouveaux",         href: "/orders",                  badge: true },
+  { name: "Nouveaux",         href: "/orders",                  badge: true, badgeKey: "nouveau" as const },
   { name: "Confirmés",        href: "/orders/confirme" },
-  { name: "Confirmé Reporté", href: "/orders/confirme-reporte" },
+  { name: "Confirmé Reporté", href: "/orders/confirme-reporte", badge: true, badgeKey: "confirmeReporteDueSoon" as const },
   { name: "Injoignables",     href: "/orders/injoignable" },
   { name: "Annulés",        href: "/orders/annules" },
   { name: "Boite vocale",   href: "/orders/boite-vocale" },
@@ -501,7 +502,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     queryKey: ['/api/stats/filtered'],
     enabled: !isMediaBuyer,
   });
-  const newOrdersCount: number = ordersStats?.nouveau ?? 0;
+  const newOrdersCount: number       = ordersStats?.nouveau ?? 0;
+  const confirmeReporteDueSoon: number = ordersStats?.confirmeReporteDueSoon ?? 0;
+
+  // Map of badgeKey → count, used by the sidebar badge render below.
+  const badgeCounts: Record<string, number> = {
+    nouveau: newOrdersCount,
+    confirmeReporteDueSoon,
+  };
 
   /* Recent orders for notifications panel */
   const { data: recentOrders } = useQuery<any[]>({
@@ -695,12 +703,18 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                         style={subActive ? { background: 'rgba(255,255,255,0.15)' } : {}}
                       >
                         <span>{t(ORDER_SUB_KEYS[sub.name] || sub.name)}</span>
-                        {sub.name === "Nouveaux" && newOrdersCount > 0 && (
+                        {(sub as any).badge && (sub as any).badgeKey && badgeCounts[(sub as any).badgeKey] > 0 && (
                           <span
-                            className="ml-2 shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold leading-none px-1.5 py-0.5 min-w-[20px]"
-                            style={{ background: '#ef4444', color: '#fff' }}
+                            className={cn(
+                              "ml-2 shrink-0 flex items-center justify-center rounded-full text-[10px] font-extrabold leading-none px-1.5 py-0.5 min-w-[20px]",
+                              (sub as any).badgeKey === 'confirmeReporteDueSoon' && "animate-pulse",
+                            )}
+                            style={{
+                              background: (sub as any).badgeKey === 'confirmeReporteDueSoon' ? '#f59e0b' : '#ef4444',
+                              color: '#fff',
+                            }}
                           >
-                            {newOrdersCount}
+                            {badgeCounts[(sub as any).badgeKey]}
                           </span>
                         )}
                       </Link>
@@ -971,6 +985,25 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                       <span className="text-xs bg-red-500 text-white px-1.5 py-0.5 rounded-full font-medium">{newOrdersCount} nouveau{newOrdersCount > 1 ? 'x' : ''}</span>
                     )}
                   </div>
+                  {/* Confirmé Reporté: alert agent when there are reconfirmations due in 24h */}
+                  {confirmeReporteDueSoon > 0 && (
+                    <Link
+                      href="/orders/confirme-reporte"
+                      onClick={() => setNotifPanelOpen(false)}
+                      className="block mx-3 mt-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+                      data-testid="link-notif-confirme-reporte"
+                    >
+                      <div className="flex items-center gap-2">
+                        <CalendarClock className="w-4 h-4 text-amber-600" />
+                        <span className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                          {confirmeReporteDueSoon} commande{confirmeReporteDueSoon > 1 ? 's' : ''} à reconfirmer
+                        </span>
+                      </div>
+                      <p className="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1">
+                        Échéance demain — appelez les clients aujourd'hui
+                      </p>
+                    </Link>
+                  )}
                   <div className="max-h-72 overflow-y-auto">
                     {(!recentOrders || recentOrders.length === 0) ? (
                       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">

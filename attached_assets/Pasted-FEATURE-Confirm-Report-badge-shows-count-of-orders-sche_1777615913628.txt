@@ -1,0 +1,180 @@
+FEATURE — "Confirmé Reporté" badge shows count of orders scheduled for today/tomorrow
+My problem
+After adding the "Confirmé Reporté" status, agents have no visual cue when an upcoming scheduled date is approaching. If a customer asked to be re-confirmed on May 5 and an agent forgets, the order sits silently until the cron auto-promotes it on the morning of the 5th — too late to call the client and verify.
+I want a red badge on the "Confirmé Reporté" sidebar item that shows how many orders are due for re-confirmation by tomorrow. So on May 4 evening / May 5 morning, the agent sees "Confirmé Reporté [3]" and knows there are 3 customers to call before shipping the next day.
+Logic
+
+Today = current Casablanca date (UTC+1)
+"Due soon" = orders with status='confirme_reporte' AND scheduled_for <= today+1 (i.e. today or tomorrow)
+Show badge only when count > 0
+
+This means the badge appears the day before the scheduled delivery date, giving the agent 24 hours to call and re-confirm with the client.
+
+Step 1 — server/routes.ts: add confirmeReporteDueSoon to the stats endpoint
+Find the /api/stats/filtered endpoint (around line 564). After the existing counts are computed and before res.json(...), add:
+ts// ── Count Confirmé Reporté due in the next 24h ─────────────────────────────
+// Orders the agent needs to re-call BEFORE the auto-promotion runs.
+// "Due soon" = scheduled_for <= tomorrow (Casablanca date)
+const now = new Date();
+const tomorrowCasablanca = new Date(now);
+tomorrowCasablanca.setUTCHours(0, 0, 0, 0);
+tomorrowCasablanca.setDate(tomorrowCasablanca.getDate() + 1);  // tomorrow midnight UTC
+// Casablanca is UTC+1; tomorrow Casablanca = today UTC 23:00 onwards, so this is close enough
+// for a 24h-window heuristic. Strict accuracy isn't needed — the badge is just a hint.
+
+const confirmeReporteDueSoon = allOrders.filter((o: any) =>
+  o.status === 'confirme_reporte' &&
+  o.scheduledFor &&
+  new Date(o.scheduledFor) <= tomorrowCasablanca
+).length;
+
+const confirmeReporteTotal = allOrders.filter((o: any) =>
+  o.status === 'confirme_reporte'
+).length;
+Then add both to the JSON response. Find the existing res.json({...}) call and add the new fields:
+tsres.json({
+  // ... all existing fields ...
+  confirmeReporteDueSoon,    // ← NEW: count due today or tomorrow
+  confirmeReporteTotal,       // ← NEW: total in this status (informational)
+});
+Do the same in the other stats endpoint at line 451 (api.stats.get.path) — apply the same logic and add both fields to the response so any sidebar that reads either endpoint gets the count.
+Step 2 — client/src/components/layout/app-layout.tsx: render the badge
+Around line 89-100, the ORDER_SUB_ITEMS array. Add a badgeKey field to identify which stat drives each badge:
+tsconst ORDER_SUB_ITEMS = [
+  { name: "Nouveaux",         href: "/orders",                  badge: true,  badgeKey: "nouveau" },
+  { name: "Confirmés",        href: "/orders/confirme" },
+  { name: "Confirmé Reporté", href: "/orders/confirme-reporte", badge: true,  badgeKey: "confirmeReporteDueSoon" },  // ← NEW
+  { name: "Injoignables",     href: "/orders/injoignable" },
+  { name: "Annulés",          href: "/orders/annules" },
+  { name: "Boite vocale",     href: "/orders/boite-vocale" },
+  { name: "Pas de réponse",   href: "/orders/pas-reponse" },
+  { name: "En cours",         href: "/orders/en-cours" },
+  { name: "Suivi des Colis",  href: "/orders/suivi" },
+  { name: "Livrées",          href: "/orders/livrees" },
+  { name: "Refusées",         href: "/orders/refuses" },
+];
+Around line 503, the existing newOrdersCount. Replace with a generic count map:
+tsconst newOrdersCount: number       = ordersStats?.nouveau ?? 0;
+const confirmeReporteDueSoon: number = ordersStats?.confirmeReporteDueSoon ?? 0;
+
+// Map of badgeKey → count, used in the sidebar render below
+const badgeCounts: Record<string, number> = {
+  nouveau: newOrdersCount,
+  confirmeReporteDueSoon: confirmeReporteDueSoon,
+};
+Around line 695-700 (where the Nouveaux badge currently renders), generalize. Find the current code:
+tsx{sub.name === "Nouveaux" && newOrdersCount > 0 && (
+  <span className="...">
+    {newOrdersCount}
+  </span>
+)}
+Replace with:
+tsx{sub.badge && sub.badgeKey && badgeCounts[sub.badgeKey] > 0 && (
+  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+    sub.badgeKey === 'nouveau'
+      ? 'bg-red-500 text-white'                            // existing red badge
+      : 'bg-amber-500 text-white animate-pulse'             // NEW amber for due-soon (catches eye)
+  }`}>
+    {badgeCounts[sub.badgeKey]}
+  </span>
+)}
+The amber pulse is intentional — it grabs the agent's attention without being as alarming as the red "new orders" badge.
+Step 3 — Header notification when there are due-soon items
+In the same file, find the recentOrders notifications panel (around line 506+). Optionally, add a new notification card that shows up when confirmeReporteDueSoon > 0:
+tsx{confirmeReporteDueSoon > 0 && (
+  <Link
+    href="/orders/confirme-reporte"
+    className="block p-3 mb-2 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 hover:bg-amber-100"
+  >
+    <div className="flex items-center gap-2">
+      <CalendarClock className="w-4 h-4 text-amber-600" />
+      <span className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+        {confirmeReporteDueSoon} commande{confirmeReporteDueSoon > 1 ? 's' : ''} à reconfirmer
+      </span>
+    </div>
+    <p className="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1">
+      Échéance demain — appelez les clients aujourd'hui
+    </p>
+  </Link>
+)}
+Put this at the top of the notifications panel so it's the first thing the agent sees when they open it. Import CalendarClock from lucide-react if not already.
+Step 4 — Page header on the Confirmé Reporté tab itself
+In client/src/pages/orders.tsx, when urlStatus === 'confirme_reporte', add a banner at the top of the orders list explaining the workflow:
+tsx{urlStatus === 'confirme_reporte' && (
+  <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-900 p-4">
+    <div className="flex items-start gap-3">
+      <CalendarClock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+      <div className="flex-1">
+        <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+          Reconfirmation programmée
+        </p>
+        <p className="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1">
+          Ces commandes attendent leur date de livraison souhaitée. Le système les promeut
+          automatiquement en "Confirmées" à 06:00 le jour J. <strong>Appelez les clients la veille</strong>
+          pour confirmer une dernière fois avant l'expédition.
+        </p>
+      </div>
+    </div>
+  </div>
+)}
+This educates new agents the first time they open the tab.
+Step 5 — Sort the tab by scheduledFor ASC so soonest-due comes first
+In the page's data fetching, when urlStatus === 'confirme_reporte', add a sort:
+tsxconst orders = useMemo(() => {
+  let list = (data?.orders || []) as any[];
+
+  if (urlStatus === 'confirme_reporte') {
+    list = [...list].sort((a, b) => {
+      const da = a.scheduledFor ? new Date(a.scheduledFor).getTime() : Infinity;
+      const db = b.scheduledFor ? new Date(b.scheduledFor).getTime() : Infinity;
+      return da - db;  // soonest first
+    });
+  }
+
+  return list;
+}, [data, urlStatus]);
+The agent opens the tab and sees the most-urgent reconfirmations at the top.
+Step 6 — Color-code rows by urgency
+In the row render, when on the confirme_reporte tab, add a left border to indicate urgency:
+tsxconst getUrgencyClass = (order: any): string => {
+  if (urlStatus !== 'confirme_reporte' || !order.scheduledFor) return '';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(order.scheduledFor);
+  target.setHours(0, 0, 0, 0);
+  const daysUntil = Math.round((target.getTime() - today.getTime()) / 86400000);
+  if (daysUntil <= 0) return 'border-l-4 border-red-500';      // due today or overdue (about to be auto-promoted)
+  if (daysUntil <= 1) return 'border-l-4 border-amber-500';    // due tomorrow
+  if (daysUntil <= 3) return 'border-l-4 border-yellow-300';   // due this week
+  return 'border-l-4 border-transparent';                       // farther than 3 days
+};
+
+<TableRow className={getUrgencyClass(order)}>
+  ...
+</TableRow>
+Combined with the sort, the agent sees a clear visual gradient: red urgent → amber soon → yellow this week → no border later.
+
+Acceptance criteria
+
+✅ Open sidebar today (May 1) — no badge on "Confirmé Reporté" if no orders are due in the next 24h.
+✅ Create a test order, set status to "Confirmé Reporté" with scheduled_for = May 5.
+✅ Open sidebar on May 4 → "Confirmé Reporté [1]" with amber pulsing badge.
+✅ Open sidebar on May 3 (2 days before) → no badge yet.
+✅ Click the badge → tab opens, banner explains the workflow, the order has an amber-bordered row.
+✅ Multiple orders due tomorrow → badge shows the count (e.g. "3").
+✅ Notifications panel shows an amber alert: "3 commandes à reconfirmer — Échéance demain".
+✅ Rows sorted by scheduled date ascending — soonest first.
+✅ Once cron promotes an order on the morning of May 5, badge count decreases.
+✅ Agents (not just admins) see the badge — the stats endpoint returns it for all roles.
+
+Commit
+bashgit add server/routes.ts client/src/components/layout/app-layout.tsx client/src/pages/orders.tsx
+git commit -m "feat(reporte): badge on sidebar shows count of orders due to reconfirm in 24h
+
+- New stats fields confirmeReporteDueSoon / confirmeReporteTotal
+- Amber pulsing badge on 'Confirmé Reporté' sidebar item
+- Notification card in header when due-soon > 0
+- Tab banner explains the reconfirmation workflow
+- Rows sorted by scheduledFor ASC (most urgent first)
+- Left border color-codes urgency: red (today), amber (tomorrow), yellow (≤3d)"
+git push

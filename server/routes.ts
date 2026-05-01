@@ -6,7 +6,7 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
-import { casablancaTomorrow } from "./utils/casablanca-time";
+import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
 import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
 import { eq, and, gte, lt, count, desc, sql } from "drizzle-orm";
 import multer from "multer";
@@ -488,7 +488,21 @@ export async function registerRoutes(
     const cancelled = annuleFake + annuleFauxNumero + annuleDouble;
     // Confirmation rate = cumulative confirmed / total leads (stays stable after shipping)
     const confirmationRate = totalOrders > 0 ? Math.round(cumConfirmed / totalOrders * 100) : 0;
-    res.json({ totalOrders, nouveau, confirme: cumConfirmed, inProgress, cancelled, delivered, refused, injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale, revenue, profit, confirmationRate });
+
+    // ── "Confirmé Reporté" badge counts ─────────────────────────────────────
+    // Drives the amber badge on the sidebar. We count any reporté order whose
+    // scheduled date is today or tomorrow (Casablanca calendar) so agents have
+    // a 24h heads-up to call the customer before the auto-promotion fires.
+    const tomorrowCas = casablancaTomorrow();
+    const reporteCounts = countConfirmeReporte(ordersList, tomorrowCas);
+
+    res.json({
+      totalOrders, nouveau, confirme: cumConfirmed, inProgress, cancelled, delivered, refused,
+      injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
+      revenue, profit, confirmationRate,
+      confirmeReporteDueSoon: reporteCounts.dueSoon,
+      confirmeReporteTotal:   reporteCounts.total,
+    });
   });
 
   app.get("/api/stats/daily", requireAuth, async (req, res) => {
@@ -848,10 +862,15 @@ export async function registerRoutes(
     const canCharts = !isAgent || agentPermissions.show_charts;
     const canProducts = !isAgent || agentPermissions.show_top_products;
 
+    // Sidebar badge counts for "Confirmé Reporté" — see comment on /api/stats
+    const reporteCounts = countConfirmeReporte(allOrders as any[], casablancaTomorrow());
+
     res.json({
       totalOrders, nouveau, confirme, inProgress, cancelled, delivered, refused,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
       pasReponse,
+      confirmeReporteDueSoon: reporteCounts.dueSoon,
+      confirmeReporteTotal:   reporteCounts.total,
       confirmationRate, deliveryRate,
       totalShipped,
       deliveredShipped,
