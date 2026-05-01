@@ -1,0 +1,542 @@
+FEATURE — Product inventory shows full historical performance + restock-aware Reçu calculation + per-product stats modal
+My problem
+When I add a product to inventory and then do a restock 2 days/weeks later, I want the inventory page to show me everything I need to decide whether to keep buying this product:
+
+Total received (cumulative across all restocks)
+Total delivered
+Total confirmed
+Confirmation rate (lifetime)
+Delivery rate (lifetime)
+Currently in transit
+Currently available
+
+Today the page shows lifetime stats correctly for products with continuous orders, but two things are missing:
+
+Restock history tracking — I can't see when I last added stock and how much I added each time
+A detailed per-product modal — clicking a product should show me its full performance: orders timeline, top cities, refusal reasons, current open orders, etc. So I know whether to reorder or kill the product.
+
+What to build
+Part 1 — Stock movement tracking (so "Reçu" reflects actual restocks, not just current_stock + delivered)
+Today the Reçu number is computed as available + sortie. That works if delivered orders never get returned and stock never gets manually adjusted. The moment you do a manual restock, the formula becomes wrong (e.g. you added 50 units but Reçu jumped by 50 too, even though you only "received" 50 once).
+I want a real ledger.
+Part 2 — Per-product details modal
+Clicking a product row opens a side panel/modal with:
+
+Lifetime totals (already computed, just shown bigger)
+Orders by status (pie chart or simple bars)
+Last 30 orders for this product (table)
+Stock movement history (every restock + every delivery)
+Top 5 cities for this product
+Top 5 refusal reasons for this product (from comments / status notes)
+
+
+Step 1 — Migration migrations/0004_stock_movements.sql
+sql-- ============================================================================
+-- 0004_stock_movements
+-- Ledger of every stock change. The "Reçu" column on the inventory page is
+-- computed from this ledger (sum of all 'restock' rows) instead of being
+-- inferred from current_stock + delivered_count.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.stock_movements (
+  id           serial PRIMARY KEY,
+  store_id     integer NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+  product_id   integer NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  variant_id   integer,
+  type         text    NOT NULL CHECK (type IN (
+                  'restock',         -- manual + initial stock add
+                  'delivered',       -- order status → delivered (auto)
+                  'returned',        -- carrier returned (auto)
+                  'adjustment',      -- manual correction (positive or negative)
+                  'reservation',     -- order confirmed, stock allocated
+                  'release'          -- order cancelled, stock freed
+                )),
+  quantity     integer NOT NULL,    -- positive = stock in, negative = stock out
+  reason       text,                -- free-text note ("Inventory recount", "Damaged", etc.)
+  order_id     integer REFERENCES public.orders(id) ON DELETE SET NULL,
+  user_id      integer REFERENCES public.users(id),
+  created_at   timestamp NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_product
+  ON public.stock_movements (product_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_store
+  ON public.stock_movements (store_id, created_at DESC);
+
+-- ── Backfill the ledger from existing data ────────────────────────────────
+-- One 'restock' row per product representing the initial stock that was
+-- entered before this ledger existed. Quantity = current_stock + delivered_count.
+-- This makes the new Reçu calculation match the old behavior on day 1.
+INSERT INTO public.stock_movements (store_id, product_id, type, quantity, reason, created_at)
+SELECT
+  p.store_id,
+  p.id,
+  'restock',
+  GREATEST(
+    p.stock + COALESCE((
+      SELECT SUM(oi.quantity)
+      FROM public.order_items oi
+      INNER JOIN public.orders o ON o.id = oi.order_id
+      WHERE oi.product_id = p.id AND o.status = 'delivered'
+    ), 0),
+    p.stock
+  ),
+  'Initial backfill — pre-ledger inventory',
+  COALESCE(p.created_at, now())
+FROM public.products p
+WHERE NOT EXISTS (
+  SELECT 1 FROM public.stock_movements sm WHERE sm.product_id = p.id AND sm.type = 'restock'
+);
+This migration creates the ledger and backfills one row per existing product so the inventory page numbers stay identical the moment you deploy. Going forward, every restock and every delivery writes a new row.
+Step 2 — shared/schema.ts
+Add the table definition:
+tsexport const stockMovements = pgTable("stock_movements", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+  productId:  integer("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+  variantId:  integer("variant_id"),
+  type:       text("type").notNull(),  // 'restock' | 'delivered' | 'returned' | 'adjustment' | 'reservation' | 'release'
+  quantity:   integer("quantity").notNull(),
+  reason:     text("reason"),
+  orderId:    integer("order_id").references(() => orders.id, { onDelete: 'set null' }),
+  userId:     integer("user_id").references(() => users.id),
+  createdAt:  timestamp("created_at").defaultNow().notNull(),
+});
+Step 3 — server/storage.ts: write to the ledger on every stock change
+Find every place where db.update(products).set({ stock: ... }) is called. There are roughly four:
+A. Manual restock from inventory UI (find the endpoint that updates products.stock):
+ts// After updating products.stock, log the movement
+await db.insert(stockMovements).values({
+  storeId,
+  productId: id,
+  type: 'restock',
+  quantity: deltaStock,                 // the AMOUNT ADDED, not the new total
+  reason: req.body.reason || 'Manual restock',
+  userId: req.user!.id,
+});
+B. Order delivered (in updateOrderStatus, when status flips TO 'delivered'):
+ts// Inside the transaction, after stock is decremented:
+for (const item of items) {
+  if (item.productId) {
+    await tx.insert(stockMovements).values({
+      storeId,
+      productId: item.productId,
+      variantId: item.variantId,
+      type: 'delivered',
+      quantity: -item.quantity,        // negative = stock out
+      orderId: id,
+      userId: actorId,
+    });
+  }
+}
+C. Order returned (status 'refused' or 'retourné'):
+tsawait tx.insert(stockMovements).values({
+  storeId, productId, variantId,
+  type: 'returned',
+  quantity: +item.quantity,            // positive = back in stock
+  orderId: id, userId: actorId,
+});
+D. Order confirmed/reserved (optional — only if you do "soft" stock reservation):
+Track reservation and release events. If your platform doesn't reserve stock on confirmation (just decrements on delivery), skip this.
+Step 4 — server/storage.ts: rewrite getInventoryStats to use the ledger
+Replace the old Reçu = available + sortie formula with a real query against the ledger.
+tsasync getInventoryStats(storeId: number, options?: { dateFrom?: string; dateTo?: string }): Promise<any> {
+  const allProducts = await db.select().from(products).where(eq(products.storeId, storeId));
+  const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+
+  // (existing aggregates: totalProducts, totalQuantity, lowStock, outOfStock, newProducts)
+  // ... same as before ...
+
+  // Pull all movements for these products in one query
+  const productIds = allProducts.map(p => p.id);
+  const movements = productIds.length === 0
+    ? []
+    : await db.select().from(stockMovements)
+        .where(and(
+          eq(stockMovements.storeId, storeId),
+          inArray(stockMovements.productId, productIds),
+        ));
+
+  // Group movements by product
+  const movementsByProduct = new Map<number, typeof movements>();
+  for (const m of movements) {
+    if (!movementsByProduct.has(m.productId)) movementsByProduct.set(m.productId, []);
+    movementsByProduct.get(m.productId)!.push(m);
+  }
+
+  const productStats = [];
+  for (const p of allProducts) {
+    const variants = allVariants.filter(v => v.productId === p.id);
+    const totalStock = p.stock + variants.reduce((s, v) => s + v.stock, 0);
+    const productMovements = movementsByProduct.get(p.id) || [];
+
+    // Reçu = sum of every 'restock' (lifetime, never decreases)
+    const recu = productMovements
+      .filter(m => m.type === 'restock')
+      .reduce((s, m) => s + m.quantity, 0);
+
+    // Sortie = sum of |delivered|
+    const sortie = Math.abs(productMovements
+      .filter(m => m.type === 'delivered')
+      .reduce((s, m) => s + m.quantity, 0));
+
+    // Returns = sum of |returned|
+    const returned = productMovements
+      .filter(m => m.type === 'returned')
+      .reduce((s, m) => s + m.quantity, 0);
+
+    // Last restock info (for tooltip)
+    const lastRestock = productMovements
+      .filter(m => m.type === 'restock')
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+
+    // Existing in-transit / confirmation calculations stay (use orders directly)
+    // ... existing INVENTORY_CONFIRMED / inTransitItems / totalOrderItems queries ...
+
+    const confirmRate = totalOrdered > 0 ? Math.round(totalConfirmedQty / totalOrdered * 100) : 0;
+    const deliverRate = totalConfirmedQty > 0 ? Math.round(sortie / totalConfirmedQty * 100) : 0;
+
+    productStats.push({
+      ...p,
+      totalStock,
+      recu,                          // ← from ledger (true cumulative)
+      sortie,
+      returned,
+      inTransit,
+      totalOrdered,
+      confirmRate,
+      deliverRate,
+      lastRestockAt:  lastRestock?.createdAt ?? null,
+      lastRestockQty: lastRestock?.quantity ?? null,
+    });
+  }
+
+  return { totalProducts, totalQuantity, lowStock, outOfStock, newProducts, productStats };
+}
+Step 5 — New endpoint for per-product detailed stats
+server/routes.ts:
+tsapp.get("/api/products/:id/insights", requireAuth, async (req, res) => {
+  const productId = Number(req.params.id);
+  const storeId = req.user!.storeId!;
+
+  // Verify ownership
+  const [product] = await db.select().from(products)
+    .where(and(eq(products.id, productId), eq(products.storeId, storeId)));
+  if (!product) return res.status(404).json({ message: "Produit introuvable" });
+
+  // 1. Stock movements (ledger)
+  const movements = await db.select().from(stockMovements)
+    .where(and(eq(stockMovements.productId, productId), eq(stockMovements.storeId, storeId)))
+    .orderBy(desc(stockMovements.createdAt))
+    .limit(100);
+
+  // 2. Last 30 orders for this product
+  const recentOrderItems = await db.select({
+    orderId:        orderItems.orderId,
+    quantity:       orderItems.quantity,
+    price:          orderItems.price,
+    orderNumber:    orders.orderNumber,
+    customerName:   orders.customerName,
+    customerCity:   orders.customerCity,
+    status:         orders.status,
+    totalPrice:     orders.totalPrice,
+    createdAt:      orders.createdAt,
+    deliveredAt:    orders.deliveredAt,
+  })
+    .from(orderItems)
+    .innerJoin(orders, eq(orderItems.orderId, orders.id))
+    .where(and(
+      eq(orderItems.productId, productId),
+      eq(orders.storeId, storeId),
+    ))
+    .orderBy(desc(orders.createdAt))
+    .limit(30);
+
+  // 3. Aggregates: top cities (delivered), refusal reasons
+  const allOrdersForProduct = await db.select({
+    city:    orders.customerCity,
+    status:  orders.status,
+    comment: orders.comment,
+    qty:     orderItems.quantity,
+  })
+    .from(orderItems)
+    .innerJoin(orders, eq(orderItems.orderId, orders.id))
+    .where(and(
+      eq(orderItems.productId, productId),
+      eq(orders.storeId, storeId),
+    ));
+
+  // Top cities (by delivered count)
+  const cityMap: Record<string, number> = {};
+  allOrdersForProduct.filter(o => o.status === 'delivered').forEach(o => {
+    const c = (o.city || 'Inconnu').trim();
+    cityMap[c] = (cityMap[c] || 0) + (o.qty || 1);
+  });
+  const topCities = Object.entries(cityMap)
+    .map(([city, count]) => ({ city, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  // Status breakdown (for pie chart)
+  const statusMap: Record<string, number> = {};
+  allOrdersForProduct.forEach(o => {
+    statusMap[o.status] = (statusMap[o.status] || 0) + 1;
+  });
+
+  // Refusal patterns (rough — based on order comment substrings)
+  const refusalReasons: Record<string, number> = {};
+  allOrdersForProduct
+    .filter(o => o.status === 'refused' || o.status?.startsWith('Annulé'))
+    .forEach(o => {
+      const reason = (o.comment || 'Sans raison').slice(0, 60);
+      refusalReasons[reason] = (refusalReasons[reason] || 0) + 1;
+    });
+  const topRefusalReasons = Object.entries(refusalReasons)
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  res.json({
+    product,
+    movements,
+    recentOrders: recentOrderItems,
+    topCities,
+    statusBreakdown: statusMap,
+    topRefusalReasons,
+  });
+});
+Step 6 — UI: per-product details modal
+In client/src/pages/inventory.tsx, when the user clicks a row (or a new "Voir détails" button), open a side sheet:
+tsximport { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
+import { useQuery } from '@tanstack/react-query';
+import { format } from 'date-fns';
+
+const [openProductId, setOpenProductId] = useState<number | null>(null);
+
+const { data: insights } = useQuery({
+  queryKey: ['/api/products', openProductId, 'insights'],
+  enabled: openProductId != null,
+  queryFn: async () => {
+    const r = await fetch(`/api/products/${openProductId}/insights`, { credentials: 'include' });
+    return r.json();
+  },
+});
+
+// Add to each product row a button:
+<Button size="sm" variant="ghost" onClick={() => setOpenProductId(p.id)}>
+  <BarChart3 className="w-4 h-4" />
+</Button>
+
+// Side sheet:
+<Sheet open={openProductId != null} onOpenChange={(o) => !o && setOpenProductId(null)}>
+  <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
+    <SheetHeader>
+      <SheetTitle>{insights?.product.name}</SheetTitle>
+      <SheetDescription>Performance complète depuis le {insights?.product.createdAt && format(new Date(insights.product.createdAt), 'dd/MM/yyyy')}</SheetDescription>
+    </SheetHeader>
+
+    {insights && (
+      <div className="mt-6 space-y-6">
+        {/* KPI cards */}
+        <div className="grid grid-cols-2 gap-3">
+          <KpiCard label="Reçu (cumulé)"     value={insights.recu || 0} icon={Inbox}        color="blue"   />
+          <KpiCard label="Livrés"             value={insights.sortie || 0} icon={CheckCircle} color="green"  />
+          <KpiCard label="En cours"           value={insights.inTransit || 0} icon={Truck}    color="amber"  />
+          <KpiCard label="Disponible"         value={insights.product.stock} icon={Package}  color="purple" />
+        </div>
+
+        {/* Rates */}
+        <div className="grid grid-cols-2 gap-3">
+          <RateCard label="Taux de confirmation" value={insights.confirmRate || 0} />
+          <RateCard label="Taux de livraison"    value={insights.deliverRate || 0} />
+        </div>
+
+        {/* Status breakdown */}
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Répartition par statut</h3>
+          <div className="space-y-1.5">
+            {Object.entries(insights.statusBreakdown || {}).map(([status, count]) => (
+              <div key={status} className="flex items-center justify-between text-xs">
+                <span className="capitalize">{status}</span>
+                <span className="font-mono font-semibold">{count as number}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Top cities */}
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Top 5 villes (livrées)</h3>
+          {insights.topCities?.length === 0
+            ? <p className="text-xs text-muted-foreground">Aucune livraison enregistrée</p>
+            : (
+              <ol className="space-y-1.5">
+                {insights.topCities.map((c: any, i: number) => (
+                  <li key={c.city} className="flex items-center justify-between text-xs">
+                    <span>{i + 1}. {c.city}</span>
+                    <span className="font-mono font-semibold">{c.count}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+        </div>
+
+        {/* Stock movements */}
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Historique des mouvements</h3>
+          <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
+            {insights.movements?.map((m: any) => (
+              <div key={m.id} className={`flex items-center justify-between text-xs p-2 rounded ${
+                m.type === 'restock'   ? 'bg-blue-50 dark:bg-blue-950/30' :
+                m.type === 'delivered' ? 'bg-green-50 dark:bg-green-950/30' :
+                m.type === 'returned'  ? 'bg-amber-50 dark:bg-amber-950/30' :
+                                         'bg-zinc-50 dark:bg-zinc-900'
+              }`}>
+                <div>
+                  <span className="font-semibold capitalize">{m.type}</span>
+                  {m.reason && <span className="text-muted-foreground ml-2">— {m.reason}</span>}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className={`font-mono font-bold ${m.quantity > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {m.quantity > 0 ? '+' : ''}{m.quantity}
+                  </span>
+                  <span className="text-muted-foreground">{format(new Date(m.createdAt), 'dd/MM HH:mm')}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Refusal reasons */}
+        {insights.topRefusalReasons?.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold mb-2 text-red-600">Top 5 raisons de refus</h3>
+            <ol className="space-y-1.5">
+              {insights.topRefusalReasons.map((r: any, i: number) => (
+                <li key={i} className="flex items-start justify-between text-xs gap-3">
+                  <span className="flex-1">{i + 1}. {r.reason}</span>
+                  <span className="font-mono font-semibold text-red-600">{r.count}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
+        {/* Last 30 orders link */}
+        <div>
+          <h3 className="text-sm font-semibold mb-2">30 dernières commandes</h3>
+          <div className="space-y-1 max-h-[250px] overflow-y-auto">
+            {insights.recentOrders?.map((o: any) => (
+              <Link key={o.orderId} href={`/orders?search=${o.orderNumber}`} className="flex items-center justify-between text-xs p-2 rounded hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                <span>#{o.orderNumber} — {o.customerName} ({o.customerCity})</span>
+                <span className={`font-semibold ${o.status === 'delivered' ? 'text-green-600' : o.status === 'refused' ? 'text-red-600' : 'text-zinc-500'}`}>
+                  {o.status}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
+    )}
+  </SheetContent>
+</Sheet>
+The KPI/Rate card components are simple:
+tsxconst KpiCard = ({ label, value, icon: Icon, color }: any) => (
+  <div className={`rounded-lg p-3 border bg-${color}-50 dark:bg-${color}-950/30 border-${color}-200 dark:border-${color}-900`}>
+    <div className="flex items-center gap-2 mb-1">
+      <Icon className={`w-4 h-4 text-${color}-600`} />
+      <span className="text-xs text-muted-foreground">{label}</span>
+    </div>
+    <div className="text-2xl font-bold">{value}</div>
+  </div>
+);
+
+const RateCard = ({ label, value }: any) => (
+  <div className="rounded-lg p-3 border bg-zinc-50 dark:bg-zinc-900">
+    <div className="text-xs text-muted-foreground mb-1">{label}</div>
+    <div className={`text-2xl font-bold ${value >= 50 ? 'text-green-600' : value >= 25 ? 'text-amber-600' : 'text-red-600'}`}>
+      {value}%
+    </div>
+  </div>
+);
+Step 7 — Quick "Restock" action with reason
+In client/src/pages/inventory.tsx, add a small "+" button next to each stock count that opens a dialog:
+tsxconst [restockDialog, setRestockDialog] = useState<{ id: number; name: string; current: number } | null>(null);
+const [restockQty, setRestockQty] = useState('');
+const [restockReason, setRestockReason] = useState('');
+
+const submitRestock = async () => {
+  if (!restockDialog || !restockQty) return;
+  const qty = Number(restockQty);
+  if (qty <= 0) return toast({ title: "Quantité invalide", variant: "destructive" });
+
+  await fetch(`/api/products/${restockDialog.id}/restock`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ quantity: qty, reason: restockReason || undefined }),
+  });
+
+  setRestockDialog(null);
+  setRestockQty('');
+  setRestockReason('');
+  queryClient.invalidateQueries({ queryKey: ['/api/inventory'] });
+  toast({ title: `+${qty} unités ajoutées` });
+};
+And the corresponding /api/products/:id/restock endpoint:
+tsapp.post("/api/products/:id/restock", requireAdmin, async (req, res) => {
+  const productId = Number(req.params.id);
+  const storeId = req.user!.storeId!;
+  const { quantity, reason } = req.body;
+
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    return res.status(400).json({ message: "quantity doit être un entier positif" });
+  }
+
+  // Verify product belongs to store
+  const [product] = await db.select().from(products)
+    .where(and(eq(products.id, productId), eq(products.storeId, storeId)));
+  if (!product) return res.status(404).json({ message: "Produit introuvable" });
+
+  await db.transaction(async (tx) => {
+    await tx.update(products)
+      .set({ stock: sql`${products.stock} + ${quantity}` })
+      .where(eq(products.id, productId));
+
+    await tx.insert(stockMovements).values({
+      storeId,
+      productId,
+      type: 'restock',
+      quantity,
+      reason: reason || 'Manual restock',
+      userId: req.user!.id,
+    });
+  });
+
+  res.json({ ok: true });
+});
+Acceptance criteria
+
+✅ Migration 0004 runs on Railway, stock_movements table exists, backfilled with one row per existing product.
+✅ Inventory page shows the SAME numbers as before (Reçu, Sortie, %) — no visual regression.
+✅ Restock a product +50 from the new dialog → ledger row created, Reçu increases by 50.
+✅ An order delivers → ledger row of type 'delivered' with negative quantity created automatically.
+✅ Click a product → side sheet opens with KPIs, status breakdown, top cities, full movement history, recent orders, refusal reasons.
+✅ Movement history shows color-coded entries: blue restock, green delivered, amber returned.
+✅ Last restock date + quantity visible in the row tooltip (or a "i" icon).
+✅ Stats survive even when current stock = 0 (the lifetime numbers come from orders + ledger, not from current_stock).
+
+Commit
+bashgit add migrations/0004_stock_movements.sql shared/schema.ts server/routes.ts server/storage.ts client/src/pages/inventory.tsx
+git commit -m "feat(inventory): stock movement ledger + per-product insights modal
+
+- New stock_movements table with full audit trail (restock/delivered/returned/adjustment)
+- Migration 0004 backfills one row per existing product to keep numbers identical
+- Reçu now comes from ledger (true cumulative across restocks) not inferred formula
+- New /api/products/:id/insights endpoint returns:
+  movements, recent 30 orders, top 5 cities, status breakdown, top refusal reasons
+- Side sheet UI with KPI cards, rate badges, color-coded movement history
+- Manual restock dialog logs the action with optional reason
+- Stats persist even when current_stock=0 — lifetime numbers come from orders+ledger"
+git push

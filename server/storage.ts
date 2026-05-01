@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
-  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, payments, emailVerificationCodes,
+  subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
   carrierAccounts, carrierCities,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
@@ -661,12 +661,23 @@ export class DatabaseStorage implements IStorage {
     const [order] = await db.select({ id: orders.id, status: orders.status }).from(orders)
       .where(and(eq(orders.id, id), eq(orders.storeId, storeId)));
     if (!order) throw new Error('Order not found or access denied');
-    // Stock recovery: if confirmed, restore inventory before deleting
+    // Stock recovery: if confirmed, restore inventory before deleting and
+    // log a ledger 'adjustment' row so the audit trail isn't broken by the
+    // delete (we can't use 'returned' here because the order itself is gone
+    // and we want the reason to make it clear it was a manual deletion).
     if (order.status === 'confirme') {
       const items = await db.select().from(orderItems).where(eq(orderItems.orderId, id));
       for (const item of items) {
         if (item.productId) {
           await db.update(products).set({ stock: sql`stock + ${item.quantity}` }).where(eq(products.id, item.productId));
+          await db.insert(stockMovements).values({
+            storeId,
+            productId: item.productId,
+            type: 'adjustment',
+            quantity: item.quantity,
+            orderId: id,
+            reason: `Stock restauré — commande #${id} (confirmée) supprimée`,
+          });
         }
       }
     }
@@ -696,6 +707,15 @@ export class DatabaseStorage implements IStorage {
       for (const item of itemsToRestore) {
         if (item.productId) {
           await db.update(products).set({ stock: sql`stock + ${item.quantity}` }).where(eq(products.id, item.productId));
+          // Mirror the same audit-trail logic as deleteOrder for each item.
+          await db.insert(stockMovements).values({
+            storeId,
+            productId: item.productId,
+            type: 'adjustment',
+            quantity: item.quantity,
+            orderId: item.orderId,
+            reason: `Stock restauré — commande #${item.orderId} (confirmée) supprimée (lot)`,
+          });
         }
       }
     }
@@ -786,22 +806,42 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // ── RULE 1: First-time delivery → subtract stock ────────────────────
-      // Only triggers when transitioning INTO delivered from a status that
-      // never reserved stock (NOT in CONFIRMED_FOR_STOCK).
-      if (status === 'delivered' && prevStatus !== 'delivered' && !this.CONFIRMED_FOR_STOCK.has(prevStatus)) {
+      // ── RULE 1: First-time delivery ────────────────────────────────────
+      // The ledger MUST log every transition into 'delivered', regardless of
+      // what the prev status was — that's the whole point of "sortie" in the
+      // insights view (units actually shipped to customers).
+      // Physical stock subtraction is conditional: if the prev status was
+      // already stock-deducting (RULE 0 ran on confirme), we skip the
+      // subtraction but still write the ledger row so the audit trail is
+      // accurate. The legacy stock_logs row only fires on the path that also
+      // touches physical stock to preserve old behavior.
+      if (status === 'delivered' && prevStatus !== 'delivered') {
+        const skipStockDeduction = this.CONFIRMED_FOR_STOCK.has(prevStatus);
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
-          await tx.update(products)
-            .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
-            .where(eq(products.id, item.productId));
-          await tx.insert(stockLogs).values({
+          if (!skipStockDeduction) {
+            await tx.update(products)
+              .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
+              .where(eq(products.id, item.productId));
+            await tx.insert(stockLogs).values({
+              storeId: currentOrder.storeId!,
+              productId: item.productId,
+              orderId: id,
+              changeAmount: -qty,
+              reason: `Commande #${id} livrée`,
+            });
+          }
+          await tx.insert(stockMovements).values({
             storeId: currentOrder.storeId!,
             productId: item.productId,
+            type: 'delivered',
+            quantity: -qty,
             orderId: id,
-            changeAmount: -qty,
-            reason: `Commande #${id} livrée`,
+            userId: actorId ?? null,
+            reason: skipStockDeduction
+              ? `Commande #${id} livrée (stock déjà déduit à la confirmation)`
+              : `Commande #${id} livrée`,
           });
         }
       }
@@ -820,6 +860,15 @@ export class DatabaseStorage implements IStorage {
             productId: item.productId,
             orderId: id,
             changeAmount: qty,
+            reason: `Retour commande #${id} → ${status}`,
+          });
+          await tx.insert(stockMovements).values({
+            storeId: currentOrder.storeId!,
+            productId: item.productId,
+            type: 'returned',
+            quantity: qty,
+            orderId: id,
+            userId: actorId ?? null,
             reason: `Retour commande #${id} → ${status}`,
           });
         }
@@ -1203,7 +1252,7 @@ export class DatabaseStorage implements IStorage {
   async getInventoryStats(storeId: number): Promise<any> {
     const allProducts = await db.select().from(products).where(eq(products.storeId, storeId));
     const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
-    
+
     const totalProducts = allProducts.length;
     const totalVariants = allVariants.length;
     const totalQuantity = allProducts.reduce((s, p) => s + p.stock, 0) + allVariants.reduce((s, v) => s + v.stock, 0);
@@ -1213,10 +1262,27 @@ export class DatabaseStorage implements IStorage {
     };
     const lowStock = allProducts.filter(p => { const s = getAggStock(p); return s > 0 && s < 10; }).length;
     const outOfStock = allProducts.filter(p => getAggStock(p) === 0).length;
-    
+
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const newProducts = allProducts.filter(p => p.createdAt && new Date(p.createdAt) >= startOfMonth).length;
+
+    // Pull every stock movement for this store's products in one query and
+    // group by product. We use this ledger for "Reçu" (cumulative purchased)
+    // so manual restocks no longer corrupt the lifetime number.
+    const productIds = allProducts.map(p => p.id);
+    const allMovements = productIds.length === 0
+      ? []
+      : await db.select().from(stockMovements)
+          .where(and(
+            eq(stockMovements.storeId, storeId),
+            inArray(stockMovements.productId, productIds),
+          ));
+    const movementsByProduct = new Map<number, typeof allMovements>();
+    for (const m of allMovements) {
+      const list = movementsByProduct.get(m.productId);
+      if (list) list.push(m); else movementsByProduct.set(m.productId, [m]);
+    }
 
     const productStats = [];
     for (const p of allProducts) {
@@ -1266,7 +1332,21 @@ export class DatabaseStorage implements IStorage {
       const totalOrdered = Number(totalOrderItems[0]?.qty || 0);
       const totalConfirmedQty = Number(confirmedItems[0]?.qty || 0);
       const available = totalStock; // live stock = initial minus all deliveries plus all returns
-      const initialStock = available + sortie;
+
+      // ── Reçu now comes from the stock_movements ledger ────────────────────
+      // Sum of every 'restock' row (lifetime, never decreases). Going forward
+      // every manual restock adds a row, so the cumulative number is correct
+      // even when current_stock has been depleted to 0 and refilled multiple
+      // times. The migration backfilled one row per product so day-1 values
+      // match the old `available + sortie` formula.
+      const productMovements = movementsByProduct.get(p.id) || [];
+      const recu = productMovements
+        .filter(m => m.type === 'restock')
+        .reduce((s, m) => s + (m.quantity || 0), 0);
+      const lastRestock = productMovements
+        .filter(m => m.type === 'restock')
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+
       const confirmRate = totalOrdered > 0 ? Math.round(totalConfirmedQty / totalOrdered * 100) : 0;
       // deliverRate = Delivered / Confirmed (not total) — correct carrier-delivery formula
       const deliverRate = totalConfirmedQty > 0 ? Math.round(sortie / totalConfirmedQty * 100) : 0;
@@ -1284,7 +1364,7 @@ export class DatabaseStorage implements IStorage {
         baseStock: p.stock,
         stock: totalStock,
         variantCount: variants.length || 1,
-        recu: initialStock,
+        recu,
         sortie,
         inTransit,
         available,
@@ -1296,6 +1376,8 @@ export class DatabaseStorage implements IStorage {
         stockReel: available * p.costPrice,
         stockTotal: available * p.sellingPrice,
         storeName: '',
+        lastRestockAt:  lastRestock?.createdAt ?? null,
+        lastRestockQty: lastRestock?.quantity  ?? null,
       });
     }
 

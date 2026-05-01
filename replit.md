@@ -411,3 +411,49 @@ Key design points:
   on each row/card (red = overdue, amber = due today/tomorrow). The page
   re-evaluates Casablanca day boundaries every 60s so urgency stays correct
   across midnight without a reload.
+
+## Stock Movement Ledger + Per-Product Insights (added 2026-05-01)
+
+A `stock_movements` ledger table now records every change to a product's stock
+so the inventory page can show real lifetime numbers and a per-product insights
+panel — instead of inferring totals from `current_stock + delivered_count` (a
+formula that was silently corrupted every time someone restocked).
+
+Key design points:
+- **Migration `0004_stock_movements.sql`**: creates the table with two
+  composite indexes (`product+createdAt`, `store+createdAt`) and back-fills
+  one `restock` row per product (`GREATEST(stock + delivered_sum, stock)` so
+  day-1 "Reçu" matches the old formula) plus one negative `delivered` row per
+  historical delivered order.
+- **Movement types**: `restock` (+), `delivered` (-), `returned` (+),
+  `adjustment` (±), and reserved-for-future `reservation`/`release`.
+- **Hook sites in `server/storage.ts`**: every transition INTO `delivered`
+  (whether or not stock is also subtracted — the confirmé path was missed in
+  the first pass and added after architect review), every return from
+  `delivered`/`confirme*`, and the stock restorations inside
+  `deleteOrder`/`bulkDeleteOrders` (logged as `adjustment`).
+- **Soft-reservation gap**: physical stock is still deducted on `confirme`
+  (legacy soft reservation) but no `reservation` ledger row is written; the
+  ledger only tracks "real" movements. The `delivered` row written on
+  `confirme → delivered` therefore notes "stock déjà déduit à la confirmation"
+  in its reason so the audit trail is self-explanatory.
+- **`getInventoryStats` rewrite**: "Reçu" now comes from `sum(quantity)` of
+  `restock` rows for that product (lifetime, never decreases), and the result
+  shape gained `lastRestockAt` / `lastRestockQty`.
+- **New endpoints in `server/routes.ts`**:
+  - `POST /api/products/:id/restock` (transactional: increments stock and
+    inserts a `restock` ledger row in one transaction).
+  - `GET /api/products/:id/insights` returns KPIs (current stock, recu,
+    sortie, returned, totalOrdered, totalRefused, refusalRate), the last 30
+    ledger movements (joined to `users.name` for "par X"), top 5 cities (from
+    `customerCity` of delivered orders), and top 5 refusal reasons (agent
+    `comment` first, falls back to status bucket — REFUSED_STATUSES covers
+    `refused`, `retourné`, all `Annulé*` variants, `Injoignable`,
+    `boite vocale`).
+  - `PATCH /api/products/:id` now also writes an `adjustment` ledger row when
+    the body changes the `stock` value (legacy edit path safeguard).
+- **UI in `client/src/pages/inventory.tsx`**: each row gains two new icon
+  buttons — green `PackagePlus` (opens restock dialog) and blue `BarChart3`
+  (opens the insights side-sheet). The legacy History dialog/button were
+  removed in favour of the side-sheet's movement table, which is sourced from
+  the ledger instead of the legacy `stock_logs` table.

@@ -8,12 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2 } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw } from "lucide-react";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 interface VariantForm {
@@ -32,6 +33,50 @@ export default function Inventory() {
   const { toast } = useToast();
   const [logsProductId, setLogsProductId] = useState<number | null>(null);
   const [logsProductName, setLogsProductName] = useState<string>("");
+
+  // Insights side-sheet
+  const [insightsProductId, setInsightsProductId] = useState<number | null>(null);
+
+  // Restock dialog
+  const [restockProduct, setRestockProduct] = useState<any | null>(null);
+  const [restockQty, setRestockQty] = useState<string>("");
+  const [restockReason, setRestockReason] = useState<string>("");
+  const [restockSaving, setRestockSaving] = useState(false);
+
+  const handleRestockSave = async () => {
+    if (!restockProduct) return;
+    const n = Number(restockQty);
+    if (!Number.isFinite(n) || n <= 0) {
+      toast({ title: "Quantité invalide", description: "Entrez un nombre positif.", variant: "destructive" });
+      return;
+    }
+    setRestockSaving(true);
+    try {
+      await apiRequest("POST", `/api/products/${restockProduct.id}/restock`, {
+        quantity: n,
+        reason: restockReason.trim() || undefined,
+      });
+      toast({ title: "✅ Stock mis à jour", description: `+${n} unités ajoutées à "${restockProduct.name}".` });
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      if (insightsProductId === restockProduct.id) {
+        queryClient.invalidateQueries({ queryKey: ['/api/products', restockProduct.id, 'insights'] });
+      }
+      setRestockProduct(null);
+      setRestockQty("");
+      setRestockReason("");
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message || "Erreur", variant: "destructive" });
+    } finally {
+      setRestockSaving(false);
+    }
+  };
+
+  // Insights query (only fires when sheet open)
+  const { data: insightsData, isLoading: insightsLoading } = useQuery<any>({
+    queryKey: ['/api/products', insightsProductId, 'insights'],
+    enabled: insightsProductId !== null,
+  });
 
   // Quick AI description edit state
   const [aiEditProduct, setAiEditProduct] = useState<any | null>(null);
@@ -428,8 +473,23 @@ export default function Inventory() {
                       >
                         <Brain className="w-4 h-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="w-8 h-8 text-blue-500 hover:text-blue-700" data-testid={`button-logs-product-${product.id}`} title="Historique stock" onClick={() => { setLogsProductId(product.id); setLogsProductName(product.name); }}>
-                        <History className="w-4 h-4" />
+                      <Button
+                        variant="ghost" size="icon"
+                        className="w-8 h-8 text-emerald-600 hover:text-emerald-700"
+                        title="Réapprovisionner"
+                        data-testid={`button-restock-product-${product.id}`}
+                        onClick={() => { setRestockProduct(product); setRestockQty(""); setRestockReason(""); }}
+                      >
+                        <PackagePlus className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost" size="icon"
+                        className="w-8 h-8 text-blue-500 hover:text-blue-700"
+                        title="Voir les insights"
+                        data-testid={`button-insights-product-${product.id}`}
+                        onClick={() => setInsightsProductId(product.id)}
+                      >
+                        <BarChart3 className="w-4 h-4" />
                       </Button>
                       <Button variant="ghost" size="icon" className="w-8 h-8" data-testid={`button-edit-product-${product.id}`} onClick={() => openEdit(product)}>
                         <Pencil className="w-4 h-4" />
@@ -837,6 +897,226 @@ export default function Inventory() {
               </TableBody>
             </Table>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Insights side-sheet ─────────────────────────────────────────── */}
+      <Sheet open={insightsProductId !== null} onOpenChange={(v) => { if (!v) setInsightsProductId(null); }}>
+        <SheetContent side="right" className="w-full sm:max-w-xl overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <BarChart3 className="w-5 h-5" style={{ color: "#1E1B4B" }} />
+              Insights produit
+            </SheetTitle>
+          </SheetHeader>
+
+          {insightsLoading || !insightsData ? (
+            <div className="py-12 text-center text-muted-foreground text-sm" data-testid="insights-loading">
+              Chargement...
+            </div>
+          ) : (
+            <div className="mt-4 space-y-6">
+              {/* Header card */}
+              <div className="flex gap-3 items-center p-3 rounded-xl border border-border/50 bg-muted/30">
+                {insightsData.product.imageUrl && (
+                  <img src={insightsData.product.imageUrl} alt="" className="w-14 h-14 rounded-lg object-cover" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold truncate" data-testid="text-insights-product-name">{insightsData.product.name}</div>
+                  <div className="text-xs text-muted-foreground">SKU: {insightsData.product.sku}</div>
+                </div>
+                <Button
+                  size="sm"
+                  style={{ background: "#C5A059", color: "#fff" }}
+                  data-testid="button-insights-restock"
+                  onClick={() => {
+                    setRestockProduct(insightsData.product);
+                    setRestockQty("");
+                    setRestockReason("");
+                  }}
+                >
+                  <PackagePlus className="w-4 h-4 mr-1" /> Réapprovisionner
+                </Button>
+              </div>
+
+              {/* KPIs */}
+              <div className="grid grid-cols-2 gap-3">
+                <Card className="p-3 rounded-xl">
+                  <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1"><Boxes className="w-3 h-3" /> Stock actuel</div>
+                  <div className="text-xl font-bold" data-testid="kpi-current-stock">{insightsData.kpis.currentStock}</div>
+                </Card>
+                <Card className="p-3 rounded-xl">
+                  <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1"><ArrowUpCircle className="w-3 h-3 text-emerald-600" /> Reçu (lifetime)</div>
+                  <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400" data-testid="kpi-recu">{insightsData.kpis.recu}</div>
+                </Card>
+                <Card className="p-3 rounded-xl">
+                  <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1"><ArrowDownCircle className="w-3 h-3 text-blue-600" /> Livré</div>
+                  <div className="text-xl font-bold text-blue-700 dark:text-blue-400" data-testid="kpi-sortie">{insightsData.kpis.sortie}</div>
+                </Card>
+                <Card className="p-3 rounded-xl">
+                  <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1"><RotateCcw className="w-3 h-3 text-amber-600" /> Retournés</div>
+                  <div className="text-xl font-bold text-amber-700 dark:text-amber-400" data-testid="kpi-returned">{insightsData.kpis.returned}</div>
+                </Card>
+                <Card className="p-3 rounded-xl col-span-2">
+                  <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1"><AlertCircle className="w-3 h-3 text-red-600" /> Taux de refus</div>
+                  <div className="flex items-baseline gap-2">
+                    <div className="text-xl font-bold text-red-700 dark:text-red-400" data-testid="kpi-refusal-rate">{insightsData.kpis.refusalRate}%</div>
+                    <div className="text-xs text-muted-foreground">
+                      ({insightsData.kpis.totalRefused} / {insightsData.kpis.totalOrdered} commandes)
+                    </div>
+                  </div>
+                </Card>
+              </div>
+
+              {/* Top cities */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-blue-500" /> Top 5 villes (livraisons)
+                </h3>
+                {insightsData.topCities.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Aucune livraison enregistrée.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {insightsData.topCities.map((c: any, i: number) => (
+                      <div key={c.city} className="flex justify-between items-center text-sm py-1.5 px-2 rounded hover:bg-muted/50" data-testid={`row-top-city-${i}`}>
+                        <span className="truncate">{c.city}</span>
+                        <Badge variant="outline" className="ml-2">{c.qty}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Top refusal reasons */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-500" /> Top raisons de refus
+                </h3>
+                {insightsData.topRefusalReasons.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Aucun refus enregistré.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {insightsData.topRefusalReasons.map((r: any, i: number) => (
+                      <div key={i} className="flex justify-between items-start gap-2 text-sm py-1.5 px-2 rounded hover:bg-muted/50" data-testid={`row-refusal-reason-${i}`}>
+                        <span className="break-words flex-1">{r.reason}</span>
+                        <Badge variant="outline" className="text-red-700 border-red-200 bg-red-50 dark:bg-red-950 dark:text-red-400 shrink-0">{r.qty}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Movement ledger */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  <History className="w-4 h-4 text-muted-foreground" /> Derniers mouvements
+                </h3>
+                {insightsData.movements.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">Aucun mouvement enregistré.</p>
+                ) : (
+                  <div className="rounded-lg border border-border/50 overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-xs">Date</TableHead>
+                          <TableHead className="text-xs">Type</TableHead>
+                          <TableHead className="text-xs text-right">Qté</TableHead>
+                          <TableHead className="text-xs">Note</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {insightsData.movements.map((m: any) => {
+                          const isPositive = m.quantity > 0;
+                          const typeLabels: Record<string, string> = {
+                            restock: "Réappro",
+                            delivered: "Livré",
+                            returned: "Retour",
+                            adjustment: "Ajust.",
+                            reservation: "Réserv.",
+                            release: "Libér.",
+                          };
+                          return (
+                            <TableRow key={m.id} data-testid={`row-movement-${m.id}`}>
+                              <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
+                                {new Date(m.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                <Badge variant="outline" className="text-[10px]">{typeLabels[m.type] || m.type}</Badge>
+                              </TableCell>
+                              <TableCell className={`text-xs text-right font-semibold ${isPositive ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-700 dark:text-red-400'}`}>
+                                {isPositive ? `+${m.quantity}` : m.quantity}
+                              </TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {m.orderId ? <span className="font-mono">#{m.orderId}</span> : ''}
+                                {m.orderId && m.reason ? ' · ' : ''}
+                                {m.reason || (m.orderId ? '' : '—')}
+                                {m.userName && <div className="text-[10px] opacity-60">par {m.userName}</div>}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* ── Restock dialog ──────────────────────────────────────────────── */}
+      <Dialog open={restockProduct !== null} onOpenChange={(v) => { if (!v && !restockSaving) setRestockProduct(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <PackagePlus className="w-5 h-5 text-emerald-600" />
+              Réapprovisionner
+            </DialogTitle>
+            <DialogDescription>
+              {restockProduct ? `Ajouter du stock à "${restockProduct.name}" (actuel: ${restockProduct.stock ?? '—'})` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label htmlFor="restock-qty">Quantité ajoutée *</Label>
+              <Input
+                id="restock-qty"
+                type="number"
+                min="1"
+                step="1"
+                value={restockQty}
+                onChange={(e) => setRestockQty(e.target.value)}
+                placeholder="ex. 50"
+                data-testid="input-restock-quantity"
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label htmlFor="restock-reason">Note (optionnel)</Label>
+              <Textarea
+                id="restock-reason"
+                value={restockReason}
+                onChange={(e) => setRestockReason(e.target.value)}
+                placeholder="ex. Commande fournisseur #123, livraison 1er Mai"
+                rows={3}
+                data-testid="input-restock-reason"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRestockProduct(null)} disabled={restockSaving}>
+              Annuler
+            </Button>
+            <Button
+              onClick={handleRestockSave}
+              disabled={restockSaving || !restockQty}
+              style={{ background: "#C5A059", color: "#fff" }}
+              data-testid="button-confirm-restock"
+            >
+              {restockSaving ? "Sauvegarde..." : "Ajouter au stock"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

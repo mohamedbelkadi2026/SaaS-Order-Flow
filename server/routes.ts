@@ -7,8 +7,8 @@ import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
-import { eq, and, gte, lt, count, desc, sql } from "drizzle-orm";
+import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
+import { eq, and, gte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
 import archiver from "archiver";
@@ -4608,6 +4608,22 @@ export async function registerRoutes(
         aiFeatures: z.string().nullable().optional(), // stored as JSON string
       });
       const data = schema.parse(req.body);
+
+      // If a manual stock edit slipped in via PATCH (legacy path — restock UI
+      // should use POST /restock instead), record an 'adjustment' ledger row
+      // for the delta so the audit trail is never silently broken.
+      if (typeof data.stock === 'number' && data.stock !== product.stock) {
+        const delta = data.stock - product.stock;
+        await db.insert(stockMovements).values({
+          storeId: product.storeId!,
+          productId: product.id,
+          type: 'adjustment',
+          quantity: delta,
+          userId: req.user!.id,
+          reason: `Édition manuelle du stock (${product.stock} → ${data.stock})`,
+        });
+      }
+
       const updated = await storage.updateProduct(productId, data);
       res.json(updated);
     } catch (err) {
@@ -4623,6 +4639,155 @@ export async function registerRoutes(
     if (product.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
     await storage.deleteProduct(productId);
     res.json({ message: "Supprimé" });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // POST /api/products/:id/restock
+  // Add inventory to a product. Increments products.stock AND inserts a
+  // 'restock' row in the ledger so the inventory page's "Reçu" column and
+  // history modal both reflect the new shipment.
+  // ─────────────────────────────────────────────────────────────────────────
+  app.post("/api/products/:id/restock", requireAuth, async (req, res) => {
+    try {
+      const productId = Number(req.params.id);
+      const product = await storage.getProduct(productId);
+      if (!product) return res.status(404).json({ message: "Produit non trouvé" });
+      if (product.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+
+      const schema = z.object({
+        quantity: z.number().int().positive("La quantité doit être > 0"),
+        reason:   z.string().max(500).optional(),
+      });
+      const { quantity, reason } = schema.parse(req.body);
+
+      await db.transaction(async (tx) => {
+        await tx.update(products)
+          .set({ stock: sql`${products.stock} + ${quantity}` })
+          .where(eq(products.id, productId));
+        await tx.insert(stockMovements).values({
+          storeId: product.storeId!,
+          productId,
+          type: 'restock',
+          quantity,
+          userId: req.user!.id,
+          reason: reason || 'Réapprovisionnement manuel',
+        });
+      });
+
+      res.json({ ok: true });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /api/products/:id/insights
+  // Per-product analytics for the inventory side-sheet:
+  //   - KPIs (recu / sortie / available / refusal counts)
+  //   - Last 30 ledger movements
+  //   - Top 5 cities (delivered orders only)
+  //   - Top refusal reasons (status: refused / annule / no_response)
+  // ─────────────────────────────────────────────────────────────────────────
+  app.get("/api/products/:id/insights", requireAuth, async (req, res) => {
+    const productId = Number(req.params.id);
+    const storeId = req.user!.storeId!;
+    const product = await storage.getProduct(productId);
+    if (!product) return res.status(404).json({ message: "Produit non trouvé" });
+    if (product.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+
+    const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
+    const totalStock = product.stock + variants.reduce((s, v) => s + v.stock, 0);
+
+    // ── Last 30 ledger movements ────────────────────────────────────────
+    const movements = await db.select({
+        id:        stockMovements.id,
+        type:      stockMovements.type,
+        quantity:  stockMovements.quantity,
+        reason:    stockMovements.reason,
+        orderId:   stockMovements.orderId,
+        createdAt: stockMovements.createdAt,
+        userName:  users.name,
+      })
+      .from(stockMovements)
+      .leftJoin(users, eq(stockMovements.userId, users.id))
+      .where(and(eq(stockMovements.productId, productId), eq(stockMovements.storeId, storeId)))
+      .orderBy(desc(stockMovements.createdAt))
+      .limit(30);
+
+    // ── KPIs from the ledger ────────────────────────────────────────────
+    const allLedger = await db.select({ type: stockMovements.type, qty: stockMovements.quantity })
+      .from(stockMovements)
+      .where(and(eq(stockMovements.productId, productId), eq(stockMovements.storeId, storeId)));
+    const recu     = allLedger.filter(m => m.type === 'restock').reduce((s, m) => s + m.qty, 0);
+    const sortie   = -allLedger.filter(m => m.type === 'delivered').reduce((s, m) => s + m.qty, 0);
+    const returned =  allLedger.filter(m => m.type === 'returned').reduce((s, m) => s + m.qty, 0);
+
+    // ── Order-side stats (cities, refusal reasons, totals) ──────────────
+    // Refusal/cancellation buckets — covers carrier returns, customer
+    // cancellations and unreachable customers. The free-text "comment" field
+    // is what the agent jots down when a delivery fails, so we use it as the
+    // refusal reason (status itself is the fallback bucket).
+    const REFUSED_STATUSES = new Set([
+      'refused', 'retourné',
+      'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)',
+      'Injoignable', 'boite vocale',
+    ]);
+
+    const orderStats = await db.select({
+        status: orders.status,
+        city:   orders.customerCity,
+        qty:    orderItems.quantity,
+        comment: orders.comment,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .where(and(eq(orderItems.productId, productId), eq(orders.storeId, storeId)));
+
+    const totalOrdered = orderStats.reduce((s, o) => s + o.qty, 0);
+    const totalRefused = orderStats.filter(o => REFUSED_STATUSES.has(o.status))
+                                    .reduce((s, o) => s + o.qty, 0);
+
+    // Top 5 delivery cities (delivered orders only)
+    const cityMap = new Map<string, number>();
+    for (const o of orderStats) {
+      if (o.status !== 'delivered' || !o.city) continue;
+      const key = o.city.trim() || 'Inconnue';
+      cityMap.set(key, (cityMap.get(key) || 0) + o.qty);
+    }
+    const topCities = Array.from(cityMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([city, qty]) => ({ city, qty }));
+
+    // Top refusal reasons — agent comment first, fall back to status bucket
+    const refMap = new Map<string, number>();
+    for (const o of orderStats) {
+      if (!REFUSED_STATUSES.has(o.status)) continue;
+      const noted = (o.comment || '').trim();
+      const key = noted ? noted.slice(0, 80) : o.status;
+      refMap.set(key, (refMap.get(key) || 0) + o.qty);
+    }
+    const topRefusalReasons = Array.from(refMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([reason, qty]) => ({ reason, qty }));
+
+    res.json({
+      product: {
+        id: product.id, name: product.name, sku: product.sku, imageUrl: product.imageUrl,
+        sellingPrice: product.sellingPrice, costPrice: product.costPrice,
+      },
+      kpis: {
+        currentStock: totalStock,
+        recu, sortie, returned,
+        totalOrdered, totalRefused,
+        refusalRate: totalOrdered > 0 ? Math.round(totalRefused / totalOrdered * 100) : 0,
+      },
+      movements,
+      topCities,
+      topRefusalReasons,
+    });
   });
 
   // ============================================================

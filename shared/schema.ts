@@ -547,6 +547,33 @@ export const insertStockLogSchema = createInsertSchema(stockLogs).omit({ id: tru
 export type StockLog = typeof stockLogs.$inferSelect;
 export type InsertStockLog = z.infer<typeof insertStockLogSchema>;
 
+// ── Stock movement ledger ──────────────────────────────────────────────────
+// Audit trail for every stock change. The inventory page derives "Reçu"
+// (lifetime cumulative purchased) from sum(restock rows) instead of inferring
+// it from current_stock + delivered_count, so a manual restock no longer
+// silently inflates historical totals.
+//   type='restock'    → +qty: manual purchase, initial stock, or reorder
+//   type='delivered'  → -qty: order status flipped to delivered
+//   type='returned'   → +qty: carrier returned the goods (refused/retourné)
+//   type='adjustment' → ± qty: manual correction (recount, damage, etc.)
+//   type='reservation'/ 'release' (reserved for future soft-reservation work)
+export const stockMovements = pgTable("stock_movements", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+  productId:  integer("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+  variantId:  integer("variant_id"),
+  type:       text("type").notNull(),
+  quantity:   integer("quantity").notNull(),
+  reason:     text("reason"),
+  orderId:    integer("order_id").references(() => orders.id, { onDelete: 'set null' }),
+  userId:     integer("user_id").references(() => users.id),
+  createdAt:  timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertStockMovementSchema = createInsertSchema(stockMovements).omit({ id: true, createdAt: true });
+export type StockMovement = typeof stockMovements.$inferSelect;
+export type InsertStockMovement = z.infer<typeof insertStockMovementSchema>;
+
 export type ProductWithVariants = Product & {
   variants: ProductVariant[];
 };
