@@ -9,12 +9,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3, MapPin, Target } from "lucide-react";
+import { ShoppingCart, CheckCircle, Clock, XCircle, Truck, Package, TrendingUp, FileText, Ban, Eye, Filter, CalendarDays, Calendar, DollarSign, Check, Link2, Monitor, ChevronDown, Wallet, Receipt, Users, PackageSearch, PhoneCall, PackageCheck, BarChart3, MapPin, Target } from "lucide-react";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -123,14 +123,54 @@ export default function Dashboard() {
     enabled: isAgent,
   });
 
-  const [agentFilters, setAgentFilters] = useState({
-    dateRange: 'month' as 'today' | 'yesterday' | '7days' | 'month' | 'lastmonth' | 'all' | 'custom',
-    dateFrom: '',
-    dateTo: '',
-    city: 'all',
-    productId: 'all',
-    showCustom: false,
-  });
+  // Agent-only UI state for the filter bar's date preset dropdown. All actual
+  // date/city/product values now live in the unified `filters` state above so
+  // every card and endpoint sees the same period (fixes mixed-period bug).
+  type AgentDateRange = 'today' | 'yesterday' | '7days' | 'month' | 'lastmonth' | 'all' | 'custom';
+  const [agentDateRange, setAgentDateRange] = useState<AgentDateRange>('month');
+  const [agentShowCustom, setAgentShowCustom] = useState(false);
+
+  // When the agent picks a date preset, compute dateFrom/dateTo and write
+  // them into the SAME filters state that drives /api/stats/filtered. This
+  // unifies the period across all 8 stat cards and the commissions banner.
+  useEffect(() => {
+    if (!isAgent) return;
+    if (agentDateRange === 'custom') return; // custom dates flow directly to filters via inputs
+    const now = new Date();
+    const fmt = (d: Date) => d.toISOString().slice(0, 10);
+    let dateFrom = '';
+    let dateTo = '';
+
+    if (agentDateRange === 'today') {
+      dateFrom = dateTo = fmt(now);
+    } else if (agentDateRange === 'yesterday') {
+      const y = new Date(now); y.setDate(y.getDate() - 1);
+      dateFrom = dateTo = fmt(y);
+    } else if (agentDateRange === '7days') {
+      const f = new Date(now); f.setDate(f.getDate() - 6);
+      dateFrom = fmt(f); dateTo = fmt(now);
+    } else if (agentDateRange === 'month') {
+      dateFrom = fmt(new Date(now.getFullYear(), now.getMonth(), 1));
+      dateTo = fmt(now);
+    } else if (agentDateRange === 'lastmonth') {
+      dateFrom = fmt(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+      dateTo = fmt(new Date(now.getFullYear(), now.getMonth(), 0));
+    } else if (agentDateRange === 'all') {
+      dateFrom = ''; dateTo = '';
+    }
+
+    setFilters(prev => ({ ...prev, dateFrom, dateTo }));
+  }, [agentDateRange, isAgent]);
+
+  // Force agentId = current user id for agents so /api/stats/filtered
+  // pre-scopes every count (refused, cancelled, profit, ROI…) to their data.
+  useEffect(() => {
+    if (isAgent && user?.id) {
+      setFilters(prev =>
+        prev.agentId === String(user.id) ? prev : { ...prev, agentId: String(user.id) }
+      );
+    }
+  }, [isAgent, user?.id]);
 
   const { data: agentMyStats, isLoading: agentStatsLoading } = useQuery<{
     total: number;
@@ -146,16 +186,22 @@ export default function Dashboard() {
     cities?: string[];
     products?: { id?: number; name: string; total: number; confirmed: number; delivered: number }[];
   }>({
-    queryKey: ['/api/agents/my-stats', agentFilters],
+    // Driven by the SAME filters as the rest of the dashboard so the agent's
+    // 8 stat cards stay in lock-step with the active period and city/product.
+    queryKey: ['/api/agents/my-stats', filters.dateFrom, filters.dateTo, filters.city, filters.productId, agentDateRange],
     queryFn: async () => {
       const params = new URLSearchParams();
-      if (agentFilters.city !== 'all') params.set('city', agentFilters.city);
-      if (agentFilters.productId !== 'all') params.set('product', agentFilters.productId);
-      if (agentFilters.dateFrom) {
-        params.set('dateFrom', agentFilters.dateFrom);
-        params.set('dateTo', agentFilters.dateTo || new Date().toISOString().slice(0, 10));
-      } else {
-        params.set('dateRange', agentFilters.dateRange);
+      if (filters.city !== 'all') params.set('city', filters.city);
+      // Send the numeric product id; /api/agents/my-stats accepts both
+      // `productId` (new) and `product` (legacy by name).
+      if (filters.productId !== 'all') {
+        params.set('productId', filters.productId);
+      }
+      if (filters.dateFrom) {
+        params.set('dateFrom', filters.dateFrom);
+        params.set('dateTo', filters.dateTo || new Date().toISOString().slice(0, 10));
+      } else if (agentDateRange === 'all') {
+        params.set('dateRange', 'all');
       }
       const r = await fetch(`/api/agents/my-stats?${params}`, { credentials: 'include' });
       if (!r.ok) throw new Error('Failed to fetch');
@@ -213,10 +259,14 @@ export default function Dashboard() {
   });
 
   const { data: adminPersonalProfit } = useQuery<{ revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads?: number }>({
-    queryKey: ['/api/media-buyer/profit-admin-personal', filters.magasinId],
+    // Mirror the active dashboard filters so "Mes Stats Personnelles" reflects
+    // the SAME period as the cards below (no more April vs May confusion).
+    queryKey: ['/api/media-buyer/profit-admin-personal', filters.magasinId, filters.dateFrom, filters.dateTo],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters.magasinId !== 'all') params.set('magasinId', filters.magasinId);
+      if (filters.dateFrom) params.set('dateFrom', filters.dateFrom);
+      if (filters.dateTo) params.set('dateTo', filters.dateTo);
       const qs = params.toString();
       const res = await fetch(`/api/media-buyer/profit${qs ? `?${qs}` : ''}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed');
@@ -288,10 +338,19 @@ export default function Dashboard() {
 
   const resetFilters = () => {
     setFilters({
-      city: 'all', productId: 'all', agentId: 'all', source: 'all',
+      city: 'all', productId: 'all',
+      // For agents, keep the agentId-lock to themselves so reset doesn't
+      // expose other agents' data; the useEffect above will re-apply it
+      // anyway, but doing it inline avoids one-frame flashes.
+      agentId: isAgent && user?.id ? String(user.id) : 'all',
+      source: 'all',
       shippingProvider: 'all', utmSource: 'all', utmCampaign: 'all',
       magasinId: 'all', datePreset: 'all', dateFrom: '', dateTo: '',
     });
+    if (isAgent) {
+      setAgentDateRange('month');
+      setAgentShowCustom(false);
+    }
   };
 
   const hasActiveFilters = Object.values(activeFilters).some(v => v && v !== 'all');
@@ -861,7 +920,23 @@ export default function Dashboard() {
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex justify-between items-center flex-wrap gap-2">
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Dashboard</h1>
+          <div className="flex flex-col gap-1">
+            <h1 className="text-2xl sm:text-3xl font-display font-bold uppercase" data-testid="text-dashboard-title">Dashboard</h1>
+            {(filters.dateFrom || filters.dateTo) && (
+              <Badge
+                variant="outline"
+                className="text-[11px] gap-1 self-start font-medium"
+                data-testid="badge-active-period"
+              >
+                <Calendar className="w-3 h-3" />
+                {filters.dateFrom && filters.dateTo
+                  ? `${new Date(filters.dateFrom).toLocaleDateString('fr-FR')} → ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+                  : filters.dateFrom
+                    ? `À partir du ${new Date(filters.dateFrom).toLocaleDateString('fr-FR')}`
+                    : `Jusqu'au ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`}
+              </Badge>
+            )}
+          </div>
           {isAdminUser && (
             <div className="flex rounded-lg border border-border/60 overflow-hidden text-xs" data-testid="admin-view-toggle">
               <button
@@ -895,12 +970,16 @@ export default function Dashboard() {
             <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Filtres</span>
 
             <Select
-              value={agentFilters.showCustom ? 'custom' : agentFilters.dateRange}
+              value={agentShowCustom ? 'custom' : agentDateRange}
               onValueChange={(v) => {
                 if (v === 'custom') {
-                  setAgentFilters((f) => ({ ...f, showCustom: true, dateRange: 'custom' }));
+                  setAgentShowCustom(true);
+                  setAgentDateRange('custom');
                 } else {
-                  setAgentFilters((f) => ({ ...f, dateRange: v as any, showCustom: false, dateFrom: '', dateTo: '' }));
+                  setAgentShowCustom(false);
+                  setAgentDateRange(v as AgentDateRange);
+                  // dateFrom/dateTo will be re-derived from the preset by the
+                  // useEffect above and pushed into `filters` automatically.
                 }
               }}
             >
@@ -918,20 +997,20 @@ export default function Dashboard() {
               </SelectContent>
             </Select>
 
-            {agentFilters.showCustom && (
+            {agentShowCustom && (
               <>
                 <input
                   type="date"
-                  value={agentFilters.dateFrom}
-                  onChange={(e) => setAgentFilters((f) => ({ ...f, dateFrom: e.target.value }))}
+                  value={filters.dateFrom}
+                  onChange={(e) => setFilters((f) => ({ ...f, dateFrom: e.target.value }))}
                   className="h-8 text-xs border rounded-lg px-2 bg-white dark:bg-card cursor-pointer"
                   data-testid="input-agent-date-from"
                 />
                 <span className="text-xs text-muted-foreground">→</span>
                 <input
                   type="date"
-                  value={agentFilters.dateTo}
-                  onChange={(e) => setAgentFilters((f) => ({ ...f, dateTo: e.target.value }))}
+                  value={filters.dateTo}
+                  onChange={(e) => setFilters((f) => ({ ...f, dateTo: e.target.value }))}
                   className="h-8 text-xs border rounded-lg px-2 bg-white dark:bg-card cursor-pointer"
                   data-testid="input-agent-date-to"
                 />
@@ -940,7 +1019,7 @@ export default function Dashboard() {
 
             <div className="w-px h-5 bg-border" />
 
-            <Select value={agentFilters.city} onValueChange={(v) => setAgentFilters((f) => ({ ...f, city: v }))}>
+            <Select value={filters.city} onValueChange={(v) => setFilters((f) => ({ ...f, city: v }))}>
               <SelectTrigger className="h-8 text-xs w-auto min-w-[140px] rounded-full" data-testid="select-agent-city">
                 <SelectValue placeholder="Toutes les villes" />
               </SelectTrigger>
@@ -953,22 +1032,22 @@ export default function Dashboard() {
             </Select>
 
             {(agentMyStats?.products || []).length > 0 && (
-              <Select value={agentFilters.productId} onValueChange={(v) => setAgentFilters((f) => ({ ...f, productId: v }))}>
+              <Select value={filters.productId} onValueChange={(v) => setFilters((f) => ({ ...f, productId: v }))}>
                 <SelectTrigger className="h-8 text-xs w-auto min-w-[140px] rounded-full" data-testid="select-agent-product">
                   <SelectValue placeholder="Tous les produits" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">📦 Tous les produits</SelectItem>
                   {(agentMyStats?.products || []).map((p: any) => (
-                    <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>
+                    <SelectItem key={p.id ?? p.name} value={String(p.id ?? p.name)}>{p.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             )}
 
-            {(agentFilters.city !== 'all' || agentFilters.productId !== 'all' || agentFilters.dateRange !== 'month' || agentFilters.dateFrom) && (
+            {(filters.city !== 'all' || filters.productId !== 'all' || agentDateRange !== 'month' || agentShowCustom) && (
               <button
-                onClick={() => setAgentFilters({ dateRange: 'month', dateFrom: '', dateTo: '', city: 'all', productId: 'all', showCustom: false })}
+                onClick={resetFilters}
                 className="h-8 px-3 text-xs rounded-full border text-red-500 hover:bg-red-50"
                 data-testid="button-agent-filters-reset"
               >
@@ -977,22 +1056,24 @@ export default function Dashboard() {
             )}
           </div>
 
-          {agentFilters.city !== 'all' && (
+          {filters.city !== 'all' && (
             <div className="flex items-center gap-2 text-xs">
               <span className="text-muted-foreground">Ville:</span>
-              <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary font-semibold">{agentFilters.city}</span>
+              <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary font-semibold">{filters.city}</span>
             </div>
           )}
         </div>
       )}
 
       {/* ── Active product badge above stat cards ── */}
-      {isAgent && agentFilters.productId !== 'all' && (
+      {isAgent && filters.productId !== 'all' && (
         <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-2 flex items-center gap-2" data-testid="agent-active-product-badge">
           <Package className="w-4 h-4 text-primary" />
-          <span className="text-sm font-semibold text-primary">Filtré par: {agentFilters.productId}</span>
+          <span className="text-sm font-semibold text-primary">
+            Filtré par: {(agentMyStats?.products || []).find((p: any) => String(p.id ?? p.name) === filters.productId)?.name || filters.productId}
+          </span>
           <button
-            onClick={() => setAgentFilters((f) => ({ ...f, productId: 'all' }))}
+            onClick={() => setFilters((f) => ({ ...f, productId: 'all' }))}
             className="ml-auto text-xs text-muted-foreground hover:text-red-500"
             data-testid="button-clear-product-filter"
           >
@@ -1194,7 +1275,9 @@ export default function Dashboard() {
                 <p className="text-white/80 text-xs font-semibold uppercase tracking-wider">Total Commissions à Payer</p>
                 <p className="text-white text-2xl font-bold">{totalCommissionsOwed.toFixed(2)} DH</p>
                 <p className="text-xs text-white/70 mt-1">
-                  Livraisons de {new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
+                  {filters.dateFrom && filters.dateTo
+                    ? `Livraisons du ${new Date(filters.dateFrom).toLocaleDateString('fr-FR')} au ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+                    : `Livraisons de ${new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}`}
                 </p>
               </div>
             </div>
@@ -1269,7 +1352,13 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         ) : null}
-        <StatCard title="Refusées" value={stats?.refused || 0} icon={XCircle} color={STATUS_COLORS.cancelled} subtitle={`${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`} />
+        <StatCard
+          title="Refusées"
+          value={isAgent ? (agentMyStats?.refused || 0) : (stats?.refused || 0)}
+          icon={XCircle}
+          color={STATUS_COLORS.cancelled}
+          subtitle={`${totalOrders > 0 ? (((isAgent ? (agentMyStats?.refused || 0) : (stats?.refused || 0)) / totalOrders) * 100).toFixed(2) : 0}%`}
+        />
         {canSeeRevenue && (
           <StatCard title="ROI / ROAS" value={null} icon={BarChart3} color="#C5A059" subtitle={
             stats?.adSpendTotal > 0

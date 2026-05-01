@@ -1,0 +1,131 @@
+
+🐛 FIX — Dashboard cards show wrong numbers when filtering by date for agents
+Problems
+Bug 1: Agent-only "Refusées" card pulls from global store stats
+On line 1272 of client/src/pages/dashboard.tsx:
+tsx<StatCard title="Refusées" value={stats?.refused || 0} ... />
+This always reads from stats (the global store stats from /api/stats/filtered), even for agents. So when an agent filters their dashboard to "Mai 2026", the Refusées card still shows the store-wide refused count from any period, mixing with the agent's other date-filtered cards.
+Bug 2: Agents have two independent filter bars
+Agents use agentFilters (their own filter bar at line 126), which feeds /api/agents/my-stats only. But the rest of the dashboard reads from activeFilters → /api/stats/filtered. When the agent picks "Personnalisé 01/05/2026 → 31/05/2026" in their own filter bar, it doesn't propagate to the global stats query → the cards inconsistently mix the two periods.
+Bug 3: "Total Commissions à Payer" banner says "Livraisons de mai 2026" but the cards below show 40/19/8 (clearly not just May data)
+The banner correctly date-filters (commissionsSummary uses activeFilters.dateFrom/dateTo), but the cards don't, because they read from /api/agents/my-stats which uses agentFilters (which defaults to "ce mois" but is set independently and may differ).
+Root cause
+The dashboard maintains TWO independent filter states (filters for admins, agentFilters for agents) that drive DIFFERENT endpoints (/api/stats/filtered vs /api/agents/my-stats). Cards read from a mix of both → inconsistent dates across cards.
+Fix
+Step 1 — Unify filter state for agents
+In client/src/pages/dashboard.tsx, when the user is an agent, drive filters (the unified state) from the agent filter bar, and drop agentFilters as a separate state.
+Around line 126, replace:
+tsconst [agentFilters, setAgentFilters] = useState({
+  dateRange: 'month' as ...,
+  dateFrom: '', dateTo: '',
+  city: 'all', productId: 'all',
+});
+With a sync hook that mirrors agent filter changes into the unified filters state:
+tsconst [agentDateRange, setAgentDateRange] = useState<'today'|'yesterday'|'7days'|'month'|'lastmonth'|'all'|'custom'>('month');
+
+// When agent picks a preset, compute the from/to and write into filters
+useEffect(() => {
+  if (!isAgent) return;
+  const now = new Date();
+  let dateFrom = '';
+  let dateTo   = '';
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+
+  if (agentDateRange === 'today') {
+    dateFrom = dateTo = fmt(now);
+  } else if (agentDateRange === 'yesterday') {
+    const y = new Date(now); y.setDate(y.getDate() - 1);
+    dateFrom = dateTo = fmt(y);
+  } else if (agentDateRange === '7days') {
+    const f = new Date(now); f.setDate(f.getDate() - 6);
+    dateFrom = fmt(f); dateTo = fmt(now);
+  } else if (agentDateRange === 'month') {
+    dateFrom = fmt(new Date(now.getFullYear(), now.getMonth(), 1));
+    dateTo   = fmt(now);
+  } else if (agentDateRange === 'lastmonth') {
+    dateFrom = fmt(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+    dateTo   = fmt(new Date(now.getFullYear(), now.getMonth(), 0));
+  } else if (agentDateRange === 'all') {
+    dateFrom = ''; dateTo = '';
+  }
+  // 'custom' falls through — uses the dates the user explicitly picked
+
+  if (agentDateRange !== 'custom') {
+    setFilters(prev => ({ ...prev, dateFrom, dateTo }));
+  }
+}, [agentDateRange, isAgent]);
+For agents, also force agentId = current_user_id in filters:
+tsuseEffect(() => {
+  if (isAgent && user?.id) {
+    setFilters(prev => ({ ...prev, agentId: String(user.id) }));
+  }
+}, [isAgent, user?.id]);
+This means when an agent is logged in:
+
+Their filter bar drives the SAME filters state that admins use
+Server gets agentId=<them> in every query → all stats pre-scoped to them
+A single dateFrom/dateTo flows to every endpoint
+
+Step 2 — Make /api/stats/filtered honor agentId for refused/cancelled/etc.
+In server/routes.ts line 564 (the /api/stats/filtered endpoint), confirm agentId filter is applied to ALL counts, not just totalOrders. If it's already in the WHERE clause for the base orders query, all derived counts benefit automatically. ✅
+Step 3 — Source the Refusées card from agent stats when isAgent
+Line 1272:
+tsx<StatCard
+  title="Refusées"
+  value={isAgent ? (agentMyStats?.refused || 0) : (stats?.refused || 0)}
+  icon={XCircle}
+  color={STATUS_COLORS.cancelled}
+  subtitle={`${totalOrders > 0 ? ((isAgent ? (agentMyStats?.refused || 0) : (stats?.refused || 0)) / totalOrders * 100).toFixed(2) : 0}%`}
+/>
+Apply the same pattern to any other card that uses stats?.X while inside the agent view. Search for stats?. in the file and audit each occurrence — wrap with isAgent ? agentMyStats?.X : stats?.X.
+Step 4 — Add refused field to /api/agents/my-stats response
+Verify in server/routes.ts line 4779-4969 that the response includes refused. Looking at the code, refused is computed via:
+tslet refusedCount = agentOrders.filter(o => o.status === 'refused').length;
+If refused is missing from the JSON response (around line 4955), add it:
+tsres.json({
+  // ...
+  refused: refusedCount,    // ← add if missing
+  // ...
+});
+Step 5 — Make commissionsSummary use the SAME filters
+The "Total Commissions à Payer" banner (line 1186) uses commissionsSummary which queries /api/stats/commissions-summary with activeFilters.dateFrom/dateTo. This is correct — but make sure the label below the banner reflects the actual selected period, not "mai 2026" hardcoded:
+Around line 1197, replace:
+tsx<p className="text-xs text-white/70 mt-1">
+  Livraisons de {new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}
+</p>
+With:
+tsx<p className="text-xs text-white/70 mt-1">
+  {filters.dateFrom && filters.dateTo
+    ? `Livraisons du ${new Date(filters.dateFrom).toLocaleDateString('fr-FR')} au ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+    : `Livraisons de ${new Date().toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })}`
+  }
+</p>
+So the banner label always matches the actual period in use, not the current month.
+Step 6 — Visual: show the active period prominently
+At the top of the dashboard, just under the page title, add a period badge:
+tsx<h1 className="text-3xl font-display font-bold">DASHBOARD</h1>
+{(filters.dateFrom || filters.dateTo) && (
+  <Badge variant="outline" className="mt-2 text-xs gap-1">
+    <Calendar className="w-3 h-3" />
+    {filters.dateFrom && filters.dateTo
+      ? `${new Date(filters.dateFrom).toLocaleDateString('fr-FR')} → ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+      : filters.dateFrom
+        ? `À partir du ${new Date(filters.dateFrom).toLocaleDateString('fr-FR')}`
+        : `Jusqu'au ${new Date(filters.dateTo).toLocaleDateString('fr-FR')}`
+    }
+  </Badge>
+)}
+This way agents and admins both immediately see the active period — no more confusion about "wach hadshi May walla April?"
+Step 7 — Audit the "Mes Stats Personnelles" admin tab too
+Around line 1215, when adminView === 'personal', the adminPersonalProfit query should also respect activeFilters. Find the query and verify it passes dateFrom/dateTo. Same fix pattern: pull from agent-style filtered endpoint when in personal view.
+Acceptance criteria
+
+✅ Agent picks "Personnalisé 01/05/2026 → 31/05/2026" in their filter bar.
+✅ All 8 cards (Commandes, Confirmées, En cours, Annulées, Livrées, Profit, Refusées, ROI) recalculate to ONLY orders within May 2026.
+✅ "Total Commissions à Payer" banner shows the same period in its label and amount.
+✅ Switching to "Mois dernier" → all cards update to April 2026.
+✅ Period badge under the title shows the active range.
+✅ Agent only sees their own data (agentId is implicit in their queries) — never sees other agents' numbers.
+✅ Admin filtering works the same way: pick a date → all cards reflect that period.
+✅ "Réinitialiser les filtres" button resets BOTH date and other filters back to defaults.
+✅ No card mixes data from two different periods anymore.

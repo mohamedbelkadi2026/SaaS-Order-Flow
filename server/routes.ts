@@ -5201,8 +5201,11 @@ export async function registerRoutes(
       const storeId = user.storeId!;
       const agentId = user.id;
 
-      // Filter params
-      const { city, product, dateRange, dateFrom, dateTo } = req.query as Record<string, string>;
+      // Filter params. `product` is filtered by NAME (legacy). `productId`
+      // is the new numeric-ID filter that matches the unified dashboard
+      // filter dropdown shape (so all 8 cards stay in lock-step).
+      const { city, product, productId, dateRange, dateFrom, dateTo } =
+        req.query as Record<string, string>;
 
       // Compute window from dateRange shortcut or custom range
       const now = new Date();
@@ -5256,8 +5259,16 @@ export async function registerRoutes(
         );
       }
 
-      // Apply product filter (by name)
-      if (product && product !== 'all') {
+      // Apply product filter (by ID first — matches unified dashboard filter
+      // shape — then fall back to legacy name match if `product` was sent).
+      if (productId && productId !== 'all') {
+        const pid = Number(productId);
+        if (!Number.isNaN(pid)) {
+          agentOrders = agentOrders.filter((o: any) =>
+            o.items?.some((i: any) => i.productId === pid)
+          );
+        }
+      } else if (product && product !== 'all') {
         agentOrders = agentOrders.filter((o: any) => {
           const name =
             o.rawProductName ||
