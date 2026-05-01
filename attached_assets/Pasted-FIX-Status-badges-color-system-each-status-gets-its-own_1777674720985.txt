@@ -1,4 +1,10 @@
-import { Badge } from "@/components/ui/badge";
+FIX: Status badges color system — each status gets its own distinct color
+File to replace: client/src/components/ui/status-badge.tsx
+Problem:
+All carrier statuses (En cours de réception, En Voyage, Ramassé, Programmé, etc.) share the same blue color, making it impossible to distinguish order stages at a glance.
+Fix:
+Replace the entire file with a new color system where each delivery stage has its own color:
+tsximport { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 const C = {
@@ -148,3 +154,4 @@ export function isCancelledGroup(status: string) {
 export function isRefusedGroup(status: string) {
   return REFUSED_GROUP_STATUSES.includes(status);
 }
+Do not change any other file. Only replace status-badge.tsx.
