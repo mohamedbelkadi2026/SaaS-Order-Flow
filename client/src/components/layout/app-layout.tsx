@@ -91,12 +91,13 @@ const ORDER_SUB_ITEMS = [
   { name: "Nouveaux",         href: "/orders",                  badge: true, badgeKey: "nouveau" as const },
   { name: "Confirmés",        href: "/orders/confirme" },
   { name: "Confirmé Reporté", href: "/orders/confirme-reporte", badge: true, badgeKey: "confirmeReporteDueSoon" as const },
+  { name: "Rappel",           href: "/orders/rappel",           badge: true, badgeKey: "rappel" as const },
   { name: "Injoignables",     href: "/orders/injoignable" },
   { name: "Annulés",        href: "/orders/annules" },
   { name: "Boite vocale",   href: "/orders/boite-vocale" },
   { name: "Pas de réponse", href: "/orders/pas-reponse" },
-  { name: "En cours",       href: "/orders/en-cours" },
   { name: "Suivi des Colis",href: "/orders/suivi" },
+  { name: "En cours",       href: "/orders/en-cours" },
   { name: "Livrées",        href: "/orders/livrees" },
   { name: "Refusées",       href: "/orders/refuses" },
 ];
@@ -136,6 +137,7 @@ const NAV_KEYS: Record<string, string> = {
 const ORDER_SUB_KEYS: Record<string, string> = {
   "Nouveaux":       "orderSub.new",
   "Confirmés":      "orderSub.confirmed",
+  "Rappel":         "orderSub.rappel",
   "Injoignables":   "orderSub.unreachable",
   "Annulés":        "orderSub.cancelled",
   "Boite vocale":   "orderSub.voicemail",
@@ -504,11 +506,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   });
   const newOrdersCount: number       = ordersStats?.nouveau ?? 0;
   const confirmeReporteDueSoon: number = ordersStats?.confirmeReporteDueSoon ?? 0;
+  const rappelCount: number          = ordersStats?.rappel ?? 0;
 
   // Map of badgeKey → count, used by the sidebar badge render below.
   const badgeCounts: Record<string, number> = {
     nouveau: newOrdersCount,
     confirmeReporteDueSoon,
+    rappel: rappelCount,
   };
 
   /* Recent orders for notifications panel */
@@ -549,7 +553,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     if (agentSpecialty === 'confirmation') {
       return ORDER_SUB_ITEMS.filter(s => !['Suivi des Colis', 'En cours', 'Livrées', 'Refusées'].includes(s.name));
     }
-    return ORDER_SUB_ITEMS.filter(s => ['En cours', 'Suivi des Colis', 'Livrées', 'Refusées'].includes(s.name));
+    return ORDER_SUB_ITEMS.filter(s => ['En cours', 'Suivi des Colis', 'Livrées', 'Refusées', 'Rappel'].includes(s.name));
   }, [isAgent, agentSpecialty, isMediaBuyer]);
 
   /* ── Sidebar JSX ──────────────────────────────────────────────── */

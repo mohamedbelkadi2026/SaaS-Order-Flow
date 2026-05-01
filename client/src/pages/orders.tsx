@@ -85,6 +85,7 @@ const STATUS_MAP: Record<string, string> = {
   nouvelles: "nouveau",
   confirme: "confirme",
   "confirme-reporte": "confirme_reporte",
+  rappel: "rappel",
   injoignable: "Injoignable",
   annules: "annule_group",
   "boite-vocale": "boite vocale",
@@ -99,6 +100,7 @@ const TITLE_MAP: Record<string, string> = {
   "": "NOUVELLES",
   confirme: "CONFIRMÉES",
   "confirme-reporte": "CONFIRMÉ REPORTÉ",
+  rappel: "RAPPEL",
   injoignable: "INJOIGNABLES",
   annules: "ANNULÉES",
   "boite-vocale": "BOITE VOCALE",
@@ -115,6 +117,7 @@ const STATUS_DROPDOWN_OPTIONS: { value: string; label: string; disabled?: boolea
   // ── Agent statuses (manually set by agents) ─────────────────
   { value: 'nouveau',                       label: 'Nouveau'                    },
   { value: 'confirme',                      label: 'Confirmé'                   },
+  { value: 'rappel',                        label: 'Rappel'                     },
   { value: 'Injoignable',                   label: 'Injoignable'                },
   { value: 'Annulé (fake)',                 label: 'Annulé (fake)'              },
   { value: 'Annulé (faux numéro)',          label: 'Annulé (faux numéro)'       },
@@ -163,6 +166,7 @@ const ALL_ORDER_STATUSES = [
   // ── Confirmation statuses ─────────────────────────────
   { value: 'nouveau',                       label: 'Nouveau'                    },
   { value: 'confirme',                      label: 'Confirmé'                   },
+  { value: 'rappel',                        label: 'Rappel'                     },
   { value: 'Injoignable',                   label: 'Injoignable'                },
   { value: 'boite vocale',                  label: 'Boite vocale'               },
   { value: 'Pas de réponse 1',              label: 'Pas de réponse 1'           },
@@ -180,6 +184,7 @@ const ALL_ORDER_STATUSES = [
   { value: 'in_progress',                   label: 'En cours de livraison'      },
   { value: 'delivered',                     label: 'Livré'                      },
   { value: 'refused',                       label: 'Refusé'                     },
+  { value: 'Reporté',                       label: 'Reporté'                    },
   { value: 'retourné',                      label: 'Retourné'                   },
 ];
 

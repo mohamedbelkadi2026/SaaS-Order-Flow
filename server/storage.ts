@@ -519,6 +519,8 @@ export class DatabaseStorage implements IStorage {
               // Moroccan carrier in-transit statuses
               'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
               'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+              // Postponed delivery
+              'Reporté',
             ])
           )
         );

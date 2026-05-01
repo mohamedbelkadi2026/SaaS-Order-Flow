@@ -638,7 +638,7 @@ export async function registerRoutes(
     const ADMIN_CONFIRMED = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
-    let pasReponse = 0;
+    let pasReponse = 0, rappel = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
 
     // Fetch store packaging cost and agent commission rates for accurate profit calc
@@ -661,6 +661,7 @@ export async function registerRoutes(
 
     allOrders.forEach(o => {
       if (o.status === 'nouveau') nouveau++;
+      else if (o.status === 'rappel') rappel++;
       else if (o.status === 'in_progress') inProgress++;
       else if (o.status === 'refused') refused++;
       else if (o.status === 'Injoignable') injoignable++;
@@ -867,7 +868,7 @@ export async function registerRoutes(
     const reporteCounts = countConfirmeReporte(allOrders as any[], casablancaTomorrow());
 
     res.json({
-      totalOrders, nouveau, confirme, inProgress, cancelled, delivered, refused,
+      totalOrders, nouveau, rappel, confirme, inProgress, cancelled, delivered, refused,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
       pasReponse,
       confirmeReporteDueSoon: reporteCounts.dueSoon,

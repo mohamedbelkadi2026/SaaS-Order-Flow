@@ -21,6 +21,7 @@ export const ORDER_STATUSES = [
   // Agent statuses
   { value: 'nouveau',                           label: 'Nouveau',                       color: C.amber        },
   { value: 'confirme',                          label: 'Confirmé',                      color: C.emeraldSolid },
+  { value: 'rappel',                            label: 'Rappel',                        color: C.orange       },
   { value: 'Injoignable',                       label: 'Injoignable',                   color: C.indigo       },
   { value: 'Annulé (fake)',                     label: 'Annulé (fake)',                 color: C.rose         },
   { value: 'Annulé (faux numéro)',              label: 'Annulé (faux numéro)',          color: C.rose         },
@@ -66,6 +67,7 @@ export const ORDER_STATUSES = [
   { value: 'En cours de livraison',             label: 'En cours de livraison',         color: C.sky          },
   { value: 'Sorti pour livraison',              label: 'Sorti pour livraison',          color: C.sky          },
   { value: 'Programmé',                         label: 'Programmé',                     color: C.sky          },
+  { value: 'Reporté',                           label: 'Reporté',                       color: C.violet       },
 
   // Carrier — Driver Confirmed
   { value: 'Confirmé par livreur',              label: 'Confirmé par livreur',          color: C.teal         },
@@ -113,6 +115,7 @@ export const SUIVI_STATUSES = [
   'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
   'En attente de ramassage', 'Non Reçu', 'Retour en cours',
   "Retourné à l'expéditeur", 'Tentative échouée',
+  'Reporté',
 ];
 
 export const REFUSED_GROUP_STATUSES = [
