@@ -1,0 +1,119 @@
+🐛 FIX — Two related bugs that block manual re-shipping after a failed dispatchBug 1: Selection blocked on NOUVELLES tab when an order has a stale trackNumberThe earlier fix (P0-1: prevent duplicate shipping) added a checkbox filter:
+checkbox disabled WHEN status='confirme' AND trackNumber IS NULL is falseBut that filter is being applied on every tab, including NOUVELLES. So an order in nouveau status that happens to have a leftover trackNumber from a previous failed shipping attempt becomes un-selectable everywhere — even from the NOUVELLES tab where a fresh order should always be selectable.The user sees: "Cette commande a déjà été expédiée ou n'est pas..." tooltip even though the order is in the NOUVELLES list.The fix: the "shippable" check is only relevant on the Confirmées tab. On any other tab, all orders should be selectable normally.Bug 2: Reverting status to "Confirmé" doesn't clear the carrier fieldsToday when an admin moves an already-shipped order back to confirme (because the carrier failed, lost the package, etc.), the status changes but trackNumber, labelUrl, shippingProvider, carrierId, carrierName all stay populated from the previous attempt. Result:
+Bulk-ship excludes the order (because trackNumber IS NOT NULL)
+The user can't re-ship it without manually clearing the fields in the DB
+The fix: when status transitions OUT of any shipped state INTO confirme (or nouveau), clear all the carrier-side fields so the order behaves like a fresh confirmed order.FixStep 1 — server/storage.ts updateOrderStatus: clear carrier fields when revertingAround line 729 in updateOrderStatus, find where setPayload is built:
+tsconst setPayload: Record<string, any> = { status, updatedAt: new Date() };
+if (actorId != null) {
+  setPayload.lastActionAt = new Date();
+  setPayload.lastActionBy = actorId;
+}Add right after that block:
+ts// ── Carrier fields cleanup on status reversal ──────────────────────────
+// When a previously-shipped order is moved BACK to 'confirme' or 'nouveau',
+// clear all carrier-side fields so the order can be re-shipped cleanly.
+// Without this, bulk-ship's "trackNumber IS NULL" guard skips the order
+// because the old tracking number is still there.
+const wasShipped = ['expédié', 'Attente De Ramassage', 'in_progress', 'delivered', 'refused', 'retourné']
+  .includes(prevStatus);
+
+const isReverting = (status === 'confirme' || status === 'nouveau') && wasShipped;
+
+if (isReverting) {
+  setPayload.trackNumber      = null;
+  setPayload.labelUrl         = null;
+  setPayload.shippingProvider = null;
+  setPayload.carrierId        = null;
+  setPayload.carrierName      = null;
+  setPayload.driverName       = null;
+  setPayload.driverPhone      = null;
+  setPayload.shippingCost     = 0;
+  console.log(
+    `[STATUS-REVERT] Order #${id}: ${prevStatus} → ${status} — cleared carrier fields ` +
+    `(trackNumber, labelUrl, provider, carrier, driver, cost)`
+  );
+}This means the moment an admin (or a manual API call) sets status back to confirme, the order is "reset" and will be picked up by bulk-ship like any fresh confirmed order.Step 2 — server/routes.ts bulkShipOrders endpoint: only block shipped on the right tabsThe current bulkShipOrders filter (from P0-1) is correct:
+tseq(orders.status, 'confirme'),
+sql`(${orders.trackNumber} IS NULL OR ${orders.trackNumber} = '')`,This filter is meant for the BACKEND — only orders that match are eligible. That's fine and stays as-is.But the FRONTEND is currently disabling checkboxes everywhere, not just on the Confirmées tab. That's the user-visible bug.Step 3 — client/src/pages/orders.tsx: scope the disable logic to Confirmées tab onlyFind where the row checkbox is rendered. There should be a disabled={...} and a title={...} prop based on a computed isShippable flag. The current logic is something like:tsxconst isShippable = order.status === 'confirme' && !order.trackNumber;
+<Checkbox
+  disabled={!isShippable}
+  title={!isShippable ? 'Cette commande a déjà été expédiée ou n'est pas...' : undefined}
+  ...
+/>Replace the isShippable definition with one that only blocks on the Confirmées tab:tsx// urlStatus is the current tab key (already used elsewhere in this file).
+// Bulk-ship is only invoked from the Confirmées tab, so the checkbox-disable
+// guard should only apply there. On every other tab, all rows are selectable
+// normally for whatever bulk action the tab supports.
+const isOnConfirmeesTab = urlStatus === 'confirme';
+const isShippable = isOnConfirmeesTab
+  ? (order.status === 'confirme' && !order.trackNumber)
+  : true;   // any other tab: row is always selectable
+
+const blockedTooltip = isOnConfirmeesTab && !isShippable
+  ? 'Cette commande a déjà un numéro de suivi. Pour la réexpédier, ramenez-la à "Confirmé" depuis la modal de détails.'
+  : undefined;
+
+<Checkbox
+  checked={selectedIds.has(order.id)}
+  disabled={!isShippable}
+  onCheckedChange={() => toggleSelect(order.id)}
+  title={blockedTooltip}
+/>The new tooltip is also more actionable — it tells the user how to fix the situation (reset the status from the modal) instead of just "déjà expédiée".Step 4 — Same fix in all-orders.tsx if it has its own checkbox columnApply the identical scoping logic in client/src/pages/all-orders.tsx. The "Sélectionner tout" handler should also respect the tab:tsxconst selectAllShippable = () => {
+  const eligible = isOnConfirmeesTab
+    ? filteredOrders.filter((o: any) => o.status === 'confirme' && !o.trackNumber)
+    : filteredOrders;
+  setSelectedIds(new Set(eligible.map((o: any) => o.id)));
+};Step 5 — UI affordance: surface the trackNumber on a shipped rowWhen a row HAS a trackNumber, show it as a small chip in the row so the user understands why a re-ship is blocked. In the Confirmées tab row render, add:tsx{order.trackNumber && (
+  <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-[10px] font-mono">
+    📦 {order.trackNumber}
+  </span>
+)}Now if a user lands on the Confirmées tab and sees a row with 📦 ABC123 chip + disabled checkbox, they immediately know "ah, this one already has a tracking number — I need to reset it from the modal before bulk-shipping again".Step 6 — Add a "Réinitialiser l'expédition" button in the order details modalSo the user has a one-click way to clear the carrier fields without going through status changes. In client/src/components/order-details-modal.tsx, near the other action buttons:tsx{order.trackNumber && (
+  <Button
+    variant="outline"
+    className="border-amber-300 text-amber-700 hover:bg-amber-50"
+    onClick={async () => {
+      if (!confirm("Réinitialiser l'expédition? Le numéro de suivi sera effacé et la commande pourra être réexpédiée.")) return;
+      await fetch(`/api/orders/${order.id}/reset-shipping`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      toast({ title: "Expédition réinitialisée", description: "La commande peut maintenant être réexpédiée." });
+      onClose();
+    }}
+  >
+    <RotateCcw className="w-4 h-4 mr-2" />
+    Réinitialiser l'expédition
+  </Button>
+)}And the /api/orders/:id/reset-shipping endpoint in server/routes.ts:tsapp.post("/api/orders/:id/reset-shipping", requireAuth, requireAdmin, async (req, res) => {
+  const orderId = Number(req.params.id);
+  const storeId = req.user!.storeId!;
+
+  const [order] = await db.select().from(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
+  if (!order) return res.status(404).json({ message: "Commande introuvable" });
+
+  await db.update(orders).set({
+    status:           'confirme',
+    trackNumber:      null,
+    labelUrl:         null,
+    shippingProvider: null,
+    carrierId:        null,
+    carrierName:      null,
+    driverName:       null,
+    driverPhone:      null,
+    shippingCost:     0,
+    lastActionAt:     new Date(),
+    lastActionBy:     req.user!.id,
+    updatedAt:        new Date(),
+  }).where(eq(orders.id, orderId));
+
+  console.log(`[RESET-SHIPPING] Order #${order.orderNumber} (id=${orderId}) reset by user ${req.user!.id}`);
+  res.json({ ok: true });
+});This is the cleanest path: a single dedicated endpoint with requireAdmin so only admins/owners can do it (agents shouldn't be undoing dispatches by accident).Acceptance criteria
+✅ Open NOUVELLES tab → all checkboxes are selectable, no "déjà expédiée" tooltip on any row.
+✅ Open Confirmées tab → orders with trackNumber=NULL are selectable; orders with trackNumber=ABC123 are NOT selectable, show 📦 ABC123 chip + tooltip explaining what to do.
+✅ Move a shipped order from Suivi tab back to Confirmé via the modal status picker → server logs [STATUS-REVERT] Order #X: in_progress → confirme — cleared carrier fields.
+✅ The reverted order now appears in the Confirmées tab WITHOUT a 📦 chip and IS selectable.
+✅ Bulk-ship the reverted order → succeeds, gets a new trackNumber from the carrier.
+✅ Admin opens a shipped order details modal → sees "Réinitialiser l'expédition" button → click → confirmation prompt → carrier fields cleared, status set to confirme.
+✅ Agents (non-admin) do NOT see "Réinitialiser l'expédition" — the endpoint enforces requireAdmin.
+✅ "Sélectionner tout" on NOUVELLES tab selects all rows; on Confirmées tab selects only shippable rows.

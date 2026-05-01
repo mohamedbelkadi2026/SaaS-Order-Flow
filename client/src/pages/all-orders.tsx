@@ -891,12 +891,16 @@ export default function AllOrders() {
                       <TableCell className="px-2" onClick={e => e.stopPropagation()}>
                         {(() => {
                           const shippable = isOrderShippable(order);
+                          // Only block selection when explicitly filtered to 'confirme'
+                          // orders that already have a trackNumber (cannot be re-shipped).
+                          // When viewing other statuses the checkbox is always enabled.
+                          const isDisabled = filters.status === 'confirme' && !shippable;
                           return (
                             <Checkbox
                               checked={selectedIds.has(order.id)}
                               onCheckedChange={() => toggleSelect(order.id)}
-                              disabled={!shippable}
-                              title={!shippable ? 'Cette commande a déjà été expédiée ou n\'est pas confirmée' : undefined}
+                              disabled={isDisabled}
+                              title={isDisabled ? 'Cette commande a déjà été expédiée ou n\'est pas confirmée' : undefined}
                               data-testid={`all-checkbox-order-${order.id}`}
                             />
                           );

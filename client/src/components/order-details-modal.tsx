@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useAuth } from "@/hooks/use-auth";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -230,6 +231,8 @@ interface OrderDetailsModalProps {
 }
 
 export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: OrderDetailsModalProps) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'owner' || user?.role === 'admin';
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -432,6 +435,18 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       toast({ title: "Ticket de retour créé ✅", description: `N° de retour: ${data.returnTrackingNumber}` });
     },
     onError: (e: any) => toast({ title: "Erreur Open Retour", description: e.message, variant: "destructive" }),
+  });
+
+  const resetShipping = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/orders/${order!.id}/reset-shipping`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      toast({ title: "Expédition réinitialisée", description: "La commande est revenue au statut Confirmée et peut être réexpédiée." });
+      if (onUpdated) onUpdated({ ...order, status: 'confirme', trackNumber: null });
+      onClose();
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
   const set = (key: string, value: any) => setFields((f: any) => ({ ...f, [key]: value }));
@@ -917,6 +932,28 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                 <span className="text-xs text-gray-400 hidden sm:inline">Open Retour non connecté</span>
               )}
             </div>
+
+            {/* Admin-only: reset a shipped order back to Confirmée */}
+            {isAdmin && (order as any)?.trackNumber && (
+              <div className="order-0 sm:order-0 w-full sm:w-auto">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (!window.confirm(`Réinitialiser l'expédition de la commande #${order?.orderNumber || order?.id} ?\n\nLe numéro de suivi et les informations transporteur seront effacés. La commande reviendra au statut "Confirmée".`)) return;
+                    resetShipping.mutate();
+                  }}
+                  disabled={resetShipping.isPending}
+                  className="border-red-200 text-red-600 hover:bg-red-50 font-semibold text-xs w-full sm:w-auto"
+                  data-testid="button-reset-shipping"
+                >
+                  {resetShipping.isPending
+                    ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                    : <RotateCcw className="w-3.5 h-3.5 mr-1" />}
+                  Réinitialiser l'expédition
+                </Button>
+              </div>
+            )}
 
             {/* Action buttons — full-width on mobile, inline on desktop */}
             <div className="order-1 sm:order-2 flex gap-2 w-full sm:w-auto">

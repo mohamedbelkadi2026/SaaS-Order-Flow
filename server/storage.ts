@@ -770,6 +770,30 @@ export class DatabaseStorage implements IStorage {
         setPayload.lastActionAt = new Date();
         setPayload.lastActionBy = actorId;
       }
+
+      // ── Carrier fields cleanup on status reversal ──────────────────────────
+      // When a previously-shipped order is moved BACK to 'confirme' or 'nouveau',
+      // clear all carrier-side fields so the order can be re-shipped cleanly.
+      // Without this, bulk-ship's "trackNumber IS NULL" guard skips the order
+      // because the old tracking number is still there.
+      const wasShipped = ['expédié', 'Attente De Ramassage', 'in_progress', 'delivered', 'refused', 'retourné']
+        .includes(prevStatus ?? '');
+      const isReverting = (status === 'confirme' || status === 'nouveau') && wasShipped;
+      if (isReverting) {
+        setPayload.trackNumber      = null;
+        setPayload.labelUrl         = null;
+        setPayload.shippingProvider = null;
+        setPayload.carrierId        = null;
+        setPayload.carrierName      = null;
+        setPayload.driverName       = null;
+        setPayload.driverPhone      = null;
+        setPayload.shippingCost     = 0;
+        console.log(
+          `[STATUS-REVERT] Order #${id}: ${prevStatus} → ${status} — cleared carrier fields ` +
+          `(trackNumber, labelUrl, provider, carrier, driver, cost)`
+        );
+      }
+
       // Any transition AWAY from confirme_reporte (including the cron's
       // confirme_reporte → confirme promotion) clears the schedule so we
       // don't promote the same order twice.

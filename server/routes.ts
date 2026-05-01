@@ -6935,6 +6935,41 @@ export async function registerRoutes(
     }
   });
 
+  // ──────────────────────────────────────────────────────────────────
+  // RESET SHIPPING — admin only, clears carrier fields & reverts to confirme
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/orders/:id/reset-shipping", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const orderId = Number(req.params.id);
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Commande non trouvée" });
+
+      const [updated] = await db
+        .update(orders)
+        .set({
+          status:           'confirme',
+          trackNumber:      null,
+          labelUrl:         null,
+          shippingProvider: null,
+          carrierId:        null,
+          carrierName:      null,
+          driverName:       null,
+          driverPhone:      null,
+          shippingCost:     0,
+          updatedAt:        new Date(),
+          lastActionAt:     new Date(),
+          lastActionBy:     req.user!.id,
+        })
+        .where(eq(orders.id, orderId))
+        .returning();
+
+      console.log(`[RESET-SHIPPING] Order #${orderId} (${order.orderNumber}) reset to confirme by user #${req.user!.id}`);
+      res.json({ success: true, order: updated });
+    } catch (err) {
+      throw err;
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════
   // CARRIER CITY MAPPING
   // ══════════════════════════════════════════════════════════════════
