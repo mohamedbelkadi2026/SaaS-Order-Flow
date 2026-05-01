@@ -695,4 +695,32 @@ app.use((req, res, next) => {
       } catch {}
     }
   }, 2 * 60 * 1000);
+
+  // ── Daily promotion of "Confirmé Reporté" → "Confirmé" at 06:00 Casablanca ──
+  // We don't hardcode UTC offsets (Morocco's offset has historically shifted for
+  // Ramadan). Instead we ask Intl what the current hour and date are in
+  // Africa/Casablanca, fire when hour=6, and use the Casablanca calendar day as
+  // the dedupe key so multiple ticks inside 06:00–06:59 only run once.
+  // The SQL UPDATE itself is idempotent (clears scheduled_for), so this guard
+  // is mostly a cheap-skip optimization.
+  const { promoteScheduledOrders } = await import("./cron/promote-scheduled");
+  const { casablancaToday, casablancaHour } = await import("./utils/casablanca-time");
+  let lastPromoteDay: string | null = null;
+  setInterval(async () => {
+    if (casablancaHour() !== 6) return;
+    const day = casablancaToday();
+    if (lastPromoteDay === day) return;
+    lastPromoteDay = day;
+    try {
+      await promoteScheduledOrders();
+    } catch (err: any) {
+      console.error("[CRON-PROMOTE] Failed:", err?.message ?? err);
+    }
+  }, 30 * 60 * 1000);
+
+  // Also run once on boot so any orders whose scheduled_for already passed
+  // (e.g. because the server was down at 06:00) get promoted right away.
+  promoteScheduledOrders().catch((err: any) =>
+    console.error("[CRON-PROMOTE] Boot-time run failed:", err?.message ?? err),
+  );
 })();

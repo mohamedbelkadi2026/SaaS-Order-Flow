@@ -511,7 +511,7 @@ export class DatabaseStorage implements IStorage {
             and(
               sql`${orders.trackNumber} IS NOT NULL`,
               sql`${orders.trackNumber} != ''`,
-              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'delivered', 'refused')`,
+              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused')`,
               sql`${orders.status} NOT LIKE 'Annulé%'`
             ),
             inArray(orders.status, [
@@ -726,6 +726,13 @@ export class DatabaseStorage implements IStorage {
   // Return statuses that restore stock when transitioning FROM delivered
   private readonly RETURN_STATUSES = new Set(['retourné', 'refused', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)', 'Annulé']);
 
+  // ── Stock-commitment statuses ──
+  // Confirme + Confirmé Reporté both reserve inventory: confirme_reporte
+  // is a future-dated confirmation, so we deduct stock on first transition
+  // INTO either status. The cron-driven promotion confirme_reporte → confirme
+  // is therefore a no-op for stock (stock was already deducted earlier).
+  private readonly CONFIRMED_FOR_STOCK = new Set(['confirme', 'confirme_reporte']);
+
   async updateOrderStatus(id: number, status: string, actorId?: number | null): Promise<Order | undefined> {
     return await db.transaction(async (tx) => {
       const [currentOrder] = await tx.select().from(orders).where(eq(orders.id, id));
@@ -741,6 +748,12 @@ export class DatabaseStorage implements IStorage {
         setPayload.lastActionAt = new Date();
         setPayload.lastActionBy = actorId;
       }
+      // Any transition AWAY from confirme_reporte (including the cron's
+      // confirme_reporte → confirme promotion) clears the schedule so we
+      // don't promote the same order twice.
+      if (prevStatus === 'confirme_reporte' && status !== 'confirme_reporte') {
+        setPayload.scheduledFor = null;
+      }
 
       const [updated] = await tx.update(orders)
         .set(setPayload)
@@ -750,8 +763,13 @@ export class DatabaseStorage implements IStorage {
       const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, id));
 
       // ── RULE 0: First-time confirm → subtract stock ─────────────────────
-      // Triggers when transitioning INTO 'confirme' from a non-confirme status
-      if (status === 'confirme' && prevStatus !== 'confirme') {
+      // Triggers when transitioning INTO 'confirme' or 'confirme_reporte'
+      // from a status that is NEITHER. Promotion confirme_reporte→confirme
+      // does NOT re-deduct (stock was already taken when entering reporte).
+      if (this.CONFIRMED_FOR_STOCK.has(status) && !this.CONFIRMED_FOR_STOCK.has(prevStatus)) {
+        const reason = status === 'confirme_reporte'
+          ? `Commande #${id} confirmée (reportée)`
+          : `Commande #${id} confirmée`;
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
@@ -763,15 +781,15 @@ export class DatabaseStorage implements IStorage {
             productId: item.productId,
             orderId: id,
             changeAmount: -qty,
-            reason: `Commande #${id} confirmée`,
+            reason,
           });
         }
       }
 
       // ── RULE 1: First-time delivery → subtract stock ────────────────────
-      // Only triggers when transitioning INTO delivered from a NON-confirme status
-      // (if coming from confirme, stock was already deducted in RULE 0)
-      if (status === 'delivered' && prevStatus !== 'delivered' && prevStatus !== 'confirme') {
+      // Only triggers when transitioning INTO delivered from a status that
+      // never reserved stock (NOT in CONFIRMED_FOR_STOCK).
+      if (status === 'delivered' && prevStatus !== 'delivered' && !this.CONFIRMED_FOR_STOCK.has(prevStatus)) {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
@@ -788,9 +806,9 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // ── RULE 2: Return/cancel from delivered OR confirme → restore stock ─
-      // Triggers when was delivered or confirme AND now switching to a return status
-      if ((prevStatus === 'delivered' || prevStatus === 'confirme') && this.RETURN_STATUSES.has(status)) {
+      // ── RULE 2: Return/cancel from delivered OR confirmed → restore stock ─
+      // Triggers when prev was delivered/confirme/confirme_reporte AND now switching to a return status
+      if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && this.RETURN_STATUSES.has(status)) {
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);
@@ -1206,7 +1224,7 @@ export class DatabaseStorage implements IStorage {
       const totalStock = p.stock + variants.reduce((s, v) => s + v.stock, 0);
       
       // Cumulative: count all statuses reached after agent confirmation
-      const INVENTORY_CONFIRMED = ['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
+      const INVENTORY_CONFIRMED = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
       const confirmedItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
@@ -1337,7 +1355,7 @@ export class DatabaseStorage implements IStorage {
     // Collect all unique campaigns before product filter (for dropdown population)
     const campaigns = [...new Set(allOrders.map(o => o.utmCampaign).filter(Boolean))].sort() as string[];
     // Cumulative confirmed statuses: once confirmed by agent, always counted as confirmed
-    const CONFIRMED_STATUSES = ['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
+    const CONFIRMED_STATUSES = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
     const DELIVERED_STATUS = 'delivered';
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
@@ -1482,7 +1500,7 @@ export class DatabaseStorage implements IStorage {
             : eq(orders.mediaBuyerId, buyer.id),
           ...dateConditions,
         ));
-      const CONF_STATUSES = ['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
+      const CONF_STATUSES = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
       const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
       for (const o of buyerOrders) {
         const plt = (o as any).trafficPlatform || 'Organique';
@@ -1692,7 +1710,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select({
       agentId: orders.lastActionBy,
       total: count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'))`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
     }).from(orders)
@@ -1731,7 +1749,7 @@ export class DatabaseStorage implements IStorage {
     const rows = await db.select({
       agentId:   orders.assignedToId,
       total:     count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme','confirmé','expédié','in_progress','Attente De Ramassage','delivered','refused','retourné'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme','confirme_reporte','confirmé','expédié','in_progress','Attente De Ramassage','delivered','refused','retourné'))`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)','Annulé (faux numéro)','Annulé (double)'))`,
     })

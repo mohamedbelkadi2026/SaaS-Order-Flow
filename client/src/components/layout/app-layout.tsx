@@ -87,9 +87,10 @@ const MEDIA_BUYER_NAV = [
 ] as const;
 
 const ORDER_SUB_ITEMS = [
-  { name: "Nouveaux",       href: "/orders",             badge: true },
-  { name: "Confirmés",      href: "/orders/confirme" },
-  { name: "Injoignables",   href: "/orders/injoignable" },
+  { name: "Nouveaux",         href: "/orders",                  badge: true },
+  { name: "Confirmés",        href: "/orders/confirme" },
+  { name: "Confirmé Reporté", href: "/orders/confirme-reporte" },
+  { name: "Injoignables",     href: "/orders/injoignable" },
   { name: "Annulés",        href: "/orders/annules" },
   { name: "Boite vocale",   href: "/orders/boite-vocale" },
   { name: "Pas de réponse", href: "/orders/pas-reponse" },

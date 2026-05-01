@@ -1,0 +1,281 @@
+Mzyan! Daba 3andi koul l-image. Hada howa l-prompt l-final, shamel kolchi:
+
+FEATURE — Add "Confirmé Reporté" status with scheduled auto-promotion to "Confirmé"
+My problem
+Some customers say "yes, I want it, but ship it later — for example on May 6". Today I have to either:
+
+Mark them "Confirmé" now → they ship today (wrong, we'll have stock issues)
+Mark them "Pas de réponse" → wrong status, they did respond and they did agree
+
+I want a new status "Confirmé Reporté" (Confirmed Postponed) where I save the agreed-upon delivery date, and the system automatically moves the order to "Confirmé" when that date arrives, ready for shipping.
+What to build
+
+New status string confirme_reporte in the database
+New column scheduled_for (date) on orders to store when the order should auto-promote
+New sidebar item "Confirmé Reporté" in Mes Commandes (between "Confirmés" and "Injoignables")
+New tab page at /orders/confirme-reporte
+Confirmation modal where the agent picks a date when they hit "Confirmé Reporté"
+Server-side cron that runs daily at 06:00 Casablanca time → promotes any order whose scheduled_for <= today from confirme_reporte → confirme
+Bulk-ship endpoint must still EXCLUDE confirme_reporte (already does, since it only allows confirme)
+Stats endpoints (dashboard counts, agent performance) treat confirme_reporte as a confirmation for accounting purposes, but the order stays out of shipping queue until promoted.
+
+
+Step 1 — Migration migrations/0003_add_scheduled_for.sql
+sql-- ============================================================================
+-- 0003_add_scheduled_for
+-- Adds scheduled_for date column for the "Confirmé Reporté" status flow.
+-- Orders with status='confirme_reporte' AND scheduled_for <= CURRENT_DATE
+-- will be auto-promoted to status='confirme' by the daily cron.
+-- ============================================================================
+
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS scheduled_for date;
+
+CREATE INDEX IF NOT EXISTS idx_orders_scheduled_for
+  ON public.orders (scheduled_for)
+  WHERE scheduled_for IS NOT NULL AND status = 'confirme_reporte';
+Step 2 — shared/schema.ts: declare the column
+In the orders table definition, add next to lastActionAt:
+tsscheduledFor: date("scheduled_for"),
+If date isn't already imported from drizzle-orm/pg-core, add it to the existing imports.
+Step 3 — Sidebar: add the new item between "Confirmés" and "Injoignables"
+client/src/components/layout/app-layout.tsx line 89:
+tsconst ORDER_SUB_ITEMS = [
+  { name: "Nouveaux",         href: "/orders",                  badge: true },
+  { name: "Confirmés",        href: "/orders/confirme" },
+  { name: "Confirmé Reporté", href: "/orders/confirme-reporte" },  // ← NEW
+  { name: "Injoignables",     href: "/orders/injoignable" },
+  { name: "Annulés",          href: "/orders/annules" },
+  { name: "Boite vocale",     href: "/orders/boite-vocale" },
+  { name: "Pas de réponse",   href: "/orders/pas-reponse" },
+  { name: "En cours",         href: "/orders/en-cours" },
+  { name: "Suivi des Colis",  href: "/orders/suivi" },
+  { name: "Livrées",          href: "/orders/livrees" },
+  { name: "Refusées",         href: "/orders/refuses" },
+];
+Same file, around line 140 (TITLE_MAP equivalent), add the i18n key:
+ts"Confirmé Reporté": "orderSub.confirmeReporte",
+Same file, around line 538-543, the role-based filtering: confirmation agents should see "Confirmé Reporté" alongside "Confirmés". Update:
+tsif (agentSpecialty === 'confirmation') {
+  return ORDER_SUB_ITEMS.filter(s => !['Suivi des Colis', 'En cours', 'Livrées', 'Refusées'].includes(s.name));
+}
+→ already keeps "Confirmé Reporté" because it's not in the exclusion list. ✅
+Step 4 — client/src/pages/orders.tsx: route + status mapping + title
+Around line 61 (STATUS_MAP):
+tsconst STATUS_MAP: Record<string, string> = {
+  nouvelles: "nouveau",
+  confirme: "confirme",
+  "confirme-reporte": "confirme_reporte",   // ← NEW
+  injoignable: "Injoignable",
+  annules: "annule_group",
+  "boite-vocale": "boite vocale",
+  "pas-reponse": "pas_reponse_group",
+  "en-cours": "in_progress",
+  suivi: "suivi_group",
+  livrees: "delivered",
+  refuses: "refused",
+};
+Around line 74 (TITLE_MAP):
+tsconst TITLE_MAP: Record<string, string> = {
+  "": "NOUVELLES",
+  confirme: "CONFIRMÉES",
+  "confirme-reporte": "CONFIRMÉ REPORTÉ",   // ← NEW
+  injoignable: "INJOIGNABLES",
+  // ... rest
+};
+In the column rendering, when urlStatus === 'confirme_reporte', show the scheduled_for date in the row. Find the comment/status cell rendering and add:
+tsx{urlStatus === 'confirme_reporte' && (order as any).scheduledFor && (
+  <div className="text-xs text-blue-600 dark:text-blue-400 font-medium">
+    📅 Programmé pour: {new Date((order as any).scheduledFor).toLocaleDateString('fr-FR')}
+  </div>
+)}
+Step 5 — Confirmation modal: pick a date when agent picks "Confirmé Reporté"
+In client/src/components/order-details-modal.tsx, find the section where the agent currently picks a status. Add a new button/option "Confirmé Reporté" that opens a small date picker before submitting.
+tsxconst [showReporteDialog, setShowReporteDialog] = useState(false);
+const [scheduledDate, setScheduledDate]         = useState<string>('');
+
+// Helper: tomorrow as default min
+const tomorrow = new Date();
+tomorrow.setDate(tomorrow.getDate() + 1);
+const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+const handleConfirmeReporte = async () => {
+  if (!scheduledDate) {
+    toast({ title: 'Veuillez choisir une date', variant: 'destructive' });
+    return;
+  }
+  await fetch(`/api/orders/${order.id}/status`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'confirme_reporte', scheduledFor: scheduledDate }),
+  });
+  setShowReporteDialog(false);
+  // Refresh + toast as the other status changes do
+};
+
+// In the status buttons row, add:
+<Button
+  variant="outline"
+  className="border-blue-300 text-blue-700 hover:bg-blue-50"
+  onClick={() => setShowReporteDialog(true)}
+>
+  📅 Confirmé Reporté
+</Button>
+
+{/* Date picker dialog */}
+<Dialog open={showReporteDialog} onOpenChange={setShowReporteDialog}>
+  <DialogContent>
+    <DialogHeader>
+      <DialogTitle>Reporter la confirmation</DialogTitle>
+      <DialogDescription>
+        Le client souhaite être livré à une date précise. La commande sera
+        automatiquement promue en "Confirmé" à cette date.
+      </DialogDescription>
+    </DialogHeader>
+    <div className="space-y-2">
+      <Label>Date de livraison souhaitée</Label>
+      <Input
+        type="date"
+        min={tomorrowStr}
+        value={scheduledDate}
+        onChange={(e) => setScheduledDate(e.target.value)}
+      />
+    </div>
+    <DialogFooter>
+      <Button variant="ghost" onClick={() => setShowReporteDialog(false)}>Annuler</Button>
+      <Button onClick={handleConfirmeReporte} disabled={!scheduledDate}>Reporter</Button>
+    </DialogFooter>
+  </DialogContent>
+</Dialog>
+Step 6 — server/routes.ts: accept scheduledFor in the status update endpoint
+Find the status update endpoint (search /api/orders/:id/status). Allow scheduledFor to be passed alongside the new status:
+tsapp.post("/api/orders/:id/status", requireAuth, async (req, res) => {
+  const orderId = Number(req.params.id);
+  const { status, scheduledFor } = req.body;
+
+  // ... existing validation ...
+
+  // When transitioning TO confirme_reporte, scheduledFor is required
+  if (status === 'confirme_reporte') {
+    if (!scheduledFor) {
+      return res.status(400).json({ message: "Date programmée requise pour ce statut" });
+    }
+    const target = new Date(scheduledFor);
+    const today  = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (target < today) {
+      return res.status(400).json({ message: "La date programmée ne peut pas être dans le passé" });
+    }
+  }
+
+  // Set scheduledFor only when status is confirme_reporte; clear it otherwise
+  const update: any = {
+    status,
+    lastActionAt: new Date(),
+    lastActionBy: req.user!.id,
+  };
+  if (status === 'confirme_reporte') {
+    update.scheduledFor = scheduledFor;
+  } else {
+    update.scheduledFor = null;  // any other transition clears the schedule
+  }
+
+  await storage.updateOrder(orderId, update);
+  res.json({ ok: true });
+});
+Step 7 — Backend filter for the new tab
+In server/storage.ts, find getOrdersFiltered (or whatever the listing function is). Add a branch for confirme_reporte:
+tsif (statusGroup === 'confirme_reporte') {
+  conditions.push(eq(orders.status, 'confirme_reporte'));
+}
+Step 8 — Daily cron: promote scheduled orders to confirme when their date arrives
+Create server/cron/promote-scheduled.ts:
+tsimport { db } from '../db';
+import { orders } from '@shared/schema';
+import { and, eq, lte, sql } from 'drizzle-orm';
+
+/**
+ * Runs daily at 06:00 Casablanca time.
+ * Finds every order with status='confirme_reporte' AND scheduled_for <= today
+ * and promotes it to status='confirme', clearing scheduled_for.
+ *
+ * Idempotent: re-running on the same day produces zero new updates after
+ * the first promotion.
+ */
+export async function promoteScheduledOrders(): Promise<{ promoted: number }> {
+  const result = await db.update(orders)
+    .set({
+      status:       'confirme',
+      scheduledFor: null,
+      lastActionAt: new Date(),
+    })
+    .where(and(
+      eq(orders.status, 'confirme_reporte'),
+      lte(orders.scheduledFor, sql`CURRENT_DATE`),
+    ))
+    .returning({ id: orders.id, orderNumber: orders.orderNumber });
+
+  if (result.length > 0) {
+    console.log(`[CRON-PROMOTE] Promoted ${result.length} order(s) from confirme_reporte → confirme:`);
+    result.forEach(o => console.log(`[CRON-PROMOTE]   - #${o.orderNumber} (id=${o.id})`));
+  }
+
+  return { promoted: result.length };
+}
+In server/index.ts, schedule it:
+tsimport { promoteScheduledOrders } from './cron/promote-scheduled';
+
+// ── Daily promotion of scheduled orders ───────────────────────────────────
+// Runs every hour and only does work if it's currently 06:00 Casablanca local time.
+// This catches the right moment regardless of when the server boots.
+setInterval(async () => {
+  const now = new Date();
+  // Casablanca is UTC+1 year-round (no DST). Compute Casablanca hour from UTC.
+  const casablancaHour = (now.getUTCHours() + 1) % 24;
+
+  if (casablancaHour === 6 && now.getUTCMinutes() < 60) {
+    // Mark we ran today using a module-level flag, to avoid double-running
+    // if the interval fires twice in the 06:00-06:59 window.
+    if ((global as any).__lastPromoteRunDay !== now.toISOString().slice(0, 10)) {
+      (global as any).__lastPromoteRunDay = now.toISOString().slice(0, 10);
+      try {
+        await promoteScheduledOrders();
+      } catch (err) {
+        console.error('[CRON-PROMOTE] Failed:', err);
+      }
+    }
+  }
+}, 30 * 60 * 1000);  // Check every 30 minutes
+
+// Also run once on boot, in case the server was down at 06:00.
+// This catches any orders whose scheduled_for has already passed.
+promoteScheduledOrders().catch(err => console.error('[CRON-PROMOTE] Boot run failed:', err));
+Step 9 — Stats: count confirme_reporte as a confirmation
+In server/storage.ts, find every place where confirmations are counted. The pattern is usually:
+tseq(orders.status, 'confirme')
+Change to:
+tsinArray(orders.status, ['confirme', 'confirme_reporte'])
+Specifically:
+
+getAgentPerformance — confirmations count
+getDashboardStats — confirmation rate
+getCommissionsSummary — agent commission per confirmation (if agents are paid per confirmation rather than per delivery, which depends on your config)
+
+For commission per delivery: nothing to change, only delivered orders count.
+Step 10 — UI: make sure bulk-ship still cannot pick confirme_reporte
+The fix from the previous prompt already filters to eq(orders.status, 'confirme') only — confirme_reporte is naturally excluded. ✅ No additional change needed.
+Acceptance criteria
+
+✅ Migration runs on Railway, orders.scheduled_for column exists, indexed.
+✅ Sidebar shows "Confirmé Reporté" between "Confirmés" and "Injoignables".
+✅ Clicking it routes to /orders/confirme-reporte and shows only orders with status='confirme_reporte'.
+✅ Each row shows the scheduled date (e.g. "📅 Programmé pour: 06/05/2026").
+✅ Order details modal shows a "Confirmé Reporté" button → opens date picker → saving puts the order in this status with the picked date.
+✅ Trying to set a past date → error "ne peut pas être dans le passé".
+✅ When the scheduled date arrives (or any date after), the daily cron at 06:00 Casablanca moves the order to confirme and clears scheduled_for.
+✅ Re-running the cron the same day → 0 promotions (idempotent).
+✅ Bulk-ship "Sélectionner tout" on the Confirmés tab does NOT include scheduled-but-not-yet-promoted orders (because they're still confirme_reporte).
+✅ Confirmation rate on dashboard counts both confirme and confirme_reporte as positive outcomes for the agent.
+✅ Boot run promotes any orders whose date already passed while the server was down.
+

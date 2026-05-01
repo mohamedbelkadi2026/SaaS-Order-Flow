@@ -374,3 +374,31 @@ Four tabs in `client/src/pages/automation.tsx`:
 - `GREENAPI_API_TOKEN` - Green API authentication token
 - `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` / `VITE_PAYPAL_CLIENT_ID` - PayPal payments
 - `VITE_POLAR_CHECKOUT_URL_STARTER` / `VITE_POLAR_CHECKOUT_URL_PRO` - Polar.sh checkout URLs
+
+## "Confirmé Reporté" Status (added 2026-05-01)
+
+Confirmation agents can confirm an order with a future delivery date instead of
+shipping immediately. Such orders sit in status `confirme_reporte` with a
+`scheduled_for` date column. A daily 06:00 Casablanca cron job promotes every
+order whose `scheduled_for <= CURRENT_DATE` to status `confirme`.
+
+Key design points:
+- **Stock**: `confirme` and `confirme_reporte` form one stock-commitment group
+  (`CONFIRMED_FOR_STOCK` in `server/storage.ts`). Stock is deducted on first
+  transition INTO either, so a reported order reserves inventory immediately.
+  The cron's `confirme_reporte → confirme` promotion is a stock no-op.
+- **Cron** (`server/cron/promote-scheduled.ts`): single atomic SQL UPDATE
+  (race-free, idempotent — clears `scheduled_for=NULL` in the same statement).
+  Bypasses `updateOrderStatus` because the transition has no side effects.
+- **Timezone**: All Casablanca-local time/date math goes through
+  `server/utils/casablanca-time.ts` which uses `Intl.DateTimeFormat` with
+  `Africa/Casablanca` (no hardcoded UTC offsets — survives Ramadan shifts).
+- **Validation**: `PATCH /api/orders/:id` requires a valid `YYYY-MM-DD`
+  `scheduledFor >= casablancaTomorrow()` whenever the target status is
+  `confirme_reporte`. The bare `PATCH /api/orders/:id/status` endpoint rejects
+  this status entirely (cannot carry a date) and forces callers through the
+  detailed-order modal.
+- **Analytics**: `confirme_reporte` is included in every "confirmed" status set
+  across `server/routes.ts` and `server/storage.ts` (stats, inventory,
+  per-buyer/per-product/per-city counters) so dashboards count it as a
+  confirmation.

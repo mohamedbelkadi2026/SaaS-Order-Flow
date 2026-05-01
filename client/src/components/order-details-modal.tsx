@@ -168,6 +168,7 @@ const ORDER_STATUSES: { value: string; label: string; disabled?: boolean }[] = [
   // ── Agent statuses (manually set by agents) ─────────────────
   { value: "nouveau",                        label: "Nouveau" },
   { value: "confirme",                       label: "Confirmé" },
+  { value: "confirme_reporte",               label: "📅 Confirmé Reporté" },
   { value: "Injoignable",                    label: "Injoignable" },
   { value: "Annulé (fake)",                  label: "Annulé (fake)" },
   { value: "Annulé (faux numéro)",           label: "Annulé (faux numéro)" },
@@ -277,6 +278,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       customerAddress: order.customerAddress || "",
       customerCity: order.customerCity || "",
       status: order.status || "nouveau",
+      scheduledFor: order.scheduledFor || "",
       comment: order.comment || "",
       commentStatus: order.commentStatus || "",
       rawProductName: order.rawProductName || (order.items?.[0]?.rawProductName) || (order.items?.[0]?.product?.name) || "",
@@ -315,6 +317,22 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const saveOrder = useMutation({
     mutationFn: async () => {
       if (!order) return null;
+      // Client-side guard: confirme_reporte requires a scheduled date in the future.
+      // Server validates again, but failing fast here gives a clearer error.
+      if (fields.status === 'confirme_reporte') {
+        const sf = (fields.scheduledFor || "").slice(0, 10);
+        if (!sf) {
+          toast({ title: "Date requise", description: "Veuillez choisir une date de livraison souhaitée.", variant: "destructive" });
+          throw new Error("scheduledFor required");
+        }
+        const target = new Date(sf);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        if (target < today) {
+          toast({ title: "Date invalide", description: "La date programmée ne peut pas être dans le passé.", variant: "destructive" });
+          throw new Error("scheduledFor in past");
+        }
+      }
       const payload: any = {
         replace: fields.replace ? 1 : 0,
         canOpen: fields.canOpen ? 1 : 0,
@@ -326,6 +344,9 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         customerAddress: fields.customerAddress,
         customerCity: fields.customerCity,
         status: fields.status,
+        scheduledFor: fields.status === 'confirme_reporte'
+          ? ((fields.scheduledFor || "").slice(0, 10) || null)
+          : null,
         comment: fields.comment !== undefined ? (fields.comment || null) : undefined,
         commentStatus: fields.commentStatus || null,
         rawProductName: fields.rawProductName || null,
@@ -673,6 +694,29 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                 </Select>
               </Field>
             </div>
+
+            {/* Date picker — only when status = confirme_reporte */}
+            {fields.status === 'confirme_reporte' && (
+              <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-900 p-4">
+                <Field label="📅 Date de livraison souhaitée">
+                  <Input
+                    type="date"
+                    min={(() => {
+                      const t = new Date();
+                      t.setDate(t.getDate() + 1);
+                      return t.toISOString().split('T')[0];
+                    })()}
+                    value={(fields.scheduledFor || "").slice(0, 10)}
+                    onChange={e => set("scheduledFor", e.target.value)}
+                    className={inputCls}
+                    data-testid="input-scheduled-for"
+                  />
+                  <p className="text-[11px] text-blue-700 dark:text-blue-300 mt-1">
+                    La commande sera automatiquement promue en "Confirmé" à cette date (06:00 Casablanca).
+                  </p>
+                </Field>
+              </div>
+            )}
 
             {/* ╔══════ PRODUIT CARD ══════╗ */}
             <div className="rounded-xl border border-gray-100 p-4 space-y-4 bg-white">

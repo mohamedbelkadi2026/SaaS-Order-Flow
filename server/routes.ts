@@ -6,6 +6,7 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
+import { casablancaTomorrow } from "./utils/casablanca-time";
 import { users, orders, orderItems, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
 import { eq, and, gte, lt, count, desc, sql } from "drizzle-orm";
 import multer from "multer";
@@ -454,7 +455,7 @@ export async function registerRoutes(
 
     // Cumulative confirmed statuses: once an order is confirmed it stays "confirmed"
     // regardless of shipping progress (expédié, in_progress, delivered, refused, retourné)
-    const CONFIRMED_STATUSES = new Set(['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
+    const CONFIRMED_STATUSES = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
 
     let totalOrders = ordersList.length;
     let cumConfirmed = 0, inProgress = 0, delivered = 0, refused = 0;
@@ -619,7 +620,7 @@ export async function registerRoutes(
     let totalOrders = allOrders.length;
     // CONFIRMED = all statuses an order passes through after agent confirmation
     // (cumulative: once confirmed, always counted as confirmed regardless of shipping stage)
-    const ADMIN_CONFIRMED = new Set(['confirme', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
+    const ADMIN_CONFIRMED = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let pasReponse = 0;
@@ -1084,7 +1085,7 @@ export async function registerRoutes(
         res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
           SUIVI_GROUP.includes((o as any).commentStatus || '') ||
-          (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
+          (!!(o as any).trackNumber && !['nouveau','confirme','confirme_reporte','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
         )));
       } else if (status === 'refused') {
         res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
@@ -1110,7 +1111,7 @@ export async function registerRoutes(
         res.json(includeShippingCost(ordersList.filter(o =>
           SUIVI_GROUP.includes(o.status) ||
           SUIVI_GROUP.includes((o as any).commentStatus || '') ||
-          (!!(o as any).trackNumber && !['nouveau','confirme','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
+          (!!(o as any).trackNumber && !['nouveau','confirme','confirme_reporte','delivered','refused'].includes(o.status) && !o.status?.startsWith('Annulé'))
         )));
       } else if (status === 'refused') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
@@ -1591,6 +1592,16 @@ export async function registerRoutes(
       if (!order) return res.status(404).json({ message: "Order not found" });
       if (order.storeId !== req.user!.storeId) return res.status(403).json({ message: "Access denied" });
       const { status } = api.orders.updateStatus.input.parse(req.body);
+      // ── Block bypass route for confirme_reporte ──
+      // This endpoint takes only `status` and cannot accept a `scheduledFor`,
+      // so allowing the transition here would leave `scheduled_for=NULL` and
+      // the cron would never promote the order. Force callers through
+      // PATCH /api/orders/:id which validates the date.
+      if (status === 'confirme_reporte') {
+        return res.status(400).json({
+          message: "Le statut Confirmé Reporté nécessite une date programmée. Utilisez la fenêtre détaillée de la commande.",
+        });
+      }
       const previousStatus = order.status;
       const updated = await storage.updateOrderStatus(orderId, status, req.user!.id);
       if (!updated) return res.status(404).json({ message: "Order not found" });
@@ -4349,8 +4360,41 @@ export async function registerRoutes(
         commentStatus: z.string().nullable().optional(),
         commentOrder: z.string().nullable().optional(),
         totalPrice: z.number().optional(),
+        // ── Confirmé Reporté: ISO date string (YYYY-MM-DD) or null to clear ──
+        scheduledFor: z.string().nullable().optional(),
       });
       const data = schema.parse(req.body);
+
+      // ── Validate scheduledFor when transitioning to confirme_reporte ───
+      // Server-side rule mirrors the client modal: must be strictly after today
+      // in Casablanca local time (>= tomorrow Casablanca). We parse YYYY-MM-DD
+      // strictly and reject calendar-invalid dates such as "2026-02-31" which
+      // `new Date()` would silently roll over.
+      if (data.status === 'confirme_reporte') {
+        if (!data.scheduledFor) {
+          return res.status(400).json({ message: "Date programmée requise pour le statut Confirmé Reporté." });
+        }
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(data.scheduledFor);
+        if (!m) {
+          return res.status(400).json({ message: "Date programmée invalide (format attendu YYYY-MM-DD)." });
+        }
+        const [, ys, ms, ds] = m;
+        const y = Number(ys), mo = Number(ms), d = Number(ds);
+        const probe = new Date(Date.UTC(y, mo - 1, d));
+        if (
+          probe.getUTCFullYear() !== y ||
+          probe.getUTCMonth() !== mo - 1 ||
+          probe.getUTCDate() !== d
+        ) {
+          return res.status(400).json({ message: "Date programmée invalide." });
+        }
+        // Compare YYYY-MM-DD strings against "tomorrow in Casablanca" — this
+        // avoids any UTC vs Casablanca day-boundary skew and matches what
+        // the client's <input type="date" min={tomorrow}> enforces.
+        if (data.scheduledFor < casablancaTomorrow()) {
+          return res.status(400).json({ message: "La date programmée doit être au minimum demain." });
+        }
+      }
       console.log(`[PATCH /api/orders/${orderId}] storeId=${req.user!.storeId} fields=${JSON.stringify({ status: data.status, comment: data.comment, commentStatus: data.commentStatus, commentOrder: data.commentOrder, customerName: data.customerName, customerCity: data.customerCity })}`);
 
       // Route status changes through updateOrderStatus for proper stock handling

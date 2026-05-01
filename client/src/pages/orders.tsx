@@ -61,6 +61,7 @@ function getCarrierLogo(provider: string | null | undefined): string | null {
 const STATUS_MAP: Record<string, string> = {
   nouvelles: "nouveau",
   confirme: "confirme",
+  "confirme-reporte": "confirme_reporte",
   injoignable: "Injoignable",
   annules: "annule_group",
   "boite-vocale": "boite vocale",
@@ -74,6 +75,7 @@ const STATUS_MAP: Record<string, string> = {
 const TITLE_MAP: Record<string, string> = {
   "": "NOUVELLES",
   confirme: "CONFIRMÉES",
+  "confirme-reporte": "CONFIRMÉ REPORTÉ",
   injoignable: "INJOIGNABLES",
   annules: "ANNULÉES",
   "boite-vocale": "BOITE VOCALE",
@@ -1348,6 +1350,14 @@ export default function Orders() {
                             <span className="truncate" title={order.comment || order.commentStatus || ''}>
                               {order.comment || order.commentStatus || '-'}
                             </span>
+                            {urlStatus === 'confirme_reporte' && (order as any).scheduledFor && (
+                              <span
+                                className="text-[11px] text-blue-600 dark:text-blue-400 font-semibold whitespace-nowrap"
+                                data-testid={`text-scheduled-for-${order.id}`}
+                              >
+                                📅 Programmé: {new Date((order as any).scheduledFor).toLocaleDateString('fr-FR')}
+                              </span>
+                            )}
                             {showDriverInfo && (order as any).driverPhone && (
                               <a
                                 href={`tel:${(order as any).driverPhone}`}
