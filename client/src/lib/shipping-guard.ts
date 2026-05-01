@@ -5,6 +5,23 @@
  */
 import { findBestCityMatch } from "@/lib/carrier-cities";
 
+/**
+ * All statuses that allow an order to be (re-)shipped.
+ * Includes base confirme + every carrier transit status so that an order
+ * that was previously shipped and then manually reset can be re-dispatched
+ * without the client-side guard blocking it.
+ */
+export const SHIPPABLE_STATUSES = new Set([
+  'confirme',
+  'expédié',
+  'Attente De Ramassage',
+  'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+  'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+  'En cours de réception au network', 'Arrivé au hub', 'En cours de livraison',
+  'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
+  'Confirmé par livreur', 'Confirmé par livreur *',
+]);
+
 export interface OrderValidationResult {
   orderId: number;
   orderNumber: string;

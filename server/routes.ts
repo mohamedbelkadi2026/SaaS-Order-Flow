@@ -1264,6 +1264,16 @@ export async function registerRoutes(
 
       const eligible = await storage.bulkShipOrders(orderIds, storeId);
 
+      // All statuses that allow shipping (mirrors storage.bulkShipOrders eligibility)
+      const SHIPPABLE_STATUSES = [
+        'confirme', 'expédié', 'Attente De Ramassage',
+        'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+        'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+        'En cours de réception au network', 'Arrivé au hub', 'En cours de livraison',
+        'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
+        'Confirmé par livreur', 'Confirmé par livreur *',
+      ];
+
       // Identify blocked orders (requested but not eligible — wrong status
       // OR already has a tracking number, which means it was already shipped).
       const allRequested = await storage.getOrdersByIds(orderIds, storeId);
@@ -1271,18 +1281,18 @@ export async function registerRoutes(
       const blockedOrders = allRequested.filter((o: any) => !eligibleIds.has(o.id));
 
       if (eligible.length === 0 && blockedOrders.length === 0) {
-        return res.status(400).json({ message: "Aucune commande éligible (statut 'Confirmé' requis, sans numéro de suivi)" });
+        return res.status(400).json({ message: "Aucune commande éligible (statut shippable requis, sans numéro de suivi)" });
       }
       if (eligible.length === 0) {
-        // Distinguish "already shipped" from "wrong status" so the user
+        // Distinguish "already has tracking" from "wrong status" so the user
         // gets an actionable message instead of a generic one.
         const alreadyShipped = blockedOrders.filter((o: any) =>
-          !!o.trackNumber || o.status === 'expédié' || o.status === 'Attente De Ramassage'
+          !!o.trackNumber || SHIPPABLE_STATUSES.includes(o.status)
         ).length;
         return res.status(400).json({
           message: alreadyShipped > 0
-            ? `${alreadyShipped} commande(s) déjà expédiée(s). Seules les commandes "Confirmé" sans numéro de suivi peuvent être expédiées.`
-            : `Aucune commande éligible — ${blockedOrders.length} commande(s) bloquée(s) (statut requis: "Confirmé").`,
+            ? `${alreadyShipped} commande(s) déjà expédiée(s). Réinitialisez l'expédition avant de renvoyer.`
+            : `Aucune commande éligible — ${blockedOrders.length} commande(s) bloquée(s) (statut requis: shippable, sans numéro de suivi).`,
         });
       }
 

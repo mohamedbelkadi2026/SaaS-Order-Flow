@@ -644,7 +644,14 @@ export class DatabaseStorage implements IStorage {
       .where(and(
         inArray(orders.id, orderIds),
         eq(orders.storeId, storeId),
-        eq(orders.status, 'confirme'),
+        inArray(orders.status, [
+          'confirme', 'expédié', 'Attente De Ramassage',
+          'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+          'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+          'En cours de réception au network', 'Arrivé au hub', 'En cours de livraison',
+          'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
+          'Confirmé par livreur', 'Confirmé par livreur *',
+        ]),
         sql`(${orders.trackNumber} IS NULL OR ${orders.trackNumber} = '')`,
       ));
     // Hydrate items so bulk-ship quantity sums items[].quantity correctly
