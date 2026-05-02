@@ -145,9 +145,20 @@ export default function Dashboard() {
   const canSeeCharts = !isAgent || !!perms.show_charts;
   const canSeeTopProducts = !isAgent || !!perms.show_top_products;
 
-  const { data: walletData } = useQuery<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }>({
-    queryKey: ['/api/agents/wallet'],
+  const { data: walletData } = useQuery<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }>({
+    queryKey: ['/api/agents/wallet', agentDateRange, filters.dateFrom, filters.dateTo],
     enabled: isAgent,
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters.dateFrom) {
+        params.set('dateFrom', filters.dateFrom);
+        params.set('dateTo', filters.dateTo || new Date().toISOString().slice(0, 10));
+      } else {
+        params.set('dateRange', agentDateRange);
+      }
+      const r = await fetch(`/api/agents/wallet?${params}`, { credentials: 'include' });
+      return r.json();
+    },
   });
 
   // Agent-only UI state for the filter bar's date preset dropdown. All actual
@@ -1262,12 +1273,12 @@ export default function Dashboard() {
                 <div>
                   <p className="text-white/80 text-xs font-semibold uppercase tracking-widest mb-0.5">Mon Portefeuille</p>
                   <p className="text-white text-3xl font-bold">{Number(walletData.totalEarned).toFixed(2)} <span className="text-white/70 text-lg font-normal">DH</span></p>
-                  <p className="text-white/70 text-xs mt-0.5">Total commissions gagnées ({walletData.deliveredTotal} livraisons)</p>
+                  <p className="text-white/70 text-xs mt-0.5">{walletData.periodLabel || 'Ce mois'} — {walletData.deliveredThisMonth} livraison(s) × {walletData.commissionRate} DH</p>
                 </div>
               </div>
               <div className="flex sm:flex-col gap-4 sm:gap-2 sm:items-end">
                 <div className="text-center sm:text-right">
-                  <p className="text-white/70 text-xs uppercase tracking-wide">Ce mois</p>
+                  <p className="text-white/70 text-xs uppercase tracking-wide">{walletData.periodLabel || 'Ce mois'}</p>
                   <p className="text-white text-xl font-bold">{walletData.deliveredThisMonth}</p>
                   <p className="text-white/60 text-xs">livraisons</p>
                 </div>

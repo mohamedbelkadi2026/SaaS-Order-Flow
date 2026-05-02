@@ -150,7 +150,7 @@ export interface IStorage {
 
   getAgentPermissions(agentId: number): Promise<Record<string, boolean>>;
   updateAgentPermissions(agentId: number, permissions: Record<string, boolean>): Promise<void>;
-  getAgentWallet(agentId: number, storeId: number): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }>;
+  getAgentWallet(agentId: number, storeId: number, opts?: { dateFrom?: string; dateTo?: string; dateRange?: string }): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }>;
   getCommissionsSummary(storeId: number): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]>;
 
   getStoresByOwner(userId: number): Promise<Store[]>;
@@ -2442,20 +2442,66 @@ export class DatabaseStorage implements IStorage {
     await db.update(users).set({ dashboardPermissions: permissions }).where(eq(users.id, agentId));
   }
 
-  async getAgentWallet(agentId: number, storeId: number): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }> {
+  async getAgentWallet(agentId: number, storeId: number, opts?: { dateFrom?: string; dateTo?: string; dateRange?: string }): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }> {
     const setting = await this.getAgentStoreSetting(agentId, storeId);
     const rate = Number(setting?.commissionRate ?? 0);
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    let periodStart: Date;
+    let periodEnd: Date = new Date();
+    let periodLabel = 'Ce mois';
+
+    if (opts?.dateFrom) {
+      periodStart = new Date(opts.dateFrom + 'T00:00:00');
+      periodEnd   = opts.dateTo ? new Date(opts.dateTo + 'T23:59:59') : new Date();
+      periodLabel = opts.dateFrom === opts.dateTo
+        ? opts.dateFrom
+        : `${opts.dateFrom} → ${opts.dateTo || "aujourd'hui"}`;
+    } else if (opts?.dateRange === 'today') {
+      periodStart = new Date(); periodStart.setHours(0, 0, 0, 0);
+      periodLabel = "Aujourd'hui";
+    } else if (opts?.dateRange === 'yesterday') {
+      periodStart = new Date(); periodStart.setDate(periodStart.getDate() - 1); periodStart.setHours(0, 0, 0, 0);
+      periodEnd   = new Date(); periodEnd.setDate(periodEnd.getDate() - 1); periodEnd.setHours(23, 59, 59, 999);
+      periodLabel = 'Hier';
+    } else if (opts?.dateRange === '7days') {
+      periodStart = new Date(); periodStart.setDate(periodStart.getDate() - 6); periodStart.setHours(0, 0, 0, 0);
+      periodLabel = '7 derniers jours';
+    } else if (opts?.dateRange === 'lastmonth') {
+      periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      periodEnd   = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      periodLabel = 'Mois dernier';
+    } else if (opts?.dateRange === 'all') {
+      periodStart = new Date('2020-01-01');
+      periodLabel = 'Tout le temps';
+    } else {
+      periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      periodLabel = 'Ce mois';
+    }
+
     const [totalRow] = await db.select({ count: sql<number>`count(*)` })
       .from(orders)
       .where(and(eq(orders.assignedToId, agentId), eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
-    const [monthRow] = await db.select({ count: sql<number>`count(*)` })
+
+    const [periodRow] = await db.select({ count: sql<number>`count(*)` })
       .from(orders)
-      .where(and(eq(orders.assignedToId, agentId), eq(orders.storeId, storeId), eq(orders.status, 'delivered'), gte(orders.createdAt, startOfMonth)));
+      .where(and(
+        eq(orders.assignedToId, agentId),
+        eq(orders.storeId, storeId),
+        eq(orders.status, 'delivered'),
+        gte(orders.createdAt, periodStart),
+        lte(orders.createdAt, periodEnd),
+      ));
+
     const deliveredTotal = Number(totalRow?.count ?? 0);
-    const deliveredThisMonth = Number(monthRow?.count ?? 0);
-    return { totalEarned: Number(deliveredTotal) * Number(rate), deliveredThisMonth, deliveredTotal, commissionRate: rate };
+    const deliveredThisMonth = Number(periodRow?.count ?? 0);
+    return {
+      totalEarned: deliveredThisMonth * rate,
+      deliveredThisMonth,
+      deliveredTotal,
+      commissionRate: rate,
+      periodLabel,
+    };
   }
 
   async getCommissionsSummary(storeId: number, opts?: { dateFrom?: string; dateTo?: string; month?: string; agentId?: string }): Promise<{ agentId: number; agentName: string; commissionRate: number; deliveredTotal: number; totalOwed: number }[]> {

@@ -1,0 +1,215 @@
+FIX: Agent Dashboard — 3 bugs (Évolution chart, Mon Portefeuille filter, Produits Commandés empty)
+
+Bug 1 — server/routes.ts — Évolution des commandes ignores the date filter
+In GET /api/agents/my-stats, find this block:
+ts// ── Daily counts (line chart) ──────────────────────────────────
+const dayMap = new Map<string, number>();
+for (let i = 14; i >= 0; i--) {
+  const d = new Date(now);
+  d.setDate(d.getDate() - i);
+  const key = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  dayMap.set(key, 0);
+}
+for (const o of agentOrders) {
+  if (!o.createdAt) continue;
+  const d = new Date(o.createdAt);
+  const key = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  if (dayMap.has(key)) dayMap.set(key, dayMap.get(key)! + 1);
+}
+const daily = Array.from(dayMap.entries()).map(([date, orders]) => ({ date, orders }));
+Replace with:
+ts// ── Daily counts (line chart) — respects the selected date range ──
+const dayMap = new Map<string, number>();
+const rangeStart = new Date(cutoff);
+const rangeEnd   = new Date(endDate);
+const diffMs   = rangeEnd.getTime() - rangeStart.getTime();
+const diffDays = Math.min(Math.ceil(diffMs / 86400000) + 1, 90);
+for (let i = 0; i < diffDays; i++) {
+  const d = new Date(rangeStart);
+  d.setDate(d.getDate() + i);
+  const key = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  dayMap.set(key, 0);
+}
+for (const o of agentOrders) {
+  if (!o.createdAt) continue;
+  const d = new Date(o.createdAt);
+  const key = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+  if (dayMap.has(key)) dayMap.set(key, dayMap.get(key)! + 1);
+}
+const daily = Array.from(dayMap.entries()).map(([date, orders]) => ({ date, orders }));
+
+Bug 2 — server/routes.ts + server/storage.ts — Mon Portefeuille ignores the date filter
+2a. server/routes.ts — find:
+tsapp.get("/api/agents/wallet", requireAuth, async (req, res) => {
+  const user = req.user!;
+  const storeId = user.storeId!;
+  const wallet = await storage.getAgentWallet(user.id, storeId);
+  res.json(wallet);
+Replace with:
+tsapp.get("/api/agents/wallet", requireAuth, async (req, res) => {
+  const user = req.user!;
+  const storeId = user.storeId!;
+  const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
+  const wallet = await storage.getAgentWallet(user.id, storeId, { dateFrom, dateTo, dateRange });
+  res.json(wallet);
+2b. server/storage.ts — find the entire getAgentWallet method and replace it with:
+tsasync getAgentWallet(agentId: number, storeId: number, opts?: { dateFrom?: string; dateTo?: string; dateRange?: string }): Promise<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }> {
+  const setting = await this.getAgentStoreSetting(agentId, storeId);
+  const rate = Number(setting?.commissionRate ?? 0);
+  const now = new Date();
+
+  let periodStart: Date;
+  let periodEnd: Date = new Date();
+  let periodLabel = 'Ce mois';
+
+  if (opts?.dateFrom) {
+    periodStart = new Date(opts.dateFrom + 'T00:00:00');
+    periodEnd   = opts.dateTo ? new Date(opts.dateTo + 'T23:59:59') : new Date();
+    periodLabel = opts.dateFrom === opts.dateTo
+      ? opts.dateFrom
+      : `${opts.dateFrom} → ${opts.dateTo || "aujourd'hui"}`;
+  } else if (opts?.dateRange === 'today') {
+    periodStart = new Date(); periodStart.setHours(0, 0, 0, 0);
+    periodLabel = "Aujourd'hui";
+  } else if (opts?.dateRange === 'yesterday') {
+    periodStart = new Date(); periodStart.setDate(periodStart.getDate() - 1); periodStart.setHours(0, 0, 0, 0);
+    periodEnd   = new Date(); periodEnd.setDate(periodEnd.getDate() - 1); periodEnd.setHours(23, 59, 59, 999);
+    periodLabel = 'Hier';
+  } else if (opts?.dateRange === '7days') {
+    periodStart = new Date(); periodStart.setDate(periodStart.getDate() - 6); periodStart.setHours(0, 0, 0, 0);
+    periodLabel = '7 derniers jours';
+  } else if (opts?.dateRange === 'lastmonth') {
+    periodStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    periodEnd   = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    periodLabel = 'Mois dernier';
+  } else if (opts?.dateRange === 'all') {
+    periodStart = new Date('2020-01-01');
+    periodLabel = 'Tout le temps';
+  } else {
+    periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    periodLabel = 'Ce mois';
+  }
+
+  const [totalRow] = await db.select({ count: sql<number>`count(*)` })
+    .from(orders)
+    .where(and(eq(orders.assignedToId, agentId), eq(orders.storeId, storeId), eq(orders.status, 'delivered')));
+
+  const [periodRow] = await db.select({ count: sql<number>`count(*)` })
+    .from(orders)
+    .where(and(
+      eq(orders.assignedToId, agentId),
+      eq(orders.storeId, storeId),
+      eq(orders.status, 'delivered'),
+      gte(orders.createdAt, periodStart),
+      lte(orders.createdAt, periodEnd),
+    ));
+
+  const deliveredTotal = Number(totalRow?.count ?? 0);
+  const deliveredThisMonth = Number(periodRow?.count ?? 0);
+  return {
+    totalEarned: deliveredThisMonth * rate,
+    deliveredThisMonth,
+    deliveredTotal,
+    commissionRate: rate,
+    periodLabel,
+  };
+}
+
+Bug 3 — server/routes.ts — Produits Commandés always empty
+In GET /api/agents/my-stats, find:
+ts// ── Products breakdown (table) ────────────────────────────────
+const productMap: Record<string, { id: number; name: string; total: number; confirmed: number; delivered: number }> = {};
+for (const o of agentOrders as any[]) {
+  const name =
+    o.rawProductName ||
+    o.items?.[0]?.rawProductName ||
+    o.items?.[0]?.product?.name ||
+    'Produit';
+  const pid = o.items?.[0]?.productId || 0;
+  ...
+}
+Replace the entire products breakdown block with:
+ts// ── Products breakdown (table) ────────────────────────────────
+const { orderItems: orderItemsTable, products: productsTable } = await import("@shared/schema");
+const agentOrderIds = (agentOrders as any[]).map(o => o.id);
+let itemRows: any[] = [];
+if (agentOrderIds.length > 0) {
+  const { inArray: inArr } = await import("drizzle-orm");
+  itemRows = await db
+    .select({
+      orderId: orderItemsTable.orderId,
+      productId: orderItemsTable.productId,
+      rawProductName: orderItemsTable.rawProductName,
+      quantity: orderItemsTable.quantity,
+      productName: productsTable.name,
+    })
+    .from(orderItemsTable)
+    .leftJoin(productsTable, drEq(orderItemsTable.productId, productsTable.id))
+    .where(inArr(orderItemsTable.orderId, agentOrderIds));
+}
+const orderToProduct: Record<number, { id: number; name: string }> = {};
+for (const row of itemRows) {
+  if (!orderToProduct[row.orderId]) {
+    orderToProduct[row.orderId] = {
+      id: row.productId || 0,
+      name: row.rawProductName || row.productName || 'Produit',
+    };
+  }
+}
+const productMap: Record<string, { id: number; name: string; total: number; confirmed: number; delivered: number }> = {};
+for (const o of agentOrders as any[]) {
+  const pInfo = orderToProduct[o.id];
+  const name = pInfo?.name || o.rawProductName || 'Produit';
+  const pid  = pInfo?.id || 0;
+  if (!productMap[name]) productMap[name] = { id: pid, name, total: 0, confirmed: 0, delivered: 0 };
+  productMap[name].total++;
+  const s = (o.status ?? '').toLowerCase().trim();
+  if (
+    s === 'confirme' || s === 'confirmé' || s === 'confirmed' ||
+    s === 'delivered' || s === 'livré' || s === 'livrée' ||
+    s === 'in_progress' || s === 'inprogress' || s === 'en cours' ||
+    s === 'expédié' || s === 'expedie' || s === 'shipped'
+  ) {
+    productMap[name].confirmed++;
+  }
+  if (s === 'delivered' || s === 'livré' || s === 'livrée') {
+    productMap[name].delivered++;
+  }
+}
+const products = Object.values(productMap).sort((a, b) => b.total - a.total);
+
+Bug 4 — client/src/pages/dashboard.tsx — wallet query doesn't send the filter
+Find:
+tsconst { data: walletData } = useQuery<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number }>({
+  queryKey: ['/api/agents/wallet'],
+  enabled: isAgent,
+});
+Replace with:
+tsconst { data: walletData } = useQuery<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }>({
+  queryKey: ['/api/agents/wallet', agentFilters.dateRange, agentFilters.dateFrom, agentFilters.dateTo],
+  enabled: isAgent,
+  queryFn: async () => {
+    const params = new URLSearchParams();
+    if (agentFilters.dateFrom) {
+      params.set('dateFrom', agentFilters.dateFrom);
+      params.set('dateTo', agentFilters.dateTo || new Date().toISOString().slice(0, 10));
+    } else {
+      params.set('dateRange', agentFilters.dateRange);
+    }
+    const r = await fetch(`/api/agents/wallet?${params}`, { credentials: 'include' });
+    return r.json();
+  },
+});
+Also find this in the Mon Portefeuille card:
+tsx<p className="text-white/70 text-xs mt-0.5">Total commissions gagnées ({walletData.deliveredTotal} livraisons)</p>
+Replace with:
+tsx<p className="text-white/70 text-xs mt-0.5">{walletData.periodLabel || 'Ce mois'} — {walletData.deliveredThisMonth} livraison(s) × {walletData.commissionRate} DH</p>
+And find:
+tsx<p className="text-white/70 text-xs uppercase tracking-wide">Ce mois</p>
+<p className="text-white text-xl font-bold">{walletData.deliveredThisMonth}</p>
+Replace with:
+tsx<p className="text-white/70 text-xs uppercase tracking-wide">{walletData.periodLabel || 'Ce mois'}</p>
+<p className="text-white text-xl font-bold">{walletData.deliveredThisMonth}</p>
+
+Files to change: server/routes.ts, server/storage.ts, client/src/pages/dashboard.tsx
+Do not change anything else.

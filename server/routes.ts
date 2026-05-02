@@ -5208,7 +5208,8 @@ export async function registerRoutes(
   app.get("/api/agents/wallet", requireAuth, async (req, res) => {
     const user = req.user!;
     const storeId = user.storeId!;
-    const wallet = await storage.getAgentWallet(user.id, storeId);
+    const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
+    const wallet = await storage.getAgentWallet(user.id, storeId, { dateFrom, dateTo, dateRange });
     res.json(wallet);
   });
 
@@ -5297,11 +5298,15 @@ export async function registerRoutes(
         });
       }
 
-      // ── Daily counts (line chart) ──────────────────────────────────
+      // ── Daily counts (line chart) — respects the selected date range ──
       const dayMap = new Map<string, number>();
-      for (let i = 14; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
+      const rangeStart = new Date(cutoff);
+      const rangeEnd   = new Date(endDate);
+      const diffMs   = rangeEnd.getTime() - rangeStart.getTime();
+      const diffDays = Math.min(Math.ceil(diffMs / 86400000) + 1, 90);
+      for (let i = 0; i < diffDays; i++) {
+        const d = new Date(rangeStart);
+        d.setDate(d.getDate() + i);
         const key = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
         dayMap.set(key, 0);
       }
@@ -5355,14 +5360,37 @@ export async function registerRoutes(
       ].filter(b => b.value > 0);
 
       // ── Products breakdown (table) ────────────────────────────────
+      const { orderItems: orderItemsTable, products: productsTable } = await import("@shared/schema");
+      const agentOrderIds = (agentOrders as any[]).map(o => o.id);
+      let itemRows: any[] = [];
+      if (agentOrderIds.length > 0) {
+        const { inArray: inArr } = await import("drizzle-orm");
+        itemRows = await db
+          .select({
+            orderId: orderItemsTable.orderId,
+            productId: orderItemsTable.productId,
+            rawProductName: orderItemsTable.rawProductName,
+            quantity: orderItemsTable.quantity,
+            productName: productsTable.name,
+          })
+          .from(orderItemsTable)
+          .leftJoin(productsTable, drEq(orderItemsTable.productId, productsTable.id))
+          .where(inArr(orderItemsTable.orderId, agentOrderIds));
+      }
+      const orderToProduct: Record<number, { id: number; name: string }> = {};
+      for (const row of itemRows) {
+        if (!orderToProduct[row.orderId]) {
+          orderToProduct[row.orderId] = {
+            id: row.productId || 0,
+            name: row.rawProductName || row.productName || 'Produit',
+          };
+        }
+      }
       const productMap: Record<string, { id: number; name: string; total: number; confirmed: number; delivered: number }> = {};
       for (const o of agentOrders as any[]) {
-        const name =
-          o.rawProductName ||
-          o.items?.[0]?.rawProductName ||
-          o.items?.[0]?.product?.name ||
-          'Produit';
-        const pid = o.items?.[0]?.productId || 0;
+        const pInfo = orderToProduct[o.id];
+        const name = pInfo?.name || o.rawProductName || 'Produit';
+        const pid  = pInfo?.id || 0;
         if (!productMap[name]) productMap[name] = { id: pid, name, total: 0, confirmed: 0, delivered: 0 };
         productMap[name].total++;
         const s = (o.status ?? '').toLowerCase().trim();
