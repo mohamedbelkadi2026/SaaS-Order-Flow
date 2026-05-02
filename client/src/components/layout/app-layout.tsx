@@ -100,7 +100,6 @@ const ORDER_SUB_ITEMS = [
   { name: "En cours",       href: "/orders/en-cours" },
   { name: "Livrées",        href: "/orders/livrees" },
   { name: "Refusées",       href: "/orders/refuses" },
-  { name: "Négligées ⚠️",  href: "/orders/neglected" },
 ];
 
 const INTEGRATION_SUB_ITEMS = [
@@ -147,7 +146,6 @@ const ORDER_SUB_KEYS: Record<string, string> = {
   "Suivi des Colis":"orderSub.tracking",
   "Livrées":        "orderSub.delivered",
   "Refusées":       "orderSub.refused",
-  "Négligées ⚠️":  "orderSub.neglected",
 };
 const INTEGRATION_SUB_KEYS: Record<string, string> = {
   "Boutiques":             "integrationSub.stores",
@@ -550,12 +548,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, [isMediaBuyer, isAgent, baseNav, agentSpecialty]);
 
   const visibleOrderSubItems = useMemo(() => {
-    if (isMediaBuyer) return ORDER_SUB_ITEMS.filter(s => !['Suivi des Colis', 'Négligées ⚠️'].includes(s.name));
+    if (isMediaBuyer) return ORDER_SUB_ITEMS.filter(s => s.name !== 'Suivi des Colis');
     if (!isAgent || agentSpecialty === 'both') return ORDER_SUB_ITEMS;
     if (agentSpecialty === 'confirmation') {
-      return ORDER_SUB_ITEMS.filter(s => !['Suivi des Colis', 'En cours', 'Livrées', 'Refusées', 'Négligées ⚠️'].includes(s.name));
+      return ORDER_SUB_ITEMS.filter(s => !['Suivi des Colis', 'En cours', 'Livrées', 'Refusées'].includes(s.name));
     }
-    return ORDER_SUB_ITEMS.filter(s => ['En cours', 'Suivi des Colis', 'Livrées', 'Refusées', 'Rappel', 'Négligées ⚠️'].includes(s.name));
+    return ORDER_SUB_ITEMS.filter(s => ['En cours', 'Suivi des Colis', 'Livrées', 'Refusées', 'Rappel'].includes(s.name));
   }, [isAgent, agentSpecialty, isMediaBuyer]);
 
   /* ── Sidebar JSX ──────────────────────────────────────────────── */

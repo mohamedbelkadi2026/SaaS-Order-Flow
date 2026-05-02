@@ -1110,28 +1110,6 @@ export async function registerRoutes(
         )));
       } else if (status === 'refused') {
         res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
-      } else if (status === 'neglected_group') {
-        const hoursThreshold = 48;
-        const cutoff = new Date(Date.now() - hoursThreshold * 60 * 60 * 1000);
-        const NEGLECTED_STATUSES = [
-          'refused', 'retourné', 'Tentative échouée', 'Retour en cours',
-          "Retourné à l'expéditeur", 'Article retourné', 'Retour en route',
-          'Adresse inconnue', 'Demande retour', 'rappel', 'Reporté',
-          'Injoignable', 'Pas de réponse 1', 'Pas de réponse 2',
-          'Pas de réponse 3', 'Pas de réponse 4',
-        ];
-        const neglected = ordersList.filter(o => {
-          if (!(o as any).trackNumber) return false;
-          if (!NEGLECTED_STATUSES.includes(o.status || '')) return false;
-          const lastAction = (o as any).lastActionAt;
-          if (!lastAction) return true;
-          return new Date(lastAction) < cutoff;
-        }).sort((a, b) => {
-          const aT = (a as any).lastActionAt ? new Date((a as any).lastActionAt).getTime() : 0;
-          const bT = (b as any).lastActionAt ? new Date((b as any).lastActionAt).getTime() : 0;
-          return aT - bT;
-        });
-        res.json(includeShippingCost(neglected));
       } else if (status === 'nouveau') {
         // Nouveaux = only real new orders (no carrier statuses)
         res.json(includeShippingCost(ordersList.filter(o =>
@@ -1159,29 +1137,6 @@ export async function registerRoutes(
       } else if (status === 'refused') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o => REFUSED_GROUP.includes(o.status))));
-      } else if (status === 'neglected_group') {
-        const hoursThreshold = 48;
-        const cutoff = new Date(Date.now() - hoursThreshold * 60 * 60 * 1000);
-        const NEGLECTED_STATUSES = [
-          'refused', 'retourné', 'Tentative échouée', 'Retour en cours',
-          "Retourné à l'expéditeur", 'Article retourné', 'Retour en route',
-          'Adresse inconnue', 'Demande retour', 'rappel', 'Reporté',
-          'Injoignable', 'Pas de réponse 1', 'Pas de réponse 2',
-          'Pas de réponse 3', 'Pas de réponse 4',
-        ];
-        const ordersList = await storage.getOrdersByStore(user.storeId!);
-        const neglected = ordersList.filter(o => {
-          if (!(o as any).trackNumber) return false;
-          if (!NEGLECTED_STATUSES.includes(o.status || '')) return false;
-          const lastAction = (o as any).lastActionAt;
-          if (!lastAction) return true;
-          return new Date(lastAction) < cutoff;
-        }).sort((a, b) => {
-          const aT = (a as any).lastActionAt ? new Date((a as any).lastActionAt).getTime() : 0;
-          const bT = (b as any).lastActionAt ? new Date((b as any).lastActionAt).getTime() : 0;
-          return aT - bT;
-        });
-        res.json(includeShippingCost(neglected));
       } else if (status === 'nouveau') {
         const ordersList = await storage.getOrdersByStore(user.storeId!);
         res.json(includeShippingCost(ordersList.filter(o =>
@@ -1193,54 +1148,6 @@ export async function registerRoutes(
         const ordersList = await storage.getOrdersByStore(user.storeId!, status || undefined);
         res.json(includeShippingCost(ordersList));
       }
-    }
-  });
-
-  app.get("/api/orders/neglected", requireAuth, async (req, res) => {
-    try {
-      const user = req.user!;
-      const storeId = user.storeId!;
-      const hoursThreshold = Number(req.query.hours || 48);
-
-      const NEGLECTED_STATUSES = [
-        'refused',
-        'retourné',
-        'Tentative échouée',
-        'Retour en cours',
-        "Retourné à l'expéditeur",
-        'Article retourné',
-        'Retour en route',
-        'Adresse inconnue',
-        'Demande retour',
-        'rappel',
-        'Reporté',
-        'Injoignable',
-        'Pas de réponse 1',
-        'Pas de réponse 2',
-        'Pas de réponse 3',
-        'Pas de réponse 4',
-      ];
-
-      const cutoff = new Date(Date.now() - hoursThreshold * 60 * 60 * 1000);
-      const allOrders = await storage.getOrdersByStore(storeId);
-
-      const neglected = allOrders.filter(o => {
-        if (!(o as any).trackNumber) return false;
-        if (!NEGLECTED_STATUSES.includes(o.status || '')) return false;
-        const lastAction = (o as any).lastActionAt;
-        if (!lastAction) return true;
-        return new Date(lastAction) < cutoff;
-      });
-
-      neglected.sort((a, b) => {
-        const aTime = (a as any).lastActionAt ? new Date((a as any).lastActionAt).getTime() : 0;
-        const bTime = (b as any).lastActionAt ? new Date((b as any).lastActionAt).getTime() : 0;
-        return aTime - bTime;
-      });
-
-      res.json(neglected);
-    } catch (err) {
-      throw err;
     }
   });
 
