@@ -94,6 +94,7 @@ const STATUS_MAP: Record<string, string> = {
   suivi: "suivi_group",
   livrees: "delivered",
   refuses: "refused",
+  neglected: "neglected_group",
 };
 
 const TITLE_MAP: Record<string, string> = {
@@ -109,6 +110,7 @@ const TITLE_MAP: Record<string, string> = {
   suivi: "SUIVI DES COLIS",
   livrees: "LIVRÉES",
   refuses: "REFUSÉES",
+  neglected: "⚠️ COMMANDES NÉGLIGÉES",
 };
 
 // ── Status dropdown options (grouped: agent-set first, carrier-set below) ──
@@ -1522,6 +1524,17 @@ export default function Orders() {
                       {isColVisible('derniereAction') && (
                         <TableCell className="whitespace-nowrap text-muted-foreground text-[11px]">
                           {order.createdAt ? new Date(order.createdAt).toLocaleString('fr-MA', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
+                          {urlStatus === 'neglected_group' && (
+                            <span className="ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 border border-orange-300">
+                              {(() => {
+                                const last = (order as any).lastActionAt;
+                                if (!last) return 'Jamais traité';
+                                const hours = Math.floor((Date.now() - new Date(last).getTime()) / 3600000);
+                                if (hours < 24) return `${hours}h sans suivi`;
+                                return `${Math.floor(hours / 24)}j sans suivi`;
+                              })()}
+                            </span>
+                          )}
                         </TableCell>
                       )}
                       {isColVisible('status') && (

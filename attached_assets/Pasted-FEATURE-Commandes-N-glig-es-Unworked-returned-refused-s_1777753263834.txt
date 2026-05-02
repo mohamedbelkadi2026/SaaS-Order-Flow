@@ -1,0 +1,119 @@
+FEATURE: "Commandes Négligées" — Unworked returned/refused shipped orders
+Goal: Add a new page/section showing orders that were shipped (have a track_number), came back as refused/returned, but no suivi agent has touched them (i.e. last_action_by IS NULL or last_action_at is older than 48h). This helps the admin see which orders are being ignored.
+
+Change 1 — server/routes.ts — New endpoint GET /api/orders/neglected
+Add this route near the other /api/orders routes:
+tsapp.get("/api/orders/neglected", requireAuth, async (req, res) => {
+  try {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const hoursThreshold = Number(req.query.hours || 48);
+
+    const NEGLECTED_STATUSES = [
+      'refused',
+      'retourné',
+      'Tentative échouée',
+      'Retour en cours',
+      "Retourné à l'expéditeur",
+      'Article retourné',
+      'Retour en route',
+      'Adresse inconnue',
+      'Demande retour',
+      'Rappel',
+      'Reporté',
+      'Injoignable',
+      'Pas de réponse 1',
+      'Pas de réponse 2',
+      'Pas de réponse 3',
+      'Pas de réponse 4',
+    ];
+
+    const cutoff = new Date(Date.now() - hoursThreshold * 60 * 60 * 1000);
+
+    const allOrders = await storage.getOrdersByStore(storeId);
+
+    const neglected = allOrders.filter(o => {
+      // Must have been shipped (has track number)
+      if (!(o as any).trackNumber) return false;
+      // Must be in a return/refused/unworked status
+      if (!NEGLECTED_STATUSES.includes(o.status || '')) return false;
+      // No agent touched it, OR last touch was more than `hoursThreshold` hours ago
+      const lastAction = (o as any).lastActionAt;
+      if (!lastAction) return true;
+      return new Date(lastAction) < cutoff;
+    });
+
+    // Sort by lastActionAt ascending (oldest neglect first)
+    neglected.sort((a, b) => {
+      const aTime = (a as any).lastActionAt ? new Date((a as any).lastActionAt).getTime() : 0;
+      const bTime = (b as any).lastActionAt ? new Date((b as any).lastActionAt).getTime() : 0;
+      return aTime - bTime;
+    });
+
+    res.json(neglected);
+  } catch (err) {
+    throw err;
+  }
+});
+
+Change 2 — client/src/pages/orders.tsx — Add "neglected" to STATUS_MAP and TITLE_MAP
+ts// In STATUS_MAP add:
+"neglected": "neglected_group",
+
+// In TITLE_MAP add:
+"neglected": "⚠️ COMMANDES NÉGLIGÉES",
+
+Change 3 — client/src/components/layout/app-layout.tsx — Add sidebar link
+In ORDER_SUB_ITEMS, add this entry after "Refusées":
+ts{ name: "Négligées ⚠️", href: "/orders/neglected" },
+Also add to ORDER_SUB_KEYS:
+ts"Négligées ⚠️": "orderSub.neglected",
+Make it visible for roles: owner, admin, suivi — hide for agent and media_buyer.
+
+Change 4 — server/routes.ts — Handle neglected_group in the main GET /api/orders route
+In the existing orders filter block (where suivi_group, annule_group etc. are handled), add:
+ts} else if (status === 'neglected_group') {
+  const hoursThreshold = 48;
+  const cutoff = new Date(Date.now() - hoursThreshold * 60 * 60 * 1000);
+  const NEGLECTED_STATUSES = [
+    'refused', 'retourné', 'Tentative échouée', 'Retour en cours',
+    "Retourné à l'expéditeur", 'Article retourné', 'Retour en route',
+    'Adresse inconnue', 'Demande retour', 'Rappel', 'Reporté',
+    'Injoignable', 'Pas de réponse 1', 'Pas de réponse 2',
+    'Pas de réponse 3', 'Pas de réponse 4',
+  ];
+  const ordersList = await storage.getOrdersByStore(storeId);
+  const neglected = ordersList.filter(o => {
+    if (!(o as any).trackNumber) return false;
+    if (!NEGLECTED_STATUSES.includes(o.status || '')) return false;
+    const lastAction = (o as any).lastActionAt;
+    if (!lastAction) return true;
+    return new Date(lastAction) < cutoff;
+  }).sort((a, b) => {
+    const aT = (a as any).lastActionAt ? new Date((a as any).lastActionAt).getTime() : 0;
+    const bT = (b as any).lastActionAt ? new Date((b as any).lastActionAt).getTime() : 0;
+    return aT - bT;
+  });
+  res.json(includeShippingCost(neglected));
+Add this for both the agent block and the else (owner/admin) block.
+
+Change 5 — client/src/pages/orders.tsx — Show "neglect duration" badge in the table row
+In the orders table row, when urlStatus === 'neglected_group', show how long the order has been untouched. Find the DERNIÈRE ACTION column cell and add:
+tsx{urlStatus === 'neglected_group' && (
+  <span className="ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 border border-orange-300">
+    {(() => {
+      const last = (order as any).lastActionAt;
+      if (!last) return 'Jamais traité';
+      const hours = Math.floor((Date.now() - new Date(last).getTime()) / 3600000);
+      if (hours < 24) return `${hours}h sans suivi`;
+      return `${Math.floor(hours / 24)}j sans suivi`;
+    })()}
+  </span>
+)}
+
+Important notes:
+
+The 48h threshold can be adjusted later — use it as the default for now
+Don't touch any existing filter logic
+The badge color is orange to signal urgency without being alarming
+"Jamais traité" means the order came back from carrier with no agent action at a
