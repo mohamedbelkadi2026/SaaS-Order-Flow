@@ -145,6 +145,13 @@ export default function Dashboard() {
   const canSeeCharts = !isAgent || !!perms.show_charts;
   const canSeeTopProducts = !isAgent || !!perms.show_top_products;
 
+  // Agent-only UI state for the filter bar's date preset dropdown. All actual
+  // date/city/product values now live in the unified `filters` state above so
+  // every card and endpoint sees the same period (fixes mixed-period bug).
+  type AgentDateRange = 'today' | 'yesterday' | '7days' | 'month' | 'lastmonth' | 'all' | 'custom';
+  const [agentDateRange, setAgentDateRange] = useState<AgentDateRange>('month');
+  const [agentShowCustom, setAgentShowCustom] = useState(false);
+
   const { data: walletData } = useQuery<{ totalEarned: number; deliveredThisMonth: number; deliveredTotal: number; commissionRate: number; periodLabel: string }>({
     queryKey: ['/api/agents/wallet', agentDateRange, filters.dateFrom, filters.dateTo],
     enabled: isAgent,
@@ -160,13 +167,6 @@ export default function Dashboard() {
       return r.json();
     },
   });
-
-  // Agent-only UI state for the filter bar's date preset dropdown. All actual
-  // date/city/product values now live in the unified `filters` state above so
-  // every card and endpoint sees the same period (fixes mixed-period bug).
-  type AgentDateRange = 'today' | 'yesterday' | '7days' | 'month' | 'lastmonth' | 'all' | 'custom';
-  const [agentDateRange, setAgentDateRange] = useState<AgentDateRange>('month');
-  const [agentShowCustom, setAgentShowCustom] = useState(false);
 
   // When the agent picks a date preset, compute dateFrom/dateTo and write
   // them into the SAME filters state that drives /api/stats/filtered. This
