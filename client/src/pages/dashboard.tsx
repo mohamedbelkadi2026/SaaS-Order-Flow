@@ -1819,7 +1819,7 @@ export default function Dashboard() {
                         tickLine={false}
                         tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
                         dy={6}
-                        interval={Math.max(0, Math.floor((agentMyStats.daily.length - 1) / 6))}
+                        interval={Math.max(0, Math.floor((agentChartData.daily.length - 1) / 6))}
                       />
                       <YAxis
                         axisLine={false}
