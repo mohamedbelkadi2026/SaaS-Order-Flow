@@ -239,6 +239,33 @@ export default function Dashboard() {
     refetchInterval: 60_000,
   });
 
+  // Separate query for chart + products table — these come from /api/agents/my-stats
+  // which is the dedicated agent endpoint that returns `daily` and `products`.
+  // The agentMyStats query above targets /api/stats/filtered (stat-card numbers only).
+  const { data: agentChartData, isLoading: agentChartLoading } = useQuery<{
+    daily: { date: string; orders: number }[];
+    products: { id: number; name: string; total: number; confirmed: number; delivered: number }[];
+    cities: string[];
+  }>({
+    queryKey: ['/api/agents/my-stats', filters.dateFrom, filters.dateTo, filters.city, filters.productId, agentDateRange],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters.city !== 'all') params.set('city', filters.city);
+      if (filters.productId !== 'all') params.set('productId', filters.productId);
+      if (filters.dateFrom) {
+        params.set('dateFrom', filters.dateFrom);
+        params.set('dateTo', filters.dateTo || ymd(new Date()));
+      } else {
+        params.set('dateRange', agentDateRange);
+      }
+      const r = await fetch(`/api/agents/my-stats?${params}`, { credentials: 'include' });
+      if (!r.ok) throw new Error('Failed to fetch agent chart data');
+      return r.json();
+    },
+    enabled: isAgent,
+    refetchInterval: 60_000,
+  });
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [platformFilter, setPlatformFilter] = useState('all');
@@ -1774,17 +1801,17 @@ export default function Dashboard() {
                 <p className="text-xs text-muted-foreground">Commandes traitées par jour (15 derniers jours)</p>
               </CardHeader>
               <CardContent className="px-2 pb-4">
-                {agentStatsLoading ? (
+                {agentChartLoading ? (
                   <div className="h-[220px] flex items-center justify-center">
                     <Skeleton className="w-full h-full rounded-lg" />
                   </div>
-                ) : !agentMyStats?.daily?.length ? (
+                ) : !agentChartData?.daily?.length ? (
                   <div className="h-[220px] flex items-center justify-center text-muted-foreground text-sm">
                     Aucune donnée disponible
                   </div>
                 ) : (
                   <ResponsiveContainer width="100%" height={220}>
-                    <LineChart data={agentMyStats.daily} margin={{ top: 10, right: 20, left: -12, bottom: 0 }}>
+                    <LineChart data={agentChartData.daily} margin={{ top: 10, right: 20, left: -12, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                       <XAxis
                         dataKey="date"
@@ -1909,12 +1936,12 @@ export default function Dashboard() {
           </div>
 
           {/* ── PRODUITS COMMANDÉS — Agent ── */}
-          {agentMyStats?.products && agentMyStats.products.length > 0 && (
+          {agentChartData?.products && agentChartData.products.length > 0 && (
             <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5" data-testid="card-agent-products-table">
               <div className="flex items-center gap-2 pb-2 border-b mb-4">
                 <Package className="w-4 h-4 text-indigo-500" />
                 <h2 className="text-sm font-bold uppercase tracking-wide">Produits Commandés</h2>
-                <span className="text-xs text-muted-foreground ml-auto">{agentMyStats.products.length} produit(s)</span>
+                <span className="text-xs text-muted-foreground ml-auto">{agentChartData.products.length} produit(s)</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -1929,7 +1956,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {agentMyStats.products.map((p: any, i: number) => {
+                    {agentChartData.products.map((p: any, i: number) => {
                       const confRate = p.total > 0 ? Math.round((p.confirmed / p.total) * 100) : 0;
                       const delivRate = p.confirmed > 0 ? Math.round((p.delivered / p.confirmed) * 100) : 0;
                       const confColor = confRate >= 60 ? 'text-emerald-600' : confRate >= 40 ? 'text-amber-500' : 'text-red-500';
