@@ -8,7 +8,7 @@ import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, com
 import { db } from "./db";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
-import { eq, and, gte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
+import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
 import archiver from "archiver";
@@ -4605,6 +4605,137 @@ export async function registerRoutes(
     const productId = Number(req.params.productId);
     const logs = await storage.getStockLogs(storeId, isNaN(productId) ? undefined : productId);
     res.json(logs);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /api/products/profitability — per-product revenue, cost, and profit
+  // computed directly from orders + order_items (no CSV needed).
+  // ─────────────────────────────────────────────────────────────────────────
+  app.get("/api/products/profitability", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const storeId = user.storeId!;
+      const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
+
+      const now = new Date();
+      let cutoff: Date;
+      let endDate: Date = new Date();
+
+      if (dateFrom) {
+        cutoff  = new Date(dateFrom + 'T00:00:00');
+        endDate = dateTo ? new Date(dateTo + 'T23:59:59') : new Date();
+      } else if (dateRange === 'today') {
+        cutoff = new Date(); cutoff.setHours(0, 0, 0, 0);
+      } else if (dateRange === 'yesterday') {
+        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 1); cutoff.setHours(0, 0, 0, 0);
+        endDate = new Date(); endDate.setDate(endDate.getDate() - 1); endDate.setHours(23, 59, 59, 999);
+      } else if (dateRange === '7days') {
+        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6); cutoff.setHours(0, 0, 0, 0);
+      } else if (dateRange === 'lastmonth') {
+        cutoff  = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      } else if (dateRange === 'all') {
+        cutoff = new Date('2020-01-01');
+      } else {
+        cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+      }
+
+      const storeOrders = await db
+        .select()
+        .from(orders)
+        .where(and(
+          eq(orders.storeId, storeId),
+          gte(orders.createdAt, cutoff),
+          lte(orders.createdAt, endDate),
+        ));
+
+      if (storeOrders.length === 0) return res.json([]);
+
+      const orderIds = storeOrders.map(o => o.id);
+
+      const itemRows = await db
+        .select({
+          orderId:          orderItems.orderId,
+          productId:        orderItems.productId,
+          rawProductName:   orderItems.rawProductName,
+          quantity:         orderItems.quantity,
+          price:            orderItems.price,
+          productName:      products.name,
+          productCostPrice: products.costPrice,
+        })
+        .from(orderItems)
+        .leftJoin(products, eq(orderItems.productId, products.id))
+        .where(inArray(orderItems.orderId, orderIds));
+
+      const orderMap = new Map(storeOrders.map(o => [o.id, o]));
+
+      type ProductStats = {
+        id: number; name: string;
+        totalOrders: number; confirmedOrders: number; deliveredOrders: number;
+        refusedOrders: number; returnedOrders: number;
+        revenue: number; productCost: number; shippingCost: number; adSpend: number;
+        netProfit: number; margin: number; roi: number;
+        confirmRate: number; deliveryRate: number;
+      };
+
+      const statsMap: Record<string, ProductStats> = {};
+
+      for (const item of itemRows) {
+        const order = orderMap.get(item.orderId);
+        if (!order) continue;
+
+        const name = (item.rawProductName || item.productName || 'Produit inconnu').trim();
+        const pid  = item.productId || 0;
+        const key  = `${pid}_${name}`;
+
+        if (!statsMap[key]) {
+          statsMap[key] = {
+            id: pid, name,
+            totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
+            refusedOrders: 0, returnedOrders: 0,
+            revenue: 0, productCost: 0, shippingCost: 0, adSpend: 0,
+            netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
+          };
+        }
+
+        const s = statsMap[key];
+        const status = ((order as any).status || '').toLowerCase();
+        const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
+        const isConfirmed = isDelivered ||
+          status === 'confirme' || status === 'confirmé' ||
+          status === 'expédié' || status === 'attente de ramassage' ||
+          status === 'in_progress';
+        const isRefused  = status === 'refused' || status === 'refusé';
+        const isReturned = status === 'retourné' || status === 'retour en cours';
+
+        s.totalOrders++;
+        if (isConfirmed) s.confirmedOrders++;
+        if (isDelivered) s.deliveredOrders++;
+        if (isRefused)   s.refusedOrders++;
+        if (isReturned)  s.returnedOrders++;
+
+        if (isDelivered) {
+          s.revenue      += Number((order as any).totalPrice  || 0);
+          s.productCost  += Number(item.productCostPrice || (order as any).productCost || 0) * Number(item.quantity || 1);
+          s.shippingCost += Number((order as any).shippingCost || 0);
+          s.adSpend      += Number((order as any).adSpend      || 0);
+        }
+      }
+
+      const result = Object.values(statsMap).map(s => {
+        const netProfit    = s.revenue - s.productCost - s.shippingCost - s.adSpend;
+        const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
+        const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
+        const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders / s.totalOrders) * 100 : 0;
+        const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
+        return { ...s, netProfit, margin, roi, confirmRate, deliveryRate };
+      });
+
+      result.sort((a, b) => b.netProfit - a.netProfit);
+      res.json(result);
+    } catch (err) {
+      throw err;
+    }
   });
 
   app.patch("/api/products/:id", requireAuth, async (req, res) => {

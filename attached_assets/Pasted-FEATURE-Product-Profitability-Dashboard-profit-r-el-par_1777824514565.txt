@@ -1,0 +1,196 @@
+FEATURE: Product Profitability Dashboard — profit réel par produit depuis les commandes
+Goal: Add a new API endpoint + page that shows per-product profit analysis using real order data (no CSV upload needed). For each product: revenue, cost, shipping, ad spend, net profit, margin %, and ROI.
+
+Change 1 — server/routes.ts — New endpoint GET /api/products/profitability
+tsapp.get("/api/products/profitability", requireAuth, async (req, res) => {
+  try {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
+
+    // Compute date range
+    const now = new Date();
+    let cutoff: Date;
+    let endDate: Date = new Date();
+
+    if (dateFrom) {
+      cutoff  = new Date(dateFrom + 'T00:00:00');
+      endDate = dateTo ? new Date(dateTo + 'T23:59:59') : new Date();
+    } else if (dateRange === 'today') {
+      cutoff = new Date(); cutoff.setHours(0, 0, 0, 0);
+    } else if (dateRange === 'yesterday') {
+      cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 1); cutoff.setHours(0, 0, 0, 0);
+      endDate = new Date(); endDate.setDate(endDate.getDate() - 1); endDate.setHours(23, 59, 59, 999);
+    } else if (dateRange === '7days') {
+      cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6); cutoff.setHours(0, 0, 0, 0);
+    } else if (dateRange === 'lastmonth') {
+      cutoff  = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    } else if (dateRange === 'all') {
+      cutoff = new Date('2020-01-01');
+    } else {
+      // default: this month
+      cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+
+    // Fetch all orders in range for this store
+    const storeOrders = await db
+      .select()
+      .from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        gte(orders.createdAt, cutoff),
+        lte(orders.createdAt, endDate),
+      ));
+
+    if (storeOrders.length === 0) return res.json([]);
+
+    const orderIds = storeOrders.map(o => o.id);
+
+    // Fetch orderItems with product info
+    const itemRows = await db
+      .select({
+        orderId: orderItems.orderId,
+        productId: orderItems.productId,
+        rawProductName: orderItems.rawProductName,
+        quantity: orderItems.quantity,
+        price: orderItems.price,
+        productName: products.name,
+        productCostPrice: products.costPrice,
+      })
+      .from(orderItems)
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(inArray(orderItems.orderId, orderIds));
+
+    // Build a map: orderId → order data
+    const orderMap = new Map(storeOrders.map(o => [o.id, o]));
+
+    // Aggregate per product
+    type ProductStats = {
+      id: number;
+      name: string;
+      totalOrders: number;
+      confirmedOrders: number;
+      deliveredOrders: number;
+      refusedOrders: number;
+      returnedOrders: number;
+      revenue: number;        // totalPrice of delivered orders
+      productCost: number;    // costPrice × qty for delivered
+      shippingCost: number;   // sum of shippingCost for all orders
+      adSpend: number;        // sum of adSpend
+      netProfit: number;
+      margin: number;         // netProfit / revenue * 100
+      roi: number;            // netProfit / productCost * 100
+      confirmRate: number;
+      deliveryRate: number;
+    };
+
+    const statsMap: Record<string, ProductStats> = {};
+
+    for (const item of itemRows) {
+      const order = orderMap.get(item.orderId);
+      if (!order) continue;
+
+      const name = item.rawProductName || item.productName || 'Produit inconnu';
+      const pid  = item.productId || 0;
+      const key  = `${pid}_${name}`;
+
+      if (!statsMap[key]) {
+        statsMap[key] = {
+          id: pid, name,
+          totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
+          refusedOrders: 0, returnedOrders: 0,
+          revenue: 0, productCost: 0, shippingCost: 0, adSpend: 0,
+          netProfit: 0, margin: 0, roi: 0,
+          confirmRate: 0, deliveryRate: 0,
+        };
+      }
+
+      const s = statsMap[key];
+      const status = (order.status || '').toLowerCase();
+      const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
+      const isConfirmed = isDelivered || status === 'confirme' || status === 'confirmé' ||
+                          status === 'expédié' || status === 'attente de ramassage' ||
+                          status === 'en_progress' || status === 'in_progress';
+      const isRefused   = status === 'refused' || status === 'refusé';
+      const isReturned  = status === 'retourné' || status === 'retour en cours' ||
+                          status === "retourné à l'expéditeur" || status === 'tentative échouée';
+
+      s.totalOrders++;
+      if (isConfirmed) s.confirmedOrders++;
+      if (isDelivered) s.deliveredOrders++;
+      if (isRefused)   s.refusedOrders++;
+      if (isReturned)  s.returnedOrders++;
+
+      // Only count revenue and cost for delivered orders
+      if (isDelivered) {
+        s.revenue     += Number(order.totalPrice  || 0);
+        s.productCost += Number(item.productCostPrice || order.productCost || 0) * Number(item.quantity || 1);
+        s.shippingCost+= Number(order.shippingCost || 0);
+        s.adSpend     += Number(order.adSpend      || 0);
+      }
+    }
+
+    // Calculate derived metrics
+    const result = Object.values(statsMap).map(s => {
+      const netProfit = s.revenue - s.productCost - s.shippingCost - s.adSpend;
+      const margin    = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
+      const roi       = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
+      const confirmRate = s.totalOrders > 0 ? (s.confirmedOrders / s.totalOrders) * 100 : 0;
+      const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
+      return { ...s, netProfit, margin, roi, confirmRate, deliveryRate };
+    });
+
+    // Sort by netProfit descending
+    result.sort((a, b) => b.netProfit - a.netProfit);
+
+    res.json(result);
+  } catch (err) {
+    throw err;
+  }
+});
+
+Change 2 — client/src/pages/profit-analyzer.tsx — Add new "Par Produit" tab
+At the top of the file, add a new tab called "📊 Par Produit" alongside the existing CSV-based analyzer. When this tab is selected, show the live product profitability table fetched from the API.
+Add state:
+tsconst [activeTab, setActiveTab] = useState<'csv' | 'live'>('live');
+const [liveDateRange, setLiveDateRange] = useState('month');
+const [liveDateFrom, setLiveDateFrom] = useState('');
+const [liveDateTo, setLiveDateTo] = useState('');
+
+const { data: liveStats = [], isLoading: liveLoading } = useQuery<any[]>({
+  queryKey: ['/api/products/profitability', liveDateRange, liveDateFrom, liveDateTo],
+  queryFn: async () => {
+    const params = new URLSearchParams();
+    if (liveDateFrom) {
+      params.set('dateFrom', liveDateFrom);
+      params.set('dateTo', liveDateTo || new Date().toISOString().slice(0, 10));
+    } else {
+      params.set('dateRange', liveDateRange);
+    }
+    const r = await fetch(`/api/products/profitability?${params}`, { credentials: 'include' });
+    return r.json();
+  },
+});
+Add the live tab UI — show a table with these columns per product:
+ProduitCommandesConfirmésLivrésRefusésCA (DH)CoûtLivraisonPubProfit NetMarge %ROI %
+Color rules:
+
+netProfit > 0 → green text text-emerald-600
+netProfit < 0 → red text text-rose-600
+margin > 30% → green badge
+margin 10–30% → amber badge
+margin < 10% → rose badge
+
+Add a summary bar at the top showing:
+tsx// Total across all products
+const totalRevenue  = liveStats.reduce((s, p) => s + p.revenue, 0);
+const totalProfit   = liveStats.reduce((s, p) => s + p.netProfit, 0);
+const totalOrders   = liveStats.reduce((s, p) => s + p.totalOrders, 0);
+const totalDelivered = liveStats.reduce((s, p) => s + p.deliveredOrders, 0);
+Show 4 KPI cards: Total Commandes, Total Livrées, CA Total, Profit Net Total.
+Date filter — add the same filter bar as the agent dashboard (Aujourd'hui / 7 jours / Ce mois / Mois dernier / Tout / Custom).
+
+Change 3 — client/src/components/layout/app-layout.tsx — Add sidebar link
+Add "Profit par Produit" as a link in the sidebar under the analytics section (near "Profit Analyzer" if it exists, otherwise at the bottom of MENU):
+ts{ name: "Profit par Produit", href: "/profit-analyzer", icon: TrendingUp }
