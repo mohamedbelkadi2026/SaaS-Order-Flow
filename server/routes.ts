@@ -753,7 +753,11 @@ export async function registerRoutes(
       if (!rawName) return;
       const rawVariantVal: string = (o.items && o.items.length > 0 ? (o.items[0] as any).variantInfo : null) || '';
       const v = rawVariantVal.trim();
-      const displayName = (v && v !== 'Default Title' && v !== 'null' && v !== '-') ? `${rawName} - ${v}` : rawName;
+      // Avoid duplicate variant: if rawName already ends with the variant value, don't append it again
+      const variantAlreadyInName = v && rawName.toLowerCase().trim().endsWith(v.toLowerCase().trim());
+      const displayName = (v && v !== 'Default Title' && v !== 'null' && v !== '-' && !variantAlreadyInName)
+        ? `${rawName} - ${v}`
+        : rawName;
       const key = displayName.toLowerCase().trim();
       if (!rawProductMap[key]) {
         rawProductMap[key] = {
