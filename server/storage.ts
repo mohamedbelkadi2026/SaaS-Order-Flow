@@ -2533,15 +2533,17 @@ export class DatabaseStorage implements IStorage {
       const setting = await this.getAgentStoreSetting(agent.id, storeId);
       const rate = Number(setting?.commissionRate ?? 0);
 
-      // Count deliveries in date range — using updatedAt (delivery date)
+      // Count deliveries in date range — using createdAt (order creation date)
+      // Must match the agent's own my-stats and wallet endpoints which also
+      // filter by createdAt so admin and agent see identical numbers.
       const allDelivered = await db.select()
         .from(orders)
         .where(and(
           eq(orders.assignedToId, agent.id),
           eq(orders.storeId, storeId),
           eq(orders.status, 'delivered'),
-          gte(orders.updatedAt, cutoff),
-          lte(orders.updatedAt, endDate),
+          gte(orders.createdAt, cutoff),
+          lte(orders.createdAt, endDate),
         ));
 
       const deliveredTotal = allDelivered.length;
