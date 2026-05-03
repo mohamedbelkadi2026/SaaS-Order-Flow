@@ -4649,7 +4649,7 @@ export async function registerRoutes(
           lte(orders.createdAt, endDate),
         ));
 
-      if (storeOrders.length === 0) return res.json([]);
+      if (storeOrders.length === 0) return res.json({ products: [], platforms: [] });
 
       const orderIds = storeOrders.map(o => o.id);
 
@@ -4679,6 +4679,9 @@ export async function registerRoutes(
       };
 
       const statsMap: Record<string, ProductStats> = {};
+      const CONFIRMED_SET = new Set(["confirme","confirmé","expédié","attente de ramassage","in_progress","delivered","livré","livrée"]);
+      const REFUSED_SET   = new Set(["refused","refusé"]);
+      const RETURN_SET    = new Set(["retourné","retour en cours","retourné à l'expéditeur","tentative échouée","article retourné"]);
 
       for (const item of itemRows) {
         const order = orderMap.get(item.orderId);
@@ -4699,30 +4702,24 @@ export async function registerRoutes(
         }
 
         const s = statsMap[key];
-        const status = ((order as any).status || '').toLowerCase();
+        const status = ((order as any).status || '').toLowerCase().trim();
         const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
-        const isConfirmed = isDelivered ||
-          status === 'confirme' || status === 'confirmé' ||
-          status === 'expédié' || status === 'attente de ramassage' ||
-          status === 'in_progress';
-        const isRefused  = status === 'refused' || status === 'refusé';
-        const isReturned = status === 'retourné' || status === 'retour en cours';
 
         s.totalOrders++;
-        if (isConfirmed) s.confirmedOrders++;
-        if (isDelivered) s.deliveredOrders++;
-        if (isRefused)   s.refusedOrders++;
-        if (isReturned)  s.returnedOrders++;
+        if (CONFIRMED_SET.has(status)) s.confirmedOrders++;
+        if (isDelivered)               s.deliveredOrders++;
+        if (REFUSED_SET.has(status))   s.refusedOrders++;
+        if (RETURN_SET.has(status))    s.returnedOrders++;
 
         if (isDelivered) {
           s.revenue      += Number((order as any).totalPrice  || 0);
-          s.productCost  += Number(item.productCostPrice || (order as any).productCost || 0) * Number(item.quantity || 1);
+          s.productCost  += Number(item.productCostPrice ?? (order as any).productCost ?? 0) * Number(item.quantity || 1);
           s.shippingCost += Number((order as any).shippingCost || 0);
           s.adSpend      += Number((order as any).adSpend      || 0);
         }
       }
 
-      const result = Object.values(statsMap).map(s => {
+      const productResult = Object.values(statsMap).map(s => {
         const netProfit    = s.revenue - s.productCost - s.shippingCost - s.adSpend;
         const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
         const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
@@ -4730,9 +4727,37 @@ export async function registerRoutes(
         const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
         return { ...s, netProfit, margin, roi, confirmRate, deliveryRate };
       });
+      productResult.sort((a, b) => b.netProfit - a.netProfit);
 
-      result.sort((a, b) => b.netProfit - a.netProfit);
-      res.json(result);
+      // ── Per-platform aggregation ──────────────────────────────────
+      type PlatStat = { platform: string; orders: number; delivered: number; revenue: number; adSpend: number; netProfit: number; roas: number; cpo: number };
+      const platMap: Record<string, PlatStat> = {};
+      for (const o of storeOrders) {
+        const raw   = (o as any).trafficPlatform || (o as any).utmSource || "";
+        const low   = raw.toLowerCase();
+        const label = low.includes("facebook") || low.includes("fb") || low.includes("meta") ? "Facebook / Meta"
+                    : low.includes("tiktok") || low.includes("tik") ? "TikTok"
+                    : low.includes("google") ? "Google"
+                    : low.includes("organic") || low.includes("organique") ? "Organique"
+                    : raw || "Non défini";
+        if (!platMap[label]) platMap[label] = { platform: label, orders: 0, delivered: 0, revenue: 0, adSpend: 0, netProfit: 0, roas: 0, cpo: 0 };
+        const p = platMap[label];
+        const isDel = ["delivered","livré","livrée"].includes(((o as any).status || "").toLowerCase());
+        p.orders++;
+        if (isDel) {
+          p.delivered++;
+          p.revenue  += Number((o as any).totalPrice || 0);
+          p.adSpend  += Number((o as any).adSpend    || 0);
+        }
+      }
+      const platformResult = Object.values(platMap).map(p => ({
+        ...p,
+        netProfit: p.revenue - p.adSpend,
+        roas: p.adSpend > 0 ? p.revenue / p.adSpend : 0,
+        cpo:  p.orders  > 0 ? p.adSpend / p.orders  : 0,
+      })).sort((a, b) => b.revenue - a.revenue);
+
+      res.json({ products: productResult, platforms: platformResult });
     } catch (err) {
       throw err;
     }

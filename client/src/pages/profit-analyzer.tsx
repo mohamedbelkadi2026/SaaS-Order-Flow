@@ -208,31 +208,41 @@ export default function ProfitAnalyzer() {
   const [activeTab, setActiveTab] = useState<'live' | 'csv'>('live');
 
   /* ── Live tab state ── */
-  const [liveDateRange, setLiveDateRange] = useState('month');
-  const [liveDateFrom, setLiveDateFrom]   = useState('');
-  const [liveDateTo,   setLiveDateTo]     = useState('');
+  const [liveDateRange,  setLiveDateRange]  = useState('month');
+  const [liveDateFrom,   setLiveDateFrom]   = useState('');
+  const [liveDateTo,     setLiveDateTo]     = useState('');
+  const [liveShowCustom, setLiveShowCustom] = useState(false);
+  const [platformView,   setPlatformView]   = useState(false);
 
-  const { data: liveStats = [], isLoading: liveLoading, refetch: liveRefetch } = useQuery<LiveProductStat[]>({
-    queryKey: ['/api/products/profitability', liveDateRange, liveDateFrom, liveDateTo],
+  const buildLiveParams = () => {
+    const p = new URLSearchParams();
+    if (liveDateFrom && liveShowCustom) {
+      p.set('dateFrom', liveDateFrom);
+      p.set('dateTo', liveDateTo || new Date().toISOString().slice(0, 10));
+    } else {
+      p.set('dateRange', liveDateRange);
+    }
+    return p.toString();
+  };
+
+  const { data: liveData, isLoading: liveLoading, refetch: liveRefetch } = useQuery<{ products: any[]; platforms: any[] }>({
+    queryKey: ['/api/products/profitability', liveDateRange, liveDateFrom, liveDateTo, liveShowCustom],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (liveDateFrom) {
-        params.set('dateFrom', liveDateFrom);
-        params.set('dateTo', liveDateTo || new Date().toISOString().slice(0, 10));
-      } else {
-        params.set('dateRange', liveDateRange);
-      }
-      const r = await fetch(`/api/products/profitability?${params}`, { credentials: 'include' });
+      const r = await fetch(`/api/products/profitability?${buildLiveParams()}`, { credentials: 'include' });
       return r.json();
     },
     enabled: activeTab === 'live',
   });
 
+  const liveProducts  = liveData?.products  ?? [];
+  const livePlatforms = liveData?.platforms ?? [];
+
   /* Live summary aggregates */
-  const liveTotalRevenue   = liveStats.reduce((s, p) => s + p.revenue,        0);
-  const liveTotalProfit    = liveStats.reduce((s, p) => s + p.netProfit,       0);
-  const liveTotalOrders    = liveStats.reduce((s, p) => s + p.totalOrders,     0);
-  const liveTotalDelivered = liveStats.reduce((s, p) => s + p.deliveredOrders, 0);
+  const liveTotalOrders    = liveProducts.reduce((s: number, p: any) => s + p.totalOrders,    0);
+  const liveTotalDelivered = liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
+  const liveTotalRevenue   = liveProducts.reduce((s: number, p: any) => s + p.revenue,         0);
+  const liveTotalProfit    = liveProducts.reduce((s: number, p: any) => s + p.netProfit,        0);
+  const liveDeliveryRate   = liveTotalOrders > 0 ? ((liveTotalDelivered / liveTotalOrders) * 100).toFixed(1) : "0";
 
   function fmtDH(v: number) {
     return `${v.toLocaleString("fr-MA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH`;
@@ -478,160 +488,224 @@ export default function ProfitAnalyzer() {
       <div className="max-w-6xl mx-auto px-6 py-6 space-y-5">
 
         {/* ═══════════════════════════════════════════
-            LIVE TAB — Par Produit
+            LIVE TAB — Par Produit / Par Plateforme
         ═══════════════════════════════════════════ */}
         {activeTab === 'live' && (
-          <div className="space-y-5">
+          <div className="space-y-4">
 
             {/* Date filter bar */}
             <div className="flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-              <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold mr-1">Période</span>
-              {LIVE_PRESETS.map(p => (
-                <button
-                  key={p.value}
-                  onClick={() => { setLiveDateRange(p.value); if (p.value !== 'custom') { setLiveDateFrom(''); setLiveDateTo(''); } }}
-                  data-testid={`btn-preset-${p.value}`}
-                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-all border ${
-                    liveDateRange === p.value
-                      ? 'border-amber-500/60 text-amber-300'
-                      : 'border-white/10 text-slate-400 hover:text-white hover:border-white/20'
-                  }`}
-                  style={liveDateRange === p.value ? { background: `${GOLD}18` } : {}}
-                >
-                  {p.label}
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest mr-1">Période</span>
+              {[
+                { key: 'today',     label: "Aujourd'hui" },
+                { key: '7days',     label: '7 jours' },
+                { key: 'month',     label: 'Ce mois' },
+                { key: 'lastmonth', label: 'Mois dernier' },
+                { key: 'all',       label: 'Tout' },
+              ].map(({ key, label }) => (
+                <button key={key}
+                  onClick={() => { setLiveDateRange(key); setLiveShowCustom(false); }}
+                  data-testid={`btn-preset-${key}`}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition-all border ${
+                    liveDateRange === key && !liveShowCustom
+                      ? 'border-amber-500 text-amber-400 bg-amber-500/10'
+                      : 'border-white/10 text-slate-400 hover:text-white hover:border-white/30'
+                  }`}>
+                  {label}
                 </button>
               ))}
-              {liveDateRange === 'custom' && (
+              <button
+                onClick={() => setLiveShowCustom(v => !v)}
+                data-testid="btn-preset-custom"
+                className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition-all border ${
+                  liveShowCustom ? 'border-amber-500 text-amber-400 bg-amber-500/10' : 'border-white/10 text-slate-400 hover:text-white'
+                }`}>
+                Personnalisé
+              </button>
+              {liveShowCustom && (
                 <>
-                  <Input
-                    type="date" value={liveDateFrom} onChange={e => setLiveDateFrom(e.target.value)}
-                    className="h-7 w-36 text-xs bg-white/5 border-white/20 text-white"
-                    data-testid="input-live-date-from"
-                  />
+                  <input type="date" value={liveDateFrom} onChange={e => setLiveDateFrom(e.target.value)}
+                    className="text-xs px-2 py-1.5 rounded-lg bg-white/5 border border-white/20 text-white"
+                    data-testid="input-live-date-from" />
                   <span className="text-slate-500 text-xs">→</span>
-                  <Input
-                    type="date" value={liveDateTo} onChange={e => setLiveDateTo(e.target.value)}
-                    className="h-7 w-36 text-xs bg-white/5 border-white/20 text-white"
-                    data-testid="input-live-date-to"
-                  />
+                  <input type="date" value={liveDateTo} onChange={e => setLiveDateTo(e.target.value)}
+                    className="text-xs px-2 py-1.5 rounded-lg bg-white/5 border border-white/20 text-white"
+                    data-testid="input-live-date-to" />
                 </>
               )}
-              <button
-                onClick={() => liveRefetch()}
-                className="ml-auto flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
-                data-testid="button-live-refresh"
-              >
-                <RefreshCw className="w-3.5 h-3.5" /> Actualiser
+              <button onClick={() => liveRefetch()}
+                className="ml-auto flex items-center gap-1.5 text-xs text-slate-400 hover:text-white border border-white/10 px-3 py-1.5 rounded-lg hover:border-white/30"
+                data-testid="button-live-refresh">
+                <RefreshCw className="w-3 h-3" /> Actualiser
               </button>
             </div>
 
-            {/* KPI summary cards */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <KpiCard label="Total Commandes" value={liveTotalOrders.toLocaleString()}
-                sub="toutes périodes"
-                color="#f59e0b" icon={<Package className="w-5 h-5" />} />
-              <KpiCard label="Total Livrées" value={liveTotalDelivered.toLocaleString()}
-                sub={liveTotalOrders > 0 ? `${Math.round(liveTotalDelivered / liveTotalOrders * 100)}% taux` : '—'}
-                color="#10b981" icon={<Truck className="w-5 h-5" />} />
-              <KpiCard label="CA Total" value={fmtDH(liveTotalRevenue)}
-                sub="revenus livrées"
-                color="#06b6d4" icon={<DollarSign className="w-5 h-5" />} />
-              <KpiCard label="Profit Net Total" value={fmtDH(liveTotalProfit)}
-                sub={liveTotalProfit >= 0 ? "En bénéfice" : "En déficit"}
-                color={liveTotalProfit >= 0 ? "#10b981" : "#ef4444"}
-                icon={<Target className="w-5 h-5" />} />
+            {/* View toggle */}
+            <div className="flex items-center gap-2">
+              <button onClick={() => setPlatformView(false)}
+                data-testid="btn-view-product"
+                className={`text-xs px-3 py-1.5 rounded-lg font-semibold border transition-all ${!platformView ? 'bg-white/10 text-white border-white/20' : 'text-slate-400 border-white/10 hover:text-white'}`}>
+                📦 Par Produit
+              </button>
+              <button onClick={() => setPlatformView(true)}
+                data-testid="btn-view-platform"
+                className={`text-xs px-3 py-1.5 rounded-lg font-semibold border transition-all ${platformView ? 'bg-white/10 text-white border-white/20' : 'text-slate-400 border-white/10 hover:text-white'}`}>
+                🌐 Par Plateforme
+              </button>
             </div>
 
-            {/* Products table */}
-            {liveLoading ? (
-              <div className="rounded-xl border border-white/10 bg-white/5 p-8 text-center">
-                <RefreshCw className="w-6 h-6 text-amber-400 animate-spin mx-auto mb-2" />
-                <p className="text-slate-400 text-sm">Chargement des données…</p>
-              </div>
-            ) : liveStats.length === 0 ? (
-              <div className="rounded-xl border border-white/10 bg-white/5 p-10 text-center">
-                <Package className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-                <p className="text-slate-400 text-sm">Aucune commande pour cette période.</p>
-                <p className="text-slate-600 text-xs mt-1">Essayez "Tout" pour voir toutes les données.</p>
-              </div>
-            ) : (
-              <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
-                <CardHeader className="pb-2 pt-4 px-5">
-                  <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2" style={{ color: GOLD }}>
-                    <Package className="w-3.5 h-3.5" />
-                    Rentabilité par produit — {liveStats.length} produit(s)
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="border-white/10 hover:bg-transparent">
-                          {[
-                            { label: "Produit",     cls: "" },
-                            { label: "Commandes",   cls: "text-center" },
-                            { label: "Confirmés",   cls: "text-center" },
-                            { label: "Livrés",      cls: "text-center" },
-                            { label: "Refusés",     cls: "text-center" },
-                            { label: "CA (DH)",     cls: "text-right" },
-                            { label: "Coût",        cls: "text-right" },
-                            { label: "Livraison",   cls: "text-right" },
-                            { label: "Pub",         cls: "text-right" },
-                            { label: "Profit Net",  cls: "text-right" },
-                            { label: "Marge %",     cls: "text-center" },
-                            { label: "ROI %",       cls: "text-center" },
-                          ].map(({ label, cls }) => (
-                            <TableHead key={label} className={`text-slate-500 text-xs font-semibold whitespace-nowrap py-3 ${cls}`}>
-                              {label}
-                            </TableHead>
-                          ))}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {liveStats.map((p, i) => (
-                          <TableRow key={i} className="border-white/8 hover:bg-white/4" data-testid={`row-live-product-${i}`}>
-                            <TableCell className="text-white font-semibold text-sm py-3 max-w-[160px] truncate">{p.name}</TableCell>
-                            <TableCell className="text-center py-3 text-slate-300 text-sm">{p.totalOrders}</TableCell>
-                            <TableCell className="text-center py-3 text-sky-400 text-sm font-semibold">{p.confirmedOrders}</TableCell>
-                            <TableCell className="text-center py-3 text-emerald-400 text-sm font-semibold">{p.deliveredOrders}</TableCell>
-                            <TableCell className="text-center py-3 text-rose-400 text-sm">{p.refusedOrders}</TableCell>
-                            <TableCell className="text-right py-3 text-emerald-300 text-sm font-semibold">{fmtDH(p.revenue)}</TableCell>
-                            <TableCell className="text-right py-3 text-slate-400 text-sm">{fmtDH(p.productCost)}</TableCell>
-                            <TableCell className="text-right py-3 text-amber-400 text-sm">{fmtDH(p.shippingCost)}</TableCell>
-                            <TableCell className="text-right py-3 text-purple-400 text-sm">{fmtDH(p.adSpend)}</TableCell>
-                            <TableCell className={`text-right py-3 text-sm font-extrabold ${p.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {fmtDH(p.netProfit)}
-                            </TableCell>
-                            <TableCell className="text-center py-3">
-                              <Badge className={`text-[10px] font-bold border px-1.5 py-0 ${marginBadge(p.margin)}`}>
-                                {p.margin.toFixed(1)}%
-                              </Badge>
-                            </TableCell>
-                            <TableCell className={`text-center py-3 text-sm font-bold ${p.roi >= 50 ? 'text-emerald-400' : p.roi >= 20 ? 'text-amber-400' : 'text-rose-400'}`}>
-                              {p.roi.toFixed(1)}%
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                        {/* Totals row */}
-                        <TableRow className="border-t-2 border-white/20 bg-white/5">
-                          <TableCell className="text-white font-extrabold text-sm py-3" colSpan={5}>TOTAL</TableCell>
-                          <TableCell className="text-right text-emerald-300 font-bold text-sm py-3">{fmtDH(liveTotalRevenue)}</TableCell>
-                          <TableCell className="text-right text-slate-400 font-bold text-sm py-3">{fmtDH(liveStats.reduce((s, p) => s + p.productCost, 0))}</TableCell>
-                          <TableCell className="text-right text-amber-400 font-bold text-sm py-3">{fmtDH(liveStats.reduce((s, p) => s + p.shippingCost, 0))}</TableCell>
-                          <TableCell className="text-right text-purple-400 font-bold text-sm py-3">{fmtDH(liveStats.reduce((s, p) => s + p.adSpend, 0))}</TableCell>
-                          <TableCell className={`text-right font-extrabold text-sm py-3 ${liveTotalProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {fmtDH(liveTotalProfit)}
-                          </TableCell>
-                          <TableCell colSpan={2} className="text-center text-slate-500 text-xs py-3">
-                            {liveTotalRevenue > 0 ? `Marge moy. ${(liveTotalProfit / liveTotalRevenue * 100).toFixed(1)}%` : '—'}
-                          </TableCell>
-                        </TableRow>
-                      </TableBody>
-                    </Table>
+            {/* KPI cards */}
+            {!liveLoading && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: 'TOTAL COMMANDES',  val: liveTotalOrders.toString(),   sub: 'toutes périodes',          color: '#f59e0b', icon: '📦' },
+                  { label: 'TOTAL LIVRÉES',    val: liveTotalDelivered.toString(), sub: `${liveDeliveryRate}% taux`, color: '#06b6d4', icon: '🚚' },
+                  { label: 'CA TOTAL',         val: liveTotalRevenue.toLocaleString('fr-MA', { minimumFractionDigits: 2 }) + ' DH', sub: 'revenus livrées', color: '#3b82f6', icon: '💰' },
+                  { label: 'PROFIT NET TOTAL', val: liveTotalProfit.toLocaleString('fr-MA', { minimumFractionDigits: 2 }) + ' DH', sub: liveTotalProfit >= 0 ? 'En bénéfice' : 'En perte', color: liveTotalProfit >= 0 ? '#10b981' : '#f43f5e', icon: liveTotalProfit >= 0 ? '📈' : '📉' },
+                ].map(kpi => (
+                  <div key={kpi.label} className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">{kpi.icon}</span>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-tight">{kpi.label}</span>
+                    </div>
+                    <p className="text-2xl font-extrabold" style={{ color: kpi.color }}>{kpi.val}</p>
+                    <p className="text-[10px] text-slate-500">{kpi.sub}</p>
                   </div>
-                </CardContent>
-              </Card>
+                ))}
+              </div>
             )}
+
+            {/* Loading */}
+            {liveLoading && (
+              <div className="flex items-center justify-center py-16 text-slate-400 gap-3">
+                <RefreshCw className="w-5 h-5 animate-spin" />
+                <span className="text-sm">Chargement des données...</span>
+              </div>
+            )}
+
+            {/* Products table */}
+            {!liveLoading && !platformView && liveProducts.length === 0 && (
+              <div className="text-center py-16 text-slate-500">
+                <Package className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                <p className="text-sm">Aucune commande livrée sur cette période</p>
+              </div>
+            )}
+            {!liveLoading && !platformView && liveProducts.length > 0 && (
+              <div className="rounded-xl border border-white/10 overflow-hidden">
+                <div className="px-4 py-3 border-b border-white/10 bg-white/5 flex items-center gap-2">
+                  <Package className="w-4 h-4" style={{ color: '#f59e0b' }} />
+                  <span className="text-xs font-bold text-white uppercase tracking-widest">
+                    Rentabilité par Produit — {liveProducts.length} Produit(s)
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-white/5 text-slate-400 text-[10px] uppercase tracking-wider">
+                        <th className="text-left px-4 py-2.5 font-semibold">Produit</th>
+                        <th className="text-center px-3 py-2.5">Cmd</th>
+                        <th className="text-center px-3 py-2.5">Conf</th>
+                        <th className="text-center px-3 py-2.5">Livré</th>
+                        <th className="text-center px-3 py-2.5">Refusé</th>
+                        <th className="text-right px-3 py-2.5">CA (DH)</th>
+                        <th className="text-right px-3 py-2.5">Coût</th>
+                        <th className="text-right px-3 py-2.5">Livraison</th>
+                        <th className="text-right px-3 py-2.5">Pub</th>
+                        <th className="text-right px-4 py-2.5">Profit Net</th>
+                        <th className="text-center px-3 py-2.5">Marge</th>
+                        <th className="text-center px-3 py-2.5">ROI</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveProducts.map((p: any, i: number) => {
+                        const fmt = (n: number) => n.toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        const profitColor  = p.netProfit > 0 ? '#10b981' : p.netProfit < 0 ? '#f43f5e' : '#94a3b8';
+                        const marginColor  = p.margin >= 30 ? '#10b981' : p.margin >= 10 ? '#f59e0b' : '#f43f5e';
+                        return (
+                          <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors" data-testid={`row-live-product-${i}`}>
+                            <td className="px-4 py-3 text-white font-semibold max-w-[160px] truncate" title={p.name}>{p.name}</td>
+                            <td className="px-3 py-3 text-center text-slate-300 font-bold">{p.totalOrders}</td>
+                            <td className="px-3 py-3 text-center font-bold" style={{ color: '#06b6d4' }}>{p.confirmedOrders}</td>
+                            <td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.deliveredOrders}</td>
+                            <td className="px-3 py-3 text-center font-bold" style={{ color: p.refusedOrders > 0 ? '#f43f5e' : '#94a3b8' }}>{p.refusedOrders}</td>
+                            <td className="px-3 py-3 text-right font-bold text-white">{p.revenue > 0 ? fmt(p.revenue) : <span className="text-slate-500">—</span>}</td>
+                            <td className="px-3 py-3 text-right text-slate-300">{fmt(p.productCost)}</td>
+                            <td className="px-3 py-3 text-right" style={{ color: p.shippingCost > 0 ? '#f59e0b' : '#475569' }}>{fmt(p.shippingCost)}</td>
+                            <td className="px-3 py-3 text-right" style={{ color: p.adSpend > 0 ? '#8b5cf6' : '#475569' }}>{fmt(p.adSpend)}</td>
+                            <td className="px-4 py-3 text-right font-extrabold text-sm" style={{ color: profitColor }}>{fmt(p.netProfit)}</td>
+                            <td className="px-3 py-3 text-center">
+                              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: marginColor + '20', color: marginColor, border: `1px solid ${marginColor}40` }}>
+                                {p.margin.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              <span className="text-[11px] font-bold" style={{ color: p.roi > 0 ? '#10b981' : '#f43f5e' }}>
+                                {p.roi.toFixed(0)}%
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Platforms table */}
+            {!liveLoading && platformView && livePlatforms.length === 0 && (
+              <div className="text-center py-16 text-slate-500">
+                <Globe className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                <p className="text-sm">Aucune donnée de plateforme disponible</p>
+                <p className="text-xs mt-1">Assurez-vous que le champ "Plateforme" est rempli sur les commandes</p>
+              </div>
+            )}
+            {!liveLoading && platformView && livePlatforms.length > 0 && (
+              <div className="rounded-xl border border-white/10 overflow-hidden">
+                <div className="px-4 py-3 border-b border-white/10 bg-white/5 flex items-center gap-2">
+                  <Globe className="w-4 h-4" style={{ color: '#3b82f6' }} />
+                  <span className="text-xs font-bold text-white uppercase tracking-widest">Profit par Plateforme</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-white/5 text-slate-400 text-[10px] uppercase tracking-wider">
+                        <th className="text-left px-4 py-2.5">Plateforme</th>
+                        <th className="text-center px-3 py-2.5">Commandes</th>
+                        <th className="text-center px-3 py-2.5">Livrées</th>
+                        <th className="text-right px-3 py-2.5">CA (DH)</th>
+                        <th className="text-right px-3 py-2.5">Pub (DH)</th>
+                        <th className="text-right px-3 py-2.5">Profit Net</th>
+                        <th className="text-center px-3 py-2.5">ROAS</th>
+                        <th className="text-center px-3 py-2.5">CPO</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {livePlatforms.map((p: any, i: number) => {
+                        const fmt  = (n: number) => n.toLocaleString('fr-MA', { minimumFractionDigits: 2 });
+                        const icon = p.platform.toLowerCase().includes('facebook') ? '📘'
+                                   : p.platform.toLowerCase().includes('tiktok')  ? '🎵'
+                                   : p.platform.toLowerCase().includes('google')  ? '🔍'
+                                   : p.platform.toLowerCase().includes('organique') ? '🌱' : '📊';
+                        return (
+                          <tr key={i} className="border-b border-white/5 hover:bg-white/5" data-testid={`row-platform-${i}`}>
+                            <td className="px-4 py-3 font-bold text-white"><span className="mr-2">{icon}</span>{p.platform}</td>
+                            <td className="px-3 py-3 text-center text-slate-300 font-bold">{p.orders}</td>
+                            <td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.delivered}</td>
+                            <td className="px-3 py-3 text-right font-bold text-white">{fmt(p.revenue)}</td>
+                            <td className="px-3 py-3 text-right" style={{ color: '#8b5cf6' }}>{fmt(p.adSpend)}</td>
+                            <td className="px-3 py-3 text-right font-extrabold" style={{ color: p.netProfit >= 0 ? '#10b981' : '#f43f5e' }}>{fmt(p.netProfit)}</td>
+                            <td className="px-3 py-3 text-center font-bold" style={{ color: p.roas >= 3 ? '#10b981' : p.roas >= 1.5 ? '#f59e0b' : '#f43f5e' }}>{p.roas.toFixed(2)}x</td>
+                            <td className="px-3 py-3 text-center text-slate-300">{fmt(p.cpo)} DH</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
           </div>
         )}
 
