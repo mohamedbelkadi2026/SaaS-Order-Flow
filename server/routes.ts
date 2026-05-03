@@ -803,8 +803,10 @@ export async function registerRoutes(
         if (e.productId !== activeProductId) return;
       }
       if (adSourceFilter && e.source && e.source !== adSourceFilter) return;
-      if (dateFrom && e.date < dateFrom) return;
-      if (dateTo && e.date > dateTo) return;
+      // Filter by date range — both bounds
+      const eDate = (e.date || '').substring(0, 10);
+      if (dateFrom && eDate < dateFrom.substring(0, 10)) return;
+      if (dateTo   && eDate > dateTo.substring(0, 10))   return;
       const amountCents = Math.round(Number(e.amount ?? 0) * 100);
       adSpendTotal += amountCents;
       if (e.productId) productAdCostMap[e.productId] = (productAdCostMap[e.productId] || 0) + amountCents;
