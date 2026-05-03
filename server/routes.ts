@@ -4712,10 +4712,11 @@ export async function registerRoutes(
         if (RETURN_SET.has(status))    s.returnedOrders++;
 
         if (isDelivered) {
-          s.revenue      += Number((order as any).totalPrice  || 0);
-          s.productCost  += Number(item.productCostPrice ?? (order as any).productCost ?? 0) * Number(item.quantity || 1);
-          s.shippingCost += Number((order as any).shippingCost || 0);
-          s.adSpend      += Number((order as any).adSpend      || 0);
+          // All amounts stored in centimes — divide by 100 to get DH
+          s.revenue      += Number((order as any).totalPrice  || 0) / 100;
+          s.productCost  += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
+          s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+          s.adSpend      += Number((order as any).adSpend      || 0) / 100;
         }
       }
 
@@ -4746,8 +4747,8 @@ export async function registerRoutes(
         p.orders++;
         if (isDel) {
           p.delivered++;
-          p.revenue  += Number((o as any).totalPrice || 0);
-          p.adSpend  += Number((o as any).adSpend    || 0);
+          p.revenue  += Number((o as any).totalPrice || 0) / 100;
+          p.adSpend  += Number((o as any).adSpend    || 0) / 100;
         }
       }
       const platformResult = Object.values(platMap).map(p => ({
