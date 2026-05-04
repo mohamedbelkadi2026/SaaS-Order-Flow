@@ -846,8 +846,14 @@ export default function Orders() {
     updateStatus.mutate({ id, status }, {
       onSuccess: () => {
         toast({ title: "Statut mis à jour", description: `Commande changée en ${status}` });
+        // Immediately patch the cached list so the badge updates without waiting for refetch
+        queryClient.setQueryData(["/api/orders/filtered", actualFilters], (old: any) => {
+          if (!old) return old;
+          const list: any[] = Array.isArray(old) ? old : (old.orders ?? []);
+          const patched = list.map((o: any) => o.id === id ? { ...o, status } : o);
+          return Array.isArray(old) ? patched : { ...old, orders: patched };
+        });
         if (selectedOrder && selectedOrder.id === id) {
-          setSelectedOrder({ ...selectedOrder, status });
           setSelectedOrder(null);
         }
         if (status !== urlStatus) {

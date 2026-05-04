@@ -268,6 +268,16 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     staleTime: 5 * 60 * 1000,
   });
 
+  // Recalculate totalPrice whenever items change (quantity or price edit)
+  useEffect(() => {
+    if (localItems.length === 0) return;
+    const sum = localItems.reduce(
+      (acc, item) => acc + (Number(item.price) || 0) * (Number(item.quantity) || 1),
+      0
+    );
+    setFields((f: any) => ({ ...f, totalPrice: (sum / 100).toFixed(2) }));
+  }, [localItems]);
+
   useEffect(() => {
     if (!order) return;
     const firstItemVariant = order.items?.[0]?.variantInfo || "";
