@@ -241,6 +241,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [fields, setFields] = useState<any>({});
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
+  const [manualPriceOverride, setManualPriceOverride] = useState(false);
 
   // ── Carrier city list — filtered by the order's assigned carrier ──
   const orderCarrier = (order as any)?.carrierName || order?.shippingProvider || null;
@@ -268,15 +269,16 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     staleTime: 5 * 60 * 1000,
   });
 
-  // Recalculate totalPrice whenever items change (quantity or price edit)
+  // Recalculate totalPrice whenever items change — skipped when user has manually
+  // overridden the price (manualPriceOverride flag set by the Prix total onChange).
   useEffect(() => {
-    if (localItems.length === 0) return;
+    if (manualPriceOverride || localItems.length === 0) return;
     const sum = localItems.reduce(
       (acc, item) => acc + (Number(item.price) || 0) * (Number(item.quantity) || 1),
       0
     );
     setFields((f: any) => ({ ...f, totalPrice: (sum / 100).toFixed(2) }));
-  }, [localItems]);
+  }, [localItems, manualPriceOverride]);
 
   useEffect(() => {
     if (!order) return;
@@ -301,6 +303,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       variantInfo: variantFallback !== "null" ? variantFallback : "",
       commentOrder: order.commentOrder || "",
     });
+    setManualPriceOverride(false);
     const mappedItems = (order.items || []).map((item: any) => ({
       ...item,
       variantInfo: item.variantInfo === "null" ? "" : (item.variantInfo || ""),
@@ -769,7 +772,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                     type="number"
                     step="0.01"
                     value={fields.totalPrice}
-                    onChange={e => set("totalPrice", e.target.value)}
+                    onChange={e => { setManualPriceOverride(true); set("totalPrice", e.target.value); }}
                     className={cn(inputCls, "flex-1 bg-gray-50 text-right font-bold")}
                     style={{ color: NAVY }}
                     data-testid="input-total-price"
@@ -781,11 +784,11 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                 </div>
                 {/* Offer/discount badge — shown when total differs from items sum by > 1 DH */}
                 {(() => {
-                  const itemsSubtotal = (order.items || []).reduce(
-                    (s: number, i: any) => s + ((i.price || 0) * (i.quantity || 1)),
+                  const itemsSubtotal = localItems.reduce(
+                    (s: number, i: any) => s + ((Number(i.price) || 0) * (Number(i.quantity) || 1)),
                     0
                   );
-                  const facture = order.totalPrice || 0;
+                  const facture = Math.round(parseFloat(fields.totalPrice || "0") * 100);
                   const isOffer = Math.abs(itemsSubtotal - facture) > 100;
                   if (!isOffer) return null;
                   return (
