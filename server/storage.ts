@@ -779,6 +779,11 @@ export class DatabaseStorage implements IStorage {
         setPayload.lastActionAt = new Date();
         setPayload.lastActionBy = actorId;
       }
+      // When manually resetting to 'confirme', clear the carrier commentStatus
+      // so the order no longer shows a stale carrier badge (e.g. "En cours de réception")
+      if (status === 'confirme' && actorId != null) {
+        setPayload.commentStatus = null;
+      }
 
       // ── Carrier fields cleanup on status reversal ──────────────────────────
       // When a previously-shipped order is moved BACK to 'confirme' or 'nouveau',
