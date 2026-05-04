@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -242,6 +242,11 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
   const [manualPriceOverride, setManualPriceOverride] = useState(false);
+  // Track the last order ID so we only reset the manual override when a
+  // different order is opened — NOT when the same order's data refreshes
+  // after save (which would immediately re-run the auto-calc and undo the
+  // manually typed price).
+  const prevOrderIdRef = useRef<number | null>(null);
 
   // ── Carrier city list — filtered by the order's assigned carrier ──
   const orderCarrier = (order as any)?.carrierName || order?.shippingProvider || null;
@@ -281,29 +286,45 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   }, [localItems, manualPriceOverride]);
 
   useEffect(() => {
-    if (!order) return;
+    if (!order) {
+      prevOrderIdRef.current = null;
+      return;
+    }
+    const isNewOrder = order.id !== prevOrderIdRef.current;
+    if (isNewOrder) {
+      // Only reset the manual override when a genuinely different order is opened.
+      // When the same order's data refreshes after save, we keep the override so
+      // the auto-calc doesn't clobber the manually typed price.
+      setManualPriceOverride(false);
+      prevOrderIdRef.current = order.id;
+    }
     const firstItemVariant = order.items?.[0]?.variantInfo || "";
     const variantFallback = firstItemVariant || order.variantDetails || "";
-    setFields({
+    setFields((prev: any) => ({
+      // For a new order, start completely fresh from DB values.
+      // For a same-order refresh, keep existing field edits and only sync
+      // fields that come purely from the server (not user-editable mid-session).
+      ...(isNewOrder ? {} : prev),
       replace: !!order.replace,
       canOpen: order.canOpen !== 0,
       upSell: !!order.upSell,
       isStock: !!order.isStock,
       replacementTrackNumber: order.replacementTrackNumber || "",
-      customerName: cleanCustomerName(order.customerName || ""),
-      customerPhone: order.customerPhone || "",
-      customerAddress: order.customerAddress || "",
-      customerCity: order.customerCity || "",
-      status: order.status || "nouveau",
-      scheduledFor: order.scheduledFor || "",
-      comment: order.comment || "",
-      commentStatus: order.commentStatus || "",
-      rawProductName: order.rawProductName || (order.items?.[0]?.rawProductName) || (order.items?.[0]?.product?.name) || "",
-      totalPrice: order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00",
-      variantInfo: variantFallback !== "null" ? variantFallback : "",
-      commentOrder: order.commentOrder || "",
-    });
-    setManualPriceOverride(false);
+      customerName: isNewOrder ? cleanCustomerName(order.customerName || "") : (prev.customerName ?? cleanCustomerName(order.customerName || "")),
+      customerPhone: isNewOrder ? (order.customerPhone || "") : (prev.customerPhone ?? order.customerPhone ?? ""),
+      customerAddress: isNewOrder ? (order.customerAddress || "") : (prev.customerAddress ?? order.customerAddress ?? ""),
+      customerCity: isNewOrder ? (order.customerCity || "") : (prev.customerCity ?? order.customerCity ?? ""),
+      status: isNewOrder ? (order.status || "nouveau") : (prev.status ?? order.status ?? "nouveau"),
+      scheduledFor: isNewOrder ? (order.scheduledFor || "") : (prev.scheduledFor ?? order.scheduledFor ?? ""),
+      comment: isNewOrder ? (order.comment || "") : (prev.comment ?? order.comment ?? ""),
+      commentStatus: isNewOrder ? (order.commentStatus || "") : (prev.commentStatus ?? order.commentStatus ?? ""),
+      rawProductName: isNewOrder ? (order.rawProductName || (order.items?.[0]?.rawProductName) || (order.items?.[0]?.product?.name) || "") : (prev.rawProductName ?? order.rawProductName ?? ""),
+      // For a new order, seed price from DB. For same-order refresh, keep whatever
+      // the user typed (manualPriceOverride keeps auto-calc from clobbering it too).
+      totalPrice: isNewOrder ? (order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00") : (prev.totalPrice ?? (order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00")),
+      variantInfo: isNewOrder ? (variantFallback !== "null" ? variantFallback : "") : (prev.variantInfo ?? (variantFallback !== "null" ? variantFallback : "")),
+      commentOrder: isNewOrder ? (order.commentOrder || "") : (prev.commentOrder ?? order.commentOrder ?? ""),
+    }));
     const mappedItems = (order.items || []).map((item: any) => ({
       ...item,
       variantInfo: item.variantInfo === "null" ? "" : (item.variantInfo || ""),
