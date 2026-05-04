@@ -1,0 +1,41 @@
+FIX: Orders with carrier statuses cannot be re-shipped after status reset
+Problem:
+The SHIPPABLE_STATUSES list only contains 3 statuses: confirme, expédié, and Attente De Ramassage. When an order has a carrier transit status (like En cours de réception au network, En Voyage, Ramassé, etc.), it gets blocked from shipping even if the agent manually resets it to confirme. The validation fires on the old status value before the reset is applied.
+Fix — update these 3 files:
+1. client/src/lib/shipping-guard.ts
+Replace the SHIPPABLE_STATUSES set to include all carrier transit statuses:
+tsexport const SHIPPABLE_STATUSES = new Set([
+  'confirme',
+  'expédié',
+  'Attente De Ramassage',
+  'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+  'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+  'En cours de réception au network', 'Arrivé au hub', 'En cours de livraison',
+  'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
+  'Confirmé par livreur', 'Confirmé par livreur *',
+]);
+2. server/storage.ts — bulkShipOrders() method
+Replace:
+tsinArray(orders.status, ['confirme', 'expédié', 'Attente De Ramassage'])
+With:
+tsinArray(orders.status, [
+  'confirme', 'expédié', 'Attente De Ramassage',
+  'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+  'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+  'En cours de réception au network', 'Arrivé au hub', 'En cours de livraison',
+  'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
+  'Confirmé par livreur', 'Confirmé par livreur *',
+])
+3. server/routes.ts — SHIPPABLE_STATUSES constant in /api/orders/bulk-ship
+Replace:
+tsconst SHIPPABLE_STATUSES = ['confirme', 'expédié', 'Attente De Ramassage'];
+With:
+tsconst SHIPPABLE_STATUSES = [
+  'confirme', 'expédié', 'Attente De Ramassage',
+  'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
+  'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
+  'En cours de réception au network', 'Arrivé au hub', 'En cours de livraison',
+  'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
+  'Confirmé par livreur', 'Confirmé par livreur *',
+];
+Do not change any other logic. Only update the status lists in these 3 places.
