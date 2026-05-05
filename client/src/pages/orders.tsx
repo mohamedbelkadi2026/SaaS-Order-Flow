@@ -15,7 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2, CalendarClock } from "lucide-react";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2, CalendarClock, Package } from "lucide-react";
 import { SiWhatsapp, SiShopify } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
@@ -394,6 +394,7 @@ export default function Orders() {
     status: urlStatus,
     statusFilter: '',
     agentId: '',
+    productId: '',
     city: '',
     source: '',
     utmSource: '',
@@ -1014,6 +1015,26 @@ export default function Orders() {
         <div>
           <h1 className="text-xl sm:text-2xl font-display font-bold uppercase tracking-tight" data-testid="text-orders-title">{pageTitle}</h1>
           <p className="text-muted-foreground text-xs mt-0.5">Commandes / {pageTitle}</p>
+          {filters.productId && (() => {
+            const product = (filterOptions?.products || []).find((p: any) => String(p.id) === filters.productId);
+            if (!product) return null;
+            return (
+              <div className="flex items-center gap-2 mt-1.5">
+                <Badge variant="outline" className="text-xs gap-1 pr-1">
+                  <Package className="w-3 h-3" />
+                  Produit: {product.name}
+                  <button
+                    onClick={() => setFilters(f => ({ ...f, productId: '', page: 1 }))}
+                    className="ml-1 hover:text-red-600 transition-colors"
+                    aria-label="Retirer le filtre produit"
+                    data-testid="button-clear-product-filter"
+                  >
+                    ×
+                  </button>
+                </Badge>
+              </div>
+            );
+          })()}
         </div>
         {urlStatus === 'confirme_reporte' && (reporteBannerCounts.overdue + reporteBannerCounts.dueSoon) > 0 && (
           <div
@@ -1173,6 +1194,29 @@ export default function Orders() {
                   <SelectItem value="all">Tous les Magasins</SelectItem>
                   {magasins.map((m: any) => (
                     <SelectItem key={m.id} value={String(m.id)} data-testid={`filter-magasin-${m.id}`}>{m.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {/* ── Produit ── */}
+          {(filterOptions?.products || []).length > 0 && (
+            <div className="flex flex-col shrink-0">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Produit</span>
+              <Select
+                value={filters.productId || 'all'}
+                onValueChange={(v) => setFilters(f => ({ ...f, productId: v === 'all' ? '' : v, page: 1 }))}
+              >
+                <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[160px]" data-testid="filter-product">
+                  <SelectValue placeholder="Tous les Produits" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les Produits</SelectItem>
+                  {(filterOptions?.products || []).map((p: any) => (
+                    <SelectItem key={p.id} value={String(p.id)} data-testid={`filter-product-${p.id}`}>
+                      {p.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>

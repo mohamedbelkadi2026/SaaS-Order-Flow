@@ -49,6 +49,7 @@ export interface IStorage {
   getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
     utmSource?: string; utmCampaign?: string; magasinId?: number;
+    productId?: number;
     dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }>;
   bulkAssignOrders(orderIds: number[], agentId: number, storeId: number): Promise<number>;
@@ -472,6 +473,7 @@ export class DatabaseStorage implements IStorage {
   async getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
     utmSource?: string; utmCampaign?: string; magasinId?: number;
+    productId?: number;
     dateFrom?: string; dateTo?: string; dateType?: string; search?: string; page?: number; limit?: number;
   }, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
     const conditions: any[] = [eq(orders.storeId, storeId)];
@@ -554,6 +556,15 @@ export class DatabaseStorage implements IStorage {
     }
     if (filters.magasinId) {
       conditions.push(eq(orders.magasinId, filters.magasinId));
+    }
+    if (filters.productId) {
+      conditions.push(
+        sql`${orders.id} IN (
+          SELECT DISTINCT ${orderItems.orderId}
+          FROM ${orderItems}
+          WHERE ${orderItems.productId} = ${filters.productId}
+        )`
+      );
     }
     if (filters.dateFrom || filters.dateTo) {
       const dateCol = filters.dateType === 'updatedAt'

@@ -1,0 +1,178 @@
+FEATURE — Add "Tous les Produits" filter to Mes Commandes (works on every tab + agents + media buyers)
+What I want
+A new dropdown in the filter bar of every Mes Commandes tab (Nouveaux, Confirmés, Suivi des Colis, Livrées, etc.) that lets the user pick a product and see only orders containing that product.
+The filter must work for:
+
+Admins / owners (see all store orders, filter by product)
+Confirmation agents (see only their assigned orders, filter by product within those)
+Media buyers (see only their attributed orders, filter by product within those)
+
+The dropdown is populated from the same source as the dashboard's product filter (/api/stats/filter-options returns products: [{ id, name }, ...]).
+
+Step 1 — server/storage.ts: add productId to getFilteredOrders
+Around line 470, extend the filters type and apply a JOIN with order_items:
+tsasync getFilteredOrders(storeId: number, filters: {
+  status?: string; agentId?: number; city?: string; source?: string;
+  utmSource?: string; utmCampaign?: string; magasinId?: number;
+  productId?: number;                           // ← NEW
+  dateFrom?: string; dateTo?: string; dateType?: string;
+  search?: string; page?: number; limit?: number;
+}, agentOnly?: number, mediaBuyerOnly?: number): Promise<{ orders: OrderWithDetails[]; total: number }> {
+
+  const conditions: any[] = [eq(orders.storeId, storeId)];
+
+  // ... existing agentOnly / mediaBuyerOnly / status / city / source / etc. blocks unchanged ...
+
+  // ── Product filter: matches orders that contain at least one item with this productId ──
+  if (filters.productId) {
+    conditions.push(
+      sql`${orders.id} IN (
+        SELECT DISTINCT ${orderItems.orderId}
+        FROM ${orderItems}
+        WHERE ${orderItems.productId} = ${filters.productId}
+      )`
+    );
+  }
+
+  // ... rest unchanged ...
+}
+The subquery approach keeps the existing pagination logic intact — we add a single WHERE id IN (...) condition rather than restructuring the query into a join.
+Step 2 — server/routes.ts: read productId from query string
+Around line 1122 in the /api/orders/filtered handler:
+tsapp.get("/api/orders/filtered", requireAuth, async (req, res) => {
+  const user = req.user!;
+  const magasinIdRaw = req.query.magasinId as string | undefined;
+  const productIdRaw = req.query.productId as string | undefined;     // ← NEW
+
+  const filters = {
+    status:      req.query.status as string | undefined,
+    agentId:     req.query.agentId ? Number(req.query.agentId) : undefined,
+    city:        req.query.city as string | undefined,
+    source:      req.query.source as string | undefined,
+    utmSource:   req.query.utmSource as string | undefined,
+    utmCampaign: req.query.utmCampaign as string | undefined,
+    magasinId:   magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
+    productId:   productIdRaw && productIdRaw !== 'all' ? Number(productIdRaw) : undefined,  // ← NEW
+    dateFrom:    req.query.dateFrom as string | undefined,
+    dateTo:      req.query.dateTo as string | undefined,
+    dateType:    req.query.dateType as string | undefined,
+    search:      req.query.search as string | undefined,
+    page:        req.query.page ? Number(req.query.page) : 1,
+    limit:       req.query.limit ? Number(req.query.limit) : 25,
+  };
+
+  const agentOnly      = user.role === 'agent'       ? user.id : undefined;
+  const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
+  const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+  res.json(result);
+});
+If there's a similar second getFilteredOrders call (e.g. line 1166 for the export endpoint), apply the same change there.
+Step 3 — Same change to the count endpoint
+Find any endpoint that returns counts or sub-tab badges based on the same filters (e.g. /api/orders/count or similar). Add productId so the badges respect the active product filter too.
+Step 4 — client/src/pages/orders.tsx: add productId to filters state
+Around line 363 where filters is initialized:
+tsconst [filters, setFilters] = useState({
+  status: urlStatus,
+  statusFilter: '',
+  agentId: '',
+  productId: '',                  // ← NEW
+  city: '',
+  source: '',
+  utmSource: '',
+  utmCampaign: '',
+  dateFrom: '',
+  dateTo: '',
+  dateType: 'createdAt',
+  search: '',
+  page: 1,
+  limit: 25,
+});
+The actualFilters memo around line 383 doesn't need to change — it spreads ...filters so productId is already passed through to the query.
+Step 5 — Render the product dropdown in the filter bar
+The current filter bar is around lines 990-1055. Find the spot after the Magasin filter (line 1031) and before "Équipe" (line 1033). Insert:
+tsx{/* ── Produit ── */}
+<div className="flex flex-col shrink-0">
+  <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">
+    Produit
+  </span>
+  <Select
+    value={filters.productId || 'all'}
+    onValueChange={(v) => updateFilter('productId', v === 'all' ? '' : v)}
+  >
+    <SelectTrigger className="h-9 text-xs bg-background border-border/60 w-[160px]" data-testid="filter-product">
+      <SelectValue placeholder="Tous les Produits" />
+    </SelectTrigger>
+    <SelectContent>
+      <SelectItem value="all">Tous les Produits</SelectItem>
+      {(filterOptions?.products || []).map((p: any) => (
+        <SelectItem key={p.id} value={String(p.id)} data-testid={`filter-product-${p.id}`}>
+          {p.name}
+        </SelectItem>
+      ))}
+    </SelectContent>
+  </Select>
+</div>
+filterOptions is already fetched at line 398 (useFilterOptions()) so no new query is needed — products is already in the response payload.
+Step 6 — Reset pagination when filter changes
+The Magasin filter (line 1014-1018) resets pagination on change. Do the same for Product:
+tsxonValueChange={(v) => {
+  updateFilter('productId', v === 'all' ? '' : v);
+  setFilters(f => ({ ...f, page: 1 }));   // reset to page 1
+}}
+If updateFilter already calls setFilters and merges, you can fold both into one call to avoid double renders:
+tsxonValueChange={(v) => {
+  setFilters(f => ({ ...f, productId: v === 'all' ? '' : v, page: 1 }));
+}}
+Step 7 — Same filter on all-orders.tsx (Toutes les Commandes page)
+If there's a separate client/src/pages/all-orders.tsx page, mirror Steps 4-6 there. The filter UI should look identical so users don't get a different experience between Mes Commandes and Toutes les Commandes.
+Step 8 — Make sure agent and media-buyer dashboards' product filter also passes productId
+The dashboard filter bar already has a Produit dropdown (visible in your earlier screenshots). Verify it's already wired through to /api/stats/filtered — based on existing code (line 1816), productId is already in that query. Good.
+The new piece is making sure clicking a product on the dashboard and then navigating to "Mes Commandes" preserves the filter. Optional: if you have any "View Orders" link from the dashboard, append ?productId=X to it.
+Step 9 — Visual: show the active product filter in the page title or as a chip
+When a product filter is active, show a small chip below the page title so the user remembers what they're filtering by:
+tsx{filters.productId && (() => {
+  const product = (filterOptions?.products || []).find((p: any) => String(p.id) === filters.productId);
+  if (!product) return null;
+  return (
+    <div className="flex items-center gap-2 mt-2">
+      <Badge variant="outline" className="text-xs gap-1">
+        <Package className="w-3 h-3" />
+        Produit: {product.name}
+        <button
+          onClick={() => setFilters(f => ({ ...f, productId: '', page: 1 }))}
+          className="ml-1 hover:text-red-600"
+          aria-label="Retirer le filtre"
+        >
+          ×
+        </button>
+      </Badge>
+    </div>
+  );
+})()}
+This goes right under the NOUVELLES / CONFIRMÉES / etc. tab title.
+
+Acceptance criteria
+
+✅ "Mes Commandes / Nouveaux" tab — new dropdown labeled "Produit" with "Tous les Produits" default + list of all products.
+✅ Pick a product → table refreshes to show only orders containing that product.
+✅ Same filter present and functional on every other tab (Confirmés, Suivi des Colis, Livrées, Refusées, etc.).
+✅ A confirmation agent (e.g. khawla) sees the filter; only HER orders containing the chosen product appear.
+✅ A media buyer sees the filter; only orders attributed to him containing that product appear.
+✅ Pagination resets to page 1 when product changes.
+✅ A small chip appears under the title showing "Produit: <name>" with an × to clear.
+✅ Switching product or clearing it doesn't affect other filters (city, status, dates, agent).
+✅ Same filter exists on Toutes les Commandes (all-orders.tsx) if applicable.
+✅ Backend log shows the productId being honored: a quick spot-check by adding console.log('[FILTER] productId=', filters.productId) in the route handler temporarily.
+
+Commit
+bashgit add server/routes.ts server/storage.ts client/src/pages/orders.tsx client/src/pages/all-orders.tsx
+git commit -m "feat(orders): product filter in Mes Commandes / Toutes les Commandes filter bar
+
+- Backend: getFilteredOrders accepts productId, filters via order_items subquery
+- /api/orders/filtered reads productId from query
+- Frontend: 'Tous les Produits' Select between Magasin and Équipe filters
+- Filter populates from existing filter-options endpoint (no new fetch)
+- Page resets to 1 on product change to avoid empty pages on small datasets
+- Active product shown as chip below title with one-click removal
+- Works for admin, agent (within own assignments), media buyer (within attribution)"
+git push

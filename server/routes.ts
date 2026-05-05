@@ -1160,6 +1160,7 @@ export async function registerRoutes(
   app.get("/api/orders/filtered", requireAuth, async (req, res) => {
     const user = req.user!;
     const magasinIdRaw = req.query.magasinId as string | undefined;
+    const productIdRaw = req.query.productId as string | undefined;
     const filters = {
       status: req.query.status as string | undefined,
       agentId: req.query.agentId ? Number(req.query.agentId) : undefined,
@@ -1168,6 +1169,7 @@ export async function registerRoutes(
       utmSource: req.query.utmSource as string | undefined,
       utmCampaign: req.query.utmCampaign as string | undefined,
       magasinId: magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
+      productId: productIdRaw && productIdRaw !== 'all' ? Number(productIdRaw) : undefined,
       dateFrom: req.query.dateFrom as string | undefined,
       dateTo: req.query.dateTo as string | undefined,
       dateType: req.query.dateType as string | undefined,
@@ -1185,6 +1187,7 @@ export async function registerRoutes(
   app.get("/api/orders/all", requireAuth, async (req, res) => {
     const user = req.user!;
     const magasinIdRaw = req.query.magasinId as string | undefined;
+    const productIdRaw = req.query.productId as string | undefined;
     const filters = {
       status: req.query.status as string | undefined,
       agentId: req.query.agentId ? Number(req.query.agentId) : undefined,
@@ -1193,6 +1196,7 @@ export async function registerRoutes(
       utmSource: req.query.utmSource as string | undefined,
       utmCampaign: req.query.utmCampaign as string | undefined,
       magasinId: magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
+      productId: productIdRaw && productIdRaw !== 'all' ? Number(productIdRaw) : undefined,
       dateFrom: req.query.dateFrom as string | undefined,
       dateTo: req.query.dateTo as string | undefined,
       search: req.query.search as string | undefined,
