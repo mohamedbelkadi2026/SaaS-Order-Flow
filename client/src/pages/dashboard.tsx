@@ -410,14 +410,23 @@ export default function Dashboard() {
 
   const hasActiveFilters = Object.values(activeFilters).some(v => v && v !== 'all');
 
-  const StatCard = ({ title, value, icon: Icon, subtitle, color = '#1e1b4b', isCurrency = false }: any) => (
+  const StatCard = ({ title, value, icon: Icon, subtitle, color = '#1e1b4b', isCurrency = false, tooltip }: any) => (
     <div
       className="rounded-xl p-4 flex items-center justify-between text-white shadow-sm hover:-translate-y-1 transition-transform duration-200 cursor-default select-none"
       style={{ background: `linear-gradient(135deg, ${color} 0%, ${color}dd 100%)` }}
       data-testid={`card-stat-${title.replace(/\s+/g, '-').toLowerCase()}`}
     >
       <div className="min-w-0">
-        <p className="text-[10px] font-bold uppercase tracking-widest opacity-70 leading-none">{title}</p>
+        <div className="flex items-center gap-1">
+          <p className="text-[10px] font-bold uppercase tracking-widest opacity-70 leading-none">{title}</p>
+          {tooltip && (
+            <span title={tooltip} className="opacity-60 hover:opacity-100 cursor-help shrink-0" aria-label={tooltip}>
+              <svg className="w-2.5 h-2.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+              </svg>
+            </span>
+          )}
+        </div>
         {isLoading ? (
           <div className="h-7 w-20 rounded-lg bg-white/20 animate-pulse mt-2" />
         ) : (
@@ -1387,7 +1396,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
         <StatCard title="Commandes" value={totalOrders} icon={PackageSearch} color="#1e1b4b" subtitle="Total des commandes" />
-        <StatCard title="Confirmées" value={confirme} icon={PhoneCall} color={STATUS_COLORS.confirme} subtitle={`${confirmPct}% du total`} />
+        <StatCard title="Confirmées" value={confirme} icon={PhoneCall} color={STATUS_COLORS.confirme} subtitle={`${confirmPct}% du total`} tooltip="Total cumulé des commandes confirmées (inclut expédiées, en transit, livrées, refusées). Ne diminue jamais quand les commandes avancent." />
         <StatCard title="En cours" value={inProgress} icon={Truck} color={STATUS_COLORS.transit} subtitle={`${inProgressPct}%`} />
         <StatCard title="Annulées" value={cancelled} icon={Ban} color={STATUS_COLORS.cancelled} subtitle={`${cancelPct}%`} />
       </div>

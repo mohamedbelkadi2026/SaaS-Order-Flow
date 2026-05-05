@@ -1,0 +1,109 @@
+🐛 FIX — Agent dashboard "Confirmées" count decreases when orders move to shippingMy problemThe Confirmation card on the agent dashboard shows e.g. 90 in the morning. Khawla confirms 0 new orders, but ships 5 of them to Digylog (status moves from confirme → Attente De Ramassage). After refresh, the card shows 87.It looks like she just un-confirmed 3 orders. She didn't. The 5 shipped orders are still confirmed — they just moved to a later stage. But the card displays the number of orders currently sitting in confirme status, not the cumulative count of orders that have ever been confirmed.This is misleading for two reasons:
+
+The agent's daily confirmation total visually shrinks throughout the day as orders ship, even though her work hasn't been undone.
+The confirmation rate calculation uses the cumulative count internally, but the displayed count uses the raw 'confirme' filter — so the percentage and the raw number tell different stories.
+The admin dashboard already does it right (/api/stats/filtered uses ADMIN_CONFIRMED set including expédié, Attente De Ramassage, in_progress, delivered, refused, retourné). The agent endpoint does not.What I wantConfirmées on the agent dashboard = cumulative count. Once an order is confirmed, it stays counted as confirmed forever, no matter what stage it reaches afterwards (shipped, in transit, delivered, refused).The same fix applied everywhere else this matters: pie chart, agent performance leaderboard, commissions screen.Step 1 — server/routes.ts /api/agents/my-stats: cumulative confirmation bucketAround line 4866-4900, the bucket classifier currently only counts s === "confirme" as confirmed. Replace the classifier with one that uses the same cumulative set as the admin endpoint:ts// Status sets — keep them in sync with /api/stats/filtered (line 622)
+const CONFIRMED_STATUSES = new Set([
+  'confirme', 'confirmé', 'confirmed',
+  'expédié', 'expedie', 'shipped',
+  'attente de ramassage', 'attente ramassage',
+  'in_progress', 'inprogress', 'en cours', 'transit',
+  'delivered', 'livré', 'livrée',
+  'refused', 'refusé', 'refusée', 'refusee',
+  'retourné', 'retour recu', 'returned',
+]);
+
+const DELIVERED_STATUSES = new Set(['delivered', 'livré', 'livrée']);
+const IN_TRANSIT_STATUSES = new Set([
+  'expédié', 'expedie', 'shipped',
+  'attente de ramassage', 'attente ramassage',
+  'in_progress', 'inprogress', 'en cours', 'transit',
+]);
+const REFUSED_STATUSES = new Set(['refused', 'refusé', 'refusée', 'refusee', 'retourné']);
+const CANCELLED_STATUSES_PREFIX = ['annulé', 'annule'];
+
+const buckets = {
+  // Cumulative: every order that ever reached confirmation, no matter where it is now
+  confirme:    0,
+  // Subsets of cumulative — for breakdown
+  delivered:   0,
+  en_cours:    0,
+  refused:     0,
+  // Negative outcomes (never reached confirmation OR explicitly cancelled)
+  cancelled:   0,
+};
+
+for (const o of agentOrders) {
+  const s = (o.status ?? '').toLowerCase().trim();
+
+  // Cumulative confirmation: counted ONCE per order, no matter the current stage
+  if (CONFIRMED_STATUSES.has(s)) {
+    buckets.confirme++;
+  }
+
+  // Sub-breakdown (these are SUBSETS of confirme — already counted above)
+  if (DELIVERED_STATUSES.has(s))  buckets.delivered++;
+  if (IN_TRANSIT_STATUSES.has(s)) buckets.en_cours++;
+  if (REFUSED_STATUSES.has(s))    buckets.refused++;
+
+  // Cancelled is mutually exclusive with confirmed
+  if (CANCELLED_STATUSES_PREFIX.some(p => s.startsWith(p))) buckets.cancelled++;
+  // 'boite vocale', 'faux numéro' etc. are negative outcomes too — keep them in cancelled
+  if (s === 'boite vocale' || s === 'faux numéro') buckets.cancelled++;
+  // 'Pas de réponse' is just "not yet processed" — neither confirmed nor cancelled
+  // 'nouveau' is also neither — not counted in any bucket
+}Important: delivered + en_cours + (confirme itself representing "currently sitting in 'confirme'") + refused are NOT mutually exclusive with confirme — they're all subsets of it. The card displays confirme (cumulative), and the breakdown chart can show the sub-buckets.Step 2 — Pie chart should use the cumulative semanticsThe byStatus pie chart on the agent dashboard currently shows separate slices for "Confirmées", "En cours", "Livrées", which is misleading — those last two are subsets of confirmed. Two options:Option A — Show pure status snapshot: rename the "Confirmées" slice to "En attente d'expédition" so it's clear that slice is "currently in confirme status, not yet shipped". The pie shows current state, no overlap.Option B — Show decision-level outcome (recommended): combine into business-meaningful buckets:
+
+Confirmées (cumulative, includes all sub-stages)
+Annulées
+Pas de réponse / Boite vocale
+Nouveaux (not yet actioned)
+I recommend Option A for the pie (clear visual snapshot of where orders are right now), and use the cumulative buckets.confirme for the KPI card only.tsconst byStatus = [
+  { name: "À expédier",  value: agentOrders.filter(o => (o.status||'').toLowerCase().trim() === 'confirme').length, color: "#0ea5e9" },
+  { name: "En transit",  value: buckets.en_cours,  color: "#64748b" },
+  { name: "Livrées",     value: buckets.delivered, color: "#10b981" },
+  { name: "Refusées",    value: buckets.refused,   color: "#f97316" },
+  { name: "Annulées",    value: buckets.cancelled, color: "#e11d48" },
+].filter(b => b.value > 0);The card "Confirmées" stays = buckets.confirme (cumulative).Step 3 — Confirmation rate stays cumulativeThe line at 4949 is already correct using cumulative:
+tsconst confirmRate = total > 0 ? Math.round(((confirme + delivered + en_cours) / total) * 100) : 0;But since confirme is NOW already cumulative (includes delivered + en_cours + refused), this triple-adds. Simplify:
+ts// confirme is already cumulative; rate is just confirmed / total
+const confirmRate = total > 0 ? Math.round((confirme / total) * 100) : 0;
+const deliverRate = confirme > 0 ? Math.round((delivered / confirme) * 100) : 0;Step 4 — Apply the same cumulative semantics to agent leaderboardIn server/storage.ts, find getAgentPerformance (and getAgentPerformanceByAssignment). Their "confirmed" count probably has the same bug. Update them to use the same CONFIRMED_STATUSES set.Same for getMediaBuyerProfit / dashboard's "agents performance" widget if it computes confirmation locally.Step 5 — Add a small clarifying tooltip on the Confirmées cardSo agents understand the number is cumulative:tsx<StatCard
+  title="Confirmées"
+  value={confirme}
+  icon={CheckCircle}
+  color={STATUS_COLORS.confirme}
+  subtitle={`${totalOrders > 0 ? ((confirme / totalOrders) * 100).toFixed(2) : 0}% du total`}
+  tooltip="Total cumulé des commandes confirmées (inclut expédiées, livrées, retournées)"
+/>If StatCard doesn't accept a tooltip prop, add an info icon next to the title with a hover hint.Step 6 — Same fix on the wallet/commissions bannerThe banner "Total Commissions à Payer" already filters on delivered status only — that's correct (commission is paid on delivery, not on confirmation). No change needed there.But the "Mes Stats Personnelles" tab on dashboard.tsx might also pull confirmation count from the buggy endpoint. Verify by searching for places that read agentMyStats.confirme or call /api/agents/my-stats and check whether they want cumulative or current-state semantics.Acceptance criteria
+✅ Khawla has 90 confirmed orders at 9 AM (status='confirme'). Card shows "Confirmées: 90".
+✅ At 9:05 she ships 5 to Digylog (status moves to 'Attente De Ramassage').
+✅ After refresh, the card STILL shows "Confirmées: 90" (cumulative, not 85).
+✅ "En cours" card shows 5 (the new in-transit count).
+✅ Confirmation rate stays at 90 / total — does not jump or drop when orders ship.
+✅ Pie chart breakdown shows the snapshot view: "À expédier 85", "En transit 5", etc. — no overlap.
+✅ The same numbers appear in the admin "filter by agent: khawla" view.
+✅ Tooltip on "Confirmées" card explains the cumulative meaning.
+✅ Agent leaderboard / agent performance widgets respect the same cumulative semantics.
+Commitbashgit add server/routes.ts server/storage.ts client/src/pages/dashboard.tsx
+git commit -m "fix(stats): agent confirmation count is now cumulative, doesn't drop when orders ship
+
+- Bug: agent dashboard counted only orders currently in 'confirme' status,
+  so the visible count decreased every time orders moved to 'Attente De Ramassage',
+  'in_progress', 'delivered', or 'refused'. Khawla's 90 confirmed could read
+  as 85 after shipping 5, falsely suggesting un-confirmation.
+
+- Fix: confirme bucket now includes all post-confirmation statuses (same set
+  used by the admin /api/stats/filtered endpoint). Once an order is confirmed,
+  it stays counted as confirmed forever.
+
+- Pie chart switched to current-state snapshot semantics ('À expédier',
+  'En transit', 'Livrées', 'Refusées', 'Annulées') so slices don't overlap.
+
+- Confirmation rate formula simplified (confirme is already cumulative now).
+
+- Same fix in agent leaderboard / performance / wallet endpoints to keep
+  consistent semantics across the app.
+
+- Added tooltip on Confirmées card to explain cumulative meaning."
+git push

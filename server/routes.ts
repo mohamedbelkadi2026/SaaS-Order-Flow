@@ -5511,45 +5511,58 @@ export async function registerRoutes(
       }
       const daily = Array.from(dayMap.entries()).map(([date, orders]) => ({ date, orders }));
 
-      // ── Status distribution (pie chart) ───────────────────────────
-      // Exact same classification as the dashboard stat cards
-      const buckets: Record<string, number> = {
-        confirme:   0, // Confirmées  — sky blue  #0ea5e9
-        delivered:  0, // Livrées     — emerald   #10b981
-        en_cours:   0, // En cours    — slate     #64748b
-        cancelled:  0, // Annulées    — rose red  #e11d48
-        refused:    0, // Refusées    — orange    #f97316
-      };
-      const REFUSED_STATUSES = new Set([
-        "refused", "refusé", "refusee", "refusée",
-        "annulé faux numéro", "annulé double", "annulé fake",
-        "boite vocale", "faux numéro",
+      // ── Status distribution ───────────────────────────────────────
+      // confirme is CUMULATIVE: once confirmed, always counted regardless of
+      // shipping stage. Mirrors the admin /api/stats/filtered (ADMIN_CONFIRMED set).
+      // Sub-buckets (delivered, en_cours, refused) are disjoint SUBSETS of confirme.
+      const AGENT_CONFIRMED = new Set([
+        'confirme', 'confirme_reporte', 'confirmé', 'confirmed',
+        'expédié', 'expedie', 'shipped',
+        'attente de ramassage', 'attente ramassage',
+        'in_progress', 'inprogress', 'en cours', 'transit',
+        'delivered', 'livré', 'livrée',
+        'refused', 'refusé', 'refusée', 'refusee',
+        'retourné', 'retour recu', 'returned',
       ]);
+      const AGENT_DELIVERED = new Set(['delivered', 'livré', 'livrée']);
+      const AGENT_TRANSIT = new Set([
+        'expédié', 'expedie', 'shipped',
+        'attente de ramassage', 'attente ramassage',
+        'in_progress', 'inprogress', 'en cours', 'transit',
+      ]);
+      const AGENT_REFUSED = new Set([
+        'refused', 'refusé', 'refusée', 'refusee', 'retourné', 'returned',
+      ]);
+      const AGENT_CANCELLED_PREFIXES = ['annulé', 'annule'];
+      const AGENT_CANCELLED_EXACT = new Set(['boite vocale', 'faux numéro', 'cancelled']);
+
+      const buckets = { confirme: 0, delivered: 0, en_cours: 0, refused: 0, cancelled: 0 };
       for (const o of agentOrders) {
-        const s = (o.status ?? "").toLowerCase().trim();
-        if (s === "delivered" || s === "livré" || s === "livrée") {
-          buckets.delivered++;
-        } else if (s === "confirme" || s === "confirmé" || s === "confirmed") {
-          buckets.confirme++;
-        } else if (s === "in_progress" || s === "inprogress" || s === "en cours") {
-          buckets.en_cours++;
-        } else if (REFUSED_STATUSES.has(s)) {
-          buckets.refused++;
-        } else if (s === "cancelled" || s.startsWith("annulé") || s.startsWith("annule")) {
+        const s = (o.status ?? '').toLowerCase().trim();
+        // Cumulative confirmation — counted once per order regardless of stage
+        if (AGENT_CONFIRMED.has(s)) buckets.confirme++;
+        // Sub-breakdowns (mutually exclusive subsets of confirme)
+        if (AGENT_DELIVERED.has(s)) buckets.delivered++;
+        if (AGENT_TRANSIT.has(s))   buckets.en_cours++;
+        if (AGENT_REFUSED.has(s))   buckets.refused++;
+        // Cancelled = never reached confirmation
+        if (AGENT_CANCELLED_PREFIXES.some(p => s.startsWith(p)) || AGENT_CANCELLED_EXACT.has(s)) {
           buckets.cancelled++;
-        } else if (s === "nouveau" || s === "new" || s === "") {
-          // nouveau = unactioned leads — not cancelled
-        } else if (s === "shipping" || s === "shipped" || s === "en_cours" || s === "transit") {
-          buckets.en_cours++;
         }
-        // truly unrecognised statuses are silently ignored — NOT added to cancelled
       }
+
+      // Pie uses snapshot semantics (where orders ARE right now — no overlap).
+      // "À expédier" = confirmed but not yet shipped (still in 'confirme' stage).
+      const aExpedier = agentOrders.filter(o => {
+        const s = (o.status ?? '').toLowerCase().trim();
+        return s === 'confirme' || s === 'confirme_reporte' || s === 'confirmé' || s === 'confirmed';
+      }).length;
       const byStatus = [
-        { name: "Confirmées", value: buckets.confirme,  color: "#0ea5e9" },
-        { name: "Livrées",    value: buckets.delivered, color: "#10b981" },
-        { name: "En cours",   value: buckets.en_cours,  color: "#64748b" },
-        { name: "Annulées",   value: buckets.cancelled, color: "#e11d48" },
-        { name: "Refusées",   value: buckets.refused,   color: "#f97316" },
+        { name: "À expédier", value: aExpedier,          color: "#0ea5e9" },
+        { name: "En transit",  value: buckets.en_cours,   color: "#64748b" },
+        { name: "Livrées",    value: buckets.delivered,  color: "#10b981" },
+        { name: "Refusées",   value: buckets.refused,    color: "#f97316" },
+        { name: "Annulées",   value: buckets.cancelled,  color: "#e11d48" },
       ].filter(b => b.value > 0);
 
       // ── Products breakdown (table) ────────────────────────────────
@@ -5587,12 +5600,7 @@ export async function registerRoutes(
         if (!productMap[name]) productMap[name] = { id: pid, name, total: 0, confirmed: 0, delivered: 0 };
         productMap[name].total++;
         const s = (o.status ?? '').toLowerCase().trim();
-        if (
-          s === 'confirme' || s === 'confirmé' || s === 'confirmed' ||
-          s === 'delivered' || s === 'livré' || s === 'livrée' ||
-          s === 'in_progress' || s === 'inprogress' || s === 'en cours' ||
-          s === 'expédié' || s === 'expedie' || s === 'shipped'
-        ) {
+        if (AGENT_CONFIRMED.has(s)) {
           productMap[name].confirmed++;
         }
         if (s === 'delivered' || s === 'livré' || s === 'livrée') {
@@ -5615,8 +5623,9 @@ export async function registerRoutes(
       const cancelled = buckets.cancelled;
       const refused = buckets.refused;
       const en_cours = buckets.en_cours;
-      const confirmRate = total > 0 ? Math.round(((confirme + delivered + en_cours) / total) * 100) : 0;
-      const deliverRate = (confirme + delivered) > 0 ? Math.round((delivered / (confirme + delivered)) * 100) : 0;
+      // confirme is now cumulative — rate = confirmed / total (no summing sub-buckets)
+      const confirmRate = total > 0 ? Math.round((buckets.confirme / total) * 100) : 0;
+      const deliverRate = buckets.confirme > 0 ? Math.round((buckets.delivered / buckets.confirme) * 100) : 0;
 
       res.json({
         daily,
