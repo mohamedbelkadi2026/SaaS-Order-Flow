@@ -622,27 +622,42 @@ export default function ProfitAnalyzer() {
                         const profitColor  = p.netProfit > 0 ? '#10b981' : p.netProfit < 0 ? '#f43f5e' : '#94a3b8';
                         const marginColor  = p.margin >= 30 ? '#10b981' : p.margin >= 10 ? '#f59e0b' : '#f43f5e';
                         return (
-                          <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition-colors" data-testid={`row-live-product-${i}`}>
-                            <td className="px-4 py-3 text-white font-semibold max-w-[160px] truncate" title={p.name}>{p.name}</td>
-                            <td className="px-3 py-3 text-center text-slate-300 font-bold">{p.totalOrders}</td>
-                            <td className="px-3 py-3 text-center font-bold" style={{ color: '#06b6d4' }}>{p.confirmedOrders}</td>
-                            <td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.deliveredOrders}</td>
-                            <td className="px-3 py-3 text-center font-bold" style={{ color: p.refusedOrders > 0 ? '#f43f5e' : '#94a3b8' }}>{p.refusedOrders}</td>
-                            <td className="px-3 py-3 text-right font-bold text-white">{p.revenue > 0 ? fmt(p.revenue) : <span className="text-slate-500">—</span>}</td>
-                            <td className="px-3 py-3 text-right text-slate-300">{fmt(p.productCost)}</td>
-                            <td className="px-3 py-3 text-right" style={{ color: p.shippingCost > 0 ? '#f59e0b' : '#475569' }}>{fmt(p.shippingCost)}</td>
-                            <td className="px-3 py-3 text-right" style={{ color: p.adSpend > 0 ? '#8b5cf6' : '#475569' }}>{fmt(p.adSpend)}</td>
-                            <td className="px-4 py-3 text-right font-extrabold text-sm" style={{ color: profitColor }}>{fmt(p.netProfit)}</td>
-                            <td className="px-3 py-3 text-center">
-                              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: marginColor + '20', color: marginColor, border: `1px solid ${marginColor}40` }}>
-                                {p.margin.toFixed(1)}%
-                              </span>
+                          <tr key={i} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${p.noData ? "opacity-50" : ""}`} data-testid={`row-live-product-${i}`}>
+                            <td className="px-4 py-3 text-white font-semibold max-w-[160px] truncate" title={p.name}>
+                              {p.name}
+                              {p.noData && (
+                                <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 border border-slate-600 font-normal">
+                                  Nouveau
+                                </span>
+                              )}
                             </td>
-                            <td className="px-3 py-3 text-center">
-                              <span className="text-[11px] font-bold" style={{ color: p.roi > 0 ? '#10b981' : '#f43f5e' }}>
-                                {p.roi.toFixed(0)}%
-                              </span>
-                            </td>
+                            {p.noData ? (
+                              <td colSpan={11} className="px-3 py-3 text-center text-slate-500 text-[11px] italic">
+                                Aucune commande sur cette période
+                              </td>
+                            ) : (
+                              <>
+                                <td className="px-3 py-3 text-center text-slate-300 font-bold">{p.totalOrders}</td>
+                                <td className="px-3 py-3 text-center font-bold" style={{ color: '#06b6d4' }}>{p.confirmedOrders}</td>
+                                <td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.deliveredOrders}</td>
+                                <td className="px-3 py-3 text-center font-bold" style={{ color: p.refusedOrders > 0 ? '#f43f5e' : '#94a3b8' }}>{p.refusedOrders}</td>
+                                <td className="px-3 py-3 text-right font-bold text-white">{p.revenue > 0 ? fmt(p.revenue) : <span className="text-slate-500">—</span>}</td>
+                                <td className="px-3 py-3 text-right text-slate-300">{p.productCost > 0 ? fmt(p.productCost) : <span className="text-slate-500">0</span>}</td>
+                                <td className="px-3 py-3 text-right" style={{ color: p.shippingCost > 0 ? '#f59e0b' : '#475569' }}>{fmt(p.shippingCost)}</td>
+                                <td className="px-3 py-3 text-right" style={{ color: p.adSpend > 0 ? '#8b5cf6' : '#475569' }}>{fmt(p.adSpend)}</td>
+                                <td className="px-4 py-3 text-right font-extrabold text-sm" style={{ color: profitColor }}>{fmt(p.netProfit)}</td>
+                                <td className="px-3 py-3 text-center">
+                                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: marginColor + '20', color: marginColor, border: `1px solid ${marginColor}40` }}>
+                                    {p.margin.toFixed(1)}%
+                                  </span>
+                                </td>
+                                <td className="px-3 py-3 text-center">
+                                  <span className="text-[11px] font-bold" style={{ color: p.roi > 0 ? '#10b981' : '#f43f5e' }}>
+                                    {p.roi.toFixed(0)}%
+                                  </span>
+                                </td>
+                              </>
+                            )}
                           </tr>
                         );
                       })}

@@ -4655,11 +4655,10 @@ export async function registerRoutes(
           lte(orders.createdAt, endDate),
         ));
 
-      if (storeOrders.length === 0) return res.json({ products: [], platforms: [] });
-
       const orderIds = storeOrders.map(o => o.id);
 
-      const itemRows = await db
+      // Fetch orderItems with product info (skip if no orders in range)
+      const itemRows = orderIds.length > 0 ? await db
         .select({
           orderId:          orderItems.orderId,
           productId:        orderItems.productId,
@@ -4671,7 +4670,7 @@ export async function registerRoutes(
         })
         .from(orderItems)
         .leftJoin(products, eq(orderItems.productId, products.id))
-        .where(inArray(orderItems.orderId, orderIds));
+        .where(inArray(orderItems.orderId, orderIds)) : [];
 
       const orderMap = new Map(storeOrders.map(o => [o.id, o]));
 
@@ -4735,6 +4734,29 @@ export async function registerRoutes(
         return { ...s, netProfit, margin, roi, confirmRate, deliveryRate };
       });
       productResult.sort((a, b) => b.netProfit - a.netProfit);
+
+      // ── Merge stock products that have no orders yet ─────────────────────
+      // Fetch ALL products in the store so new/untested products appear with zeros
+      const allStoreProducts = await db.select({
+        id: products.id,
+        name: products.name,
+        costPrice: products.costPrice,
+        stock: products.stock,
+      }).from(products).where(eq(products.storeId, storeId));
+
+      const existingProductIds = new Set(productResult.map((p: any) => p.id));
+      for (const sp of allStoreProducts) {
+        if (!existingProductIds.has(sp.id)) {
+          productResult.push({
+            id: sp.id, name: sp.name,
+            totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
+            refusedOrders: 0, returnedOrders: 0,
+            revenue: 0, productCost: 0, shippingCost: 0, adSpend: 0,
+            netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
+            noData: true,
+          } as any);
+        }
+      }
 
       // ── Per-platform aggregation ──────────────────────────────────
       type PlatStat = { platform: string; orders: number; delivered: number; revenue: number; adSpend: number; netProfit: number; roas: number; cpo: number };
