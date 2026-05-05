@@ -1,0 +1,210 @@
+FEATURE — Reliable bulk shipping: retry on transient errors + faster parallel processing
+My problems
+1. Random "Digylog n'a pas retourné de numéro de suivi" failures
+Bulk-ship 10 commandes → 7 succeed, 3 fail with this error. Sometimes Digylog API hiccups (rate limit, 5xx, timeout) and the order isn't actually rejected — it just didn't respond cleanly. Today we mark it as failed and the user has to manually re-ship those 3.
+2. Shipping is slow
+Even with batches of 5, processing 50 commandes takes 60-90 seconds. Most of that wait is Digylog's slow API plus our sequential batches.
+
+Fix
+Step 1 — server/services/carrier-service.ts: retry transient errors with exponential backoff
+Find the shipOrderToCarrier function around line 800. Wrap the actual HTTP call in a retry loop that ONLY retries on transient errors (network timeout, 5xx, 429 rate limit, "no tracking returned" when HTTP was 200).
+Add this helper at the top of the file:
+ts/**
+ * Decide whether a carrier failure is worth retrying.
+ * Transient = network/rate-limit/server-error/empty-tracking-on-2xx.
+ * Permanent = validation errors, missing fields, auth failures, 4xx other than 429.
+ */
+function isTransientShipError(httpStatus: number, errorMessage: string, rawBody: any): boolean {
+  // Network or fetch failure → no httpStatus
+  if (!httpStatus) return true;
+
+  // Rate limited → always retry
+  if (httpStatus === 429) return true;
+
+  // Server-side error → retry
+  if (httpStatus >= 500 && httpStatus < 600) return true;
+
+  // 2xx but tracking number missing → carrier hiccup, retry
+  if (httpStatus >= 200 && httpStatus < 300) {
+    const msg = (errorMessage || '').toLowerCase();
+    if (msg.includes("n'a pas retourné") || msg.includes('no tracking')) return true;
+    // Empty array / null body
+    if (rawBody == null) return true;
+    if (Array.isArray(rawBody) && rawBody.length === 0) return true;
+  }
+
+  // Validation errors (4xx other than 429) — don't retry, the payload is wrong
+  return false;
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+Then around the main HTTP call inside shipOrderToCarrier, wrap with a retry loop. Find the existing try { … fetch(…) … } block that produces the { success, trackingNumber, … } result. Refactor into:
+tsconst MAX_ATTEMPTS = 3;
+const BASE_DELAY_MS = 800;     // 800ms, then 1.6s, then 3.2s
+
+let lastResult: any = null;
+for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  // Existing logic that performs the fetch and produces the result object
+  const result = await performSingleShipAttempt(provider, creds, input, attempt);
+  lastResult = result;
+
+  if (result.success) {
+    if (attempt > 1) {
+      console.log(`[SHIP-RETRY] order=${input.orderId} succeeded on attempt ${attempt}/${MAX_ATTEMPTS}`);
+    }
+    return result;
+  }
+
+  const transient = isTransientShipError(result.httpStatus, result.error || '', result.rawResponse);
+
+  if (!transient) {
+    console.log(`[SHIP-RETRY] order=${input.orderId} permanent failure on attempt ${attempt} — aborting retries: ${result.error}`);
+    return result;
+  }
+
+  if (attempt < MAX_ATTEMPTS) {
+    const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 200);  // jitter
+    console.log(`[SHIP-RETRY] order=${input.orderId} transient failure on attempt ${attempt}/${MAX_ATTEMPTS}: ${result.error} — retrying in ${delay}ms`);
+    await sleep(delay);
+  }
+}
+
+console.log(`[SHIP-RETRY] order=${input.orderId} EXHAUSTED ${MAX_ATTEMPTS} attempts — final error: ${lastResult?.error}`);
+return lastResult;
+Where performSingleShipAttempt is the existing single-shot logic extracted into its own function. Refactor cleanly so the retry loop is the only top-level flow.
+This one change alone will turn ~80% of "n'a pas retourné de numéro de suivi" failures into successes — most of the time they're rate-limit hiccups that resolve on the second try.
+Step 2 — Increase bulk-ship batch concurrency
+In server/routes.ts line 1339, change:
+tsconst BATCH_SIZE = 5;
+to:
+tsconst BATCH_SIZE = 10;
+10 parallel requests is comfortable for Digylog's API. We've seen them handle 20+ but stay conservative to leave headroom for retries.
+Step 3 — Don't await DB writes between batches
+Currently around line 1450 (after the settled.forEach), the code does await Promise.all(dbUpdates) BEFORE moving to the next batch. That serializes batches end-to-end. Move the DB writes INTO the batch processing so the next batch starts in parallel:
+Find:
+tsconst dbUpdates: Promise<unknown>[] = [];
+// … push updates into dbUpdates …
+await Promise.all([...dbUpdates, ...logUpdates]);  // ← blocks before next batch
+Replace with: collect all dbUpdates across ALL batches, then run them all at the end:
+ts// Outside the for loop:
+const allDbUpdates: Promise<unknown>[] = [];
+const allLogUpdates: Promise<unknown>[] = [];
+
+// Inside each batch iteration: just push, don't await
+allDbUpdates.push(...currentBatchDbUpdates);
+allLogUpdates.push(...currentBatchLogUpdates);
+
+// After the for loop ends:
+await Promise.allSettled([...allDbUpdates, ...allLogUpdates]);
+This unblocks the carrier API loop entirely. DB updates land asynchronously after carrier responses but before the user gets the final toast.
+Step 4 — Increase per-request fetch timeout slightly + add abort controller
+Find every fetch(url, ...) call to Digylog/Ameex inside carrier-service.ts. Add an AbortController with 15-second timeout (Digylog can take 8-12s under load):
+tsconst controller = new AbortController();
+const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
+try {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { ... },
+    body: JSON.stringify(payload),
+    signal: controller.signal,
+  });
+  // … existing handling
+} catch (err: any) {
+  if (err.name === 'AbortError') {
+    return { success: false, httpStatus: 0, error: 'Timeout après 15s', carrierMessage: 'Timeout', rawResponse: null };
+  }
+  throw err;
+} finally {
+  clearTimeout(timeoutId);
+}
+15s is the right balance: long enough that legit slow responses don't abort, short enough that hung connections don't block a retry attempt.
+Step 5 — Surface retry attempts in the progress toast
+In the bulk-ship progress UI, when a retry succeeds, we want the user to see it. The existing [SHIP-RETRY] log proves the retry happened, but the UI just shows "10/10 success". Add a count of retries to the response shape so the toast reads "10 expédiées (3 ont nécessité une seconde tentative)".
+In server/routes.ts bulk-ship endpoint, track retries by counting:
+tslet retryCount = 0;
+
+// After settled.forEach loop, when an order succeeded but the result includes
+// an `attempts > 1` flag (returned from carrier-service when retry happened):
+settled.forEach((outcome, idx) => {
+  if (outcome.status === 'fulfilled' && outcome.value.success) {
+    if ((outcome.value as any).attempts && (outcome.value as any).attempts > 1) {
+      retryCount++;
+    }
+    // ... existing success handling
+  }
+});
+
+// Final response includes:
+res.json({
+  success: true,
+  shipped: shippedCount,
+  failed: failedCount,
+  retries: retryCount,
+  // ... rest
+});
+For this you also need to add attempts: attempt to the result returned from the retry loop in carrier-service.ts:
+tsreturn { ...result, attempts: attempt };
+Frontend toast (in client/src/pages/orders.tsx after bulk-ship completes):
+tsxtoast({
+  title: `${shipped} expédiée${shipped > 1 ? 's' : ''}`,
+  description: retries > 0
+    ? `${retries} ${retries > 1 ? 'ont nécessité' : 'a nécessité'} une seconde tentative.${failed > 0 ? ` ${failed} échec${failed > 1 ? 's' : ''}.` : ''}`
+    : (failed > 0 ? `${failed} échec${failed > 1 ? 's' : ''}.` : 'Toutes les commandes traitées avec succès.'),
+});
+Step 6 — Add a "Réessayer les échecs" button when there are failures
+After bulk-ship finishes with some failures, the modal already shows the list of failed orders. Add a button that re-attempts ONLY those orders (single click instead of selecting them again).
+In the failure summary section of orders.tsx around line 2017-2050:
+tsx{shipProgress && !shipProgress.active && shipProgress.failed > 0 && (
+  <div className="mt-3">
+    <Button
+      variant="default"
+      size="sm"
+      onClick={() => {
+        const failedIds = (shipProgress.results || [])
+          .filter(r => r.status === 'failed')
+          .map(r => r.orderId);
+        if (failedIds.length === 0) return;
+        // Re-trigger bulk-ship with just these IDs
+        bulkShipMutation.mutate({ orderIds: failedIds, provider: shipProgress.provider });
+      }}
+    >
+      <RotateCcw className="w-4 h-4 mr-2" />
+      Réessayer les {shipProgress.failed} échec{shipProgress.failed > 1 ? 's' : ''}
+    </Button>
+  </div>
+)}
+This makes the retry workflow one-click instead of "scroll back, re-select, re-submit".
+
+Acceptance criteria
+
+✅ Bulk-ship 20 commandes → server logs show [SHIP-RETRY] lines for any failed first attempts.
+✅ Transient failures (HTTP 429, 500, 502, 503, "no tracking") get retried up to 2 more times automatically.
+✅ Permanent failures (validation errors, missing required fields, 401/403) are NOT retried — they fail fast.
+✅ Total bulk-ship time for 50 commandes drops from ~90s to ~30s (10-parallel + non-blocking DB writes).
+✅ Toast shows retry count: "12 expédiées (3 ont nécessité une seconde tentative)".
+✅ Failure modal includes a "Réessayer les échecs" button that re-attempts only the failed orders.
+✅ A 15-second timeout exists on every carrier fetch — no more hung requests blocking the queue.
+✅ DB integrity intact: every successful ship still produces a track_number + status update; no fake tracking numbers.
+
+Commit
+bashgit add server/services/carrier-service.ts server/routes.ts client/src/pages/orders.tsx
+git commit -m "perf+reliability(shipping): retry transient carrier errors + parallelize bulk dispatch
+
+Reliability:
+- New isTransientShipError() distinguishes retryable failures (5xx, 429,
+  network, empty-body-on-2xx) from permanent ones (validation, auth)
+- Up to 3 attempts per order with 800ms→3.2s exponential backoff + jitter
+- 15s AbortController timeout on every carrier fetch (no more hangs)
+- Most 'Digylog n'a pas retourné de numéro de suivi' errors now auto-resolve
+
+Performance:
+- Bulk batch size: 5 → 10 parallel
+- DB writes no longer block batch transitions (collected across batches,
+  awaited once at end)
+- 50-order ship: ~90s → ~30s
+
+UX:
+- Toast surfaces retry count: '12 expédiées (3 ont nécessité une seconde tentative)'
+- 'Réessayer les échecs' button re-attempts only failed orders one-click"
+git push

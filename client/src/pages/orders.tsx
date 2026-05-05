@@ -475,6 +475,7 @@ export default function Orders() {
   const [bulkShipAccountId, setBulkShipAccountId] = useState<number | null>(null);
   const [shipProgress, setShipProgress] = useState<{
     active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
+    retries?: number;
     results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string }[];
   } | null>(null);
 
@@ -748,6 +749,7 @@ export default function Orders() {
           total:   d.total   ?? prev.total,
           shipped: d.shipped ?? prev.shipped,
           failed:  d.failed  ?? prev.failed,
+          retries: d.retries ?? prev.retries,
           results: d.results ?? (prev as any).results,
           active:  !d.complete,
         } : null);
@@ -764,6 +766,18 @@ export default function Orders() {
               title: "Commandes non confirmées",
               description: `${blocked.length} commande(s) n'ont pas été envoyées car elles ne sont pas confirmées. Veuillez d'abord confirmer ces commandes.`,
               variant: "destructive",
+            });
+          }
+          // Surface retry count (shown separately in progress modal badge)
+          const shipped = d.shipped ?? 0;
+          const failed  = d.failed  ?? 0;
+          const retries = d.retries ?? 0;
+          if (shipped > 0 || failed > 0) {
+            toast({
+              title: `${shipped} expédiée${shipped > 1 ? 's' : ''}`,
+              description: retries > 0
+                ? `${retries} ${retries > 1 ? 'ont nécessité' : 'a nécessité'} une seconde tentative.${failed > 0 ? ` ${failed} échec${failed > 1 ? 's' : ''}.` : ''}`
+                : (failed > 0 ? `${failed} échec${failed > 1 ? 's' : ''}.` : 'Toutes les commandes traitées avec succès.'),
             });
           }
         }
@@ -2257,6 +2271,35 @@ export default function Orders() {
                   ))
                 }
               </div>
+            </div>
+          )}
+
+          {shipProgress && !shipProgress.active && shipProgress.failed > 0 && (
+            <div className="px-6 pb-4">
+              <Button
+                variant="default"
+                size="sm"
+                className="w-full bg-amber-500 hover:bg-amber-600 text-white rounded-xl"
+                data-testid="button-retry-failed-ship"
+                onClick={() => {
+                  const failedIds = (shipProgress.results || [])
+                    .filter(r => r.status === 'failed')
+                    .map(r => r.orderId);
+                  if (failedIds.length === 0) return;
+                  const provider = shipProgress.provider;
+                  setShipProgress({ active: true, done: 0, total: failedIds.length, shipped: 0, failed: 0, provider });
+                  bulkShip.mutate({ orderIds: failedIds, provider, accountId: bulkShipAccountId }, {
+                    onError: (err: any) => {
+                      const msg = String(err.message || "").replace(/^\d{3}:\s*/, "");
+                      setShipProgress(null);
+                      toast({ title: "Erreur d'expédition", description: msg, variant: "destructive" });
+                    },
+                  });
+                }}
+              >
+                <RotateCcw className="w-4 h-4 mr-2" />
+                Réessayer les {shipProgress.failed} échec{shipProgress.failed > 1 ? 's' : ''}
+              </Button>
             </div>
           )}
 

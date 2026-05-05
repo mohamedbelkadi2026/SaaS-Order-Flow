@@ -215,10 +215,29 @@ const TRANSIENT_CODES = new Set([
   "ECONNABORTED", // axios timeout / AbortSignal
 ]);
 
-const MAX_ATTEMPTS   = 2;    // 1 initial + 1 retry — fail fast, report clearly
-// Per-carrier max attempts
-const getMaxAttempts = (provider: string) => provider === 'ameex' ? 3 : MAX_ATTEMPTS;
-const RETRY_DELAY_MS = 2000; // 2 s between each attempt
+const MAX_ATTEMPTS   = 3;    // 1 initial + 2 retries — handles transient carrier hiccups
+const BASE_DELAY_MS  = 800;  // 800ms → 1.6s → 3.2s (exponential + jitter)
+// Per-carrier max attempts (uniform: all carriers get 3 attempts)
+const getMaxAttempts = (_provider: string) => MAX_ATTEMPTS;
+const RETRY_DELAY_MS = BASE_DELAY_MS; // kept for legacy compat
+
+/**
+ * Decide whether a carrier HTTP response warrants a retry.
+ * Transient = server errors, rate limits, or completely empty 2xx body.
+ * Permanent = validation/auth errors (4xx other than 429) → don't waste retries.
+ */
+function isTransientHttpError(httpStatus: number, rawBody: any): boolean {
+  if (httpStatus === 429) return true;
+  if (httpStatus >= 500 && httpStatus < 600) return true;
+  // 2xx with completely empty body → carrier hiccup, retry
+  if (httpStatus >= 200 && httpStatus < 300) {
+    if (rawBody == null) return true;
+    if (Array.isArray(rawBody) && rawBody.length === 0) return true;
+  }
+  return false;
+}
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 export interface CarrierShipInput {
   customerName: string;
@@ -249,6 +268,7 @@ export interface CarrierShipResult {
   httpStatus?: number;
   error?: string;
   carrierMessage?: string;
+  attempts?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -896,18 +916,32 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
 
   let httpStatus = 0;
   let rawBody: unknown;
+  let usedAttempts = 1;
 
   try {
     let response: Awaited<ReturnType<typeof attempt>>;
 
-    // ── Retry loop: up to maxAttempts with RETRY_DELAY_MS (2s) between ──
+    // ── Retry loop: up to maxAttempts with exponential backoff + jitter ──
+    // Retries on: network errors (ECONNRESET, ETIMEDOUT, …)
+    //             HTTP 429 / 5xx
+    //             2xx with completely empty body (carrier hiccup)
     const maxAttempts = getMaxAttempts(providerKey);
     let lastErr: any;
     let succeeded = false;
 
     for (let attempt_n = 1; attempt_n <= maxAttempts; attempt_n++) {
+      usedAttempts = attempt_n;
       try {
         response = await attempt();
+
+        // HTTP-level transient check — retry without throwing
+        if (isTransientHttpError(response.status, response.data) && attempt_n < maxAttempts) {
+          const delay = BASE_DELAY_MS * Math.pow(2, attempt_n - 1) + Math.floor(Math.random() * 200);
+          console.warn(`${tag} [SHIP-RETRY] HTTP ${response.status} transient on attempt ${attempt_n}/${maxAttempts} — retrying in ${delay}ms`);
+          await sleep(delay);
+          continue;
+        }
+
         succeeded = true;
         break;
       } catch (err: any) {
@@ -919,9 +953,10 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
           err?.message?.toLowerCase().includes("enotfound");
 
         if (isTransient && attempt_n < maxAttempts) {
-          console.warn(`${tag} ⚠️ Transient network error [${code}] — attempt ${attempt_n}/${maxAttempts}. Retrying in ${RETRY_DELAY_MS / 1000}s...`);
+          const delay = BASE_DELAY_MS * Math.pow(2, attempt_n - 1) + Math.floor(Math.random() * 200);
+          console.warn(`${tag} ⚠️ Transient network error [${code}] — attempt ${attempt_n}/${maxAttempts}. Retrying in ${delay}ms...`);
           console.warn(`[API-DEBUG]: Retry attempt ${attempt_n + 1} for URL: ${apiUrl}`);
-          await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+          await sleep(delay);
         } else if (isTransient && attempt_n === maxAttempts) {
           // All retries exhausted for a transient error — throw with friendly message
           const exhausted = new Error(`EAI_AGAIN_EXHAUSTED:${code || "TRANSIENT"}`);
@@ -979,8 +1014,9 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
         // Use extractTracking() which checks tracking, barcode, num, code_suivi, tracking_number
         const tracking = extractTracking(rawBody);
         if (tracking) {
+          if (usedAttempts > 1) console.log(`[SHIP-RETRY] order=${input.orderId} succeeded on attempt ${usedAttempts}/${maxAttempts}`);
           console.log(`[DIGYLOG] ✅ Success! tracking=${tracking}`);
-          return { success: true, trackingNumber: tracking, labelUrl: `/api/labels/${tracking}.pdf`, httpStatus, rawResponse: rawBody };
+          return { success: true, trackingNumber: tracking, labelUrl: `/api/labels/${tracking}.pdf`, httpStatus, rawResponse: rawBody, attempts: usedAttempts };
         }
 
         // Array returned but no error field AND no tracking number — fail loudly
@@ -1035,8 +1071,9 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
     }
     const labelUrl = extractLabelUrl(rawBody) || `/api/labels/${trackingNumber}.pdf`;
 
+    if (usedAttempts > 1) console.log(`[SHIP-RETRY] order=${input.orderId} succeeded on attempt ${usedAttempts}/${maxAttempts}`);
     console.log(`${tag} ✅ SUCCESS! Tracking: ${trackingNumber}`);
-    return { success: true, trackingNumber, labelUrl, httpStatus, rawResponse: rawBody };
+    return { success: true, trackingNumber, labelUrl, httpStatus, rawResponse: rawBody, attempts: usedAttempts };
 
   } catch (err: any) {
     // ── Classify the error ─────────────────────────────────────────

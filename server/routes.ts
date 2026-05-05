@@ -1390,8 +1390,11 @@ export async function registerRoutes(
         });
 
         try {
-          // ── Batch processing (5 simultaneous, no sequential blocking) ─
-          const BATCH_SIZE = 5;
+          // ── Batch processing (10 simultaneous, DB writes collected end-of-run) ─
+          const BATCH_SIZE = 10;
+          const allDbUpdates: Promise<unknown>[] = [];
+          const allLogUpdates: Promise<unknown>[] = [];
+          let retryCount = 0;
           for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
             const batch = eligible.slice(i, i + BATCH_SIZE);
 
@@ -1451,9 +1454,6 @@ export async function registerRoutes(
               })
             );
 
-            const dbUpdates: Promise<unknown>[] = [];
-            const logUpdates: Promise<unknown>[] = [];
-
             settled.forEach((outcome, idx) => {
               const { order, resolvedCity, orderCreds } = perOrderCtx[idx];
               const ref   = (order as any).orderNumber || order.id;
@@ -1464,7 +1464,7 @@ export async function registerRoutes(
                 // Hard guard: never save undefined as the tracking number
                 if (!trackingNumber) {
                   console.error(`[SHIPPING-LOG]: ❌ Order #${ref} — carrier returned success but no tracking number. Skipping DB save.`);
-                  logUpdates.push(storage.createIntegrationLog({
+                  allLogUpdates.push(storage.createIntegrationLog({
                     storeId, integrationId: null, provider,
                     action: 'shipping_sent', status: 'fail',
                     message: `❌ Commande #${ref}: ${provider} a confirmé mais sans numéro de suivi. Commande reste Confirmée.`,
@@ -1473,13 +1473,15 @@ export async function registerRoutes(
                   failedCount++;
                 } else {
                 console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber} (saved to track_number column)`);
+                // Track retries (attempts > 1 means at least one retry was needed)
+                if ((outcome.value as any).attempts && (outcome.value as any).attempts > 1) retryCount++;
                 // ── Atomic post-ship update ─────────────────────────────────────
                 // Previously this was 2 calls (updateOrderShipping +
                 // updateOrderStatus) pushed into dbUpdates and run via
                 // Promise.all. They raced: sometimes status was clobbered back
                 // to 'confirme', so only some orders moved to "Attente De
                 // Ramassage". One updateOrder call sets all fields together.
-                dbUpdates.push(
+                allDbUpdates.push(
                   storage.updateOrder(order.id, {
                     trackNumber:      trackingNumber,
                     labelLink:        labelUrl ?? null,
@@ -1490,12 +1492,12 @@ export async function registerRoutes(
                 );
                 const fee = (orderCreds as any).deliveryFee || 0;
                 if (fee > 0) {
-                  dbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
+                  allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
                 }
                 // Try to get real per-city delivery cost from Digylog
                 if (provider === 'digylog') {
                   const networkId = (orderCreds as any).digylogNetworkId || 1;
-                  dbUpdates.push(
+                  allDbUpdates.push(
                     getDigylogDeliveryCost(trackingNumber, (orderCreds as any).apiKey, networkId, (orderCreds as any).apiUrl)
                       .then(cost => {
                         if (cost && cost > 0) {
@@ -1506,7 +1508,7 @@ export async function registerRoutes(
                       .catch(costErr => console.error('[DIGYLOG-COST] Failed to fetch cost:', costErr))
                   );
                 }
-                logUpdates.push(storage.createIntegrationLog({
+                allLogUpdates.push(storage.createIntegrationLog({
                   storeId, integrationId: null, provider,
                   action: 'shipping_sent', status: 'success',
                   message: `✅ Commande #${ref} envoyée. Tracking: ${trackingNumber}`,
@@ -1521,7 +1523,7 @@ export async function registerRoutes(
                     : (outcome.value?.error || 'Erreur inconnue');
                 const httpCode = outcome.status === 'fulfilled' ? (outcome.value?.httpStatus ?? '?') : '?';
                 console.error(`[SHIPPING-LOG]: ❌ Order #${ref} failed — HTTP ${httpCode}: ${errMsg}`);
-                logUpdates.push(storage.createIntegrationLog({
+                allLogUpdates.push(storage.createIntegrationLog({
                   storeId, integrationId: null, provider,
                   action: 'shipping_sent', status: 'fail',
                   message: `❌ Commande #${ref} refusée (HTTP ${httpCode}): ${errMsg}`,
@@ -1531,17 +1533,19 @@ export async function registerRoutes(
               }
             });
 
-            await Promise.all([...dbUpdates, ...logUpdates]);
+            // Don't await DB writes here — collect across all batches, flush at end
             done += batch.length;
             broadcastProgress();
           }
+          // Flush all DB + log writes after all batches complete
+          await Promise.allSettled([...allDbUpdates, ...allLogUpdates]);
         } catch (bgErr) {
           console.error("[BULK-SHIP:BG] Unexpected error in background job:", bgErr);
         } finally {
           // Final broadcast — always sent, even on partial failure
           broadcastToStore(storeId, 'shipping_progress', {
             done: total, total, shipped: shippedCount, failed: failedCount,
-            complete: true, results,
+            complete: true, results, retries: retryCount,
           });
           console.log(`[BULK-SHIP:BG] Done — ${shippedCount} shipped, ${failedCount} failed out of ${total}`);
         }
