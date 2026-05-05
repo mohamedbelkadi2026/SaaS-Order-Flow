@@ -1320,6 +1320,7 @@ export async function registerRoutes(
         let done = 0;
         let shippedCount = 0;
         let failedCount  = 0;
+        let retryCount   = 0;
 
         // ── Pre-fill blocked (non-shippable status) orders ───────────
         blockedOrders.forEach((order: any) => {
@@ -1394,7 +1395,6 @@ export async function registerRoutes(
           const BATCH_SIZE = 10;
           const allDbUpdates: Promise<unknown>[] = [];
           const allLogUpdates: Promise<unknown>[] = [];
-          let retryCount = 0;
           for (let i = 0; i < eligible.length; i += BATCH_SIZE) {
             const batch = eligible.slice(i, i + BATCH_SIZE);
 

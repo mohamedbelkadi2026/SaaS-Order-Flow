@@ -2241,38 +2241,108 @@ export default function Orders() {
             </div>
           )}
 
-          {/* Per-order error details — shown only when there are failures */}
-          {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (
-            <div className="px-6 pb-2">
-              <p className="text-xs font-bold text-red-600 mb-2 flex items-center gap-1">
-                <span>⚠️</span>
-                <span>سبب الفشل — تفاصيل الأخطاء:</span>
-              </p>
-              <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
-                {shipProgress.results
-                  .filter(r => r.status === 'failed')
-                  .map((r, idx) => (
-                    <div
-                      key={r.orderId || idx}
-                      className="flex items-start gap-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2"
-                    >
-                      <span className="text-sm mt-0.5 shrink-0">❌</span>
-                      <div className="min-w-0">
-                        {r.orderNumber && (
-                          <p className="text-xs font-bold text-red-700 dark:text-red-400">
-                            #{r.orderNumber}
-                          </p>
-                        )}
-                        <p className="text-xs text-red-600 dark:text-red-300 break-words leading-snug">
-                          {r.error || "Erreur inconnue retournée par le transporteur."}
-                        </p>
-                      </div>
+          {/* Per-order error details — categorized by type */}
+          {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (() => {
+            const failures = shipProgress.results.filter(r => r.status === 'failed');
+            const blacklisted = failures.filter(r => r.error?.includes('blacklist') || r.error?.includes('liste noire') || r.error?.includes('🚫'));
+            const duplicates  = failures.filter(r => r.error?.includes('double') || r.error?.includes('existe déjà') || r.error?.includes('⚠️ Commande'));
+            const addressBad  = failures.filter(r => r.error?.includes('Adresse') || r.error?.includes('Ville') || r.error?.includes('📍'));
+            const transient   = failures.filter(r =>
+              !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r)
+            );
+            return (
+              <div className="px-6 pb-2 space-y-3">
+                {blacklisted.length > 0 && (
+                  <div className="rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 p-3">
+                    <p className="text-xs font-bold text-red-800 dark:text-red-200 mb-1.5">
+                      🚫 {blacklisted.length} commande{blacklisted.length > 1 ? 's' : ''} avec numéro blacklisté
+                    </p>
+                    <p className="text-[10px] text-red-700/80 dark:text-red-300/80 mb-2">
+                      Ces clients ont un historique d'annulations chez le transporteur. Vérifiez manuellement avant de réessayer.
+                    </p>
+                    <ul className="space-y-0.5 max-h-32 overflow-y-auto">
+                      {blacklisted.map(r => (
+                        <li key={r.orderId} className="text-[10px] text-red-700 dark:text-red-300">
+                          <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {duplicates.length > 0 && (
+                  <div className="rounded-lg bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 p-3">
+                    <p className="text-xs font-bold text-orange-800 dark:text-orange-200 mb-1.5">
+                      ⚠️ {duplicates.length} commande{duplicates.length > 1 ? 's' : ''} en double
+                    </p>
+                    <ul className="space-y-0.5 max-h-28 overflow-y-auto">
+                      {duplicates.map(r => (
+                        <li key={r.orderId} className="text-[10px] text-orange-700 dark:text-orange-300">
+                          <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {addressBad.length > 0 && (
+                  <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 p-3">
+                    <p className="text-xs font-bold text-yellow-800 dark:text-yellow-200 mb-1.5">
+                      📍 {addressBad.length} commande{addressBad.length > 1 ? 's' : ''} avec adresse/ville invalide
+                    </p>
+                    <ul className="space-y-0.5 max-h-28 overflow-y-auto">
+                      {addressBad.map(r => (
+                        <li key={r.orderId} className="text-[10px] text-yellow-700 dark:text-yellow-300">
+                          <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {transient.length > 0 && (
+                  <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
+                    <div className="flex items-start gap-2 mb-1.5">
+                      <p className="text-xs font-bold text-amber-800 dark:text-amber-200 flex-1">
+                        ⏱ {transient.length} échec{transient.length > 1 ? 's' : ''} transitoire{transient.length > 1 ? 's' : ''}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="default"
+                        className="h-6 text-[10px] px-2 bg-amber-600 hover:bg-amber-700 text-white shrink-0"
+                        data-testid="button-retry-transient"
+                        onClick={() => {
+                          const ids = transient.map(r => r.orderId);
+                          const provider = shipProgress.provider;
+                          setShipProgress({ active: true, done: 0, total: ids.length, shipped: 0, failed: 0, provider });
+                          bulkShip.mutate({ orderIds: ids, provider, accountId: bulkShipAccountId }, {
+                            onError: (err: any) => {
+                              const msg = String(err.message || "").replace(/^\d{3}:\s*/, "");
+                              setShipProgress(null);
+                              toast({ title: "Erreur d'expédition", description: msg, variant: "destructive" });
+                            },
+                          });
+                        }}
+                      >
+                        <RotateCcw className="w-3 h-3 mr-1" />
+                        Réessayer
+                      </Button>
                     </div>
-                  ))
-                }
+                    <p className="text-[10px] text-amber-700/80 dark:text-amber-300/80 mb-2">
+                      Probable hiccup côté transporteur. Cliquez "Réessayer" pour relancer ces commandes seules.
+                    </p>
+                    <ul className="space-y-0.5 max-h-28 overflow-y-auto">
+                      {transient.map(r => (
+                        <li key={r.orderId} className="text-[10px] text-amber-700 dark:text-amber-300">
+                          <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {shipProgress && !shipProgress.active && shipProgress.failed > 0 && (
             <div className="px-6 pb-4">

@@ -226,13 +226,19 @@ const RETRY_DELAY_MS = BASE_DELAY_MS; // kept for legacy compat
  * Transient = server errors, rate limits, or completely empty 2xx body.
  * Permanent = validation/auth errors (4xx other than 429) → don't waste retries.
  */
-function isTransientHttpError(httpStatus: number, rawBody: any): boolean {
+function isTransientHttpError(httpStatus: number, rawBody: any, permanent?: boolean): boolean {
+  // Carrier explicitly flagged this as permanent — don't waste retries
+  if (permanent === true) return false;
+
   if (httpStatus === 429) return true;
   if (httpStatus >= 500 && httpStatus < 600) return true;
   // 2xx with completely empty body → carrier hiccup, retry
   if (httpStatus >= 200 && httpStatus < 300) {
     if (rawBody == null) return true;
     if (Array.isArray(rawBody) && rawBody.length === 0) return true;
+    // Digylog explicit rejection (isSuccess:false + non-empty errors[]) → permanent, no retry
+    if (Array.isArray(rawBody) && (rawBody[0] as any)?.isSuccess === false &&
+        Array.isArray((rawBody[0] as any)?.errors) && (rawBody[0] as any).errors.length > 0) return false;
   }
   return false;
 }
@@ -269,6 +275,7 @@ export interface CarrierShipResult {
   error?: string;
   carrierMessage?: string;
   attempts?: number;
+  permanent?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -935,7 +942,7 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
         response = await attempt();
 
         // HTTP-level transient check — retry without throwing
-        if (isTransientHttpError(response.status, response.data) && attempt_n < maxAttempts) {
+        if (isTransientHttpError(response.status, response.data, false) && attempt_n < maxAttempts) {
           const delay = BASE_DELAY_MS * Math.pow(2, attempt_n - 1) + Math.floor(Math.random() * 200);
           console.warn(`${tag} [SHIP-RETRY] HTTP ${response.status} transient on attempt ${attempt_n}/${maxAttempts} — retrying in ${delay}ms`);
           await sleep(delay);
@@ -1002,13 +1009,39 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
 
       // Digylog returns an array — check for error first, then tracking
       if (Array.isArray(rawBody)) {
-        const first = rawBody[0];
+        const first = rawBody[0] as any;
 
-        // Per-order error field takes priority (e.g. duplicate, invalid address, etc.)
+        // ── Digylog rejection envelope (isSuccess: false + errors array) ────
+        // Examples: blacklisted phone, duplicate order, validation errors
+        if (first && first.isSuccess === false) {
+          const errs = Array.isArray(first.errors) ? first.errors.filter(Boolean).map(String) : [];
+          const rawErrMsg = errs.length > 0
+            ? errs.join(' — ')
+            : (first.error || first.message || 'Digylog a refusé la commande sans message');
+
+          const lc = rawErrMsg.toLowerCase();
+          let userMsg = rawErrMsg;
+          if (lc.includes('liste noire') || lc.includes('blacklist')) {
+            userMsg = `🚫 Numéro client blacklisté par Digylog. ${rawErrMsg}`;
+          } else if (lc.includes('existe déjà') || lc.includes('duplicate')) {
+            userMsg = `⚠️ Commande en double chez Digylog. ${rawErrMsg}`;
+          } else if (lc.includes('adresse') || lc.includes('ville')) {
+            userMsg = `📍 Adresse/ville invalide. ${rawErrMsg}`;
+          }
+
+          console.error(`[DIGYLOG] ❌ Rejected (isSuccess=false): ${userMsg}`);
+          return {
+            success: false, error: userMsg, carrierMessage: rawErrMsg,
+            httpStatus, rawResponse: rawBody,
+            permanent: true, // explicit rejection — don't retry
+          };
+        }
+
+        // Per-order error field (legacy single string format)
         if (first?.error) {
           const errMsg = String(first.error);
           console.error(`[DIGYLOG] ❌ Order error: ${errMsg}`);
-          return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody };
+          return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus, rawResponse: rawBody, permanent: true };
         }
 
         // Use extractTracking() which checks tracking, barcode, num, code_suivi, tracking_number
@@ -1019,9 +1052,9 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
           return { success: true, trackingNumber: tracking, labelUrl: `/api/labels/${tracking}.pdf`, httpStatus, rawResponse: rawBody, attempts: usedAttempts };
         }
 
-        // Array returned but no error field AND no tracking number — fail loudly
+        // Array returned but no error field AND no tracking number — possible transient
         console.error(`[DIGYLOG] ❌ No tracking number in Digylog response. Raw body: ${JSON.stringify(rawBody)}`);
-        const noTrackMsg = "Digylog n'a pas retourné de numéro de suivi. La commande n'a pas été créée chez Digylog.";
+        const noTrackMsg = "Digylog n'a pas retourné de numéro de suivi. Possible problème transitoire — sera réessayé.";
         return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus, rawResponse: rawBody };
       }
 

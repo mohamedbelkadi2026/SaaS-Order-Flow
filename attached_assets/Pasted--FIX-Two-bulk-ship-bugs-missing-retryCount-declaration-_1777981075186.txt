@@ -1,0 +1,196 @@
+🐛 FIX — Two bulk-ship bugs: missing retryCount declaration + Digylog errors[] array not parsedBug 1: retryCount is not defined — JavaScript ReferenceErrorThe retry-counter feature added in the last prompt referenced retryCount somewhere but the variable was never declared. Server log shows:
+[UnhandledRejection — continuing]: retryCount is not definedThis crashes the bulk-ship promise chain mid-flight. We need to declare it cleanly.Bug 2: Digylog blacklist responses are reported as "no tracking returned"When Digylog rejects an order because the customer phone is blacklisted, it returns:
+json[{
+  "isSuccess": false,
+  "errors": ["Le numéro 0662447228 est sur la liste noire. livrées : 0, annulée : 17"],
+  "num": 7012
+}]But our code at line 973 only checks for first.error (singular string). The blacklist response uses errors (plural array) and isSuccess: false. Result: code falls through to the generic "n'a pas retourné de numéro de suivi" message — useless to the user.What we want:
+
+Detect isSuccess: false + errors[] properly
+Surface the actual carrier message in the failure ("Numéro blacklisté: 17 annulées, 0 livrée")
+Mark this as a permanent failure (don't retry — the phone is banned)
+FixStep 1 — server/services/carrier-service.ts: handle isSuccess: false + errors[]Find the Digylog response handling around line 968-990. Replace the if (first?.error) { ... } block with a more comprehensive one:tsif (Array.isArray(rawBody)) {
+  const first = rawBody[0] as any;
+
+  // ── Digylog rejection envelope (isSuccess: false + errors array) ────
+  // Examples:
+  //   - Blacklisted phone: errors=["Le numéro X est sur la liste noire..."]
+  //   - Duplicate: errors=["Cette commande existe déjà"]
+  //   - Validation: errors=["Adresse invalide", "Ville inconnue"]
+  if (first && first.isSuccess === false) {
+    const errs = Array.isArray(first.errors) ? first.errors.filter(Boolean).map(String) : [];
+    const errMsg = errs.length > 0
+      ? errs.join(' — ')
+      : (first.error || first.message || 'Digylog a refusé la commande sans message');
+
+    // Detect specific patterns to give the user actionable info
+    const lc = errMsg.toLowerCase();
+    let userMsg = errMsg;
+    if (lc.includes('liste noire') || lc.includes('blacklist')) {
+      userMsg = `🚫 Numéro client blacklisté par Digylog. ${errMsg}`;
+    } else if (lc.includes('existe déjà') || lc.includes('duplicate')) {
+      userMsg = `⚠️ Commande en double chez Digylog. ${errMsg}`;
+    } else if (lc.includes('adresse') || lc.includes('ville')) {
+      userMsg = `📍 Adresse/ville invalide. ${errMsg}`;
+    }
+
+    console.error(`[DIGYLOG] ❌ Rejected (isSuccess=false): ${userMsg}`);
+    return {
+      success:        false,
+      error:          userMsg,
+      carrierMessage: errMsg,
+      httpStatus,
+      rawResponse:    rawBody,
+      // CRUCIAL: mark as permanent so retry loop doesn't waste 2 more attempts
+      permanent:      true,
+    };
+  }
+
+  // Per-order error field (legacy single string format)
+  if (first?.error) {
+    const errMsg = String(first.error);
+    console.error(`[DIGYLOG] ❌ Order error: ${errMsg}`);
+    return {
+      success: false, error: errMsg, carrierMessage: errMsg,
+      httpStatus, rawResponse: rawBody,
+      permanent: true,   // explicit error string = permanent
+    };
+  }
+
+  // Tracking number extraction
+  const tracking = extractTracking(rawBody);
+  if (tracking) {
+    console.log(`[DIGYLOG] ✅ Success! tracking=${tracking}`);
+    return {
+      success: true,
+      trackingNumber: tracking,
+      labelUrl: `/api/labels/${tracking}.pdf`,
+      httpStatus,
+      rawResponse: rawBody,
+    };
+  }
+
+  // Array returned, no error field, no tracking — could be transient
+  console.error(`[DIGYLOG] ❌ No tracking number in Digylog response. Raw body: ${JSON.stringify(rawBody)}`);
+  return {
+    success:        false,
+    error:          "Digylog n'a pas retourné de numéro de suivi. Possible problème transitoire — sera réessayé.",
+    carrierMessage: "No tracking number",
+    httpStatus,
+    rawResponse:    rawBody,
+    // No permanent flag = retry loop will give it another shot
+  };
+}The crucial addition is the permanent: true flag on rejected responses. This tells the retry loop "don't bother trying again — the phone is blacklisted, retrying won't help".Step 2 — Update isTransientShipError to honor the permanent flagAround the helper added in the previous prompt, change:tsfunction isTransientShipError(httpStatus: number, errorMessage: string, rawBody: any, permanent?: boolean): boolean {
+  // Carrier explicitly told us this is permanent — don't retry
+  if (permanent === true) return false;
+
+  // ... rest of the existing logic unchanged ...
+}And in the retry loop, pass the flag through:
+tsconst transient = isTransientShipError(
+  result.httpStatus,
+  result.error || '',
+  result.rawResponse,
+  (result as any).permanent,
+);This way blacklist rejections fail fast (1 attempt, no retries) while genuine network hiccups still get up to 3 attempts.Step 3 — Fix the retryCount is not defined errorIn server/routes.ts at the bulk-ship endpoint (around line 1191), at the top of the route handler where other counters are declared, add:tslet shippedCount = 0;
+let failedCount  = 0;
+let retryCount   = 0;        // ← NEW: counts orders that took > 1 attempt
+let done         = 0;Then the retryCount++ reference inside the result-handling loop will resolve correctly. The exact location is in the success branch:tsif (outcome.status === 'fulfilled' && outcome.value.success) {
+  // … existing success handling …
+  if ((outcome.value as any).attempts && (outcome.value as any).attempts > 1) {
+    retryCount++;
+  }
+}Make sure the response includes it:
+tsres.json({
+  success: true,
+  shipped: shippedCount,
+  failed:  failedCount,
+  retries: retryCount,
+  results,
+});Step 4 — server/services/carrier-service.ts: ensure every result returns attemptsIn the retry loop, return the result with the attempt count appended. Find the success return:
+tsif (result.success) {
+  if (attempt > 1) {
+    console.log(`[SHIP-RETRY] order=${input.orderId} succeeded on attempt ${attempt}/${MAX_ATTEMPTS}`);
+  }
+  return { ...result, attempts: attempt };  // ← include attempts on success
+}And the final-failure return:
+tsconsole.log(`[SHIP-RETRY] order=${input.orderId} EXHAUSTED ${MAX_ATTEMPTS} attempts — final error: ${lastResult?.error}`);
+return { ...lastResult, attempts: MAX_ATTEMPTS };And the permanent-error early return:
+tsif (!transient) {
+  console.log(`[SHIP-RETRY] order=${input.orderId} permanent failure on attempt ${attempt} — aborting retries: ${result.error}`);
+  return { ...result, attempts: attempt };
+}Now outcome.value.attempts is always defined and the retryCount increment in routes.ts works.Step 5 — Surface blacklist failures clearly in the failure modalIn client/src/pages/orders.tsx around the failure summary (line ~2017-2050), categorize errors so the user sees what's actionable:tsxconst failures = (shipProgress.results || []).filter(r => r.status === 'failed');
+
+// Group by error category
+const blacklisted = failures.filter(r => r.error?.includes('blacklist') || r.error?.includes('liste noire'));
+const duplicates  = failures.filter(r => r.error?.includes('double') || r.error?.includes('existe déjà'));
+const addressBad  = failures.filter(r => r.error?.includes('Adresse') || r.error?.includes('Ville'));
+const transient   = failures.filter(r =>
+  !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r)
+);
+
+// In the JSX:
+{blacklisted.length > 0 && (
+  <div className="mb-3 p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200">
+    <p className="text-sm font-semibold text-red-900 dark:text-red-200 mb-2">
+      🚫 {blacklisted.length} commande{blacklisted.length > 1 ? 's' : ''} avec numéro blacklisté
+    </p>
+    <p className="text-xs text-red-800/80 dark:text-red-300/80 mb-2">
+      Ces clients ont un historique d'annulations chez le transporteur. Vérifiez manuellement avant de réessayer.
+    </p>
+    <ul className="text-xs space-y-0.5 max-h-[150px] overflow-y-auto">
+      {blacklisted.map(r => (
+        <li key={r.orderId} className="font-mono">
+          #{r.orderNumber} — {r.error}
+        </li>
+      ))}
+    </ul>
+  </div>
+)}
+
+{transient.length > 0 && (
+  <div className="mb-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200">
+    <div className="flex items-start gap-3">
+      <p className="text-sm font-semibold text-amber-900 dark:text-amber-200 flex-1">
+        ⚠️ {transient.length} échec{transient.length > 1 ? 's' : ''} transitoire{transient.length > 1 ? 's' : ''}
+      </p>
+      <Button size="sm" variant="default" onClick={() => {
+        const ids = transient.map(r => r.orderId);
+        bulkShipMutation.mutate({ orderIds: ids, provider: shipProgress.provider });
+      }}>
+        <RotateCcw className="w-4 h-4 mr-2" />
+        Réessayer
+      </Button>
+    </div>
+    <p className="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1">
+      Probable hiccup côté transporteur. Cliquez "Réessayer" pour relancer ces commandes seules.
+    </p>
+  </div>
+)}Now blacklisted orders show as clearly different from transient failures — user knows blacklisted ones need MANUAL review (call the customer, change the phone, or skip the order), and transient ones can be retried with one click.Acceptance criteria
+✅ retryCount is declared and the response includes retries: <number>. No more ReferenceError.
+✅ Bulk-ship a customer with a blacklisted phone → returns permanent: true → no retry attempts → fails fast in <2s.
+✅ Failure message shown to user reads: "🚫 Numéro client blacklisté par Digylog. Le numéro 0662... est sur la liste noire. livrées: 0, annulée: 17"
+✅ Failure modal groups failures: blacklist (red), duplicates (orange), address (yellow), transient (amber with retry button).
+✅ Transient failures show "Réessayer" button; blacklist failures do NOT (since retry won't help).
+✅ Server log shows: [DIGYLOG] ❌ Rejected (isSuccess=false): 🚫 Numéro client blacklisté...
+✅ No more "n'a pas retourné de numéro de suivi" message for blacklist cases.
+✅ Genuine no-tracking 5xx hiccups still retry up to 3 times.
+Commitbashgit add server/routes.ts server/services/carrier-service.ts client/src/pages/orders.tsx
+git commit -m "fix(shipping): handle Digylog isSuccess:false + errors[] envelope + declare retryCount
+
+Bug 1: retryCount referenced but never declared → UnhandledRejection on every
+bulk-ship. Declared at top of route handler alongside shippedCount/failedCount.
+
+Bug 2: Digylog rejections (blacklisted phone, duplicates, validation) come back
+as { isSuccess: false, errors: [...] } not { error: '...' }. Code only checked
+for the singular 'error' field and fell through to a generic 'no tracking'
+message, hiding the real reason from the user.
+
+Now:
+- Detect isSuccess: false + errors[] array properly
+- Surface the actual reason in failure messages
+- Tag permanent failures (blacklist, duplicate, validation) so retry loop
+  doesn't waste 2 more attempts on hopeless orders
+- Failure modal categorizes errors: blacklist (red), duplicate, address bad,
+  transient (with one-click 'Réessayer')
+- Every carrier result includes 'attempts' count for accurate retry stats"
+git push
