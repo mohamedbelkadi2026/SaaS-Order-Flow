@@ -1622,6 +1622,7 @@ export async function registerRoutes(
     if (req.user!.role === 'agent' && order.assignedToId !== req.user!.id) {
       return res.status(403).json({ message: "Accès refusé" });
     }
+    console.log(`[GET /api/orders/${orderId}] totalPrice=${order.totalPrice} (${((order.totalPrice ?? 0) / 100).toFixed(2)} DH) items=${(order as any).items?.length ?? 0}`);
     res.json(order);
   });
 

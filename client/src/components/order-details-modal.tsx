@@ -266,6 +266,9 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   // after save (which would immediately re-run the auto-calc and undo the
   // manually typed price).
   const prevOrderIdRef = useRef<number | null>(null);
+  // Tracks whether the fresh-order fetch has already been applied for the
+  // current open session — reset to null on close so reopening re-applies.
+  const freshOrderAppliedRef = useRef<number | null>(null);
 
   // ── Carrier city list — filtered by the order's assigned carrier ──
   const orderCarrier = (order as any)?.carrierName || order?.shippingProvider || null;
@@ -293,6 +296,21 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     staleTime: 5 * 60 * 1000,
   });
 
+  // Always fetch the latest order from the server when the modal opens.
+  // staleTime=0 ensures a refetch even when the same order is reopened after
+  // save, so the modal never displays a totalPrice from a stale list-cache prop.
+  const { data: freshOrder } = useQuery<any>({
+    queryKey: ['/api/orders', order?.id],
+    enabled: !!order?.id,
+    staleTime: 0,
+    refetchOnMount: true,
+    queryFn: async () => {
+      const res = await fetch(`/api/orders/${order!.id}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch order');
+      return res.json();
+    },
+  });
+
   // Recalculate totalPrice whenever items change — skipped when user has manually
   // overridden the price (manualPriceOverride flag set by the Prix total onChange).
   useEffect(() => {
@@ -304,9 +322,41 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     setFields((f: any) => ({ ...f, totalPrice: (sum / 100).toFixed(2) }));
   }, [localItems, manualPriceOverride]);
 
+  // When fresh server data arrives, patch totalPrice (and re-evaluate the
+  // manualPriceOverride flag) — but only if the user hasn't already typed a
+  // manual override since the modal opened. This corrects a stale prop that
+  // the parent list-cache may have passed.
+  useEffect(() => {
+    if (!freshOrder?.id) return;
+    if (freshOrder.id === freshOrderAppliedRef.current) return; // already applied
+    freshOrderAppliedRef.current = freshOrder.id;
+    const dbTotal = freshOrder.totalPrice ?? 0;
+    const itemsSum = (freshOrder.items || []).reduce(
+      (s: number, i: any) => s + ((Number(i.price) || 0) * (Number(i.quantity) || 1)),
+      0
+    );
+    const hasOverride = Math.abs(dbTotal - itemsSum) > 100;
+    setManualPriceOverride(hasOverride);
+    // Update totalPrice only if user hasn't manually typed a value yet
+    if (!manualPriceOverride) {
+      setFields((f: any) => ({
+        ...f,
+        totalPrice: dbTotal ? (dbTotal / 100).toFixed(2) : "0.00",
+      }));
+    }
+    console.log('[ORDER-MODAL-LOAD]', {
+      orderId: freshOrder.id,
+      fromFresh_totalPrice: dbTotal,
+      finalUsedDH: (dbTotal / 100).toFixed(2),
+      itemsSum,
+      hasOverride,
+    });
+  }, [freshOrder]);
+
   useEffect(() => {
     if (!order) {
       prevOrderIdRef.current = null;
+      freshOrderAppliedRef.current = null; // reset so reopen re-applies fresh data
       return;
     }
     const isNewOrder = order.id !== prevOrderIdRef.current;
@@ -449,6 +499,11 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       queryClient.invalidateQueries({ queryKey: ["/api/all-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      // Invalidate the single-order cache so the modal re-renders with fresh
+      // DB data on next open, instead of the stale filtered-list prop value.
+      if (order?.id) {
+        queryClient.invalidateQueries({ queryKey: ['/api/orders', order.id] });
+      }
       const saved = updatedOrder ?? { ...order, ...fields };
       onUpdated?.(saved);
       const statusChanged = (updatedOrder?.status ?? fields.status) !== order?.status;

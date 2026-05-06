@@ -1,0 +1,163 @@
+🐛 FIX (final) — Modal reopens with stale totalPrice; force fresh fetch + add traces
+Status
+The previous fix succeeded half-way:
+
+✅ Save persists totalPrice = 2200 to the DB (the orders list shows 2200 correctly)
+❌ Reopening the order modal shows 2397.00 DH — the items × price computed value, NOT the saved 2200
+
+So the bug is in the load path of the modal, not the save path. The modal is reading a stale order prop (from the parent's filtered-orders cache) where totalPrice is still the old computed value.
+Fix
+Step 1 — Modal: fetch fresh order data on open, don't trust the prop
+In client/src/components/order-details-modal.tsx, around the top of the component (after the useState declarations near line 235), add a query that always refetches the single order from /api/orders/:id when the modal opens. Use that fresh value instead of the prop.
+tsximport { useQuery } from '@tanstack/react-query';
+
+// ... existing state ...
+
+// Always fetch the latest order from the server when the modal is open.
+// The prop may be stale (cached from a list query that ran before the last save).
+const { data: freshOrder } = useQuery({
+  queryKey: ['/api/orders', order?.id],
+  enabled: !!order?.id,
+  queryFn: async () => {
+    const res = await fetch(`/api/orders/${order!.id}`, { credentials: 'include' });
+    if (!res.ok) throw new Error('Failed to fetch order');
+    return res.json();
+  },
+  staleTime: 0,            // always refetch on open
+  refetchOnMount: true,
+});
+
+// Use freshOrder when available, fall back to the prop on first render
+const effectiveOrder = freshOrder ?? order;
+Then change the useEffect at line 265 to depend on effectiveOrder instead of order:
+tsuseEffect(() => {
+  if (!effectiveOrder) return;
+  const firstItemVariant = effectiveOrder.items?.[0]?.variantInfo || "";
+  const variantFallback = firstItemVariant || effectiveOrder.variantDetails || "";
+  setFields({
+    // ... all existing fields, but read from effectiveOrder ...
+    customerName: cleanCustomerName(effectiveOrder.customerName || ""),
+    customerPhone: effectiveOrder.customerPhone || "",
+    customerAddress: effectiveOrder.customerAddress || "",
+    customerCity: effectiveOrder.customerCity || "",
+    status: effectiveOrder.status || "nouveau",
+    comment: effectiveOrder.comment || "",
+    commentStatus: effectiveOrder.commentStatus || "",
+    rawProductName: effectiveOrder.rawProductName || (effectiveOrder.items?.[0]?.rawProductName) || (effectiveOrder.items?.[0]?.product?.name) || "",
+    totalPrice: effectiveOrder.totalPrice ? (effectiveOrder.totalPrice / 100).toFixed(2) : "0.00",
+    variantInfo: variantFallback !== "null" ? variantFallback : "",
+    commentOrder: effectiveOrder.commentOrder || "",
+    // ... etc ...
+  });
+
+  console.log('[ORDER-MODAL-LOAD]', {
+    orderId: effectiveOrder.id,
+    fromProp_totalPrice: order?.totalPrice,
+    fromFresh_totalPrice: freshOrder?.totalPrice,
+    finalUsedDH: ((effectiveOrder.totalPrice ?? 0) / 100).toFixed(2),
+    itemsSum: (effectiveOrder.items || []).reduce((s: number, i: any) => s + (i.price || 0) * (i.quantity || 1), 0),
+  });
+
+  const mappedItems = (effectiveOrder.items || []).map((item: any) => ({ ... }));
+  // ... rest unchanged ...
+
+}, [effectiveOrder]);
+The console log will tell us in the browser console:
+
+fromProp_totalPrice = what the parent passed (could be stale)
+fromFresh_totalPrice = what the server actually has now
+finalUsedDH = what the modal ended up showing
+itemsSum = what 799 × 3 = 2397 cents
+
+So if the bug repeats:
+
+fromFresh = 220000, finalUsed = 2200.00 → fixed ✅
+fromFresh = 239700 → server actually has 2397 in DB → real backend bug, look elsewhere
+fromFresh = 220000, finalUsed = 2397.00 → modal logic still broken, need to recheck the useEffect
+
+Step 2 — Invalidate the single-order cache key on save too
+In onSuccess of the save mutation (line 363-367), add the single-order cache key:
+tsonSuccess: (updatedOrder: any) => {
+  toast({ title: "Commande mise à jour avec succès" });
+  queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/all-orders"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+
+  // NEW: refresh the single-order query so the modal re-renders with fresh data immediately
+  if (order?.id) {
+    queryClient.invalidateQueries({ queryKey: ['/api/orders', order.id] });
+  }
+
+  const saved = updatedOrder ?? { ...order, ...fields };
+  onUpdated?.(saved);
+  const statusChanged = (updatedOrder?.status ?? fields.status) !== order?.status;
+  if (statusChanged) onClose();
+},
+Without this, even after save, the useQuery(['/api/orders', orderId]) keeps the previously-loaded result and doesn't refetch.
+Step 3 — Server-side: log on GET so we can verify the DB value
+In server/routes.ts line 1520:
+tsapp.get("/api/orders/:id", requireAuth, async (req, res) => {
+  const orderId = Number(req.params.id);
+  const order = await storage.getOrder(orderId);
+  if (!order) return res.status(404).json({ message: "Order not found" });
+  if (order.storeId !== req.user!.storeId && !req.user!.isSuperAdmin) {
+    return res.status(403).json({ message: "Accès refusé" });
+  }
+  if (req.user!.role === 'agent' && order.assignedToId !== req.user!.id) {
+    return res.status(403).json({ message: "Accès refusé" });
+  }
+
+  console.log(`[GET /api/orders/${orderId}] returning totalPrice=${order.totalPrice} (${(order.totalPrice / 100).toFixed(2)} DH), itemsCount=${(order as any).items?.length ?? 0}`);
+  res.json(order);
+});
+This way, you'll see in Railway logs every time the modal opens whether the DB really has 220000 or 239700.
+Step 4 — Add same fresh-fetch pattern to all-orders.tsx if applicable
+If the order details modal is also opened from client/src/pages/all-orders.tsx, it inherits the same fix automatically (the modal is shared). No change needed.
+Step 5 — Optional: visible "Offre / remise" indicator
+Same as the previous prompt — show an amber box in the modal whenever totalPrice ≠ items subtotal. This is purely UI, makes the override visible. If already added, skip.
+tsx{(() => {
+  const itemsSubtotal = localItems.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
+  const currentTotal = Math.round(parseFloat(fields.totalPrice || "0") * 100);
+  const diff = itemsSubtotal - currentTotal;
+  if (Math.abs(diff) < 100) return null;
+
+  return (
+    <div className="text-[11px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 rounded p-2 mt-1">
+      <div className="flex justify-between"><span>Sous-total :</span><span className="font-mono">{(itemsSubtotal/100).toFixed(2)} DH</span></div>
+      <div className="flex justify-between font-semibold"><span>Total facturé :</span><span className="font-mono">{(currentTotal/100).toFixed(2)} DH</span></div>
+      <div className="flex justify-between text-amber-700 mt-0.5 border-t border-amber-200 pt-1">
+        <span>{diff > 0 ? 'Offre / remise :' : 'Supplément :'}</span>
+        <span className="font-mono">{diff > 0 ? '−' : '+'}{Math.abs(diff/100).toFixed(2)} DH</span>
+      </div>
+    </div>
+  );
+})()}
+Acceptance criteria
+
+✅ Open commande #7194 (or whichever has the saved override) → modal shows Prix total: 2200.00 DH (NOT 2397).
+✅ Browser console logs [ORDER-MODAL-LOAD] with fromFresh_totalPrice = 220000 and finalUsedDH = "2200.00".
+✅ Railway logs [GET /api/orders/7194] returning totalPrice=220000.
+✅ Amber "Offre / remise: −197.00 DH" box visible above the items.
+✅ Edit the override to 2100, save → reopen → modal shows 2100 (not 2200, not 2397).
+✅ Save propagates: liste shows 2100, modal shows 2100, Digylog shipping receives 2100.
+✅ Orders without an override still work normally (no amber box; reopen shows the computed total).
+✅ No infinite loop: useQuery doesn't refetch endlessly; useEffect depends on effectiveOrder only.
+
+Commit
+bashgit add client/src/components/order-details-modal.tsx server/routes.ts
+git commit -m "fix(orders): modal reopens with fresh totalPrice from server, not stale prop
+
+Bug remained after the previous fix: save persisted 2200 to DB (visible in
+list), but reopening the modal showed 2397 — the modal was reading a stale
+'order' prop from the parent's filtered-orders cache, not the actual DB value.
+
+- Modal now fires its own useQuery on /api/orders/:id whenever opened, with
+  staleTime=0 + refetchOnMount, so it always reflects the current DB state.
+- onSuccess of the save mutation now invalidates the single-order cache key
+  in addition to the list keys.
+- Added [ORDER-MODAL-LOAD] browser log + [GET /api/orders/:id] server log
+  showing what each side has, so future inconsistencies are easy to debug.
+- Amber 'Offre/remise' callout makes overrides visible at a glance."
+git push
