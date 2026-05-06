@@ -138,22 +138,41 @@ function ItemRow({ item, products, onChange, onDelete }: ItemRowProps) {
       <div className="flex items-center gap-2 mt-2 flex-wrap">
         <div className="flex items-center gap-0.5">
           <Input
-            type="number"
-            value={priceVal.toFixed(2)}
-            onChange={e => onChange(item.id, "price", Math.round(parseFloat(e.target.value) * 100))}
-            className="w-20 text-sm text-right font-semibold h-8 rounded-lg"
+            type="text"
+            inputMode="decimal"
+            value={priceVal === 0 ? '' : priceVal.toFixed(2)}
+            onFocus={(e) => e.target.select()}
+            onChange={(e) => {
+              const raw = e.target.value.replace(/[^\d.,]/g, '').replace(',', '.');
+              if (raw === '') { onChange(item.id, "price", 0); return; }
+              const f = parseFloat(raw);
+              if (Number.isFinite(f) && f >= 0) onChange(item.id, "price", Math.round(f * 100));
+            }}
+            className="w-20 text-sm text-right font-semibold h-8 rounded-lg [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             style={{ color: NAVY }}
+            data-testid="input-item-price"
           />
           <span className="text-xs font-bold ml-0.5" style={{ color: NAVY }}>DH</span>
         </div>
         <span className="text-gray-400 text-sm">×</span>
         <Input
-          type="number"
-          min={1}
-          value={qty}
-          onChange={e => onChange(item.id, "quantity", parseInt(e.target.value) || 1)}
-          className="w-14 text-sm text-center font-semibold h-8 rounded-lg"
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          value={qty === 0 ? '' : String(qty)}
+          onFocus={(e) => e.target.select()}
+          onChange={(e) => {
+            const raw = e.target.value.replace(/[^\d]/g, '');
+            if (raw === '') { onChange(item.id, "quantity", 0); return; }
+            const n = parseInt(raw, 10);
+            if (Number.isFinite(n) && n >= 0) onChange(item.id, "quantity", n);
+          }}
+          onBlur={() => {
+            if (qty < 1) onChange(item.id, "quantity", 1);
+          }}
+          className="w-16 text-sm text-center font-semibold h-8 rounded-lg [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
           style={{ color: NAVY }}
+          data-testid="input-item-quantity"
         />
         <span className="text-gray-300 text-sm">=</span>
         <span className="text-sm font-bold" style={{ color: NAVY }}>

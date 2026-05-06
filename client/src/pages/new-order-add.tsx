@@ -389,14 +389,37 @@ export default function NewOrderAdd() {
                   onChange={e => updateItem(item.id, "variantInfo", e.target.value)}
                 />
                 <Input
-                  type="number" className="text-xs h-9" placeholder="0"
-                  value={item.price || ""}
-                  onChange={e => updateItem(item.id, "price", parseFloat(e.target.value) || 0)}
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  className="text-xs h-9 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  value={item.price === 0 ? '' : String(item.price)}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/[^\d.,]/g, '').replace(',', '.');
+                    if (raw === '') { updateItem(item.id, "price", 0); return; }
+                    const f = parseFloat(raw);
+                    if (Number.isFinite(f) && f >= 0) updateItem(item.id, "price", f);
+                  }}
+                  data-testid="input-item-price-add"
                 />
                 <Input
-                  type="number" min={1} className="text-xs h-9"
-                  value={item.quantity}
-                  onChange={e => updateItem(item.id, "quantity", parseInt(e.target.value) || 1)}
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  className="text-xs h-9 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  value={item.quantity === 0 ? '' : String(item.quantity)}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/[^\d]/g, '');
+                    if (raw === '') { updateItem(item.id, "quantity", 0); return; }
+                    const n = parseInt(raw, 10);
+                    if (Number.isFinite(n) && n >= 0) updateItem(item.id, "quantity", n);
+                  }}
+                  onBlur={(e) => {
+                    if (item.quantity < 1) updateItem(item.id, "quantity", 1);
+                  }}
+                  data-testid="input-item-qty-add"
                 />
                 <Input
                   readOnly
