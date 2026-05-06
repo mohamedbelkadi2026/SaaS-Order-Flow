@@ -1,0 +1,156 @@
+🐛 FIX — Manual totalPrice override is lost when saving an existing order
+My problem
+When I edit an existing order in the order details modal:
+
+Order has 3 items × 799 DH = 2397 DH total
+I want to apply a special offer: customer pays only 999 DH for the bundle
+I type 999 in the "Prix total" field
+I click "Enregistrer"
+Modal closes, saves successfully
+I reopen the same order → "Prix total" is back to 2397 DH ❌
+
+The override I typed is silently overwritten. I want my manual value to be persisted exactly as typed and preserved across reopens.
+Investigation done
+I already verified:
+
+The backend /api/orders/:id PATCH endpoint accepts totalPrice and writes it as-is (no recomputation in server/routes.ts line 4137 or in storage.updateOrderItem)
+The save payload at client/src/components/order-details-modal.tsx line 332 sends totalPrice correctly: Math.round(parseFloat(fields.totalPrice || "0") * 100)
+No useEffect in the modal recomputes fields.totalPrice based on items
+
+So either:
+
+(a) Some code path I haven't found is silently recomputing totalPrice in the save flow
+(b) The PATCH succeeds but the row read back uses a different totalPrice (cached items × price)
+(c) The Replit Agent introduced a useEffect we missed
+
+Fix plan
+Step 1 — Add explicit logging on the client save path
+In client/src/components/order-details-modal.tsx around line 332, add a log right before the API call so we can see what's being sent:
+tsconst totalPriceCents = Math.round(parseFloat(fields.totalPrice || "0") * 100);
+
+console.log('[ORDER-MODAL-SAVE]', {
+  orderId: order.id,
+  oldTotalPrice: order.totalPrice,
+  oldTotalPriceDH: (order.totalPrice / 100).toFixed(2),
+  newTotalPriceTyped: fields.totalPrice,
+  newTotalPriceCents: totalPriceCents,
+  newTotalPriceDH: (totalPriceCents / 100).toFixed(2),
+  itemsSubtotalCents: localItems.reduce((s, i) => s + (i.price || 0) * (i.quantity || 1), 0),
+});
+
+const payload: any = {
+  // ... existing fields ...
+  totalPrice: totalPriceCents,
+};
+Step 2 — Add explicit logging on the server PATCH
+In server/routes.ts around line 4163, log incoming + persisted values:
+tsconsole.log(`[PATCH /api/orders/${orderId}] received totalPrice=${data.totalPrice}, current order.totalPrice=${order.totalPrice}`);
+And right after storage.updateOrder (or wherever the fields are persisted), re-fetch and log:
+tsconst verifyOrder = await storage.getOrder(orderId);
+console.log(`[PATCH /api/orders/${orderId}] AFTER persist: totalPrice in DB = ${verifyOrder?.totalPrice}`);
+Step 3 — Verify there's no recalcOrderTotal or similar trigger
+Search the entire codebase for any function that mutates orders.total_price based on items:
+bashgrep -rn "total_price" server/ shared/
+grep -rn "totalPrice.*=.*reduce" server/ client/src/
+grep -rn "recalculate\|recomputeTotal\|syncOrderTotal" server/
+If any found that runs on item update or order save, it must be removed or gated behind an explicit flag (default off — only run when the caller explicitly asks for auto-compute).
+Step 4 — Make updateOrder in storage trust the totalPrice exactly
+Find the actual update path. If storage.updateOrder exists, ensure it doesn't override totalPrice:
+ts// server/storage.ts — updateOrder method
+async updateOrder(id: number, data: Partial<Order>): Promise<Order | undefined> {
+  // CRITICAL: Do NOT recompute totalPrice from items. The caller's value is
+  // authoritative — it may differ from sum(items.price × quantity) on purpose
+  // (special offers, bundle discounts, manual adjustments).
+  const [updated] = await db.update(orders)
+    .set({ ...data, updatedAt: new Date() })
+    .where(eq(orders.id, id))
+    .returning();
+  return updated;
+}
+If you find a line like if (data.items) data.totalPrice = data.items.reduce(...), delete it.
+Step 5 — Save totalPrice BEFORE syncing items
+In the modal save mutation (line 335-358), the order is patched first, then items are synced. That's correct order. But verify item PATCH doesn't trigger a server-side recompute. If it does, swap the order: sync items first, then PATCH the order with the manual totalPrice as the LAST write. That way nothing overwrites it after.
+ts// 1. Sync all items first
+for (const item of localItems) {
+  // ... existing item POST/PATCH ...
+}
+
+// 2. THEN patch the order with the explicit totalPrice — last writer wins
+const res = await apiRequest("PATCH", `/api/orders/${order.id}`, payload);
+const updatedOrder = await res.json();
+
+return updatedOrder;
+This makes the user's totalPrice the last write, immune to any side effect of item updates.
+Step 6 — Surface the discrepancy in the UI
+When totalPrice ≠ sum(items.price × quantity), show a clear amber box explaining the offer. This makes it visible (and intentional) to anyone opening the order:
+In the modal, near the totalPrice field:
+tsx{(() => {
+  const itemsSubtotal = localItems.reduce((s, i) => s + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
+  const totalPriceCents = Math.round(parseFloat(fields.totalPrice || "0") * 100);
+  const diff = itemsSubtotal - totalPriceCents;
+  if (Math.abs(diff) < 100) return null;  // < 1 DH → ignore rounding noise
+
+  return (
+    <div className="text-[11px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 rounded p-2 mt-1">
+      <div className="flex justify-between">
+        <span className="text-amber-800">Sous-total articles :</span>
+        <span className="font-mono font-semibold">{(itemsSubtotal / 100).toFixed(2)} DH</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-amber-800">Total facturé :</span>
+        <span className="font-mono font-semibold">{(totalPriceCents / 100).toFixed(2)} DH</span>
+      </div>
+      <div className="flex justify-between text-amber-700 font-semibold mt-0.5 border-t border-amber-200 pt-1">
+        <span>{diff > 0 ? 'Offre / remise :' : 'Supplément :'}</span>
+        <span className="font-mono">{diff > 0 ? '−' : '+'}{Math.abs(diff / 100).toFixed(2)} DH</span>
+      </div>
+    </div>
+  );
+})()}
+Step 7 — Test sequence to confirm the fix
+After deploying:
+
+Open commande #7211 → modal shows "Prix total: 2397.00 DH"
+Type 999 in the field
+Amber box appears: "Sous-total: 2397.00 DH | Total facturé: 999.00 DH | Offre: −1398.00 DH"
+Click Enregistrer
+Watch Railway logs:
+
+[ORDER-MODAL-SAVE] orderId=7211 newTotalPriceCents=99900
+[PATCH /api/orders/7211] received totalPrice=99900
+[PATCH /api/orders/7211] AFTER persist: totalPrice in DB = 99900
+
+
+Modal stays open OR you reopen → Prix total field shows "999.00" ✅
+Liste shows the order at 999 DH ✅
+Bulk-ship → Digylog receives price = 999, quantity = 3 ✅
+
+If step 5 logs show received=99900 but AFTER persist=239700, the bug is server-side — find what's overwriting between the receive and the persist.
+If step 5 logs show newTotalPriceCents=239700 (not 99900), the bug is client-side — the override never made it into the payload.
+The logs make it falsifiable.
+Acceptance criteria
+
+✅ Type 999 in totalPrice field on a 2397 DH order → save → reopen → field shows 999.
+✅ Amber box "Offre/remise" appears when totalPrice ≠ items subtotal, with the right numbers.
+✅ Liste shows 999 DH (not 2397) for that order.
+✅ Bulk-ship sends totalPrice=999 to Digylog (not 2397).
+✅ Items keep their price=799, quantity=3 — only the order-level total is overridden.
+✅ Logs in Railway clearly show the value flowing intact: payload → received → persisted.
+✅ No regression: orders without override still show items × price = total correctly.
+
+Commit
+bashgit add server/routes.ts server/storage.ts client/src/components/order-details-modal.tsx
+git commit -m "fix(orders): persist manual totalPrice override on existing orders
+
+Bug: typing a custom 'Prix total' (e.g. 999 DH for a bundle that auto-computes
+to 2397 DH) was lost on save — the field reverted to items × price on reopen.
+
+- Added trace logs on both client (ORDER-MODAL-SAVE) and server (PATCH receive
+  + AFTER persist) so the value can be tracked end-to-end through Railway logs.
+- Reordered the modal save flow: items sync FIRST, then order PATCH, so the
+  user's totalPrice is the last write and can't be clobbered by item triggers.
+- Confirmed storage.updateOrder writes 'set({ ...data })' verbatim — no
+  silent recomputation from items. Documented as critical comment.
+- New amber 'Offre/remise' callout in the modal whenever totalPrice differs
+  from items subtotal — makes the override visible & intentional."
+git push

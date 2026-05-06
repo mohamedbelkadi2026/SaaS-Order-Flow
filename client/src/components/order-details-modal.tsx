@@ -311,11 +311,16 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     }
     const isNewOrder = order.id !== prevOrderIdRef.current;
     if (isNewOrder) {
-      // Only reset the manual override when a genuinely different order is opened.
-      // When the same order's data refreshes after save, we keep the override so
-      // the auto-calc doesn't clobber the manually typed price.
-      setManualPriceOverride(false);
       prevOrderIdRef.current = order.id;
+      // Detect whether the stored totalPrice is a manual override (differs from
+      // items subtotal by > 1 DH). If so, keep manualPriceOverride=true so the
+      // items-useEffect doesn't clobber it when setLocalItems triggers it below.
+      const dbTotal = order.totalPrice ?? 0;
+      const itemsSum = (order.items || []).reduce(
+        (s: number, i: any) => s + ((Number(i.price) || 0) * (Number(i.quantity) || 1)),
+        0
+      );
+      setManualPriceOverride(Math.abs(dbTotal - itemsSum) > 100);
     }
     const firstItemVariant = order.items?.[0]?.variantInfo || "";
     const variantFallback = firstItemVariant || order.variantDetails || "";
