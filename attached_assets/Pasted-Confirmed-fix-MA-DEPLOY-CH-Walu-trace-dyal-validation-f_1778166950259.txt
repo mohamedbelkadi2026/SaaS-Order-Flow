@@ -1,0 +1,198 @@
+Confirmed: fix MA-DEPLOY-CH! Walu trace dyal validation f code daba.
+Donc 2 possibilities:
+
+Replit Agent ma 9-9bel-ch had prompt (wala n-sit-ih)
+Push fail walla deploy lazel kayt-process
+
+Walakin daba khlini n-help-ek awwal check commande #5289 direct:
+Step 1: Verify customerName f db
+Run hadi SQL f Railway DB UI:
+sqlSELECT 
+  id,
+  order_number,
+  customer_name,
+  length(customer_name) AS name_length,
+  customer_name IS NULL AS is_null,
+  encode(customer_name::bytea, 'hex') AS hex_bytes,  -- ← shows invisible chars!
+  customer_phone,
+  customer_city,
+  customer_address,
+  status,
+  store_id
+FROM orders 
+WHERE id = 5289;
+hex_bytes ka-y-show lik kolchi bytes dyal name — ila kayna e2808e (RTL mark) walla e2808b (zero-width space) → invisible chars hia l-mochkila.
+Sif-li result → ana n-confirmek exact mochkila.
+Step 2: Quick manual fix daba (ma t-st-anna-ch deploy)
+Bach t-shippi commande #5289 daba f l-7e9-9-9, dir hadshi:
+Option A: Fix via UI
+
+Open Mes Commandes → #5289
+Modal opens
+Clear DESTINATAIRE field complètement (delete kolchi text)
+Re-type customer name b yedik (ma t-paste-ch men 9bel — type m-jdid)
+Save
+Try bulk-ship again
+
+Hadi ka-t-clear invisible chars 7it nta kayt-r-type fresh.
+Option B: Fix via SQL direct
+sql-- Awwal: chouf ach kayna f field
+SELECT id, customer_name, length(customer_name)
+FROM orders WHERE id = 5289;
+
+-- Ila length = 0 walla NULL:
+UPDATE orders 
+SET customer_name = 'Hassan'  -- ← put real name f l-makan
+WHERE id = 5289;
+
+-- Ila length > 0 walakin bla customer name visible:
+-- Strip invisible chars manually
+UPDATE orders 
+SET customer_name = regexp_replace(
+  customer_name, 
+  E'[\\u200B-\\u200F\\u202A-\\u202E\\u2066-\\u2069\\uFEFF\\u00A0]', 
+  '', 
+  'g'
+)
+WHERE id = 5289;
+
+-- Verify
+SELECT id, customer_name, length(customer_name) FROM orders WHERE id = 5289;
+Ba3d hadi → bulk-ship kha-y-shaghal directement.
+Step 3: Push prompt mra okhra
+Khlini n-write lik prompt mokhtaser + wadi7 li Replit Agent ma y9derch y-skip:
+
+URGENT BUG FIX — Ameex rejecting orders for missing customerName
+Symptom
+Server logs show repeatedly:
+[CARRIER→AMEEX][#5289] ❌ Ameex n'a pas retourné de numéro de suivi.
+Raw: {"login":"success","api":{"type":"error","msg":"Destinataire: est obligatoire"}}
+Ameex is correctly rejecting orders because the destinataire (customer name) field is empty or contains only invisible characters (RTL marks, zero-width spaces from Shopify imports). The platform sends the request anyway and surfaces a confusing error.
+This affects orders imported from Shopify/WooCommerce where customer names sometimes contain \u200E (LRM), \u200F (RLM), \u200B (ZWSP), \uFEFF (BOM), etc. The string LOOKS non-empty in the database but cleans to empty.
+EXACT changes — do not deviate from this spec
+File 1: server/services/carrier-service.ts
+Change A — Add helper function above buildAmeexPayload (which is around line 365):
+ts/**
+ * Strip invisible Unicode characters that often hide in customer-facing fields
+ * imported from Shopify/WooCommerce stores. These characters render as nothing
+ * in the UI but cause server-side validation failures on third-party APIs.
+ */
+function cleanText(s: any): string {
+  return String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u00A0]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Validate Ameex-mandatory fields BEFORE making the API call.
+ * Returns a list of missing/invalid fields, or empty array if OK.
+ */
+function validateAmeexInput(input: CarrierShipInput): string[] {
+  const issues: string[] = [];
+  const name    = cleanText(input.customerName);
+  const phone   = cleanText(input.phone).replace(/\D/g, '');
+  const city    = cleanText(input.city);
+  const address = cleanText(input.address);
+  const product = cleanText(input.productName);
+
+  if (!name || name.length < 2)       issues.push('Nom du destinataire manquant ou trop court');
+  if (!phone || phone.length < 8)     issues.push('Téléphone manquant ou invalide');
+  if (!city)                          issues.push('Ville manquante');
+  if (!address && !city)              issues.push('Adresse manquante');
+  if (!product)                       issues.push('Nom du produit manquant');
+  if (!input.totalPrice || input.totalPrice <= 0) issues.push('Prix total manquant ou nul');
+
+  return issues;
+}
+Change B — Update buildAmeexPayload to use cleaned values:
+Replace the existing function body with:
+tsfunction buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  const name    = cleanText(input.customerName);
+  const phone   = sanitizePhone(input.phone);
+  const city    = cleanText(input.city);
+  const address = cleanText(input.address) || city;
+  const product = cleanText(input.productName) || 'Produit';
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+
+  return {
+    business:     String(input.apiSecret || input.apiId || ""),
+    type:         "SIMPLE",
+    destinataire: name,
+    telephone:    phone,
+    ville:        city,
+    adresse:      address,
+    montant:      String(priceDH),
+    cod:          String(priceDH),
+    produit:      product,
+    quantite:     String(input.quantity ?? 1),
+    ref:          String(input.orderNumber),
+    note:         cleanText(input.note),
+    open:         input.canOpen ? "YES" : "NO",
+    replace:      "true",
+  };
+}
+Change C — Add validation gate at the top of the Ameex branch in shipOrderToCarrier:
+Find the line if (providerKey === 'ameex') { (around line 811 or 871). At the very TOP of that block, BEFORE any other code, add:
+tsif (providerKey === 'ameex') {
+  // ── PRE-FLIGHT VALIDATION ────────────────────────────────────────
+  const validationIssues = validateAmeexInput(input);
+  if (validationIssues.length > 0) {
+    const errMsg = `Données manquantes pour Ameex: ${validationIssues.join(', ')}`;
+    console.error(`[CARRIER→AMEEX][#${input.orderNumber}] ❌ Pre-flight validation failed: ${errMsg}`);
+    console.error(`[CARRIER→AMEEX][#${input.orderNumber}] Raw input: customerName="${input.customerName}" (len=${(input.customerName || '').length}) phone="${input.phone}" city="${input.city}" address="${input.address}"`);
+    return {
+      success:        false,
+      error:          errMsg,
+      carrierMessage: errMsg,
+      httpStatus:     0,
+      rawResponse:    null,
+      permanent:      true,
+    };
+  }
+
+  // ... ALL existing Ameex POST logic stays unchanged below ...
+}
+Change D — Add payload log right before the POST:
+Just before the axios.post(apiUrl, fd, ...) call (around line 878), add:
+tsconsole.log(`[AMEEX-PAYLOAD] order=${input.orderNumber} →`, JSON.stringify({
+  destinataire: payload.destinataire,
+  telephone:    payload.telephone,
+  ville:        payload.ville,
+  adresse:      payload.adresse,
+  montant:      payload.montant,
+  produit:      payload.produit,
+  quantite:     payload.quantite,
+  ref:          payload.ref,
+}));
+Acceptance test
+After deploy, the Railway logs should show ONE of these two patterns when you bulk-ship:
+Pattern A — order has missing data (was the bug case):
+[CARRIER→AMEEX][#5289] ❌ Pre-flight validation failed: Données manquantes pour Ameex: Nom du destinataire manquant ou trop court
+[CARRIER→AMEEX][#5289] Raw input: customerName="" (len=0) phone="+212..." city="..." address="..."
+Pattern B — order is valid:
+[AMEEX-PAYLOAD] order=5289 → {"destinataire":"Hassan","telephone":"+212600000000","ville":"Casablanca",...}
+[CARRIER→AMEEX][#5289] ✅ Ameex SUCCESS!
+No more "Destinataire: est obligatoire" coming back from Ameex's server because we pre-empt the call.
+Constraints
+
+Do NOT modify Digylog code paths or any other carrier
+Do NOT change response handling logic
+Do NOT add retry logic to the validation failure path (permanent: true handles it)
+Just add: cleanText(), validateAmeexInput(), payload-cleaning in buildAmeexPayload, validation gate in shipOrderToCarrier, and one log line
+
+Commit
+bashgit add server/services/carrier-service.ts
+git commit -m "fix(ameex): pre-flight validation + invisible-char cleanup
+
+Ameex rejected orders with 'Destinataire: est obligatoire' when customer
+names contained only invisible chars (RTL marks, zero-width spaces from
+Shopify imports). Now we clean text fields and validate before the API call.
+
+- cleanText() strips \u200B-\u200F, \u202A-\u202E, \u2066-\u2069, \uFEFF, NBSP
+- validateAmeexInput() refuses ships missing destinataire/phone/city/address/product/price
+- buildAmeexPayload uses cleaned values; falls back to city when address empty
+- Validation failures return permanent:true so retry loop doesn't waste attempts
+- New [AMEEX-PAYLOAD] log shows exact sanitized payload sent
+- No other carrier or response-handling code touched"
+git push

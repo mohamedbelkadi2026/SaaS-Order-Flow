@@ -394,14 +394,17 @@ function buildGenericPayload(input: CarrierShipInput): Record<string, unknown> {
  * Auth: C-Api-Key + C-Api-Id headers
  */
 
-// Strips invisible/directional Unicode characters that look present in the UI
-// but cause Ameex field-validation failures (RTL marks, zero-width spaces,
-// BOM — all common in names imported from Shopify/WooCommerce Arabic stores).
-const cleanAmeexField = (s: any): string =>
-  String(s ?? '')
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+/**
+ * Strip invisible Unicode characters that often hide in customer-facing fields
+ * imported from Shopify/WooCommerce stores. These characters render as nothing
+ * in the UI but cause server-side validation failures on third-party APIs.
+ */
+function cleanText(s: any): string {
+  return String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u00A0]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
 
 /**
  * Validate Ameex-mandatory fields BEFORE making the API call.
@@ -410,11 +413,11 @@ const cleanAmeexField = (s: any): string =>
  */
 function validateAmeexInput(input: CarrierShipInput): string[] {
   const issues: string[] = [];
-  const name    = cleanAmeexField(input.customerName);
-  const phone   = cleanAmeexField(input.phone).replace(/\D/g, '');
-  const city    = cleanAmeexField(input.city);
-  const address = cleanAmeexField(input.address) || city;
-  const product = cleanAmeexField(input.productName);
+  const name    = cleanText(input.customerName);
+  const phone   = cleanText(input.phone).replace(/\D/g, '');
+  const city    = cleanText(input.city);
+  const address = cleanText(input.address) || city;
+  const product = cleanText(input.productName);
 
   if (!name || name.length < 2)            issues.push('Nom du destinataire manquant ou trop court');
   if (!phone || phone.length < 8)          issues.push('Téléphone manquant ou invalide');
@@ -427,11 +430,11 @@ function validateAmeexInput(input: CarrierShipInput): string[] {
 }
 
 function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
-  const name    = cleanAmeexField(input.customerName);
+  const name    = cleanText(input.customerName);
   const phone   = sanitizePhone(input.phone);
-  const city    = cleanAmeexField(input.city);
-  const address = cleanAmeexField(input.address) || city;
-  const product = cleanAmeexField(input.productName) || 'Produit';
+  const city    = cleanText(input.city);
+  const address = cleanText(input.address) || city;
+  const product = cleanText(input.productName) || 'Produit';
   const priceDH = +(input.totalPrice / 100).toFixed(2);
 
   return {
@@ -449,7 +452,7 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
     // as 'ref'; the webhook uses it to correlate before the real tracking arrives.
     ref:          `TJG-${input.orderNumber}`,
     external_id:  `tajergrow-${input.orderId}`,
-    note:         cleanAmeexField(input.note),
+    note:         cleanText(input.note),
     open:         input.canOpen ? "YES" : "NO",
     replace:      "true",
   };
@@ -884,7 +887,8 @@ export async function shipOrderToCarrier(
     const validationIssues = validateAmeexInput(input);
     if (validationIssues.length > 0) {
       const errMsg = `Données manquantes pour Ameex: ${validationIssues.join(', ')}`;
-      console.error(`${tag} ❌ Pre-flight validation failed: ${errMsg}`);
+      console.error(`[CARRIER→AMEEX][#${input.orderNumber}] ❌ Pre-flight validation failed: ${errMsg}`);
+      console.error(`[CARRIER→AMEEX][#${input.orderNumber}] Raw input: customerName="${input.customerName}" (len=${(input.customerName || '').length}) phone="${input.phone}" city="${input.city}" address="${input.address}"`);
       return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
     }
 
