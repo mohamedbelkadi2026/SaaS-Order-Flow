@@ -940,6 +940,18 @@ export async function shipOrderToCarrier(
       return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
     }
 
+    // ── Business / auth guard ─────────────────────────────────────────────────
+    // Ameex uses the 'business' field to identify the account. If apiSecret and
+    // apiId are both empty, business="" and Ameex returns the misleading
+    // "Destinataire est obligatoire" error instead of a proper 401.
+    const businessValue = String(input.apiSecret || input.apiId || "").trim();
+    if (!businessValue) {
+      const errMsg = `Ameex: identifiant 'business' manquant. Vérifiez la configuration de votre intégration Ameex (champ 'API Secret' ou 'API ID').`;
+      console.error(`[CARRIER→AMEEX][#${input.orderNumber}] ❌ ${errMsg}`);
+      console.error(`[AMEEX-CREDS-AUDIT] apiKey_present=${!!apiKey} apiSecret_present=${!!input.apiSecret} apiId_present=${!!input.apiId} business_value="" business_present=false`);
+      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
+
     console.log(`[AMEEX-REACHED] input=`, JSON.stringify(input));
     // Ameex requires multipart/form-data
     const FormDataLib = (await import('form-data')).default;
@@ -953,7 +965,19 @@ export async function shipOrderToCarrier(
       fdFields[k] = val;
     });
 
-    console.log(`[AMEEX-INPUT-DEBUG] name="${input.customerName}" secret="${input.apiSecret}" id="${input.apiId}"`);
+    console.log(`[AMEEX-CREDS-AUDIT] order=${input.orderNumber}`, {
+      apiKey_present:    !!apiKey,
+      apiKey_length:     (apiKey || '').length,
+      apiKey_prefix:     (apiKey || '').slice(0, 8) + '...',
+      apiSecret_present: !!input.apiSecret,
+      apiSecret_length:  (input.apiSecret || '').length,
+      apiSecret_prefix:  (input.apiSecret || '').slice(0, 8) + '...',
+      apiId_present:     !!input.apiId,
+      apiId_length:      (input.apiId || '').length,
+      apiId_prefix:      (input.apiId || '').slice(0, 8) + '...',
+      business_value:    businessValue,
+      business_present:  !!businessValue,
+    });
     console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
     console.log(`[AMEEX-PAYLOAD] order=${input.orderNumber}`, JSON.stringify({
       destinataire: payload.destinataire,
@@ -966,11 +990,17 @@ export async function shipOrderToCarrier(
       ref:          payload.ref,
     }));
 
+    console.log(`[AMEEX-REQUEST] url=${apiUrl} method=POST contentType=multipart/form-data businessLen=${businessValue.length} apiKeyLen=${(apiKey || '').length}`);
     const resp = await axios.post(apiUrl, fd, {
       headers: {
         ...fd.getHeaders(),        // multipart/form-data + correct boundary
-        'C-Api-Key': cleanKey(apiKey),
-        'C-Api-Id':  cleanKey(apiSecret || ''),
+        // Send auth token under multiple header names — different Ameex API
+        // versions / portal configs may expect different auth header names.
+        'C-Api-Key':     cleanKey(apiKey),
+        'C-Api-Id':      cleanKey(input.apiSecret || apiKey || ''),
+        'Authorization': `Bearer ${cleanKey(apiKey)}`,
+        'Token':         cleanKey(apiKey),
+        'X-Api-Key':     cleanKey(apiKey),
       },
       timeout: 45000,
       httpsAgent: SSL_AGENT,
