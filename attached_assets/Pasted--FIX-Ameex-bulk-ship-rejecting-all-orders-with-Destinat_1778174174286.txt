@@ -1,0 +1,180 @@
+🔧 FIX — Ameex bulk-ship rejecting all orders with "Destinataire est obligatoire"
+⚠️ CRITICAL CONSTRAINTS
+DO NOT TOUCH ANY FILE OR CODE THAT IS NOT EXPLICITLY LISTED BELOW.
+
+❌ DO NOT modify Digylog — Digylog works perfectly, do not look at its code
+❌ DO NOT modify any other carrier (Ozone, Ecotrack, Sendit, etc.)
+❌ DO NOT modify shared helpers (sanitizePhone, extractTracking, isTransientShipError, etc.)
+❌ DO NOT modify the retry loop
+❌ DO NOT modify response handling outside the Ameex branch
+✅ ONLY modify the Ameex code paths — clearly marked below
+
+If a change you're considering touches Digylog or any other carrier, STOP and skip it.
+Symptom (verified from Railway logs after previous deploy attempt)
+[AMEEX-PAYLOAD] order=5289 → {"destinataire":"Mustapha","telephone":"0661639533","ville":"Agadir",...}
+[CARRIER→AMEEX][#5289] ❌ Raw: {"login":"success","api":{"type":"error","msg":"Destinataire: est obligatoire"}}
+Tajergrow sends destinataire="Mustapha" correctly. Ameex rejects with "Destinataire est obligatoire". Either Ameex's API expects a different field name, or a different request format (e.g. JSON instead of form-data, or different content-type).
+Digylog is NOT affected — it ships fine and stays untouched.
+Files to modify (ONLY these, ONLY the Ameex sections)
+
+server/services/carrier-service.ts — Ameex payload builder + Ameex POST branch ONLY
+
+That's it. One file, two specific sections inside it.
+
+Change 1 — server/services/carrier-service.ts buildAmeexPayload (around line 365)
+This is the ONLY function to modify in this step. It builds the Ameex-specific payload. Do not touch buildDigylogPayload, buildGenericPayload, or any other builder.
+Replace the function body (line 365-386) with this version that sends the customer name under multiple field aliases. Ameex's API is rejecting destinataire alone, so we send the same name under every plausible field name. The right one will be picked up; the others are ignored.
+tsfunction buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  // Strip invisible Unicode (RTL marks, zero-width space, BOM) that hide in
+  // Shopify/WooCommerce-imported customer names and break server-side validation.
+  const clean = (s: any) => String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u00A0]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const name    = clean(input.customerName);
+  const phone   = sanitizePhone(input.phone);
+  const city    = clean(input.city);
+  const address = clean(input.address) || city;
+  const product = clean(input.productName) || 'Produit';
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+
+  // Split full name in case Ameex wants nom + prenom separately
+  const parts  = name.split(/\s+/);
+  const prenom = parts[0] || name;
+  const nom    = parts.slice(1).join(' ') || name;
+
+  return {
+    business:     String(input.apiSecret || input.apiId || ""),
+    type:         "SIMPLE",
+
+    // ── Customer name — sent under every plausible Ameex field name ─────
+    destinataire:        name,
+    nom:                 nom,
+    prenom:              prenom,
+    nom_complet:         name,
+    nom_destinataire:    name,
+    name:                name,
+    client:              name,
+    client_name:         name,
+    customer:            name,
+    customer_name:       name,
+    recipient:           name,
+    recipient_name:      name,
+    fullname:            name,
+    full_name:           name,
+
+    telephone:    phone,
+    phone:        phone,
+    tel:          phone,
+
+    ville:        city,
+    city:         city,
+
+    adresse:      address,
+    address:      address,
+
+    montant:      String(priceDH),
+    cod:          String(priceDH),
+    price:        String(priceDH),
+    amount:       String(priceDH),
+
+    produit:      product,
+    product:      product,
+    description:  product,
+
+    quantite:     String(input.quantity ?? 1),
+    quantity:     String(input.quantity ?? 1),
+    qty:          String(input.quantity ?? 1),
+
+    ref:          String(input.orderNumber),
+    reference:    String(input.orderNumber),
+    external_id:  `tajergrow-${input.orderId}`,
+
+    note:         clean(input.note),
+    notes:        clean(input.note),
+    comment:      clean(input.note),
+
+    open:         input.canOpen ? "YES" : "NO",
+    canopen:      input.canOpen ? "YES" : "NO",
+    can_open:     input.canOpen ? "YES" : "NO",
+
+    replace:      "true",
+  };
+}
+The duplicate aliases are harmless to Ameex's parser — extra keys are ignored. The right key WILL be picked up.
+Change 2 — Add a verbose response logger in the Ameex branch ONLY
+Find the Ameex branch in shipOrderToCarrier. The exact line to look for is:
+tsif (providerKey === 'ameex') {
+This appears around line 811 or 871. Inside the FIRST if (providerKey === 'ameex') block (the one that handles the response, NOT the one that builds the request), find this existing line:
+tsconst trackingNumber = extractTracking(rb);
+RIGHT BEFORE that line, add:
+tsconsole.log(`[AMEEX-FULL-RESPONSE] order=${input.orderNumber} httpStatus=${httpSt} body=${JSON.stringify(rb).slice(0, 800)}`);
+This is for visibility — it shows the full Ameex response in Railway logs so we can see if the error message changes after Change 1 takes effect.
+Change 3 — Surface Ameex's exact api.msg to the user instead of generic message
+In the SAME Ameex response branch, find this existing block (around line 858-862):
+tsif (!trackingNumber && !ameexSuccess) {
+  const noTrackMsg = `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
+  console.error(`${tag} ❌ ${noTrackMsg} Raw: ${JSON.stringify(rb)}`);
+  return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus: httpSt, rawResponse: rb };
+}
+Replace it with:
+tsif (!trackingNumber && !ameexSuccess) {
+  // If Ameex returned a specific error message (api.msg), surface it verbatim
+  // so the user knows exactly what to fix instead of seeing a generic message.
+  const ameexApiMsg = rb?.api?.msg || rb?.message || rb?.error;
+  const userMsg = ameexApiMsg
+    ? `Ameex: ${ameexApiMsg}`
+    : `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
+
+  console.error(`${tag} ❌ ${userMsg}. Raw: ${JSON.stringify(rb)}`);
+  return {
+    success:        false,
+    error:          userMsg,
+    carrierMessage: ameexApiMsg || userMsg,
+    httpStatus:     httpSt,
+    rawResponse:    rb,
+    permanent:      !!ameexApiMsg,   // if Ameex gave a specific error, retry won't help
+  };
+}
+This way, when Ameex says "Destinataire est obligatoire", the failure modal shows EXACTLY that, not a generic message. The user knows immediately what's wrong.
+What NOT to change
+
+❌ buildDigylogPayload — leave it 100% alone
+❌ buildGenericPayload — leave it alone
+❌ Any code outside if (providerKey === 'ameex') blocks
+❌ cleanText, validateAmeexInput, or any helpers from previous prompts (they may already exist; if so, leave them; if not, do not add them — the multi-alias approach is enough)
+❌ The retry loop, isTransientShipError, extractTracking, sanitizePhone
+❌ Frontend orders.tsx, the failure modal categorization — already handled
+❌ Any database or schema changes
+❌ Any new files
+
+Acceptance criteria
+
+✅ buildAmeexPayload sends destinataire, nom, prenom, nom_complet, client, client_name, customer_name, recipient, name, fullname etc. all containing the same customer name.
+✅ Same multi-aliasing for phone/city/address/price/product/quantity.
+✅ Railway logs show [AMEEX-FULL-RESPONSE] order=X httpStatus=200 body=... after every Ameex ship attempt.
+✅ When Ameex rejects with api.msg="Destinataire est obligatoire", failure modal shows "Ameex: Destinataire est obligatoire" (not generic message).
+✅ When Ameex finally accepts an order, status code 200 + tracking number returned, success path works.
+✅ Digylog ship a test order — works exactly as before. No regression.
+✅ No other carrier behavior changed.
+✅ No new helper functions added; changes confined to buildAmeexPayload body and the two Ameex response-branch edits.
+
+Commit
+bashgit add server/services/carrier-service.ts
+git commit -m "fix(ameex): multi-alias payload + surface raw error message
+
+Ameex rejects ships with 'Destinataire est obligatoire' even when destinataire
+is correctly populated, suggesting their API expects a different field name.
+
+Defensive fix (Ameex ONLY, Digylog and other carriers untouched):
+- Send customer name under ~10 plausible field names (nom, prenom, name,
+  client, customer, recipient, fullname, etc.)
+- Same multi-aliasing for phone/city/address/price/product/quantity/ref
+- Strip invisible Unicode (RTL marks, ZWSP, BOM) from text fields before send
+- New [AMEEX-FULL-RESPONSE] log shows full body + status for every Ameex attempt
+- Pass through Ameex api.msg verbatim instead of generic 'no tracking' message
+  → failure modal now shows users exactly what Ameex complains about
+- Mark specific Ameex errors as permanent so retry loop doesn't waste attempts
+- Zero changes to Digylog, generic builder, retry loop, or any other carrier"
+git push

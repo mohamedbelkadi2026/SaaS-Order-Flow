@@ -436,24 +436,72 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const address = cleanText(input.address) || city;
   const product = cleanText(input.productName) || 'Produit';
   const priceDH = +(input.totalPrice / 100).toFixed(2);
+  const note    = cleanText(input.note);
+
+  // Split full name in case Ameex wants nom + prenom separately
+  const parts  = name.split(/\s+/);
+  const prenom = parts[0] || name;
+  const nom    = parts.slice(1).join(' ') || name;
 
   return {
     business:     String(input.apiSecret || input.apiId || ""),
     type:         "SIMPLE",
-    destinataire: name,
+
+    // ── Customer name — sent under every plausible Ameex field name ──────────
+    // Ameex API has been seen rejecting 'destinataire' alone; extra aliases are
+    // ignored by their parser but ensure the right key is picked up.
+    destinataire:        name,
+    nom:                 nom,
+    prenom:              prenom,
+    nom_complet:         name,
+    nom_destinataire:    name,
+    name:                name,
+    client:              name,
+    client_name:         name,
+    customer:            name,
+    customer_name:       name,
+    recipient:           name,
+    recipient_name:      name,
+    fullname:            name,
+    full_name:           name,
+
     telephone:    phone,
+    phone:        phone,
+    tel:          phone,
+
     ville:        city,
+    city:         city,
+
     adresse:      address,
+    address:      address,
+
     montant:      String(priceDH),
     cod:          String(priceDH),
+    price:        String(priceDH),
+    amount:       String(priceDH),
+
     produit:      product,
+    product:      product,
+    description:  product,
+
     quantite:     String(input.quantity ?? 1),
+    quantity:     String(input.quantity ?? 1),
+    qty:          String(input.quantity ?? 1),
+
     // TJG-{orderNumber} is a stable cross-attempt reference. Ameex stores it
     // as 'ref'; the webhook uses it to correlate before the real tracking arrives.
     ref:          `TJG-${input.orderNumber}`,
+    reference:    `TJG-${input.orderNumber}`,
     external_id:  `tajergrow-${input.orderId}`,
-    note:         cleanText(input.note),
+
+    note:         note,
+    notes:        note,
+    comment:      note,
+
     open:         input.canOpen ? "YES" : "NO",
+    canopen:      input.canOpen ? "YES" : "NO",
+    can_open:     input.canOpen ? "YES" : "NO",
+
     replace:      "true",
   };
 }
@@ -952,6 +1000,7 @@ export async function shipOrderToCarrier(
       console.warn(`${tag} ⚠️ AMEEX-RETRY: order=${input.orderNumber} had a placeholder from a previous attempt. Parcel may already exist in Ameex portal. Proceeding with new attempt.`);
     }
 
+    console.log(`[AMEEX-FULL-RESPONSE] order=${input.orderNumber} httpStatus=${httpSt} body=${JSON.stringify(rb).slice(0, 800)}`);
     const trackingNumber = extractTracking(rb);
     // Ameex returns several "success" shapes — all must be recognized or we create
     // duplicates on retry when the user clicks "Réessayer".
@@ -970,9 +1019,20 @@ export async function shipOrderToCarrier(
       (!!rb?.parcel || !!rb?.colis);
 
     if (!isSuccessShape) {
-      const noTrackMsg = `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
-      console.error(`${tag} ❌ ${noTrackMsg} Raw: ${JSON.stringify(rb)}`);
-      return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus: httpSt, rawResponse: rb };
+      // Surface Ameex's exact api.msg so the user sees what to fix, not a generic message.
+      const ameexApiMsg = rb?.api?.msg || rb?.message || rb?.error;
+      const userMsg = ameexApiMsg
+        ? `Ameex: ${ameexApiMsg}`
+        : `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
+      console.error(`${tag} ❌ ${userMsg}. Raw: ${JSON.stringify(rb)}`);
+      return {
+        success:        false,
+        error:          userMsg,
+        carrierMessage: ameexApiMsg || userMsg,
+        httpStatus:     httpSt,
+        rawResponse:    rb,
+        permanent:      !!ameexApiMsg,
+      };
     }
     // Placeholder embeds TJG-{orderNumber} so the webhook can correlate before
     // the real tracking number arrives.
