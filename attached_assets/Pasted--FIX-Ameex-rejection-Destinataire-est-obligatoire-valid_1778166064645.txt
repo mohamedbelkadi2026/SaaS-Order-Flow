@@ -1,0 +1,179 @@
+🐛 FIX — Ameex rejection "Destinataire: est obligatoire" — validate fields before shippingMy problemBulk-ship to Ameex returns:
+json{ "login": "success", "api": { "type": "error", "msg": "Destinataire: est obligatoire" } }Translated: "Recipient name is required". Ameex is correctly rejecting orders that have an empty/null customerName. But my orders DO have customer names visible in the UI — so either:
+
+The customer name has invisible characters (zero-width spaces, RTL marks, BOM)
+The customer name is null in the database for that specific order
+There's some character that fails Ameex's server-side validation
+Today the platform sends the request anyway and surfaces a confusing error. I want:
+
+Pre-flight validation before sending — refuse to ship if mandatory fields are missing
+Field cleaning — strip invisible characters, fix RTL, normalize whitespace
+Clear error messages when a field is genuinely missing
+Fix — Ameex-only, no other carrier touchedStep 1 — Add a pre-flight validator for Ameex shipmentsIn server/services/carrier-service.ts, just above buildAmeexPayload (line 365), add:ts/**
+ * Validate the Ameex-mandatory fields BEFORE making the API call.
+ * Returns a list of missing/invalid fields, or empty array if OK.
+ *
+ * Ameex requires: destinataire (customer name), telephone, ville, adresse,
+ * montant, produit. Missing any of these = rejection.
+ */
+function validateAmeexInput(input: CarrierShipInput): string[] {
+  const issues: string[] = [];
+
+  // Strip invisible chars (RTL marks, zero-width spaces, BOM) before checking
+  const cleaned = (s: any) => String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')  // invisible
+    .replace(/\s+/g, ' ')                                              // collapse whitespace
+    .trim();
+
+  const name    = cleaned(input.customerName);
+  const phone   = cleaned(input.phone);
+  const city    = cleaned(input.city);
+  const address = cleaned(input.address);
+  const product = cleaned(input.productName);
+
+  if (!name || name.length < 2)       issues.push('Nom du destinataire manquant ou trop court');
+  if (!phone || phone.length < 8)     issues.push('Téléphone manquant ou invalide');
+  if (!city)                          issues.push('Ville manquante');
+  if (!address)                       issues.push('Adresse manquante');
+  if (!product)                       issues.push('Nom du produit manquant');
+  if (!input.totalPrice || input.totalPrice <= 0) issues.push('Prix total manquant ou nul');
+
+  return issues;
+}The cleaning regex strips:
+
+\u200B-\u200F — zero-width space, ZWNJ, ZWJ, LRM, RLM
+\u202A-\u202E — directional formatting (LRE, RLE, PDF, LRO, RLO)
+\u2066-\u2069 — directional isolates
+\uFEFF — byte order mark
+These often hide in customer names imported from Shopify/WooCommerce (RTL Arabic store fields), and they look "present" in the UI but get stripped server-side or fail validation on third-party APIs.Step 2 — Use cleaned values in the actual payloadUpdate buildAmeexPayload (line 365) to clean the same way, so even if validation passes, what we send is normalized:tsfunction buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  const cleaned = (s: any) => String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const name    = cleaned(input.customerName);
+  const phone   = sanitizePhone(input.phone);
+  const city    = cleaned(input.city);
+  const address = cleaned(input.address) || city;       // fallback to city if address empty
+  const product = cleaned(input.productName) || 'Produit';
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+
+  return {
+    business:     String(input.apiSecret || input.apiId || ""),
+    type:         "SIMPLE",
+    destinataire: name,
+    telephone:    phone,
+    ville:        city,
+    adresse:      address,
+    montant:      String(priceDH),
+    cod:          String(priceDH),
+    produit:      product,
+    quantite:     String(input.quantity ?? 1),
+    ref:          String(input.orderNumber),
+    note:         cleaned(input.note),
+    open:         input.canOpen ? "YES" : "NO",
+    replace:      "true",
+  };
+}Step 3 — Run validation BEFORE the network callIn the Ameex section of shipOrderToCarrier (around line 811-868), add the validation gate at the top:tsif (providerKey === 'ameex') {
+  const issues = validateAmeexInput(input);
+  if (issues.length > 0) {
+    const errMsg = `Données manquantes pour Ameex: ${issues.join(', ')}`;
+    console.error(`${tag} ❌ Pre-flight validation failed: ${errMsg}`);
+    return {
+      success:        false,
+      error:          errMsg,
+      carrierMessage: errMsg,
+      httpStatus:     0,           // didn't even contact carrier
+      rawResponse:    null,
+      permanent:      true,        // not transient — retry won't help, data is missing
+    };
+  }
+  // ... existing Ameex POST logic ...
+}The permanent: true flag tells the retry loop not to waste 2 more attempts — the data is missing on our side, retrying won't fix it.Step 4 — Surface the missing-field reason in the failure modalIn client/src/pages/orders.tsx failure categorization (where blacklist/duplicate/etc. are grouped), add a new "validation" category:tsxconst validationFailures = failures.filter(r =>
+  /Données manquantes|Destinataire|Téléphone|Adresse|Ville/i.test(r.error || '')
+);
+
+// In the JSX:
+{validationFailures.length > 0 && (
+  <div className="mb-3 p-3 rounded-lg bg-orange-50 dark:bg-orange-950/30 border border-orange-200">
+    <p className="text-sm font-semibold text-orange-900 dark:text-orange-200 mb-2">
+      📝 {validationFailures.length} commande{validationFailures.length > 1 ? 's' : ''} avec données incomplètes
+    </p>
+    <p className="text-xs text-orange-800/80 dark:text-orange-300/80 mb-2">
+      Ces commandes manquent d'informations obligatoires. Ouvrez chaque commande pour compléter les champs manquants avant de réexpédier.
+    </p>
+    <ul className="text-xs space-y-1 max-h-[180px] overflow-y-auto">
+      {validationFailures.map(r => (
+        <li key={r.orderId}>
+          <button
+            onClick={() => {
+              // Open the order modal directly so user can fix the data
+              setSelectedOrder({ id: r.orderId });
+              setOpenModal(true);
+            }}
+            className="text-left hover:underline"
+          >
+            <strong>#{r.orderNumber}</strong> — <span className="text-orange-700 dark:text-orange-400">{r.error}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  </div>
+)}A click on #5289 opens the order modal directly — user fixes the missing field and re-ships, no need to manually navigate.Step 5 — Highlight missing-field rows in the order listIn orders.tsx row render (Confirmées tab), add a small warning chip when an order has critical fields missing:tsxconst missingFields: string[] = [];
+if (!(order.customerName || '').replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').trim()) {
+  missingFields.push('nom');
+}
+if (!(order.customerPhone || '').replace(/\D/g, '') || (order.customerPhone || '').replace(/\D/g, '').length < 8) {
+  missingFields.push('téléphone');
+}
+if (!(order.customerCity || '').trim()) {
+  missingFields.push('ville');
+}
+if (!(order.customerAddress || '').trim() && !(order.customerCity || '').trim()) {
+  missingFields.push('adresse');
+}
+
+{missingFields.length > 0 && (
+  <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-200 text-[10px] font-medium" title={`Champs manquants: ${missingFields.join(', ')}`}>
+    ⚠ {missingFields.length} manquant{missingFields.length > 1 ? 's' : ''}
+  </span>
+)}Now BEFORE the user clicks bulk-ship, they can already see which orders have problems.Step 6 — Add a server log of the exact sanitized values being sentRight before the Ameex POST, log the cleaned payload (without secrets):tsconsole.log(`[AMEEX-PAYLOAD] order=${input.orderNumber}`, JSON.stringify({
+  destinataire: payload.destinataire,
+  telephone:    payload.telephone,
+  ville:        payload.ville,
+  adresse:      payload.adresse,
+  montant:      payload.montant,
+  produit:      payload.produit,
+  quantite:     payload.quantite,
+  ref:          payload.ref,
+  // omit business (secret)
+}));So when an order fails despite validation passing, you can see in Railway logs exactly what was sent to Ameex and compare with what they expect.Acceptance criteria
+✅ Bulk-ship an order with empty customerName to Ameex → fails locally with "Données manquantes pour Ameex: Nom du destinataire manquant" — no API call made.
+✅ Bulk-ship an order with customerName="‎Hassan‎" (RTL marks) → cleaning strips them, "Hassan" sent to Ameex, success.
+✅ Failure modal shows orange "Données incomplètes" group with clickable order numbers.
+✅ Click #5289 in the failure list → opens the order modal so user can fix the name.
+✅ Confirmées tab shows ⚠ chip on rows with missing critical fields BEFORE user attempts to ship.
+✅ Retry loop doesn't waste 2 more attempts on validation failures (permanent flag honored).
+✅ Railway logs show [AMEEX-PAYLOAD] order=5289 destinataire="..." so you can verify what's being sent.
+✅ NO change to Digylog or any other carrier behavior.
+Commitbashgit add server/services/carrier-service.ts client/src/pages/orders.tsx
+git commit -m "fix(ameex): pre-flight field validation + invisible-char cleanup
+
+Bug: Ameex rejected ships with 'Destinataire: est obligatoire' when the
+customer name had invisible characters (RTL marks, zero-width spaces from
+Shopify/WooCommerce imports). The platform sent the request anyway and
+showed a confusing error.
+
+- New validateAmeexInput() runs before the API call, refuses ships with
+  empty/invalid destinataire, telephone, ville, adresse, produit, montant.
+- buildAmeexPayload now strips invisible chars from every text field and
+  collapses whitespace before sending.
+- Validation failures return permanent:true so the retry loop doesn't
+  waste 2 more attempts on data that won't change.
+- Failure modal categorizes 'Données incomplètes' separately with clickable
+  order numbers that open the modal for fixing.
+- Confirmées tab rows show ⚠ chip when critical fields are missing, so
+  users see problems BEFORE attempting to ship.
+- New [AMEEX-PAYLOAD] server log shows exact sanitized values sent.
+- No other carrier touched."
+git push

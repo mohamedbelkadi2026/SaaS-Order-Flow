@@ -1489,7 +1489,30 @@ export default function Orders() {
                           }
                         </TableCell>
                       )}
-                      {isColVisible('destinataire') && <TableCell className="whitespace-nowrap font-medium">{cleanCustomerName(order.customerName)}</TableCell>}
+                      {isColVisible('destinataire') && (
+                        <TableCell className="whitespace-nowrap font-medium">
+                          <div className="flex items-center gap-1.5">
+                            {cleanCustomerName(order.customerName)}
+                            {(() => {
+                              const inv = (s: any) => String(s ?? '').replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+                              const missing: string[] = [];
+                              if (!inv(order.customerName) || inv(order.customerName).length < 2) missing.push('nom');
+                              if (!(order.customerPhone ?? '').replace(/\D/g, '') || (order.customerPhone ?? '').replace(/\D/g, '').length < 8) missing.push('tél');
+                              if (!inv(order.customerCity)) missing.push('ville');
+                              if (!inv(order.customerAddress) && !inv(order.customerCity)) missing.push('adresse');
+                              return missing.length > 0 ? (
+                                <span
+                                  title={`Champs manquants: ${missing.join(', ')}`}
+                                  className="inline-flex items-center px-1 py-0.5 rounded bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-200 text-[9px] font-medium shrink-0"
+                                  data-testid={`badge-missing-fields-${order.id}`}
+                                >
+                                  ⚠ {missing.length}
+                                </span>
+                              ) : null;
+                            })()}
+                          </div>
+                        </TableCell>
+                      )}
                       {isColVisible('telephone') && (
                         <TableCell className="whitespace-nowrap">
                           <div className="flex items-center gap-1">
@@ -1819,6 +1842,23 @@ export default function Orders() {
                           ⚠️ {order.duplicateCount} Cmds
                         </button>
                       )}
+                      {(() => {
+                        const inv = (s: any) => String(s ?? '').replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+                        const missing: string[] = [];
+                        if (!inv(order.customerName) || inv(order.customerName).length < 2) missing.push('nom');
+                        if (!(order.customerPhone ?? '').replace(/\D/g, '') || (order.customerPhone ?? '').replace(/\D/g, '').length < 8) missing.push('tél');
+                        if (!inv(order.customerCity)) missing.push('ville');
+                        if (!inv(order.customerAddress) && !inv(order.customerCity)) missing.push('adresse');
+                        return missing.length > 0 ? (
+                          <span
+                            title={`Champs manquants: ${missing.join(', ')}`}
+                            className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-200 text-[10px] font-medium"
+                            data-testid={`badge-missing-fields-mobile-${order.id}`}
+                          >
+                            ⚠ {missing.length}
+                          </span>
+                        ) : null;
+                      })()}
                     </div>
                     {itemCount > 1 && (
                       <span className="text-[10px] font-extrabold text-white bg-amber-500 rounded-full px-1.5 py-0.5 shrink-0">
@@ -2288,11 +2328,12 @@ export default function Orders() {
           {/* Per-order error details — categorized by type */}
           {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (() => {
             const failures = shipProgress.results.filter(r => r.status === 'failed');
-            const blacklisted = failures.filter(r => r.error?.includes('blacklist') || r.error?.includes('liste noire') || r.error?.includes('🚫'));
-            const duplicates  = failures.filter(r => r.error?.includes('double') || r.error?.includes('existe déjà') || r.error?.includes('⚠️ Commande'));
-            const addressBad  = failures.filter(r => r.error?.includes('Adresse') || r.error?.includes('Ville') || r.error?.includes('📍'));
-            const transient   = failures.filter(r =>
-              !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r)
+            const blacklisted        = failures.filter(r => r.error?.includes('blacklist') || r.error?.includes('liste noire') || r.error?.includes('🚫'));
+            const duplicates         = failures.filter(r => r.error?.includes('double') || r.error?.includes('existe déjà') || r.error?.includes('⚠️ Commande'));
+            const addressBad         = failures.filter(r => r.error?.includes('Adresse') || r.error?.includes('Ville') || r.error?.includes('📍'));
+            const validationFailures = failures.filter(r => /Données manquantes|Destinataire.*obligatoire/i.test(r.error || ''));
+            const transient          = failures.filter(r =>
+              !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r) && !validationFailures.includes(r)
             );
             return (
               <div className="px-6 pb-2 space-y-3">
@@ -2338,6 +2379,32 @@ export default function Orders() {
                       {addressBad.map(r => (
                         <li key={r.orderId} className="text-[10px] text-yellow-700 dark:text-yellow-300">
                           <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {validationFailures.length > 0 && (
+                  <div className="rounded-lg bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 p-3">
+                    <p className="text-xs font-bold text-orange-800 dark:text-orange-200 mb-1">
+                      📝 {validationFailures.length} commande{validationFailures.length > 1 ? 's' : ''} avec données incomplètes
+                    </p>
+                    <p className="text-[10px] text-orange-700/80 dark:text-orange-300/80 mb-2">
+                      Ouvrez chaque commande pour compléter les champs manquants avant de réexpédier.
+                    </p>
+                    <ul className="space-y-0.5 max-h-[180px] overflow-y-auto">
+                      {validationFailures.map(r => (
+                        <li key={r.orderId}>
+                          <button
+                            className="text-left hover:underline text-[10px] text-orange-700 dark:text-orange-300"
+                            onClick={() => {
+                              const fullOrder = (data?.orders || []).find((o: any) => o.id === r.orderId);
+                              if (fullOrder) setSelectedOrder(fullOrder);
+                            }}
+                          >
+                            <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
+                          </button>
                         </li>
                       ))}
                     </ul>

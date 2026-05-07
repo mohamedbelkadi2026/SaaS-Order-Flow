@@ -393,27 +393,63 @@ function buildGenericPayload(input: CarrierShipInput): Record<string, unknown> {
  * POST https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add
  * Auth: C-Api-Key + C-Api-Id headers
  */
+
+// Strips invisible/directional Unicode characters that look present in the UI
+// but cause Ameex field-validation failures (RTL marks, zero-width spaces,
+// BOM — all common in names imported from Shopify/WooCommerce Arabic stores).
+const cleanAmeexField = (s: any): string =>
+  String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+/**
+ * Validate Ameex-mandatory fields BEFORE making the API call.
+ * Returns a list of human-readable issues, or an empty array if all OK.
+ * Failures are marked permanent=true so the retry loop doesn't waste attempts.
+ */
+function validateAmeexInput(input: CarrierShipInput): string[] {
+  const issues: string[] = [];
+  const name    = cleanAmeexField(input.customerName);
+  const phone   = cleanAmeexField(input.phone).replace(/\D/g, '');
+  const city    = cleanAmeexField(input.city);
+  const address = cleanAmeexField(input.address) || city;
+  const product = cleanAmeexField(input.productName);
+
+  if (!name || name.length < 2)            issues.push('Nom du destinataire manquant ou trop court');
+  if (!phone || phone.length < 8)          issues.push('Téléphone manquant ou invalide');
+  if (!city)                               issues.push('Ville manquante');
+  if (!address)                            issues.push('Adresse manquante');
+  if (!product)                            issues.push('Nom du produit manquant');
+  if (!input.totalPrice || input.totalPrice <= 0) issues.push('Prix total manquant ou nul');
+
+  return issues;
+}
+
 function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  const name    = cleanAmeexField(input.customerName);
   const phone   = sanitizePhone(input.phone);
+  const city    = cleanAmeexField(input.city);
+  const address = cleanAmeexField(input.address) || city;
+  const product = cleanAmeexField(input.productName) || 'Produit';
   const priceDH = +(input.totalPrice / 100).toFixed(2);
-  const addr    = (input.address || "").trim() || input.city.trim();
 
   return {
     business:     String(input.apiSecret || input.apiId || ""),
     type:         "SIMPLE",
-    destinataire: input.customerName.trim(),
+    destinataire: name,
     telephone:    phone,
-    ville:        input.city.trim(),
-    adresse:      addr,
+    ville:        city,
+    adresse:      address,
     montant:      String(priceDH),
     cod:          String(priceDH),
-    produit:      (input.productName || "Produit").trim(),
+    produit:      product,
     quantite:     String(input.quantity ?? 1),
     // TJG-{orderNumber} is a stable cross-attempt reference. Ameex stores it
     // as 'ref'; the webhook uses it to correlate before the real tracking arrives.
     ref:          `TJG-${input.orderNumber}`,
     external_id:  `tajergrow-${input.orderId}`,
-    note:         input.note || "",
+    note:         cleanAmeexField(input.note),
     open:         input.canOpen ? "YES" : "NO",
     replace:      "true",
   };
@@ -843,6 +879,15 @@ export async function shipOrderToCarrier(
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
   if (providerKey === 'ameex') {
+    // Pre-flight validation — refuse to call Ameex if mandatory fields are missing
+    // or contain only invisible characters. permanent=true stops the retry loop.
+    const validationIssues = validateAmeexInput(input);
+    if (validationIssues.length > 0) {
+      const errMsg = `Données manquantes pour Ameex: ${validationIssues.join(', ')}`;
+      console.error(`${tag} ❌ Pre-flight validation failed: ${errMsg}`);
+      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
+
     console.log(`[AMEEX-REACHED] input=`, JSON.stringify(input));
     // Ameex requires multipart/form-data
     const FormDataLib = (await import('form-data')).default;
@@ -857,7 +902,17 @@ export async function shipOrderToCarrier(
     });
 
     console.log(`[AMEEX-INPUT-DEBUG] name="${input.customerName}" secret="${input.apiSecret}" id="${input.apiId}"`);
-console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
+    console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null, 2));
+    console.log(`[AMEEX-PAYLOAD] order=${input.orderNumber}`, JSON.stringify({
+      destinataire: payload.destinataire,
+      telephone:    payload.telephone,
+      ville:        payload.ville,
+      adresse:      payload.adresse,
+      montant:      payload.montant,
+      produit:      payload.produit,
+      quantite:     payload.quantite,
+      ref:          payload.ref,
+    }));
 
     const resp = await axios.post(apiUrl, fd, {
       headers: {
