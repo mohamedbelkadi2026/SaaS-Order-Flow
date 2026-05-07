@@ -1,0 +1,205 @@
+🐛 FIX — Ameex bulk-ship false-failures + duplicate creation on retryMy problemWhen I bulk-ship to Ameex, sometimes:
+
+Tajergrow shows: "Ameex n'a pas retourné de numéro de suivi"
+But the order is actually created in Ameex's portal
+I click "Réessayer" → Ameex creates a duplicate ❌
+Customer gets called twice / shipping fees doubled
+The platform thinks the ship failed, but it really succeeded — the response shape just didn't match what we expected.Root cause analysisThree issues stack on each other:A. Ameex returns multiple response shapesToday the code accepts only TWO shapes as success (line 854-867 in server/services/carrier-service.ts):
+
+Shape 1: response has a tracking number → success
+Shape 2: response has login: 'success' AND api.type !== 'error' → success (placeholder tracking)
+But Ameex sometimes returns:
+
+Shape 3: { status: 'ok', message: 'Parcel created' } (no login field)
+Shape 4: HTTP 200 with empty body {} while the parcel was actually created
+Shape 5: HTML wrapper around JSON (gateway errors)
+These all fall through to "n'a pas retourné de numéro de suivi" → false failure.B. No idempotency on retryWhen the user clicks "Réessayer" on an order that:
+
+Has NO trackNumber saved on our side (because we thought it failed)
+But IS already created in Ameex
+…we send a fresh creation request → Ameex creates a duplicate. There's no external_reference we send Ameex that they could use to detect "I've already seen this order".C. Webhook can't match AMEEX-PENDING-{orderNumber} placeholdersWhen the response is shape 2 (success but no tracking yet), we save AMEEX-PENDING-7211 as the trackNumber. Later, the Ameex webhook arrives with the real tracking number AMX-ABC123. We look up the order by getOrderByTrackingNumberAnyStore('AMX-ABC123') → not found (we have the PENDING placeholder, not the real one).So even successful Shape-2 ships never get the real tracking number written back.Fix — Ameex-only changes (no other carrier touched)Step 1 — Send a stable external reference Ameex can dedupe onIn server/services/carrier-service.ts, in buildAmeexPayload (around line 365), include a unique reference field that Ameex stores on their side. Most carriers honor either external_id, ref, reference, or client_ref. Ameex's docs suggest ref works:tsfunction buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  // ... existing fields ...
+
+  return {
+    // ... existing payload ...
+    ref:           `TJG-${input.orderNumber}`,            // ← stable cross-attempt reference
+    external_id:   `tajergrow-${input.orderId}`,          // ← fallback alias
+  };
+}Even if Ameex doesn't dedupe on this, we'll use it ourselves in Step 2 to detect "I already created this".Step 2 — Detect Shape 3, 4, 5 as success, not failureReplace the success detection block (line 854-862) with broader logic that catches every plausible "created" signal:tsconst trackingNumber = extractTracking(rb);
+
+// Ameex returns several "success" shapes — all of them MUST be recognized
+// or we create duplicates on retry.
+const isSuccessShape =
+  // Shape 1: explicit tracking number returned
+  !!trackingNumber ||
+  // Shape 2: original known success response
+  (rb?.login === 'success' && rb?.api?.type !== 'error') ||
+  // Shape 3: status field signals success
+  (typeof rb?.status === 'string' && /^(ok|success|created|added)$/i.test(rb.status)) ||
+  // Shape 4: HTTP 200 + empty body or { } — Ameex sometimes does this
+  (httpSt >= 200 && httpSt < 300 && (rb == null || (typeof rb === 'object' && Object.keys(rb).length === 0))) ||
+  // Shape 5: response message indicates parcel creation
+  (typeof rb?.message === 'string' && /créé|created|added|enregistr/i.test(rb.message)) ||
+  // Shape 6: parcel/colis object present even without explicit tracking
+  (!!rb?.parcel || !!rb?.colis);
+
+if (!isSuccessShape) {
+  const noTrackMsg = `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
+  console.error(`${tag} ❌ ${noTrackMsg} Raw: ${JSON.stringify(rb)}`);
+  return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus: httpSt, rawResponse: rb };
+}
+
+// Use real tracking if returned, else a stable PENDING placeholder
+// linked to our reference so the webhook can find it.
+const finalTracking = trackingNumber || `AMEEX-PENDING-TJG-${input.orderNumber}`;
+const labelUrl = `/api/labels/${finalTracking}.pdf`;
+console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${finalTracking} (webhook will resolve real number later)`);
+
+return {
+  success: true,
+  trackingNumber: finalTracking,
+  labelUrl,
+  httpStatus: httpSt,
+  rawResponse: rb,
+  pendingReal: !trackingNumber,                  // hint: webhook needs to update this
+  externalRef: `TJG-${input.orderNumber}`,       // hint: webhook can match by this
+};The pattern format AMEEX-PENDING-TJG-{orderNumber} is critical — it embeds the same TJG-{orderNumber} reference we sent to Ameex, so the webhook can correlate even before the real number arrives.Step 3 — Ameex webhook: match by ref field if tracking number doesn't matchIn server/routes.ts line 5960 (the Ameex webhook handler), broaden the order lookup so it can match by our reference too:tsapp.post("/api/webhooks/shipping/ameex/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const body = req.body || {};
+
+    const trackingNumber: string | undefined =
+      body.tracking_number || body.tracking || body.barcode || body.code_suivi || body.colis;
+    const rawStatus: string | undefined =
+      body.statut || body.status || body.etat;
+    const externalRef: string | undefined =
+      body.ref || body.reference || body.external_id || body.client_ref;
+
+    if (!trackingNumber && !externalRef) {
+      return res.status(400).json({ message: "tracking_number or ref required" });
+    }
+
+    // Try matching by tracking number first
+    let order = trackingNumber
+      ? await storage.getOrderByTrackingNumberAnyStore(trackingNumber)
+      : null;
+
+    // Fallback: match by external reference (TJG-{orderNumber})
+    // This catches the case where we saved AMEEX-PENDING-TJG-XXX placeholder
+    // and Ameex now sends us the real tracking number for the first time.
+    if (!order && externalRef) {
+      const m = externalRef.match(/TJG-(\d+)/);
+      if (m) {
+        const orderNumber = m[1];
+        order = await storage.getOrderByOrderNumberAnyStore(orderNumber);
+        console.log(`[AMEEX-WEBHOOK] Matched by ref=${externalRef} → orderNumber=${orderNumber}`);
+      }
+    }
+
+    // Last resort: if tracking starts with AMEEX-PENDING-TJG-, extract orderNumber
+    if (!order && trackingNumber) {
+      const m = trackingNumber.match(/^AMEEX-PENDING-TJG-(\d+)$/);
+      if (m) {
+        order = await storage.getOrderByOrderNumberAnyStore(m[1]);
+      }
+    }
+
+    if (!order) {
+      console.warn(`[AMEEX-WEBHOOK] Order not found for tracking=${trackingNumber} ref=${externalRef}`);
+      return res.json({ success: true, matched: false });
+    }
+
+    // Update tracking number if we had a placeholder
+    if (trackingNumber && order.trackNumber?.startsWith('AMEEX-PENDING-')) {
+      await storage.updateOrder(order.id, { trackNumber: trackingNumber });
+      console.log(`[AMEEX-WEBHOOK] Resolved placeholder → real tracking ${trackingNumber} for order #${order.orderNumber}`);
+    }
+
+    if (rawStatus) {
+      const mappedStatus = mapAmeexStatus(rawStatus);
+      if (mappedStatus && mappedStatus !== order.status) {
+        await storage.updateOrderStatus(order.id, mappedStatus);
+        await storage.createOrderFollowUpLog({
+          orderId:   order.id,
+          agentId:   null,
+          agentName: "Ameex Webhook",
+          note:      `Statut mis à jour via webhook: ${rawStatus} → ${mappedStatus}`,
+        });
+        console.log(`[AMEEX-WEBHOOK] Order #${order.id} status: ${order.status} → ${mappedStatus}`);
+      }
+    }
+
+    res.json({ success: true, matched: true });
+  } catch (err: any) {
+    console.error(`[AMEEX-WEBHOOK] Error: ${err.message}`);
+    res.status(500).json({ message: "Webhook processing failed" });
+  }
+});If getOrderByOrderNumberAnyStore doesn't exist yet, add it next to getOrderByTrackingNumberAnyStore:ts// server/storage.ts
+async getOrderByOrderNumberAnyStore(orderNumber: string): Promise<Order | undefined> {
+  const [order] = await db.select().from(orders)
+    .where(eq(orders.orderNumber, orderNumber))
+    .limit(1);
+  return order;
+}Step 4 — Idempotency guard before retrying AmeexBefore sending a second creation request to Ameex, check if we already attempted this. In server/services/carrier-service.ts, just before the Ameex POST (around line 871), add:tsif (providerKey === 'ameex' && input.previousAttemptHadPlaceholder) {
+  // We already created this in Ameex but the response was ambiguous.
+  // Don't recreate — query Ameex's portal to find the real tracking number.
+  console.log(`[AMEEX-RECOVERY] order=${input.orderNumber} — checking if already in Ameex portal before retry`);
+  const existing = await checkAmeexParcelByRef(`TJG-${input.orderNumber}`, apiKey, apiSecret);
+  if (existing?.trackingNumber) {
+    console.log(`[AMEEX-RECOVERY] ✅ Found existing parcel ${existing.trackingNumber} — skipping recreate`);
+    return {
+      success: true,
+      trackingNumber: existing.trackingNumber,
+      labelUrl: `/api/labels/${existing.trackingNumber}.pdf`,
+      httpStatus: 200,
+      rawResponse: existing,
+    };
+  }
+}Where checkAmeexParcelByRef is a new helper that queries Ameex's listing endpoint and matches by our TJG-{orderNumber} ref. If Ameex doesn't have a "search by ref" endpoint, this falls back to skipping the recovery (no harm — at worst we recreate, but at least logs show we tried).The flag input.previousAttemptHadPlaceholder is set by the route handler when it detects the order's existing trackNumber starts with AMEEX-PENDING-.Step 5 — Route handler: detect placeholder before retryIn server/routes.ts bulk-ship endpoint (around line 1357 where shipOrderToCarrier is called), check the existing trackNumber and pass the flag:tsconst isAmeexRetry = provider === 'ameex'
+  && order.trackNumber
+  && order.trackNumber.startsWith('AMEEX-PENDING-');
+
+const shipResult = await shipOrderToCarrier(provider, orderCreds, {
+  // ... existing fields ...
+  previousAttemptHadPlaceholder: isAmeexRetry,
+});Step 6 — UI: explain Ameex's quirk in the failure modalWhen the failure modal shows an Ameex "no tracking" error, add a hint that the user should check the portal before clicking "Réessayer":tsx{transient.length > 0 && transient.some(r => /ameex/i.test(r.error || '') && /numéro de suivi/i.test(r.error || '')) && (
+  <div className="mt-2 p-2 rounded bg-blue-50 dark:bg-blue-950/30 border border-blue-200 text-[11px] text-blue-900 dark:text-blue-200">
+    💡 <strong>Astuce :</strong> Ameex peut créer la commande dans son portail
+    sans renvoyer le numéro de suivi immédiatement. Vérifiez votre portail Ameex
+    avant de cliquer "Réessayer" pour éviter les doublons.
+  </div>
+)}The retry button is still available (in case the order really wasn't created) but the user is now warned.Acceptance criteria
+✅ Bulk-ship to Ameex → response shapes 1, 2, 3, 4, 5, 6 are all recognized as success.
+✅ Failed-looking responses that turn out to be successes get tracked as AMEEX-PENDING-TJG-{orderNumber} placeholders.
+✅ Ameex webhook arrives with real tracking + ref → matches the placeholder by ref → updates the order with the real tracking number.
+✅ User clicks "Réessayer" on an order that has a AMEEX-PENDING- placeholder → server first queries Ameex by ref → if found, uses existing tracking → no duplicate created.
+✅ Server logs [AMEEX-RECOVERY] ✅ Found existing parcel instead of creating a duplicate.
+✅ Failure modal shows the blue hint when Ameex "no tracking" error occurs.
+✅ NO change in Digylog behavior or any other carrier — only Ameex code paths touched.
+✅ Existing Ameex orders with real tracking numbers continue to work normally.
+Commitbashgit add server/services/carrier-service.ts server/routes.ts server/storage.ts client/src/pages/orders.tsx
+git commit -m "fix(ameex): broader success detection + idempotent retry to prevent duplicates
+
+Bug: Ameex sometimes returns response shapes the code didn't recognize
+('status: ok', empty body on 200, message-only success), so the platform
+flagged successful creations as failures. Clicking 'Réessayer' then created
+duplicates in Ameex's portal — billed shipping twice, called the customer
+twice.
+
+Changes (Ameex-only, no other carrier touched):
+- buildAmeexPayload now sends ref=TJG-{orderNumber} and external_id for
+  cross-attempt correlation
+- Success detection accepts shapes 1-6: tracking present, login:success,
+  status:ok|success|created, empty body on HTTP 2xx, message indicating
+  creation, parcel/colis object present
+- Placeholder format changed to AMEEX-PENDING-TJG-{orderNumber} so webhook
+  can correlate before real tracking arrives
+- Webhook handler now matches by ref or by extracting orderNumber from a
+  AMEEX-PENDING placeholder, then patches the real tracking onto the order
+- Bulk-ship route flags retries on AMEEX-PENDING- placeholders so the
+  carrier service can call Ameex's listing endpoint first instead of
+  blindly recreating
+- New getOrderByOrderNumberAnyStore() in storage
+- Failure modal now warns users to check Ameex portal before retrying
+  Ameex 'no tracking' errors"
+git push

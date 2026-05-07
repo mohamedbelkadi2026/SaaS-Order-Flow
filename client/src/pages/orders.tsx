@@ -2344,6 +2344,12 @@ export default function Orders() {
                   </div>
                 )}
 
+                {transient.length > 0 && transient.some(r => /ameex/i.test(r.error || '') && /numéro de suivi/i.test(r.error || '')) && (
+                  <div className="mt-2 p-2 rounded bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-[11px] text-blue-900 dark:text-blue-200">
+                    💡 <strong>Astuce Ameex :</strong> Ameex peut créer la commande dans son portail sans renvoyer le numéro de suivi immédiatement. Vérifiez votre portail Ameex avant de cliquer "Réessayer" pour éviter les doublons.
+                  </div>
+                )}
+
                 {transient.length > 0 && (
                   <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3">
                     <div className="flex items-start gap-2 mb-1.5">

@@ -264,6 +264,10 @@ export interface CarrierShipInput {
   digylogNetwork?: number;   // legacy alias for digylogNetworkId
   apiId?: string;            // Ameex: C-Api-Id / Business ID
   apiSecret?: string;        // Ameex: C-Api-Id / Business ID (stored as apiSecret)
+  // Ameex idempotency: set true when the order already has an AMEEX-PENDING-
+  // placeholder from a previous attempt — signals that the parcel may already
+  // exist in Ameex's portal and we should be careful about recreating it.
+  previousAttemptHadPlaceholder?: boolean;
 }
 
 export interface CarrierShipResult {
@@ -405,7 +409,10 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
     cod:          String(priceDH),
     produit:      (input.productName || "Produit").trim(),
     quantite:     String(input.quantity ?? 1),
-    ref:          String(input.orderNumber),
+    // TJG-{orderNumber} is a stable cross-attempt reference. Ameex stores it
+    // as 'ref'; the webhook uses it to correlate before the real tracking arrives.
+    ref:          `TJG-${input.orderNumber}`,
+    external_id:  `tajergrow-${input.orderId}`,
     note:         input.note || "",
     open:         input.canOpen ? "YES" : "NO",
     replace:      "true",
@@ -878,19 +885,50 @@ console.log(`[AMEEX-FORMDATA] Fields being sent:`, JSON.stringify(fdFields, null
       console.error(`${tag} ❌ Ameex logical error: ${logicalError}`);
       return { success: false, httpStatus: httpSt, rawResponse: rb, error: logicalError, carrierMessage: logicalError };
     }
+    // Idempotency guard: if this order already had an AMEEX-PENDING- placeholder
+    // from a previous attempt, log a warning so we know a duplicate might be created.
+    // (We cannot query Ameex by ref yet — no search endpoint exposed — so we proceed,
+    // but the broader success detection below will avoid re-marking as failure.)
+    if (input.previousAttemptHadPlaceholder) {
+      console.warn(`${tag} ⚠️ AMEEX-RETRY: order=${input.orderNumber} had a placeholder from a previous attempt. Parcel may already exist in Ameex portal. Proceeding with new attempt.`);
+    }
+
     const trackingNumber = extractTracking(rb);
-    // Ameex does NOT return tracking number on creation — it arrives via webhook (field: CODE)
-    // If login:success and no api.type:error, treat as success with a pending tracking placeholder
-    const ameexSuccess = rb?.login === 'success' && rb?.api?.type !== 'error';
-    if (!trackingNumber && !ameexSuccess) {
+    // Ameex returns several "success" shapes — all must be recognized or we create
+    // duplicates on retry when the user clicks "Réessayer".
+    const isSuccessShape =
+      // Shape 1: explicit tracking number returned
+      !!trackingNumber ||
+      // Shape 2: original known success response (login:success, no api error)
+      (rb?.login === 'success' && rb?.api?.type !== 'error') ||
+      // Shape 3: status field signals success
+      (typeof rb?.status === 'string' && /^(ok|success|created|added)$/i.test(rb.status)) ||
+      // Shape 4: HTTP 200 + empty body — Ameex sometimes does this on success
+      (httpSt >= 200 && httpSt < 300 && (rb == null || (typeof rb === 'object' && Object.keys(rb as object).length === 0))) ||
+      // Shape 5: response message indicates parcel creation
+      (typeof rb?.message === 'string' && /créé|created|added|enregistr/i.test(rb.message)) ||
+      // Shape 6: parcel/colis object present without explicit tracking
+      (!!rb?.parcel || !!rb?.colis);
+
+    if (!isSuccessShape) {
       const noTrackMsg = `Ameex n'a pas retourné de numéro de suivi. Vérifiez le portail Ameex.`;
       console.error(`${tag} ❌ ${noTrackMsg} Raw: ${JSON.stringify(rb)}`);
       return { success: false, error: noTrackMsg, carrierMessage: noTrackMsg, httpStatus: httpSt, rawResponse: rb };
     }
-    const finalTracking = trackingNumber || `AMEEX-PENDING-${input.orderNumber}`;
+    // Placeholder embeds TJG-{orderNumber} so the webhook can correlate before
+    // the real tracking number arrives.
+    const finalTracking = trackingNumber || `AMEEX-PENDING-TJG-${input.orderNumber}`;
     const labelUrl = `/api/labels/${finalTracking}.pdf`;
-    console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${finalTracking} (webhook will update later)`);
-    return { success: true, trackingNumber: finalTracking, labelUrl, httpStatus: httpSt, rawResponse: rb };
+    console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${finalTracking} (webhook will resolve real number later)`);
+    return {
+      success: true,
+      trackingNumber: finalTracking,
+      labelUrl,
+      httpStatus: httpSt,
+      rawResponse: rb,
+      pendingReal: !trackingNumber,
+      externalRef: `TJG-${input.orderNumber}`,
+    };
   }
 
   // Inner helper — runs one attempt and throws on network error (non-Ameex carriers)

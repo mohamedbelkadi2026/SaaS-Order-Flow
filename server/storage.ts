@@ -102,6 +102,7 @@ export interface IStorage {
   getOrderByNumber(storeId: number, orderNumber: string): Promise<Order | undefined>;
   getOrderByTrackingNumber(storeId: number, trackingNumber: string): Promise<Order | undefined>;
   getOrderByTrackingNumberAnyStore(trackingNumber: string): Promise<Order | undefined>;
+  getOrderByOrderNumberAnyStore(orderNumber: string): Promise<Order | undefined>;
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
@@ -1247,6 +1248,15 @@ export class DatabaseStorage implements IStorage {
     // Searches ALL stores — case-insensitive on track_number.
     const [order] = await db.select().from(orders)
       .where(sql`lower(${orders.trackNumber}) = lower(${trackingNumber})`);
+    return order;
+  }
+
+  async getOrderByOrderNumberAnyStore(orderNumber: string): Promise<Order | undefined> {
+    // Cross-store lookup by orderNumber — used by the Ameex webhook to correlate
+    // a TJG-{orderNumber} ref before the real tracking number arrives.
+    const [order] = await db.select().from(orders)
+      .where(eq(orders.orderNumber, orderNumber))
+      .limit(1);
     return order;
   }
 

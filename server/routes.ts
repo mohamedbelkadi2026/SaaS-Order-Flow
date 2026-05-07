@@ -1436,6 +1436,14 @@ export async function registerRoutes(
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
                 console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId} qty=${bulkQty}`);
                 console.log(`[AMEEX-PRE-SHIP] order=${order.id} customerName="${order.customerName}" apiSecret="${(orderCreds as any).apiSecret}" settings=${JSON.stringify((orderCreds as any).settings || {})}`);
+                // Detect Ameex retry: order already has a PENDING placeholder from
+                // a previous attempt — warn the carrier service so it can log
+                // appropriately and avoid silent duplicates.
+                const isAmeexRetry =
+                  provider.toLowerCase() === 'ameex' &&
+                  !!(order as any).trackNumber &&
+                  String((order as any).trackNumber).startsWith('AMEEX-PENDING-');
+
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -1454,6 +1462,7 @@ export async function registerRoutes(
                   digylogNetworkId: (orderCreds as any).digylogNetworkId || 1,
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
+                  previousAttemptHadPlaceholder: isAmeexRetry,
                 });
               })
             );
@@ -6666,17 +6675,48 @@ export async function registerRoutes(
         body.tracking_number || body.tracking || body.barcode || body.code_suivi || body.colis;
       const rawStatus: string | undefined =
         body.statut || body.status || body.etat;
+      // TJG-{orderNumber} reference we sent to Ameex on creation — allows
+      // correlation before the real tracking number arrives.
+      const externalRef: string | undefined =
+        body.ref || body.reference || body.external_id || body.client_ref;
 
-      if (!trackingNumber) {
-        return res.status(400).json({ message: "tracking_number required" });
+      if (!trackingNumber && !externalRef) {
+        return res.status(400).json({ message: "tracking_number or ref required" });
       }
 
-      // Scope the lookup to the carrier account's store so a tracking
-      // collision between two stores can't cross-update orders.
-      const order = await storage.getOrderByTrackingNumber(carrierAccount.storeId, trackingNumber);
+      // 1. Match by tracking number (scoped to this carrier account's store)
+      let order = trackingNumber
+        ? await storage.getOrderByTrackingNumber(carrierAccount.storeId, trackingNumber)
+        : null;
+
+      // 2. Fallback: match by AMEEX-PENDING-TJG-{orderNumber} placeholder stored
+      //    when Ameex returned a success shape but no real tracking yet.
+      if (!order && trackingNumber) {
+        const m = trackingNumber.match(/^AMEEX-PENDING-TJG-(.+)$/);
+        if (m) {
+          order = await storage.getOrderByOrderNumberAnyStore(m[1]);
+          if (order) console.log(`[AMEEX-WEBHOOK] Matched by placeholder tracking=${trackingNumber} → order #${order.orderNumber}`);
+        }
+      }
+
+      // 3. Fallback: match by TJG-{orderNumber} external ref Ameex echoes back
+      if (!order && externalRef) {
+        const m = externalRef.match(/TJG-(.+)/);
+        if (m) {
+          order = await storage.getOrderByOrderNumberAnyStore(m[1]);
+          if (order) console.log(`[AMEEX-WEBHOOK] Matched by ref=${externalRef} → order #${order.orderNumber}`);
+        }
+      }
+
       if (!order) {
-        console.warn(`[AMEEX-WEBHOOK] Order not found for tracking=${trackingNumber} in store=${carrierAccount.storeId}`);
+        console.warn(`[AMEEX-WEBHOOK] Order not found — tracking=${trackingNumber} ref=${externalRef} store=${carrierAccount.storeId}`);
         return res.json({ success: true, matched: false });
+      }
+
+      // If we stored a placeholder, patch it with the real tracking number now
+      if (trackingNumber && order.trackNumber?.startsWith('AMEEX-PENDING-')) {
+        await storage.updateOrder(order.id, { trackNumber: trackingNumber } as any);
+        console.log(`[AMEEX-WEBHOOK] Resolved placeholder → real tracking ${trackingNumber} for order #${order.orderNumber}`);
       }
 
       if (rawStatus) {
