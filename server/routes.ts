@@ -3778,7 +3778,8 @@ export async function registerRoutes(
       const customerPhone   = (data.phone   || data.telephone || data.customer_phone || "").toString().trim();
       const customerCity    = (data.city    || data.ville   || "").toString().trim();
       const customerAddress = (data.address || data.adresse || "").toString().trim();
-      const productName     = (data.product || data.produit || "").toString().trim();
+      // Use explicit product field, then fall back to tab name (e.g. "cofer", "hachoir")
+      const productName     = (data.product || data.produit || data.tab_name || "").toString().trim();
       const quantity        = parseInt(data.quantity || "1") || 1;
       const rawPrice        = parseFloat(String(data.price || data.prix || "0").replace(",", ".")) || 0;
       const totalPrice      = Math.round(rawPrice * 100);

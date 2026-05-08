@@ -1,0 +1,546 @@
+Confirmed: Daba script ka-y-runi 3la active tab GHIR (line 234). Donc khassek Option C (hybrid + multi-tab).
+Hada howa l-prompt l-final, shamel kolchi:
+
+🚀 BIG UPDATE — Multi-tab support + hybrid header detection (works on existing legacy sheets)
+My problem
+Real users have sheets like this:
+
+One sheet, many tabs — each tab = a different product (hachoir, camera v360, cofer, kachif m3adin, …)
+No header row — row 1 is data, not column titles
+Product name = tab name, not a column
+Fixed legacy column order: A=customer name, B=phone, C=city, F=price, K=campaign name, L=traffic source, etc.
+
+The current smart-detection script:
+
+Only syncs the active tab → 11 of 12 tabs of orders are silently ignored
+Requires a header row → fails with "Colonnes obligatoires manquantes" on every legacy sheet
+Has no concept of "product = tab name"
+
+I need a script that handles both modern sheets (with headers) and legacy sheets (no headers, multi-tab) without the user changing anything.
+
+What to build
+1. Sync ALL tabs in the spreadsheet, not just the active one
+The script should iterate every sheet/tab in the spreadsheet on setup, on the daily check, and on the manual menu. The onEdit trigger naturally fires per-tab, so that's already correct.
+2. Hybrid header detection
+For each tab, the script first tries header-based detection (row 1). If it can't find at least the name and phone columns from headers, it falls back to positional mode:
+
+Column A → Customer name
+Column B → Phone
+Column C → City (or address)
+Column D → Address (optional, can be empty)
+Column E → Product (or fallback to tab name)
+Column F → Price
+Column G → Quantity (default 1 if empty)
+Column K → utm_campaign
+Column L → utm_source
+Column M → External tracking ref / order ref
+Column N → SKU / Product code
+The status column is added at the next free letter (e.g. column O or P).
+
+3. Tab name → product name fallback
+When the detected product field (column E) is empty in a row, use the tab name (cofer, hachoir, …) as the product name. This is a per-row fallback, not a global override.
+4. Per-tab status tracking
+Each tab gets its own status column. The status column is detected/created independently per tab, so different tabs can have different status column letters without breaking.
+
+Implementation
+File: client/src/pages/integrations.tsx — replace the appScript template
+Replace the entire script (around line 206-450) with this hybrid version:
+js// ═══════════════════════════════════════════════════════════════
+//  🚀 TajerGrow — Google Sheets Auto-Sync (Multi-Tab + Hybrid)
+//  • Synchronise TOUS les onglets automatiquement
+//  • Détection intelligente : avec ou sans en-têtes
+//  • Mode positionnel pour anciens tableaux : A=Nom, B=Phone, ...
+//  • Le nom de l'onglet sert de nom de produit par défaut
+//  Ne pas modifier API_URL / API_KEY
+// ═══════════════════════════════════════════════════════════════
+
+var API_URL = '${apiUrl}';
+var API_KEY = '${apiKey}';
+var DEBOUNCE_SECONDS = 30;
+var STATUS_COLUMN_LABEL = 'TajerGrow Status';
+
+// ─── Synonymes de colonnes (12 champs reconnus) ───────────────
+var COLUMN_ALIASES = {
+  name: [
+    'nom', 'nom client', 'nom du client', 'nom complet', 'client',
+    'fullname', 'full name', 'name', 'customer', 'customer name',
+    'destinataire', 'recipient', 'الاسم', 'اسم العميل'
+  ],
+  phone: [
+    'telephone', 'tel', 'phone', 'numero', 'numero tel', 'numero telephone',
+    'gsm', 'mobile', 'whatsapp', 'mobile phone', 'cell',
+    'الهاتف', 'رقم الهاتف', 'رقم'
+  ],
+  address: ['adresse', 'address', 'rue', 'street', 'العنوان'],
+  city: ['ville', 'city', 'town', 'localite', 'المدينة'],
+  product: ['produit', 'product', 'article', 'item', 'nom produit', 'product name', 'المنتج'],
+  price: ['prix', 'price', 'montant', 'amount', 'total', 'tarif', 'السعر'],
+  quantity: ['quantite', 'qty', 'quantity', 'qte', 'nombre', 'count', 'الكمية'],
+  note: ['note', 'notes', 'comment', 'commentaire', 'remarque', 'message', 'ملاحظة'],
+  offer: ['offre', 'offer', 'promo', 'promotion', 'deal', 'pack', 'عرض'],
+  utmSource: ['utm source', 'source', 'utm_source', 'origine', 'مصدر'],
+  utmCampaign: ['utm campaign', 'campaign', 'utm_campaign', 'campagne', 'حملة'],
+  productId: ['product id', 'productid', 'sku', 'reference produit', 'ameex product id', 'معرف المنتج'],
+};
+
+// ─── Mode positionnel : ordre des colonnes pour anciens tableaux ──
+// Utilisé quand les en-têtes ne sont pas reconnus.
+var POSITIONAL_MAP = {
+  name:        1,   // A
+  phone:       2,   // B
+  city:        3,   // C
+  address:     4,   // D
+  product:     5,   // E (fallback : nom de l'onglet)
+  price:       6,   // F
+  quantity:    7,   // G
+  utmCampaign: 11,  // K
+  utmSource:   12,  // L
+  note:        13,  // M (col M = trackingRef dans ton sheet, ajusté ici)
+  productId:   14,  // N
+};
+
+function normalizeHeader(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/^no\s*label\s*/i, '')
+    .replace(/^col(onne|umn)?\s*/i, '')
+    .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ')
+    .trim();
+}
+
+// ─── Détection : essaye headers d'abord, fallback positionnel ─
+function detectColumns(sheet) {
+  var lastCol = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow();
+
+  // Sheet vide
+  if (lastCol < 1 || lastRow < 1) {
+    return { error: 'Onglet vide.', tabName: sheet.getName() };
+  }
+
+  // ── Essai 1 : detection par headers (row 1) ──
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var headerMap = {};
+  var statusCol = 0;
+  var hasAnyHeader = false;
+
+  for (var i = 0; i < headers.length; i++) {
+    var h = normalizeHeader(headers[i]);
+    if (!h) continue;
+    if (h.length >= 3 && /^[a-z\u0600-\u06ff]/.test(h)) hasAnyHeader = true;
+
+    if (h.indexOf('tajergrow') >= 0 || h.indexOf('status') >= 0 || h.indexOf('statut') >= 0) {
+      statusCol = i + 1;
+      continue;
+    }
+
+    for (var key in COLUMN_ALIASES) {
+      if (headerMap[key]) continue;
+      var aliases = COLUMN_ALIASES[key];
+      for (var j = 0; j < aliases.length; j++) {
+        if (h === normalizeHeader(aliases[j])) {
+          headerMap[key] = i + 1;
+          break;
+        }
+      }
+    }
+  }
+
+  // Si on a au moins name + phone détectés depuis les headers → mode header
+  if (headerMap.name && headerMap.phone) {
+    if (!statusCol) {
+      statusCol = lastCol + 1;
+      sheet.getRange(1, statusCol).setValue(STATUS_COLUMN_LABEL).setFontWeight('bold');
+    }
+    headerMap.status = statusCol;
+    return { map: headerMap, mode: 'header', tabName: sheet.getName() };
+  }
+
+  // ── Essai 2 : mode positionnel (legacy sheets sans en-têtes) ──
+  // On copie POSITIONAL_MAP et on ajoute la colonne status
+  var positional = {};
+  for (var key in POSITIONAL_MAP) positional[key] = POSITIONAL_MAP[key];
+
+  // Status column = première colonne libre après le max utilisé
+  var maxUsed = lastCol;
+  for (var key in positional) {
+    if (positional[key] > maxUsed) maxUsed = positional[key];
+  }
+  if (!statusCol) {
+    statusCol = maxUsed + 1;
+    // Don't write a header in row 1 — there is no header row in legacy mode.
+    // Just use this column for status values.
+  }
+  positional.status = statusCol;
+
+  return { map: positional, mode: 'positional', tabName: sheet.getName() };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SETUP — Lance UNE FOIS pour activer la synchro auto sur TOUS les onglets
+// ═══════════════════════════════════════════════════════════════
+function setup() {
+  setupOnEditTrigger();
+  setupDailyTrigger();
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var allSheets = spreadsheet.getSheets();
+  var report = '✅ TajerGrow — Synchronisation activée sur ' + allSheets.length + ' onglet(s)\\n\\n';
+
+  for (var s = 0; s < allSheets.length; s++) {
+    var sheet = allSheets[s];
+    var detection = detectColumns(sheet);
+    var mode = detection.mode === 'header' ? '📋 Headers' : '📐 Positionnel';
+    report += '• ' + sheet.getName() + ' — ' + mode;
+    if (detection.error) report += ' ⚠️ ' + detection.error;
+    report += '\\n';
+
+    if (!detection.error) syncAllRowsInSheet(sheet, detection);
+  }
+
+  report += '\\nLes nouvelles lignes seront synchronisées automatiquement dans tous les onglets.';
+  SpreadsheetApp.getUi().alert(report);
+}
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🚀 TajerGrow')
+    .addItem('▶️ Activer la synchro auto (tous les onglets)', 'setup')
+    .addItem('🔄 Re-synchroniser tous les onglets', 'syncAllSheets')
+    .addItem('📋 Vérifier la détection (onglet actif)', 'showDetection')
+    .addItem('🩺 Tester la connexion', 'testConnection')
+    .addItem('🧹 Réinitialiser les statuts (onglet actif)', 'resetActiveSheetStatuses')
+    .addToUi();
+}
+
+// ─── Triggers ─────────────────────────────────────────────────
+function setupOnEditTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'onEditHandler') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('onEditHandler')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit().create();
+}
+
+function setupDailyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'dailyCheckHandler') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('dailyCheckHandler').timeBased().atHour(10).everyDays(1).create();
+}
+
+// ─── onEdit : déclenché sur n'importe quel onglet ─────────────
+function onEditHandler(e) {
+  if (!e || !e.range) return;
+  var sheet = e.source.getActiveSheet();   // l'onglet actuellement édité
+  var detection = detectColumns(sheet);
+  if (detection.error) return;
+
+  var startRow = e.range.getRow();
+  var endRow   = e.range.getLastRow();
+  // En mode header, ignorer la ligne 1 (header).
+  // En mode positionnel, toutes les lignes ≥ 1 sont des données.
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (endRow < minRow) return;
+  if (startRow < minRow) startRow = minRow;
+
+  if (e.range.getColumn() === detection.map.status) return;
+
+  for (var row = startRow; row <= endRow; row++) {
+    queueRowForSync(sheet, detection, row);
+  }
+}
+
+function queueRowForSync(sheet, detection, row) {
+  var statusCell = sheet.getRange(row, detection.map.status);
+  var status = statusCell.getValue().toString().trim().toUpperCase();
+  if (status === 'SENT' || status === 'DUPLICATE' || status === 'EN ATTENTE') return;
+
+  statusCell.setValue('EN ATTENTE');
+  statusCell.setBackground('#fff3cd');
+
+  PropertiesService.getDocumentProperties().setProperty(
+    'queue_' + sheet.getSheetId() + '_' + row,
+    new Date().getTime().toString()
+  );
+
+  ScriptApp.newTrigger('processQueue')
+    .timeBased().after(DEBOUNCE_SECONDS * 1000).create();
+}
+
+function processQueue() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'processQueue') {
+      try { ScriptApp.deleteTrigger(t); } catch (err) {}
+    }
+  });
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var props = PropertiesService.getDocumentProperties();
+  var allProps = props.getProperties();
+  var nowMs = new Date().getTime();
+  var debounceMs = DEBOUNCE_SECONDS * 1000;
+
+  for (var key in allProps) {
+    if (key.indexOf('queue_') !== 0) continue;
+    var queuedAt = parseInt(allProps[key], 10);
+    if (nowMs - queuedAt < debounceMs - 5000) continue;
+
+    var parts = key.replace('queue_', '').split('_');
+    if (parts.length !== 2) { props.deleteProperty(key); continue; }
+
+    var sheetIdNum = parseInt(parts[0], 10);
+    var row = parseInt(parts[1], 10);
+    if (isNaN(sheetIdNum) || isNaN(row)) { props.deleteProperty(key); continue; }
+
+    // Find the sheet by ID
+    var targetSheet = null;
+    var allSheets = spreadsheet.getSheets();
+    for (var i = 0; i < allSheets.length; i++) {
+      if (allSheets[i].getSheetId() === sheetIdNum) { targetSheet = allSheets[i]; break; }
+    }
+    if (!targetSheet) { props.deleteProperty(key); continue; }
+
+    var detection = detectColumns(targetSheet);
+    if (!detection.error) syncRow(targetSheet, detection, row);
+
+    props.deleteProperty(key);
+  }
+}
+
+// ─── Synchroniser une seule ligne ─────────────────────────────
+function syncRow(sheet, detection, row) {
+  var cols = detection.map;
+  var statusCell = sheet.getRange(row, cols.status);
+  var status = statusCell.getValue().toString().trim().toUpperCase();
+  if (status === 'SENT' || status === 'DUPLICATE') return;
+
+  function readCol(key) {
+    if (!cols[key]) return '';
+    var lastCol = sheet.getLastColumn();
+    if (cols[key] > lastCol) return '';
+    return sheet.getRange(row, cols[key]).getValue().toString().trim();
+  }
+
+  var nom       = readCol('name');
+  var telephone = readCol('phone');
+
+  if (!nom && !telephone) {
+    statusCell.setValue('');
+    statusCell.setBackground(null);
+    return;
+  }
+  if (!telephone) {
+    statusCell.setValue('PHONE MANQUANT');
+    statusCell.setBackground('#f8d7da');
+    return;
+  }
+
+  var sheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  var qty = readCol('quantity') || 1;
+
+  // ⭐ Si product vide, utiliser le nom de l'onglet (cofer, hachoir, ...)
+  var product = readCol('product') || detection.tabName;
+
+  var payload = {
+    name:         nom,
+    phone:        telephone,
+    address:      readCol('address'),
+    city:         readCol('city'),
+    product:      product,
+    price:        readCol('price'),
+    quantity:     qty.toString(),
+    note:         readCol('note'),
+    offer:        readCol('offer'),
+    utm_source:   readCol('utmSource'),
+    utm_campaign: readCol('utmCampaign'),
+    product_id:   readCol('productId'),
+    ref:          'GS-' + sheetId.substring(0, 6) + '-' + sheet.getSheetId() + '-R' + row,
+    tab_name:     detection.tabName,
+  };
+
+  try {
+    var response = UrlFetchApp.fetch(API_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Api-Key': API_KEY },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    var code = response.getResponseCode();
+    var body = JSON.parse(response.getContentText());
+
+    if (code === 200 && body.success && !body.duplicate) {
+      statusCell.setValue('SENT');
+      statusCell.setBackground('#d4edda');
+    } else if (body.duplicate) {
+      statusCell.setValue('DUPLICATE');
+      statusCell.setBackground('#fff3cd');
+    } else {
+      statusCell.setValue('ERREUR');
+      statusCell.setBackground('#f8d7da');
+      Logger.log('Onglet ' + sheet.getName() + ' ligne ' + row + ' erreur: ' + response.getContentText());
+    }
+  } catch (err) {
+    statusCell.setValue('ERREUR');
+    statusCell.setBackground('#f8d7da');
+    Logger.log('Onglet ' + sheet.getName() + ' ligne ' + row + ' exception: ' + err.toString());
+  }
+}
+
+// ─── Synchroniser toutes les lignes d'un onglet ───────────────
+function syncAllRowsInSheet(sheet, detection) {
+  var lastRow = sheet.getLastRow();
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (lastRow < minRow) return;
+
+  for (var row = minRow; row <= lastRow; row++) {
+    syncRow(sheet, detection, row);
+    Utilities.sleep(200);
+  }
+}
+
+// ─── Synchroniser TOUS les onglets manuellement ───────────────
+function syncAllSheets() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var allSheets = spreadsheet.getSheets();
+  var totalSynced = 0;
+
+  for (var s = 0; s < allSheets.length; s++) {
+    var detection = detectColumns(allSheets[s]);
+    if (!detection.error) {
+      syncAllRowsInSheet(allSheets[s], detection);
+      totalSynced++;
+    }
+  }
+  SpreadsheetApp.getUi().alert('✅ ' + totalSynced + ' onglet(s) re-synchronisé(s)');
+}
+
+// ─── Filet de sécurité quotidien : tous les onglets ───────────
+function dailyCheckHandler() {
+  var allSheets = SpreadsheetApp.getActiveSpreadsheet().getSheets();
+  for (var s = 0; s < allSheets.length; s++) {
+    var sheet = allSheets[s];
+    var detection = detectColumns(sheet);
+    if (detection.error) continue;
+    var lastRow = sheet.getLastRow();
+    var minRow = detection.mode === 'header' ? 2 : 1;
+    for (var row = minRow; row <= lastRow; row++) {
+      var st = sheet.getRange(row, detection.map.status).getValue().toString().trim().toUpperCase();
+      if (st !== 'SENT' && st !== 'DUPLICATE') {
+        syncRow(sheet, detection, row);
+        Utilities.sleep(200);
+      }
+    }
+  }
+}
+
+function showDetection() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) {
+    SpreadsheetApp.getUi().alert('❌ ' + detection.error);
+    return;
+  }
+  var msg = '📋 Onglet : ' + detection.tabName + '\\n';
+  msg += 'Mode : ' + (detection.mode === 'header' ? 'Headers (ligne 1)' : 'Positionnel (legacy)') + '\\n\\n';
+  for (var key in detection.map) {
+    msg += '  • ' + key + ' → colonne ' + columnLetter(detection.map[key]) + '\\n';
+  }
+  if (detection.mode === 'positional') {
+    msg += '\\n💡 Le nom de l\\'onglet "' + detection.tabName + '" sera utilisé comme produit pour les lignes vides.';
+  }
+  SpreadsheetApp.getUi().alert(msg);
+}
+
+function columnLetter(col) {
+  var s = '';
+  while (col > 0) {
+    var rem = (col - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    col = Math.floor((col - 1) / 26);
+  }
+  return s;
+}
+
+function testConnection() {
+  try {
+    var response = UrlFetchApp.fetch(API_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Api-Key': API_KEY },
+      payload: JSON.stringify({ test: true, ref: 'TEST-' + new Date().getTime() }),
+      muteHttpExceptions: true
+    });
+    var code = response.getResponseCode();
+    SpreadsheetApp.getUi().alert(
+      code === 200
+        ? '✅ Connexion réussie !\\n\\n' + response.getContentText()
+        : '❌ Erreur HTTP ' + code + '\\n\\n' + response.getContentText()
+    );
+  } catch (err) {
+    SpreadsheetApp.getUi().alert('❌ Erreur réseau\\n\\n' + err.toString());
+  }
+}
+
+function resetActiveSheetStatuses() {
+  var ui = SpreadsheetApp.getUi();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) { ui.alert('❌ ' + detection.error); return; }
+
+  var resp = ui.alert('Réinitialiser les statuts ?',
+    'Toutes les lignes de l\\'onglet "' + detection.tabName + '" seront marquées comme "à envoyer".',
+    ui.ButtonSet.YES_NO);
+  if (resp !== ui.Button.YES) return;
+
+  var lastRow = sheet.getLastRow();
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (lastRow < minRow) return;
+  var range = sheet.getRange(minRow, detection.map.status, lastRow - minRow + 1, 1);
+  range.clearContent();
+  range.setBackground(null);
+  ui.alert('✅ Statuts réinitialisés pour l\\'onglet "' + detection.tabName + '"');
+}
+Backend: accept the new tab_name field as a fallback for product
+In server/routes.ts around line 3540 (the gsheets webhook), update the product reading:
+ts// Use explicit product field, then fall back to tab name (e.g. "cofer", "hachoir")
+const productName = (
+  data.product || data.produit || data.tab_name || ''
+).toString().trim();
+That's the only backend change. No schema or storage updates needed.
+
+Acceptance criteria
+
+✅ Run setup → toast lists every tab with detection mode (Headers or Positionnel) and starts syncing all of them.
+✅ Sheet "orders fatima" with tabs hachoir, cofer, camera v360, … all sync — not just the active one.
+✅ Tab cofer (no header row, A=Achache aziz, B=714585443, C=Fez, F=449) imports correctly: customerName="Achache aziz", customerPhone="714585443", customerCity="Fez", productName="cofer" (from tab name), totalPrice=44900.
+✅ Tab with proper headers (Nom/Téléphone/Adresse/...) still works in header mode.
+✅ Adding a row to ANY tab → 30 seconds later → SENT in that tab's status column.
+✅ Daily check at 10am scans every tab and retries failures.
+✅ "Vérifier la détection" menu shows the active tab's mode + column mapping + tab name.
+✅ Status column added at next free position per tab — different tabs can use different status column letters.
+✅ Existing simple "headers in row 1" sheets continue working (backwards compat).
+✅ Sheet has 152 rows × 12 tabs ≈ 1,800 orders; setup syncs them all (with rate-limit pacing).
+
+Commit
+bashgit add client/src/pages/integrations.tsx server/routes.ts
+git commit -m "feat(gsheets): multi-tab sync + hybrid header/positional detection
+
+Real-world Tajergrow users have spreadsheets with one tab per product
+(hachoir, cofer, camera v360, ...) and no header row in row 1. The current
+script only synced the active tab and required headers, so 11 of 12 tabs
+were silently ignored and legacy sheets failed setup entirely.
+
+- detectColumns now tries header detection first, falls back to a
+  positional map (A=name, B=phone, C=city, D=address, E=product,
+  F=price, G=qty, K=campaign, L=source) for legacy sheets
+- setup, manual sync, and daily safety net all iterate every tab
+- onEdit + queue keys include the sheet ID so cross-tab edits don't collide
+- When the product cell is empty, falls back to the tab name (e.g. 'cofer')
+- showDetection menu reports per-tab mode + column letters
+- Status column auto-added at next free position per tab independently
+- Backend webhook accepts data.tab_name as a final product fallback"
+git push

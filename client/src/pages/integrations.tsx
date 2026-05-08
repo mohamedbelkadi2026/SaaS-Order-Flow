@@ -211,69 +211,49 @@ function GoogleSheetsTab({ webhookKey, origin }: { webhookKey: string; origin: s
 
 var API_URL = '${apiUrl}';
 var API_KEY = '${apiKey}';
-
 var DEBOUNCE_SECONDS = 30;
+var STATUS_COLUMN_LABEL = 'TajerGrow Status';
 
-// ─── Synonymes de colonnes — 12 champs reconnus ───────────────
+// ─── Synonymes de colonnes (12 champs reconnus) ───────────────
 var COLUMN_ALIASES = {
   name: [
     'nom', 'nom client', 'nom du client', 'nom complet', 'client',
     'fullname', 'full name', 'name', 'customer', 'customer name',
-    'destinataire', 'recipient',
-    'الاسم', 'اسم العميل'
+    'destinataire', 'recipient', 'الاسم', 'اسم العميل'
   ],
   phone: [
     'telephone', 'tel', 'phone', 'numero', 'numero tel', 'numero telephone',
     'gsm', 'mobile', 'whatsapp', 'mobile phone', 'cell',
     'الهاتف', 'رقم الهاتف', 'رقم'
   ],
-  address: [
-    'adresse', 'address', 'adresse complete', 'rue', 'street',
-    'العنوان'
-  ],
-  city: [
-    'ville', 'city', 'town', 'localite', 'locality',
-    'المدينة'
-  ],
-  product: [
-    'produit', 'product', 'article', 'item', 'nom produit', 'product name',
-    'المنتج', 'اسم المنتج'
-  ],
-  price: [
-    'prix', 'price', 'montant', 'amount', 'total', 'prix dh', 'price dh', 'tarif',
-    'السعر', 'الثمن'
-  ],
-  quantity: [
-    'quantite', 'qty', 'quantity', 'qte', 'nombre', 'count',
-    'الكمية', 'العدد'
-  ],
-  note: [
-    'note', 'notes', 'comment', 'commentaire', 'remarque', 'remarks', 'message',
-    'ملاحظة', 'ملاحظات'
-  ],
-  offer: [
-    'offre', 'offer', 'promo', 'promotion', 'deal', 'pack',
-    'عرض', 'عرض خاص'
-  ],
-  utmSource: [
-    'utm source', 'source', 'utm_source', 'traffic source', 'origine',
-    'مصدر'
-  ],
-  utmCampaign: [
-    'utm campaign', 'campaign', 'utm_campaign', 'campagne', 'ad campaign',
-    'حملة', 'الحملة'
-  ],
-  productId: [
-    'product id', 'productid', 'product uuid', 'ameex product id',
-    'ameex id', 'sku', 'reference produit', 'product ref',
-    'معرف المنتج'
-  ]
+  address: ['adresse', 'address', 'rue', 'street', 'العنوان'],
+  city: ['ville', 'city', 'town', 'localite', 'المدينة'],
+  product: ['produit', 'product', 'article', 'item', 'nom produit', 'product name', 'المنتج'],
+  price: ['prix', 'price', 'montant', 'amount', 'total', 'tarif', 'السعر'],
+  quantity: ['quantite', 'qty', 'quantity', 'qte', 'nombre', 'count', 'الكمية'],
+  note: ['note', 'notes', 'comment', 'commentaire', 'remarque', 'message', 'ملاحظة'],
+  offer: ['offre', 'offer', 'promo', 'promotion', 'deal', 'pack', 'عرض'],
+  utmSource: ['utm source', 'source', 'utm_source', 'origine', 'مصدر'],
+  utmCampaign: ['utm campaign', 'campaign', 'utm_campaign', 'campagne', 'حملة'],
+  productId: ['product id', 'productid', 'sku', 'reference produit', 'ameex product id', 'معرف المنتج'],
 };
 
-var STATUS_ALIASES = ['status', 'statut', 'etat', 'etat', 'orders', 'order status'];
+// ─── Mode positionnel : ordre des colonnes pour anciens tableaux ──
+// Utilisé quand les en-têtes ne sont pas reconnus.
+var POSITIONAL_MAP = {
+  name:        1,   // A — nom client
+  phone:       2,   // B — téléphone
+  city:        3,   // C — ville
+  address:     4,   // D — adresse
+  product:     5,   // E — produit (fallback : nom de l\\'onglet)
+  price:       6,   // F — prix
+  quantity:    7,   // G — quantité
+  utmCampaign: 11,  // K — utm_campaign
+  utmSource:   12,  // L — utm_source
+  note:        13,  // M — note / tracking ref
+  productId:   14,  // N — sku / product code
+};
 
-// ─── Normalise un en-tête pour la comparaison ─────────────────
-// Strips accents, "No Label" prefix, "Col/Colonne/Column" prefix, punctuation.
 function normalizeHeader(s) {
   return String(s || '')
     .toLowerCase()
@@ -285,126 +265,106 @@ function normalizeHeader(s) {
 }
 
 // ─── Convertit un numéro de colonne 1-based en lettre (A, B…) ─
-function columnLetter(n) {
+function columnLetter(col) {
   var s = '';
-  while (n > 0) { n--; s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26); }
+  while (col > 0) {
+    var rem = (col - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    col = Math.floor((col - 1) / 26);
+  }
   return s;
 }
 
-// ─── Détecte automatiquement les colonnes depuis la ligne 1 ───
-// Retourne { map: {name:col, phone:col, …}, statusCol: col, error: null|string }
+// ─── Détection hybride : headers d\\'abord, fallback positionnel ─
+// Retourne { map, mode ('header'|'positional'), tabName, error? }
 function detectColumns(sheet) {
   var lastCol = sheet.getLastColumn();
-  if (lastCol < 1) return { map: {}, statusCol: 10, error: 'Feuille vide.' };
+  var lastRow = sheet.getLastRow();
+  if (lastCol < 1 || lastRow < 1) {
+    return { map: {}, mode: 'empty', tabName: sheet.getName(), error: 'Onglet vide.' };
+  }
+
+  // ── Essai 1 : détection par en-têtes (ligne 1) ──────────────
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var map = {};
+  var headerMap = {};
   var statusCol = 0;
-  var maxDataCol = 0;
 
-  for (var c = 0; c < headers.length; c++) {
-    var norm = normalizeHeader(headers[c]);
-    if (!norm) continue;
-    var col = c + 1;
-    if (col > maxDataCol) maxDataCol = col;
+  for (var i = 0; i < headers.length; i++) {
+    var h = normalizeHeader(headers[i]);
+    if (!h) continue;
 
-    // Check status aliases first
-    var isStatus = false;
-    for (var si = 0; si < STATUS_ALIASES.length; si++) {
-      if (norm === STATUS_ALIASES[si]) { statusCol = col; isStatus = true; break; }
+    if (h.indexOf('tajergrow') >= 0 || h === 'status' || h === 'statut' ||
+        h === 'orders' || h === 'order status') {
+      statusCol = i + 1;
+      continue;
     }
-    if (isStatus) continue;
 
-    // Match against field aliases
-    for (var field in COLUMN_ALIASES) {
-      if (map[field]) continue;
-      var aliases = COLUMN_ALIASES[field];
-      for (var ai = 0; ai < aliases.length; ai++) {
-        if (norm === normalizeHeader(aliases[ai])) { map[field] = col; break; }
+    for (var key in COLUMN_ALIASES) {
+      if (headerMap[key]) continue;
+      var aliases = COLUMN_ALIASES[key];
+      for (var j = 0; j < aliases.length; j++) {
+        if (h === normalizeHeader(aliases[j])) { headerMap[key] = i + 1; break; }
       }
     }
   }
 
-  // Fallback status column: first col after last data col, minimum col 10
-  if (!statusCol) statusCol = Math.max(maxDataCol + 1, 10);
-
-  var error = null;
-  if (!map.name && !map.phone) {
-    error = 'Colonnes Nom et Téléphone introuvables.\\nVérifiez vos en-têtes de colonnes.';
-  } else if (!map.name) {
-    error = 'Colonne Nom introuvable. Noms acceptés : Nom, Client, Fullname, Customer, Destinataire.';
-  } else if (!map.phone) {
-    error = 'Colonne Téléphone introuvable. Noms acceptés : Téléphone, Phone, GSM, Mobile, Whatsapp.';
+  // Si name + phone détectés depuis les headers → mode header ──
+  if (headerMap.name && headerMap.phone) {
+    if (!statusCol) {
+      statusCol = lastCol + 1;
+      sheet.getRange(1, statusCol).setValue(STATUS_COLUMN_LABEL).setFontWeight('bold');
+    }
+    headerMap.status = statusCol;
+    return { map: headerMap, mode: 'header', tabName: sheet.getName() };
   }
 
-  return { map: map, statusCol: statusCol, error: error };
+  // ── Essai 2 : mode positionnel (legacy, sans en-têtes) ──────
+  var positional = {};
+  for (var k in POSITIONAL_MAP) positional[k] = POSITIONAL_MAP[k];
+
+  // Colonne status = première colonne libre après la dernière utilisée
+  var maxUsed = lastCol;
+  for (var k in positional) { if (positional[k] > maxUsed) maxUsed = positional[k]; }
+  if (!statusCol) statusCol = maxUsed + 1;
+  positional.status = statusCol;
+
+  return { map: positional, mode: 'positional', tabName: sheet.getName() };
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  SETUP — Lance ceci UNE FOIS pour activer la synchro automatique
+//  SETUP — Lance UNE FOIS pour activer la synchro sur TOUS les onglets
 // ═══════════════════════════════════════════════════════════════
 function setup() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var detection = detectColumns(sheet);
-  if (detection.error) {
-    SpreadsheetApp.getUi().alert('❌ Configuration incomplète\\n\\n' + detection.error);
-    return;
-  }
-
   setupOnEditTrigger();
   setupDailyTrigger();
-  syncAllExistingRows();
 
-  var fieldLabels = {
-    name: 'Nom', phone: 'Téléphone', address: 'Adresse', city: 'Ville',
-    product: 'Produit', price: 'Prix', quantity: 'Quantité',
-    note: 'Note', offer: 'Offre', utmSource: 'UTM Source',
-    utmCampaign: 'UTM Campaign', productId: 'Product ID'
-  };
-  var summary = '✅ TajerGrow — Synchronisation activée !\\n\\n📋 Colonnes détectées :\\n';
-  for (var key in fieldLabels) {
-    if (detection.map[key]) {
-      summary += '  • ' + fieldLabels[key] + ' → ' + columnLetter(detection.map[key]) + '\\n';
-    }
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var allSheets = spreadsheet.getSheets();
+  var report = '✅ TajerGrow — Synchronisation activée sur ' + allSheets.length + ' onglet(s)\\n\\n';
+
+  for (var s = 0; s < allSheets.length; s++) {
+    var sheet = allSheets[s];
+    var detection = detectColumns(sheet);
+    var mode = detection.mode === 'header' ? '📋 Headers' : '📐 Positionnel';
+    report += '• ' + sheet.getName() + ' — ' + mode;
+    if (detection.error) { report += ' ⚠️ ' + detection.error; }
+    report += '\\n';
+    if (!detection.error) syncAllRowsInSheet(sheet, detection);
   }
-  summary += '  • Status (auto) → ' + columnLetter(detection.statusCol) + '\\n';
-  summary += '\\nLes nouvelles commandes seront envoyées automatiquement.';
-  SpreadsheetApp.getUi().alert(summary);
+
+  report += '\\nLes nouvelles lignes seront synchronisées automatiquement dans tous les onglets.';
+  SpreadsheetApp.getUi().alert(report);
 }
 
-// ─── Vérifie la détection des colonnes ────────────────────────
-function verifyDetection() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var detection = detectColumns(sheet);
-  if (detection.error) {
-    SpreadsheetApp.getUi().alert('❌ Détection incomplète\\n\\n' + detection.error);
-    return;
-  }
-  var fieldLabels = {
-    name: 'Nom', phone: 'Téléphone', address: 'Adresse', city: 'Ville',
-    product: 'Produit', price: 'Prix', quantity: 'Quantité',
-    note: 'Note', offer: 'Offre', utmSource: 'UTM Source',
-    utmCampaign: 'UTM Campaign', productId: 'Product ID'
-  };
-  var msg = '📋 Colonnes détectées dans votre sheet :\\n\\n';
-  for (var key in fieldLabels) {
-    if (detection.map[key]) {
-      msg += '  • ' + fieldLabels[key] + ' → ' + columnLetter(detection.map[key]) + '\\n';
-    }
-  }
-  msg += '  • Status (auto) → ' + columnLetter(detection.statusCol);
-  SpreadsheetApp.getUi().alert(msg);
-}
-
-// ─── Menu personnalisé (toujours disponible en backup) ────────
+// ─── Menu personnalisé ────────────────────────────────────────
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🚀 TajerGrow')
-    .addItem('▶️ Activer la synchro auto', 'setup')
-    .addItem('🔍 Vérifier la détection des colonnes', 'verifyDetection')
-    .addItem('🔄 Synchroniser les nouvelles commandes', 'syncNewRowsManual')
-    .addItem('📤 Tout re-synchroniser', 'syncAllExistingRows')
+    .addItem('▶️ Activer la synchro auto (tous les onglets)', 'setup')
+    .addItem('🔄 Re-synchroniser tous les onglets', 'syncAllSheets')
+    .addItem('📋 Vérifier la détection (onglet actif)', 'showDetection')
     .addItem('🩺 Tester la connexion', 'testConnection')
-    .addItem('🧹 Réinitialiser les statuts', 'resetAllStatuses')
+    .addItem('🧹 Réinitialiser les statuts (onglet actif)', 'resetActiveSheetStatuses')
     .addToUi();
 }
 
@@ -415,91 +375,101 @@ function setupOnEditTrigger() {
   });
   ScriptApp.newTrigger('onEditHandler')
     .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
-    .onEdit()
-    .create();
-  Logger.log('✅ Trigger onEdit installé');
+    .onEdit().create();
 }
 
 function setupDailyTrigger() {
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction() === 'dailyCheckHandler') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('dailyCheckHandler')
-    .timeBased()
-    .atHour(10)
-    .everyDays(1)
-    .create();
-  Logger.log('✅ Trigger quotidien installé (10h)');
+  ScriptApp.newTrigger('dailyCheckHandler').timeBased().atHour(10).everyDays(1).create();
 }
 
-// ─── Handler appelé à chaque modification ─────────────────────
+// ─── onEdit : déclenché sur n\\'importe quel onglet ────────────
 function onEditHandler(e) {
   if (!e || !e.range) return;
   var sheet = e.source.getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) return;
+
   var startRow = e.range.getRow();
   var endRow   = e.range.getLastRow();
-  if (startRow === 1) return;
-  var detection = detectColumns(sheet);
-  if (e.range.getColumn() === detection.statusCol) return;
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (endRow < minRow) return;
+  if (startRow < minRow) startRow = minRow;
+  if (e.range.getColumn() === detection.map.status) return;
+
   for (var row = startRow; row <= endRow; row++) {
-    queueRowForSync(sheet, row, detection.statusCol);
+    queueRowForSync(sheet, detection, row);
   }
 }
 
-// ─── Met une ligne en file d'attente pour synchro différée ────
-function queueRowForSync(sheet, row, statusCol) {
-  var statusCell = sheet.getRange(row, statusCol);
-  var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
-  if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
-  if (currentStatus === 'EN ATTENTE') return;
+// ─── File d\\'attente avec debounce — clé inclut l\\'ID de l\\'onglet ─
+function queueRowForSync(sheet, detection, row) {
+  var statusCell = sheet.getRange(row, detection.map.status);
+  var status = statusCell.getValue().toString().trim().toUpperCase();
+  if (status === 'SENT' || status === 'DUPLICATE' || status === 'EN ATTENTE') return;
+
   statusCell.setValue('EN ATTENTE');
   statusCell.setBackground('#fff3cd');
-  var props = PropertiesService.getDocumentProperties();
-  props.setProperty('queue_row_' + row, new Date().getTime().toString());
-  ScriptApp.newTrigger('processQueue')
-    .timeBased()
-    .after(DEBOUNCE_SECONDS * 1000)
-    .create();
-  Logger.log('Ligne ' + row + ' mise en file (synchro dans ' + DEBOUNCE_SECONDS + 's)');
+
+  PropertiesService.getDocumentProperties().setProperty(
+    'queue_' + sheet.getSheetId() + '_' + row,
+    new Date().getTime().toString()
+  );
+  ScriptApp.newTrigger('processQueue').timeBased().after(DEBOUNCE_SECONDS * 1000).create();
 }
 
-// ─── Traite toutes les lignes en file d'attente ───────────────
+// ─── Traite les lignes en attente (toutes feuilles) ───────────
 function processQueue() {
   ScriptApp.getProjectTriggers().forEach(function(t) {
-    if (t.getHandlerFunction() === 'processQueue' &&
-        t.getEventType() === ScriptApp.EventType.CLOCK) {
-      try { ScriptApp.deleteTrigger(t); } catch (e) {}
+    if (t.getHandlerFunction() === 'processQueue') {
+      try { ScriptApp.deleteTrigger(t); } catch (err) {}
     }
   });
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var props = PropertiesService.getDocumentProperties();
   var allProps = props.getProperties();
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var nowMs = new Date().getTime();
   var debounceMs = DEBOUNCE_SECONDS * 1000;
+
   for (var key in allProps) {
-    if (key.indexOf('queue_row_') !== 0) continue;
+    if (key.indexOf('queue_') !== 0) continue;
     var queuedAt = parseInt(allProps[key], 10);
     if (nowMs - queuedAt < debounceMs - 5000) continue;
-    var row = parseInt(key.replace('queue_row_', ''), 10);
-    if (isNaN(row) || row < 2) { props.deleteProperty(key); continue; }
-    syncRow(sheet, row);
+
+    var parts = key.replace('queue_', '').split('_');
+    if (parts.length !== 2) { props.deleteProperty(key); continue; }
+    var sheetIdNum = parseInt(parts[0], 10);
+    var row = parseInt(parts[1], 10);
+    if (isNaN(sheetIdNum) || isNaN(row)) { props.deleteProperty(key); continue; }
+
+    var targetSheet = null;
+    var allSheets = spreadsheet.getSheets();
+    for (var i = 0; i < allSheets.length; i++) {
+      if (allSheets[i].getSheetId() === sheetIdNum) { targetSheet = allSheets[i]; break; }
+    }
+    if (!targetSheet) { props.deleteProperty(key); continue; }
+
+    var detection = detectColumns(targetSheet);
+    if (!detection.error) syncRow(targetSheet, detection, row);
     props.deleteProperty(key);
   }
 }
 
-// ─── Synchronisation d'une ligne ──────────────────────────────
-function syncRow(sheet, row) {
-  var detection = detectColumns(sheet);
-  if (detection.error) { Logger.log('Détection échouée: ' + detection.error); return; }
-  var map = detection.map;
-  var statusCol = detection.statusCol;
+// ─── Synchronisation d\\'une seule ligne ──────────────────────
+function syncRow(sheet, detection, row) {
+  var cols = detection.map;
+  var statusCell = sheet.getRange(row, cols.status);
+  var status = statusCell.getValue().toString().trim().toUpperCase();
+  if (status === 'SENT' || status === 'DUPLICATE') return;
 
-  var statusCell = sheet.getRange(row, statusCol);
-  var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
-  if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
-
-  function readCol(field) {
-    return map[field] ? sheet.getRange(row, map[field]).getValue().toString().trim() : '';
+  function readCol(key) {
+    if (!cols[key]) return '';
+    var lastCol = sheet.getLastColumn();
+    if (cols[key] > lastCol) return '';
+    return sheet.getRange(row, cols[key]).getValue().toString().trim();
   }
 
   var nom       = readCol('name');
@@ -508,23 +478,27 @@ function syncRow(sheet, row) {
   if (!nom && !telephone) { statusCell.setValue(''); statusCell.setBackground(null); return; }
   if (!telephone) { statusCell.setValue('PHONE MANQUANT'); statusCell.setBackground('#f8d7da'); return; }
 
-  var qty     = map.quantity ? (sheet.getRange(row, map.quantity).getValue() || 1) : 1;
   var sheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  var qty     = readCol('quantity') || 1;
+
+  // Si la colonne produit est vide, utiliser le nom de l\\'onglet (ex : "cofer")
+  var product = readCol('product') || detection.tabName;
 
   var payload = {
     name:         nom,
     phone:        telephone,
     address:      readCol('address'),
     city:         readCol('city'),
-    product:      readCol('product'),
+    product:      product,
     price:        readCol('price'),
     quantity:     qty.toString(),
-    ref:          'GS-' + sheetId.substring(0, 6) + '-R' + row,
     note:         readCol('note'),
     offer:        readCol('offer'),
     utm_source:   readCol('utmSource'),
     utm_campaign: readCol('utmCampaign'),
-    product_id:   readCol('productId')
+    product_id:   readCol('productId'),
+    ref:          'GS-' + sheetId.substring(0, 6) + '-' + sheet.getSheetId() + '-R' + row,
+    tab_name:     detection.tabName,
   };
 
   try {
@@ -540,57 +514,75 @@ function syncRow(sheet, row) {
     if (code === 200 && body.success && !body.duplicate) {
       statusCell.setValue('SENT');
       statusCell.setBackground('#d4edda');
-      Logger.log('✓ Ligne ' + row + ' → Commande #' + body.orderId + ' créée');
+      Logger.log('✓ ' + sheet.getName() + ' L' + row + ' → Commande #' + body.orderId);
     } else if (body.duplicate) {
       statusCell.setValue('DUPLICATE');
       statusCell.setBackground('#fff3cd');
     } else {
       statusCell.setValue('ERREUR');
       statusCell.setBackground('#f8d7da');
-      Logger.log('✗ Ligne ' + row + ' erreur: ' + response.getContentText());
+      Logger.log('✗ ' + sheet.getName() + ' L' + row + ': ' + response.getContentText());
     }
   } catch (err) {
     statusCell.setValue('ERREUR');
     statusCell.setBackground('#f8d7da');
-    Logger.log('✗ Ligne ' + row + ' exception: ' + err.toString());
+    Logger.log('✗ ' + sheet.getName() + ' L' + row + ' exception: ' + err.toString());
   }
 }
 
-// ─── Synchronise toutes les lignes existantes ─────────────────
-function syncAllExistingRows() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+// ─── Synchroniser toutes les lignes d\\'un onglet ────────────
+function syncAllRowsInSheet(sheet, detection) {
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-  for (var row = 2; row <= lastRow; row++) {
-    syncRow(sheet, row);
-    Utilities.sleep(300);
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (lastRow < minRow) return;
+  for (var row = minRow; row <= lastRow; row++) {
+    syncRow(sheet, detection, row);
+    Utilities.sleep(200);
   }
-  Logger.log('✅ Synchro complète terminée');
 }
 
-// ─── Filet de sécurité quotidien ──────────────────────────────
+// ─── Synchroniser TOUS les onglets manuellement ──────────────
+function syncAllSheets() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var allSheets = spreadsheet.getSheets();
+  var totalSynced = 0;
+  for (var s = 0; s < allSheets.length; s++) {
+    var detection = detectColumns(allSheets[s]);
+    if (!detection.error) { syncAllRowsInSheet(allSheets[s], detection); totalSynced++; }
+  }
+  SpreadsheetApp.getUi().alert('✅ ' + totalSynced + ' onglet(s) re-synchronisé(s)');
+}
+
+// ─── Filet de sécurité quotidien : tous les onglets ──────────
 function dailyCheckHandler() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var detection = detectColumns(sheet);
-  if (detection.error) return;
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-  var resynced = 0;
-  for (var row = 2; row <= lastRow; row++) {
-    var status = sheet.getRange(row, detection.statusCol).getValue().toString().trim().toUpperCase();
-    if (status !== 'SENT' && status !== 'DUPLICATE') {
-      var nom = detection.map.name ? sheet.getRange(row, detection.map.name).getValue().toString().trim() : '';
-      var tel = detection.map.phone ? sheet.getRange(row, detection.map.phone).getValue().toString().trim() : '';
-      if (nom && tel) { syncRow(sheet, row); Utilities.sleep(300); resynced++; }
+  var allSheets = SpreadsheetApp.getActiveSpreadsheet().getSheets();
+  for (var s = 0; s < allSheets.length; s++) {
+    var sheet = allSheets[s];
+    var detection = detectColumns(sheet);
+    if (detection.error) continue;
+    var lastRow = sheet.getLastRow();
+    var minRow = detection.mode === 'header' ? 2 : 1;
+    for (var row = minRow; row <= lastRow; row++) {
+      var st = sheet.getRange(row, detection.map.status).getValue().toString().trim().toUpperCase();
+      if (st !== 'SENT' && st !== 'DUPLICATE') { syncRow(sheet, detection, row); Utilities.sleep(200); }
     }
   }
-  Logger.log('🩺 Vérification quotidienne — ' + resynced + ' ligne(s) re-synchronisée(s)');
 }
 
-// ─── Action manuelle depuis le menu ───────────────────────────
-function syncNewRowsManual() {
-  syncAllExistingRows();
-  SpreadsheetApp.getUi().alert('✅ Synchronisation manuelle terminée');
+// ─── Vérifier la détection de l\\'onglet actif ────────────────
+function showDetection() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) { SpreadsheetApp.getUi().alert('❌ ' + detection.error); return; }
+  var msg = '📋 Onglet : ' + detection.tabName + '\\n';
+  msg += 'Mode : ' + (detection.mode === 'header' ? 'Headers (ligne 1)' : 'Positionnel (legacy)') + '\\n\\n';
+  for (var key in detection.map) {
+    msg += '  • ' + key + ' → colonne ' + columnLetter(detection.map[key]) + '\\n';
+  }
+  if (detection.mode === 'positional') {
+    msg += '\\n💡 Le nom de l\\'onglet "' + detection.tabName + '" sera utilisé comme produit si la colonne E est vide.';
+  }
+  SpreadsheetApp.getUi().alert(msg);
 }
 
 // ─── Test de connexion ────────────────────────────────────────
@@ -600,43 +592,39 @@ function testConnection() {
       method: 'post',
       contentType: 'application/json',
       headers: { 'X-Api-Key': API_KEY },
-      payload: JSON.stringify({
-        name: 'TEST CONNECTION', phone: '0000000000',
-        address: '', city: '', product: '', price: '0',
-        ref: 'TEST-' + new Date().getTime(), test: true
-      }),
+      payload: JSON.stringify({ test: true, ref: 'TEST-' + new Date().getTime() }),
       muteHttpExceptions: true
     });
-    var body = response.getContentText();
     var code = response.getResponseCode();
-    if (code === 200) {
-      SpreadsheetApp.getUi().alert('✅ Connexion réussie !\\n\\n' + body);
-    } else {
-      SpreadsheetApp.getUi().alert('❌ Erreur HTTP ' + code + '\\n\\n' + body);
-    }
+    SpreadsheetApp.getUi().alert(
+      code === 200
+        ? '✅ Connexion réussie !\\n\\n' + response.getContentText()
+        : '❌ Erreur HTTP ' + code + '\\n\\n' + response.getContentText()
+    );
   } catch (err) {
     SpreadsheetApp.getUi().alert('❌ Erreur réseau\\n\\n' + err.toString());
   }
 }
 
-// ─── Réinitialiser tous les statuts (forcer re-sync) ──────────
-function resetAllStatuses() {
+// ─── Réinitialiser les statuts de l\\'onglet actif ────────────
+function resetActiveSheetStatuses() {
   var ui = SpreadsheetApp.getUi();
-  var resp = ui.alert(
-    'Réinitialiser les statuts ?',
-    'Toutes les lignes seront marquées comme "à envoyer". Les commandes déjà reçues par TajerGrow seront détectées comme doublons et ignorées.',
-    ui.ButtonSet.YES_NO
-  );
-  if (resp !== ui.Button.YES) return;
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var detection = detectColumns(sheet);
+  if (detection.error) { ui.alert('❌ ' + detection.error); return; }
+
+  var resp = ui.alert('Réinitialiser les statuts ?',
+    'Toutes les lignes de l\\'onglet "' + detection.tabName + '" seront marquées comme "à envoyer".',
+    ui.ButtonSet.YES_NO);
+  if (resp !== ui.Button.YES) return;
+
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-  var statusRange = sheet.getRange(2, detection.statusCol, lastRow - 1, 1);
-  statusRange.clearContent();
-  statusRange.setBackground(null);
-  PropertiesService.getDocumentProperties().deleteAllProperties();
-  ui.alert('✅ Statuts réinitialisés');
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (lastRow < minRow) return;
+  var range = sheet.getRange(minRow, detection.map.status, lastRow - minRow + 1, 1);
+  range.clearContent();
+  range.setBackground(null);
+  ui.alert('✅ Statuts réinitialisés pour l\\'onglet "' + detection.tabName + '"');
 }`;
 
   const handleCopy = () => {
