@@ -1,0 +1,134 @@
+🚀 FIX — Setup marks all existing rows as "ANCIEN", only new rows sync
+My problem
+When I run setup, the script syncs ALL 1,800+ existing rows from my 12 tabs to TajerGrow. I don't want that — those orders are old and already processed.
+I want: only NEW rows added AFTER setup get synced. Existing rows stay in the sheet but are NEVER sent.
+Implementation
+In client/src/pages/integrations.tsx, in the script template, replace the current setup() function with this version that auto-marks existing rows as ANCIEN:
+js// ═══════════════════════════════════════════════════════════════
+//  SETUP — Active la synchro pour les NOUVELLES commandes uniquement
+//  Les commandes déjà présentes sont marquées "ANCIEN" et ignorées.
+// ═══════════════════════════════════════════════════════════════
+function setup() {
+  var ui = SpreadsheetApp.getUi();
+
+  var confirm = ui.alert(
+    'Activer la synchronisation TajerGrow',
+    '✨ Seules les NOUVELLES commandes ajoutées à partir de maintenant seront synchronisées.\\n\\n' +
+    'Les commandes déjà présentes dans vos onglets seront marquées "ANCIEN" (ignorées).\\n\\n' +
+    'Continuer ?',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (confirm !== ui.Button.OK) return;
+
+  setupOnEditTrigger();
+  setupDailyTrigger();
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var allSheets = spreadsheet.getSheets();
+  var report = '✅ TajerGrow — Synchronisation activée\\n\\n';
+  var totalMarked = 0;
+
+  for (var s = 0; s < allSheets.length; s++) {
+    var sheet = allSheets[s];
+    var detection = detectColumns(sheet);
+    if (detection.error) {
+      report += '• ' + sheet.getName() + ' — ⚠️ ' + detection.error + '\\n';
+      continue;
+    }
+
+    var marked = markExistingRowsAsAncien(sheet, detection);
+    totalMarked += marked;
+    var mode = detection.mode === 'header' ? '📋' : '📐';
+    report += '• ' + mode + ' ' + sheet.getName() + ' (' + marked + ' anciennes ignorées)\\n';
+  }
+
+  report += '\\n✨ ' + totalMarked + ' commandes existantes marquées "ANCIEN".\\n';
+  report += 'À partir de maintenant, toute NOUVELLE ligne ajoutée sera synchronisée automatiquement (30 secondes après modification).';
+
+  ui.alert(report);
+}
+
+// ─── Marque toutes les lignes existantes comme "ANCIEN" sans rien envoyer ──
+function markExistingRowsAsAncien(sheet, detection) {
+  var lastRow = sheet.getLastRow();
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (lastRow < minRow) return 0;
+
+  var marked = 0;
+  for (var row = minRow; row <= lastRow; row++) {
+    var statusCell = sheet.getRange(row, detection.map.status);
+    var current = statusCell.getValue().toString().trim().toUpperCase();
+    if (current === 'SENT' || current === 'DUPLICATE' || current === 'ANCIEN') continue;
+
+    // Ne marque que les lignes qui ont au moins un nom ou téléphone (lignes vides ignorées)
+    var hasData = false;
+    if (detection.map.name) {
+      if (sheet.getRange(row, detection.map.name).getValue().toString().trim()) hasData = true;
+    }
+    if (detection.map.phone) {
+      if (sheet.getRange(row, detection.map.phone).getValue().toString().trim()) hasData = true;
+    }
+    if (!hasData) continue;
+
+    statusCell.setValue('ANCIEN');
+    statusCell.setBackground('#e2e3e5');   // gris clair
+    marked++;
+  }
+  return marked;
+}
+Also update syncRow so it never re-syncs an ANCIEN row (the same way it already protects SENT and DUPLICATE):
+jsfunction syncRow(sheet, detection, row) {
+  var cols = detection.map;
+  var statusCell = sheet.getRange(row, cols.status);
+  var status = statusCell.getValue().toString().trim().toUpperCase();
+  // ✨ ANCIEN ajouté — ne JAMAIS re-synchroniser une ligne historique
+  if (status === 'SENT' || status === 'DUPLICATE' || status === 'ANCIEN') return;
+
+  // ... rest of the function unchanged ...
+}
+And the daily safety net should also skip ANCIEN:
+jsfunction dailyCheckHandler() {
+  var allSheets = SpreadsheetApp.getActiveSpreadsheet().getSheets();
+  for (var s = 0; s < allSheets.length; s++) {
+    var sheet = allSheets[s];
+    var detection = detectColumns(sheet);
+    if (detection.error) continue;
+    var lastRow = sheet.getLastRow();
+    var minRow = detection.mode === 'header' ? 2 : 1;
+    for (var row = minRow; row <= lastRow; row++) {
+      var st = sheet.getRange(row, detection.map.status).getValue().toString().trim().toUpperCase();
+      // Skip SENT, DUPLICATE, ET ANCIEN
+      if (st !== 'SENT' && st !== 'DUPLICATE' && st !== 'ANCIEN') {
+        syncRow(sheet, detection, row);
+        Utilities.sleep(200);
+      }
+    }
+  }
+}
+Acceptance criteria
+
+✅ User runs setup → confirmation dialog explains: "Seules les NOUVELLES commandes seront synchronisées".
+✅ Click OK → all 1,800 existing rows across all 12 tabs get status ANCIEN (light gray cell).
+✅ ZERO orders sent to TajerGrow during setup.
+✅ Triggers (onEdit + daily) installed correctly.
+✅ User adds a new row in any tab → 30 seconds later → status SENT (green) + order in TajerGrow.
+✅ User edits an ANCIEN row (e.g. fixes a typo) → row stays ANCIEN, no re-sync, no TajerGrow order.
+✅ Daily 10am check skips all ANCIEN rows.
+✅ Final toast shows count: "1,847 commandes existantes marquées ANCIEN. À partir de maintenant, toute NOUVELLE ligne sera synchronisée."
+
+Commit
+bashgit add client/src/pages/integrations.tsx
+git commit -m "feat(gsheets): setup marks existing rows ANCIEN — only new rows sync from now on
+
+Users with 1,800+ historical rows in their sheets don't want all of them
+imported into TajerGrow on first connection — those orders are already
+processed. They want a clean cutoff: from this moment forward, only NEW
+rows get synced.
+
+- setup() now marks every existing row with data as 'ANCIEN' (gray cell)
+- ZERO API calls to TajerGrow during setup — pure local marking
+- syncRow + dailyCheckHandler treat ANCIEN like SENT/DUPLICATE (never re-sync)
+- Editing an ANCIEN row keeps it ANCIEN (idempotent — historical fixes don't leak)
+- onEdit handler still works normally for genuinely NEW rows added after setup
+- Confirmation dialog before setup explains the behavior clearly"
+git push

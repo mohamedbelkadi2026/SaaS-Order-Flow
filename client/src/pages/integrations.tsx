@@ -332,28 +332,69 @@ function detectColumns(sheet) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  SETUP — Lance UNE FOIS pour activer la synchro sur TOUS les onglets
+//  SETUP — Active la synchro pour les NOUVELLES commandes uniquement
+//  Les commandes déjà présentes sont marquées "ANCIEN" et ignorées.
 // ═══════════════════════════════════════════════════════════════
 function setup() {
+  var ui = SpreadsheetApp.getUi();
+
+  var confirm = ui.alert(
+    'Activer la synchronisation TajerGrow',
+    '✨ Seules les NOUVELLES commandes ajoutées à partir de maintenant seront synchronisées.\\n\\n' +
+    'Les commandes déjà présentes dans vos onglets seront marquées "ANCIEN" (ignorées).\\n\\n' +
+    'Continuer ?',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (confirm !== ui.Button.OK) return;
+
   setupOnEditTrigger();
   setupDailyTrigger();
 
   var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   var allSheets = spreadsheet.getSheets();
-  var report = '✅ TajerGrow — Synchronisation activée sur ' + allSheets.length + ' onglet(s)\\n\\n';
+  var report = '✅ TajerGrow — Synchronisation activée\\n\\n';
+  var totalMarked = 0;
 
   for (var s = 0; s < allSheets.length; s++) {
     var sheet = allSheets[s];
     var detection = detectColumns(sheet);
-    var mode = detection.mode === 'header' ? '📋 Headers' : '📐 Positionnel';
-    report += '• ' + sheet.getName() + ' — ' + mode;
-    if (detection.error) { report += ' ⚠️ ' + detection.error; }
-    report += '\\n';
-    if (!detection.error) syncAllRowsInSheet(sheet, detection);
+    if (detection.error) {
+      report += '• ' + sheet.getName() + ' — ⚠️ ' + detection.error + '\\n';
+      continue;
+    }
+    var marked = markExistingRowsAsAncien(sheet, detection);
+    totalMarked += marked;
+    var mode = detection.mode === 'header' ? '📋' : '📐';
+    report += '• ' + mode + ' ' + sheet.getName() + ' (' + marked + ' anciennes ignorées)\\n';
   }
 
-  report += '\\nLes nouvelles lignes seront synchronisées automatiquement dans tous les onglets.';
-  SpreadsheetApp.getUi().alert(report);
+  report += '\\n✨ ' + totalMarked + ' commandes existantes marquées "ANCIEN".\\n';
+  report += 'À partir de maintenant, toute NOUVELLE ligne ajoutée sera synchronisée automatiquement (30 secondes après modification).';
+  ui.alert(report);
+}
+
+// ─── Marque toutes les lignes existantes comme "ANCIEN" sans rien envoyer ──
+function markExistingRowsAsAncien(sheet, detection) {
+  var lastRow = sheet.getLastRow();
+  var minRow = detection.mode === 'header' ? 2 : 1;
+  if (lastRow < minRow) return 0;
+
+  var marked = 0;
+  for (var row = minRow; row <= lastRow; row++) {
+    var statusCell = sheet.getRange(row, detection.map.status);
+    var current = statusCell.getValue().toString().trim().toUpperCase();
+    if (current === 'SENT' || current === 'DUPLICATE' || current === 'ANCIEN') continue;
+
+    var hasData = false;
+    if (detection.map.name && sheet.getRange(row, detection.map.name).getValue().toString().trim()) hasData = true;
+    if (detection.map.phone && sheet.getRange(row, detection.map.phone).getValue().toString().trim()) hasData = true;
+    if (!hasData) continue;
+
+    statusCell.setValue('ANCIEN');
+    statusCell.setBackground('#e2e3e5');
+    marked++;
+  }
+  return marked;
 }
 
 // ─── Menu personnalisé ────────────────────────────────────────
@@ -463,7 +504,7 @@ function syncRow(sheet, detection, row) {
   var cols = detection.map;
   var statusCell = sheet.getRange(row, cols.status);
   var status = statusCell.getValue().toString().trim().toUpperCase();
-  if (status === 'SENT' || status === 'DUPLICATE') return;
+  if (status === 'SENT' || status === 'DUPLICATE' || status === 'ANCIEN') return;
 
   function readCol(key) {
     if (!cols[key]) return '';
@@ -564,7 +605,7 @@ function dailyCheckHandler() {
     var minRow = detection.mode === 'header' ? 2 : 1;
     for (var row = minRow; row <= lastRow; row++) {
       var st = sheet.getRange(row, detection.map.status).getValue().toString().trim().toUpperCase();
-      if (st !== 'SENT' && st !== 'DUPLICATE') { syncRow(sheet, detection, row); Utilities.sleep(200); }
+      if (st !== 'SENT' && st !== 'DUPLICATE' && st !== 'ANCIEN') { syncRow(sheet, detection, row); Utilities.sleep(200); }
     }
   }
 }
