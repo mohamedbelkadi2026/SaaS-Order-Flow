@@ -212,35 +212,187 @@ function GoogleSheetsTab({ webhookKey, origin }: { webhookKey: string; origin: s
 var API_URL = '${apiUrl}';
 var API_KEY = '${apiKey}';
 
-// ─── Configuration des colonnes (1 = A, 2 = B, ..., 10 = J) ───
-var COL_NOM       = 1;   // A — Nom du client
-var COL_TELEPHONE = 2;   // B — Téléphone
-var COL_ADRESSE   = 3;   // C — Adresse
-var COL_VILLE     = 4;   // D — Ville
-var COL_PRODUIT   = 5;   // E — Produit
-var COL_PRIX      = 6;   // F — Prix (DH)
-var COL_QTY       = 7;   // G — Quantité
-
-// Colonne J réservée au statut interne (gérée par le script — ne pas modifier)
-var COL_STATUS    = 10;
-
-// Nombre de secondes d'attente après une édition avant de synchroniser
-// (laisse à l'utilisateur le temps de remplir toute la ligne).
 var DEBOUNCE_SECONDS = 30;
+
+// ─── Synonymes de colonnes — 12 champs reconnus ───────────────
+var COLUMN_ALIASES = {
+  name: [
+    'nom', 'nom client', 'nom du client', 'nom complet', 'client',
+    'fullname', 'full name', 'name', 'customer', 'customer name',
+    'destinataire', 'recipient',
+    'الاسم', 'اسم العميل'
+  ],
+  phone: [
+    'telephone', 'tel', 'phone', 'numero', 'numero tel', 'numero telephone',
+    'gsm', 'mobile', 'whatsapp', 'mobile phone', 'cell',
+    'الهاتف', 'رقم الهاتف', 'رقم'
+  ],
+  address: [
+    'adresse', 'address', 'adresse complete', 'rue', 'street',
+    'العنوان'
+  ],
+  city: [
+    'ville', 'city', 'town', 'localite', 'locality',
+    'المدينة'
+  ],
+  product: [
+    'produit', 'product', 'article', 'item', 'nom produit', 'product name',
+    'المنتج', 'اسم المنتج'
+  ],
+  price: [
+    'prix', 'price', 'montant', 'amount', 'total', 'prix dh', 'price dh', 'tarif',
+    'السعر', 'الثمن'
+  ],
+  quantity: [
+    'quantite', 'qty', 'quantity', 'qte', 'nombre', 'count',
+    'الكمية', 'العدد'
+  ],
+  note: [
+    'note', 'notes', 'comment', 'commentaire', 'remarque', 'remarks', 'message',
+    'ملاحظة', 'ملاحظات'
+  ],
+  offer: [
+    'offre', 'offer', 'promo', 'promotion', 'deal', 'pack',
+    'عرض', 'عرض خاص'
+  ],
+  utmSource: [
+    'utm source', 'source', 'utm_source', 'traffic source', 'origine',
+    'مصدر'
+  ],
+  utmCampaign: [
+    'utm campaign', 'campaign', 'utm_campaign', 'campagne', 'ad campaign',
+    'حملة', 'الحملة'
+  ],
+  productId: [
+    'product id', 'productid', 'product uuid', 'ameex product id',
+    'ameex id', 'sku', 'reference produit', 'product ref',
+    'معرف المنتج'
+  ]
+};
+
+var STATUS_ALIASES = ['status', 'statut', 'etat', 'etat', 'orders', 'order status'];
+
+// ─── Normalise un en-tête pour la comparaison ─────────────────
+// Strips accents, "No Label" prefix, "Col/Colonne/Column" prefix, punctuation.
+function normalizeHeader(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/^no\s*label\s*/i, '')
+    .replace(/^col(onne|umn)?\s*/i, '')
+    .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ')
+    .trim();
+}
+
+// ─── Convertit un numéro de colonne 1-based en lettre (A, B…) ─
+function columnLetter(n) {
+  var s = '';
+  while (n > 0) { n--; s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26); }
+  return s;
+}
+
+// ─── Détecte automatiquement les colonnes depuis la ligne 1 ───
+// Retourne { map: {name:col, phone:col, …}, statusCol: col, error: null|string }
+function detectColumns(sheet) {
+  var lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return { map: {}, statusCol: 10, error: 'Feuille vide.' };
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var map = {};
+  var statusCol = 0;
+  var maxDataCol = 0;
+
+  for (var c = 0; c < headers.length; c++) {
+    var norm = normalizeHeader(headers[c]);
+    if (!norm) continue;
+    var col = c + 1;
+    if (col > maxDataCol) maxDataCol = col;
+
+    // Check status aliases first
+    var isStatus = false;
+    for (var si = 0; si < STATUS_ALIASES.length; si++) {
+      if (norm === STATUS_ALIASES[si]) { statusCol = col; isStatus = true; break; }
+    }
+    if (isStatus) continue;
+
+    // Match against field aliases
+    for (var field in COLUMN_ALIASES) {
+      if (map[field]) continue;
+      var aliases = COLUMN_ALIASES[field];
+      for (var ai = 0; ai < aliases.length; ai++) {
+        if (norm === normalizeHeader(aliases[ai])) { map[field] = col; break; }
+      }
+    }
+  }
+
+  // Fallback status column: first col after last data col, minimum col 10
+  if (!statusCol) statusCol = Math.max(maxDataCol + 1, 10);
+
+  var error = null;
+  if (!map.name && !map.phone) {
+    error = 'Colonnes Nom et Téléphone introuvables.\\nVérifiez vos en-têtes de colonnes.';
+  } else if (!map.name) {
+    error = 'Colonne Nom introuvable. Noms acceptés : Nom, Client, Fullname, Customer, Destinataire.';
+  } else if (!map.phone) {
+    error = 'Colonne Téléphone introuvable. Noms acceptés : Téléphone, Phone, GSM, Mobile, Whatsapp.';
+  }
+
+  return { map: map, statusCol: statusCol, error: error };
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  SETUP — Lance ceci UNE FOIS pour activer la synchro automatique
 // ═══════════════════════════════════════════════════════════════
 function setup() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) {
+    SpreadsheetApp.getUi().alert('❌ Configuration incomplète\\n\\n' + detection.error);
+    return;
+  }
+
   setupOnEditTrigger();
   setupDailyTrigger();
   syncAllExistingRows();
-  SpreadsheetApp.getUi().alert(
-    '✅ TajerGrow — Synchronisation automatique activée !\\n\\n' +
-    '• Les nouvelles commandes seront envoyées automatiquement.\\n' +
-    '• Une vérification quotidienne assure qu\\'aucune commande n\\'est oubliée.\\n' +
-    '• Vous pouvez aussi déclencher manuellement via le menu 🚀 TajerGrow.'
-  );
+
+  var fieldLabels = {
+    name: 'Nom', phone: 'Téléphone', address: 'Adresse', city: 'Ville',
+    product: 'Produit', price: 'Prix', quantity: 'Quantité',
+    note: 'Note', offer: 'Offre', utmSource: 'UTM Source',
+    utmCampaign: 'UTM Campaign', productId: 'Product ID'
+  };
+  var summary = '✅ TajerGrow — Synchronisation activée !\\n\\n📋 Colonnes détectées :\\n';
+  for (var key in fieldLabels) {
+    if (detection.map[key]) {
+      summary += '  • ' + fieldLabels[key] + ' → ' + columnLetter(detection.map[key]) + '\\n';
+    }
+  }
+  summary += '  • Status (auto) → ' + columnLetter(detection.statusCol) + '\\n';
+  summary += '\\nLes nouvelles commandes seront envoyées automatiquement.';
+  SpreadsheetApp.getUi().alert(summary);
+}
+
+// ─── Vérifie la détection des colonnes ────────────────────────
+function verifyDetection() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) {
+    SpreadsheetApp.getUi().alert('❌ Détection incomplète\\n\\n' + detection.error);
+    return;
+  }
+  var fieldLabels = {
+    name: 'Nom', phone: 'Téléphone', address: 'Adresse', city: 'Ville',
+    product: 'Produit', price: 'Prix', quantity: 'Quantité',
+    note: 'Note', offer: 'Offre', utmSource: 'UTM Source',
+    utmCampaign: 'UTM Campaign', productId: 'Product ID'
+  };
+  var msg = '📋 Colonnes détectées dans votre sheet :\\n\\n';
+  for (var key in fieldLabels) {
+    if (detection.map[key]) {
+      msg += '  • ' + fieldLabels[key] + ' → ' + columnLetter(detection.map[key]) + '\\n';
+    }
+  }
+  msg += '  • Status (auto) → ' + columnLetter(detection.statusCol);
+  SpreadsheetApp.getUi().alert(msg);
 }
 
 // ─── Menu personnalisé (toujours disponible en backup) ────────
@@ -248,6 +400,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🚀 TajerGrow')
     .addItem('▶️ Activer la synchro auto', 'setup')
+    .addItem('🔍 Vérifier la détection des colonnes', 'verifyDetection')
     .addItem('🔄 Synchroniser les nouvelles commandes', 'syncNewRowsManual')
     .addItem('📤 Tout re-synchroniser', 'syncAllExistingRows')
     .addItem('🩺 Tester la connexion', 'testConnection')
@@ -255,7 +408,7 @@ function onOpen() {
     .addToUi();
 }
 
-// ─── Trigger : déclenché à chaque édition du sheet ────────────
+// ─── Triggers ─────────────────────────────────────────────────
 function setupOnEditTrigger() {
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction() === 'onEditHandler') ScriptApp.deleteTrigger(t);
@@ -267,7 +420,6 @@ function setupOnEditTrigger() {
   Logger.log('✅ Trigger onEdit installé');
 }
 
-// ─── Trigger quotidien : filet de sécurité (10h chaque jour) ──
 function setupDailyTrigger() {
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction() === 'dailyCheckHandler') ScriptApp.deleteTrigger(t);
@@ -287,15 +439,16 @@ function onEditHandler(e) {
   var startRow = e.range.getRow();
   var endRow   = e.range.getLastRow();
   if (startRow === 1) return;
-  if (e.range.getColumn() === COL_STATUS) return;
+  var detection = detectColumns(sheet);
+  if (e.range.getColumn() === detection.statusCol) return;
   for (var row = startRow; row <= endRow; row++) {
-    queueRowForSync(sheet, row);
+    queueRowForSync(sheet, row, detection.statusCol);
   }
 }
 
 // ─── Met une ligne en file d'attente pour synchro différée ────
-function queueRowForSync(sheet, row) {
-  var statusCell = sheet.getRange(row, COL_STATUS);
+function queueRowForSync(sheet, row, statusCol) {
+  var statusCell = sheet.getRange(row, statusCol);
   var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
   if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
   if (currentStatus === 'EN ATTENTE') return;
@@ -336,29 +489,44 @@ function processQueue() {
 
 // ─── Synchronisation d'une ligne ──────────────────────────────
 function syncRow(sheet, row) {
-  var statusCell = sheet.getRange(row, COL_STATUS);
+  var detection = detectColumns(sheet);
+  if (detection.error) { Logger.log('Détection échouée: ' + detection.error); return; }
+  var map = detection.map;
+  var statusCol = detection.statusCol;
+
+  var statusCell = sheet.getRange(row, statusCol);
   var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
   if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
-  var nom       = sheet.getRange(row, COL_NOM).getValue().toString().trim();
-  var telephone = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
+
+  function readCol(field) {
+    return map[field] ? sheet.getRange(row, map[field]).getValue().toString().trim() : '';
+  }
+
+  var nom       = readCol('name');
+  var telephone = readCol('phone');
+
   if (!nom && !telephone) { statusCell.setValue(''); statusCell.setBackground(null); return; }
   if (!telephone) { statusCell.setValue('PHONE MANQUANT'); statusCell.setBackground('#f8d7da'); return; }
-  var adresse = sheet.getRange(row, COL_ADRESSE).getValue().toString().trim();
-  var ville   = sheet.getRange(row, COL_VILLE).getValue().toString().trim();
-  var produit = sheet.getRange(row, COL_PRODUIT).getValue().toString().trim();
-  var prix    = sheet.getRange(row, COL_PRIX).getValue().toString().trim();
-  var qty     = sheet.getRange(row, COL_QTY).getValue() || 1;
+
+  var qty     = map.quantity ? (sheet.getRange(row, map.quantity).getValue() || 1) : 1;
   var sheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+
   var payload = {
-    name:     nom,
-    phone:    telephone,
-    address:  adresse,
-    city:     ville,
-    product:  produit,
-    price:    prix,
-    quantity: qty.toString(),
-    ref:      'GS-' + sheetId.substring(0, 6) + '-R' + row
+    name:         nom,
+    phone:        telephone,
+    address:      readCol('address'),
+    city:         readCol('city'),
+    product:      readCol('product'),
+    price:        readCol('price'),
+    quantity:     qty.toString(),
+    ref:          'GS-' + sheetId.substring(0, 6) + '-R' + row,
+    note:         readCol('note'),
+    offer:        readCol('offer'),
+    utm_source:   readCol('utmSource'),
+    utm_campaign: readCol('utmCampaign'),
+    product_id:   readCol('productId')
   };
+
   try {
     var response = UrlFetchApp.fetch(API_URL, {
       method: 'post',
@@ -403,14 +571,16 @@ function syncAllExistingRows() {
 // ─── Filet de sécurité quotidien ──────────────────────────────
 function dailyCheckHandler() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) return;
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
   var resynced = 0;
   for (var row = 2; row <= lastRow; row++) {
-    var status = sheet.getRange(row, COL_STATUS).getValue().toString().trim().toUpperCase();
+    var status = sheet.getRange(row, detection.statusCol).getValue().toString().trim().toUpperCase();
     if (status !== 'SENT' && status !== 'DUPLICATE') {
-      var nom = sheet.getRange(row, COL_NOM).getValue().toString().trim();
-      var tel = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
+      var nom = detection.map.name ? sheet.getRange(row, detection.map.name).getValue().toString().trim() : '';
+      var tel = detection.map.phone ? sheet.getRange(row, detection.map.phone).getValue().toString().trim() : '';
       if (nom && tel) { syncRow(sheet, row); Utilities.sleep(300); resynced++; }
     }
   }
@@ -459,9 +629,10 @@ function resetAllStatuses() {
   );
   if (resp !== ui.Button.YES) return;
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  var statusRange = sheet.getRange(2, COL_STATUS, lastRow - 1, 1);
+  var statusRange = sheet.getRange(2, detection.statusCol, lastRow - 1, 1);
   statusRange.clearContent();
   statusRange.setBackground(null);
   PropertiesService.getDocumentProperties().deleteAllProperties();
@@ -588,15 +759,49 @@ function resetAllStatuses() {
 
       {/* Column mapping info */}
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5">
-        <p className="text-xs font-semibold text-amber-800 mb-2">Structure attendue de votre Google Sheet :</p>
-        <div className="grid grid-cols-5 gap-1 text-center text-[11px]">
-          {["A — Nom", "B — Téléphone", "C — Adresse", "D — Ville", "E — Produit", "F — Prix (DH)", "G — Quantité", "H — (libre)", "I — (libre)", "J — Status"].map((col, i) => (
-            <div key={i} className={cn("rounded px-2 py-1.5 font-medium", col.startsWith("J") ? "bg-amber-200 text-amber-900" : "bg-white text-amber-700 border border-amber-200")}>
-              {col}
-            </div>
-          ))}
-        </div>
-        <p className="text-xs text-amber-700 mt-2">La colonne <strong>J (Status)</strong> est gérée automatiquement par le script — ne la remplissez pas manuellement.</p>
+        <p className="text-xs font-semibold text-amber-800 mb-1">Détection automatique des colonnes</p>
+        <p className="text-xs text-amber-700 mb-3">
+          Le script détecte automatiquement vos colonnes en lisant la ligne d'en-tête. Pas besoin de respecter un ordre précis.
+          Le préfixe <strong>"No Label"</strong> (export Tally / Google Forms) est ignoré automatiquement.
+        </p>
+        <details className="mt-1">
+          <summary className="text-xs font-semibold text-amber-900 cursor-pointer select-none">
+            📋 Voir tous les noms de colonnes reconnus (12 champs supportés)
+          </summary>
+          <div className="text-[11px] mt-2 space-y-0.5 text-amber-900">
+            <table className="w-full">
+              <tbody>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Nom *</td>
+                    <td className="text-amber-800">Nom, Client, Customer, Fullname, Destinataire, اسم</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Téléphone *</td>
+                    <td className="text-amber-800">Téléphone, Tel, Phone, GSM, Whatsapp, Mobile, الهاتف</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Adresse</td>
+                    <td className="text-amber-800">Adresse, Address, Rue, Street, العنوان</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Ville</td>
+                    <td className="text-amber-800">Ville, City, Town, Localité, المدينة</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Produit</td>
+                    <td className="text-amber-800">Produit, Product, Article, Item, المنتج</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Prix</td>
+                    <td className="text-amber-800">Prix, Price, Montant, Total, Tarif, السعر</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Quantité</td>
+                    <td className="text-amber-800">Quantité, Qty, Quantity, Qté, Nombre, الكمية</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Note</td>
+                    <td className="text-amber-800">Note, Comment, Commentaire, Remarque, Message, ملاحظة</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Offre</td>
+                    <td className="text-amber-800">Offre, Offer, Promo, Promotion, Deal, Pack, عرض</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">UTM Source</td>
+                    <td className="text-amber-800">utm_source, Source, Origine, مصدر</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">UTM Campaign</td>
+                    <td className="text-amber-800">utm_campaign, Campaign, Campagne, Ad Campaign, حملة</td></tr>
+                <tr><td className="font-semibold py-0.5 pr-3 align-top whitespace-nowrap">Product ID</td>
+                    <td className="text-amber-800">Product ID, ProductId, SKU, Référence Produit, معرف المنتج</td></tr>
+              </tbody>
+            </table>
+            <p className="text-[10px] text-amber-700 italic mt-1">
+              * = obligatoire — les autres sont optionnels. La colonne Status est gérée automatiquement par le script.
+            </p>
+          </div>
+        </details>
       </div>
 
       {/* Verify */}

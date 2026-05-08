@@ -3774,7 +3774,7 @@ export async function registerRoutes(
         return res.json({ success: true, test: true, message: 'Connection OK', storeName: store.name || `Store ${storeId}` });
       }
 
-      const customerName    = (data.name    || data.nom    || data.customer_name   || "").toString().trim();
+      const customerName    = (data.name    || data.nom    || data.customer_name  || data.fullname || "").toString().trim();
       const customerPhone   = (data.phone   || data.telephone || data.customer_phone || "").toString().trim();
       const customerCity    = (data.city    || data.ville   || "").toString().trim();
       const customerAddress = (data.address || data.adresse || "").toString().trim();
@@ -3783,6 +3783,14 @@ export async function registerRoutes(
       const rawPrice        = parseFloat(String(data.price || data.prix || "0").replace(",", ".")) || 0;
       const totalPrice      = Math.round(rawPrice * 100);
       const orderNumber     = (data.ref || `GS-${Date.now()}`).toString();
+
+      // Optional enrichment fields sent by the smart-detection script
+      const gsNote         = (data.note || data.comment || data.commentaire || "").toString().trim() || null;
+      const gsOfferName    = (data.offer || data.offre || "").toString().trim() || null;
+      const gsUtmSource    = (data.utm_source || data.utmSource || "").toString().trim() || null;
+      const gsUtmCampaign  = (data.utm_campaign || data.utmCampaign || "").toString().trim() || null;
+      const gsProductId    = (data.product_id || data.productId || "").toString().trim() || null;
+
       if (!customerName && !customerPhone) {
         return res.status(400).json({ success: false, message: "Missing customer name or phone" });
       }
@@ -3795,11 +3803,20 @@ export async function registerRoutes(
       const orderItems = matched ? [{ productId: matched.id, quantity, price: matched.sellingPrice || totalPrice, orderId: 0 }] : [];
       const integration = await storage.getIntegrationByProvider(storeId, "gsheets");
       const gsheetsApiMagasinId = integration?.magasinId ?? null;
+      // Build comment: note + offer prefix
+      const orderComment = gsOfferName
+        ? (gsNote ? `[Offre: ${gsOfferName}] ${gsNote}` : `[Offre: ${gsOfferName}]`)
+        : (gsNote || null);
+
       const order = await storage.createOrder({
         storeId, magasinId: gsheetsApiMagasinId,
         orderNumber, customerName, customerPhone, customerAddress, customerCity,
         status: "nouveau", totalPrice, productCost: matched ? matched.costPrice : 0,
-        shippingCost: 0, adSpend: 0, source: "gsheets", comment: null,
+        shippingCost: 0, adSpend: 0, source: "gsheets",
+        comment: orderComment,
+        utmSource: gsUtmSource,
+        utmCampaign: gsUtmCampaign,
+        ...(gsProductId ? { ameexProductId: gsProductId } : {}),
       } as any, orderItems);
       const nextAgentId = await storage.getNextAgent(storeId, gsheetsApiMagasinId, matched?.id, customerCity);
       if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);

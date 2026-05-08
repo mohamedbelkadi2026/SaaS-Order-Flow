@@ -214,6 +214,18 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: ameex_cities table verified/created.");
 
+    // ── 5c. orders: offer_name + ameex_product_id enrichment columns ─────────
+    await client.query(`
+      ALTER TABLE public.orders
+        ADD COLUMN IF NOT EXISTS offer_name        TEXT,
+        ADD COLUMN IF NOT EXISTS ameex_product_id  TEXT;
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_offer_name
+        ON public.orders (offer_name) WHERE offer_name IS NOT NULL;
+    `);
+    console.log("[DATABASE]: orders.offer_name + ameex_product_id columns ensured.");
+
     // ── 6. orders: add carrier tracking columns ───────────────────────────────
     await client.query(`
       ALTER TABLE public.orders

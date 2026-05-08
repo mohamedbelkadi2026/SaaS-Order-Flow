@@ -1,0 +1,284 @@
+🚀 EXTEND — Smart column detection: support more headers (offer, fullname, note, UTM, product ID)
+My problem
+The smart-detection script I just deployed handles Nom, Téléphone, Adresse, Ville, Produit, Prix, Quantité. But many of my real sheets have additional columns I want imported:
+| Product | No Label Offre | No Label fullname | No Label phone | No Label address | City | Price | Note | orders | utm_campaign | utm_source | Product ID |
+The "No Label" prefix is a quirk from a tool that exported the sheet (Tally? Google Forms?). My existing script ignores those columns entirely. I want:
+
+fullname recognized as the customer's name (currently only "nom" / "name" work)
+No Label X prefix tolerated everywhere
+Note column → fills order.comment
+utm_source + utm_campaign → fills order.utmSource and order.utmCampaign
+Product ID → fills a new order.ameexProductId so Ameex shipping can use it
+Offer / Offre → fills a new order.offerName (just metadata, shown in admin)
+Status / orders column → already detected as the status column (don't try to use its value as an order status, just write SENT/EN ATTENTE/... to it)
+
+The user shouldn't have to change any of their headers.
+
+Step 1 — Extend COLUMN_ALIASES in the Apps Script template
+In client/src/pages/integrations.tsx, find the COLUMN_ALIASES object inside the appScript template. Replace it with this expanded version:
+jsconst COLUMN_ALIASES = {
+  name: [
+    'nom', 'nom client', 'nom du client', 'nom complet', 'client',
+    'fullname', 'full name', 'name', 'customer', 'customer name',
+    'destinataire', 'recipient',
+    'الاسم', 'اسم العميل'
+  ],
+  phone: [
+    'telephone', 'tel', 'phone', 'numero', 'numero tel', 'numero telephone',
+    'gsm', 'mobile', 'whatsapp', 'mobile phone', 'cell',
+    'الهاتف', 'رقم الهاتف', 'رقم'
+  ],
+  address: [
+    'adresse', 'address', 'adresse complete', 'rue', 'street',
+    'العنوان'
+  ],
+  city: [
+    'ville', 'city', 'town', 'localite', 'locality',
+    'المدينة'
+  ],
+  product: [
+    'produit', 'product', 'article', 'item', 'nom produit', 'product name',
+    'المنتج', 'اسم المنتج'
+  ],
+  price: [
+    'prix', 'price', 'montant', 'amount', 'total', 'prix dh', 'price dh', 'tarif',
+    'السعر', 'الثمن'
+  ],
+  quantity: [
+    'quantite', 'qty', 'quantity', 'qte', 'nombre', 'count',
+    'الكمية', 'العدد'
+  ],
+  note: [
+    'note', 'notes', 'comment', 'commentaire', 'remarque', 'remarks', 'message',
+    'ملاحظة', 'ملاحظات'
+  ],
+  offer: [
+    'offre', 'offer', 'promo', 'promotion', 'deal', 'pack',
+    'عرض', 'عرض خاص'
+  ],
+  utmSource: [
+    'utm source', 'source', 'utm_source', 'traffic source', 'origine',
+    'مصدر'
+  ],
+  utmCampaign: [
+    'utm campaign', 'campaign', 'utm_campaign', 'campagne', 'ad campaign',
+    'حملة', 'الحملة'
+  ],
+  productId: [
+    'product id', 'productid', 'product uuid', 'ameex product id',
+    'ameex id', 'sku', 'reference produit', 'product ref',
+    'معرف المنتج'
+  ],
+};
+The trick that handles "No Label X" prefixes is in normalizeHeader — it strips non-alphanumeric junk. But to make it robust against the no label prefix specifically, update normalizeHeader:
+jsfunction normalizeHeader(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // strip accents
+    .replace(/^no\s*label\s*/i, '')                      // strip 'No Label' prefix
+    .replace(/^col(onne|umn)?\s*/i, '')                  // strip 'Col' / 'Colonne' / 'Column' prefix
+    .replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ')
+    .trim();
+}
+So "No Label fullname" becomes "fullname" → matches name alias → column detected.
+Step 2 — Update validation in detectColumns (no change required for new fields)
+The mandatory fields stay name + phone. The new fields (note, offer, utmSource, utmCampaign, productId) are all optional — the script reads them when the column exists, ignores them otherwise. No validation update needed.
+Step 3 — Update syncRow to send the new fields
+Find the syncRow function in the script template. Replace the payload definition with:
+jsvar payload = {
+  name:           nom,
+  phone:          telephone,
+  address:        readCol('address'),
+  city:           readCol('city'),
+  product:        readCol('product'),
+  price:          readCol('price'),
+  quantity:       qty.toString(),
+  ref:            'GS-' + sheetId.substring(0, 6) + '-R' + row,
+
+  // ── Optional enrichment fields ───────────────────────────
+  note:           readCol('note'),
+  offer:          readCol('offer'),
+  utm_source:     readCol('utmSource'),
+  utm_campaign:   readCol('utmCampaign'),
+  product_id:     readCol('productId'),
+};
+These are sent only when the column exists in the user's sheet (readCol returns '' when missing — backend treats empty strings as null).
+Step 4 — Update the setup summary to show all detected columns
+In the setup() function inside the script, the existing alert builds a string showing detected columns. Make it dynamic so it lists every detected field:
+jsfunction setup() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var detection = detectColumns(sheet);
+  if (detection.error) {
+    SpreadsheetApp.getUi().alert('❌ Configuration incomplète\\n\\n' + detection.error);
+    return;
+  }
+
+  setupOnEditTrigger();
+  setupDailyTrigger();
+  syncAllExistingRows();
+
+  var fieldLabels = {
+    name:        'Nom',
+    phone:       'Téléphone',
+    address:     'Adresse',
+    city:        'Ville',
+    product:     'Produit',
+    price:       'Prix',
+    quantity:    'Quantité',
+    note:        'Note',
+    offer:       'Offre',
+    utmSource:   'UTM Source',
+    utmCampaign: 'UTM Campaign',
+    productId:   'Product ID',
+    status:      'Status (auto)'
+  };
+
+  var summary = '✅ TajerGrow — Synchronisation activée !\\n\\n📋 Colonnes détectées :\\n';
+  for (var key in fieldLabels) {
+    if (detection.map[key]) {
+      summary += '  • ' + fieldLabels[key].padEnd(15) + ' → ' + columnLetter(detection.map[key]) + '\\n';
+    }
+  }
+  summary += '\\nLes nouvelles commandes seront envoyées automatiquement.';
+
+  SpreadsheetApp.getUi().alert(summary);
+}
+Step 5 — Backend: accept new optional fields in the gsheets webhook
+In server/routes.ts around line 3536-3544 (the /api/integrations/google-sheets/webhook handler), extend the field reading:
+tsconst customerName    = (data.name    || data.nom    || data.customer_name || data.fullname || "").toString().trim();
+const customerPhone   = (data.phone   || data.telephone || data.customer_phone || "").toString().trim();
+const customerCity    = (data.city    || data.ville   || "").toString().trim();
+const customerAddress = (data.address || data.adresse || "").toString().trim();
+const productName     = (data.product || data.produit || "").toString().trim();
+const quantity        = parseInt(data.quantity || "1") || 1;
+const rawPrice        = parseFloat(String(data.price || data.prix || "0").replace(",", ".")) || 0;
+const totalPrice      = Math.round(rawPrice * 100);
+const orderNumber     = (data.ref || `GS-${Date.now()}`).toString();
+
+// NEW optional enrichment fields
+const note            = (data.note || data.comment || data.commentaire || "").toString().trim() || null;
+const offerName       = (data.offer || data.offre || "").toString().trim() || null;
+const utmSource       = (data.utm_source || data.utmSource || "").toString().trim() || null;
+const utmCampaign     = (data.utm_campaign || data.utmCampaign || "").toString().trim() || null;
+const ameexProductId  = (data.product_id || data.productId || "").toString().trim() || null;
+Then at the createOrder call (line 3558), add the new fields:
+tsconst order = await storage.createOrder({
+  storeId,
+  magasinId: gsheetsApiMagasinId,
+  orderNumber,
+  customerName,
+  customerPhone,
+  customerAddress,
+  customerCity,
+  status: "nouveau",
+  totalPrice,
+  productCost: matched ? matched.costPrice : 0,
+  shippingCost: 0,
+  adSpend: 0,
+  source: "gsheets",
+  comment: note,                 // ← was: null
+  utmSource,                     // ← NEW
+  utmCampaign,                   // ← NEW
+  // offerName + ameexProductId require schema additions, see Step 6
+} as any, orderItems);
+
+// If the sheet provided an Ameex product ID, store it on the order so
+// the bulk-ship Ameex flow can include products[0][id] in the payload.
+if (ameexProductId) {
+  await storage.updateOrder(order.id, { ameexProductId } as any);
+}
+if (offerName) {
+  // Append offer to the comment so it's visible without a schema change yet
+  const updatedComment = note ? `[Offre: ${offerName}] ${note}` : `[Offre: ${offerName}]`;
+  await storage.updateOrder(order.id, { comment: updatedComment } as any);
+}
+Step 6 — Schema additions (optional, for cleaner storage)
+The two new fields offerName and ameexProductId can be added to the orders table for proper structured storage. Migration:
+sql-- migrations/0006_order_enrichment_fields.sql
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS offer_name        text,
+  ADD COLUMN IF NOT EXISTS ameex_product_id  text;
+
+CREATE INDEX IF NOT EXISTS idx_orders_offer_name ON public.orders (offer_name) WHERE offer_name IS NOT NULL;
+And in shared/schema.ts, add to the orders table definition:
+tsofferName:       text("offer_name"),
+ameexProductId:  text("ameex_product_id"),
+If the schema changes are too big a step for this iteration, skip Step 6 entirely and keep the workaround in Step 5 (storing offer in comment). Backend still works with all the new headers, just slightly less cleanly.
+Step 7 — Update the UI documentation
+In client/src/pages/integrations.tsx, expand the alias table shown to users so they understand all 12 fields are detected. Replace the existing alias documentation with:
+tsx<details className="mt-3">
+  <summary className="text-xs font-semibold text-amber-900 dark:text-amber-200 cursor-pointer">
+    📋 Voir tous les noms de colonnes reconnus (12 champs supportés)
+  </summary>
+  <div className="text-[11px] mt-2 space-y-2 text-amber-900 dark:text-amber-200">
+    <table className="w-full">
+      <tbody>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Nom *</td>
+            <td>Nom, Client, Customer, Fullname, Destinataire, اسم</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Téléphone *</td>
+            <td>Téléphone, Tel, Phone, GSM, Whatsapp, Mobile, الهاتف</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Adresse</td>
+            <td>Adresse, Address, Rue, Street, العنوان</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Ville</td>
+            <td>Ville, City, Town, Localité, المدينة</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Produit</td>
+            <td>Produit, Product, Article, Item, المنتج</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Prix</td>
+            <td>Prix, Price, Montant, Total, Tarif, السعر</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Quantité</td>
+            <td>Quantité, Qty, Quantity, Qté, Nombre, الكمية</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Note</td>
+            <td>Note, Comment, Commentaire, Remarque, Message, ملاحظة</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Offre</td>
+            <td>Offre, Offer, Promo, Promotion, Deal, Pack, عرض</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">UTM Source</td>
+            <td>utm_source, Source, Origine, مصدر</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">UTM Campaign</td>
+            <td>utm_campaign, Campaign, Campagne, Ad Campaign, حملة</td></tr>
+        <tr><td className="font-semibold py-0.5 pr-3 align-top">Product ID</td>
+            <td>Product ID, ProductId, SKU, Référence Produit, معرف المنتج</td></tr>
+      </tbody>
+    </table>
+    <p className="text-[10px] text-amber-700 dark:text-amber-300 italic">
+      * = obligatoire — les autres sont optionnels.
+      Le préfixe "No Label" est automatiquement ignoré.
+    </p>
+  </div>
+</details>
+A <details> element keeps the UI compact but lets curious users see the full alias dictionary on demand.
+
+Acceptance criteria
+
+✅ User has sheet with headers [Product, No Label Offre, No Label fullname, No Label phone, No Label address, City, Price, Note, orders, utm_campaign, utm_source, Product ID].
+✅ Run setup → reports detected: Nom→C, Téléphone→D, Adresse→E, Ville→F, Prix→G, Note→H, Offre→B, UTM Campaign→K, UTM Source→L, Product ID→M, Produit→A, Status→I (or new column).
+✅ Add a new row → 30 sec later → SENT.
+✅ Order in TajerGrow shows: name, phone, address, city, product, price as expected.
+✅ Order's comment field contains [Offre: appele 3] (or whatever offer was in column B).
+✅ Order's utmSource = "facebook" (or whatever was in L), utmCampaign = "summer-promo" (or K).
+✅ Order's ameexProductId (if schema extended) = the UUID from column M.
+✅ "Vérifier la détection" menu shows the full mapping with column letters.
+✅ "No Label X" prefix is consistently stripped before alias matching.
+✅ Existing simple sheets (just A=Nom, B=Phone, ...) still work — no regression.
+
+Commit
+bashgit add client/src/pages/integrations.tsx server/routes.ts shared/schema.ts migrations/0006_order_enrichment_fields.sql
+git commit -m "feat(gsheets): support note, offer, UTM tracking, product ID — strip 'No Label' prefix
+
+Real-world sheets have richer columns than just name/phone/address. The
+smart-detection script now also recognizes:
+- Note / Comment / Commentaire → order.comment
+- Offre / Offer / Promo → order.offerName (or appended to comment)
+- utm_source / utm_campaign → marketing attribution fields
+- Product ID / SKU → ameexProductId for Ameex catalog shipping
+- 'fullname' as a synonym for 'name' (Google Forms / Tally exports)
+
+Headers prefixed with 'No Label' (Tally / form export quirk) are now
+stripped before alias matching, so 'No Label fullname' resolves to 'name'.
+
+- COLUMN_ALIASES extended with 5 new field types + multi-language synonyms
+- normalizeHeader() strips 'No Label' / 'Col' / 'Colonne' / 'Column' prefixes
+- gsheets webhook reads the new fields, falls back gracefully when missing
+- New schema columns offer_name + ameex_product_id (migration 0006)
+- Setup summary lists every detected field with its column letter
+- Inline UI docs show the full 12-field alias dictionary on demand"
+git push

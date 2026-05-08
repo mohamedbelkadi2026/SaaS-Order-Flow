@@ -147,6 +147,8 @@ export const orders = pgTable("orders", {
   carrierName: text("carrier_name"),
   driverName:  text("driver_name").default(""),
   driverPhone: text("driver_phone").default(""),
+  offerName:       text("offer_name"),        // enrichment from Google Sheets / forms
+  ameexProductId:  text("ameex_product_id"),  // Ameex catalog product UUID for catalog-based shipping
 });
 
 export const orderItems = pgTable("order_items", {
