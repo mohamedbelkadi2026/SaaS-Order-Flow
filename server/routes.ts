@@ -1431,7 +1431,7 @@ export async function registerRoutes(
             });
 
             const settled = await Promise.allSettled(
-              perOrderCtx.map(({ order, resolvedCity, orderCreds, bulkQty }) => {
+              perOrderCtx.map(async ({ order, resolvedCity, orderCreds, bulkQty }) => {
                 console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
                 console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
                 console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId} qty=${bulkQty}`);
@@ -1443,6 +1443,23 @@ export async function registerRoutes(
                   provider.toLowerCase() === 'ameex' &&
                   !!(order as any).trackNumber &&
                   String((order as any).trackNumber).startsWith('AMEEX-PENDING-');
+
+                // For Ameex: resolve city name → numeric city ID (required by Ameex API)
+                let ameexCityId: string | undefined;
+                if (provider.toLowerCase() === 'ameex') {
+                  const resolved = await storage.getAmeexCityId(storeId, resolvedCity);
+                  if (!resolved) {
+                    return {
+                      success:        false,
+                      error:          `Ameex: Ville "${resolvedCity}" non reconnue. Synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
+                      carrierMessage: 'City not found in ameex_cities',
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
+                  }
+                  ameexCityId = resolved;
+                }
 
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
@@ -1463,6 +1480,7 @@ export async function registerRoutes(
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
                   previousAttemptHadPlaceholder: isAmeexRetry,
+                  cityId:           ameexCityId,
                 });
               })
             );
@@ -2701,13 +2719,22 @@ export async function registerRoutes(
       // Parse city names — carrier-specific response shapes
       let cities: string[] = [];
 
+      // Ameex city ID entries (id → name) — saved separately for city ID resolution at ship time
+      let ameexCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
+
       if (carrierKey === "ameex") {
         // Ameex returns: {"login":"success","api":{"cities":{"1":{"name":"Marrakech",...},"2":...}}}
         const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
-        cities = (Object.values(citiesObj) as any[])
-          .map((c: any) => (c.name || c.ville || "").trim())
-          .filter(Boolean)
-          .sort();
+        const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+        // Capture both names (for carrier_cities) AND id→name pairs (for ameex_cities)
+        ameexCityEntries = Object.entries(citiesObj)
+          .map(([id, c]: any) => ({
+            externalId: String(id),
+            name:       (c.name || c.ville || "").trim(),
+            nameNorm:   normName((c.name || c.ville || "").trim()),
+          }))
+          .filter(e => e.name);
+        cities = ameexCityEntries.map(e => e.name).sort();
       } else {
         // Other carriers: array or wrapped array
         const raw = resp.data;
@@ -2727,6 +2754,12 @@ export async function registerRoutes(
       }
 
       await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, cities);
+
+      // For Ameex: also save id→name mapping so city names can be resolved to numeric IDs at ship time
+      if (carrierKey === "ameex" && ameexCityEntries.length > 0) {
+        await storage.upsertAmeexCities(storeId, ameexCityEntries);
+        console.log(`[AMEEX-CITIES-SYNC]: Saved ${ameexCityEntries.length} city ID mappings to ameex_cities`);
+      }
 
       console.log(`[CITY-SYNC]: Received ${cities.length} cities from ${acct.carrierName} API (storeId=${storeId})`);
       console.log(`[CITY-SYNC]: Sample cities — ${cities.slice(0, 5).join(", ")}`);
@@ -7140,6 +7173,19 @@ export async function registerRoutes(
 
       // ── Call carrier API ──────────────────────────────────────────
       console.log(`[DIGYLOG-FINAL] order=${orderId} store="${(creds as any).digylogStoreName || (creds as any).carrierStoreName}" network=${(creds as any).digylogNetworkId} qty=${orderQuantity}`);
+      // For Ameex: resolve city name → numeric city ID (required by Ameex API)
+      let singleAmeexCityId: string | undefined;
+      if (provider.toLowerCase() === 'ameex') {
+        const resolved = await storage.getAmeexCityId(storeId, matchedCity);
+        if (!resolved) {
+          return res.status(422).json({
+            message: `Ameex: Ville "${matchedCity}" non reconnue. Synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
+            carrierMessage: 'City not found in ameex_cities',
+          });
+        }
+        singleAmeexCityId = resolved;
+      }
+
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -7158,6 +7204,7 @@ export async function registerRoutes(
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
         apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
         apiSecret:        (creds as any).apiSecret || '',
+        cityId:           singleAmeexCityId,
       });
 
       if (!shipResult.success) {

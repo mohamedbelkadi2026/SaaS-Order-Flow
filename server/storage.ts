@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities,
+  carrierAccounts, carrierCities, ameexCities,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -75,6 +75,8 @@ export interface IStorage {
   deleteCarrierAccount(id: number): Promise<void>;
   getCarrierCities(storeId: number, carrierName: string): Promise<string[]>;
   upsertCarrierCities(storeId: number, carrierName: string, accountId: number | null, cities: string[]): Promise<void>;
+  upsertAmeexCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
+  getAmeexCityId(storeId: number, cityName: string): Promise<string | null>;
   getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
     apiKey: string;
     apiSecret?: string;
@@ -1063,6 +1065,41 @@ export class DatabaseStorage implements IStorage {
         syncedAt: new Date(),
       });
     }
+  }
+
+  // ── Ameex city ID mapping (name → numeric ID) ────────────────────────────
+  // Ameex's shipment API requires city as a numeric ID, not a name string.
+  // This table is populated by "Synchroniser les villes" on the Ameex account.
+
+  async upsertAmeexCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void> {
+    if (!cities.length) return;
+    // Replace all rows for this store with fresh data from the sync
+    await db.delete(ameexCities).where(eq(ameexCities.storeId, storeId));
+    await db.insert(ameexCities).values(
+      cities.map(c => ({ storeId, externalId: c.externalId, name: c.name, nameNorm: c.nameNorm }))
+    );
+  }
+
+  async getAmeexCityId(storeId: number, cityName: string): Promise<string | null> {
+    const norm = (s: string) => s
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const key = norm(cityName);
+    if (!key) return null;
+
+    // 1. Exact normalized match
+    const [exact] = await db.select().from(ameexCities)
+      .where(and(eq(ameexCities.storeId, storeId), eq(ameexCities.nameNorm, key)))
+      .limit(1);
+    if (exact) return exact.externalId;
+
+    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
+    const fuzzy = await db.select().from(ameexCities)
+      .where(and(eq(ameexCities.storeId, storeId), like(ameexCities.nameNorm, `%${key}%`)))
+      .limit(1);
+    return fuzzy[0]?.externalId ?? null;
   }
 
   /**

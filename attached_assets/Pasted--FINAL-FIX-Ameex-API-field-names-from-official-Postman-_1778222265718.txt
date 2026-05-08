@@ -1,0 +1,237 @@
+🔧 FINAL FIX — Ameex API field names from official Postman documentationSource of truthUser shared the official Ameex Postman documentation showing the exact API contract:POST https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add
+
+Headers:
+  C-Api-Id:  <api_id>
+  C-Api-Key: <api_key>
+
+Body (multipart/form-data):
+  type            = SIMPLE
+  business        = 2
+  order_num       = ORDER_NUM_1
+  replace         = true
+  exchange_code   = EXCHANGE_PARCEL_CODE
+  open            = YES
+  try             = YES
+  fragile         = 0
+  receiver        = Receiver Name Here       ← NOT "destinataire"
+  phone           = 0606060606               ← NOT "telephone"
+  city            = 1                        ← NOT "ville", and it's an INTEGER (city ID)
+  address         = Address Here             ← NOT "adresse"
+  comment         = Comment Here             ← NOT "note"
+  product         = Product Name             ← NOT "produit"
+  cod             = 499
+  products[0][id] = <product-uuid>           ← required for catalogued products
+  products[0][qty]= 10                       ← NOT "quantite", and it's nestedThe current code sends French field names that Ameex's API silently ignores, then rejects with the misleading "Destinataire: est obligatoire" error.⚠️ CRITICAL CONSTRAINTS
+❌ DO NOT modify Digylog (works perfectly)
+❌ DO NOT modify any other carrier (Ozone, Ecotrack, Sendit, etc.)
+❌ DO NOT modify the retry loop, response handlers outside Ameex branch, shared helpers
+✅ ONLY change buildAmeexPayload and the city ID conversion logic
+Files to modify (only)server/services/carrier-service.ts — Ameex section ONLYChange 1 — Replace buildAmeexPayload entirely with the correct field namesFind function buildAmeexPayload (around line 365). Replace the entire function body with:ts/**
+ * Ameex API payload builder — verified against official Postman docs:
+ * https://documenter.getpostman.com/view/10265205/2sA3rwLZD1
+ *
+ * Endpoint: POST https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add
+ * Format:   multipart/form-data
+ * Auth:     Headers C-Api-Id + C-Api-Key
+ *
+ * Field names use ENGLISH (receiver, phone, city, address, product), NOT French.
+ */
+function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
+  // Strip invisible Unicode (RTL marks, ZWSP, BOM) that hide in customer-facing
+  // fields imported from Shopify/WooCommerce stores.
+  const clean = (s: any) => String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u00A0]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const receiver = clean(input.customerName);
+  const phone    = sanitizePhone(input.phone);
+  const cityId   = String(input.cityId || input.city || '');   // INTEGER ID, not name!
+  const address  = clean(input.address) || clean(input.city);
+  const product  = clean(input.productName) || 'Produit';
+  const note     = clean(input.note);
+  const priceDH  = +(input.totalPrice / 100).toFixed(2);
+
+  const payload: Record<string, unknown> = {
+    type:          "SIMPLE",
+    business:      String(input.apiSecret || input.apiId || ""),
+    order_num:     String(input.orderNumber),
+    replace:       "true",
+    open:          input.canOpen ? "YES" : "NO",
+    try:           "YES",
+    fragile:       "0",
+
+    // ── Customer info — ENGLISH field names per Ameex docs ──────────
+    receiver:      receiver,
+    phone:         phone,
+    city:          cityId,                  // ⚠ this is a numeric ID
+    address:       address,
+
+    // ── Order details ───────────────────────────────────────────────
+    comment:       note,
+    product:       product,
+    cod:           String(priceDH),
+  };
+
+  // Optional product catalog entry (Ameex supports it for stock-managed accounts)
+  if (input.ameexProductId) {
+    payload['products[0][id]']  = input.ameexProductId;
+    payload['products[0][qty]'] = String(input.quantity ?? 1);
+  } else {
+    // No catalog UUID — still send qty under the array key Ameex expects
+    payload['products[0][qty]'] = String(input.quantity ?? 1);
+  }
+
+  return payload;
+}Change 2 — City ID resolution (CRITICAL)Ameex's city field expects an integer ID like 1 or 42, not a city name like "Casablanca". The platform stores city names from Shopify/WooCommerce, so we need to map them.Step 2a — Add the city mappingThere's likely an existing city sync mechanism in the codebase (the credentials UI screenshot showed a "Synchroniser les villes" button). Verify it exists and check what table stores the mapping. Search for:bashgrep -rn "ameex.*cit\|carrier_cities\|syncCities\|Synchroniser les villes" server/ shared/If a carrier_cities table exists with (carrier_id, city_id_external, city_name), use it.If it does NOT exist, create a minimal cities table:sql-- migrations/0005_ameex_cities.sql
+CREATE TABLE IF NOT EXISTS public.ameex_cities (
+  id          serial PRIMARY KEY,
+  store_id    integer REFERENCES stores(id) ON DELETE CASCADE,
+  external_id text NOT NULL,         -- Ameex's numeric ID, stored as text
+  name        text NOT NULL,
+  name_norm   text NOT NULL,         -- normalized for matching
+  created_at  timestamp DEFAULT now(),
+  UNIQUE(store_id, external_id)
+);
+
+CREATE INDEX idx_ameex_cities_store_norm ON public.ameex_cities (store_id, name_norm);Step 2b — Resolve city name → city ID before sendingIn the Ameex section of shipOrderToCarrier, BEFORE calling buildAmeexPayload, look up the city ID:tsif (providerKey === 'ameex') {
+  // Resolve customer city → Ameex city ID
+  const cityName = (input.city || '').trim();
+  if (!cityName) {
+    return {
+      success: false,
+      error: `Ameex: Ville manquante pour la commande #${input.orderNumber}`,
+      carrierMessage: 'Ville manquante',
+      httpStatus: 0,
+      rawResponse: null,
+      permanent: true,
+    };
+  }
+
+  const cityId = await resolveAmeexCityId(input.storeId, cityName);
+  if (!cityId) {
+    return {
+      success: false,
+      error: `Ameex: Ville "${cityName}" non reconnue. Synchronisez les villes Ameex et choisissez une ville prise en charge.`,
+      carrierMessage: `City not found: ${cityName}`,
+      httpStatus: 0,
+      rawResponse: null,
+      permanent: true,
+    };
+  }
+
+  // Pass cityId into the input so buildAmeexPayload can use it
+  (input as any).cityId = cityId;
+
+  // ... existing Ameex POST logic continues (now with correct field names) ...
+}Step 2c — resolveAmeexCityId helperAdd this near the top of the file:ts/**
+ * Look up Ameex's numeric city ID from a customer-provided city name.
+ * Uses normalized matching (lowercase + accent-stripped + whitespace-trimmed).
+ */
+async function resolveAmeexCityId(storeId: number, cityName: string): Promise<string | null> {
+  const norm = (s: string) => s
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // strip accents
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const key = norm(cityName);
+  if (!key) return null;
+
+  // Exact match first
+  const [exact] = await db.select().from(ameexCities)
+    .where(and(eq(ameexCities.storeId, storeId), eq(ameexCities.nameNorm, key)))
+    .limit(1);
+  if (exact) return exact.externalId;
+
+  // Fuzzy match (LIKE) — returns first hit
+  const fuzzy = await db.select().from(ameexCities)
+    .where(and(
+      eq(ameexCities.storeId, storeId),
+      sql`${ameexCities.nameNorm} LIKE ${'%' + key + '%'}`
+    ))
+    .limit(1);
+  return fuzzy[0]?.externalId ?? null;
+}Add the corresponding Drizzle table to shared/schema.ts:tsexport const ameexCities = pgTable("ameex_cities", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull(),
+  externalId: text("external_id").notNull(),
+  name:       text("name").notNull(),
+  nameNorm:   text("name_norm").notNull(),
+  createdAt:  timestamp("created_at").defaultNow(),
+});Step 2d — Verify Ameex's "Get Cities" endpoint exists & write a sync functionAmeex's documentation mentions these endpoints in the user's paste; search the codebase for whether a city-sync exists already. The button "Synchroniser les villes" in the screenshot suggests yes. Verify it pulls from Ameex's cities endpoint and populates ameex_cities. If it already does, leave it; just make sure the name_norm column gets filled.If the existing sync uses a different table/format, adapt resolveAmeexCityId to read from that table instead of creating a new one. Do not duplicate the city storage — pick one source of truth.Change 3 — Update CarrierShipInput typeIn server/services/carrier-service.ts, find the CarrierShipInput interface (around line 240). Add:tsexport interface CarrierShipInput {
+  // ... existing fields ...
+  cityId?:           string;   // Ameex's numeric city ID (resolved from city name)
+  ameexProductId?:   string;   // Optional Ameex product UUID for stock-managed accounts
+  storeId?:          number;   // Needed for city ID lookup
+}In the route handler that calls shipOrderToCarrier (server/routes.ts around line 1357), make sure storeId is passed:tsreturn shipOrderToCarrier(provider, orderCreds, {
+  // ... existing fields ...
+  storeId: order.storeId,
+});Change 4 — Strengthen success detection for the new field shapeNow that we send the correct field names, Ameex will return either a parcel.code or a top-level code/tracking_number. Verify extractTracking() covers all of these. From your existing code, it likely does, but double-check by adding logs.In the Ameex response branch, KEEP the existing [AMEEX-FULL-RESPONSE] log so you can see the new response shape after the fix lands.Change 5 — Pre-flight validation (keep, slight update)Update the validation to check the right fields:tsfunction validateAmeexInput(input: CarrierShipInput): string[] {
+  const issues: string[] = [];
+  const clean = (s: any) => String(s ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u00A0]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const name    = clean(input.customerName);
+  const phone   = clean(input.phone).replace(/\D/g, '');
+  const city    = clean(input.city);
+  const address = clean(input.address);
+  const product = clean(input.productName);
+
+  if (!name || name.length < 2)       issues.push('Nom du client manquant');
+  if (!phone || phone.length < 8)     issues.push('Téléphone manquant ou invalide');
+  if (!city)                          issues.push('Ville manquante');
+  if (!address && !city)              issues.push('Adresse manquante');
+  if (!product)                       issues.push('Nom du produit manquant');
+  if (!input.totalPrice || input.totalPrice <= 0) issues.push('Prix total manquant');
+
+  return issues;
+}Call it at the top of the Ameex branch (before city resolution).What NOT to change
+❌ buildDigylogPayload — leave it alone
+❌ buildGenericPayload — leave it alone
+❌ Any code outside the Ameex branch
+❌ Retry loop, isTransientShipError, extractTracking (already supports code)
+❌ Frontend modal, failure categorization
+❌ Database tables/columns OTHER than the new ameex_cities table
+Acceptance criteria
+✅ buildAmeexPayload sends fields named: receiver, phone, city, address, comment, product, order_num, cod, products[0][qty] (NOT destinataire, telephone, ville, etc.).
+✅ City field contains the numeric Ameex city ID (e.g. "42"), NOT the city name (e.g. "Casablanca").
+✅ When the city name doesn't resolve to an ID, ship fails with: "Ville '...' non reconnue. Synchronisez les villes Ameex".
+✅ Bulk-ship #5289 → Railway logs show:
+
+   [AMEEX-FULL-RESPONSE] order=5289 httpStatus=200 body={"login":"success","api":{"type":"ok"},"parcel":{"code":"AMX..."}}
+   ✅ Order #5289 shipped, tracking AMX...
+
+✅ The [AMEEX-PAYLOAD] log shows receiver and phone and city: "42" (integer-like string), confirming the fix is live.
+✅ "Synchroniser les villes" button in the credentials UI populates ameex_cities with (externalId, name, nameNorm).
+✅ Digylog ship a test order — works exactly as before. No regression.
+Commitbashgit add server/services/carrier-service.ts server/routes.ts shared/schema.ts migrations/0005_ameex_cities.sql
+git commit -m "fix(ameex): correct API field names per official Postman docs
+
+Ameex's API uses ENGLISH field names (receiver, phone, city, address,
+product, comment, order_num, products[0][qty]), not French (destinataire,
+telephone, ville, adresse, produit, note, ref, quantite) which the platform
+was sending. The 'Destinataire est obligatoire' error was misleading — the
+real cause was that 'destinataire' isn't a recognized field at all.
+
+Source: official Ameex Postman docs
+https://documenter.getpostman.com/view/10265205/2sA3rwLZD1
+
+- Renamed every Ameex payload field to match the documented contract
+- city is now a numeric ID (resolved from name via ameex_cities table)
+- products[0][qty] replaces flat 'quantite' for catalog-aware quantity
+- Pre-flight refusal when city name can't be resolved to an Ameex city ID
+  (clear user message: 'Ville X non reconnue. Synchronisez les villes Ameex')
+- New ameex_cities table with normalized name index for fuzzy lookup
+- No changes to Digylog or any other carrier"
+git pushMital concret ba3d ma deployBulk-ship #5289 (Mustapha, Agadir, 100 DH):
+
+[AMEEX-PAYLOAD] order=5289 → {
+  "type":"SIMPLE",
+  "business":"...",
+  "order_num":"5289",
+  "receiver":"Mustapha",          ← ENGLISH, not "destinataire"
+  "phone":"0661639533",            ← ENGLISH, not "telephone"
+  "city":"42",                     ← INTEGER ID, not "A

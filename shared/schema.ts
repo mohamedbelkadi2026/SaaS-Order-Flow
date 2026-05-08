@@ -222,6 +222,20 @@ export const carrierCities = pgTable("carrier_cities", {
   syncedAt:    timestamp("synced_at").defaultNow(),
 });
 
+// ─── Ameex City ID Map — name → Ameex numeric ID ────────────────────────────
+// Ameex's 'city' field in the shipment payload requires a numeric ID (e.g. 42),
+// NOT the city name string. This table maps synced city names to their IDs.
+// Populated by "Synchroniser les villes" on the Ameex carrier account.
+export const ameexCities = pgTable("ameex_cities", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull(),
+  externalId: text("external_id").notNull(),   // Ameex numeric city ID, stored as text
+  name:       text("name").notNull(),
+  nameNorm:   text("name_norm").notNull(),      // lowercase + accent-stripped for fuzzy match
+  createdAt:  timestamp("created_at").defaultNow(),
+});
+export type AmeexCity = typeof ameexCities.$inferSelect;
+
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),

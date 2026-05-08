@@ -268,6 +268,11 @@ export interface CarrierShipInput {
   // placeholder from a previous attempt — signals that the parcel may already
   // exist in Ameex's portal and we should be careful about recreating it.
   previousAttemptHadPlaceholder?: boolean;
+  // Ameex-specific: numeric city ID resolved from city name via ameex_cities table.
+  // Ameex's API requires the city field to be an integer ID, not a name string.
+  cityId?: string;
+  // Ameex-specific: product catalog UUID for stock-managed Ameex accounts.
+  ameexProductId?: string;
 }
 
 export interface CarrierShipResult {
@@ -429,81 +434,57 @@ function validateAmeexInput(input: CarrierShipInput): string[] {
   return issues;
 }
 
+/**
+ * Ameex API payload builder — field names verified against official Postman docs:
+ * https://documenter.getpostman.com/view/10265205/2sA3rwLZD1
+ *
+ * Endpoint: POST https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add
+ * Format:   multipart/form-data
+ * Auth:     Headers C-Api-Id + C-Api-Key
+ *
+ * Key: field names are ENGLISH (receiver, phone, city, address, product, comment),
+ * NOT French (destinataire, telephone, ville, adresse, produit, note).
+ * The 'city' field is a NUMERIC ID, not a city name string.
+ */
 function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
-  const name    = cleanText(input.customerName);
-  const phone   = sanitizePhone(input.phone);
-  const city    = cleanText(input.city);
-  const address = cleanText(input.address) || city;
-  const product = cleanText(input.productName) || 'Produit';
-  const priceDH = +(input.totalPrice / 100).toFixed(2);
-  const note    = cleanText(input.note);
+  const receiver = cleanText(input.customerName);
+  const phone    = sanitizePhone(input.phone);
+  const cityId   = String(input.cityId || '');   // numeric ID resolved from ameex_cities
+  const address  = cleanText(input.address) || cleanText(input.city);
+  const product  = cleanText(input.productName) || 'Produit';
+  const note     = cleanText(input.note);
+  const priceDH  = +(input.totalPrice / 100).toFixed(2);
 
-  // Split full name in case Ameex wants nom + prenom separately
-  const parts  = name.split(/\s+/);
-  const prenom = parts[0] || name;
-  const nom    = parts.slice(1).join(' ') || name;
+  const payload: Record<string, unknown> = {
+    type:      "SIMPLE",
+    business:  String(input.apiSecret || input.apiId || ""),
+    order_num: String(input.orderNumber),
+    replace:   "true",
+    open:      input.canOpen ? "YES" : "NO",
+    try:       "YES",
+    fragile:   "0",
 
-  return {
-    business:     String(input.apiSecret || input.apiId || ""),
-    type:         "SIMPLE",
+    // ── Customer info — ENGLISH field names per official Ameex Postman docs ──
+    receiver,
+    phone,
+    city:      cityId,      // ⚠ Ameex expects a numeric ID, not a city name
+    address,
 
-    // ── Customer name — sent under every plausible Ameex field name ──────────
-    // Ameex API has been seen rejecting 'destinataire' alone; extra aliases are
-    // ignored by their parser but ensure the right key is picked up.
-    destinataire:        name,
-    nom:                 nom,
-    prenom:              prenom,
-    nom_complet:         name,
-    nom_destinataire:    name,
-    name:                name,
-    client:              name,
-    client_name:         name,
-    customer:            name,
-    customer_name:       name,
-    recipient:           name,
-    recipient_name:      name,
-    fullname:            name,
-    full_name:           name,
-
-    telephone:    phone,
-    phone:        phone,
-    tel:          phone,
-
-    ville:        city,
-    city:         city,
-
-    adresse:      address,
-    address:      address,
-
-    montant:      String(priceDH),
-    cod:          String(priceDH),
-    price:        String(priceDH),
-    amount:       String(priceDH),
-
-    produit:      product,
-    product:      product,
-    description:  product,
-
-    quantite:     String(input.quantity ?? 1),
-    quantity:     String(input.quantity ?? 1),
-    qty:          String(input.quantity ?? 1),
-
-    // TJG-{orderNumber} is a stable cross-attempt reference. Ameex stores it
-    // as 'ref'; the webhook uses it to correlate before the real tracking arrives.
-    ref:          `TJG-${input.orderNumber}`,
-    reference:    `TJG-${input.orderNumber}`,
-    external_id:  `tajergrow-${input.orderId}`,
-
-    note:         note,
-    notes:        note,
-    comment:      note,
-
-    open:         input.canOpen ? "YES" : "NO",
-    canopen:      input.canOpen ? "YES" : "NO",
-    can_open:     input.canOpen ? "YES" : "NO",
-
-    replace:      "true",
+    // ── Order details ────────────────────────────────────────────────────────
+    comment:   note,
+    product,
+    cod:       String(priceDH),
   };
+
+  // Product quantity: Ameex uses the array notation products[0][qty]
+  if (input.ameexProductId) {
+    payload['products[0][id]']  = input.ameexProductId;
+    payload['products[0][qty]'] = String(input.quantity ?? 1);
+  } else {
+    payload['products[0][qty]'] = String(input.quantity ?? 1);
+  }
+
+  return payload;
 }
 
 // ── Data-driven carrier registry ────────────────────────────────────────────
@@ -937,6 +918,16 @@ export async function shipOrderToCarrier(
       const errMsg = `Données manquantes pour Ameex: ${validationIssues.join(', ')}`;
       console.error(`[CARRIER→AMEEX][#${input.orderNumber}] ❌ Pre-flight validation failed: ${errMsg}`);
       console.error(`[CARRIER→AMEEX][#${input.orderNumber}] Raw input: customerName="${input.customerName}" (len=${(input.customerName || '').length}) phone="${input.phone}" city="${input.city}" address="${input.address}"`);
+      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
+
+    // ── City ID guard ─────────────────────────────────────────────────────────
+    // Ameex requires a numeric city ID in the 'city' field, not a city name.
+    // The ID is resolved from the ameex_cities table in routes.ts before calling
+    // this function. If it's missing, the user hasn't synced cities yet.
+    if (!input.cityId) {
+      const errMsg = `Ameex: ID de ville manquant pour "${input.city}". Synchronisez les villes Ameex dans Paramètres → Transporteurs puis réessayez.`;
+      console.error(`[CARRIER→AMEEX][#${input.orderNumber}] ❌ ${errMsg}`);
       return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
     }
 
