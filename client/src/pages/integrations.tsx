@@ -204,115 +204,268 @@ function GoogleSheetsTab({ webhookKey, origin }: { webhookKey: string; origin: s
   const apiKey = webhookKey;
 
   const appScript = `// ═══════════════════════════════════════════════════════════════
-//  🚀 TajerGrow — Google Sheets Integration Script
-//  Script généré automatiquement — Ne pas modifier API_URL / API_KEY
+//  🚀 TajerGrow — Google Sheets Auto-Sync Script
+//  Synchronisation automatique en temps réel
+//  Ne pas modifier API_URL / API_KEY
 // ═══════════════════════════════════════════════════════════════
 
-const API_URL = '${apiUrl}';
-const API_KEY = '${apiKey}';
+var API_URL = '${apiUrl}';
+var API_KEY = '${apiKey}';
 
 // ─── Configuration des colonnes (1 = A, 2 = B, ..., 10 = J) ───
-const COL_NOM       = 1;   // A — Nom du client
-const COL_TELEPHONE = 2;   // B — Téléphone
-const COL_ADRESSE   = 3;   // C — Adresse
-const COL_VILLE     = 4;   // D — Ville
-const COL_PRODUIT   = 5;   // E — Produit
-const COL_PRIX      = 6;   // F — Prix (DH)
-const COL_QTY       = 7;   // G — Quantité
-const COL_STATUS    = 10;  // J — Statut (vide = à envoyer, SENT = déjà envoyé)
+var COL_NOM       = 1;   // A — Nom du client
+var COL_TELEPHONE = 2;   // B — Téléphone
+var COL_ADRESSE   = 3;   // C — Adresse
+var COL_VILLE     = 4;   // D — Ville
+var COL_PRODUIT   = 5;   // E — Produit
+var COL_PRIX      = 6;   // F — Prix (DH)
+var COL_QTY       = 7;   // G — Quantité
 
-// ─── Menu personnalisé dans Google Sheets ──────────────────────
+// Colonne J réservée au statut interne (gérée par le script — ne pas modifier)
+var COL_STATUS    = 10;
+
+// Nombre de secondes d'attente après une édition avant de synchroniser
+// (laisse à l'utilisateur le temps de remplir toute la ligne).
+var DEBOUNCE_SECONDS = 30;
+
+// ═══════════════════════════════════════════════════════════════
+//  SETUP — Lance ceci UNE FOIS pour activer la synchro automatique
+// ═══════════════════════════════════════════════════════════════
+function setup() {
+  setupOnEditTrigger();
+  setupDailyTrigger();
+  syncAllExistingRows();
+  SpreadsheetApp.getUi().alert(
+    '✅ TajerGrow — Synchronisation automatique activée !\\n\\n' +
+    '• Les nouvelles commandes seront envoyées automatiquement.\\n' +
+    '• Une vérification quotidienne assure qu\\'aucune commande n\\'est oubliée.\\n' +
+    '• Vous pouvez aussi déclencher manuellement via le menu 🚀 TajerGrow.'
+  );
+}
+
+// ─── Menu personnalisé (toujours disponible en backup) ────────
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🚀 TajerGrow')
-    .addItem('Envoyer les nouvelles commandes', 'sendOrdersToTajerGrow')
+    .addItem('▶️ Activer la synchro auto', 'setup')
+    .addItem('🔄 Synchroniser les nouvelles commandes', 'syncNewRowsManual')
+    .addItem('📤 Tout re-synchroniser', 'syncAllExistingRows')
+    .addItem('🩺 Tester la connexion', 'testConnection')
+    .addItem('🧹 Réinitialiser les statuts', 'resetAllStatuses')
     .addToUi();
 }
 
-// ─── Envoi des nouvelles commandes ────────────────────────────
-function sendOrdersToTajerGrow() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const lastRow = sheet.getLastRow();
+// ─── Trigger : déclenché à chaque édition du sheet ────────────
+function setupOnEditTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'onEditHandler') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('onEditHandler')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit()
+    .create();
+  Logger.log('✅ Trigger onEdit installé');
+}
 
-  if (lastRow < 2) {
-    SpreadsheetApp.getUi().alert('Aucune commande à envoyer.');
-    return;
+// ─── Trigger quotidien : filet de sécurité (10h chaque jour) ──
+function setupDailyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'dailyCheckHandler') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('dailyCheckHandler')
+    .timeBased()
+    .atHour(10)
+    .everyDays(1)
+    .create();
+  Logger.log('✅ Trigger quotidien installé (10h)');
+}
+
+// ─── Handler appelé à chaque modification ─────────────────────
+function onEditHandler(e) {
+  if (!e || !e.range) return;
+  var sheet = e.source.getActiveSheet();
+  var startRow = e.range.getRow();
+  var endRow   = e.range.getLastRow();
+  if (startRow === 1) return;
+  if (e.range.getColumn() === COL_STATUS) return;
+  for (var row = startRow; row <= endRow; row++) {
+    queueRowForSync(sheet, row);
   }
+}
 
-  let sent = 0;
-  let skipped = 0;
-  let errors = 0;
+// ─── Met une ligne en file d'attente pour synchro différée ────
+function queueRowForSync(sheet, row) {
+  var statusCell = sheet.getRange(row, COL_STATUS);
+  var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
+  if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
+  if (currentStatus === 'EN ATTENTE') return;
+  statusCell.setValue('EN ATTENTE');
+  statusCell.setBackground('#fff3cd');
+  var props = PropertiesService.getDocumentProperties();
+  props.setProperty('queue_row_' + row, new Date().getTime().toString());
+  ScriptApp.newTrigger('processQueue')
+    .timeBased()
+    .after(DEBOUNCE_SECONDS * 1000)
+    .create();
+  Logger.log('Ligne ' + row + ' mise en file (synchro dans ' + DEBOUNCE_SECONDS + 's)');
+}
 
-  for (let row = 2; row <= lastRow; row++) {
-    const statusCell = sheet.getRange(row, COL_STATUS);
-    const status = statusCell.getValue().toString().trim().toUpperCase();
-
-    // Ignorer les lignes déjà envoyées
-    if (status === 'SENT' || status === 'ENVOYÉ' || status === 'DUPLICATE') {
-      skipped++;
-      continue;
+// ─── Traite toutes les lignes en file d'attente ───────────────
+function processQueue() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'processQueue' &&
+        t.getEventType() === ScriptApp.EventType.CLOCK) {
+      try { ScriptApp.deleteTrigger(t); } catch (e) {}
     }
+  });
+  var props = PropertiesService.getDocumentProperties();
+  var allProps = props.getProperties();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var nowMs = new Date().getTime();
+  var debounceMs = DEBOUNCE_SECONDS * 1000;
+  for (var key in allProps) {
+    if (key.indexOf('queue_row_') !== 0) continue;
+    var queuedAt = parseInt(allProps[key], 10);
+    if (nowMs - queuedAt < debounceMs - 5000) continue;
+    var row = parseInt(key.replace('queue_row_', ''), 10);
+    if (isNaN(row) || row < 2) { props.deleteProperty(key); continue; }
+    syncRow(sheet, row);
+    props.deleteProperty(key);
+  }
+}
 
-    const nom       = sheet.getRange(row, COL_NOM).getValue().toString().trim();
-    const telephone = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
-
-    // Ignorer les lignes vides
-    if (!nom && !telephone) continue;
-
-    const adresse = sheet.getRange(row, COL_ADRESSE).getValue().toString().trim();
-    const ville   = sheet.getRange(row, COL_VILLE).getValue().toString().trim();
-    const produit = sheet.getRange(row, COL_PRODUIT).getValue().toString().trim();
-    const prix    = sheet.getRange(row, COL_PRIX).getValue().toString().trim();
-    const qty     = sheet.getRange(row, COL_QTY).getValue() || 1;
-
-    const payload = {
-      name:     nom,
-      phone:    telephone,
-      address:  adresse,
-      city:     ville,
-      product:  produit,
-      price:    prix,
-      quantity: qty.toString(),
-      ref:      'GS-R' + row + '-' + Date.now()
-    };
-
-    const options = {
+// ─── Synchronisation d'une ligne ──────────────────────────────
+function syncRow(sheet, row) {
+  var statusCell = sheet.getRange(row, COL_STATUS);
+  var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
+  if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
+  var nom       = sheet.getRange(row, COL_NOM).getValue().toString().trim();
+  var telephone = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
+  if (!nom && !telephone) { statusCell.setValue(''); statusCell.setBackground(null); return; }
+  if (!telephone) { statusCell.setValue('PHONE MANQUANT'); statusCell.setBackground('#f8d7da'); return; }
+  var adresse = sheet.getRange(row, COL_ADRESSE).getValue().toString().trim();
+  var ville   = sheet.getRange(row, COL_VILLE).getValue().toString().trim();
+  var produit = sheet.getRange(row, COL_PRODUIT).getValue().toString().trim();
+  var prix    = sheet.getRange(row, COL_PRIX).getValue().toString().trim();
+  var qty     = sheet.getRange(row, COL_QTY).getValue() || 1;
+  var sheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  var payload = {
+    name:     nom,
+    phone:    telephone,
+    address:  adresse,
+    city:     ville,
+    product:  produit,
+    price:    prix,
+    quantity: qty.toString(),
+    ref:      'GS-' + sheetId.substring(0, 6) + '-R' + row
+  };
+  try {
+    var response = UrlFetchApp.fetch(API_URL, {
       method: 'post',
       contentType: 'application/json',
       headers: { 'X-Api-Key': API_KEY },
       payload: JSON.stringify(payload),
       muteHttpExceptions: true
-    };
+    });
+    var code = response.getResponseCode();
+    var body = JSON.parse(response.getContentText());
+    if (code === 200 && body.success && !body.duplicate) {
+      statusCell.setValue('SENT');
+      statusCell.setBackground('#d4edda');
+      Logger.log('✓ Ligne ' + row + ' → Commande #' + body.orderId + ' créée');
+    } else if (body.duplicate) {
+      statusCell.setValue('DUPLICATE');
+      statusCell.setBackground('#fff3cd');
+    } else {
+      statusCell.setValue('ERREUR');
+      statusCell.setBackground('#f8d7da');
+      Logger.log('✗ Ligne ' + row + ' erreur: ' + response.getContentText());
+    }
+  } catch (err) {
+    statusCell.setValue('ERREUR');
+    statusCell.setBackground('#f8d7da');
+    Logger.log('✗ Ligne ' + row + ' exception: ' + err.toString());
+  }
+}
 
-    try {
-      const response = UrlFetchApp.fetch(API_URL, options);
-      const code = response.getResponseCode();
-      const body = JSON.parse(response.getContentText());
+// ─── Synchronise toutes les lignes existantes ─────────────────
+function syncAllExistingRows() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  for (var row = 2; row <= lastRow; row++) {
+    syncRow(sheet, row);
+    Utilities.sleep(300);
+  }
+  Logger.log('✅ Synchro complète terminée');
+}
 
-      if (code === 200 && body.success && !body.duplicate) {
-        statusCell.setValue('SENT');
-        statusCell.setBackground('#d4edda');
-        Logger.log('✓ Ligne ' + row + ' → Commande #' + body.orderId + ' créée');
-        sent++;
-      } else if (body.duplicate) {
-        statusCell.setValue('DUPLICATE');
-        statusCell.setBackground('#fff3cd');
-        Logger.log('⚠ Ligne ' + row + ' → Commande déjà existante');
-        skipped++;
-      } else {
-        Logger.log('✗ Ligne ' + row + ' → Erreur: ' + response.getContentText());
-        errors++;
-      }
-    } catch (e) {
-      Logger.log('✗ Ligne ' + row + ' → Exception: ' + e.toString());
-      errors++;
+// ─── Filet de sécurité quotidien ──────────────────────────────
+function dailyCheckHandler() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var resynced = 0;
+  for (var row = 2; row <= lastRow; row++) {
+    var status = sheet.getRange(row, COL_STATUS).getValue().toString().trim().toUpperCase();
+    if (status !== 'SENT' && status !== 'DUPLICATE') {
+      var nom = sheet.getRange(row, COL_NOM).getValue().toString().trim();
+      var tel = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
+      if (nom && tel) { syncRow(sheet, row); Utilities.sleep(300); resynced++; }
     }
   }
+  Logger.log('🩺 Vérification quotidienne — ' + resynced + ' ligne(s) re-synchronisée(s)');
+}
 
-  const msg = sent + ' commande(s) envoyée(s)' +
-    (skipped > 0 ? ', ' + skipped + ' ignorée(s)' : '') +
-    (errors > 0 ? ', ' + errors + ' erreur(s)' : '') + '.';
-  SpreadsheetApp.getUi().alert('🚀 TajerGrow — ' + msg);
+// ─── Action manuelle depuis le menu ───────────────────────────
+function syncNewRowsManual() {
+  syncAllExistingRows();
+  SpreadsheetApp.getUi().alert('✅ Synchronisation manuelle terminée');
+}
+
+// ─── Test de connexion ────────────────────────────────────────
+function testConnection() {
+  try {
+    var response = UrlFetchApp.fetch(API_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Api-Key': API_KEY },
+      payload: JSON.stringify({
+        name: 'TEST CONNECTION', phone: '0000000000',
+        address: '', city: '', product: '', price: '0',
+        ref: 'TEST-' + new Date().getTime(), test: true
+      }),
+      muteHttpExceptions: true
+    });
+    var body = response.getContentText();
+    var code = response.getResponseCode();
+    if (code === 200) {
+      SpreadsheetApp.getUi().alert('✅ Connexion réussie !\\n\\n' + body);
+    } else {
+      SpreadsheetApp.getUi().alert('❌ Erreur HTTP ' + code + '\\n\\n' + body);
+    }
+  } catch (err) {
+    SpreadsheetApp.getUi().alert('❌ Erreur réseau\\n\\n' + err.toString());
+  }
+}
+
+// ─── Réinitialiser tous les statuts (forcer re-sync) ──────────
+function resetAllStatuses() {
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.alert(
+    'Réinitialiser les statuts ?',
+    'Toutes les lignes seront marquées comme "à envoyer". Les commandes déjà reçues par TajerGrow seront détectées comme doublons et ignorées.',
+    ui.ButtonSet.YES_NO
+  );
+  if (resp !== ui.Button.YES) return;
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var statusRange = sheet.getRange(2, COL_STATUS, lastRow - 1, 1);
+  statusRange.clearContent();
+  statusRange.setBackground(null);
+  PropertiesService.getDocumentProperties().deleteAllProperties();
+  ui.alert('✅ Statuts réinitialisés');
 }`;
 
   const handleCopy = () => {
@@ -328,7 +481,7 @@ function sendOrdersToTajerGrow() {
     if (result.hasActivity) {
       toast({ title: "Connexion vérifiée !", description: `${result.logsCount} événement(s) reçu(s)` });
     } else {
-      toast({ title: "Aucune activité détectée", description: "Exécutez 'Envoyer les nouvelles commandes' dans votre Google Sheet." });
+      toast({ title: "Aucune activité détectée", description: "Exécutez la fonction 'setup' dans Apps Script pour activer la synchro auto." });
     }
   };
 
@@ -336,8 +489,8 @@ function sendOrdersToTajerGrow() {
     { icon: "1", text: "Ouvrez votre Google Sheet et allez dans", highlight: "Extensions → Apps Script" },
     { icon: "2", text: "Effacez le contenu par défaut, puis cliquez sur", highlight: "«\u00a0Copier le script\u00a0»" },
     { icon: "3", text: "Collez le script dans l'éditeur, puis cliquez sur", highlight: "Enregistrer (Ctrl+S)" },
-    { icon: "4", text: "Rechargez votre Sheet — le menu", highlight: "🚀 TajerGrow apparaîtra" },
-    { icon: "5", text: "Cliquez sur", highlight: "🚀 TajerGrow → Envoyer les nouvelles commandes" },
+    { icon: "4", text: "Dans la liste des fonctions, sélectionnez", highlight: "setup puis cliquez sur ▶ Exécuter — acceptez les autorisations Google." },
+    { icon: "5", text: "C'est tout ! 🎉 Vos nouvelles commandes seront synchronisées", highlight: "automatiquement" },
   ];
 
   return (
@@ -367,6 +520,15 @@ function sendOrdersToTajerGrow() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Debounce info banner */}
+      <div className="rounded-lg p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 text-sm">
+        <p className="font-semibold text-blue-900 dark:text-blue-200 mb-1">⏱️ Délai de 30 secondes</p>
+        <p className="text-xs text-blue-800/80 dark:text-blue-300/80">
+          Le script attend 30 secondes après votre dernière modification avant d'envoyer la commande.
+          Cela vous laisse le temps de remplir toutes les cellules d'une ligne sans déclencher 6 envois différents.
+        </p>
       </div>
 
       {/* Script card */}

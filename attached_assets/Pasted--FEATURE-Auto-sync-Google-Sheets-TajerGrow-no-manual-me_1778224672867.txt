@@ -1,0 +1,453 @@
+🚀 FEATURE — Auto-sync Google Sheets → TajerGrow (no manual menu click required)
+My problem
+The current Google Sheets integration requires the user to:
+
+Open the sheet
+Click 🚀 TajerGrow → Envoyer les nouvelles commandes menu item every time
+Wait for the sync
+
+This is friction-heavy. Most users add 5-10 orders a day from leads, and clicking the menu after every batch is tedious. The result: users add rows but never sync them — orders stay in the sheet forever.
+I want zero-friction sync:
+
+The moment a new row is filled in the sheet, the order is sent to TajerGrow automatically
+No menu click needed
+No "Status" column the user has to manage
+Daily safety-net check catches anything missed (network failure, etc.)
+Works even if the user types one cell at a time over a few minutes
+
+The reference implementation is from a competing platform (Garean) which uses three triggers:
+
+Edit trigger (onEdit) — fires on every cell edit
+Time trigger — runs once daily as safety net
+Initial setup — sends all existing rows on first install
+
+I want the same UX, branded for TajerGrow.
+
+What to build
+Step 1 — Replace the Google Sheets script template entirely
+In client/src/pages/integrations.tsx around line 206, replace the appScript template string with the new auto-sync version below. The shape of the API call (POST to ${apiUrl} with X-Api-Key header and JSON body) stays identical — backend doesn't change.
+js// ═══════════════════════════════════════════════════════════════
+//  🚀 TajerGrow — Google Sheets Auto-Sync Script
+//  Synchronisation automatique en temps réel
+//  Ne pas modifier API_URL / API_KEY
+// ═══════════════════════════════════════════════════════════════
+
+const API_URL = '${apiUrl}';
+const API_KEY = '${apiKey}';
+
+// ─── Configuration des colonnes (1 = A, 2 = B, ..., 10 = J) ───
+const COL_NOM       = 1;   // A — Nom du client
+const COL_TELEPHONE = 2;   // B — Téléphone
+const COL_ADRESSE   = 3;   // C — Adresse
+const COL_VILLE     = 4;   // D — Ville
+const COL_PRODUIT   = 5;   // E — Produit
+const COL_PRIX      = 6;   // F — Prix (DH)
+const COL_QTY       = 7;   // G — Quantité
+
+// Colonne J réservée au statut interne (gérée par le script — ne pas modifier)
+const COL_STATUS    = 10;
+
+// Nombre de secondes d'attente après une édition avant de synchroniser
+// (laisse à l'utilisateur le temps de remplir toute la ligne).
+const DEBOUNCE_SECONDS = 30;
+
+// ═══════════════════════════════════════════════════════════════
+//  SETUP — Lance ceci UNE FOIS pour activer la synchro automatique
+// ═══════════════════════════════════════════════════════════════
+function setup() {
+  setupOnEditTrigger();
+  setupDailyTrigger();
+  syncAllExistingRows();
+  SpreadsheetApp.getUi().alert(
+    '✅ TajerGrow — Synchronisation automatique activée !\\n\\n' +
+    '• Les nouvelles commandes seront envoyées automatiquement.\\n' +
+    '• Une vérification quotidienne assure qu\\'aucune commande n\\'est oubliée.\\n' +
+    '• Vous pouvez aussi déclencher manuellement via le menu 🚀 TajerGrow.'
+  );
+}
+
+// ─── Menu personnalisé (toujours disponible en backup) ────────
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🚀 TajerGrow')
+    .addItem('▶️ Activer la synchro auto', 'setup')
+    .addItem('🔄 Synchroniser les nouvelles commandes', 'syncNewRowsManual')
+    .addItem('📤 Tout re-synchroniser', 'syncAllExistingRows')
+    .addItem('🩺 Tester la connexion', 'testConnection')
+    .addItem('🧹 Réinitialiser les statuts', 'resetAllStatuses')
+    .addToUi();
+}
+
+// ─── Trigger : déclenché à chaque édition du sheet ────────────
+function setupOnEditTrigger() {
+  // Supprime les anciens triggers onEdit pour éviter les doublons
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'onEditHandler') ScriptApp.deleteTrigger(t);
+  });
+
+  ScriptApp.newTrigger('onEditHandler')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit()
+    .create();
+
+  Logger.log('✅ Trigger onEdit installé');
+}
+
+// ─── Trigger quotidien : filet de sécurité (10h chaque jour) ──
+function setupDailyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'dailyCheckHandler') ScriptApp.deleteTrigger(t);
+  });
+
+  ScriptApp.newTrigger('dailyCheckHandler')
+    .timeBased()
+    .atHour(10)
+    .everyDays(1)
+    .create();
+
+  Logger.log('✅ Trigger quotidien installé (10h)');
+}
+
+// ─── Handler appelé à chaque modification ─────────────────────
+function onEditHandler(e) {
+  if (!e || !e.range) return;
+  var sheet = e.source.getActiveSheet();
+  var startRow = e.range.getRow();
+  var endRow   = e.range.getLastRow();
+
+  // Ignore l'en-tête et la colonne Status (J)
+  if (startRow === 1) return;
+  if (e.range.getColumn() === COL_STATUS) return;
+
+  for (var row = startRow; row <= endRow; row++) {
+    queueRowForSync(sheet, row);
+  }
+}
+
+// ─── Met une ligne en file d'attente pour synchro différée ────
+// On attend DEBOUNCE_SECONDS pour laisser à l'utilisateur le
+// temps de remplir toutes les cellules avant d'envoyer.
+function queueRowForSync(sheet, row) {
+  var statusCell = sheet.getRange(row, COL_STATUS);
+  var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
+
+  // Déjà envoyé ou en cours — ne rien faire
+  if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
+  if (currentStatus === 'EN ATTENTE') return;
+
+  statusCell.setValue('EN ATTENTE');
+  statusCell.setBackground('#fff3cd');
+
+  // Stocker l'horodatage de la queue dans les propriétés
+  var props = PropertiesService.getDocumentProperties();
+  props.setProperty('queue_row_' + row, new Date().getTime().toString());
+
+  // Programmer un trigger one-shot dans DEBOUNCE_SECONDS secondes
+  ScriptApp.newTrigger('processQueue')
+    .timeBased()
+    .after(DEBOUNCE_SECONDS * 1000)
+    .create();
+
+  Logger.log('Ligne ' + row + ' mise en file (synchro dans ' + DEBOUNCE_SECONDS + 's)');
+}
+
+// ─── Traite toutes les lignes en file d'attente ───────────────
+function processQueue() {
+  // Nettoyer les triggers one-shot expirés
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'processQueue' &&
+        t.getEventType() === ScriptApp.EventType.CLOCK) {
+      // On garde celui-ci en cours, supprime les autres
+      try { ScriptApp.deleteTrigger(t); } catch (e) {}
+    }
+  });
+
+  var props = PropertiesService.getDocumentProperties();
+  var allProps = props.getProperties();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var nowMs = new Date().getTime();
+  var debounceMs = DEBOUNCE_SECONDS * 1000;
+
+  for (var key in allProps) {
+    if (key.indexOf('queue_row_') !== 0) continue;
+
+    var queuedAt = parseInt(allProps[key], 10);
+    if (nowMs - queuedAt < debounceMs - 5000) continue;  // pas encore mûr
+
+    var row = parseInt(key.replace('queue_row_', ''), 10);
+    if (isNaN(row) || row < 2) {
+      props.deleteProperty(key);
+      continue;
+    }
+
+    syncRow(sheet, row);
+    props.deleteProperty(key);
+  }
+}
+
+// ─── Synchronisation d'une ligne ──────────────────────────────
+function syncRow(sheet, row) {
+  var statusCell = sheet.getRange(row, COL_STATUS);
+  var currentStatus = statusCell.getValue().toString().trim().toUpperCase();
+  if (currentStatus === 'SENT' || currentStatus === 'DUPLICATE') return;
+
+  var nom       = sheet.getRange(row, COL_NOM).getValue().toString().trim();
+  var telephone = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
+
+  // Ligne vide ou incomplète — ne rien faire
+  if (!nom && !telephone) {
+    statusCell.setValue('');
+    statusCell.setBackground(null);
+    return;
+  }
+
+  if (!telephone) {
+    statusCell.setValue('PHONE MANQUANT');
+    statusCell.setBackground('#f8d7da');
+    return;
+  }
+
+  var adresse = sheet.getRange(row, COL_ADRESSE).getValue().toString().trim();
+  var ville   = sheet.getRange(row, COL_VILLE).getValue().toString().trim();
+  var produit = sheet.getRange(row, COL_PRODUIT).getValue().toString().trim();
+  var prix    = sheet.getRange(row, COL_PRIX).getValue().toString().trim();
+  var qty     = sheet.getRange(row, COL_QTY).getValue() || 1;
+
+  var sheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  var payload = {
+    name:     nom,
+    phone:    telephone,
+    address:  adresse,
+    city:     ville,
+    product:  produit,
+    price:    prix,
+    quantity: qty.toString(),
+    ref:      'GS-' + sheetId.substring(0, 6) + '-R' + row
+  };
+
+  try {
+    var response = UrlFetchApp.fetch(API_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Api-Key': API_KEY },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+
+    var code = response.getResponseCode();
+    var body = JSON.parse(response.getContentText());
+
+    if (code === 200 && body.success && !body.duplicate) {
+      statusCell.setValue('SENT');
+      statusCell.setBackground('#d4edda');
+      Logger.log('✓ Ligne ' + row + ' → Commande #' + body.orderId + ' créée');
+    } else if (body.duplicate) {
+      statusCell.setValue('DUPLICATE');
+      statusCell.setBackground('#fff3cd');
+    } else {
+      statusCell.setValue('ERREUR');
+      statusCell.setBackground('#f8d7da');
+      Logger.log('✗ Ligne ' + row + ' erreur: ' + response.getContentText());
+    }
+  } catch (err) {
+    statusCell.setValue('ERREUR');
+    statusCell.setBackground('#f8d7da');
+    Logger.log('✗ Ligne ' + row + ' exception: ' + err.toString());
+  }
+}
+
+// ─── Synchronise toutes les lignes existantes (initial / manuel) ──
+function syncAllExistingRows() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  for (var row = 2; row <= lastRow; row++) {
+    syncRow(sheet, row);
+    Utilities.sleep(300);  // gentle pacing
+  }
+
+  Logger.log('✅ Synchro complète terminée');
+}
+
+// ─── Filet de sécurité quotidien ──────────────────────────────
+function dailyCheckHandler() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  var resynced = 0;
+  for (var row = 2; row <= lastRow; row++) {
+    var status = sheet.getRange(row, COL_STATUS).getValue().toString().trim().toUpperCase();
+    // Ré-essaie tout ce qui n'est pas SENT/DUPLICATE
+    if (status !== 'SENT' && status !== 'DUPLICATE') {
+      var nom = sheet.getRange(row, COL_NOM).getValue().toString().trim();
+      var tel = sheet.getRange(row, COL_TELEPHONE).getValue().toString().trim();
+      if (nom && tel) {
+        syncRow(sheet, row);
+        Utilities.sleep(300);
+        resynced++;
+      }
+    }
+  }
+
+  Logger.log('🩺 Vérification quotidienne — ' + resynced + ' ligne(s) re-synchronisée(s)');
+}
+
+// ─── Action manuelle depuis le menu ───────────────────────────
+function syncNewRowsManual() {
+  syncAllExistingRows();
+  SpreadsheetApp.getUi().alert('✅ Synchronisation manuelle terminée');
+}
+
+// ─── Test de connexion ────────────────────────────────────────
+function testConnection() {
+  try {
+    var response = UrlFetchApp.fetch(API_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'X-Api-Key': API_KEY },
+      payload: JSON.stringify({
+        name:    'TEST CONNECTION',
+        phone:   '0000000000',
+        address: '',
+        city:    '',
+        product: '',
+        price:   '0',
+        ref:     'TEST-' + new Date().getTime(),
+        test:    true
+      }),
+      muteHttpExceptions: true
+    });
+    var body = response.getContentText();
+    var code = response.getResponseCode();
+    if (code === 200) {
+      SpreadsheetApp.getUi().alert('✅ Connexion réussie !\\n\\n' + body);
+    } else {
+      SpreadsheetApp.getUi().alert('❌ Erreur HTTP ' + code + '\\n\\n' + body);
+    }
+  } catch (err) {
+    SpreadsheetApp.getUi().alert('❌ Erreur réseau\\n\\n' + err.toString());
+  }
+}
+
+// ─── Réinitialiser tous les statuts (forcer re-sync) ──────────
+function resetAllStatuses() {
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.alert(
+    'Réinitialiser les statuts ?',
+    'Toutes les lignes seront marquées comme "à envoyer". Les commandes déjà reçues par TajerGrow seront détectées comme doublons et ignorées.',
+    ui.ButtonSet.YES_NO
+  );
+  if (resp !== ui.Button.YES) return;
+
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  var statusRange = sheet.getRange(2, COL_STATUS, lastRow - 1, 1);
+  statusRange.clearContent();
+  statusRange.setBackground(null);
+  PropertiesService.getDocumentProperties().deleteAllProperties();
+  ui.alert('✅ Statuts réinitialisés');
+}
+Step 2 — Update the installation instructions in the UI
+In client/src/pages/integrations.tsx, find the "Étapes d'installation" section (around the screenshot's content). Replace with:
+tsx<ol className="space-y-4">
+  <li className="flex items-start gap-3">
+    <span className="..."> 1 </span>
+    <span>Ouvrez votre Google Sheet et allez dans <b>Extensions → Apps Script</b></span>
+  </li>
+  <li className="flex items-start gap-3">
+    <span className="..."> 2 </span>
+    <span>Effacez le contenu par défaut, puis cliquez sur <b>« Copier le script »</b></span>
+  </li>
+  <li className="flex items-start gap-3">
+    <span className="..."> 3 </span>
+    <span>Collez le script dans l'éditeur, puis cliquez sur <b>Enregistrer (Ctrl+S)</b></span>
+  </li>
+  <li className="flex items-start gap-3">
+    <span className="..."> 4 </span>
+    <span>
+      Dans la liste des fonctions en haut, sélectionnez <code>setup</code>
+      puis cliquez sur <b>▶ Exécuter</b>. Acceptez les autorisations Google.
+    </span>
+  </li>
+  <li className="flex items-start gap-3">
+    <span className="..."> 5 </span>
+    <span>
+      C'est tout ! 🎉 Vos nouvelles commandes seront synchronisées
+      <b> automatiquement</b> dès que vous remplirez une ligne.
+    </span>
+  </li>
+</ol>
+The key change: Step 4 is Run setup once, not "click TajerGrow menu every time". After that, the user never touches the script — auto-sync handles everything.
+Step 3 — Add an info banner about the 30-second debounce
+So users understand why their order doesn't appear instantly:
+tsx<div className="rounded-lg p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 text-sm">
+  <p className="font-semibold text-blue-900 dark:text-blue-200 mb-1">
+    ⏱️ Délai de 30 secondes
+  </p>
+  <p className="text-xs text-blue-800/80 dark:text-blue-300/80">
+    Le script attend 30 secondes après votre dernière modification avant d'envoyer
+    la commande. Cela vous laisse le temps de remplir toutes les cellules d'une ligne
+    sans déclencher 6 envois différents.
+  </p>
+</div>
+Step 4 — Image-only orders (the user's bonus question)
+The user asked: "wach darori ikon tartib ville? ana dyali f9at rir img" — meaning their sheet often has only images of orders (screenshots from WhatsApp, or photos of paper orders) and not structured data.
+This is a separate feature, not for this prompt. To handle image-only orders, we'd need:
+
+OCR (Tesseract or Google Vision API) — paid service
+An LLM to parse extracted text → structured fields — paid API calls
+A confirmation step (user verifies extracted data)
+
+This is a bigger project and shouldn't block the Google Sheets auto-sync feature. Ship the auto-sync first, then add OCR as a separate "Photos & images" integration later.
+For now, the answer to the user is: "Yes, the column order matters because the script reads cell positions (A=name, B=phone, etc.). For images, a separate feature is being designed."
+
+Backend changes — none required
+The webhook endpoint /api/integrations/google-sheets/webhook already accepts the right shape (name, phone, city, address, product, price, quantity, ref). No changes needed in server/routes.ts or storage.ts.
+The only minor improvement: when body.test === true, the endpoint should return success WITHOUT actually creating an order. Add this guard at the top of the handler:
+ts// Test ping from Google Apps Script — confirm credentials work without
+// creating a fake order in the system.
+if (data.test === true) {
+  return res.json({
+    success: true,
+    test: true,
+    message: 'Connection OK',
+    storeName: store.name || 'Store ' + storeId,
+  });
+}
+Insert this right after the getStoreByWebhookKey lookup succeeds (around line 3534).
+
+Acceptance criteria
+
+✅ User pastes the script, runs setup once → onEdit + daily triggers installed; existing rows synced.
+✅ User adds a new row → 30 seconds later, status column shows SENT (or DUPLICATE/PHONE MANQUANT/ERREUR).
+✅ Status column is color-coded (green=sent, amber=pending/duplicate, red=error).
+✅ Editing a row that's already SENT does NOT re-send (no duplicate orders).
+✅ User can still trigger manual sync via the 🚀 TajerGrow menu if they want.
+✅ Daily 10h cron retries any rows still pending.
+✅ "Tester la connexion" menu item validates credentials without creating a test order.
+✅ "Réinitialiser les statuts" clears the J column so the next sync re-sends everything (idempotent — backend dedupes by ref).
+✅ Backend accepts test: true payload as a no-op success.
+✅ Existing appScript template variable name and code generation flow unchanged — only the script content is updated.
+
+Commit
+bashgit add client/src/pages/integrations.tsx server/routes.ts
+git commit -m "feat(gsheets): auto-sync via onEdit trigger, no manual menu click
+
+The previous Google Sheets script required users to click 🚀 TajerGrow →
+Envoyer les nouvelles commandes after every batch of new rows. Most users
+forgot to do this and their orders never reached the platform.
+
+New script:
+- Run setup() once after install → installs onEdit + daily 10h triggers
+- Adding a row auto-syncs 30s later (debounce so partial typing doesn't
+  fire 6 requests for one order)
+- Status column is auto-managed: EN ATTENTE → SENT/DUPLICATE/PHONE MANQUANT/ERREUR
+- Daily safety-net cron retries any failed/missed rows
+- 'Tester la connexion' menu validates credentials non-destructively
+- 'Réinitialiser les statuts' lets users force a full re-sync
+- Backend accepts test:true as a no-op success for connection ping"
+git push

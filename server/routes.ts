@@ -3768,6 +3768,12 @@ export async function registerRoutes(
       }
       const storeId = store.id;
       const data = req.body || {};
+
+      // Test ping from Google Apps Script — confirm credentials work without creating a fake order.
+      if (data.test === true) {
+        return res.json({ success: true, test: true, message: 'Connection OK', storeName: store.name || `Store ${storeId}` });
+      }
+
       const customerName    = (data.name    || data.nom    || data.customer_name   || "").toString().trim();
       const customerPhone   = (data.phone   || data.telephone || data.customer_phone || "").toString().trim();
       const customerCity    = (data.city    || data.ville   || "").toString().trim();
