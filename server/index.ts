@@ -8,6 +8,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
+import { syncAllGoogleSheets } from "./cron/sync-gsheets";
 import { initSocket } from "./socket";
 import { autoStartBaileys, autoStartDevices } from "./baileys-service";
 import { db, pool, initializeDatabase } from "./db";
@@ -679,6 +680,14 @@ app.use((req, res, next) => {
       clearQueue?.();
     } catch {}
   }, 5 * 60 * 1000); // clear queue every 5 min
+
+  // ── Google Sheets OAuth polling — every 5 min ─────────────────────────────
+  const gsheetsSync = setInterval(() => {
+    syncAllGoogleSheets().catch((err: any) =>
+      console.error("[GSHEETS-CRON] Error:", err.message)
+    );
+  }, 5 * 60 * 1000);
+  intervals.push(gsheetsSync);
 
   // ── Memory monitor — log every 2 min, GC + clear WA queue if heap > 400 MB ──
   setInterval(() => {

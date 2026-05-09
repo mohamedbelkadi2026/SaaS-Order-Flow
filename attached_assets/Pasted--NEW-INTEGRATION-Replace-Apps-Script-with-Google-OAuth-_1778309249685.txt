@@ -1,0 +1,384 @@
+🚀 NEW INTEGRATION — Replace Apps Script with Google OAuth (Sheets API direct)
+My problem
+The current Apps Script approach is too fragile for production:
+
+Setup hangs/times out (Apps Script log shows "Execution started" but never "completed")
+Google's "unverified app" scary warning blocks 50% of users mid-setup
+Triggers silently disabled by Google after 90 days of inactivity
+Multi-tab support requires complex workarounds
+Debugging requires reading Apps Script logs the user can't see
+
+I want to switch to direct Google Sheets API integration via OAuth — like Shopify's connect flow. The user clicks "Connect Google Sheets", picks an account, picks a spreadsheet, and we poll the sheet from our backend every 5 minutes. No script, no triggers, no Apps Script.
+Architecture
+User flow:
+  TajerGrow UI → "Connect Google Sheets"
+  → Google OAuth consent screen
+  → Permissions: read spreadsheets metadata + read content
+  → Redirect back with access_token + refresh_token
+  → Save tokens (encrypted) in store_integrations table
+  → User picks spreadsheet from a dropdown of their Drive sheets
+  → User picks tabs to sync (or "all tabs")
+  → Backend cron polls every 5 minutes:
+      → fetch sheet content via Sheets API
+      → diff against last_synced_row per tab
+      → POST new rows to existing /api/integrations/google-sheets/webhook
+      → update last_synced_row marker
+Implementation
+Step 1 — Google Cloud Console setup (one-time, by Anthropic/dev team)
+In Google Cloud Console:
+
+Create OAuth 2.0 Client ID (Web application)
+Authorized redirect URI: https://tajergrow.com/api/integrations/google-sheets/oauth/callback
+Scopes needed:
+
+https://www.googleapis.com/auth/spreadsheets.readonly
+https://www.googleapis.com/auth/drive.metadata.readonly
+
+
+Save Client ID + Client Secret in Railway environment:
+
+   GOOGLE_OAUTH_CLIENT_ID=...
+   GOOGLE_OAUTH_CLIENT_SECRET=...
+   GOOGLE_OAUTH_REDIRECT_URI=https://tajergrow.com/api/integrations/google-sheets/oauth/callback
+Step 2 — Database: extend store_integrations table
+sql-- migrations/0007_google_oauth.sql
+ALTER TABLE public.store_integrations
+  ADD COLUMN IF NOT EXISTS oauth_access_token  text,
+  ADD COLUMN IF NOT EXISTS oauth_refresh_token text,
+  ADD COLUMN IF NOT EXISTS oauth_expires_at    timestamp,
+  ADD COLUMN IF NOT EXISTS spreadsheet_id      text,
+  ADD COLUMN IF NOT EXISTS spreadsheet_name    text,
+  ADD COLUMN IF NOT EXISTS sync_tabs           text,    -- JSON array of tab GIDs to sync, or "all"
+  ADD COLUMN IF NOT EXISTS last_sync_state     jsonb;   -- { "tab_gid_X": last_row_synced, ... }
+Step 3 — Backend: OAuth endpoints
+In server/routes.ts, add three new endpoints:
+ts// 1. Initiate OAuth flow — redirect to Google
+app.get("/api/integrations/google-sheets/oauth/start", requireAuth, (req, res) => {
+  const state = `${req.user!.storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  // Store state in session/redis for CSRF protection (5 min ttl)
+  req.session.gsheetsOauthState = state;
+
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", process.env.GOOGLE_OAUTH_CLIENT_ID!);
+  url.searchParams.set("redirect_uri", process.env.GOOGLE_OAUTH_REDIRECT_URI!);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.metadata.readonly");
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
+  url.searchParams.set("state", state);
+  res.redirect(url.toString());
+});
+
+// 2. OAuth callback — exchange code for tokens
+app.get("/api/integrations/google-sheets/oauth/callback", async (req, res) => {
+  const { code, state } = req.query;
+  if (!state || state !== (req.session as any).gsheetsOauthState) {
+    return res.status(400).send("Invalid state — possible CSRF attempt");
+  }
+  delete (req.session as any).gsheetsOauthState;
+
+  // Exchange code for tokens
+  const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code: code as string,
+      client_id: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+      client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET!,
+      redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI!,
+      grant_type: "authorization_code",
+    }),
+  });
+  const tokens = await tokenResp.json();
+
+  if (!tokens.access_token) {
+    console.error("[GSHEETS-OAUTH] Token exchange failed:", tokens);
+    return res.redirect("/integrations?gsheets_error=token_exchange_failed");
+  }
+
+  // Persist tokens (encrypted)
+  const storeId = parseInt((state as string).split("-")[0]);
+  await db.update(storeIntegrations)
+    .set({
+      oauthAccessToken:  encrypt(tokens.access_token),
+      oauthRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+      oauthExpiresAt:    new Date(Date.now() + tokens.expires_in * 1000),
+      provider:          "gsheets",
+      status:            "active",
+    })
+    .where(and(
+      eq(storeIntegrations.storeId, storeId),
+      eq(storeIntegrations.provider, "gsheets"),
+    ));
+
+  // Redirect back to integrations page with success
+  res.redirect("/integrations?gsheets=connected");
+});
+
+// 3. List user's spreadsheets (after OAuth succeeded)
+app.get("/api/integrations/google-sheets/spreadsheets", requireAuth, async (req, res) => {
+  const conn = await getGSheetsConnection(req.user!.storeId!);
+  if (!conn) return res.status(400).json({ error: "not_connected" });
+
+  const accessToken = await getValidAccessToken(conn);
+  const driveResp = await fetch(
+    "https://www.googleapis.com/drive/v3/files?q=mimeType%3D%27application%2Fvnd.google-apps.spreadsheet%27&fields=files(id,name,modifiedTime)&orderBy=modifiedTime%20desc",
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  const data = await driveResp.json();
+  res.json({ spreadsheets: data.files || [] });
+});
+
+// 4. Save the user's spreadsheet choice
+app.post("/api/integrations/google-sheets/select", requireAuth, async (req, res) => {
+  const { spreadsheetId, syncTabs } = req.body;
+  await db.update(storeIntegrations)
+    .set({
+      spreadsheetId,
+      syncTabs: syncTabs || "all",
+    })
+    .where(and(
+      eq(storeIntegrations.storeId, req.user!.storeId!),
+      eq(storeIntegrations.provider, "gsheets"),
+    ));
+  res.json({ ok: true });
+});
+Step 4 — Cron job: poll sheets every 5 minutes
+Add a new file server/cron/sync-gsheets.ts:
+tsimport { db } from "../db";
+import { storeIntegrations, orders } from "@shared/schema";
+import { eq, and, sql } from "drizzle-orm";
+import { decrypt, encrypt } from "../crypto";
+
+export async function syncAllGoogleSheets() {
+  const connections = await db.select().from(storeIntegrations)
+    .where(and(
+      eq(storeIntegrations.provider, "gsheets"),
+      eq(storeIntegrations.status, "active"),
+      sql`${storeIntegrations.spreadsheetId} IS NOT NULL`,
+    ));
+
+  console.log(`[GSHEETS-CRON] Polling ${connections.length} connection(s)`);
+
+  for (const conn of connections) {
+    try {
+      await syncOneSpreadsheet(conn);
+    } catch (err: any) {
+      console.error(`[GSHEETS-CRON] Store ${conn.storeId} error:`, err.message);
+    }
+  }
+}
+
+async function syncOneSpreadsheet(conn: any) {
+  const accessToken = await getValidAccessToken(conn);
+
+  // Get all tabs metadata
+  const metaResp = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${conn.spreadsheetId}?fields=sheets.properties`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  const meta = await metaResp.json();
+  const tabs = (meta.sheets || []).map((s: any) => ({
+    title: s.properties.title,
+    gid: s.properties.sheetId,
+  }));
+
+  const lastState = (conn.lastSyncState as any) || {};
+
+  for (const tab of tabs) {
+    // Skip if user picked specific tabs and this isn't one
+    if (conn.syncTabs && conn.syncTabs !== "all") {
+      const allowed = JSON.parse(conn.syncTabs);
+      if (!allowed.includes(tab.gid)) continue;
+    }
+
+    const lastRow = lastState[`tab_${tab.gid}`] || 1;
+
+    // Fetch only rows since last sync
+    const range = `'${tab.title}'!A${lastRow + 1}:Z`;
+    const dataResp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${conn.spreadsheetId}/values/${encodeURIComponent(range)}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const data = await dataResp.json();
+    const rows = data.values || [];
+
+    if (rows.length === 0) continue;
+
+    console.log(`[GSHEETS-CRON] Store ${conn.storeId} tab "${tab.title}": ${rows.length} new rows`);
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = lastRow + 1 + i;
+
+      // Reuse existing positional mapping (A=name, B=phone, C=city, F=price, ...)
+      const payload = {
+        name:    row[0] || "",
+        phone:   row[1] || "",
+        city:    row[2] || "",
+        address: row[3] || "",
+        product: row[4] || tab.title,   // fallback to tab name
+        price:   row[5] || "0",
+        quantity:row[6] || "1",
+        utm_campaign: row[10] || "",
+        utm_source:   row[11] || "",
+        product_id:   row[12] || "",
+        tab_name:     tab.title,
+        ref:          `GS-${conn.spreadsheetId.slice(0,6)}-${tab.gid}-R${rowNum}`,
+      };
+
+      // Skip blank rows
+      if (!payload.name && !payload.phone) continue;
+
+      // Reuse existing webhook handler logic by calling it directly
+      try {
+        await ingestGsheetsRow(conn.storeId, payload);
+      } catch (err: any) {
+        console.error(`[GSHEETS-CRON] Row ${rowNum} failed: ${err.message}`);
+      }
+    }
+
+    // Mark these rows as synced
+    lastState[`tab_${tab.gid}`] = lastRow + rows.length;
+  }
+
+  await db.update(storeIntegrations)
+    .set({ lastSyncState: lastState, lastSyncAt: new Date() })
+    .where(eq(storeIntegrations.id, conn.id));
+}
+
+async function getValidAccessToken(conn: any): Promise<string> {
+  const expiresAt = new Date(conn.oauthExpiresAt);
+  const now = new Date();
+  if (expiresAt.getTime() - now.getTime() > 60_000) {
+    return decrypt(conn.oauthAccessToken);
+  }
+  // Refresh
+  const resp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      refresh_token: decrypt(conn.oauthRefreshToken),
+      client_id: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+      client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET!,
+      grant_type: "refresh_token",
+    }),
+  });
+  const tokens = await resp.json();
+  await db.update(storeIntegrations)
+    .set({
+      oauthAccessToken: encrypt(tokens.access_token),
+      oauthExpiresAt:   new Date(Date.now() + tokens.expires_in * 1000),
+    })
+    .where(eq(storeIntegrations.id, conn.id));
+  return tokens.access_token;
+}
+
+// Reuse the body of /api/integrations/google-sheets/webhook handler
+async function ingestGsheetsRow(storeId: number, payload: any) {
+  // ... extract the row-creation logic from the existing webhook handler
+  //     into a helper function and call it here ...
+}
+In server/index.ts, schedule it:
+tsimport { syncAllGoogleSheets } from "./cron/sync-gsheets";
+
+setInterval(() => {
+  syncAllGoogleSheets().catch(err =>
+    console.error("[GSHEETS-CRON] Top-level error:", err)
+  );
+}, 5 * 60 * 1000);   // every 5 minutes
+Step 5 — Frontend: replace Apps Script UI with OAuth flow
+In client/src/pages/integrations.tsx, replace the Google Sheets section with a much simpler UI:
+tsx{/* Google Sheets — OAuth flow */}
+<Card>
+  <CardHeader>
+    <CardTitle className="flex items-center gap-2">
+      📊 Google Sheets <Badge variant="success">Plug & Play</Badge>
+    </CardTitle>
+    <CardDescription>
+      Synchronisez automatiquement vos commandes Google Sheets sans installer aucun script.
+    </CardDescription>
+  </CardHeader>
+
+  <CardContent className="space-y-4">
+    {!gsheetsConnection?.connected ? (
+      <Button onClick={() => window.location.href = "/api/integrations/google-sheets/oauth/start"}>
+        <GoogleIcon className="w-4 h-4 mr-2" />
+        Connecter mon compte Google
+      </Button>
+    ) : (
+      <>
+        <Alert variant="success">
+          ✅ Connecté en tant que {gsheetsConnection.userEmail}
+        </Alert>
+
+        <div>
+          <Label>Choisir le spreadsheet à synchroniser</Label>
+          <Select value={selectedSpreadsheetId} onValueChange={setSelectedSpreadsheetId}>
+            <SelectTrigger><SelectValue placeholder="Sélectionnez un spreadsheet" /></SelectTrigger>
+            <SelectContent>
+              {spreadsheets.map(s => (
+                <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div>
+          <Label>Onglets à synchroniser</Label>
+          <RadioGroup value={syncMode} onValueChange={setSyncMode}>
+            <div><RadioGroupItem value="all" /> Tous les onglets</div>
+            <div><RadioGroupItem value="select" /> Sélectionner manuellement</div>
+          </RadioGroup>
+        </div>
+
+        <Button onClick={saveSelection}>Activer la synchronisation</Button>
+        <Button variant="outline" onClick={disconnect}>Déconnecter</Button>
+
+        {gsheetsConnection.lastSyncAt && (
+          <p className="text-xs text-muted-foreground">
+            Dernière synchronisation : il y a {timeSince(gsheetsConnection.lastSyncAt)}
+          </p>
+        )}
+      </>
+    )}
+
+    <div className="text-xs text-muted-foreground border-t pt-3">
+      💡 La synchronisation s'effectue automatiquement toutes les 5 minutes.
+      Vos données restent privées et ne sont jamais partagées.
+    </div>
+  </CardContent>
+</Card>
+Acceptance criteria
+
+✅ User clicks "Connecter mon compte Google" → redirected to Google OAuth → permissions screen → grants access → redirected back to TajerGrow with success state.
+✅ Spreadsheets dropdown lists all the user's Google Sheets (sorted by recently modified).
+✅ User picks a spreadsheet + "all tabs" or specific tabs → saves selection.
+✅ Cron polls every 5 minutes, fetches new rows since last_sync_state, creates orders.
+✅ Multi-tab support: each tab tracked independently, tab name = product name fallback.
+✅ Token refresh handled transparently when access token expires.
+✅ Disconnect button revokes tokens + clears state.
+✅ NO Apps Script needed by the user.
+✅ Setup time end-to-end < 60 seconds for the user.
+✅ Existing webhook handler still works (Apps Script users not broken).
+
+Commit
+bashgit add server/routes.ts server/cron/sync-gsheets.ts shared/schema.ts migrations/0007_google_oauth.sql client/src/pages/integrations.tsx
+git commit -m "feat(gsheets): OAuth-based Google Sheets integration replacing Apps Script
+
+The Apps Script approach was unreliable: 'unverified app' warnings blocked
+50% of users mid-setup, triggers got disabled after 90 days, multi-tab
+support required complex workarounds, and debugging was opaque.
+
+New flow:
+- User clicks 'Connect Google' → standard OAuth consent → done in 30 seconds
+- Backend stores access + refresh tokens (encrypted) in store_integrations
+- /api/integrations/google-sheets/spreadsheets lists user's Drive sheets
+- User picks spreadsheet + which tabs to sync (or all)
+- Cron polls every 5 minutes, fetches new rows since last_sync_state per tab
+- Reuses existing positional column mapping (A=name, B=phone, C=city, ...)
+- Tab name fallback for product when column E is empty
+- Token refresh handled transparently
+- No Apps Script, no triggers, no scary Google warnings
+- Apps Script integration still works for existing users (zero migration)"
+git push

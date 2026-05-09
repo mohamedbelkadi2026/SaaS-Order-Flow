@@ -250,6 +250,14 @@ export const storeIntegrations = pgTable("store_integrations", {
   ordersCount: integer("orders_count").default(0),
   magasinId: integer("magasin_id").references(() => stores.id),
   createdAt: timestamp("created_at").defaultNow(),
+  oauthAccessToken:  text("oauth_access_token"),
+  oauthRefreshToken: text("oauth_refresh_token"),
+  oauthExpiresAt:    timestamp("oauth_expires_at"),
+  spreadsheetId:     text("spreadsheet_id"),
+  spreadsheetName:   text("spreadsheet_name"),
+  syncTabs:          text("sync_tabs"),
+  lastSyncState:     jsonb("last_sync_state"),
+  lastSyncAt:        timestamp("last_sync_at"),
 });
 
 export const integrationLogs = pgTable("integration_logs", {

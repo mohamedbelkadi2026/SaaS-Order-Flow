@@ -446,6 +446,20 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] store_integrations.magasin_id ensured ✅");
 
+    // ── 12b. store_integrations: Google OAuth + polling columns ──────────────
+    await client.query(`
+      ALTER TABLE public.store_integrations
+        ADD COLUMN IF NOT EXISTS oauth_access_token  TEXT,
+        ADD COLUMN IF NOT EXISTS oauth_refresh_token TEXT,
+        ADD COLUMN IF NOT EXISTS oauth_expires_at    TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS spreadsheet_id      TEXT,
+        ADD COLUMN IF NOT EXISTS spreadsheet_name    TEXT,
+        ADD COLUMN IF NOT EXISTS sync_tabs           TEXT,
+        ADD COLUMN IF NOT EXISTS last_sync_state     JSONB,
+        ADD COLUMN IF NOT EXISTS last_sync_at        TIMESTAMP;
+    `);
+    console.log("[Migration] store_integrations Google OAuth columns ensured ✅");
+
     // ── 13. carrier_accounts: magasin_id for per-magasin carrier scoping ─────
     await client.query(`
       ALTER TABLE public.carrier_accounts

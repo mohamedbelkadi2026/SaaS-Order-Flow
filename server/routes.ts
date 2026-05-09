@@ -6,6 +6,8 @@ import { z } from "zod";
 import { createHmac } from "crypto";
 import { requireAuth, requireAdmin, requireActiveSubscription, hashPassword, comparePasswords } from "./auth";
 import { db } from "./db";
+import { encrypt, decrypt } from "./crypto";
+import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
@@ -3835,6 +3837,152 @@ export async function registerRoutes(
       console.error("[GSheets-API] Webhook error:", err);
       res.status(500).json({ success: false, message: "Processing failed" });
     }
+  });
+
+  // ─── Google Sheets OAuth flow ──────────────────────────────────────────────
+
+  app.get("/api/integrations/google-sheets/oauth/start", requireAuth, (req, res) => {
+    const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+    if (!clientId) return res.redirect("/integrations?gsheets_error=not_configured");
+    const storeId = req.user!.storeId!;
+    const state = `${storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    (req.session as any).gsheetsOauthState = state;
+    const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI ||
+      `${req.protocol}://${req.get("host")}/api/integrations/google-sheets/oauth/callback`;
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.metadata.readonly");
+    url.searchParams.set("access_type", "offline");
+    url.searchParams.set("prompt", "consent");
+    url.searchParams.set("state", state);
+    res.redirect(url.toString());
+  });
+
+  app.get("/api/integrations/google-sheets/oauth/callback", async (req, res) => {
+    const { code, state, error } = req.query;
+    if (error) return res.redirect(`/integrations?gsheets_error=${error}`);
+    const sessionState = (req.session as any).gsheetsOauthState;
+    if (!state || state !== sessionState) return res.redirect("/integrations?gsheets_error=invalid_state");
+    delete (req.session as any).gsheetsOauthState;
+    const storeId = parseInt((state as string).split("-")[0]);
+    if (isNaN(storeId)) return res.redirect("/integrations?gsheets_error=invalid_state");
+    const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI ||
+      `${req.protocol}://${req.get("host")}/api/integrations/google-sheets/oauth/callback`;
+    try {
+      const tokenResp = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code: code as string, client_id: process.env.GOOGLE_OAUTH_CLIENT_ID!,
+          client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET!,
+          redirect_uri: redirectUri, grant_type: "authorization_code",
+        }),
+      });
+      const tokens = await tokenResp.json() as any;
+      if (!tokens.access_token) {
+        console.error("[GSHEETS-OAUTH] Token exchange failed:", tokens);
+        return res.redirect("/integrations?gsheets_error=token_exchange_failed");
+      }
+      const oauthData: any = {
+        oauthAccessToken:  encrypt(tokens.access_token),
+        oauthExpiresAt:    new Date(Date.now() + (tokens.expires_in || 3600) * 1000),
+        isActive: 1,
+      };
+      if (tokens.refresh_token) oauthData.oauthRefreshToken = encrypt(tokens.refresh_token);
+      const existing = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+        .limit(1);
+      if (existing.length > 0) {
+        await db.update(storeIntegrations).set(oauthData).where(eq(storeIntegrations.id, existing[0].id));
+      } else {
+        const webhookKey = await storage.getOrGenerateWebhookKey(storeId);
+        await db.insert(storeIntegrations).values({
+          storeId, provider: "gsheets", type: "webhook", credentials: "{}", webhookKey, ...oauthData,
+        });
+      }
+      res.redirect("/integrations?gsheets=connected");
+    } catch (err: any) {
+      console.error("[GSHEETS-OAUTH] Error:", err.message);
+      res.redirect("/integrations?gsheets_error=server_error");
+    }
+  });
+
+  app.get("/api/integrations/google-sheets/status", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+      .limit(1);
+    const row = rows[0];
+    if (!row?.oauthAccessToken) return res.json({ oauthConnected: false });
+    res.json({
+      oauthConnected: true,
+      spreadsheetId:   row.spreadsheetId,
+      spreadsheetName: row.spreadsheetName,
+      syncTabs:        row.syncTabs || "all",
+      lastSyncAt:      row.lastSyncAt,
+    });
+  });
+
+  app.get("/api/integrations/google-sheets/spreadsheets", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+      .limit(1);
+    const conn = rows[0];
+    if (!conn?.oauthAccessToken) return res.status(400).json({ error: "not_connected" });
+    try {
+      const accessToken = await getValidAccessToken(conn);
+      const driveResp = await fetch(
+        "https://www.googleapis.com/drive/v3/files?q=mimeType%3D%27application%2Fvnd.google-apps.spreadsheet%27&fields=files(id,name,modifiedTime)&orderBy=modifiedTime%20desc&pageSize=50",
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const data = await driveResp.json() as any;
+      res.json({ spreadsheets: data.files || [] });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/integrations/google-sheets/select", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { spreadsheetId, spreadsheetName, syncTabs } = req.body;
+    if (!spreadsheetId) return res.status(400).json({ error: "spreadsheetId required" });
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+      .limit(1);
+    const conn = rows[0];
+    if (!conn?.oauthAccessToken) return res.status(400).json({ error: "not_connected" });
+    try {
+      const accessToken = await getValidAccessToken(conn);
+      const metaResp = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const meta = await metaResp.json() as any;
+      const initState: Record<string, number> = {};
+      for (const s of (meta.sheets || [])) {
+        initState[`tab_${s.properties.sheetId}`] = s.properties.gridProperties?.rowCount || 0;
+      }
+      await db.update(storeIntegrations).set({
+        spreadsheetId, spreadsheetName: spreadsheetName || spreadsheetId,
+        syncTabs: syncTabs || "all", lastSyncState: initState as any, lastSyncAt: null,
+      }).where(eq(storeIntegrations.id, conn.id));
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/integrations/google-sheets/disconnect", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    await db.update(storeIntegrations).set({
+      oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null,
+      spreadsheetId: null, spreadsheetName: null, syncTabs: null,
+      lastSyncState: null, lastSyncAt: null,
+    }).where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")));
+    res.json({ ok: true });
   });
 
   // Verify connection: check if integration has received recent logs
