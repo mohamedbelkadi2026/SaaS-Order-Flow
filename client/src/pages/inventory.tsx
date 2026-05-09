@@ -211,7 +211,27 @@ export default function Inventory() {
         }));
       }
       await createProduct.mutateAsync(payload);
-      toast({ title: "Produit ajouté", description: `${form.name} a été ajouté` });
+
+      // Check if orders already exist for this product name
+      try {
+        const check = await fetch(
+          `/api/products/name-check?name=${encodeURIComponent(form.name)}`,
+          { credentials: 'include' }
+        ).then(r => r.json());
+
+        if (check.found && check.total > 0) {
+          toast({
+            title: `⚠️ ${form.name} — Données historiques trouvées`,
+            description: `${check.total} commande(s) existantes — ${check.confirmed} confirmées (${check.confirmRate}%) — ${check.delivered} livrées (${check.deliveryRate}%). Ces stats s'affichent maintenant dans Profit Analyzer.`,
+            duration: 8000,
+          });
+        } else {
+          toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
+        }
+      } catch {
+        toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
+      }
+
       setAddOpen(false);
       resetForm();
     } catch (err: any) {

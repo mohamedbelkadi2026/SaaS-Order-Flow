@@ -4817,6 +4817,48 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/products/name-check", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const name = (req.query.name as string || "").trim().toLowerCase();
+      if (!name) return res.json({ found: false });
+
+      const matchingItems = await db
+        .select({ orderId: orderItems.orderId })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`LOWER(${orderItems.rawProductName}) LIKE ${'%' + name + '%'}`,
+        ));
+
+      if (matchingItems.length === 0) return res.json({ found: false });
+
+      const orderIds = [...new Set(matchingItems.map(i => i.orderId))];
+
+      const matchingOrders = await db
+        .select({ status: orders.status })
+        .from(orders)
+        .where(inArray(orders.id, orderIds));
+
+      const total     = matchingOrders.length;
+      const confirmed = matchingOrders.filter(o => {
+        const s = (o.status || '').toLowerCase();
+        return ['confirme','confirmé','expédié','delivered','livré','livrée','in_progress','attente de ramassage'].includes(s);
+      }).length;
+      const delivered = matchingOrders.filter(o => {
+        const s = (o.status || '').toLowerCase();
+        return s === 'delivered' || s === 'livré' || s === 'livrée';
+      }).length;
+      const confirmRate  = total     > 0 ? Math.round(confirmed / total     * 100) : 0;
+      const deliveryRate = confirmed > 0 ? Math.round(delivered / confirmed * 100) : 0;
+
+      res.json({ found: true, total, confirmed, delivered, confirmRate, deliveryRate });
+    } catch (err) {
+      throw err;
+    }
+  });
+
   app.get("/api/products/inventory", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     const stats = await storage.getInventoryStats(storeId);

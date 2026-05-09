@@ -1,0 +1,77 @@
+FEATURE: Auto-detect existing orders when adding a new product to stock
+Goal: When an owner adds a new product in /inventory, the system automatically checks if there are already orders with a matching product name (via rawProductName). If yes, show a warning toast with the stats: total orders, confirmed, delivered — so the owner knows historical data exists.
+
+Change 1 — server/routes.ts — New endpoint GET /api/products/name-check
+Add this route right after POST /api/products:
+tsapp.get("/api/products/name-check", requireAuth, async (req, res) => {
+  try {
+    const storeId = req.user!.storeId!;
+    const name = (req.query.name as string || "").trim().toLowerCase();
+    if (!name) return res.json({ found: false });
+
+    // Search orderItems for matching rawProductName
+    const matchingItems = await db
+      .select({ orderId: orderItems.orderId })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .where(and(
+        eq(orders.storeId, storeId),
+        sql`LOWER(${orderItems.rawProductName}) LIKE ${'%' + name + '%'}`,
+      ));
+
+    if (matchingItems.length === 0) return res.json({ found: false });
+
+    const orderIds = [...new Set(matchingItems.map(i => i.orderId))];
+
+    // Get stats for these orders
+    const matchingOrders = await db
+      .select({ status: orders.status })
+      .from(orders)
+      .where(inArray(orders.id, orderIds));
+
+    const total     = matchingOrders.length;
+    const confirmed = matchingOrders.filter(o => {
+      const s = (o.status || '').toLowerCase();
+      return ['confirme','confirmé','expédié','delivered','livré','livrée','in_progress','attente de ramassage'].includes(s);
+    }).length;
+    const delivered = matchingOrders.filter(o => {
+      const s = (o.status || '').toLowerCase();
+      return s === 'delivered' || s === 'livré' || s === 'livrée';
+    }).length;
+    const confirmRate = total > 0 ? Math.round(confirmed / total * 100) : 0;
+    const deliveryRate = confirmed > 0 ? Math.round(delivered / confirmed * 100) : 0;
+
+    res.json({ found: true, total, confirmed, delivered, confirmRate, deliveryRate });
+  } catch (err) {
+    throw err;
+  }
+});
+
+Change 2 — client/src/pages/inventory.tsx — Check for existing orders after product creation
+In handleCreate, after this line:
+tsawait createProduct.mutateAsync(payload);
+toast({ title: "Produit ajouté", description: `${form.name} a été ajouté` });
+Replace with:
+tsawait createProduct.mutateAsync(payload);
+
+// Check if orders already exist for this product name
+try {
+  const check = await fetch(
+    `/api/products/name-check?name=${encodeURIComponent(form.name)}`,
+    { credentials: 'include' }
+  ).then(r => r.json());
+
+  if (check.found && check.total > 0) {
+    toast({
+      title: `⚠️ ${form.name} — Données historiques trouvées`,
+      description: `${check.total} commande(s) existantes — ${check.confirmed} confirmées (${check.confirmRate}%) — ${check.delivered} livrées (${check.deliveryRate}%). Ces stats s'affichent maintenant dans Profit Analyzer.`,
+      duration: 8000,
+    });
+  } else {
+    toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
+  }
+} catch {
+  toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
+}
+
+Do not change anything else.
