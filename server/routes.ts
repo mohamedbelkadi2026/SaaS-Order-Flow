@@ -9,7 +9,7 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, passwordSchema } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema } from "@shared/schema";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -4880,6 +4880,32 @@ export async function registerRoutes(
 
       const orderIds = storeOrders.map(o => o.id);
 
+      // ── Fetch adSpendTracking for this period ─────────────────────────────
+      const cutoffDateStr = cutoff.toISOString().slice(0, 10);
+      const endDateStr    = endDate.toISOString().slice(0, 10);
+      const adSpendRows = await db.select({
+        productId: adSpendTracking.productId,
+        amount:    adSpendTracking.amount,
+        date:      adSpendTracking.date,
+      }).from(adSpendTracking).where(and(
+        eq(adSpendTracking.storeId, storeId),
+        sql`${adSpendTracking.date} >= ${cutoffDateStr}`,
+        sql`${adSpendTracking.date} <= ${endDateStr}`,
+      ));
+
+      // Build map: productId → total adSpend (DH)
+      // null productId = global spend (split proportionally by revenue later)
+      const productAdSpendMap: Record<number, number> = {};
+      let globalAdSpend = 0;
+      for (const row of adSpendRows) {
+        const amt = Number(row.amount || 0);
+        if (row.productId) {
+          productAdSpendMap[row.productId] = (productAdSpendMap[row.productId] || 0) + amt;
+        } else {
+          globalAdSpend += amt;
+        }
+      }
+
       // Fetch orderItems with product info (skip if no orders in range)
       const itemRows = orderIds.length > 0 ? await db
         .select({
@@ -4944,17 +4970,26 @@ export async function registerRoutes(
           s.revenue      += Number((order as any).totalPrice  || 0) / 100;
           s.productCost  += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
           s.shippingCost += Number((order as any).shippingCost || 0) / 100;
-          s.adSpend      += Number((order as any).adSpend      || 0) / 100;
+          // adSpend comes from adSpendTracking table, applied after aggregation
         }
       }
 
+      const totalRevenue = Object.values(statsMap).reduce((s, p) => s + p.revenue, 0);
+
       const productResult = Object.values(statsMap).map(s => {
-        const netProfit    = s.revenue - s.productCost - s.shippingCost - s.adSpend;
+        // Per-product adSpend from adSpendTracking
+        const specificAdSpend = productAdSpendMap[s.id] || 0;
+        // Global adSpend split proportionally by revenue share
+        const revShare    = totalRevenue > 0 ? s.revenue / totalRevenue : 0;
+        const globalShare = globalAdSpend * revShare;
+        const totalAdSpend = specificAdSpend + globalShare;
+
+        const netProfit    = s.revenue - s.productCost - s.shippingCost - totalAdSpend;
         const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
         const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
-        const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders / s.totalOrders) * 100 : 0;
+        const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
         const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
-        return { ...s, netProfit, margin, roi, confirmRate, deliveryRate };
+        return { ...s, adSpend: totalAdSpend, netProfit, margin, roi, confirmRate, deliveryRate };
       });
       productResult.sort((a, b) => b.netProfit - a.netProfit);
 
@@ -4998,16 +5033,19 @@ export async function registerRoutes(
         p.orders++;
         if (isDel) {
           p.delivered++;
-          p.revenue  += Number((o as any).totalPrice || 0) / 100;
-          p.adSpend  += Number((o as any).adSpend    || 0) / 100;
+          p.revenue += Number((o as any).totalPrice || 0) / 100;
         }
       }
-      const platformResult = Object.values(platMap).map(p => ({
-        ...p,
-        netProfit: p.revenue - p.adSpend,
-        roas: p.adSpend > 0 ? p.revenue / p.adSpend : 0,
-        cpo:  p.orders  > 0 ? p.adSpend / p.orders  : 0,
-      })).sort((a, b) => b.revenue - a.revenue);
+      // Distribute total adSpend from adSpendTracking proportionally by revenue
+      const totalAdSpendDH = adSpendRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+      const totalPlatRev   = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
+      const platformResult = Object.values(platMap).map(p => {
+        const platAdSpend = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
+        const netProfit   = p.revenue - platAdSpend;
+        const roas        = platAdSpend > 0 ? p.revenue / platAdSpend : 0;
+        const cpo         = p.orders   > 0 ? platAdSpend / p.orders  : 0;
+        return { ...p, adSpend: platAdSpend, netProfit, roas, cpo };
+      }).sort((a, b) => b.revenue - a.revenue);
 
       res.json({ products: productResult, platforms: platformResult });
     } catch (err) {
