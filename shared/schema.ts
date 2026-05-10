@@ -258,6 +258,11 @@ export const storeIntegrations = pgTable("store_integrations", {
   syncTabs:          text("sync_tabs"),
   lastSyncState:     jsonb("last_sync_state"),
   lastSyncAt:        timestamp("last_sync_at"),
+  gsheetUrl:         text("gsheet_url"),
+  gsheetId:          text("gsheet_id"),
+  gsheetTabs:        jsonb("gsheet_tabs"),
+  gsheetSyncState:   jsonb("gsheet_sync_state"),
+  status:            text("status").default("active"),
 });
 
 export const integrationLogs = pgTable("integration_logs", {

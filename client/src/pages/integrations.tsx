@@ -8,6 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Copy, CheckCircle, Loader2, Link2, ExternalLink, RefreshCw, Trash2, Plus, ShoppingBag } from "lucide-react";
 import { SiShopify, SiWoocommerce, SiGooglesheets } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
@@ -668,10 +669,10 @@ function resetActiveSheetStatuses() {
   ui.alert('✅ Statuts réinitialisés pour l\\'onglet "' + detection.tabName + '"');
 }`;
 
-  const [selectedSheetId, setSelectedSheetId] = useState("");
-  const [selectedSheetName, setSelectedSheetName] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [selectedMagasin, setSelectedMagasin] = useState<string>('');
+  const { data: magasins = [] } = useMagasins();
 
   const handleCopy = () => {
     navigator.clipboard.writeText(appScript);
@@ -690,59 +691,9 @@ function resetActiveSheetStatuses() {
     }
   };
 
-  const { data: gsStatus, isLoading: statusLoading, refetch: refetchStatus } = useQuery<any>({
+  const { data: gsheetsConn, refetch } = useQuery<any>({
     queryKey: ['/api/integrations/google-sheets/status'],
   });
-
-  const { data: sheetsData, isLoading: sheetsLoading } = useQuery<any>({
-    queryKey: ['/api/integrations/google-sheets/spreadsheets'],
-    enabled: !!gsStatus?.oauthConnected,
-  });
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("gsheets") === "connected") {
-      toast({ title: "Google Sheets connecté !", description: "Choisissez maintenant votre feuille de calcul à synchroniser." });
-      refetchStatus();
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-    if (params.get("gsheets_error")) {
-      const errMap: Record<string, string> = {
-        not_configured: "Google OAuth n'est pas encore configuré sur ce serveur.",
-        invalid_state: "Session expirée, veuillez réessayer.",
-        token_exchange_failed: "Échec de l'échange de tokens. Réessayez.",
-        server_error: "Erreur serveur. Réessayez dans quelques instants.",
-      };
-      toast({ title: "Erreur de connexion", description: errMap[params.get("gsheets_error")!] || params.get("gsheets_error")!, variant: "destructive" });
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, []);
-
-  const handleSaveSelection = async () => {
-    if (!selectedSheetId) { toast({ title: "Choisissez une feuille", variant: "destructive" }); return; }
-    setSaving(true);
-    try {
-      const resp = await fetch("/api/integrations/google-sheets/select", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spreadsheetId: selectedSheetId, spreadsheetName: selectedSheetName, syncTabs: "all" }),
-      });
-      if (!resp.ok) throw new Error("Erreur lors de la sauvegarde");
-      toast({ title: "Synchronisation activée !", description: `"${selectedSheetName}" sera synchronisé toutes les 5 minutes.` });
-      refetchStatus();
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message, variant: "destructive" });
-    } finally { setSaving(false); }
-  };
-
-  const handleDisconnect = async () => {
-    setDisconnecting(true);
-    try {
-      await fetch("/api/integrations/google-sheets/disconnect", { method: "DELETE" });
-      toast({ title: "Déconnecté", description: "L'intégration Google Sheets OAuth a été désactivée." });
-      refetchStatus();
-    } catch { toast({ title: "Erreur", variant: "destructive" }); }
-    finally { setDisconnecting(false); }
-  };
 
   function timeSince(dt: string | null): string {
     if (!dt) return "jamais";
@@ -755,13 +706,47 @@ function resetActiveSheetStatuses() {
     return `il y a ${Math.floor(hours / 24)}j`;
   }
 
-  const oauthConnected = gsStatus?.oauthConnected;
-  const hasSheet = oauthConnected && gsStatus?.spreadsheetId;
+  const handleConnect = async () => {
+    setIsConnecting(true);
+    try {
+      const r = await fetch('/api/integrations/google-sheets/connect-url', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: sheetUrl, magasinId: selectedMagasin || undefined }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        toast({ title: 'Erreur', description: data.error, variant: 'destructive' });
+        return;
+      }
+      toast({
+        title: '✅ Connecté !',
+        description: `${data.tabsCount} onglet(s) détecté(s) : ${data.tabs.join(', ')}. Première synchronisation dans 30 secondes.`,
+      });
+      setSheetUrl('');
+      refetch();
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!confirm('Déconnecter Google Sheets ?')) return;
+    await fetch('/api/integrations/google-sheets/disconnect', {
+      method: 'POST',
+      credentials: 'include',
+    });
+    toast({ title: 'Déconnecté' });
+    refetch();
+  };
+
+  const handleResync = () => {
+    toast({ title: 'Sync demandée', description: 'La prochaine sync aura lieu dans moins de 5 minutes.' });
+  };
 
   return (
     <div className="max-w-3xl mx-auto space-y-5">
-
-      {/* ── OAuth section (primary) ──────────────────────────── */}
       <div className="bg-white border rounded-2xl shadow-sm p-6">
         <div className="flex items-center gap-3 mb-1">
           <SiGooglesheets className="w-7 h-7 text-green-600" />
@@ -769,203 +754,185 @@ function resetActiveSheetStatuses() {
           <Badge className="ml-auto bg-green-100 text-green-700 border-green-200">Plug & Play</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
-          Connectez votre compte Google et choisissez votre feuille — aucun script à installer.
+          Synchronisez automatiquement vos commandes en collant simplement l'URL de votre sheet.
         </p>
       </div>
 
-      {statusLoading ? (
-        <div className="flex items-center justify-center py-10 text-muted-foreground gap-2">
-          <Loader2 className="w-5 h-5 animate-spin" /> Vérification de la connexion…
-        </div>
-      ) : !oauthConnected ? (
-        /* ── Not connected ──────────────────────────────────── */
-        <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
-          <div className="rounded-lg bg-blue-50 border border-blue-100 p-4 text-sm text-blue-800 space-y-1">
-            <p className="font-semibold">Comment ça marche ?</p>
-            <ol className="list-decimal list-inside space-y-1 text-blue-700">
-              <li>Cliquez sur "Connecter mon compte Google" ci-dessous</li>
-              <li>Autorisez l'accès en lecture à vos Google Sheets</li>
-              <li>Choisissez la feuille contenant vos commandes</li>
-              <li>TajerGrow synchronise automatiquement toutes les 5 minutes</li>
-            </ol>
-          </div>
-          <Button
-            data-testid="button-connect-google"
-            className="w-full h-11 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 gap-3 font-semibold shadow-sm"
-            onClick={() => { window.location.href = "/api/integrations/google-sheets/oauth/start"; }}
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-            </svg>
-            Connecter mon compte Google
-          </Button>
-        </div>
-      ) : !hasSheet ? (
-        /* ── Connected — pick a spreadsheet ────────────────── */
-        <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-green-800 text-sm font-medium">
-            <CheckCircle className="w-4 h-4 shrink-0" />
-            Compte Google connecté — choisissez la feuille à synchroniser
-          </div>
+      <Tabs defaultValue="url" className="w-full">
+        <TabsList className="w-full">
+          <TabsTrigger value="url" className="flex-1">🔗 URL publique (recommandé)</TabsTrigger>
+          <TabsTrigger value="script" className="flex-1">📜 Apps Script (avancé)</TabsTrigger>
+        </TabsList>
 
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold">Choisir le spreadsheet</Label>
-            {sheetsLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-                <Loader2 className="w-4 h-4 animate-spin" /> Chargement de vos feuilles…
+        {/* ── Tab 1: URL publique ──────────────────────────────── */}
+        <TabsContent value="url" className="mt-4">
+          {!gsheetsConn?.connected ? (
+            <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-xs font-semibold mb-1 block">
+                    Étape 1 : Rendez votre Google Sheet public (lecteur)
+                  </Label>
+                  <ol className="text-xs space-y-1 text-muted-foreground list-decimal pl-4">
+                    <li>Ouvrez votre Google Sheet</li>
+                    <li>Cliquez sur <b>Partager</b> en haut à droite</li>
+                    <li>Section "Accès général" → choisissez <b>"Tout le monde avec le lien"</b></li>
+                    <li>Rôle : <b>Lecteur</b> (pas Éditeur)</li>
+                    <li>Cliquez sur <b>Copier le lien</b></li>
+                  </ol>
+                </div>
+
+                <div>
+                  <Label className="text-xs font-semibold mb-1 block">
+                    Étape 2 : Collez l'URL ici
+                  </Label>
+                  <Input
+                    type="url"
+                    placeholder="https://docs.google.com/spreadsheets/d/..."
+                    value={sheetUrl}
+                    onChange={(e) => setSheetUrl(e.target.value)}
+                    data-testid="input-sheet-url"
+                  />
+                </div>
+
+                {(magasins as any[]).length > 1 && (
+                  <div>
+                    <Label className="text-xs font-semibold mb-1 block">Magasin associé</Label>
+                    <Select value={selectedMagasin} onValueChange={setSelectedMagasin}>
+                      <SelectTrigger data-testid="select-magasin-gsheets">
+                        <SelectValue placeholder="Choisir un magasin" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(magasins as any[]).map((m: any) => (
+                          <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                <Button
+                  onClick={handleConnect}
+                  disabled={!sheetUrl || isConnecting}
+                  className="w-full"
+                  data-testid="button-connect-sheet-url"
+                >
+                  {isConnecting
+                    ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Vérification...</>
+                    : 'Connecter mon Google Sheet'}
+                </Button>
+
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+                  ⚠️ Le sheet doit être public (lecteur). N'utilisez pas cette méthode si votre sheet contient des données sensibles non-commerciales.
+                </div>
               </div>
-            ) : (
-              <Select
-                value={selectedSheetId}
-                onValueChange={(v) => {
-                  setSelectedSheetId(v);
-                  const sheet = sheetsData?.spreadsheets?.find((s: any) => s.id === v);
-                  setSelectedSheetName(sheet?.name || v);
-                }}
-              >
-                <SelectTrigger data-testid="select-spreadsheet">
-                  <SelectValue placeholder="Sélectionnez un spreadsheet…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(sheetsData?.spreadsheets || []).map((s: any) => (
-                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
-
-          <p className="text-xs text-muted-foreground">
-            Tous les onglets seront synchronisés automatiquement. Seules les nouvelles lignes ajoutées après cette configuration seront importées.
-          </p>
-
-          <div className="flex gap-2">
-            <Button
-              data-testid="button-save-sheet"
-              onClick={handleSaveSelection}
-              disabled={saving || !selectedSheetId}
-              className="flex-1 bg-green-600 hover:bg-green-700 text-white gap-2"
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-              Activer la synchronisation
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handleDisconnect}
-              disabled={disconnecting}
-              data-testid="button-disconnect-gsheets"
-            >
-              Déconnecter
-            </Button>
-          </div>
-        </div>
-      ) : (
-        /* ── Active connection ──────────────────────────────── */
-        <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-green-800 text-sm font-medium">
-            <CheckCircle className="w-4 h-4 shrink-0" />
-            Synchronisation active
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="text-xs text-muted-foreground mb-0.5">Feuille connectée</p>
-              <p className="font-semibold truncate">{gsStatus.spreadsheetName || gsStatus.spreadsheetId}</p>
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-0.5">Dernière synchro</p>
-              <p className="font-semibold">{timeSince(gsStatus.lastSyncAt)}</p>
-            </div>
-          </div>
-
-          <p className="text-xs text-muted-foreground border-t pt-3">
-            Tous les onglets sont synchronisés toutes les 5 minutes. Seules les nouvelles commandes ajoutées après l'activation sont importées.
-          </p>
-
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={() => { refetchStatus(); toast({ title: "Statut actualisé" }); }}
-              data-testid="button-refresh-gsheets"
-            >
-              <RefreshCw className="w-4 h-4 mr-2" /> Actualiser
-            </Button>
-            <Button
-              variant="outline"
-              className="text-red-600 hover:text-red-700 border-red-200 hover:bg-red-50"
-              onClick={handleDisconnect}
-              disabled={disconnecting}
-              data-testid="button-disconnect-gsheets"
-            >
-              {disconnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-              <span className="ml-2">Déconnecter</span>
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Legacy Apps Script (collapsible) ────────────────── */}
-      <details className="bg-white border rounded-2xl shadow-sm overflow-hidden">
-        <summary className="px-6 py-4 cursor-pointer select-none text-sm font-semibold text-muted-foreground hover:text-foreground list-none flex items-center gap-2">
-          <span className="text-base">⚙️</span> Mode Apps Script (avancé — utilisateurs existants)
-        </summary>
-        <div className="border-t space-y-4 p-5">
-          <p className="text-xs text-muted-foreground">
-            Si vous avez déjà configuré le script Apps Script, il continue de fonctionner. Vous pouvez aussi copier le script ci-dessous pour une configuration manuelle.
-          </p>
-
-          <div className="bg-white border rounded-xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b bg-gray-50">
-              <div className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-full bg-red-400" />
-                <div className="w-2.5 h-2.5 rounded-full bg-yellow-400" />
-                <div className="w-2.5 h-2.5 rounded-full bg-green-400" />
-                <span className="ml-2 text-xs font-mono text-gray-500">Code.gs</span>
+          ) : (
+            <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-green-800 text-sm font-medium">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                Connecté — {gsheetsConn.tabs?.length || 0} onglet(s) détecté(s)
+                {gsheetsConn.lastSyncAt && (
+                  <span className="ml-auto text-xs font-normal text-green-700">
+                    Dernière sync : {timeSince(gsheetsConn.lastSyncAt)}
+                  </span>
+                )}
               </div>
-              <Button onClick={handleCopy} size="sm" className={cn("gap-1.5 text-xs h-7 px-3", copied ? "bg-green-600 hover:bg-green-700 text-white" : "bg-[#1e1b4b] hover:bg-[#2d2a6e] text-white")} data-testid="button-copy-script">
-                {copied ? <CheckCircle className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                {copied ? "Copié !" : "Copier"}
+
+              {gsheetsConn.tabs?.length > 0 && (
+                <div className="text-xs space-y-1">
+                  <p className="font-semibold">Onglets synchronisés :</p>
+                  <ul className="space-y-0.5">
+                    {gsheetsConn.tabs.map((t: any) => (
+                      <li key={t.gid} className="flex justify-between items-center py-1 border-b last:border-0">
+                        <span>📑 {t.title}</span>
+                        <span className="text-muted-foreground font-mono">
+                          {gsheetsConn.syncState?.[`tab_${t.gid}`] || 0} lignes traitées
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground">
+                Synchronisation automatique toutes les 5 minutes. Les nouvelles lignes ajoutées à votre sheet apparaîtront ici en quelques minutes.
+              </p>
+
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={handleResync} className="gap-2" data-testid="button-resync-gsheets">
+                  <RefreshCw className="w-4 h-4" /> Forcer une sync
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDisconnect}
+                  className="text-red-600 hover:text-red-700 border-red-200 hover:bg-red-50 gap-2"
+                  data-testid="button-disconnect-gsheets"
+                >
+                  <Trash2 className="w-4 h-4" /> Déconnecter
+                </Button>
+              </div>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* ── Tab 2: Apps Script ──────────────────────────────── */}
+        <TabsContent value="script" className="mt-4">
+          <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Si vous avez déjà configuré le script Apps Script, il continue de fonctionner. Vous pouvez aussi copier le script ci-dessous pour une configuration manuelle.
+            </p>
+
+            <div className="bg-white border rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b bg-gray-50">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-red-400" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-yellow-400" />
+                  <div className="w-2.5 h-2.5 rounded-full bg-green-400" />
+                  <span className="ml-2 text-xs font-mono text-gray-500">Code.gs</span>
+                </div>
+                <Button onClick={handleCopy} size="sm" className={cn("gap-1.5 text-xs h-7 px-3", copied ? "bg-green-600 hover:bg-green-700 text-white" : "bg-[#1e1b4b] hover:bg-[#2d2a6e] text-white")} data-testid="button-copy-script">
+                  {copied ? <CheckCircle className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? "Copié !" : "Copier"}
+                </Button>
+              </div>
+              <div className="overflow-auto max-h-64 bg-[#1e1b4b]">
+                <pre className="p-4 text-xs font-mono text-green-300 leading-relaxed whitespace-pre">{appScript}</pre>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">API URL</Label>
+                <div className="flex gap-2">
+                  <Input value={apiUrl} readOnly className="font-mono text-xs bg-gray-50 flex-1" />
+                  <CopyButton text={apiUrl} label="Copier" />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Clé API</Label>
+                <div className="flex gap-2">
+                  <Input value={apiKey} readOnly className="font-mono text-xs bg-gray-50 flex-1" type="password" />
+                  <CopyButton text={apiKey} label="Copier" />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {verifyResult && (
+                <div className={cn("p-3 rounded-lg text-sm font-medium", verifyResult.hasActivity ? "bg-green-50 text-green-700 border border-green-200" : "bg-amber-50 text-amber-700 border border-amber-200")}>
+                  {verifyResult.hasActivity ? `✓ Connexion active — ${verifyResult.logsCount} commande(s) reçue(s)` : "⚠ Aucune activité détectée. Exécutez 'setup' dans Apps Script."}
+                </div>
+              )}
+              <Button onClick={handleVerify} disabled={verify.isPending} variant="outline" className="w-full gap-2" data-testid="button-verify-gsheets">
+                {verify.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                Vérifier la connexion Apps Script
               </Button>
             </div>
-            <div className="overflow-auto max-h-64 bg-[#1e1b4b]">
-              <pre className="p-4 text-xs font-mono text-green-300 leading-relaxed whitespace-pre">{appScript}</pre>
-            </div>
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">API URL</Label>
-              <div className="flex gap-2">
-                <Input value={apiUrl} readOnly className="font-mono text-xs bg-gray-50 flex-1" />
-                <CopyButton text={apiUrl} label="Copier" />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Clé API</Label>
-              <div className="flex gap-2">
-                <Input value={apiKey} readOnly className="font-mono text-xs bg-gray-50 flex-1" type="password" />
-                <CopyButton text={apiKey} label="Copier" />
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            {verifyResult && (
-              <div className={cn("p-3 rounded-lg text-sm font-medium", verifyResult.hasActivity ? "bg-green-50 text-green-700 border border-green-200" : "bg-amber-50 text-amber-700 border border-amber-200")}>
-                {verifyResult.hasActivity ? `✓ Connexion active — ${verifyResult.logsCount} commande(s) reçue(s)` : "⚠ Aucune activité détectée. Exécutez 'setup' dans Apps Script."}
-              </div>
-            )}
-            <Button onClick={handleVerify} disabled={verify.isPending} variant="outline" className="w-full gap-2" data-testid="button-verify-gsheets">
-              {verify.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              Vérifier la connexion Apps Script
-            </Button>
-          </div>
-        </div>
-      </details>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

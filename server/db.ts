@@ -460,6 +460,17 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] store_integrations Google OAuth columns ensured ✅");
 
+    // ── 12c. store_integrations: public URL + status columns ─────────────────
+    await client.query(`
+      ALTER TABLE public.store_integrations
+        ADD COLUMN IF NOT EXISTS gsheet_url        TEXT,
+        ADD COLUMN IF NOT EXISTS gsheet_id         TEXT,
+        ADD COLUMN IF NOT EXISTS gsheet_tabs       JSONB,
+        ADD COLUMN IF NOT EXISTS gsheet_sync_state JSONB DEFAULT '{}'::JSONB,
+        ADD COLUMN IF NOT EXISTS status            TEXT DEFAULT 'active';
+    `);
+    console.log("[Migration] store_integrations public URL columns ensured ✅");
+
     // ── 13. carrier_accounts: magasin_id for per-magasin carrier scoping ─────
     await client.query(`
       ALTER TABLE public.carrier_accounts

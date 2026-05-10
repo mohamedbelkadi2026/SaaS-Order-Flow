@@ -3915,13 +3915,18 @@ export async function registerRoutes(
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
       .limit(1);
     const row = rows[0];
-    if (!row?.oauthAccessToken) return res.json({ oauthConnected: false });
+    const gsheetUrl = row?.gsheetUrl ?? null;
+    const connected = !!(gsheetUrl && row?.status !== "inactive");
     res.json({
-      oauthConnected: true,
-      spreadsheetId:   row.spreadsheetId,
-      spreadsheetName: row.spreadsheetName,
-      syncTabs:        row.syncTabs || "all",
-      lastSyncAt:      row.lastSyncAt,
+      connected,
+      oauthConnected:  !!(row?.oauthAccessToken),
+      sheetUrl:        gsheetUrl,
+      tabs:            row?.gsheetTabs ?? [],
+      syncState:       row?.gsheetSyncState ?? {},
+      lastSyncAt:      row?.lastSyncAt,
+      spreadsheetId:   row?.spreadsheetId,
+      spreadsheetName: row?.spreadsheetName,
+      syncTabs:        row?.syncTabs || "all",
     });
   });
 
@@ -3983,6 +3988,118 @@ export async function registerRoutes(
       lastSyncState: null, lastSyncAt: null,
     }).where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")));
     res.json({ ok: true });
+  });
+
+  // ── Google Sheets: public URL helpers ────────────────────────────────────
+
+  function extractSheetId(url: string): string | null {
+    const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    return m ? m[1] : null;
+  }
+
+  async function fetchPublicSheetTabs(sheetId: string): Promise<Array<{ gid: string; title: string }>> {
+    const htmlUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview`;
+    const resp = await fetch(htmlUrl, { redirect: "follow" });
+    if (!resp.ok) throw new Error(`Sheet not accessible — verify it's set to 'Anyone with the link can view'`);
+    const html = await resp.text();
+
+    const tabs: Array<{ gid: string; title: string }> = [];
+
+    const re1 = /(?:name|title)["']?\s*:\s*["']([^"']+)["']\s*,\s*(?:sheetId|gid)["']?\s*:\s*["']?(\d+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = re1.exec(html)) !== null) {
+      if (!tabs.find(t => t.gid === match![2])) {
+        tabs.push({ title: match[1], gid: match[2] });
+      }
+    }
+
+    if (tabs.length === 0) {
+      const linkRe = /<a[^>]+id=["']sheet-button-(\d+)["'][^>]*>([^<]+)<\/a>/g;
+      while ((match = linkRe.exec(html)) !== null) {
+        tabs.push({ gid: match[1], title: match[2].trim() });
+      }
+    }
+
+    if (tabs.length === 0) tabs.push({ gid: "0", title: "Sheet1" });
+    return tabs;
+  }
+
+  // POST /api/integrations/google-sheets/connect-url
+  app.post("/api/integrations/google-sheets/connect-url", requireAuth, async (req, res) => {
+    const { url, magasinId } = req.body as { url: string; magasinId?: number };
+    if (!url) return res.status(400).json({ error: "URL manquante" });
+
+    const sheetId = extractSheetId(url);
+    if (!sheetId) {
+      return res.status(400).json({
+        error: "URL invalide. Collez l'URL complète de votre Google Sheet (commençant par https://docs.google.com/spreadsheets/d/...)",
+      });
+    }
+
+    let tabs: Array<{ gid: string; title: string }>;
+    try {
+      tabs = await fetchPublicSheetTabs(sheetId);
+    } catch (err: any) {
+      return res.status(400).json({
+        error: "Impossible d'accéder à votre Google Sheet. Vérifiez qu'il est bien partagé avec 'Tout le monde avec le lien' (Lecteur).",
+        detail: err.message,
+      });
+    }
+
+    const probeUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${tabs[0].gid}`;
+    const probeResp = await fetch(probeUrl);
+    if (!probeResp.ok) {
+      return res.status(400).json({
+        error: "Le sheet n'est pas réellement public. Activez 'Tout le monde avec le lien — Lecteur' et réessayez.",
+      });
+    }
+
+    const storeId = req.user!.storeId!;
+    const existing = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+      .limit(1);
+
+    if (existing.length > 0) {
+      await db.update(storeIntegrations)
+        .set({
+          gsheetUrl: url,
+          gsheetId: sheetId,
+          gsheetTabs: tabs,
+          gsheetSyncState: {},
+          magasinId: magasinId || null,
+          status: "active",
+        })
+        .where(eq(storeIntegrations.id, existing[0].id));
+    } else {
+      await db.insert(storeIntegrations).values({
+        storeId,
+        magasinId: magasinId || null,
+        provider: "gsheets",
+        type: "url",
+        credentials: "{}",
+        gsheetUrl: url,
+        gsheetId: sheetId,
+        gsheetTabs: tabs,
+        gsheetSyncState: {},
+        status: "active",
+      });
+    }
+
+    res.json({
+      success: true,
+      sheetId,
+      tabsCount: tabs.length,
+      tabs: tabs.map(t => t.title),
+    });
+  });
+
+  // POST /api/integrations/google-sheets/disconnect  (URL-based)
+  app.post("/api/integrations/google-sheets/disconnect", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    await db.update(storeIntegrations)
+      .set({ status: "inactive", gsheetUrl: null, gsheetId: null, gsheetTabs: null, gsheetSyncState: null })
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")));
+    res.json({ success: true });
   });
 
   // Verify connection: check if integration has received recent logs

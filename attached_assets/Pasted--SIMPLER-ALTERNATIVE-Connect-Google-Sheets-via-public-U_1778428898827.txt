@@ -1,0 +1,516 @@
+🚀 SIMPLER ALTERNATIVE — Connect Google Sheets via public URL (no OAuth, no Apps Script)My problemThe current Google Sheets integration paths are too complex:
+
+Apps Script setup hangs/fails for many users
+Full OAuth requires Google Cloud Console configuration that I haven't done yet
+I want a third option that's the simplest possible: user pastes a public Google Sheet URL, backend polls it via the public CSV export endpoint.How it worksUser flow:
+  1. User opens their Google Sheet
+  2. Share → "Anyone with the link" → Viewer
+  3. Copy URL
+  4. Paste in TajerGrow → Click "Connecter"
+  5. Backend validates URL by fetching one row → confirms format
+  6. Done. Cron polls every 5 minutes.
+
+Backend:
+  GET https://docs.google.com/spreadsheets/d/{ID}/export?format=csv&gid={tab_gid}
+  → returns CSV
+  → parse rows
+  → diff against last_synced_row per tab
+  → create new ordersNo OAuth, no API keys, no Apps Script. Just a URL.The downside is the sheet must be publicly viewable. We surface this clearly in the UI so the user knows.ImplementationStep 1 — Database: extend store_integrations for the new connectorsql-- migrations/0008_gsheets_public_url.sql
+ALTER TABLE public.store_integrations
+  ADD COLUMN IF NOT EXISTS gsheet_url        text,
+  ADD COLUMN IF NOT EXISTS gsheet_id         text,
+  ADD COLUMN IF NOT EXISTS gsheet_tabs       jsonb,           -- [{ gid: '0', title: 'cofer' }, ...]
+  ADD COLUMN IF NOT EXISTS gsheet_sync_state jsonb DEFAULT '{}'::jsonb;  -- { 'tab_0': lastRow, ... }If last_sync_at and status columns don't already exist on this table, add them too:
+sqlALTER TABLE public.store_integrations
+  ADD COLUMN IF NOT EXISTS last_sync_at timestamp,
+  ADD COLUMN IF NOT EXISTS status       text DEFAULT 'active';Step 2 — Backend: validation endpoint + connect endpointIn server/routes.ts, add:ts// Extract spreadsheet ID from a Google Sheets URL
+// Accepts: https://docs.google.com/spreadsheets/d/{ID}/edit#gid=0
+//          https://docs.google.com/spreadsheets/d/{ID}/edit
+//          https://docs.google.com/spreadsheets/d/{ID}
+function extractSheetId(url: string): string | null {
+  const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : null;
+}
+
+// Fetch tabs metadata from a public Google Sheet using the OG document HTML
+async function fetchPublicSheetTabs(sheetId: string): Promise<Array<{ gid: string; title: string }>> {
+  // Public CSV-export URLs need the gid; we get the gid list by parsing the
+  // sheet's HTML viewer page (no API key needed for public sheets).
+  const htmlUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview`;
+  const resp = await fetch(htmlUrl, { redirect: 'follow' });
+  if (!resp.ok) throw new Error(`Sheet not accessible — verify it's set to 'Anyone with the link can view'`);
+  const html = await resp.text();
+
+  // The HTML embeds a JS object with sheet titles + gids. Look for patterns like:
+  //   {"name":"cofer","gid":1234567}
+  // or in newer versions:
+  //   "sheets":[{"properties":{"sheetId":0,"title":"Sheet1"}}]
+  const tabs: Array<{ gid: string; title: string }> = [];
+
+  // Pattern 1: legacy htmlview
+  const re1 = /(?:name|title)["']?\s*:\s*["']([^"']+)["']\s*,\s*(?:sheetId|gid)["']?\s*:\s*["']?(\d+)/g;
+  let match;
+  while ((match = re1.exec(html)) !== null) {
+    if (!tabs.find(t => t.gid === match![2])) {
+      tabs.push({ title: match[1], gid: match[2] });
+    }
+  }
+
+  // Fallback: parse anchor tags <a id="sheet-button-X">TabName</a> + extract gids from links
+  if (tabs.length === 0) {
+    const linkRe = /<a[^>]+id=["']sheet-button-(\d+)["'][^>]*>([^<]+)<\/a>/g;
+    while ((match = linkRe.exec(html)) !== null) {
+      tabs.push({ gid: match[1], title: match[2].trim() });
+    }
+  }
+
+  // Last resort: just gid=0
+  if (tabs.length === 0) tabs.push({ gid: '0', title: 'Sheet1' });
+
+  return tabs;
+}
+
+// POST /api/integrations/google-sheets/connect-url
+app.post('/api/integrations/google-sheets/connect-url', requireAuth, async (req, res) => {
+  const { url, magasinId } = req.body as { url: string; magasinId?: number };
+  if (!url) return res.status(400).json({ error: 'URL manquante' });
+
+  const sheetId = extractSheetId(url);
+  if (!sheetId) {
+    return res.status(400).json({
+      error: "URL invalide. Collez l'URL complète de votre Google Sheet (commençant par https://docs.google.com/spreadsheets/d/...)",
+    });
+  }
+
+  // Validation: try to fetch tabs from the sheet
+  let tabs: Array<{ gid: string; title: string }>;
+  try {
+    tabs = await fetchPublicSheetTabs(sheetId);
+  } catch (err: any) {
+    return res.status(400).json({
+      error: "Impossible d'accéder à votre Google Sheet. Vérifiez qu'il est bien partagé avec 'Tout le monde avec le lien' (Lecteur).",
+      detail: err.message,
+    });
+  }
+
+  // Probe one tab to confirm CSV export works
+  const probeUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${tabs[0].gid}`;
+  const probeResp = await fetch(probeUrl);
+  if (!probeResp.ok) {
+    return res.status(400).json({
+      error: "Le sheet n'est pas réellement public. Activez 'Tout le monde avec le lien — Lecteur' et réessayez.",
+    });
+  }
+
+  // Persist
+  const storeId = req.user!.storeId!;
+  const existing = await db.select().from(storeIntegrations)
+    .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, 'gsheets')))
+    .limit(1);
+
+  if (existing.length > 0) {
+    await db.update(storeIntegrations)
+      .set({
+        gsheetUrl: url,
+        gsheetId: sheetId,
+        gsheetTabs: tabs,
+        gsheetSyncState: {},
+        magasinId: magasinId || null,
+        status: 'active',
+      } as any)
+      .where(eq(storeIntegrations.id, existing[0].id));
+  } else {
+    await db.insert(storeIntegrations).values({
+      storeId,
+      magasinId: magasinId || null,
+      provider: 'gsheets',
+      apiKey: '',
+      gsheetUrl: url,
+      gsheetId: sheetId,
+      gsheetTabs: tabs,
+      gsheetSyncState: {},
+      status: 'active',
+    } as any);
+  }
+
+  res.json({
+    success: true,
+    sheetId,
+    tabsCount: tabs.length,
+    tabs: tabs.map(t => t.title),
+  });
+});
+
+// GET /api/integrations/google-sheets/status
+app.get('/api/integrations/google-sheets/status', requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const [conn] = await db.select().from(storeIntegrations)
+    .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, 'gsheets')))
+    .limit(1);
+
+  if (!conn || !(conn as any).gsheetUrl) {
+    return res.json({ connected: false });
+  }
+
+  res.json({
+    connected: true,
+    sheetUrl: (conn as any).gsheetUrl,
+    tabs: (conn as any).gsheetTabs || [],
+    lastSyncAt: conn.lastSyncAt,
+    syncState: (conn as any).gsheetSyncState || {},
+  });
+});
+
+// POST /api/integrations/google-sheets/disconnect
+app.post('/api/integrations/google-sheets/disconnect', requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  await db.update(storeIntegrations)
+    .set({ status: 'inactive', gsheetUrl: null } as any)
+    .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, 'gsheets')));
+  res.json({ success: true });
+});Step 3 — Cron: poll every 5 minutesCreate server/cron/sync-gsheets-public.ts:tsimport { db } from "../db";
+import { storeIntegrations, orders } from "@shared/schema";
+import { eq, and, sql } from "drizzle-orm";
+import { storage } from "../storage";
+
+// CSV parser — basic but handles quoted fields with commas inside
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') inQuotes = false;
+      else cell += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(cell); cell = ''; }
+      else if (c === '\r') { /* skip */ }
+      else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += c;
+    }
+  }
+  if (cell !== '' || row.length > 0) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+// Positional column mapping (legacy sheets without headers)
+const POSITIONAL = {
+  name: 0, phone: 1, city: 2, address: 3,
+  product: 4, price: 5, quantity: 6,
+  utmCampaign: 10, utmSource: 11, productId: 12,
+};
+
+export async function syncAllPublicSheets() {
+  const conns = await db.select().from(storeIntegrations)
+    .where(and(
+      eq(storeIntegrations.provider, 'gsheets'),
+      eq(storeIntegrations.status, 'active'),
+      sql`${(storeIntegrations as any).gsheetUrl} IS NOT NULL`,
+    ));
+
+  for (const conn of conns) {
+    try {
+      await syncOne(conn as any);
+    } catch (err: any) {
+      console.error(`[GSHEETS-PUBLIC] Store ${conn.storeId} error:`, err.message);
+    }
+  }
+}
+
+async function syncOne(conn: any) {
+  const sheetId = conn.gsheetId;
+  const tabs = conn.gsheetTabs || [];
+  const state = conn.gsheetSyncState || {};
+
+  for (const tab of tabs) {
+    const lastRow = state[`tab_${tab.gid}`] || 0;
+
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${tab.gid}`;
+    const resp = await fetch(csvUrl);
+    if (!resp.ok) {
+      console.warn(`[GSHEETS-PUBLIC] Tab ${tab.title} fetch failed: ${resp.status}`);
+      continue;
+    }
+    const text = await resp.text();
+    const rows = parseCsv(text);
+
+    // Heuristic: detect header row. If row 0 contains text-only cells with
+    // recognizable words ('nom', 'phone', 'name', etc.), skip it.
+    let dataStart = 0;
+    if (rows.length > 0) {
+      const first = rows[0].map(c => c.toLowerCase().trim()).join(' ');
+      if (/\b(nom|name|phone|telephone|tel|address|city|ville|product|price|prix|fullname)\b/.test(first)) {
+        dataStart = 1;
+      }
+    }
+
+    // Process rows newer than last_sync
+    const newRows = rows.slice(Math.max(dataStart, lastRow));
+
+    for (let i = 0; i < newRows.length; i++) {
+      const row = newRows[i];
+      const rowIndex = Math.max(dataStart, lastRow) + i;
+
+      const name  = (row[POSITIONAL.name]  || '').trim();
+      const phone = (row[POSITIONAL.phone] || '').trim();
+      if (!name && !phone) continue;
+      if (!phone) continue;  // skip rows without phone
+
+      const ref = `GSP-${sheetId.slice(0, 6)}-${tab.gid}-R${rowIndex + 1}`;
+
+      // Idempotency: skip if order with this ref already exists
+      const existing = await db.select({ id: orders.id }).from(orders)
+        .where(eq(orders.orderNumber, ref))
+        .limit(1);
+      if (existing.length > 0) continue;
+
+      const totalPriceCents = Math.round(
+        parseFloat(String(row[POSITIONAL.price] || '0').replace(',', '.')) * 100
+      ) || 0;
+      const product = (row[POSITIONAL.product] || '').trim() || tab.title;
+      const qty     = parseInt(row[POSITIONAL.quantity] || '1', 10) || 1;
+
+      try {
+        await storage.createOrder({
+          storeId:         conn.storeId,
+          magasinId:       conn.magasinId,
+          orderNumber:     ref,
+          customerName:    name,
+          customerPhone:   phone,
+          customerAddress: (row[POSITIONAL.address] || '').trim(),
+          customerCity:    (row[POSITIONAL.city] || '').trim(),
+          rawProductName:  product,
+          status:          'nouveau',
+          totalPrice:      totalPriceCents,
+          productCost:     0,
+          shippingCost:    0,
+          adSpend:         0,
+          source:          'gsheets',
+          comment:         null,
+          utmSource:       (row[POSITIONAL.utmSource] || '').trim() || null,
+          utmCampaign:     (row[POSITIONAL.utmCampaign] || '').trim() || null,
+        } as any, [{
+          rawProductName: product,
+          quantity: qty,
+          price: totalPriceCents,
+        }]);
+        console.log(`[GSHEETS-PUBLIC] Created order ref=${ref} from tab=${tab.title} row=${rowIndex + 1}`);
+      } catch (err: any) {
+        console.error(`[GSHEETS-PUBLIC] Order creation failed for ref=${ref}: ${err.message}`);
+      }
+    }
+
+    state[`tab_${tab.gid}`] = rows.length;
+  }
+
+  await db.update(storeIntegrations)
+    .set({
+      gsheetSyncState: state,
+      lastSyncAt: new Date(),
+    } as any)
+    .where(eq(storeIntegrations.id, conn.id));
+}In server/index.ts, schedule it:tsimport { syncAllPublicSheets } from './cron/sync-gsheets-public';
+
+setInterval(() => {
+  syncAllPublicSheets().catch(err => console.error('[GSHEETS-PUBLIC-CRON]', err));
+}, 5 * 60 * 1000);
+
+// Also run once at startup so the user doesn't wait 5 minutes after first connect
+setTimeout(() => syncAllPublicSheets(), 30_000);Step 4 — Frontend: replace the script-based UI with a URL inputIn client/src/pages/integrations.tsx, the Google Sheets section becomes:tsx{/* ─── Google Sheets — Public URL ─── */}
+<Card>
+  <CardHeader>
+    <CardTitle className="flex items-center gap-2">
+      📊 Google Sheets <Badge variant="success">Plug & Play</Badge>
+    </CardTitle>
+    <CardDescription>
+      Synchronisez automatiquement vos commandes en collant simplement l'URL de votre sheet.
+    </CardDescription>
+  </CardHeader>
+
+  <CardContent className="space-y-4">
+    {!gsheetsConn?.connected ? (
+      <>
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs font-semibold mb-1 block">
+              Étape 1 : Rendez votre Google Sheet public (lecteur)
+            </Label>
+            <ol className="text-xs space-y-1 text-muted-foreground list-decimal pl-4">
+              <li>Ouvrez votre Google Sheet</li>
+              <li>Cliquez sur <b>Partager</b> en haut à droite</li>
+              <li>Section "Accès général" → choisissez <b>"Tout le monde avec le lien"</b></li>
+              <li>Rôle : <b>Lecteur</b> (pas Éditeur)</li>
+              <li>Cliquez sur <b>Copier le lien</b></li>
+            </ol>
+          </div>
+
+          <div>
+            <Label className="text-xs font-semibold mb-1 block">
+              Étape 2 : Collez l'URL ici
+            </Label>
+            <Input
+              type="url"
+              placeholder="https://docs.google.com/spreadsheets/d/..."
+              value={sheetUrl}
+              onChange={(e) => setSheetUrl(e.target.value)}
+            />
+          </div>
+
+          {magasins.length > 1 && (
+            <div>
+              <Label className="text-xs font-semibold mb-1 block">Magasin associé</Label>
+              <Select value={selectedMagasin} onValueChange={setSelectedMagasin}>
+                <SelectTrigger><SelectValue placeholder="Choisir un magasin" /></SelectTrigger>
+                <SelectContent>
+                  {magasins.map(m => (
+                    <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          <Button
+            onClick={handleConnect}
+            disabled={!sheetUrl || isConnecting}
+            className="w-full"
+          >
+            {isConnecting ? 'Vérification...' : 'Connecter mon Google Sheet'}
+          </Button>
+
+          <Alert variant="default" className="text-[11px]">
+            ⚠️ Le sheet doit être public (lecteur). N'utilisez pas cette méthode si votre sheet contient des données sensibles non-commerciales.
+          </Alert>
+        </div>
+      </>
+    ) : (
+      <>
+        <Alert variant="success">
+          ✅ Connecté — {gsheetsConn.tabs.length} onglet(s) détecté(s)
+          {gsheetsConn.lastSyncAt && (
+            <p className="text-xs mt-1">Dernière sync : il y a {timeSince(gsheetsConn.lastSyncAt)}</p>
+          )}
+        </Alert>
+
+        <div className="text-xs space-y-1">
+          <p className="font-semibold">Onglets synchronisés :</p>
+          <ul className="space-y-0.5">
+            {gsheetsConn.tabs.map((t: any) => (
+              <li key={t.gid} className="flex justify-between">
+                <span>📑 {t.title}</span>
+                <span className="text-muted-foreground font-mono">
+                  {gsheetsConn.syncState?.[`tab_${t.gid}`] || 0} lignes traitées
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Synchronisation automatique toutes les 5 minutes. Les nouvelles lignes ajoutées à votre sheet apparaîtront ici en quelques minutes.
+        </p>
+
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleResync}>
+            🔄 Forcer une sync maintenant
+          </Button>
+          <Button variant="destructive" size="sm" onClick={handleDisconnect}>
+            Déconnecter
+          </Button>
+        </div>
+      </>
+    )}
+  </CardContent>
+</Card>The supporting React state and handlers:tsxconst [sheetUrl, setSheetUrl] = useState('');
+const [selectedMagasin, setSelectedMagasin] = useState<string>('');
+const [isConnecting, setIsConnecting] = useState(false);
+
+const { data: gsheetsConn, refetch } = useQuery({
+  queryKey: ['/api/integrations/google-sheets/status'],
+  queryFn: async () => {
+    const r = await fetch('/api/integrations/google-sheets/status', { credentials: 'include' });
+    return r.json();
+  },
+});
+
+const handleConnect = async () => {
+  setIsConnecting(true);
+  try {
+    const r = await fetch('/api/integrations/google-sheets/connect-url', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: sheetUrl, magasinId: selectedMagasin || undefined }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      toast({ title: 'Erreur', description: data.error, variant: 'destructive' });
+      return;
+    }
+    toast({
+      title: '✅ Connecté !',
+      description: `${data.tabsCount} onglet(s) détecté(s) : ${data.tabs.join(', ')}. Première synchronisation dans 30 secondes.`,
+    });
+    refetch();
+  } finally {
+    setIsConnecting(false);
+  }
+};
+
+const handleDisconnect = async () => {
+  if (!confirm('Déconnecter Google Sheets ?')) return;
+  await fetch('/api/integrations/google-sheets/disconnect', {
+    method: 'POST',
+    credentials: 'include',
+  });
+  toast({ title: 'Déconnecté' });
+  refetch();
+};
+
+const handleResync = async () => {
+  // Trigger immediate sync via a manual endpoint (optional — for now, just refetch status)
+  toast({ title: 'Sync demandée', description: 'La prochaine sync aura lieu dans moins de 5 minutes.' });
+};Step 5 — Keep the old Apps Script flow available for users who already use itDon't delete the existing Apps Script section. Add a tab/toggle:tsx<Tabs defaultValue="url" className="w-full">
+  <TabsList>
+    <TabsTrigger value="url">🔗 URL publique (recommandé)</TabsTrigger>
+    <TabsTrigger value="script">📜 Apps Script (avancé)</TabsTrigger>
+  </TabsList>
+  <TabsContent value="url">
+    {/* The URL-based UI from Step 4 */}
+  </TabsContent>
+  <TabsContent value="script">
+    {/* The existing Apps Script UI — unchanged */}
+  </TabsContent>
+</Tabs>This way existing users with working Apps Script setups aren't broken.Acceptance criteria
+✅ User pastes a public Google Sheet URL → click Connecter → backend validates → toast "X onglet(s) détecté(s)".
+✅ Pasting a sheet that's NOT public → clear error: "Vérifiez qu'il est partagé avec 'Tout le monde avec le lien'".
+✅ Multi-tab sheets: every tab is detected and tracked independently.
+✅ Within 30 seconds of connecting, first sync runs (initial polling at startup + 30s delay).
+✅ Every 5 minutes thereafter, cron polls each tab's CSV export and creates orders for new rows.
+✅ last_sync_state tracks per-tab last row index so we don't re-import.
+✅ Idempotency via orderNumber = GSP-{sheetId6}-{gid}-R{row} — re-running the cron doesn't duplicate orders.
+✅ Headers in row 1 detected automatically and skipped.
+✅ Tab name used as product name when column E is empty.
+✅ "Déconnecter" button stops syncing and clears the URL.
+✅ Existing Apps Script users not broken (separate tab in UI).
+Commitbashgit add server/routes.ts server/cron/sync-gsheets-public.ts server/index.ts shared/schema.ts migrations/0008_gsheets_public_url.sql client/src/pages/integrations.tsx
+git commit -m "feat(gsheets): public URL connector — no Apps Script, no OAuth required
+
+The simplest possible Google Sheets integration: user makes their sheet
+public (Anyone with link → Viewer), pastes the URL into TajerGrow, clicks
+Connect. Backend polls the public CSV export endpoint every 5 minutes.
+
+- New /api/integrations/google-sheets/connect-url validates URL,
+  fetches tab metadata via the htmlview page parser, persists config
+- /api/integrations/google-sheets/status + /disconnect endpoints
+- Cron sync-gsheets-public.ts polls every 5 min, parses CSV, creates orders
+  with idempotent orderNumber=GSP-{sheetId6}-{gid}-R{row}
+- Multi-tab automatic; tab name fallback for product when col E is empty
+- Auto-detects header row by scanning for known field names
+- Frontend tabs: 'URL publique' (default) + 'Apps Script' (existing flow)
+- Old Apps Script integration untouched — users not migrated"
+git push

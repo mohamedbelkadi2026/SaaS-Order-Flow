@@ -9,6 +9,7 @@ import { createServer } from "http";
 import { startWooCommerceSync } from "./jobs/woocommerce-sync";
 import { startRecoveryJob } from "./recovery-job";
 import { syncAllGoogleSheets } from "./cron/sync-gsheets";
+import { syncAllPublicSheets } from "./cron/sync-gsheets-public";
 import { initSocket } from "./socket";
 import { autoStartBaileys, autoStartDevices } from "./baileys-service";
 import { db, pool, initializeDatabase } from "./db";
@@ -688,6 +689,19 @@ app.use((req, res, next) => {
     );
   }, 5 * 60 * 1000);
   intervals.push(gsheetsSync);
+
+  // ── Google Sheets public URL polling — every 5 min ────────────────────────
+  setTimeout(() => {
+    syncAllPublicSheets().catch((err: any) =>
+      console.error("[GSHEETS-PUBLIC-CRON] Error:", err.message)
+    );
+  }, 30_000);
+  const gsheetsPublicSync = setInterval(() => {
+    syncAllPublicSheets().catch((err: any) =>
+      console.error("[GSHEETS-PUBLIC-CRON] Error:", err.message)
+    );
+  }, 5 * 60 * 1000);
+  intervals.push(gsheetsPublicSync);
 
   // ── Memory monitor — log every 2 min, GC + clear WA queue if heap > 400 MB ──
   setInterval(() => {
