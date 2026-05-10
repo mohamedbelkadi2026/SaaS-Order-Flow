@@ -602,7 +602,7 @@ export default function ProfitAnalyzer() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b border-white/5 text-slate-400 text-[10px] uppercase tracking-wider">
-                        <th className="text-left px-4 py-2.5 font-semibold">Produit</th>
+                        <th className="text-left px-4 py-2.5 font-semibold min-w-[200px]">Produit</th>
                         <th className="text-center px-3 py-2.5">Cmd</th>
                         <th className="text-center px-3 py-2.5">Conf</th>
                         <th className="text-center px-3 py-2.5">Livré</th>
@@ -614,6 +614,7 @@ export default function ProfitAnalyzer() {
                         <th className="text-right px-4 py-2.5">Profit Net</th>
                         <th className="text-center px-3 py-2.5">Marge</th>
                         <th className="text-center px-3 py-2.5">ROI</th>
+                        <th className="text-right px-3 py-2.5 font-semibold">Par Livr.</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -623,7 +624,7 @@ export default function ProfitAnalyzer() {
                         const marginColor  = p.margin >= 30 ? '#10b981' : p.margin >= 10 ? '#f59e0b' : '#f43f5e';
                         return (
                           <tr key={i} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${p.noData ? "opacity-50" : ""}`} data-testid={`row-live-product-${i}`}>
-                            <td className="px-4 py-3 text-white font-semibold max-w-[160px] truncate" title={p.name}>
+                            <td className="px-4 py-3 text-white font-semibold min-w-[200px] max-w-[260px]" title={p.name} style={{ wordBreak: 'break-word', whiteSpace: 'normal', lineHeight: '1.3' }}>
                               {p.name}
                               {p.noData && (
                                 <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 border border-slate-600 font-normal">
@@ -655,6 +656,15 @@ export default function ProfitAnalyzer() {
                                   <span className="text-[11px] font-bold" style={{ color: p.roi > 0 ? '#10b981' : '#f43f5e' }}>
                                     {p.roi.toFixed(0)}%
                                   </span>
+                                </td>
+                                <td className="px-3 py-3 text-right">
+                                  {p.deliveredOrders > 0 ? (
+                                    <span className="text-[12px] font-bold" style={{ color: (p.netProfit / p.deliveredOrders) > 0 ? "#10b981" : "#f43f5e" }}>
+                                      {(p.netProfit / p.deliveredOrders).toLocaleString("fr-MA", { minimumFractionDigits: 0, maximumFractionDigits: 0 })} DH
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500 text-[11px]">—</span>
+                                  )}
                                 </td>
                               </>
                             )}
