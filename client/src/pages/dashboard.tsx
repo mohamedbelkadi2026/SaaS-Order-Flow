@@ -469,7 +469,7 @@ export default function Dashboard() {
   const deliveryPieData = [
     { name: `Refusé ${totalOrders > 0 ? ((stats?.refused || 0) / totalOrders * 100).toFixed(2) : 0}%`,        value: stats?.refused || 0, color: STATUS_COLORS.cancelled },
     { name: `Livraison en cours ${inProgressPct}%`,                                                              value: inProgress,          color: STATUS_COLORS.transit },
-    { name: `Livraison livrée ${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`,           value: delivered,           color: STATUS_COLORS.delivered },
+    { name: `Livraison livrée ${(stats?.totalShipped || 0) > 0 ? (delivered / (stats?.totalShipped || 1) * 100).toFixed(2) : 0}%`,           value: delivered,           color: STATUS_COLORS.delivered },
   ].filter(d => d.value > 0);
 
   const dailyChartData = stats?.daily?.map((d: any) => ({
@@ -1402,7 +1402,10 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
-        <StatCard title="Livrées" value={delivered} icon={PackageCheck} color={STATUS_COLORS.delivered} subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`} />
+        <StatCard title="Livrées" value={delivered} icon={PackageCheck} color={STATUS_COLORS.delivered} subtitle={`${isAgent
+  ? ((agentMyStats?.totalShipped || 0) > 0 ? (delivered / (agentMyStats?.totalShipped || 1) * 100).toFixed(2) : 0)
+  : ((stats?.totalShipped || 0) > 0 ? (delivered / (stats?.totalShipped || 1) * 100).toFixed(2) : 0)
+}%`} />
         {canSeeProfit ? (
           <Card className="rounded-xl border-0 shadow-md overflow-hidden" data-testid="card-net-profit" style={{ background: (stats?.profit || 0) >= 0 ? 'linear-gradient(135deg, #C5A059 0%, #a8853f 50%, #7a6025 100%)' : 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}>
             <CardContent className="p-4 flex items-center gap-3">

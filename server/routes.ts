@@ -6046,7 +6046,8 @@ export async function registerRoutes(
       const en_cours = buckets.en_cours;
       // confirme is now cumulative — rate = confirmed / total (no summing sub-buckets)
       const confirmRate = total > 0 ? Math.round((buckets.confirme / total) * 100) : 0;
-      const deliverRate = buckets.confirme > 0 ? Math.round((buckets.delivered / buckets.confirme) * 100) : 0;
+      const totalShipped = en_cours + delivered + refused; // expédiés = en cours + livrés + retournés/refusés
+      const deliverRate = totalShipped > 0 ? Math.round((delivered / totalShipped) * 100) : 0;
 
       res.json({
         daily,
@@ -6065,6 +6066,7 @@ export async function registerRoutes(
         pasReponse: pasReponseCount,
         confirmRate,
         deliverRate,
+        totalShipped,
       });
     } catch (err: any) {
       console.error("[/api/agents/my-stats]", err.message);

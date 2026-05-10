@@ -1,0 +1,81 @@
+
+7:55 PM
+Claude responded: FIX: LIVRÉES percentage wrong — divides by total orders instead of shipped orders
+FIX: LIVRÉES percentage wrong — divides by total orders instead of shipped orders
+
+Files to change: server/routes.ts and client/src/pages/dashboard.tsx
+
+Problem: The LIVRÉES card showed 21% (139÷653) instead of the correct 45% (139÷307). The percentage must divide by shipped orders (expédiés), not total commandes.
+
+Change 1 — server/routes.ts — Add totalShipped to my-stats response
+Find:
+
+ts
+      const confirmRate = total > 0 ? Math.round(((confirme + delivered + en_cours) / total) * 100) : 0;
+      const deliverRate = (confirme + delivered) > 0 ? Math.round((delivered / (confirme + delivered)) * 100) : 0;
+
+      res.json({
+        daily,
+        byStatus,
+        totalOrders: total,
+        cities: allCities,
+        products,
+        // KPI fields for agent dashboard cards
+        total,
+        confirme,
+        delivered,
+        cancelled,
+        refused,
+        en_cours,
+        nouveau: nouveauCount,
+        pasReponse: pasReponseCount,
+        confirmRate,
+        deliverRate,
+      });
+Replace with:
+
+ts
+      const confirmRate = total > 0 ? Math.round(((confirme + delivered + en_cours) / total) * 100) : 0;
+      const totalShipped = en_cours + delivered + refused; // expédiés = en cours + livrés + retournés/refusés
+      const deliverRate = totalShipped > 0 ? Math.round((delivered / totalShipped) * 100) : 0;
+
+      res.json({
+        daily,
+        byStatus,
+        totalOrders: total,
+        cities: allCities,
+        products,
+        // KPI fields for agent dashboard cards
+        total,
+        confirme,
+        delivered,
+        cancelled,
+        refused,
+        en_cours,
+        nouveau: nouveauCount,
+        pasReponse: pasReponseCount,
+        confirmRate,
+        deliverRate,
+        totalShipped,
+      });
+Change 2 — client/src/pages/dashboard.tsx — Fix LIVRÉES card subtitle
+Find:
+
+tsx
+subtitle={`${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`}
+Replace with:
+
+tsx
+subtitle={`${isAgent
+  ? ((agentMyStats?.totalShipped || 0) > 0 ? (delivered / (agentMyStats?.totalShipped || 1) * 100).toFixed(2) : 0)
+  : ((stats?.totalShipped || 0) > 0 ? (delivered / (stats?.totalShipped || 1) * 100).toFixed(2) : 0)
+}%`}
+Also find the deliveryPieData line:
+
+ts
+{ name: `Livraison livrée ${totalOrders > 0 ? (delivered / totalOrders * 100).toFixed(2) : 0}%`,
+Replace with:
+
+ts
+{ name: `Livraison livrée ${(stats?.totalShipped || 0) > 0 ? (delivered / (stats?.totalShipped || 1) * 100).toFixed(2) : 0}%`,
+Do not change anything else.
