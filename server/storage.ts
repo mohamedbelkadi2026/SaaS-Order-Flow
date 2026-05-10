@@ -423,35 +423,52 @@ export class DatabaseStorage implements IStorage {
   private async hydrateOrders(allOrders: Order[]): Promise<OrderWithDetails[]> {
     if (allOrders.length === 0) return [];
 
-    const magasinIds = Array.from(new Set(
-      allOrders.map(o => (o as any).magasinId).filter((id): id is number => typeof id === 'number')
-    ));
-    const magasinRows = magasinIds.length > 0
-      ? await db.select({ id: stores.id, name: stores.name }).from(stores).where(inArray(stores.id, magasinIds))
+    const orderIds   = allOrders.map(o => o.id);
+    const agentIds   = Array.from(new Set(allOrders.map(o => o.assignedToId).filter((id): id is number => id != null)));
+    const magasinIds = Array.from(new Set(allOrders.map(o => (o as any).magasinId).filter((id): id is number => id != null)));
+
+    // ── 4 batched queries instead of N×3 individual queries ──────────────
+    const [allItems, allAgents, allMagasins] = await Promise.all([
+      db.select().from(orderItems).where(inArray(orderItems.orderId, orderIds)),
+      agentIds.length > 0
+        ? db.select().from(users).where(inArray(users.id, agentIds))
+        : Promise.resolve([]),
+      magasinIds.length > 0
+        ? db.select({ id: stores.id, name: stores.name }).from(stores).where(inArray(stores.id, magasinIds))
+        : Promise.resolve([]),
+    ]);
+
+    // Fetch all products referenced by items in one query
+    const productIds = Array.from(new Set(allItems.map(i => i.productId).filter((id): id is number => id != null)));
+    const allProducts = productIds.length > 0
+      ? await db.select().from(products).where(inArray(products.id, productIds))
       : [];
-    const magasinById = new Map(magasinRows.map(m => [m.id, m]));
 
-    const ordersWithDetails: OrderWithDetails[] = [];
-    for (const order of allOrders) {
-      const orderItemsList = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
-      const agent = order.assignedToId ? (await db.select().from(users).where(eq(users.id, order.assignedToId)))[0] : null;
-
-      const itemsWithProducts = await Promise.all(orderItemsList.map(async (item) => {
-        const [product] = await db.select().from(products).where(eq(products.id, item.productId));
-        return { ...item, product };
-      }));
-
-      const mid = (order as any).magasinId as number | null | undefined;
-      const magasin = (mid && magasinById.get(mid)) || null;
-
-      ordersWithDetails.push({
-        ...order,
-        agent,
-        magasin,
-        items: itemsWithProducts
-      });
+    // Build lookup maps
+    const itemsByOrder  = new Map<number, typeof allItems>();
+    for (const item of allItems) {
+      if (!itemsByOrder.has(item.orderId)) itemsByOrder.set(item.orderId, []);
+      itemsByOrder.get(item.orderId)!.push(item);
     }
-    return ordersWithDetails;
+    const agentById   = new Map(allAgents.map(a => [a.id, a]));
+    const productById = new Map(allProducts.map(p => [p.id, p]));
+    const magasinById = new Map(allMagasins.map(m => [m.id, m]));
+
+    // Assemble results
+    return allOrders.map(order => {
+      const orderItemsList = itemsByOrder.get(order.id) || [];
+      const itemsWithProducts = orderItemsList.map(item => ({
+        ...item,
+        product: item.productId ? productById.get(item.productId) : undefined,
+      }));
+      const mid = (order as any).magasinId as number | null | undefined;
+      return {
+        ...order,
+        agent:   order.assignedToId ? agentById.get(order.assignedToId) ?? null : null,
+        magasin: (mid && magasinById.get(mid)) || null,
+        items:   itemsWithProducts,
+      } as OrderWithDetails;
+    });
   }
 
   async getOrder(id: number): Promise<OrderWithDetails | undefined> {

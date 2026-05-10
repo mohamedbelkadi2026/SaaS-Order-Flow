@@ -1,0 +1,97 @@
+PERFORMANCE FIX: Orders load very slowly — N+1 query problem in hydrateOrders
+File to change: server/storage.ts only
+Problem: hydrateOrders runs individual DB queries for every single order:
+
+1 query per order for orderItems
+1 query per order for agent (user)
+1 query per item for product
+
+With 500 orders this means 2000+ sequential DB queries — making the platform extremely slow.
+Fix: Replace hydrateOrders with a batched version that uses inArray to fetch everything in just 4 queries total regardless of order count.
+
+Find the entire hydrateOrders method:
+ts  private async hydrateOrders(allOrders: Order[]): Promise<OrderWithDetails[]> {
+    if (allOrders.length === 0) return [];
+
+    const magasinIds = Array.from(new Set(
+      allOrders.map(o => (o as any).magasinId).filter((id): id is number => typeof id === 'number')
+    ));
+    const magasinRows = magasinIds.length > 0
+      ? await db.select({ id: stores.id, name: stores.name }).from(stores).where(inArray(stores.id, magasinIds))
+      : [];
+    const magasinById = new Map(magasinRows.map(m => [m.id, m]));
+
+    const ordersWithDetails: OrderWithDetails[] = [];
+    for (const order of allOrders) {
+      const orderItemsList = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+      const agent = order.assignedToId ? (await db.select().from(users).where(eq(users.id, order.assignedToId)))[0] : null;
+
+      const itemsWithProducts = await Promise.all(orderItemsList.map(async (item) => {
+        const [product] = await db.select().from(products).where(eq(products.id, item.productId));
+        return { ...item, product };
+      }));
+
+      const mid = (order as any).magasinId as number | null | undefined;
+      const magasin = (mid && magasinById.get(mid)) || null;
+
+      ordersWithDetails.push({
+        ...order,
+        agent,
+        magasin,
+        items: itemsWithProducts
+      });
+    }
+    return ordersWithDetails;
+  }
+Replace with:
+ts  private async hydrateOrders(allOrders: Order[]): Promise<OrderWithDetails[]> {
+    if (allOrders.length === 0) return [];
+
+    const orderIds   = allOrders.map(o => o.id);
+    const agentIds   = Array.from(new Set(allOrders.map(o => o.assignedToId).filter((id): id is number => id != null)));
+    const magasinIds = Array.from(new Set(allOrders.map(o => (o as any).magasinId).filter((id): id is number => id != null)));
+
+    // ── 4 batched queries instead of N×3 individual queries ──────────────
+    const [allItems, allAgents, allMagasins] = await Promise.all([
+      db.select().from(orderItems).where(inArray(orderItems.orderId, orderIds)),
+      agentIds.length > 0
+        ? db.select().from(users).where(inArray(users.id, agentIds))
+        : Promise.resolve([]),
+      magasinIds.length > 0
+        ? db.select({ id: stores.id, name: stores.name }).from(stores).where(inArray(stores.id, magasinIds))
+        : Promise.resolve([]),
+    ]);
+
+    // Fetch all products referenced by items in one query
+    const productIds = Array.from(new Set(allItems.map(i => i.productId).filter((id): id is number => id != null)));
+    const allProducts = productIds.length > 0
+      ? await db.select().from(products).where(inArray(products.id, productIds))
+      : [];
+
+    // Build lookup maps
+    const itemsByOrder  = new Map<number, typeof allItems>();
+    for (const item of allItems) {
+      if (!itemsByOrder.has(item.orderId)) itemsByOrder.set(item.orderId, []);
+      itemsByOrder.get(item.orderId)!.push(item);
+    }
+    const agentById   = new Map(allAgents.map(a => [a.id, a]));
+    const productById = new Map(allProducts.map(p => [p.id, p]));
+    const magasinById = new Map(allMagasins.map(m => [m.id, m]));
+
+    // Assemble results
+    return allOrders.map(order => {
+      const orderItemsList = itemsByOrder.get(order.id) || [];
+      const itemsWithProducts = orderItemsList.map(item => ({
+        ...item,
+        product: item.productId ? productById.get(item.productId) : undefined,
+      }));
+      const mid = (order as any).magasinId as number | null | undefined;
+      return {
+        ...order,
+        agent:  order.assignedToId ? agentById.get(order.assignedToId) ?? null : null,
+        magasin: (mid && magasinById.get(mid)) || null,
+        items:  itemsWithProducts,
+      } as OrderWithDetails;
+    });
+  }
+Do not change anything else. This single change will make the entire platform dramatically faster.
