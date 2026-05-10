@@ -5028,15 +5028,9 @@ export async function registerRoutes(
         }
       }
 
-      const totalRevenue = Object.values(statsMap).reduce((s, p) => s + p.revenue, 0);
-
       const productResult = Object.values(statsMap).map(s => {
-        // Per-product adSpend from adSpendTracking
-        const specificAdSpend = productAdSpendMap[s.id] || 0;
-        // Global adSpend split proportionally by revenue share
-        const revShare    = totalRevenue > 0 ? s.revenue / totalRevenue : 0;
-        const globalShare = globalAdSpend * revShare;
-        const totalAdSpend = specificAdSpend + globalShare;
+        // ONLY use spend explicitly tagged to this product — never split global spend
+        const totalAdSpend = productAdSpendMap[s.id] || 0;
 
         const netProfit    = s.revenue - s.productCost - s.shippingCost - totalAdSpend;
         const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
@@ -5044,8 +5038,10 @@ export async function registerRoutes(
         const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
         const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
         return { ...s, adSpend: totalAdSpend, netProfit, margin, roi, confirmRate, deliveryRate };
-      });
-      productResult.sort((a, b) => b.netProfit - a.netProfit);
+      }).sort((a, b) => b.netProfit - a.netProfit);
+
+      // Global ad spend (not tagged to any product) shown separately in summary
+      const globalAdSpendTotal = globalAdSpend;
 
       // ── Merge stock products that have no orders yet ─────────────────────
       // Fetch ALL products in the store so new/untested products appear with zeros
@@ -5092,16 +5088,17 @@ export async function registerRoutes(
       }
       // Distribute total adSpend from adSpendTracking proportionally by revenue
       const totalAdSpendDH = adSpendRows.reduce((s: number, r: any) => s + r.amountDH, 0);
-      const totalPlatRev   = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
       const platformResult = Object.values(platMap).map(p => {
-        const platAdSpend = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
-        const netProfit   = p.revenue - platAdSpend;
-        const roas        = platAdSpend > 0 ? p.revenue / platAdSpend : 0;
-        const cpo         = p.orders   > 0 ? platAdSpend / p.orders  : 0;
+        // Platform view: distribute total spend proportionally (acceptable at platform level)
+        const totalPlatRev = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
+        const platAdSpend  = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
+        const netProfit    = p.revenue - platAdSpend;
+        const roas         = platAdSpend > 0 ? p.revenue / platAdSpend : 0;
+        const cpo          = p.orders   > 0 ? platAdSpend / p.orders  : 0;
         return { ...p, adSpend: platAdSpend, netProfit, roas, cpo };
       }).sort((a, b) => b.revenue - a.revenue);
 
-      res.json({ products: productResult, platforms: platformResult });
+      res.json({ products: productResult, platforms: platformResult, globalAdSpend: globalAdSpendTotal });
     } catch (err) {
       throw err;
     }

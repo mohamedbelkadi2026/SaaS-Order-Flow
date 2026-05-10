@@ -1,0 +1,71 @@
+FIX: Profit Analyzer — ad spend distributed incorrectly across all products
+File to change: server/routes.ts only
+Problem:
+
+Ad spend tagged to a specific product must only appear on that product
+Global ad spend (no product tag) must NOT be split proportionally — it should be shown separately and NOT deducted from individual products
+Currently global spend is divided by revenue share across all products, causing wrong numbers everywhere
+
+
+Find this block inside GET /api/products/profitability:
+ts      const totalRevenue = Object.values(statsMap).reduce((s, p) => s + p.revenue, 0);
+
+      const productResult = Object.values(statsMap).map(s => {
+        // Per-product adSpend from adSpendTracking
+        const specificAdSpend = productAdSpendMap[s.id] || 0;
+        // Global adSpend split proportionally by revenue share
+        const revShare    = totalRevenue > 0 ? s.revenue / totalRevenue : 0;
+        const globalShare = globalAdSpend * revShare;
+        const totalAdSpend = specificAdSpend + globalShare;
+
+        const netProfit    = s.revenue - s.productCost - s.shippingCost - totalAdSpend;
+        const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
+        const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
+        const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
+        const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
+        return { ...s, adSpend: totalAdSpend, netProfit, margin, roi, confirmRate, deliveryRate };
+      }).sort((a, b) => b.netProfit - a.netProfit);
+Replace with:
+ts      const productResult = Object.values(statsMap).map(s => {
+        // ONLY use spend explicitly tagged to this product — never split global spend
+        const totalAdSpend = productAdSpendMap[s.id] || 0;
+
+        const netProfit    = s.revenue - s.productCost - s.shippingCost - totalAdSpend;
+        const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
+        const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
+        const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
+        const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
+        return { ...s, adSpend: totalAdSpend, netProfit, margin, roi, confirmRate, deliveryRate };
+      }).sort((a, b) => b.netProfit - a.netProfit);
+
+      // Global ad spend (not tagged to any product) shown separately in summary
+      const globalAdSpendTotal = globalAdSpend;
+
+Also find the platform result block:
+ts      const totalAdSpendDH = adSpendRows.reduce((s: number, r: any) => s + r.amountDH, 0);
+      const totalPlatRev   = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
+      const platformResult = Object.values(platMap).map(p => {
+        const platAdSpend = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
+        const netProfit   = p.revenue - platAdSpend;
+        const roas        = platAdSpend > 0 ? p.revenue / platAdSpend : 0;
+        const cpo         = p.orders   > 0 ? platAdSpend / p.orders  : 0;
+        return { ...p, adSpend: platAdSpend, netProfit, roas, cpo };
+      }).sort((a, b) => b.revenue - a.revenue);
+Replace with:
+ts      const totalAdSpendDH = adSpendRows.reduce((s: number, r: any) => s + r.amountDH, 0);
+      const platformResult = Object.values(platMap).map(p => {
+        // Platform view: distribute total spend proportionally (acceptable at platform level)
+        const totalPlatRev = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
+        const platAdSpend  = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
+        const netProfit    = p.revenue - platAdSpend;
+        const roas         = platAdSpend > 0 ? p.revenue / platAdSpend : 0;
+        const cpo          = p.orders   > 0 ? platAdSpend / p.orders  : 0;
+        return { ...p, adSpend: platAdSpend, netProfit, roas, cpo };
+      }).sort((a, b) => b.revenue - a.revenue);
+
+Also find the final res.json in this endpoint:
+ts      res.json({ products: productResult, platforms: platformResult });
+Replace with:
+ts      res.json({ products: productResult, platforms: platformResult, globalAdSpend: globalAdSpendTotal });
+
+Do not change anything else.
