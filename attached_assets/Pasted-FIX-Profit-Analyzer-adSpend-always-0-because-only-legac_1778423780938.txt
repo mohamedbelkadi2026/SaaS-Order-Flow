@@ -1,0 +1,76 @@
+FIX: Profit Analyzer — adSpend always 0 because only legacy table was read, not the new Publicités table
+File to change: server/routes.ts only
+Problem: There are two ad spend tables. The Profit Analyzer only read adSpendTracking (legacy, amounts in DH) but ignored adSpend (new Publicités module, amounts in centimes). The 1,000 DH you added is in the new table, so it never appeared.
+
+Find this entire block inside GET /api/products/profitability:
+ts      // ── Fetch adSpendTracking for this period ─────────────────────────────
+      // amount is stored in DH (not centimes) in adSpendTracking
+      const cutoffDateStr  = cutoff.toISOString().slice(0, 10);
+      const endDateStr     = endDate.toISOString().slice(0, 10);
+      const adSpendRows = await db.select({
+        productId: adSpendTracking.productId,
+        amount:    adSpendTracking.amount,
+        date:      adSpendTracking.date,
+      }).from(adSpendTracking).where(and(
+        eq(adSpendTracking.storeId, storeId),
+        sql`${adSpendTracking.date} >= ${cutoffDateStr}`,
+        sql`${adSpendTracking.date} <= ${endDateStr}`,
+      ));
+
+      // Build map: productId → total adSpend (DH)
+      // null productId = global spend (will be split proportionally later)
+      const productAdSpendMap: Record<number, number> = {};
+      let globalAdSpend = 0;
+      for (const row of adSpendRows) {
+        const amt = Number(row.amount || 0); // stored in DH already
+        if (row.productId) {
+          productAdSpendMap[row.productId] = (productAdSpendMap[row.productId] || 0) + amt;
+        } else {
+          globalAdSpend += amt;
+        }
+      }
+Replace with:
+ts      // ── Fetch ad spend from BOTH tables ──────────────────────────────────
+      const cutoffDateStr  = cutoff.toISOString().slice(0, 10);
+      const endDateStr     = endDate.toISOString().slice(0, 10);
+
+      // 1. adSpendTracking (legacy) — amount in DH
+      const legacyAdRows = await db.select({
+        productId: adSpendTracking.productId,
+        amount:    adSpendTracking.amount,
+      }).from(adSpendTracking).where(and(
+        eq(adSpendTracking.storeId, storeId),
+        sql`${adSpendTracking.date} >= ${cutoffDateStr}`,
+        sql`${adSpendTracking.date} <= ${endDateStr}`,
+      ));
+
+      // 2. adSpend (Publicités module) — amount in centimes → divide by 100
+      const newAdEntries = await storage.getAdSpendEntries(storeId, {
+        dateFrom: cutoffDateStr,
+        dateTo:   endDateStr,
+        allUsers: true,
+      });
+
+      // Combined for platform totals (all normalized to DH)
+      const adSpendRows = [
+        ...legacyAdRows.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) })),
+        ...newAdEntries.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) / 100 })),
+      ];
+
+      // Build map: productId → total adSpend (DH)
+      const productAdSpendMap: Record<number, number> = {};
+      let globalAdSpend = 0;
+      for (const row of adSpendRows) {
+        if (row.productId) {
+          productAdSpendMap[row.productId] = (productAdSpendMap[row.productId] || 0) + row.amountDH;
+        } else {
+          globalAdSpend += row.amountDH;
+        }
+      }
+
+Also find:
+ts      const totalAdSpendDH = adSpendRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+Replace with:
+ts      const totalAdSpendDH = adSpendRows.reduce((s: number, r: any) => s + r.amountDH, 0);
+
+Do not change anything else.

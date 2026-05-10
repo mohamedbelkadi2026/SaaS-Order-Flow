@@ -4922,29 +4922,41 @@ export async function registerRoutes(
 
       const orderIds = storeOrders.map(o => o.id);
 
-      // ── Fetch adSpendTracking for this period ─────────────────────────────
-      const cutoffDateStr = cutoff.toISOString().slice(0, 10);
-      const endDateStr    = endDate.toISOString().slice(0, 10);
-      const adSpendRows = await db.select({
+      // ── Fetch ad spend from BOTH tables ──────────────────────────────────
+      const cutoffDateStr  = cutoff.toISOString().slice(0, 10);
+      const endDateStr     = endDate.toISOString().slice(0, 10);
+
+      // 1. adSpendTracking (legacy) — amount in DH
+      const legacyAdRows = await db.select({
         productId: adSpendTracking.productId,
         amount:    adSpendTracking.amount,
-        date:      adSpendTracking.date,
       }).from(adSpendTracking).where(and(
         eq(adSpendTracking.storeId, storeId),
         sql`${adSpendTracking.date} >= ${cutoffDateStr}`,
         sql`${adSpendTracking.date} <= ${endDateStr}`,
       ));
 
+      // 2. adSpend (Publicités module) — amount in centimes → divide by 100
+      const newAdEntries = await storage.getAdSpendEntries(storeId, {
+        dateFrom: cutoffDateStr,
+        dateTo:   endDateStr,
+        allUsers: true,
+      });
+
+      // Combined for platform totals (all normalized to DH)
+      const adSpendRows = [
+        ...legacyAdRows.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) })),
+        ...newAdEntries.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) / 100 })),
+      ];
+
       // Build map: productId → total adSpend (DH)
-      // null productId = global spend (split proportionally by revenue later)
       const productAdSpendMap: Record<number, number> = {};
       let globalAdSpend = 0;
       for (const row of adSpendRows) {
-        const amt = Number(row.amount || 0);
         if (row.productId) {
-          productAdSpendMap[row.productId] = (productAdSpendMap[row.productId] || 0) + amt;
+          productAdSpendMap[row.productId] = (productAdSpendMap[row.productId] || 0) + row.amountDH;
         } else {
-          globalAdSpend += amt;
+          globalAdSpend += row.amountDH;
         }
       }
 
@@ -5079,7 +5091,7 @@ export async function registerRoutes(
         }
       }
       // Distribute total adSpend from adSpendTracking proportionally by revenue
-      const totalAdSpendDH = adSpendRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+      const totalAdSpendDH = adSpendRows.reduce((s: number, r: any) => s + r.amountDH, 0);
       const totalPlatRev   = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
       const platformResult = Object.values(platMap).map(p => {
         const platAdSpend = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
