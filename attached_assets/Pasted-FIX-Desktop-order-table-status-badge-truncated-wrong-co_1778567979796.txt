@@ -1,0 +1,43 @@
+FIX: Desktop order table — status badge truncated + wrong colors for Refusée/Annulée/Livrée
+File to change: client/src/pages/orders.tsx only
+Problem: Same as mobile — commentStatus is a long string like "Refusée | Motif: Fausse commande | 📞 Livreur: 0600..." shown in one badge in the desktop table STATUS column. It gets cut off and has no distinct colors.
+
+Find the desktop STATUS column cell — it looks like one of these:
+tsx<StatusBadge status={order.commentStatus || order.status} />
+or
+tsx<StatusBadge status={order.commentStatus || order.status} className="cursor-pointer" />
+For each one found in the desktop table row (not the mobile card), replace with:
+tsx{(() => {
+  const rawCs = order.commentStatus || order.status || '';
+  const parts = rawCs.split(' | ');
+  const mainStatus = parts[0]?.trim() || '';
+  const motifPart  = parts.find((p: string) => p.startsWith('Motif:'))?.replace('Motif:', '').trim() || '';
+  const statusColor: Record<string, string> = {
+    'Refusée':   'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+    'Refusée *': 'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+    'Annulée':   'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+    'Annulé':    'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+    'Livrée':    'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+    'Livré':     'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+    'Livrée *':  'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+  };
+  const badgeClass = statusColor[mainStatus] || '';
+  return (
+    <div className="flex flex-col gap-0.5">
+      {badgeClass ? (
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md border text-[11px] font-semibold whitespace-nowrap ${badgeClass}`}>
+          {mainStatus}
+        </span>
+      ) : (
+        <StatusBadge status={mainStatus || order.status} />
+      )}
+      {motifPart && (
+        <span className="text-[10px] text-muted-foreground leading-tight max-w-[160px] truncate" title={motifPart}>
+          {motifPart}
+        </span>
+      )}
+    </div>
+  );
+})()}
+Apply this replacement to lines 1370 and 1380 in orders.tsx (the two <StatusBadge> calls inside the desktop table STATUS column — one is the default display, one is the dropdown trigger). Keep all surrounding <div>, <select>, and dropdown logic exactly as is — only replace the <StatusBadge> component itself.
+Do not change anything else.

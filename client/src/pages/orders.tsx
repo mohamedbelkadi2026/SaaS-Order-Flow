@@ -1614,7 +1614,38 @@ export default function Orders() {
                       {isColVisible('status') && (
                         <TableCell onClick={e => e.stopPropagation()}>
                           {isMediaBuyer ? (
-                            <StatusBadge status={order.commentStatus || order.status} />
+                            (() => {
+                              const rawCs = order.commentStatus || order.status || '';
+                              const parts = rawCs.split(' | ');
+                              const mainStatus = parts[0]?.trim() || '';
+                              const motifPart  = parts.find((p: string) => p.startsWith('Motif:'))?.replace('Motif:', '').trim() || '';
+                              const statusColor: Record<string, string> = {
+                                'Refusée':   'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+                                'Refusée *': 'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+                                'Annulée':   'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+                                'Annulé':    'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+                                'Livrée':    'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                                'Livré':     'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                                'Livrée *':  'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                              };
+                              const badgeClass = statusColor[mainStatus] || '';
+                              return (
+                                <div className="flex flex-col gap-0.5">
+                                  {badgeClass ? (
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md border text-[11px] font-semibold whitespace-nowrap ${badgeClass}`}>
+                                      {mainStatus}
+                                    </span>
+                                  ) : (
+                                    <StatusBadge status={mainStatus || order.status} />
+                                  )}
+                                  {motifPart && (
+                                    <span className="text-[10px] text-muted-foreground leading-tight max-w-[160px] truncate" title={motifPart}>
+                                      {motifPart}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()
                           ) : (
                             <Select
                               value={order.status}
@@ -1624,7 +1655,38 @@ export default function Orders() {
                               }}
                             >
                               <SelectTrigger className="h-7 text-[11px] border-0 bg-transparent p-0 shadow-none focus:ring-0 w-auto gap-1" data-testid={`status-select-${order.id}`}>
-                                <StatusBadge status={order.commentStatus || order.status} className="cursor-pointer" />
+                                {(() => {
+                                  const rawCs = order.commentStatus || order.status || '';
+                                  const parts = rawCs.split(' | ');
+                                  const mainStatus = parts[0]?.trim() || '';
+                                  const motifPart  = parts.find((p: string) => p.startsWith('Motif:'))?.replace('Motif:', '').trim() || '';
+                                  const statusColor: Record<string, string> = {
+                                    'Refusée':   'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+                                    'Refusée *': 'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+                                    'Annulée':   'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+                                    'Annulé':    'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+                                    'Livrée':    'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                                    'Livré':     'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                                    'Livrée *':  'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                                  };
+                                  const badgeClass = statusColor[mainStatus] || '';
+                                  return (
+                                    <div className="flex flex-col gap-0.5">
+                                      {badgeClass ? (
+                                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md border text-[11px] font-semibold whitespace-nowrap cursor-pointer ${badgeClass}`}>
+                                          {mainStatus}
+                                        </span>
+                                      ) : (
+                                        <StatusBadge status={mainStatus || order.status} className="cursor-pointer" />
+                                      )}
+                                      {motifPart && (
+                                        <span className="text-[10px] text-muted-foreground leading-tight max-w-[160px] truncate" title={motifPart}>
+                                          {motifPart}
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </SelectTrigger>
                               <SelectContent>
                                 {STATUS_DROPDOWN_OPTIONS.map(s => (
