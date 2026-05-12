@@ -601,7 +601,17 @@ export async function registerRoutes(
     }
     if (productId && productId !== 'all') {
       const pid = Number(productId);
-      allOrders = allOrders.filter(o => o.items?.some((i: any) => i.productId === pid));
+      // Also match by rawProductName for orders created before the product was added to stock
+      const productRecord = await db.select({ name: products.name })
+        .from(products).where(eq(products.id, pid)).limit(1);
+      const productName = productRecord[0]?.name?.toLowerCase().trim() || '';
+      allOrders = allOrders.filter(o =>
+        o.items?.some((i: any) =>
+          i.productId === pid ||
+          (productName && (i.rawProductName || '').toLowerCase().trim().includes(productName)) ||
+          (productName && (o as any).rawProductName && (o as any).rawProductName.toLowerCase().trim().includes(productName))
+        )
+      );
     }
     if (agentId && agentId !== 'all') {
       allOrders = allOrders.filter(o => o.assignedToId === Number(agentId));
