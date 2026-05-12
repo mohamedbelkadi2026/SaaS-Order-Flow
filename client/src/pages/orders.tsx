@@ -1887,7 +1887,38 @@ export default function Orders() {
                         </a>
                       </>
                     )}
-                    <StatusBadge status={order.commentStatus || order.status} className="text-[10px] shrink-0 ml-1" />
+                    {(() => {
+                      const rawCs = order.commentStatus || order.status || '';
+                      const parts = rawCs.split(' | ');
+                      const mainStatus = parts[0]?.trim() || '';
+                      const motifPart  = parts.find((p: string) => p.startsWith('Motif:'))?.replace('Motif:', '').trim() || '';
+                      const statusColor: Record<string, string> = {
+                        'Refusée':   'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+                        'Refusée *': 'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-400',
+                        'Annulée':   'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+                        'Annulé':    'bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-900/30 dark:text-orange-400',
+                        'Livrée':    'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                        'Livré':     'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                        'Livrée *':  'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-400',
+                      };
+                      const badgeClass = statusColor[mainStatus] || '';
+                      return (
+                        <div className="flex flex-col items-end gap-0.5 ml-1 shrink-0 max-w-[55%]">
+                          {badgeClass ? (
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-semibold whitespace-nowrap ${badgeClass}`}>
+                              {mainStatus}
+                            </span>
+                          ) : (
+                            <StatusBadge status={mainStatus || order.status} className="text-[10px]" />
+                          )}
+                          {motifPart && (
+                            <span className="text-[9px] text-muted-foreground leading-tight text-right line-clamp-2">
+                              {motifPart}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* ── MIDDLE: customer name, city, store, carrier ── */}
