@@ -3941,6 +3941,7 @@ export async function registerRoutes(
       spreadsheetName: row?.spreadsheetName,
       syncTabs:        row?.syncTabs || "all",
       magasinId:       row?.magasinId ?? null,
+      columnMapping:   (row as any)?.gsheetColumnMapping ?? null,
     });
   });
 
@@ -4038,6 +4039,72 @@ export async function registerRoutes(
     return tabs;
   }
 
+  // POST /api/integrations/google-sheets/preview-url
+  // Phase 1: validate URL, return tabs + a sample row from the first tab so the
+  // frontend can build the column-mapping dropdowns with real data previews.
+  app.post("/api/integrations/google-sheets/preview-url", requireAuth, async (req: any, res: any) => {
+    const { url } = req.body as { url: string };
+    if (!url) return res.status(400).json({ error: "URL manquante" });
+
+    const sheetId = extractSheetId(url);
+    if (!sheetId) {
+      return res.status(400).json({
+        error: "URL invalide. Collez l'URL complète de votre Google Sheet (https://docs.google.com/spreadsheets/d/...).",
+      });
+    }
+
+    let tabs: Array<{ gid: string; title: string }>;
+    try {
+      tabs = await fetchPublicSheetTabs(sheetId);
+    } catch (err: any) {
+      return res.status(400).json({
+        error: "Impossible d'accéder au sheet. Vérifiez qu'il est partagé avec 'Tout le monde avec le lien' (Lecteur).",
+      });
+    }
+
+    // Fetch first few rows of the first tab for sample data
+    let sampleRow: string[] = [];
+    let columnCount = 0;
+    try {
+      const previewUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${tabs[0].gid}`;
+      const r = await fetch(previewUrl);
+      if (r.ok) {
+        const text = await r.text();
+
+        // Inline CSV parse (same logic as cron, avoids circular import)
+        const parsePreviewCsv = (t: string): string[][] => {
+          const rs: string[][] = [];
+          let row: string[] = [], cell = '', inQ = false;
+          for (let i = 0; i < t.length; i++) {
+            const c = t[i];
+            if (inQ) {
+              if (c === '"' && t[i+1] === '"') { cell += '"'; i++; }
+              else if (c === '"') inQ = false;
+              else cell += c;
+            } else {
+              if (c === '"') inQ = true;
+              else if (c === ',') { row.push(cell); cell = ''; }
+              else if (c === '\r') { /* skip */ }
+              else if (c === '\n') { row.push(cell); rs.push(row); row = []; cell = ''; }
+              else cell += c;
+            }
+          }
+          if (cell !== '' || row.length > 0) { row.push(cell); rs.push(row); }
+          return rs;
+        };
+
+        const rows = parsePreviewCsv(text);
+        // Use first non-empty row as the sample
+        sampleRow = rows.find(row => row.some(c => c.trim())) || [];
+        columnCount = Math.max(...rows.slice(0, 5).map(r => r.length), sampleRow.length, 1);
+      }
+    } catch {
+      // Non-fatal — proceed without preview
+    }
+
+    res.json({ success: true, sheetId, tabs, sampleRow, columnCount });
+  });
+
   // POST /api/integrations/google-sheets/sync-now
   app.post("/api/integrations/google-sheets/sync-now", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
@@ -4058,8 +4125,19 @@ export async function registerRoutes(
 
   // POST /api/integrations/google-sheets/connect-url
   app.post("/api/integrations/google-sheets/connect-url", requireAuth, async (req, res) => {
-    const { url, magasinId } = req.body as { url: string; magasinId?: number };
+    const { url, magasinId, columnMapping } = req.body as {
+      url: string;
+      magasinId?: number;
+      columnMapping?: Record<string, number>;
+    };
     if (!url) return res.status(400).json({ error: "URL manquante" });
+    if (!magasinId) return res.status(400).json({ error: "Veuillez sélectionner un magasin avant de connecter." });
+    if (!columnMapping || typeof columnMapping !== "object") {
+      return res.status(400).json({ error: "Veuillez configurer le mapping des colonnes." });
+    }
+    if (columnMapping.name === undefined || columnMapping.phone === undefined) {
+      return res.status(400).json({ error: "Les colonnes Nom et Téléphone sont obligatoires." });
+    }
 
     const sheetId = extractSheetId(url);
     if (!sheetId) {
@@ -4098,10 +4176,11 @@ export async function registerRoutes(
           gsheetId: sheetId,
           gsheetTabs: tabs,
           gsheetSyncState: {},
+          gsheetColumnMapping: columnMapping,
           magasinId: magasinId || null,
           status: "active",
           type: "store",
-        })
+        } as any)
         .where(eq(storeIntegrations.id, existing[0].id));
     } else {
       await db.insert(storeIntegrations).values({
@@ -4114,8 +4193,9 @@ export async function registerRoutes(
         gsheetId: sheetId,
         gsheetTabs: tabs,
         gsheetSyncState: {},
+        gsheetColumnMapping: columnMapping,
         status: "active",
-      });
+      } as any);
     }
 
     res.json({

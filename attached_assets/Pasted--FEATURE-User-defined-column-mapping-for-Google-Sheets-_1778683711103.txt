@@ -1,0 +1,472 @@
+🚀 FEATURE — User-defined column mapping for Google Sheets public URL
+My problem
+The public URL connector uses a fixed positional column mapping (A=name, B=phone, C=city, D=address, E=product, F=price, G=quantity). But every user's sheet has columns in a different order — some have phone in column A, some have product in column A, etc.
+Currently:
+
+Users with non-standard column order get garbage data imported (wrong field in wrong slot)
+Asking them to reorder their existing sheets is friction — they have months of data they don't want to touch
+
+I want users to configure the mapping themselves during connect: a dropdown for each TajerGrow field where they pick which column letter in their sheet contains that data.
+How it works
+After pasting URL, the user sees a mapping form:
+
+  Champ TajerGrow      →  Colonne de votre sheet
+  ────────────────────────────────────────────────
+  Nom client *          →  [B ▼]   (ils ont fullname en col B)
+  Téléphone *           →  [A ▼]   (phone en col A)
+  Adresse               →  [E ▼]
+  Ville                 →  [C ▼]
+  Produit               →  [D ▼]   (or use tab name if empty)
+  Prix                  →  [F ▼]
+  Quantité              →  [G ▼]   (default 1 if empty)
+  Note                  →  [H ▼]
+  UTM Campaign          →  [K ▼]
+  UTM Source            →  [L ▼]
+  Product ID (Ameex)    →  [M ▼]
+
+* Champs obligatoires
+
+Bonus: dropdown options show the first cell's value as a preview:
+  [A ▼]  → "A (ex: 0661639533)"
+  [B ▼]  → "B (ex: Haimer Lahcen)"
+  
+This makes it obvious which column contains what.
+The mapping is saved per-integration and used by the cron when fetching CSV rows.
+Implementation
+Step 1 — Database: add column_mapping field
+sql-- migrations/0009_gsheets_column_mapping.sql
+ALTER TABLE public.store_integrations
+  ADD COLUMN IF NOT EXISTS gsheet_column_mapping jsonb DEFAULT NULL;
+-- Shape: { "name": 1, "phone": 0, "address": 4, "city": 2, "product": 3, "price": 5, "quantity": 6, "note": 7, "utmCampaign": 10, "utmSource": 11, "productId": 12 }
+-- Values are 0-indexed column positions (0 = A, 1 = B, ...)
+Step 2 — Backend: extend connect endpoint
+In server/routes.ts, the /api/integrations/google-sheets/connect-url endpoint needs to do TWO phases:
+Phase 1 (already exists): User pastes URL → backend validates → returns tabs + a sample row preview.
+Phase 2 (NEW): User picks magasin + maps columns → backend saves the mapping.
+Refactor into two endpoints:
+ts// POST /api/integrations/google-sheets/preview-url
+// Validates the URL and returns tabs + a sample row from the first tab,
+// so the frontend can show "column A contains: 0661639533" hints.
+app.post('/api/integrations/google-sheets/preview-url', requireAuth, async (req, res) => {
+  const { url } = req.body as { url: string };
+  if (!url) return res.status(400).json({ error: 'URL manquante' });
+
+  const sheetId = extractSheetId(url);
+  if (!sheetId) {
+    return res.status(400).json({
+      error: "URL invalide. Collez l'URL complète de votre Google Sheet.",
+    });
+  }
+
+  let tabs: Array<{ gid: string; title: string }>;
+  try {
+    tabs = await fetchPublicSheetTabs(sheetId);
+  } catch (err: any) {
+    return res.status(400).json({
+      error: "Impossible d'accéder au sheet. Vérifiez qu'il est partagé avec 'Tout le monde avec le lien' (Lecteur).",
+    });
+  }
+
+  // Fetch first row of the first tab for preview
+  const previewUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${tabs[0].gid}`;
+  let sampleRow: string[] = [];
+  let columnCount = 0;
+  try {
+    const r = await fetch(previewUrl);
+    if (r.ok) {
+      const text = await r.text();
+      const rows = parseCsv(text);
+      // Find the first non-empty row to use as a sample
+      sampleRow = rows.find(row => row.some(c => c.trim())) || [];
+      columnCount = Math.max(...rows.slice(0, 5).map(r => r.length), sampleRow.length);
+    }
+  } catch (err) {
+    // Non-fatal — proceed without preview
+  }
+
+  res.json({
+    success: true,
+    sheetId,
+    tabs,
+    sampleRow,
+    columnCount,
+  });
+});
+
+// POST /api/integrations/google-sheets/connect-url
+// (existing endpoint, but now also accepts columnMapping)
+app.post('/api/integrations/google-sheets/connect-url', requireAuth, async (req, res) => {
+  const { url, magasinId, columnMapping } = req.body as {
+    url: string;
+    magasinId?: number;
+    columnMapping?: Record<string, number>;
+  };
+
+  if (!magasinId) {
+    return res.status(400).json({
+      error: "Veuillez sélectionner un magasin avant de connecter."
+    });
+  }
+
+  if (!columnMapping || typeof columnMapping !== 'object') {
+    return res.status(400).json({
+      error: "Veuillez configurer le mapping des colonnes."
+    });
+  }
+
+  // Mandatory mapping fields
+  if (columnMapping.name === undefined || columnMapping.phone === undefined) {
+    return res.status(400).json({
+      error: "Les colonnes Nom et Téléphone sont obligatoires."
+    });
+  }
+
+  // ... existing validation (extractSheetId, fetchPublicSheetTabs) ...
+
+  // Persist with the mapping
+  await db.update(storeIntegrations)
+    .set({
+      gsheetUrl: url,
+      gsheetId: sheetId,
+      gsheetTabs: tabs,
+      gsheetColumnMapping: columnMapping,
+      gsheetSyncState: {},
+      magasinId,
+      status: 'active',
+    } as any)
+    .where(/* ... existing where clause ... */);
+
+  res.json({ success: true, tabsCount: tabs.length, tabs: tabs.map(t => t.title) });
+});
+Step 3 — Cron: use the user's mapping instead of fixed positional
+In server/cron/sync-gsheets-public.ts, replace the hardcoded POSITIONAL constant with reading from the integration:
+tsasync function syncOne(conn: any) {
+  const sheetId = conn.gsheetId;
+  const tabs = conn.gsheetTabs || [];
+  const state = conn.gsheetSyncState || {};
+
+  // ⭐ Read user's column mapping (with safe defaults)
+  const mapping = conn.gsheetColumnMapping || {
+    name: 0, phone: 1, city: 2, address: 3,
+    product: 4, price: 5, quantity: 6,
+    note: 7, offer: 8,
+    utmCampaign: 10, utmSource: 11, productId: 12,
+  };
+
+  for (const tab of tabs) {
+    const lastRow = state[`tab_${tab.gid}`] || 0;
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${tab.gid}`;
+    const resp = await fetch(csvUrl);
+    if (!resp.ok) continue;
+    const text = await resp.text();
+    const rows = parseCsv(text);
+
+    // Conservative header detection (from previous fix)
+    const HEADER_WORDS = ['nom', 'name', 'phone', 'telephone', 'tel', 'address', 'adresse',
+                          'city', 'ville', 'product', 'produit', 'price', 'prix', 'fullname',
+                          'note', 'comment', 'utm_source', 'utm_campaign', 'sku'];
+    let headerMatches = 0;
+    for (const cell of (rows[0] || [])) {
+      const norm = String(cell).toLowerCase().trim();
+      if (HEADER_WORDS.some(w => norm === w || norm.includes(w))) headerMatches++;
+    }
+    const row0HasPhoneShape = (rows[0] || []).some(c => /^\+?\d{8,}$/.test(String(c).trim()));
+    const dataStart = (headerMatches >= 2 && !row0HasPhoneShape) ? 1 : 0;
+
+    const newRows = rows.slice(Math.max(dataStart, lastRow));
+
+    for (let i = 0; i < newRows.length; i++) {
+      const row = newRows[i];
+      const rowIndex = Math.max(dataStart, lastRow) + i;
+
+      // ⭐ Read using user's mapping
+      const getCell = (key: string): string => {
+        const col = mapping[key];
+        if (col === undefined || col === null) return '';
+        return (row[col] || '').toString().trim();
+      };
+
+      const name  = getCell('name');
+      const phone = getCell('phone');
+      if (!name && !phone) continue;
+      if (!phone) continue;
+
+      const ref = `GSP-${sheetId.slice(0, 6)}-${tab.gid}-R${rowIndex + 1}`;
+      const existing = await db.select({ id: orders.id }).from(orders)
+        .where(eq(orders.orderNumber, ref))
+        .limit(1);
+      if (existing.length > 0) continue;
+
+      const totalPriceCents = Math.round(
+        parseFloat(getCell('price').replace(',', '.') || '0') * 100
+      ) || 0;
+      const product = getCell('product') || tab.title;
+      const qty     = parseInt(getCell('quantity') || '1', 10) || 1;
+
+      try {
+        await storage.createOrder({
+          storeId:         conn.storeId,
+          magasinId:       conn.magasinId,
+          orderNumber:     ref,
+          customerName:    name,
+          customerPhone:   phone,
+          customerAddress: getCell('address'),
+          customerCity:    getCell('city'),
+          rawProductName:  product,
+          status:          'nouveau',
+          totalPrice:      totalPriceCents,
+          productCost:     0,
+          shippingCost:    0,
+          adSpend:         0,
+          source:          'gsheets',
+          comment:         getCell('note') || null,
+          utmSource:       getCell('utmSource') || null,
+          utmCampaign:     getCell('utmCampaign') || null,
+        } as any, [{
+          rawProductName: product,
+          quantity: qty,
+          price: totalPriceCents,
+        }]);
+      } catch (err: any) {
+        console.error(`[GSHEETS-PUBLIC] Order creation failed ref=${ref}: ${err.message}`);
+      }
+    }
+
+    state[`tab_${tab.gid}`] = rows.length;
+  }
+
+  await db.update(storeIntegrations)
+    .set({ gsheetSyncState: state, lastSyncAt: new Date() } as any)
+    .where(eq(storeIntegrations.id, conn.id));
+}
+Step 4 — Frontend: column mapping UI
+In client/src/pages/integrations.tsx, the connect flow becomes 3 steps:
+tsx{/* Connect flow state machine */}
+const [step, setStep] = useState<'url' | 'mapping' | 'done'>('url');
+const [sheetUrl, setSheetUrl] = useState('');
+const [preview, setPreview] = useState<{
+  sheetId: string;
+  tabs: Array<{ gid: string; title: string }>;
+  sampleRow: string[];
+  columnCount: number;
+} | null>(null);
+const [selectedMagasin, setSelectedMagasin] = useState<string>('');
+const [mapping, setMapping] = useState<Record<string, number | null>>({
+  name: 0, phone: 1, address: 3, city: 2,
+  product: 4, price: 5, quantity: 6,
+  note: null, offer: null,
+  utmCampaign: null, utmSource: null, productId: null,
+});
+
+// ─── Step 1: URL paste ──────────────────────────────────────────
+{step === 'url' && (
+  <div className="space-y-3">
+    <Label>Collez l'URL de votre Google Sheet</Label>
+    <Input
+      type="url"
+      placeholder="https://docs.google.com/spreadsheets/d/..."
+      value={sheetUrl}
+      onChange={(e) => setSheetUrl(e.target.value)}
+    />
+    <Button onClick={handlePreview} disabled={!sheetUrl}>
+      Suivant : configurer le mapping →
+    </Button>
+  </div>
+)}
+
+// ─── Step 2: Magasin + column mapping ───────────────────────────
+{step === 'mapping' && preview && (
+  <div className="space-y-4">
+    <Alert variant="default">
+      ✅ Sheet validé — {preview.tabs.length} onglet(s) détecté(s) :
+      {preview.tabs.map(t => t.title).join(', ')}
+    </Alert>
+
+    <div>
+      <Label>Magasin associé *</Label>
+      <Select value={selectedMagasin} onValueChange={setSelectedMagasin}>
+        <SelectTrigger><SelectValue placeholder="Choisir un magasin" /></SelectTrigger>
+        <SelectContent>
+          {magasins.map(m => (
+            <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+
+    <Separator />
+
+    <div>
+      <h3 className="font-semibold mb-2">Mapping des colonnes</h3>
+      <p className="text-xs text-muted-foreground mb-3">
+        Indiquez quelle colonne de votre sheet contient chaque information.
+        Les colonnes Nom et Téléphone sont obligatoires.
+      </p>
+
+      <div className="space-y-2">
+        <ColumnMapField
+          label="Nom client *"
+          value={mapping.name}
+          onChange={(v) => setMapping({ ...mapping, name: v })}
+          required
+          preview={preview}
+        />
+        <ColumnMapField label="Téléphone *" value={mapping.phone} onChange={(v) => setMapping({ ...mapping, phone: v })} required preview={preview} />
+        <ColumnMapField label="Adresse" value={mapping.address} onChange={(v) => setMapping({ ...mapping, address: v })} preview={preview} />
+        <ColumnMapField label="Ville" value={mapping.city} onChange={(v) => setMapping({ ...mapping, city: v })} preview={preview} />
+        <ColumnMapField label="Produit" value={mapping.product} onChange={(v) => setMapping({ ...mapping, product: v })} preview={preview} hint="Si vide, le nom de l'onglet sera utilisé" />
+        <ColumnMapField label="Prix (DH)" value={mapping.price} onChange={(v) => setMapping({ ...mapping, price: v })} preview={preview} />
+        <ColumnMapField label="Quantité" value={mapping.quantity} onChange={(v) => setMapping({ ...mapping, quantity: v })} preview={preview} hint="Défaut : 1" />
+        <ColumnMapField label="Note / Commentaire" value={mapping.note} onChange={(v) => setMapping({ ...mapping, note: v })} preview={preview} />
+        <ColumnMapField label="UTM Campaign" value={mapping.utmCampaign} onChange={(v) => setMapping({ ...mapping, utmCampaign: v })} preview={preview} />
+        <ColumnMapField label="UTM Source" value={mapping.utmSource} onChange={(v) => setMapping({ ...mapping, utmSource: v })} preview={preview} />
+        <ColumnMapField label="Product ID (Ameex)" value={mapping.productId} onChange={(v) => setMapping({ ...mapping, productId: v })} preview={preview} />
+      </div>
+    </div>
+
+    <div className="flex gap-2">
+      <Button variant="outline" onClick={() => setStep('url')}>← Retour</Button>
+      <Button
+        onClick={handleConnect}
+        disabled={!selectedMagasin || mapping.name === null || mapping.phone === null}
+        className="flex-1"
+      >
+        ✅ Activer la synchronisation
+      </Button>
+    </div>
+  </div>
+)}
+The ColumnMapField component:
+tsxfunction ColumnMapField({ label, value, onChange, required, preview, hint }: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  required?: boolean;
+  preview: { sampleRow: string[]; columnCount: number };
+  hint?: string;
+}) {
+  return (
+    <div className="grid grid-cols-12 gap-2 items-center">
+      <div className="col-span-5">
+        <Label className="text-sm">{label}</Label>
+        {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
+      </div>
+      <div className="col-span-7">
+        <Select
+          value={value === null ? '__none__' : String(value)}
+          onValueChange={(v) => onChange(v === '__none__' ? null : parseInt(v, 10))}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Pas de colonne" />
+          </SelectTrigger>
+          <SelectContent>
+            {!required && <SelectItem value="__none__">— Pas de colonne —</SelectItem>}
+            {Array.from({ length: preview.columnCount }, (_, i) => {
+              const letter = columnLetter(i + 1);
+              const sample = preview.sampleRow[i]?.slice(0, 30) || '(vide)';
+              return (
+                <SelectItem key={i} value={String(i)}>
+                  {letter} — {sample}
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+}
+
+function columnLetter(col: number): string {
+  let s = '';
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    col = Math.floor((col - 1) / 26);
+  }
+  return s;
+}
+Step 5 — Handlers
+tsconst handlePreview = async () => {
+  const r = await fetch('/api/integrations/google-sheets/preview-url', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: sheetUrl }),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    toast({ title: 'Erreur', description: data.error, variant: 'destructive' });
+    return;
+  }
+  setPreview(data);
+  setStep('mapping');
+};
+
+const handleConnect = async () => {
+  // Strip null values from mapping
+  const cleanMapping: Record<string, number> = {};
+  for (const [key, val] of Object.entries(mapping)) {
+    if (val !== null) cleanMapping[key] = val;
+  }
+
+  const r = await fetch('/api/integrations/google-sheets/connect-url', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: sheetUrl,
+      magasinId: parseInt(selectedMagasin, 10),
+      columnMapping: cleanMapping,
+    }),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    toast({ title: 'Erreur', description: data.error, variant: 'destructive' });
+    return;
+  }
+  toast({
+    title: '✅ Google Sheets connecté',
+    description: `Mapping enregistré. La première synchronisation démarre dans 30 secondes.`,
+    duration: 8000,
+  });
+  setStep('done');
+  refetch();
+};
+Step 6 — "Modifier" flow re-uses the same form
+When the user clicks "Modifier" on the connected state panel, set step back to 'mapping' and pre-fill mapping from gsheetsConn.columnMapping.
+Acceptance criteria
+
+✅ Step 1: User pastes URL → click "Suivant" → backend validates + returns sample row.
+✅ Step 2: User sees mapping form with dropdowns showing column letter + sample data preview (e.g. "A — 0661639533").
+✅ Required fields (Nom, Téléphone) can't be set to "Pas de colonne".
+✅ Magasin selector mandatory before "Activer".
+✅ Click "Activer" → mapping saved to gsheet_column_mapping column.
+✅ Cron reads the mapping per-integration; user's column order is respected.
+✅ User with phone in column A, name in column B → orders import correctly.
+✅ Click "Modifier" later → mapping form re-opens with current values.
+✅ "Sync maintenant" button still works after mapping change.
+✅ Magasin page lists Google Sheets card alongside Shopify.
+
+Commit
+bashgit add server/routes.ts server/cron/sync-gsheets-public.ts shared/schema.ts migrations/0009_gsheets_column_mapping.sql client/src/pages/integrations.tsx
+git commit -m "feat(gsheets): user-defined column mapping — no need to reorder your sheet
+
+Real users have spreadsheets with their own column conventions: phone in
+column A, customer name in column B, product in column C, etc. Forcing
+them to match TajerGrow's fixed positional layout (A=name, B=phone, ...)
+is friction.
+
+New flow: after pasting URL, the user picks which column of their sheet
+contains each TajerGrow field via dropdowns. Dropdowns show 'A — 0661...'
+with sample data so the mapping is obvious.
+
+- New /preview-url endpoint returns tabs + sample row + column count
+- /connect-url now requires magasinId + columnMapping in body
+- gsheet_column_mapping jsonb column persists the user's choice
+- Cron reads the per-integration mapping instead of a fixed POSITIONAL const
+- 3-step UI: URL → mapping form → status panel
+- Modifier button re-opens mapping form pre-filled with current values
+- Required fields (Nom, Téléphone) can't be 'Pas de colonne'
+- All other fields optional — null means 'skip this field'"
+git push

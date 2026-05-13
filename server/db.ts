@@ -471,6 +471,13 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] store_integrations public URL columns ensured ✅");
 
+    // ── 12d. store_integrations: gsheet_column_mapping for user-defined mapping ─
+    await client.query(`
+      ALTER TABLE public.store_integrations
+        ADD COLUMN IF NOT EXISTS gsheet_column_mapping JSONB DEFAULT NULL;
+    `);
+    console.log("[Migration] store_integrations.gsheet_column_mapping ensured ✅");
+
     // ── 13. carrier_accounts: magasin_id for per-magasin carrier scoping ─────
     await client.query(`
       ALTER TABLE public.carrier_accounts

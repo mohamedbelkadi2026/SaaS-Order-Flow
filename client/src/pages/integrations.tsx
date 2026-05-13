@@ -669,10 +669,30 @@ function resetActiveSheetStatuses() {
   ui.alert('✅ Statuts réinitialisés pour l\\'onglet "' + detection.tabName + '"');
 }`;
 
+  type ConnStep = 'url' | 'mapping' | 'done';
+  type SheetPreview = { sheetId: string; tabs: Array<{ gid: string; title: string }>; sampleRow: string[]; columnCount: number };
+  type ColMapping = Record<string, number | null>;
+
+  const DEFAULT_COL_MAPPING: ColMapping = {
+    name: 1, phone: 0, address: 3, city: 2,
+    product: 4, price: 5, quantity: 6,
+    note: null, utmCampaign: null, utmSource: null, productId: null,
+  };
+
+  function columnLetter(col: number): string {
+    let s = '';
+    let c = col;
+    while (c > 0) { const rem = (c - 1) % 26; s = String.fromCharCode(65 + rem) + s; c = Math.floor((c - 1) / 26); }
+    return s;
+  }
+
   const [sheetUrl, setSheetUrl] = useState('');
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [connStep, setConnStep] = useState<ConnStep>('url');
+  const [preview, setPreview] = useState<SheetPreview | null>(null);
   const [selectedMagasin, setSelectedMagasin] = useState<string>('');
-  const [editMode, setEditMode] = useState(false);
+  const [colMapping, setColMapping] = useState<ColMapping>(DEFAULT_COL_MAPPING);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const { data: magasins = [] } = useMagasins();
 
@@ -697,6 +717,12 @@ function resetActiveSheetStatuses() {
     queryKey: ['/api/integrations/google-sheets/status'],
   });
 
+  useEffect(() => {
+    if (gsheetsConn?.connected && connStep === 'url' && !sheetUrl) {
+      setConnStep('done');
+    }
+  }, [gsheetsConn?.connected]);
+
   function timeSince(dt: string | null): string {
     if (!dt) return "jamais";
     const diff = Date.now() - new Date(dt).getTime();
@@ -708,27 +734,41 @@ function resetActiveSheetStatuses() {
     return `il y a ${Math.floor(hours / 24)}j`;
   }
 
+  const handlePreview = async () => {
+    setIsPreviewing(true);
+    try {
+      const r = await fetch('/api/integrations/google-sheets/preview-url', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: sheetUrl }),
+      });
+      const data = await r.json();
+      if (!r.ok) { toast({ title: 'Erreur', description: data.error, variant: 'destructive' }); return; }
+      setPreview(data);
+      setConnStep('mapping');
+    } finally {
+      setIsPreviewing(false);
+    }
+  };
+
   const handleConnect = async () => {
     setIsConnecting(true);
     try {
+      const cleanMapping: Record<string, number> = {};
+      for (const [k, v] of Object.entries(colMapping)) { if (v !== null) cleanMapping[k] = v; }
       const r = await fetch('/api/integrations/google-sheets/connect-url', {
-        method: 'POST',
-        credentials: 'include',
+        method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: sheetUrl, magasinId: selectedMagasin ? Number(selectedMagasin) : undefined }),
+        body: JSON.stringify({ url: sheetUrl, magasinId: Number(selectedMagasin), columnMapping: cleanMapping }),
       });
       const data = await r.json();
-      if (!r.ok) {
-        toast({ title: 'Erreur', description: data.error, variant: 'destructive' });
-        return;
-      }
+      if (!r.ok) { toast({ title: 'Erreur', description: data.error, variant: 'destructive' }); return; }
       toast({
         title: '✅ Google Sheets connecté',
-        description: `${data.tabsCount} onglet(s) détecté(s). La première synchronisation démarre dans 30 secondes. Cliquez sur "Sync maintenant" pour forcer immédiatement.`,
+        description: `Mapping enregistré. La première synchronisation démarre dans 30 secondes.`,
         duration: 8000,
       });
-      setSheetUrl('');
-      setEditMode(false);
+      setConnStep('done');
       refetch();
     } finally {
       setIsConnecting(false);
@@ -737,40 +777,32 @@ function resetActiveSheetStatuses() {
 
   const handleDisconnect = async () => {
     if (!confirm('Déconnecter Google Sheets ? Les commandes déjà importées seront conservées.')) return;
-    await fetch('/api/integrations/google-sheets/disconnect', {
-      method: 'POST',
-      credentials: 'include',
-    });
+    await fetch('/api/integrations/google-sheets/disconnect', { method: 'POST', credentials: 'include' });
     toast({ title: 'Déconnecté', description: 'Les commandes importées sont conservées.' });
-    setEditMode(false);
+    setConnStep('url');
+    setSheetUrl('');
+    setPreview(null);
     refetch();
   };
 
   const handleResync = async () => {
     setIsSyncing(true);
     try {
-      const r = await fetch('/api/integrations/google-sheets/sync-now', {
-        method: 'POST',
-        credentials: 'include',
-      });
+      const r = await fetch('/api/integrations/google-sheets/sync-now', { method: 'POST', credentials: 'include' });
       const data = await r.json();
-      if (!r.ok) {
-        toast({ title: 'Erreur sync', description: data.error, variant: 'destructive' });
-      } else {
-        toast({ title: '✅ Sync effectuée', description: 'Les nouvelles lignes ont été importées.' });
-        refetch();
-      }
-    } catch {
-      toast({ title: 'Erreur réseau', variant: 'destructive' });
-    } finally {
-      setIsSyncing(false);
-    }
+      if (!r.ok) { toast({ title: 'Erreur sync', description: data.error, variant: 'destructive' }); }
+      else { toast({ title: '✅ Sync effectuée', description: 'Les nouvelles lignes ont été importées.' }); refetch(); }
+    } catch { toast({ title: 'Erreur réseau', variant: 'destructive' }); }
+    finally { setIsSyncing(false); }
   };
 
   const handleEnterEdit = () => {
     setSheetUrl(gsheetsConn?.sheetUrl || '');
     setSelectedMagasin(gsheetsConn?.magasinId ? String(gsheetsConn.magasinId) : '');
-    setEditMode(true);
+    const existing = gsheetsConn?.columnMapping;
+    setColMapping(existing ? { ...DEFAULT_COL_MAPPING, ...existing } : DEFAULT_COL_MAPPING);
+    setPreview(null);
+    setConnStep('url');
   };
 
   return (
@@ -792,17 +824,19 @@ function resetActiveSheetStatuses() {
           <TabsTrigger value="script" className="flex-1">📜 Apps Script (avancé)</TabsTrigger>
         </TabsList>
 
-        {/* ── Tab 1: URL publique ──────────────────────────────── */}
+        {/* ── Tab 1: URL publique — 3-step flow ─────────────────── */}
         <TabsContent value="url" className="mt-4">
-          {(!gsheetsConn?.connected || editMode) ? (
+
+          {/* ── Step 1: paste URL ─────────────────────────────────── */}
+          {connStep === 'url' && (
             <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
-              {editMode && (
+              {gsheetsConn?.connected && (
                 <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground mb-1">
                   <Link2 className="w-4 h-4" /> Modifier la connexion Google Sheets
                 </div>
               )}
               <div className="space-y-3">
-                {!editMode && (
+                {!gsheetsConn?.connected && (
                   <div>
                     <Label className="text-xs font-semibold mb-1 block">
                       Étape 1 : Rendez votre Google Sheet public (lecteur)
@@ -816,72 +850,152 @@ function resetActiveSheetStatuses() {
                     </ol>
                   </div>
                 )}
-
                 <div>
                   <Label className="text-xs font-semibold mb-1 block">
-                    {editMode ? 'URL du Google Sheet' : 'Étape 2 : Collez l\'URL ici'}
+                    {gsheetsConn?.connected ? 'URL du Google Sheet' : 'Étape 2 : Collez l\'URL ici'}
                   </Label>
                   <Input
                     type="url"
                     placeholder="https://docs.google.com/spreadsheets/d/..."
                     value={sheetUrl}
                     onChange={(e) => setSheetUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && sheetUrl) handlePreview(); }}
                     data-testid="input-sheet-url"
                   />
                 </div>
-
-                {(magasins as any[]).length > 0 && (
-                  <div>
-                    <Label className="text-xs font-semibold mb-1 block">
-                      Magasin associé <span className="text-red-500">*</span>
-                    </Label>
-                    <Select value={selectedMagasin} onValueChange={setSelectedMagasin}>
-                      <SelectTrigger data-testid="select-magasin-gsheets">
-                        <SelectValue placeholder="Choisir un magasin" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(magasins as any[]).map((m: any) => (
-                          <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
                 <div className="flex gap-2">
                   <Button
-                    onClick={handleConnect}
-                    disabled={!sheetUrl || isConnecting || ((magasins as any[]).length > 0 && !selectedMagasin)}
+                    onClick={handlePreview}
+                    disabled={!sheetUrl || isPreviewing}
                     className="flex-1"
-                    data-testid="button-connect-sheet-url"
+                    data-testid="button-preview-sheet-url"
                   >
-                    {isConnecting
-                      ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Vérification...</>
-                      : editMode ? 'Sauvegarder' : 'Connecter mon Google Sheet'}
+                    {isPreviewing
+                      ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Validation...</>
+                      : 'Suivant : configurer le mapping →'}
                   </Button>
-                  {editMode && (
-                    <Button variant="outline" onClick={() => setEditMode(false)}>
+                  {gsheetsConn?.connected && (
+                    <Button variant="outline" onClick={() => setConnStep('done')}>
                       Annuler
                     </Button>
                   )}
                 </div>
-
-                {!editMode && (
+                {!gsheetsConn?.connected && (
                   <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
                     ⚠️ Le sheet doit être public (lecteur). N'utilisez pas cette méthode si votre sheet contient des données sensibles non-commerciales.
                   </div>
                 )}
               </div>
             </div>
-          ) : (
+          )}
+
+          {/* ── Step 2: column mapping ────────────────────────────── */}
+          {connStep === 'mapping' && preview && (
             <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
-              {/* Header */}
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200 text-blue-800 text-sm">
+                <CheckCircle className="w-4 h-4 shrink-0 text-blue-500" />
+                Sheet validé — {preview.tabs.length} onglet(s) : {preview.tabs.map(t => t.title).join(', ')}
+              </div>
+
+              {(magasins as any[]).length > 0 && (
+                <div>
+                  <Label className="text-xs font-semibold mb-1 block">
+                    Magasin associé <span className="text-red-500">*</span>
+                  </Label>
+                  <Select value={selectedMagasin} onValueChange={setSelectedMagasin}>
+                    <SelectTrigger data-testid="select-magasin-gsheets">
+                      <SelectValue placeholder="Choisir un magasin" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(magasins as any[]).map((m: any) => (
+                        <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="border-t pt-3">
+                <p className="text-sm font-semibold mb-1">Mapping des colonnes</p>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Indiquez quelle colonne de votre sheet contient chaque information.
+                  Les champs marqués <span className="text-red-500 font-bold">*</span> sont obligatoires.
+                </p>
+                <div className="space-y-2">
+                  {[
+                    { key: 'name',       label: 'Nom client *',         required: true },
+                    { key: 'phone',      label: 'Téléphone *',          required: true },
+                    { key: 'address',    label: 'Adresse' },
+                    { key: 'city',       label: 'Ville' },
+                    { key: 'product',    label: 'Produit',              hint: 'Si vide, le nom de l\'onglet sera utilisé' },
+                    { key: 'price',      label: 'Prix (DH)' },
+                    { key: 'quantity',   label: 'Quantité',             hint: 'Défaut : 1' },
+                    { key: 'note',       label: 'Note / Commentaire' },
+                    { key: 'utmCampaign', label: 'UTM Campaign' },
+                    { key: 'utmSource',  label: 'UTM Source' },
+                    { key: 'productId',  label: 'Product ID (Ameex)' },
+                  ].map(({ key, label, required, hint }) => (
+                    <div key={key} className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-5">
+                        <span className="text-sm">{label}</span>
+                        {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
+                      </div>
+                      <div className="col-span-7">
+                        <Select
+                          value={colMapping[key] === null || colMapping[key] === undefined ? '__none__' : String(colMapping[key])}
+                          onValueChange={(v) => setColMapping(prev => ({ ...prev, [key]: v === '__none__' ? null : parseInt(v, 10) }))}
+                        >
+                          <SelectTrigger data-testid={`select-col-${key}`}>
+                            <SelectValue placeholder="Pas de colonne" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {!required && <SelectItem value="__none__">— Pas de colonne —</SelectItem>}
+                            {Array.from({ length: preview.columnCount }, (_, i) => {
+                              const letter = columnLetter(i + 1);
+                              const sample = (preview.sampleRow[i] || '').slice(0, 28) || '(vide)';
+                              return (
+                                <SelectItem key={i} value={String(i)}>
+                                  {letter} — {sample}
+                                </SelectItem>
+                              );
+                            })}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <Button variant="outline" onClick={() => setConnStep('url')}>← Retour</Button>
+                <Button
+                  onClick={handleConnect}
+                  disabled={
+                    isConnecting ||
+                    ((magasins as any[]).length > 0 && !selectedMagasin) ||
+                    colMapping.name === null || colMapping.name === undefined ||
+                    colMapping.phone === null || colMapping.phone === undefined
+                  }
+                  className="flex-1"
+                  data-testid="button-connect-sheet-url"
+                >
+                  {isConnecting
+                    ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Enregistrement...</>
+                    : '✅ Activer la synchronisation'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 3 / status panel (connected) ────────────────── */}
+          {connStep === 'done' && gsheetsConn?.connected && (
+            <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
               <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-green-800 text-sm font-semibold">
                 <CheckCircle className="w-4 h-4 shrink-0 text-green-600" />
                 Google Sheets connecté
               </div>
 
-              {/* Details */}
               <div className="text-xs space-y-2">
                 {gsheetsConn.sheetUrl && (
                   <div className="flex items-center gap-2">
@@ -901,6 +1015,14 @@ function resetActiveSheetStatuses() {
                     <span className="text-muted-foreground w-28 shrink-0">🏬 Magasin</span>
                     <span className="font-medium">
                       {(magasins as any[]).find((m: any) => Number(m.id) === Number(gsheetsConn.magasinId))?.name || `#${gsheetsConn.magasinId}`}
+                    </span>
+                  </div>
+                )}
+                {gsheetsConn.columnMapping && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-28 shrink-0">🗂️ Mapping</span>
+                    <span className="font-medium text-green-700">
+                      Nom={columnLetter((gsheetsConn.columnMapping.name ?? 0) + 1)}, Tél={columnLetter((gsheetsConn.columnMapping.phone ?? 1) + 1)}
                     </span>
                   </div>
                 )}
@@ -933,7 +1055,6 @@ function resetActiveSheetStatuses() {
                 Synchronisation automatique toutes les 5 minutes.
               </p>
 
-              {/* Actions */}
               <div className="flex gap-2 flex-wrap">
                 <Button
                   variant="outline"

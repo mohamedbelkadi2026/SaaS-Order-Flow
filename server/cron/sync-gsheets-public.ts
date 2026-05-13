@@ -26,10 +26,11 @@ function parseCsv(text: string): string[][] {
   return rows;
 }
 
-const POSITIONAL = {
+const DEFAULT_MAPPING: Record<string, number> = {
   name: 0, phone: 1, city: 2, address: 3,
   product: 4, price: 5, quantity: 6,
-  utmCampaign: 10, utmSource: 11,
+  note: 7,
+  utmCampaign: 10, utmSource: 11, productId: 12,
 };
 
 export async function syncAllPublicSheets() {
@@ -96,6 +97,14 @@ export async function syncOnePublicSheet(conn: any) {
       if (headerMatches >= 2 && !row0HasPhoneShape) dataStart = 1;
     }
 
+    // Use user-defined mapping if available, otherwise fall back to defaults
+    const mapping: Record<string, number> = (conn.gsheetColumnMapping as Record<string, number>) || DEFAULT_MAPPING;
+    const getCell = (row: string[], key: string): string => {
+      const col = mapping[key];
+      if (col === undefined || col === null) return '';
+      return (row[col] || '').toString().trim();
+    };
+
     const startIdx = Math.max(dataStart, lastRow);
     const newRows = rows.slice(startIdx);
 
@@ -103,8 +112,8 @@ export async function syncOnePublicSheet(conn: any) {
       const row = newRows[i];
       const rowIndex = startIdx + i;
 
-      const name  = (row[POSITIONAL.name]  || '').trim();
-      const phone = (row[POSITIONAL.phone] || '').trim();
+      const name  = getCell(row, 'name');
+      const phone = getCell(row, 'phone');
       if (!phone) continue;
 
       const ref = `GSP-${sheetId.slice(0, 6)}-${tab.gid}-R${rowIndex + 1}`;
@@ -115,10 +124,10 @@ export async function syncOnePublicSheet(conn: any) {
       if (existing.length > 0) continue;
 
       const totalPriceCents = Math.round(
-        parseFloat(String(row[POSITIONAL.price] || '0').replace(',', '.')) * 100
+        parseFloat((getCell(row, 'price') || '0').replace(',', '.')) * 100
       ) || 0;
-      const product = (row[POSITIONAL.product] || '').trim() || tab.title;
-      const qty     = parseInt(row[POSITIONAL.quantity] || '1', 10) || 1;
+      const product = getCell(row, 'product') || tab.title;
+      const qty     = parseInt(getCell(row, 'quantity') || '1', 10) || 1;
 
       try {
         await (storage as any).createOrder({
@@ -127,8 +136,8 @@ export async function syncOnePublicSheet(conn: any) {
           orderNumber:     ref,
           customerName:    name,
           customerPhone:   phone,
-          customerAddress: (row[POSITIONAL.address] || '').trim(),
-          customerCity:    (row[POSITIONAL.city] || '').trim(),
+          customerAddress: getCell(row, 'address'),
+          customerCity:    getCell(row, 'city'),
           rawProductName:  product,
           status:          'nouveau',
           totalPrice:      totalPriceCents,
@@ -136,9 +145,9 @@ export async function syncOnePublicSheet(conn: any) {
           shippingCost:    0,
           adSpend:         0,
           source:          'gsheets',
-          comment:         null,
-          utmSource:       (row[POSITIONAL.utmSource] || '').trim() || null,
-          utmCampaign:     (row[POSITIONAL.utmCampaign] || '').trim() || null,
+          comment:         getCell(row, 'note') || null,
+          utmSource:       getCell(row, 'utmSource') || null,
+          utmCampaign:     getCell(row, 'utmCampaign') || null,
         }, [{
           rawProductName: product,
           quantity: qty,
