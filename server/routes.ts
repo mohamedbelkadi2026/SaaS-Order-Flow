@@ -3940,6 +3940,7 @@ export async function registerRoutes(
       spreadsheetId:   row?.spreadsheetId,
       spreadsheetName: row?.spreadsheetName,
       syncTabs:        row?.syncTabs || "all",
+      magasinId:       row?.magasinId ?? null,
     });
   });
 
@@ -4037,6 +4038,24 @@ export async function registerRoutes(
     return tabs;
   }
 
+  // POST /api/integrations/google-sheets/sync-now
+  app.post("/api/integrations/google-sheets/sync-now", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const [conn] = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+      .limit(1);
+    if (!conn || !conn.gsheetUrl || conn.status === "inactive") {
+      return res.status(404).json({ error: "Aucune connexion Google Sheets active" });
+    }
+    try {
+      const { syncOnePublicSheet } = await import("./cron/sync-gsheets-public");
+      await syncOnePublicSheet(conn as any);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // POST /api/integrations/google-sheets/connect-url
   app.post("/api/integrations/google-sheets/connect-url", requireAuth, async (req, res) => {
     const { url, magasinId } = req.body as { url: string; magasinId?: number };
@@ -4081,6 +4100,7 @@ export async function registerRoutes(
           gsheetSyncState: {},
           magasinId: magasinId || null,
           status: "active",
+          type: "store",
         })
         .where(eq(storeIntegrations.id, existing[0].id));
     } else {
@@ -4088,7 +4108,7 @@ export async function registerRoutes(
         storeId,
         magasinId: magasinId || null,
         provider: "gsheets",
-        type: "url",
+        type: "store",
         credentials: "{}",
         gsheetUrl: url,
         gsheetId: sheetId,

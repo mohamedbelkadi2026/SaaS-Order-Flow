@@ -1,0 +1,188 @@
+🐛 BUGFIX — Google Sheets public URL connector: 3 issues after first connect
+What's broken
+After pushing the public-URL connector, the user reports three issues:
+Issue 1: Orders added to the sheet don't appear in TajerGrow
+The user pasted their sheet URL, got "connected" toast, then added a test row to one of the tabs. After waiting >5 minutes, no order shows up in Mes Commandes / Nouveaux.
+Possible causes (to investigate in order):
+
+The cron setInterval was registered but the function never actually runs (typo in import, missing await, exception swallowed)
+The 30-second startup sync ran BEFORE the user added the test row, then the next tick is 5 minutes later
+The orders ARE being created but with magasin_id = NULL, so the Mes Commandes filter (which usually scopes by magasin) hides them
+Header-row detection skips row 1 even on sheets that don't have headers, losing the first new row
+
+Issue 2: Google Sheets doesn't appear in the magasin's "connected integrations" list
+When the user opens a magasin's page (e.g. Promomarkett), the "Connected integrations" section shows Shopify but NOT Google Sheets — even after a successful connect.
+This is almost certainly the magasin-page query filtering by provider IN (...) with a hardcoded list that doesn't include 'gsheets'.
+Issue 3: After connecting, the user has no clear confirmation or "edit" path
+The current flow:
+
+User pastes URL → clicks Connect
+Toast: "Connected, 12 tabs detected"
+...and then nothing. The UI doesn't show:
+
+Whether the cron has run
+When the last sync was
+How many rows have been processed per tab
+How to edit/disconnect/change magasin
+How to force an immediate sync
+
+
+
+Fixes required
+Fix 1A — Verify cron is actually running
+In server/index.ts, locate the gsheets cron registration. Ensure:
+tsimport { syncAllPublicSheets } from './cron/sync-gsheets-public';
+
+// Run once 30 seconds after startup (gives DB time to settle)
+setTimeout(() => {
+  syncAllPublicSheets()
+    .then(() => console.log('[GSHEETS-PUBLIC-CRON] Initial sync complete'))
+    .catch(err => console.error('[GSHEETS-PUBLIC-CRON] Initial sync failed:', err));
+}, 30_000);
+
+// Then every 5 minutes
+setInterval(() => {
+  syncAllPublicSheets()
+    .then(() => console.log('[GSHEETS-PUBLIC-CRON] Tick complete'))
+    .catch(err => console.error('[GSHEETS-PUBLIC-CRON] Tick failed:', err));
+}, 5 * 60 * 1000);
+The success/error logs are critical — without them, we can't tell from Railway logs whether the cron is running. Add them.
+Fix 1B — Header detection is too aggressive
+In server/cron/sync-gsheets-public.ts, the heuristic skips row 0 if it "looks like a header". For sheets without headers (the user's case — see legacy "cofer" tab structure), this drops the first data row.
+Make detection conservative: only skip row 0 if MULTIPLE recognized field words appear in different cells (not just one anywhere in the joined string):
+ts// Count how many cells in row 0 individually match a known header word
+const HEADER_WORDS = ['nom', 'name', 'phone', 'telephone', 'tel', 'address',
+                      'adresse', 'city', 'ville', 'product', 'produit', 'price',
+                      'prix', 'fullname', 'note', 'comment', 'utm_source',
+                      'utm_campaign', 'campaign', 'source', 'sku'];
+
+let headerMatches = 0;
+for (const cell of (rows[0] || [])) {
+  const norm = String(cell).toLowerCase().trim();
+  if (HEADER_WORDS.some(w => norm === w || norm.includes(w))) headerMatches++;
+}
+// Need at least 2 matches AND row 0 must not contain any obvious data
+// (phone-number-shaped, all-digits cells, etc.)
+const row0HasPhoneShape = (rows[0] || []).some(c => /^\+?\d{8,}$/.test(String(c).trim()));
+const dataStart = (headerMatches >= 2 && !row0HasPhoneShape) ? 1 : 0;
+With this, the user's headerless sheets (where row 1 is Achache aziz | 714585443 | Fez | ...) get dataStart=0 because row 0 has a phone number, not header words.
+Fix 1C — Always set magasinId on created orders
+In the cron's createOrder call, ensure magasinId is set to the integration's magasinId. If the integration was created without one (no magasin chosen during connect), reject the connect rather than silently creating orphan orders:
+In the /api/integrations/google-sheets/connect-url handler, add this guard near the top:
+tsif (!magasinId) {
+  return res.status(400).json({
+    error: "Veuillez sélectionner un magasin avant de connecter le sheet."
+  });
+}
+
+// Validate the magasin belongs to the user's store
+const [magasin] = await db.select().from(stores)
+  .where(and(eq(stores.id, magasinId), eq(stores.parentStoreId, storeId)))
+  .limit(1);
+if (!magasin) {
+  return res.status(400).json({ error: "Magasin introuvable." });
+}
+And on the frontend, disable the Connect button until a magasin is selected.
+Fix 1D — Force-sync endpoint + button
+Add an endpoint that lets the user trigger an immediate sync without waiting 5 minutes:
+tsapp.post('/api/integrations/google-sheets/sync-now', requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const [conn] = await db.select().from(storeIntegrations)
+    .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, 'gsheets')))
+    .limit(1);
+  if (!conn) return res.status(404).json({ error: 'Not connected' });
+
+  try {
+    await syncOnePublicSheet(conn as any);  // exported helper
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+Frontend wire-up — the "🔄 Forcer une sync maintenant" button calls this endpoint and shows the result.
+Fix 2 — Show Google Sheets in magasin integrations list
+Find the magasin page query that lists "connected integrations" — likely in server/routes.ts under /api/stores/:id/integrations or /api/magasins/:id or rendered directly from a client-side query like /api/store-integrations?magasinId=X.
+Search for the filter that lists providers:
+bashgrep -rn "shopify.*woocommerce\|providers.*=.*\[" server/ client/src/ | head -10
+Wherever there's a hardcoded provider list like:
+tsconst VISIBLE_PROVIDERS = ['shopify', 'woocommerce', 'youcan', 'storeep'];
+Add 'gsheets':
+tsconst VISIBLE_PROVIDERS = ['shopify', 'woocommerce', 'youcan', 'storeep', 'gsheets'];
+And in the magasin page UI, render a Google Sheets card the same way the Shopify card is rendered. Use the existing <IntegrationCard> component if there is one, with:
+
+Icon: 📊
+Title: "Google Sheets"
+Status: from integration.status
+Subtitle: number of tabs + last sync time
+Action: "Voir détails" → links to /integrations#gsheets
+
+Fix 3 — Better post-connect UI
+After successful connect, the user should see a status panel that clearly shows:
+┌─────────────────────────────────────────────────┐
+│  ✅ Google Sheets connecté                       │
+│                                                  │
+│  📋 Sheet : "orders fatima"                      │
+│  🏬 Magasin : Promomarkett                       │
+│  📑 12 onglets synchronisés                      │
+│  🕐 Dernière sync : il y a 2 minutes             │
+│  📊 1,247 commandes synchronisées au total       │
+│                                                  │
+│  [🔄 Sync maintenant]  [✏️ Modifier]  [Déconnecter] │
+│                                                  │
+│  📑 Détail par onglet :                          │
+│   • Sheet1     — 152 lignes traitées             │
+│   • hachoir    — 152 lignes traitées             │
+│   • cofer      — 152 lignes traitées             │
+│   • ...                                          │
+└─────────────────────────────────────────────────┘
+When the user clicks "✏️ Modifier", the form returns to the URL input + magasin selector pre-filled with current values. Saving updates the integration row in place (same id), not creating a new one.
+Specifically in client/src/pages/integrations.tsx, when gsheetsConn?.connected === true, render a <ConnectedStatusCard> component with the structure above. Add an editMode state — when editMode === true, show the URL/magasin form pre-filled; when false, show the status panel.
+Fix 4 — Toast on save should be more informative
+Currently toast says "Connected, X tabs". Make it explicit about what happens next:
+tstoast({
+  title: '✅ Google Sheets connecté',
+  description: `${data.tabsCount} onglet(s) détecté(s). La première synchronisation démarre dans 30 secondes. Vous pouvez aussi cliquer sur "Sync maintenant" pour forcer immédiatement.`,
+  duration: 8000,
+});
+Acceptance criteria
+
+✅ Connect button is disabled until both URL and magasin are filled.
+✅ Connecting without a magasin returns clear error.
+✅ After connect, the status panel shows: sheet name, magasin, tab count, last sync time, per-tab row counts.
+✅ "Sync maintenant" button triggers immediate sync and shows toast with result.
+✅ Adding a new row in any tab → at most 5 minutes later, order appears in TajerGrow scoped to the right magasin.
+✅ Headerless sheets (row 1 = data) don't lose row 1 — first new row imports correctly.
+✅ Magasin page "Connected integrations" lists Google Sheets alongside Shopify.
+✅ "Modifier" button on the status panel returns to the form with values pre-filled.
+✅ Railway logs show [GSHEETS-PUBLIC-CRON] lines every 5 minutes confirming the cron runs.
+✅ Disconnecting clears the URL + state but doesn't delete imported orders.
+
+Commit
+bashgit add server/cron/sync-gsheets-public.ts server/routes.ts server/index.ts client/src/pages/integrations.tsx client/src/pages/magasin/[id].tsx
+git commit -m "fix(gsheets): magasin required + force-sync button + show in magasin list + better header detection
+
+Three reported issues after deploying the public URL connector:
+
+1. Orders weren't appearing after adding rows to the sheet:
+   - Header detection was too aggressive (skipped row 1 on headerless sheets,
+     losing the first data row)
+   - Orders were created without magasin_id, hidden by Mes Commandes filters
+   - Cron silently failed without logs, no way to debug
+
+2. Google Sheets didn't show in magasin's integrations list
+   - The visible-providers filter was hardcoded to shopify/woocommerce/youcan/storeep
+   - Added 'gsheets' to the list and rendered the corresponding card
+
+3. After connect, UI gave no feedback or edit path
+   - Added a status panel showing sheet name, magasin, tab count, last sync,
+     per-tab row counts
+   - Added Modifier + Sync-Now buttons
+   - Made magasin required during connect (with frontend validation)
+   - Made the cron log a tick line every 5 minutes for observability
+
+- Header detection now requires 2+ recognized field words AND no
+  phone-number-shaped cells in row 0 before skipping it
+- /api/integrations/google-sheets/sync-now triggers immediate sync
+- Connect endpoint validates magasin ownership before saving
+- Disconnect preserves imported orders (only clears URL + state)"
+git push

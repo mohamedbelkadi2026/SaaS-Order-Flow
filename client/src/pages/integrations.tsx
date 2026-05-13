@@ -672,6 +672,8 @@ function resetActiveSheetStatuses() {
   const [sheetUrl, setSheetUrl] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
   const [selectedMagasin, setSelectedMagasin] = useState<string>('');
+  const [editMode, setEditMode] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const { data: magasins = [] } = useMagasins();
 
   const handleCopy = () => {
@@ -713,7 +715,7 @@ function resetActiveSheetStatuses() {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: sheetUrl, magasinId: selectedMagasin || undefined }),
+        body: JSON.stringify({ url: sheetUrl, magasinId: selectedMagasin ? Number(selectedMagasin) : undefined }),
       });
       const data = await r.json();
       if (!r.ok) {
@@ -721,10 +723,12 @@ function resetActiveSheetStatuses() {
         return;
       }
       toast({
-        title: '✅ Connecté !',
-        description: `${data.tabsCount} onglet(s) détecté(s) : ${data.tabs.join(', ')}. Première synchronisation dans 30 secondes.`,
+        title: '✅ Google Sheets connecté',
+        description: `${data.tabsCount} onglet(s) détecté(s). La première synchronisation démarre dans 30 secondes. Cliquez sur "Sync maintenant" pour forcer immédiatement.`,
+        duration: 8000,
       });
       setSheetUrl('');
+      setEditMode(false);
       refetch();
     } finally {
       setIsConnecting(false);
@@ -732,17 +736,41 @@ function resetActiveSheetStatuses() {
   };
 
   const handleDisconnect = async () => {
-    if (!confirm('Déconnecter Google Sheets ?')) return;
+    if (!confirm('Déconnecter Google Sheets ? Les commandes déjà importées seront conservées.')) return;
     await fetch('/api/integrations/google-sheets/disconnect', {
       method: 'POST',
       credentials: 'include',
     });
-    toast({ title: 'Déconnecté' });
+    toast({ title: 'Déconnecté', description: 'Les commandes importées sont conservées.' });
+    setEditMode(false);
     refetch();
   };
 
-  const handleResync = () => {
-    toast({ title: 'Sync demandée', description: 'La prochaine sync aura lieu dans moins de 5 minutes.' });
+  const handleResync = async () => {
+    setIsSyncing(true);
+    try {
+      const r = await fetch('/api/integrations/google-sheets/sync-now', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        toast({ title: 'Erreur sync', description: data.error, variant: 'destructive' });
+      } else {
+        toast({ title: '✅ Sync effectuée', description: 'Les nouvelles lignes ont été importées.' });
+        refetch();
+      }
+    } catch {
+      toast({ title: 'Erreur réseau', variant: 'destructive' });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleEnterEdit = () => {
+    setSheetUrl(gsheetsConn?.sheetUrl || '');
+    setSelectedMagasin(gsheetsConn?.magasinId ? String(gsheetsConn.magasinId) : '');
+    setEditMode(true);
   };
 
   return (
@@ -766,25 +794,32 @@ function resetActiveSheetStatuses() {
 
         {/* ── Tab 1: URL publique ──────────────────────────────── */}
         <TabsContent value="url" className="mt-4">
-          {!gsheetsConn?.connected ? (
+          {(!gsheetsConn?.connected || editMode) ? (
             <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
-              <div className="space-y-3">
-                <div>
-                  <Label className="text-xs font-semibold mb-1 block">
-                    Étape 1 : Rendez votre Google Sheet public (lecteur)
-                  </Label>
-                  <ol className="text-xs space-y-1 text-muted-foreground list-decimal pl-4">
-                    <li>Ouvrez votre Google Sheet</li>
-                    <li>Cliquez sur <b>Partager</b> en haut à droite</li>
-                    <li>Section "Accès général" → choisissez <b>"Tout le monde avec le lien"</b></li>
-                    <li>Rôle : <b>Lecteur</b> (pas Éditeur)</li>
-                    <li>Cliquez sur <b>Copier le lien</b></li>
-                  </ol>
+              {editMode && (
+                <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground mb-1">
+                  <Link2 className="w-4 h-4" /> Modifier la connexion Google Sheets
                 </div>
+              )}
+              <div className="space-y-3">
+                {!editMode && (
+                  <div>
+                    <Label className="text-xs font-semibold mb-1 block">
+                      Étape 1 : Rendez votre Google Sheet public (lecteur)
+                    </Label>
+                    <ol className="text-xs space-y-1 text-muted-foreground list-decimal pl-4">
+                      <li>Ouvrez votre Google Sheet</li>
+                      <li>Cliquez sur <b>Partager</b> en haut à droite</li>
+                      <li>Section "Accès général" → choisissez <b>"Tout le monde avec le lien"</b></li>
+                      <li>Rôle : <b>Lecteur</b> (pas Éditeur)</li>
+                      <li>Cliquez sur <b>Copier le lien</b></li>
+                    </ol>
+                  </div>
+                )}
 
                 <div>
                   <Label className="text-xs font-semibold mb-1 block">
-                    Étape 2 : Collez l'URL ici
+                    {editMode ? 'URL du Google Sheet' : 'Étape 2 : Collez l\'URL ici'}
                   </Label>
                   <Input
                     type="url"
@@ -795,9 +830,11 @@ function resetActiveSheetStatuses() {
                   />
                 </div>
 
-                {(magasins as any[]).length > 1 && (
+                {(magasins as any[]).length > 0 && (
                   <div>
-                    <Label className="text-xs font-semibold mb-1 block">Magasin associé</Label>
+                    <Label className="text-xs font-semibold mb-1 block">
+                      Magasin associé <span className="text-red-500">*</span>
+                    </Label>
                     <Select value={selectedMagasin} onValueChange={setSelectedMagasin}>
                       <SelectTrigger data-testid="select-magasin-gsheets">
                         <SelectValue placeholder="Choisir un magasin" />
@@ -811,66 +848,122 @@ function resetActiveSheetStatuses() {
                   </div>
                 )}
 
-                <Button
-                  onClick={handleConnect}
-                  disabled={!sheetUrl || isConnecting}
-                  className="w-full"
-                  data-testid="button-connect-sheet-url"
-                >
-                  {isConnecting
-                    ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Vérification...</>
-                    : 'Connecter mon Google Sheet'}
-                </Button>
-
-                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
-                  ⚠️ Le sheet doit être public (lecteur). N'utilisez pas cette méthode si votre sheet contient des données sensibles non-commerciales.
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleConnect}
+                    disabled={!sheetUrl || isConnecting || ((magasins as any[]).length > 0 && !selectedMagasin)}
+                    className="flex-1"
+                    data-testid="button-connect-sheet-url"
+                  >
+                    {isConnecting
+                      ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Vérification...</>
+                      : editMode ? 'Sauvegarder' : 'Connecter mon Google Sheet'}
+                  </Button>
+                  {editMode && (
+                    <Button variant="outline" onClick={() => setEditMode(false)}>
+                      Annuler
+                    </Button>
+                  )}
                 </div>
+
+                {!editMode && (
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+                    ⚠️ Le sheet doit être public (lecteur). N'utilisez pas cette méthode si votre sheet contient des données sensibles non-commerciales.
+                  </div>
+                )}
               </div>
             </div>
           ) : (
             <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
-              <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-green-800 text-sm font-medium">
-                <CheckCircle className="w-4 h-4 shrink-0" />
-                Connecté — {gsheetsConn.tabs?.length || 0} onglet(s) détecté(s)
-                {gsheetsConn.lastSyncAt && (
-                  <span className="ml-auto text-xs font-normal text-green-700">
-                    Dernière sync : {timeSince(gsheetsConn.lastSyncAt)}
-                  </span>
+              {/* Header */}
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-green-50 border border-green-200 text-green-800 text-sm font-semibold">
+                <CheckCircle className="w-4 h-4 shrink-0 text-green-600" />
+                Google Sheets connecté
+              </div>
+
+              {/* Details */}
+              <div className="text-xs space-y-2">
+                {gsheetsConn.sheetUrl && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-28 shrink-0">📋 Sheet URL</span>
+                    <a
+                      href={gsheetsConn.sheetUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:underline truncate max-w-[280px]"
+                    >
+                      {gsheetsConn.sheetUrl.replace('https://docs.google.com/spreadsheets/d/', '').slice(0, 40)}…
+                    </a>
+                  </div>
+                )}
+                {gsheetsConn.magasinId && (magasins as any[]).length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-28 shrink-0">🏬 Magasin</span>
+                    <span className="font-medium">
+                      {(magasins as any[]).find((m: any) => Number(m.id) === Number(gsheetsConn.magasinId))?.name || `#${gsheetsConn.magasinId}`}
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground w-28 shrink-0">📑 Onglets</span>
+                  <span className="font-medium">{gsheetsConn.tabs?.length || 0} synchronisé(s)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground w-28 shrink-0">🕐 Dernière sync</span>
+                  <span className="font-medium">{timeSince(gsheetsConn.lastSyncAt)}</span>
+                </div>
+                {gsheetsConn.tabs && gsheetsConn.tabs.length > 0 && (
+                  <div className="flex items-start gap-2">
+                    <span className="text-muted-foreground w-28 shrink-0 pt-0.5">📊 Lignes par onglet</span>
+                    <ul className="space-y-0.5 flex-1">
+                      {gsheetsConn.tabs.map((t: any) => (
+                        <li key={t.gid} className="flex justify-between items-center py-0.5 border-b border-dashed last:border-0">
+                          <span className="truncate max-w-[180px]">• {t.title}</span>
+                          <span className="text-muted-foreground font-mono ml-2">
+                            {gsheetsConn.syncState?.[`tab_${t.gid}`] || 0} lignes
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
               </div>
 
-              {gsheetsConn.tabs?.length > 0 && (
-                <div className="text-xs space-y-1">
-                  <p className="font-semibold">Onglets synchronisés :</p>
-                  <ul className="space-y-0.5">
-                    {gsheetsConn.tabs.map((t: any) => (
-                      <li key={t.gid} className="flex justify-between items-center py-1 border-b last:border-0">
-                        <span>📑 {t.title}</span>
-                        <span className="text-muted-foreground font-mono">
-                          {gsheetsConn.syncState?.[`tab_${t.gid}`] || 0} lignes traitées
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
               <p className="text-xs text-muted-foreground">
-                Synchronisation automatique toutes les 5 minutes. Les nouvelles lignes ajoutées à votre sheet apparaîtront ici en quelques minutes.
+                Synchronisation automatique toutes les 5 minutes.
               </p>
 
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={handleResync} className="gap-2" data-testid="button-resync-gsheets">
-                  <RefreshCw className="w-4 h-4" /> Forcer une sync
+              {/* Actions */}
+              <div className="flex gap-2 flex-wrap">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResync}
+                  disabled={isSyncing}
+                  className="gap-2"
+                  data-testid="button-resync-gsheets"
+                >
+                  {isSyncing
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Sync...</>
+                    : <><RefreshCw className="w-3.5 h-3.5" />Sync maintenant</>}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleEnterEdit}
+                  className="gap-2"
+                  data-testid="button-edit-gsheets"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" /> Modifier
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleDisconnect}
-                  className="text-red-600 hover:text-red-700 border-red-200 hover:bg-red-50 gap-2"
+                  className="text-red-600 hover:text-red-700 border-red-200 hover:bg-red-50 gap-2 ml-auto"
                   data-testid="button-disconnect-gsheets"
                 >
-                  <Trash2 className="w-4 h-4" /> Déconnecter
+                  <Trash2 className="w-3.5 h-3.5" /> Déconnecter
                 </Button>
               </div>
             </div>

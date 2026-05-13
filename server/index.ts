@@ -692,14 +692,14 @@ app.use((req, res, next) => {
 
   // ── Google Sheets public URL polling — every 5 min ────────────────────────
   setTimeout(() => {
-    syncAllPublicSheets().catch((err: any) =>
-      console.error("[GSHEETS-PUBLIC-CRON] Error:", err.message)
-    );
+    syncAllPublicSheets()
+      .then(() => console.log("[GSHEETS-PUBLIC-CRON] Initial sync complete"))
+      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Initial sync failed:", err.message));
   }, 30_000);
   const gsheetsPublicSync = setInterval(() => {
-    syncAllPublicSheets().catch((err: any) =>
-      console.error("[GSHEETS-PUBLIC-CRON] Error:", err.message)
-    );
+    syncAllPublicSheets()
+      .then(() => console.log("[GSHEETS-PUBLIC-CRON] Tick complete"))
+      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Tick failed:", err.message));
   }, 5 * 60 * 1000);
   intervals.push(gsheetsPublicSync);
 

@@ -42,14 +42,21 @@ export async function syncAllPublicSheets() {
 
   for (const conn of conns) {
     try {
-      await syncOne(conn as any);
+      await syncOnePublicSheet(conn as any);
     } catch (err: any) {
       console.error(`[GSHEETS-PUBLIC] Store ${conn.storeId} error:`, err.message);
     }
   }
 }
 
-async function syncOne(conn: any) {
+const HEADER_WORDS = [
+  'nom', 'name', 'phone', 'telephone', 'tel', 'address',
+  'adresse', 'city', 'ville', 'product', 'produit', 'price',
+  'prix', 'fullname', 'note', 'comment', 'utm_source',
+  'utm_campaign', 'campaign', 'source', 'sku',
+];
+
+export async function syncOnePublicSheet(conn: any) {
   const sheetId: string = conn.gsheetId;
   const tabs: Array<{ gid: string; title: string }> = conn.gsheetTabs || [];
   const state: Record<string, number> = conn.gsheetSyncState || {};
@@ -72,12 +79,21 @@ async function syncOne(conn: any) {
     const text = await resp.text();
     const rows = parseCsv(text);
 
+    // Conservative header detection: require ≥2 cells individually matching a
+    // known header word AND no phone-number-shaped cell in row 0.
+    // This prevents swallowing row 1 on headerless sheets where the first row
+    // is actual data (e.g. "Achache aziz | 714585443 | Fez | ...").
     let dataStart = 0;
     if (rows.length > 0) {
-      const first = rows[0].map(c => c.toLowerCase().trim()).join(' ');
-      if (/\b(nom|name|phone|telephone|tel|address|city|ville|product|price|prix|fullname)\b/.test(first)) {
-        dataStart = 1;
+      let headerMatches = 0;
+      for (const cell of (rows[0] || [])) {
+        const norm = String(cell).toLowerCase().trim();
+        if (HEADER_WORDS.some(w => norm === w || norm.includes(w))) headerMatches++;
       }
+      const row0HasPhoneShape = (rows[0] || []).some(
+        c => /^\+?\d{8,}$/.test(String(c).trim())
+      );
+      if (headerMatches >= 2 && !row0HasPhoneShape) dataStart = 1;
     }
 
     const startIdx = Math.max(dataStart, lastRow);
