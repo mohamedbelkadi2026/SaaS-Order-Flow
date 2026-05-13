@@ -29,24 +29,11 @@ import { sql } from "drizzle-orm";
  * Returns the count of orders promoted.
  */
 export async function promoteScheduledOrders(): Promise<{ promoted: number }> {
-  const rows = await db.execute<{ id: number; order_number: string | null }>(sql`
-    UPDATE orders
-    SET    status        = 'confirme',
-           scheduled_for = NULL,
-           updated_at    = NOW()
-    WHERE  status        = 'confirme_reporte'
-      AND  scheduled_for <= CURRENT_DATE
-    RETURNING id, order_number
-  `);
-
-  // node-postgres / drizzle returns either { rows } or an array depending on driver.
-  const promoted = Array.isArray(rows) ? rows : (rows as any).rows ?? [];
-  if (promoted.length === 0) return { promoted: 0 };
-
-  console.log(`[CRON-PROMOTE] Promoted ${promoted.length} order(s) confirme_reporte → confirme:`);
-  for (const r of promoted) {
-    console.log(`[CRON-PROMOTE]   ✓ #${r.order_number ?? r.id}`);
-  }
-
-  return { promoted: promoted.length };
+  // AUTO-PROMOTION DISABLED — agents must confirm manually.
+  // "Confirmé Reporté" orders must never be auto-promoted to "Confirmé" by a
+  // scheduler. The scheduled_for date is now used only as a visual reminder for
+  // agents in the order details modal. Status changes to 'confirme' require an
+  // explicit manual action through the UI.
+  console.log("[CRON-PROMOTE] Auto-promotion disabled — skipping (manual confirmation required).");
+  return { promoted: 0 };
 }

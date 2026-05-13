@@ -841,8 +841,8 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                     className={inputCls}
                     data-testid="input-scheduled-for"
                   />
-                  <p className="text-[11px] text-blue-700 dark:text-blue-300 mt-1">
-                    La commande sera automatiquement promue en "Confirmé" à cette date (06:00 Casablanca).
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-1">
+                    Date de rappel enregistrée — l'agent devra confirmer manuellement.
                   </p>
                 </Field>
               </div>
