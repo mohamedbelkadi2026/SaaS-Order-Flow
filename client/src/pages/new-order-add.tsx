@@ -174,6 +174,7 @@ export default function NewOrderAdd() {
         agentId: agentId ? parseInt(agentId) : null,
         comment: comment.trim() || null,
         totalPrice: itemsTotal,
+        magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : null,
         items: items
           .filter(it => it.rawProductName.trim())
           .map(it => ({
