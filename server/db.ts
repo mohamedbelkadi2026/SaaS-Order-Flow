@@ -478,6 +478,13 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[Migration] store_integrations.gsheet_column_mapping ensured ✅");
 
+    // ── 12e. store_integrations: gsheet_webhook_url for push direction ────────
+    await client.query(`
+      ALTER TABLE public.store_integrations
+        ADD COLUMN IF NOT EXISTS gsheet_webhook_url TEXT;
+    `);
+    console.log("[Migration] store_integrations.gsheet_webhook_url ensured ✅");
+
     // ── 13. carrier_accounts: magasin_id for per-magasin carrier scoping ─────
     await client.query(`
       ALTER TABLE public.carrier_accounts

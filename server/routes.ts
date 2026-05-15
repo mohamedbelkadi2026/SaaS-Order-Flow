@@ -18,6 +18,7 @@ import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
+import { pushOrderToSheet } from "./services/gsheets-push";
 
 import fs from "fs";
 
@@ -1709,6 +1710,24 @@ export async function registerRoutes(
       const cs = updated?.commentStatus ?? undefined;
       emitOrderUpdated(order.storeId, orderId, status, cs);
       broadcastToStore(order.storeId, "order_updated", { orderId, status, commentStatus: cs });
+      pushOrderToSheet(order.storeId, {
+        action: "order.updated",
+        orderNumber: (updated as any)?.orderNumber || String(orderId),
+        customerName: order.customerName || "",
+        customerPhone: order.customerPhone || "",
+        customerAddress: order.customerAddress || "",
+        customerCity: order.customerCity || "",
+        productName: "",
+        totalPrice: 0,
+        quantity: 1,
+        note: null,
+        status,
+        utmSource: null,
+        utmCampaign: null,
+        productId: null,
+        magasin: null,
+        createdAt: "",
+      }).catch(() => {});
       res.json(updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
@@ -3548,6 +3567,25 @@ export async function registerRoutes(
       // Real-time: push new order to all connected store clients
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+      pushOrderToSheet(storeId, {
+        action: "order.created",
+        orderNumber: parsed.orderNumber || "",
+        customerName: parsed.customerName || "",
+        customerPhone: parsed.customerPhone || "",
+        customerAddress: parsed.customerAddress || "",
+        customerCity: parsed.customerCity || "",
+        productName: (order as any).rawProductName || "",
+        totalPrice: order.totalPrice || 0,
+        quantity: 1,
+        note: order.comment || null,
+        status: order.status || "nouveau",
+        utmSource: (order as any).utmSource || null,
+        utmCampaign: (order as any).utmCampaign || null,
+        productId: null,
+        magasin: null,
+        createdAt: new Date().toLocaleString("fr-MA"),
+        sourceUrl: "N/A",
+      }).catch(() => {});
 
       res.json({ success: true, orderId: order.id, assignedTo: nextAgentId });
     } catch (err: any) {
@@ -3679,6 +3717,25 @@ export async function registerRoutes(
       // ── Real-time push — Socket.io + SSE ─────────────────────────────────────
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+      pushOrderToSheet(storeId, {
+        action: "order.created",
+        orderNumber: parsed.orderNumber || "",
+        customerName: parsed.customerName || "",
+        customerPhone: parsed.customerPhone || "",
+        customerAddress: parsed.customerAddress || "",
+        customerCity: parsed.customerCity || "",
+        productName: (order as any).rawProductName || "",
+        totalPrice: order.totalPrice || 0,
+        quantity: 1,
+        note: order.comment || null,
+        status: order.status || "nouveau",
+        utmSource: (order as any).utmSource || null,
+        utmCampaign: (order as any).utmCampaign || null,
+        productId: null,
+        magasin: null,
+        createdAt: new Date().toLocaleString("fr-MA"),
+        sourceUrl: "N/A",
+      }).catch(() => {});
       console.log(`[WEBHOOK SUCCESS]: Order #${parsed.orderNumber} saved for Store ID: ${storeId} (orderId: ${order.id})`);
 
       res.json({ success: true, orderId: order.id });
@@ -3751,6 +3808,25 @@ export async function registerRoutes(
       // Real-time push
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName, status: 'nouveau', source: 'gsheets' });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
+      pushOrderToSheet(storeId, {
+        action: "order.created",
+        orderNumber: orderNumber || "",
+        customerName: customerName || "",
+        customerPhone: customerPhone || "",
+        customerAddress: customerAddress || "",
+        customerCity: customerCity || "",
+        productName: (order as any).rawProductName || "",
+        totalPrice: order.totalPrice || 0,
+        quantity: 1,
+        note: order.comment || null,
+        status: "nouveau",
+        utmSource: null,
+        utmCampaign: null,
+        productId: null,
+        magasin: null,
+        createdAt: new Date().toLocaleString("fr-MA"),
+        sourceUrl: "N/A",
+      }).catch(() => {});
       res.json({ success: true, orderId: order.id });
       // ── Fire-and-forget: AI WhatsApp confirmation ──────────────
       if (getWaAutoSettings(storeId).aiConfirmation) {
@@ -3942,7 +4018,24 @@ export async function registerRoutes(
       syncTabs:        row?.syncTabs || "all",
       magasinId:       row?.magasinId ?? null,
       columnMapping:   (row as any)?.gsheetColumnMapping ?? null,
+      webhookUrl:      (row as any)?.gsheetWebhookUrl ?? null,
     });
+  });
+
+  app.get("/api/integrations/google-sheets/debug", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const all = await db.select({
+      id: storeIntegrations.id,
+      status: storeIntegrations.status,
+      gsheetUrl: (storeIntegrations as any).gsheetUrl,
+      gsheetId: (storeIntegrations as any).gsheetId,
+      webhookUrl: (storeIntegrations as any).gsheetWebhookUrl,
+    }).from(storeIntegrations)
+      .where(and(
+        eq(storeIntegrations.storeId, storeId),
+        eq(storeIntegrations.provider, "gsheets"),
+      ));
+    res.json(all);
   });
 
   app.get("/api/integrations/google-sheets/spreadsheets", requireAuth, async (req, res) => {
@@ -4202,6 +4295,8 @@ export async function registerRoutes(
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
       .limit(1);
 
+    const webhookUrlToSave = ((req.body as any).webhookUrl || (req.body as any).gsheetWebhookUrl || null) as string | null;
+
     if (existing.length > 0) {
       await db.update(storeIntegrations)
         .set({
@@ -4210,6 +4305,7 @@ export async function registerRoutes(
           gsheetTabs: tabs,
           gsheetSyncState: {},
           gsheetColumnMapping: columnMapping,
+          gsheetWebhookUrl: webhookUrlToSave,
           magasinId: magasinId || null,
           status: "active",
           type: "store",
@@ -4227,6 +4323,7 @@ export async function registerRoutes(
         gsheetTabs: tabs,
         gsheetSyncState: {},
         gsheetColumnMapping: columnMapping,
+        gsheetWebhookUrl: webhookUrlToSave,
         status: "active",
       } as any);
     }
@@ -4474,6 +4571,25 @@ export async function registerRoutes(
           source: "shopify",
         });
         broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+        pushOrderToSheet(storeId, {
+          action: "order.created",
+          orderNumber: parsed.orderNumber || "",
+          customerName: parsed.customerName || "",
+          customerPhone: parsed.customerPhone || "",
+          customerAddress: parsed.customerAddress || "",
+          customerCity: parsed.customerCity || "",
+          productName: (order as any).rawProductName || "",
+          totalPrice: order.totalPrice || 0,
+          quantity: 1,
+          note: order.comment || null,
+          status: "nouveau",
+          utmSource: (order as any).utmSource || null,
+          utmCampaign: (order as any).utmCampaign || null,
+          productId: null,
+          magasin: null,
+          createdAt: new Date().toLocaleString("fr-MA"),
+          sourceUrl: "shopify",
+        }).catch(() => {});
       } catch (rtErr: any) {
         console.warn(`[SHOPIFY WEBHOOK] Real-time push failed (non-fatal):`, rtErr?.message);
       }
@@ -4552,6 +4668,25 @@ export async function registerRoutes(
 
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: 'shopify' });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
+      pushOrderToSheet(storeId, {
+        action: "order.created",
+        orderNumber: parsed.orderNumber || "",
+        customerName: parsed.customerName || "",
+        customerPhone: parsed.customerPhone || "",
+        customerAddress: parsed.customerAddress || "",
+        customerCity: parsed.customerCity || "",
+        productName: (order as any).rawProductName || "",
+        totalPrice: order.totalPrice || 0,
+        quantity: 1,
+        note: order.comment || null,
+        status: "nouveau",
+        utmSource: (order as any).utmSource || null,
+        utmCampaign: (order as any).utmCampaign || null,
+        productId: null,
+        magasin: null,
+        createdAt: new Date().toLocaleString("fr-MA"),
+        sourceUrl: "shopify",
+      }).catch(() => {});
 
       res.json({ success: true, orderId: order.id });
     } catch (err) {
@@ -4666,6 +4801,25 @@ export async function registerRoutes(
       // Real-time push
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName: data.customerName, status: data.status, source: 'manual' });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
+      pushOrderToSheet(storeId, {
+        action: "order.created",
+        orderNumber: orderNumber || "",
+        customerName: data.customerName || "",
+        customerPhone: data.customerPhone || "",
+        customerAddress: data.customerAddress || "",
+        customerCity: data.customerCity || "",
+        productName: (order as any).rawProductName || "",
+        totalPrice: order.totalPrice || 0,
+        quantity: data.items?.[0]?.quantity || 1,
+        note: data.comment || null,
+        status: data.status || "nouveau",
+        utmSource: (data as any).utmSource || null,
+        utmCampaign: (data as any).utmCampaign || null,
+        productId: null,
+        magasin: null,
+        createdAt: new Date().toLocaleString("fr-MA"),
+        sourceUrl: "manual",
+      }).catch(() => {});
 
       res.status(201).json(order);
 
@@ -9918,6 +10072,25 @@ function submitOrder(e){
       // Broadcast the new order in real-time
       try { broadcastToStore(page.storeId, { type: "new_order", order }); } catch (_) {}
       try { emitNewOrder(page.storeId, order); } catch (_) {}
+      pushOrderToSheet(page.storeId, {
+        action: "order.created",
+        orderNumber: orderNumber || "",
+        customerName: data.customerName || "",
+        customerPhone: data.customerPhone || "",
+        customerAddress: data.customerAddress || "",
+        customerCity: data.customerCity || "",
+        productName: page.productName || "",
+        totalPrice: order.totalPrice || 0,
+        quantity: data.quantity || 1,
+        note: data.comment || null,
+        status: "nouveau",
+        utmSource: null,
+        utmCampaign: null,
+        productId: null,
+        magasin: null,
+        createdAt: new Date().toLocaleString("fr-MA"),
+        sourceUrl: "lp",
+      }).catch(() => {});
 
       res.json({ success: true, orderId: order.id, orderNumber });
     } catch (err: any) {

@@ -1,0 +1,164 @@
+FEATURE: Platform → Google Sheet (write direction) — push orders to Apps Script webhook
+Goal: When an order is created or its status changes, automatically send the data to a Google Apps Script webhook URL (provided by the user). This is the reverse of the current Sheet→Platform sync.
+
+Change 1 — shared/schema.ts — Add gsheetWebhookUrl column
+In the storeIntegrations table, after gsheetColumnMapping, add:
+tsgsheetWebhookUrl: text("gsheet_webhook_url"),
+Run the migration:
+sqlALTER TABLE store_integrations ADD COLUMN IF NOT EXISTS gsheet_webhook_url TEXT;
+
+Change 2 — server/routes.ts — Save webhook URL in gsheets connect route
+Find the gsheets connect/save endpoint (where gsheetUrl, gsheetId, gsheetTabs are saved). Add gsheetWebhookUrl to both the update and insert blocks:
+tsgsheetWebhookUrl: (body.webhookUrl || body.gsheetWebhookUrl || null) as any,
+
+Change 3 — server/routes.ts — Return webhook URL in gsheets status endpoint
+Find GET /api/integrations/gsheets/status. In the response, add:
+tswebhookUrl: row?.gsheetWebhookUrl ?? null,
+
+Change 4 — server/services/gsheets-push.ts — New file
+Create server/services/gsheets-push.ts:
+ts/**
+ * Push order events to a Google Apps Script webhook (write direction).
+ * Called after order creation and status changes.
+ */
+import { db } from "../db";
+import { storeIntegrations } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
+
+export async function pushOrderToSheet(storeId: number, payload: {
+  action: "order.created" | "order.updated";
+  orderNumber: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  customerCity: string;
+  productName: string;
+  totalPrice: number;
+  quantity: number;
+  note: string | null;
+  status: string;
+  utmSource: string | null;
+  utmCampaign: string | null;
+  productId: number | null;
+  magasin: string | null;
+  createdAt: string;
+  sourceUrl?: string;
+}) {
+  try {
+    const [conn] = await db.select().from(storeIntegrations)
+      .where(and(
+        eq(storeIntegrations.storeId, storeId),
+        eq(storeIntegrations.provider, "gsheets"),
+        eq(storeIntegrations.status, "active"),
+      ))
+      .limit(1);
+
+    const webhookUrl = (conn as any)?.gsheetWebhookUrl;
+    if (!webhookUrl) return; // no webhook configured — skip silently
+
+    const resp = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!resp.ok) {
+      console.warn(`[GSHEETS-PUSH] storeId=${storeId} HTTP ${resp.status}`);
+    } else {
+      console.log(`[GSHEETS-PUSH] storeId=${storeId} action=${payload.action} order=${payload.orderNumber} ✅`);
+    }
+  } catch (err: any) {
+    console.warn(`[GSHEETS-PUSH] storeId=${storeId} error: ${err.message}`);
+  }
+}
+
+Change 5 — server/routes.ts — Call pushOrderToSheet after order creation
+Add this import at the top:
+tsimport { pushOrderToSheet } from "./services/gsheets-push";
+Find EVERY place where emitNewOrder(storeId, ...) is called after creating an order (Shopify webhook, WooCommerce webhook, manual order, LP form, etc.). After each emitNewOrder, add:
+ts// Push to Google Sheet if connected
+pushOrderToSheet(storeId, {
+  action: "order.created",
+  orderNumber: order.orderNumber || "",
+  customerName: order.customerName || "",
+  customerPhone: order.customerPhone || "",
+  customerAddress: order.customerAddress || "",
+  customerCity: order.customerCity || "",
+  productName: (order as any).rawProductName || "",
+  totalPrice: order.totalPrice || 0,
+  quantity: 1,
+  note: order.comment || null,
+  status: order.status || "nouveau",
+  utmSource: (order as any).utmSource || null,
+  utmCampaign: (order as any).utmCampaign || null,
+  productId: null,
+  magasin: null,
+  createdAt: new Date().toLocaleString("fr-MA"),
+  sourceUrl: "N/A",
+}).catch(() => {});
+
+Change 6 — server/routes.ts — Call pushOrderToSheet after status update
+Find the PATCH /api/orders/:id/status route, after emitOrderUpdated(...). Add:
+ts// Push status update to Google Sheet
+pushOrderToSheet(order.storeId, {
+  action: "order.updated",
+  orderNumber: (updated as any)?.orderNumber || String(orderId),
+  customerName: order.customerName || "",
+  customerPhone: order.customerPhone || "",
+  customerAddress: order.customerAddress || "",
+  customerCity: order.customerCity || "",
+  productName: "",
+  totalPrice: 0,
+  quantity: 1,
+  note: null,
+  status: status,
+  utmSource: null,
+  utmCampaign: null,
+  productId: null,
+  magasin: null,
+  createdAt: "",
+}).catch(() => {});
+
+Change 7 — client/src/pages/integrations.tsx or wherever the gsheets connect form is
+Add a new input field for the Apps Script webhook URL:
+tsx<div className="space-y-1">
+  <label className="text-sm font-medium">
+    🔗 URL Apps Script (optionnel — pour exporter vers Google Sheet)
+  </label>
+  <input
+    type="url"
+    value={webhookUrl}
+    onChange={e => setWebhookUrl(e.target.value)}
+    placeholder="https://script.google.com/macros/s/..."
+    className="w-full border rounded-md px-3 py-2 text-sm"
+  />
+  <p className="text-xs text-muted-foreground">
+    Collez l'URL de déploiement de votre Google Apps Script pour recevoir les commandes automatiquement.
+  </p>
+</div>
+And send webhookUrl in the connect POST body.
+
+Fix 8 — "Found 0 active connections" debug
+Also add this temporary debug endpoint to check why connections aren't found:
+tsapp.get("/api/integrations/gsheets/debug", requireAuth, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const all = await db.select({
+    id: storeIntegrations.id,
+    status: storeIntegrations.status,
+    gsheetUrl: (storeIntegrations as any).gsheetUrl,
+    gsheetId: (storeIntegrations as any).gsheetId,
+    webhookUrl: (storeIntegrations as any).gsheetWebhookUrl,
+  }).from(storeIntegrations)
+    .where(and(
+      eq(storeIntegrations.storeId, storeId),
+      eq(storeIntegrations.provider, "gsheets"),
+    ));
+  res.json(all);
+});
+
+Important notes:
+
+pushOrderToSheet must NEVER throw or block — always wrap in .catch(() => {})
+The Apps Script URL is optional — if not set, skip silently
+Don't change any existing Sheet→Platform sync logic

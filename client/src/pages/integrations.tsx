@@ -691,6 +691,7 @@ function resetActiveSheetStatuses() {
   const [preview, setPreview] = useState<SheetPreview | null>(null);
   const [selectedMagasin, setSelectedMagasin] = useState<string>('');
   const [colMapping, setColMapping] = useState<ColMapping>(DEFAULT_COL_MAPPING);
+  const [webhookUrl, setWebhookUrl] = useState('');
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -811,7 +812,7 @@ function resetActiveSheetStatuses() {
       const r = await fetch('/api/integrations/google-sheets/connect-url', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: sheetUrl, magasinId: Number(selectedMagasin), columnMapping: cleanMapping }),
+        body: JSON.stringify({ url: sheetUrl, magasinId: Number(selectedMagasin), columnMapping: cleanMapping, webhookUrl: webhookUrl.trim() || undefined }),
       });
       const data = await r.json();
       if (!r.ok) { toast({ title: 'Erreur', description: data.error, variant: 'destructive' }); return; }
@@ -853,6 +854,7 @@ function resetActiveSheetStatuses() {
     setSelectedMagasin(gsheetsConn?.magasinId ? String(gsheetsConn.magasinId) : '');
     const existing = gsheetsConn?.columnMapping;
     setColMapping(existing ? { ...DEFAULT_COL_MAPPING, ...existing } : DEFAULT_COL_MAPPING);
+    setWebhookUrl(gsheetsConn?.webhookUrl || '');
     setPreview(null);
     setConnStep('url');
   };
@@ -1054,6 +1056,23 @@ function resetActiveSheetStatuses() {
                 </div>
               </div>
 
+              <div className="space-y-1 pt-2 border-t">
+                <label className="text-sm font-medium">
+                  🔗 URL Apps Script <span className="text-muted-foreground font-normal">(optionnel — pour exporter vers Google Sheet)</span>
+                </label>
+                <input
+                  type="url"
+                  value={webhookUrl}
+                  onChange={e => setWebhookUrl(e.target.value)}
+                  placeholder="https://script.google.com/macros/s/..."
+                  className="w-full border rounded-md px-3 py-2 text-sm"
+                  data-testid="input-gsheets-webhook-url"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Collez l'URL de déploiement de votre Google Apps Script pour recevoir les commandes automatiquement.
+                </p>
+              </div>
+
               <div className="flex gap-2 pt-1">
                 <Button variant="outline" onClick={() => setConnStep('url')}>← Retour</Button>
                 <Button
@@ -1111,6 +1130,12 @@ function resetActiveSheetStatuses() {
                     <span className="font-medium text-green-700">
                       Nom={columnLetter((gsheetsConn.columnMapping.name ?? 0) + 1)}, Tél={columnLetter((gsheetsConn.columnMapping.phone ?? 1) + 1)}
                     </span>
+                  </div>
+                )}
+                {gsheetsConn.webhookUrl && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-muted-foreground w-28 shrink-0">🔗 Apps Script</span>
+                    <span className="font-medium text-blue-700 truncate max-w-[240px]">{gsheetsConn.webhookUrl.replace('https://script.google.com/macros/s/', '').slice(0, 30)}…</span>
                   </div>
                 )}
                 <div className="flex items-center gap-2">

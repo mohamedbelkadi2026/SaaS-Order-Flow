@@ -263,6 +263,7 @@ export const storeIntegrations = pgTable("store_integrations", {
   gsheetTabs:          jsonb("gsheet_tabs"),
   gsheetSyncState:     jsonb("gsheet_sync_state"),
   gsheetColumnMapping: jsonb("gsheet_column_mapping"),
+  gsheetWebhookUrl:    text("gsheet_webhook_url"),
   status:              text("status").default("active"),
 });
 
