@@ -4138,14 +4138,16 @@ export async function registerRoutes(
     const [conn] = await db.select().from(storeIntegrations)
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
       .limit(1);
-    if (!conn || !conn.gsheetUrl || conn.status === "inactive") {
+    if (!conn || !(conn as any).gsheetUrl || conn.status === "inactive") {
       return res.status(404).json({ error: "Aucune connexion Google Sheets active" });
     }
+    console.log(`[GSHEETS-MANUAL-SYNC] User ${req.user!.id} triggered manual sync for connection ${conn.id}`);
     try {
       const { syncOnePublicSheet } = await import("./cron/sync-gsheets-public");
       await syncOnePublicSheet(conn as any);
-      res.json({ success: true });
+      res.json({ success: true, message: "Sync terminée" });
     } catch (err: any) {
+      console.error(`[GSHEETS-MANUAL-SYNC] Failed:`, err.message, err.stack);
       res.status(500).json({ error: err.message });
     }
   });
@@ -4158,13 +4160,17 @@ export async function registerRoutes(
       columnMapping?: Record<string, number>;
     };
     if (!url) return res.status(400).json({ error: "URL manquante" });
-    if (!magasinId) return res.status(400).json({ error: "Veuillez sélectionner un magasin avant de connecter." });
+    if (!magasinId || typeof magasinId !== "number") {
+      return res.status(400).json({ error: "Veuillez sélectionner un magasin avant de connecter le sheet." });
+    }
     if (!columnMapping || typeof columnMapping !== "object") {
       return res.status(400).json({ error: "Veuillez configurer le mapping des colonnes." });
     }
     if (columnMapping.name === undefined || columnMapping.phone === undefined) {
       return res.status(400).json({ error: "Les colonnes Nom et Téléphone sont obligatoires." });
     }
+
+    console.log(`[GSHEETS-CONNECT] User ${(req as any).user!.id} connecting sheet to magasin ${magasinId}`);
 
     const sheetId = extractSheetId(url);
     if (!sheetId) {

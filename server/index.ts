@@ -691,17 +691,22 @@ app.use((req, res, next) => {
   intervals.push(gsheetsSync);
 
   // ── Google Sheets public URL polling — every 5 min ────────────────────────
+  const GSHEETS_CRON_INTERVAL_MS = 5 * 60 * 1000;
   setTimeout(() => {
+    console.log("[GSHEETS-PUBLIC-CRON] Initial sync starting...");
     syncAllPublicSheets()
       .then(() => console.log("[GSHEETS-PUBLIC-CRON] Initial sync complete"))
-      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Initial sync failed:", err.message));
+      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Initial sync failed:", err.message, err.stack));
   }, 30_000);
   const gsheetsPublicSync = setInterval(() => {
+    const startTime = Date.now();
+    console.log(`[GSHEETS-PUBLIC-CRON] Tick starting at ${new Date().toISOString()}`);
     syncAllPublicSheets()
-      .then(() => console.log("[GSHEETS-PUBLIC-CRON] Tick complete"))
-      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Tick failed:", err.message));
-  }, 5 * 60 * 1000);
+      .then(() => console.log(`[GSHEETS-PUBLIC-CRON] Tick complete in ${Date.now() - startTime}ms`))
+      .catch((err: any) => console.error("[GSHEETS-PUBLIC-CRON] Tick failed:", err.message, err.stack));
+  }, GSHEETS_CRON_INTERVAL_MS);
   intervals.push(gsheetsPublicSync);
+  console.log(`[GSHEETS-PUBLIC-CRON] Registered — initial sync in 30s, then every ${GSHEETS_CRON_INTERVAL_MS / 1000}s`);
 
   // ── Memory monitor — log every 2 min, GC + clear WA queue if heap > 400 MB ──
   setInterval(() => {
