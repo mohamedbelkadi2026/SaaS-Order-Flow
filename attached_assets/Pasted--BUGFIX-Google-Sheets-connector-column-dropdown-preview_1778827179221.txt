@@ -1,0 +1,283 @@
+🐛 BUGFIX — Google Sheets connector: column dropdown previews show "(vide)" instead of actual dataSymptomAfter pasting a public Google Sheet URL and clicking "Suivant", the column mapping form shows dropdowns where every option says:
+A — (vide)
+B — (vide)
+C — (vide)
+...Instead of showing a preview of what's in each column (e.g. A — Hassan, B — 0661639533, C — Casablanca). This makes the mapping form unusable — the user has no way to know which column contains which data.Root causeIn server/routes.ts, the /api/integrations/google-sheets/preview-url endpoint fetches the first tab's CSV and looks for "the first non-empty row" to use as sample data. But the heuristic likely picks row 0 (which is often empty or contains only headers like Nom | Téléphone | ...), missing the actual data rows below.Also, the frontend probably uses preview.sampleRow[i] to populate the dropdown, but when sampleRow is empty or shorter than columnCount, every position falls through to '(vide)'.FixStep 1 — Backend: smarter sample row detectionIn server/routes.ts, find the /api/integrations/google-sheets/preview-url handler. Replace the sample row detection logic with this version that scans up to 20 rows looking for one with the most filled cells:ts// Fetch CSV from the first tab
+const previewUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${tabs[0].gid}`;
+let sampleRow: string[] = [];
+let columnCount = 0;
+let allSampleRows: string[][] = [];
+
+try {
+  const r = await fetch(previewUrl);
+  if (r.ok) {
+    const text = await r.text();
+    const rows = parseCsv(text);
+    
+    // Scan first 20 rows; pick the one with the MOST non-empty cells
+    // This handles: empty row 0, header row 0, sparse rows, etc.
+    let bestRow: string[] = [];
+    let bestFilledCount = 0;
+    
+    const scanLimit = Math.min(20, rows.length);
+    for (let i = 0; i < scanLimit; i++) {
+      const row = rows[i] || [];
+      const filledCount = row.filter(c => c && c.toString().trim()).length;
+      
+      if (filledCount > bestFilledCount) {
+        bestFilledCount = filledCount;
+        bestRow = row;
+      }
+    }
+    
+    sampleRow = bestRow;
+    
+    // Column count = max columns across first 20 rows (handles ragged rows)
+    columnCount = Math.max(
+      ...rows.slice(0, scanLimit).map(r => (r || []).length),
+      bestRow.length,
+      10  // minimum 10 columns so user can still map even if data is sparse
+    );
+    
+    // Also collect first 3 sample rows for richer preview (optional)
+    allSampleRows = rows.slice(0, scanLimit)
+      .filter(r => r.some(c => c && c.toString().trim()))
+      .slice(0, 3);
+    
+    console.log(`[GSHEETS-PREVIEW] sheet=${sheetId} tab="${tabs[0].title}" rows=${rows.length} sample_cells=${bestFilledCount} cols=${columnCount}`);
+  }
+} catch (err) {
+  console.error(`[GSHEETS-PREVIEW] Error fetching sample: ${err.message}`);
+}
+
+// Return the response with the better sample
+res.json({
+  success: true,
+  sheetId,
+  tabs,
+  sampleRow,
+  sampleRows: allSampleRows,  // NEW: send first 3 rows
+  columnCount,
+});Step 2 — Frontend: render sample data robustlyIn client/src/pages/integrations.tsx, find the ColumnMapField component. Update the SelectItem rendering to gracefully handle missing/empty values and show ALL columns even when sample data is short:tsxfunction ColumnMapField({ label, value, onChange, required, preview, hint }: {
+  label: string;
+  value: number | null;
+  onChange: (v: number | null) => void;
+  required?: boolean;
+  preview: { sampleRow: string[]; sampleRows?: string[][]; columnCount: number };
+  hint?: string;
+}) {
+  return (
+    <div className="grid grid-cols-12 gap-2 items-center py-1">
+      <div className="col-span-5">
+        <Label className="text-sm">{label}</Label>
+        {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
+      </div>
+      <div className="col-span-7">
+        <Select
+          value={value === null ? '__none__' : String(value)}
+          onValueChange={(v) => onChange(v === '__none__' ? null : parseInt(v, 10))}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Choisir une colonne" />
+          </SelectTrigger>
+          <SelectContent className="max-h-72">
+            {!required && (
+              <SelectItem value="__none__" className="text-muted-foreground">
+                — Pas de colonne —
+              </SelectItem>
+            )}
+            {Array.from({ length: preview.columnCount }, (_, i) => {
+              const letter = columnLetter(i + 1);
+              
+              // Try sampleRow first, then fall back to scanning sampleRows
+              let sample = (preview.sampleRow?.[i] || '').toString().trim();
+              if (!sample && preview.sampleRows) {
+                for (const row of preview.sampleRows) {
+                  const candidate = (row?.[i] || '').toString().trim();
+                  if (candidate) { sample = candidate; break; }
+                }
+              }
+              
+              // Truncate long values
+              const displayValue = sample
+                ? (sample.length > 30 ? sample.slice(0, 30) + '…' : sample)
+                : '(vide)';
+              
+              return (
+                <SelectItem key={i} value={String(i)}>
+                  <span className="font-mono font-semibold">{letter}</span>
+                  <span className="mx-2 text-muted-foreground">—</span>
+                  <span className={sample ? '' : 'text-muted-foreground italic'}>
+                    {displayValue}
+                  </span>
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+}Step 3 — Auto-detect: if a column clearly looks like phone/name, pre-select itThis is bonus but very high value — saves the user from manual mapping when the data is obvious. Add an autoDetectMapping function that runs after preview loads:tsfunction autoDetectMapping(sampleRows: string[][], columnCount: number): Record<string, number | null> {
+  const result: Record<string, number | null> = {
+    name: null, phone: null, address: null, city: null,
+    product: null, price: null, quantity: null,
+    note: null, utmCampaign: null, utmSource: null, productId: null,
+  };
+  if (!sampleRows || sampleRows.length === 0) return result;
+
+  // For each column, examine its content across all sample rows
+  for (let col = 0; col < columnCount; col++) {
+    const values = sampleRows
+      .map(r => (r?.[col] || '').toString().trim())
+      .filter(v => v);
+    if (values.length === 0) continue;
+
+    const allText = values.join(' ').toLowerCase();
+    const firstValue = values[0];
+
+    // Phone: digits, possibly with + or spaces, 8-15 chars
+    if (!result.phone && values.every(v => /^[+\d\s\-()]{8,20}$/.test(v) && v.replace(/\D/g, '').length >= 8)) {
+      result.phone = col;
+      continue;
+    }
+
+    // Price: pure number, possibly with decimal
+    if (!result.price && values.every(v => /^\d+([.,]\d+)?$/.test(v.replace(/\s/g, '')))) {
+      const numericValues = values.map(v => parseFloat(v.replace(',', '.')));
+      // Likely price if values are reasonable (10-100000)
+      if (numericValues.every(n => n >= 10 && n <= 100000)) {
+        result.price = col;
+        continue;
+      }
+    }
+
+    // Quantity: small integer 1-99
+    if (!result.quantity && values.every(v => /^\d{1,2}$/.test(v))) {
+      const numericValues = values.map(v => parseInt(v, 10));
+      if (numericValues.every(n => n >= 1 && n <= 99)) {
+        result.quantity = col;
+        continue;
+      }
+    }
+
+    // Name: 2+ words, mostly letters, no digits
+    if (!result.name && values.every(v => /^[\p{L}\s.''-]{2,50}$/u.test(v) && !/^\d/.test(v))) {
+      result.name = col;
+      continue;
+    }
+
+    // City: single word, capitalized, mostly letters
+    if (!result.city && values.every(v => /^[\p{L}\s]{2,30}$/u.test(v) && v.split(/\s+/).length <= 3)) {
+      result.city = col;
+      continue;
+    }
+
+    // Address: long text with mixed alphanumeric
+    if (!result.address && values.every(v => v.length > 8 && /\d/.test(v) && /\p{L}/u.test(v))) {
+      result.address = col;
+      continue;
+    }
+
+    // UTM: lowercase with underscores/hyphens, no spaces
+    if (!result.utmSource && allText.match(/facebook|instagram|google|tiktok|youtube|organic|direct/)) {
+      result.utmSource = col;
+      continue;
+    }
+
+    // Product ID: UUID-like or long hex string
+    if (!result.productId && values.every(v => /^[a-f0-9-]{20,}$/i.test(v))) {
+      result.productId = col;
+      continue;
+    }
+  }
+
+  return result;
+}Call it when preview data arrives:tsconst handlePreview = async () => {
+  const r = await fetch('/api/integrations/google-sheets/preview-url', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: sheetUrl }),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    toast({ title: 'Erreur', description: data.error, variant: 'destructive' });
+    return;
+  }
+  setPreview(data);
+  
+  // ⭐ AUTO-DETECT: pre-fill mapping based on column content analysis
+  const detected = autoDetectMapping(
+    data.sampleRows || [data.sampleRow || []],
+    data.columnCount || 10
+  );
+  setMapping(detected);
+  
+  setStep('mapping');
+  
+  // Show what was auto-detected
+  const detectedCount = Object.values(detected).filter(v => v !== null).length;
+  if (detectedCount > 0) {
+    toast({
+      title: `✨ ${detectedCount} colonnes détectées automatiquement`,
+      description: 'Vérifiez le mapping et ajustez si nécessaire.',
+      duration: 5000,
+    });
+  }
+};Step 4 — Visual improvement: show data preview chips above the mapping formAdd a section right above the mapping form that shows the first sample row as visual chips, so the user can SEE what they're mapping:tsx{preview.sampleRow && preview.sampleRow.length > 0 && (
+  <div className="rounded-lg p-3 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 text-sm">
+    <p className="font-semibold text-blue-900 dark:text-blue-200 mb-2 text-xs">
+      📋 Exemple de la première ligne de données :
+    </p>
+    <div className="flex flex-wrap gap-1.5">
+      {preview.sampleRow.slice(0, preview.columnCount).map((value, i) => (
+        <div key={i} className="bg-white dark:bg-blue-900/40 rounded px-2 py-1 text-xs border border-blue-200 dark:border-blue-800">
+          <span className="font-mono font-bold text-blue-700 dark:text-blue-300">
+            {columnLetter(i + 1)}:
+          </span>{' '}
+          <span className="text-blue-900 dark:text-blue-100">
+            {value ? (value.length > 20 ? value.slice(0, 20) + '…' : value) : '∅'}
+          </span>
+        </div>
+      ))}
+    </div>
+  </div>
+)}This gives the user a bird's-eye view of all columns at once.Acceptance criteria
+✅ Pasting a Google Sheet URL with data → preview returns sample row with actual data (not empty).
+✅ Dropdown options show "A — Hassan", "B — 0661639533", "C — Casablanca", etc. (real previews).
+✅ If a column is genuinely empty, it shows "A — (vide)" in italic gray.
+✅ Auto-detect pre-fills name/phone/city/price/etc. mapping when content is obvious (e.g., phone column auto-detected by digit pattern).
+✅ Toast confirms how many columns were auto-detected: "✨ 4 colonnes détectées automatiquement".
+✅ Sample row also shown as colored chips above the mapping form for visual context.
+✅ User can override auto-detected mapping by changing dropdowns.
+✅ Backend log [GSHEETS-PREVIEW] confirms how many cells the sample row contained.
+✅ Works with: sheets without headers, sheets with headers, sheets with empty top rows, sheets with sparse rows.
+✅ columnCount minimum is 10 even when data is sparse (user can still map columns beyond data range).
+Commitbashgit add server/routes.ts client/src/pages/integrations.tsx
+git commit -m "fix(gsheets): column mapping dropdowns now show actual sample data
+
+Previously the dropdowns showed 'A — (vide)' for every column because the
+sample row picker grabbed row 0 (often empty or headers-only). Users
+couldn't tell which column contained which data, making mapping unusable.
+
+- Backend /preview-url now scans first 20 rows and picks the one with the
+  most filled cells as sample
+- Returns up to 3 sample rows so frontend can fall back when first cell empty
+- Minimum columnCount=10 so user can map columns beyond visible data
+- New [GSHEETS-PREVIEW] log shows sheet/tab/row count for debugging
+- Frontend ColumnMapField walks sampleRows[] looking for first non-empty
+  value in each column position
+- Long values truncated to 30 chars with ellipsis in dropdown
+- New auto-detect function pre-fills mapping using regex patterns:
+    phone   → digits with 8+ length
+    price   → numeric 10-100000 range
+    quantity→ integer 1-99
+    name    → letters-only, 2+ words
+    city    → single capitalized word
+    address → mixed alphanumeric, length 8+
+    utmSource → matches facebook|instagram|google|tiktok|etc.
+    productId → UUID-like hex strings
+- New blue chip preview shows entire first row above mapping form for
+  bird's-eye context"
+git push

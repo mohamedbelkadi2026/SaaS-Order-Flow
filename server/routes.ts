@@ -4094,15 +4094,42 @@ export async function registerRoutes(
         };
 
         const rows = parsePreviewCsv(text);
-        // Use first non-empty row as the sample
-        sampleRow = rows.find(row => row.some(c => c.trim())) || [];
-        columnCount = Math.max(...rows.slice(0, 5).map(r => r.length), sampleRow.length, 1);
+
+        // Scan first 20 rows; pick the one with the MOST non-empty cells
+        // Handles: empty row 0, header-only row 0, sparse rows, etc.
+        let bestRow: string[] = [];
+        let bestFilledCount = 0;
+        const scanLimit = Math.min(20, rows.length);
+        for (let i = 0; i < scanLimit; i++) {
+          const row = rows[i] || [];
+          const filledCount = row.filter(c => c && c.toString().trim()).length;
+          if (filledCount > bestFilledCount) { bestFilledCount = filledCount; bestRow = row; }
+        }
+        sampleRow = bestRow;
+
+        // Column count = max columns across first 20 rows; minimum 10 so user
+        // can still map columns beyond visible data range
+        columnCount = Math.max(
+          ...rows.slice(0, scanLimit).map(r => (r || []).length),
+          bestRow.length,
+          10,
+        );
+
+        // Also return first 3 non-empty rows for richer per-column fallback
+        const allSampleRows = rows
+          .slice(0, scanLimit)
+          .filter(r => r.some(c => c && c.toString().trim()))
+          .slice(0, 3);
+
+        console.log(`[GSHEETS-PREVIEW] sheet=${sheetId} tab="${tabs[0].title}" rows=${rows.length} sample_cells=${bestFilledCount} cols=${columnCount}`);
+
+        return res.json({ success: true, sheetId, tabs, sampleRow, sampleRows: allSampleRows, columnCount });
       }
-    } catch {
-      // Non-fatal — proceed without preview
+    } catch (err: any) {
+      console.error(`[GSHEETS-PREVIEW] Error fetching sample: ${err?.message}`);
     }
 
-    res.json({ success: true, sheetId, tabs, sampleRow, columnCount });
+    res.json({ success: true, sheetId, tabs, sampleRow, sampleRows: [], columnCount: Math.max(columnCount, 10) });
   });
 
   // POST /api/integrations/google-sheets/sync-now

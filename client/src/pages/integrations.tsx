@@ -670,7 +670,7 @@ function resetActiveSheetStatuses() {
 }`;
 
   type ConnStep = 'url' | 'mapping' | 'done';
-  type SheetPreview = { sheetId: string; tabs: Array<{ gid: string; title: string }>; sampleRow: string[]; columnCount: number };
+  type SheetPreview = { sheetId: string; tabs: Array<{ gid: string; title: string }>; sampleRow: string[]; sampleRows?: string[][]; columnCount: number };
   type ColMapping = Record<string, number | null>;
 
   const DEFAULT_COL_MAPPING: ColMapping = {
@@ -734,6 +734,48 @@ function resetActiveSheetStatuses() {
     return `il y a ${Math.floor(hours / 24)}j`;
   }
 
+  function autoDetectMapping(sampleRows: string[][], columnCount: number): ColMapping {
+    const result: ColMapping = {
+      name: null, phone: null, address: null, city: null,
+      product: null, price: null, quantity: null,
+      note: null, utmCampaign: null, utmSource: null, productId: null,
+    };
+    if (!sampleRows || sampleRows.length === 0) return result;
+    for (let col = 0; col < columnCount; col++) {
+      const values = sampleRows.map(r => (r?.[col] || '').toString().trim()).filter(v => v);
+      if (values.length === 0) continue;
+      const allText = values.join(' ').toLowerCase();
+
+      if (!result.phone && values.every(v => /^[+\d\s\-()]{8,20}$/.test(v) && v.replace(/\D/g, '').length >= 8)) {
+        result.phone = col; continue;
+      }
+      if (!result.price && values.every(v => /^\d+([.,]\d+)?$/.test(v.replace(/\s/g, '')))) {
+        const nums = values.map(v => parseFloat(v.replace(',', '.')));
+        if (nums.every(n => n >= 10 && n <= 100000)) { result.price = col; continue; }
+      }
+      if (!result.quantity && values.every(v => /^\d{1,2}$/.test(v))) {
+        const nums = values.map(v => parseInt(v, 10));
+        if (nums.every(n => n >= 1 && n <= 99)) { result.quantity = col; continue; }
+      }
+      if (!result.name && values.every(v => /^[\p{L}\s.''-]{2,50}$/u.test(v) && !/^\d/.test(v))) {
+        result.name = col; continue;
+      }
+      if (!result.city && values.every(v => /^[\p{L}\s]{2,30}$/u.test(v) && v.split(/\s+/).length <= 3)) {
+        result.city = col; continue;
+      }
+      if (!result.address && values.every(v => v.length > 8 && /\d/.test(v) && /\p{L}/u.test(v))) {
+        result.address = col; continue;
+      }
+      if (!result.utmSource && allText.match(/facebook|instagram|google|tiktok|youtube|organic|direct/)) {
+        result.utmSource = col; continue;
+      }
+      if (!result.productId && values.every(v => /^[a-f0-9-]{20,}$/i.test(v))) {
+        result.productId = col; continue;
+      }
+    }
+    return result;
+  }
+
   const handlePreview = async () => {
     setIsPreviewing(true);
     try {
@@ -745,7 +787,17 @@ function resetActiveSheetStatuses() {
       const data = await r.json();
       if (!r.ok) { toast({ title: 'Erreur', description: data.error, variant: 'destructive' }); return; }
       setPreview(data);
+      const detected = autoDetectMapping(data.sampleRows || [data.sampleRow || []], data.columnCount || 10);
+      setColMapping(detected);
       setConnStep('mapping');
+      const detectedCount = Object.values(detected).filter(v => v !== null).length;
+      if (detectedCount > 0) {
+        toast({
+          title: `✨ ${detectedCount} colonne(s) détectée(s) automatiquement`,
+          description: 'Vérifiez le mapping et ajustez si nécessaire.',
+          duration: 5000,
+        });
+      }
     } finally {
       setIsPreviewing(false);
     }
@@ -915,27 +967,49 @@ function resetActiveSheetStatuses() {
                 </div>
               )}
 
+              {preview.sampleRow && preview.sampleRow.length > 0 && (
+                <div className="rounded-lg p-3 bg-blue-50 border border-blue-200 text-sm">
+                  <p className="font-semibold text-blue-900 mb-2 text-xs">
+                    📋 Exemple de la première ligne de données :
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {Array.from({ length: preview.columnCount }, (_, i) => {
+                      let val = (preview.sampleRow[i] || '').trim();
+                      if (!val && preview.sampleRows) {
+                        for (const r of preview.sampleRows) { const c = (r?.[i] || '').trim(); if (c) { val = c; break; } }
+                      }
+                      return (
+                        <div key={i} className="bg-white rounded px-2 py-1 text-xs border border-blue-200">
+                          <span className="font-mono font-bold text-blue-700">{columnLetter(i + 1)}:</span>{' '}
+                          <span className="text-blue-900">{val ? (val.length > 20 ? val.slice(0, 20) + '…' : val) : <span className="text-blue-400">∅</span>}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="border-t pt-3">
                 <p className="text-sm font-semibold mb-1">Mapping des colonnes</p>
                 <p className="text-xs text-muted-foreground mb-3">
                   Indiquez quelle colonne de votre sheet contient chaque information.
                   Les champs marqués <span className="text-red-500 font-bold">*</span> sont obligatoires.
                 </p>
-                <div className="space-y-2">
+                <div className="space-y-1">
                   {[
-                    { key: 'name',       label: 'Nom client *',         required: true },
-                    { key: 'phone',      label: 'Téléphone *',          required: true },
-                    { key: 'address',    label: 'Adresse' },
-                    { key: 'city',       label: 'Ville' },
-                    { key: 'product',    label: 'Produit',              hint: 'Si vide, le nom de l\'onglet sera utilisé' },
-                    { key: 'price',      label: 'Prix (DH)' },
-                    { key: 'quantity',   label: 'Quantité',             hint: 'Défaut : 1' },
-                    { key: 'note',       label: 'Note / Commentaire' },
+                    { key: 'name',        label: 'Nom client *',        required: true },
+                    { key: 'phone',       label: 'Téléphone *',         required: true },
+                    { key: 'address',     label: 'Adresse' },
+                    { key: 'city',        label: 'Ville' },
+                    { key: 'product',     label: 'Produit',             hint: 'Si vide, le nom de l\'onglet sera utilisé' },
+                    { key: 'price',       label: 'Prix (DH)' },
+                    { key: 'quantity',    label: 'Quantité',            hint: 'Défaut : 1' },
+                    { key: 'note',        label: 'Note / Commentaire' },
                     { key: 'utmCampaign', label: 'UTM Campaign' },
-                    { key: 'utmSource',  label: 'UTM Source' },
-                    { key: 'productId',  label: 'Product ID (Ameex)' },
+                    { key: 'utmSource',   label: 'UTM Source' },
+                    { key: 'productId',   label: 'Product ID (Ameex)' },
                   ].map(({ key, label, required, hint }) => (
-                    <div key={key} className="grid grid-cols-12 gap-2 items-center">
+                    <div key={key} className="grid grid-cols-12 gap-2 items-center py-1">
                       <div className="col-span-5">
                         <span className="text-sm">{label}</span>
                         {hint && <p className="text-[10px] text-muted-foreground">{hint}</p>}
@@ -946,16 +1020,29 @@ function resetActiveSheetStatuses() {
                           onValueChange={(v) => setColMapping(prev => ({ ...prev, [key]: v === '__none__' ? null : parseInt(v, 10) }))}
                         >
                           <SelectTrigger data-testid={`select-col-${key}`}>
-                            <SelectValue placeholder="Pas de colonne" />
+                            <SelectValue placeholder="Choisir une colonne" />
                           </SelectTrigger>
-                          <SelectContent>
-                            {!required && <SelectItem value="__none__">— Pas de colonne —</SelectItem>}
+                          <SelectContent className="max-h-72">
+                            {!required && (
+                              <SelectItem value="__none__" className="text-muted-foreground">— Pas de colonne —</SelectItem>
+                            )}
                             {Array.from({ length: preview.columnCount }, (_, i) => {
                               const letter = columnLetter(i + 1);
-                              const sample = (preview.sampleRow[i] || '').slice(0, 28) || '(vide)';
+                              let sample = (preview.sampleRow?.[i] || '').toString().trim();
+                              if (!sample && preview.sampleRows) {
+                                for (const row of preview.sampleRows) {
+                                  const candidate = (row?.[i] || '').toString().trim();
+                                  if (candidate) { sample = candidate; break; }
+                                }
+                              }
+                              const displayValue = sample
+                                ? (sample.length > 30 ? sample.slice(0, 30) + '…' : sample)
+                                : '(vide)';
                               return (
                                 <SelectItem key={i} value={String(i)}>
-                                  {letter} — {sample}
+                                  <span className="font-mono font-semibold">{letter}</span>
+                                  <span className="mx-1 text-muted-foreground">—</span>
+                                  <span className={sample ? '' : 'text-muted-foreground italic'}>{displayValue}</span>
                                 </SelectItem>
                               );
                             })}
