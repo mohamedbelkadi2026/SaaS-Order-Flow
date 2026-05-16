@@ -204,6 +204,12 @@ function GoogleSheetsTab({ webhookKey, origin }: { webhookKey: string; origin: s
   const apiUrl = `${origin}/api/integrations/google-sheets/webhook`;
   const apiKey = webhookKey;
 
+  const { data: appsScriptData } = useQuery<{ script: string; apiUrl: string; apiKey: string }>({
+    queryKey: ['/api/integrations/gsheets/apps-script'],
+    queryFn: () => fetch('/api/integrations/gsheets/apps-script', { credentials: 'include' }).then(r => r.json()),
+  });
+  const scriptCode = appsScriptData?.script || '';
+
   const appScript = `// ═══════════════════════════════════════════════════════════════
 //  🚀 TajerGrow — Google Sheets Auto-Sync Script
 //  Synchronisation automatique en temps réel
@@ -698,9 +704,9 @@ function resetActiveSheetStatuses() {
   const { data: magasins = [] } = useMagasins();
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(appScript);
+    navigator.clipboard.writeText(scriptCode || appScript);
     setCopied(true);
-    toast({ title: "Script copié !", description: "Collez-le dans Apps Script → Éditeur de code" });
+    toast({ title: "✅ Script copié !", description: "Collez-le dans Apps Script et déployez." });
     setTimeout(() => setCopied(false), 3000);
   };
 
@@ -1224,7 +1230,7 @@ function resetActiveSheetStatuses() {
                 </Button>
               </div>
               <div className="overflow-auto max-h-64 bg-[#1e1b4b]">
-                <pre className="p-4 text-xs font-mono text-green-300 leading-relaxed whitespace-pre">{appScript}</pre>
+                <pre className="p-4 text-xs font-mono text-green-300 leading-relaxed whitespace-pre">{scriptCode || appScript}</pre>
               </div>
             </div>
 
@@ -1232,15 +1238,15 @@ function resetActiveSheetStatuses() {
               <div className="space-y-1">
                 <Label className="text-xs">API URL</Label>
                 <div className="flex gap-2">
-                  <Input value={apiUrl} readOnly className="font-mono text-xs bg-gray-50 flex-1" />
-                  <CopyButton text={apiUrl} label="Copier" />
+                  <Input value={appsScriptData?.apiUrl || apiUrl} readOnly className="font-mono text-xs bg-gray-50 flex-1" />
+                  <CopyButton text={appsScriptData?.apiUrl || apiUrl} label="Copier" />
                 </div>
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">Clé API</Label>
                 <div className="flex gap-2">
-                  <Input value={apiKey} readOnly className="font-mono text-xs bg-gray-50 flex-1" type="password" />
-                  <CopyButton text={apiKey} label="Copier" />
+                  <Input value={appsScriptData?.apiKey || apiKey} readOnly className="font-mono text-xs bg-gray-50 flex-1" type="password" />
+                  <CopyButton text={appsScriptData?.apiKey || apiKey} label="Copier" />
                 </div>
               </div>
             </div>

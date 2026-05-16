@@ -4022,6 +4022,201 @@ export async function registerRoutes(
     });
   });
 
+  app.get("/api/integrations/gsheets/apps-script", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const apiKey  = await storage.getOrCreateWebhookKey(storeId);
+    const apiUrl  = `${req.protocol}://${req.get("host")}/api/integrations/google-sheets/webhook`;
+
+    const script = `// ════════════════════════════════════════════════════════════════
+//  TajerGrow Apps Script — Elementor → Google Sheet + Platform
+//  Coller ce code COMPLET dans Apps Script puis Deploy
+// ════════════════════════════════════════════════════════════════
+
+// ⚙️ CONFIGURATION
+var API_URL = '${apiUrl}';
+var API_KEY = '${apiKey}';
+
+var DEBOUNCE_SECONDS    = 30;
+var STATUS_COLUMN_LABEL = 'TajerGrow Status';
+var DEFAULT_SHEET_NAME  = 'Commandes';
+
+// Synonymes de colonnes — 12 champs reconnus
+var COLUMN_ALIASES = {
+  name: [
+    'nom', 'nom client', 'nom du client', 'nom complet', 'client',
+    'fullname', 'full name', 'name', 'customer', 'customer name',
+    'destinataire', 'recipient', 'الاسم', 'اسم العميل'
+  ],
+  phone: [
+    'téléphone', 'telephone', 'tel', 'mobile', 'gsm', 'whatsapp',
+    'phone', 'numéro', 'numero', 'numéro de téléphone', 'tele',
+    'رقم الهاتف', 'هاتف'
+  ],
+  address: ['adresse', 'address', 'rue', 'street', 'العنوان', 'votre adresse'],
+  city:    ['ville', 'city', 'town', 'localité', 'المدينة', 'votre ville'],
+  product: ['produit', 'product', 'article', 'item', 'المنتج', 'nom du produit'],
+  price:   ['prix', 'price', 'montant', 'amount', 'total', 'tarif', 'السعر'],
+  quantity:['quantité', 'quantity', 'qty', 'qté', 'nombre', 'الكمية'],
+  note:    ['note', 'notes', 'commentaire', 'comment', 'message', 'remarque', 'ملاحظة'],
+  utm_source:   ['utm_source', 'source', 'origine', 'utm source'],
+  utm_campaign: ['utm_campaign', 'campaign', 'campagne', 'utm campaign'],
+  product_id:   ['product_id', 'productid', 'sku', 'reference', 'ameex_product_id'],
+  offer:        ['offre', 'offer', 'pack', 'formule', 'option'],
+};
+
+var COLUMN_ORDER = [
+  'name', 'phone', 'address', 'city', 'product', 'price', 'quantity',
+  'note', 'submission_date', 'source_url',
+  'utm_campaign', 'utm_source', 'product_id', 'platform_status'
+];
+
+var COLUMN_LABELS = {
+  name: 'Nom', phone: 'Téléphone', address: 'Adresse', city: 'Ville',
+  product: 'Produit', price: 'Prix (DH)', quantity: 'Quantité', note: 'Note',
+  submission_date: 'Date', source_url: 'Source URL',
+  utm_campaign: 'UTM Campaign', utm_source: 'UTM Source',
+  product_id: 'Product ID', platform_status: 'TajerGrow Status',
+};
+
+function doGet(e) {
+  return HtmlService.createHtmlOutput('✅ TajerGrow webhook actif.');
+}
+
+function doPost(e) {
+  try {
+    var params = (e && e.parameter) ? e.parameter : {};
+    var unwrapped = {};
+    for (var key in params) {
+      var match = key.match(/^form_fields\\[([^\\]]+)\\]$/);
+      unwrapped[match ? match[1] : key] = params[key];
+    }
+    var normalized = normalizeFields(unwrapped);
+    normalized.submission_date = new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Casablanca' });
+    normalized.source_url = params.source_url || params.referrer || params.page_url || 'N/A';
+
+    var formName = params.form_name || params.formName || DEFAULT_SHEET_NAME;
+    var sheet    = getOrCreateSheet(formName);
+    ensureHeaders(sheet);
+    normalized.platform_status = '⏳ En cours...';
+    var row = COLUMN_ORDER.map(function(k) { return normalized[k] || ''; });
+    sheet.appendRow(row);
+    var newRowIndex  = sheet.getLastRow();
+    var statusColIdx = COLUMN_ORDER.indexOf('platform_status') + 1;
+
+    var result = sendToTajerGrow(normalized, params);
+
+    if (result.success) {
+      sheet.getRange(newRowIndex, statusColIdx)
+        .setValue('✅ Créée #' + (result.orderId || ''))
+        .setBackground('#d4edda').setFontColor('#155724').setFontWeight('bold');
+    } else {
+      sheet.getRange(newRowIndex, statusColIdx)
+        .setValue('❌ ' + (result.error || 'Erreur'))
+        .setBackground('#f8d7da').setFontColor('#721c24').setFontWeight('bold');
+    }
+  } catch (err) {
+    Logger.log('ERREUR: ' + err.toString());
+  }
+  return HtmlService.createHtmlOutput('Submission received successfully.');
+}
+
+function sendToTajerGrow(data, rawParams) {
+  var payload = {
+    name: data.name || '', phone: data.phone || '',
+    address: data.address || '', city: data.city || '',
+    product: data.product || '', price: data.price || '0',
+    quantity: data.quantity || '1', note: data.note || '',
+    offer: data.offer || '',
+    utm_source: data.utm_source || rawParams.utm_source || '',
+    utm_campaign: data.utm_campaign || rawParams.utm_campaign || '',
+    product_id: data.product_id || '',
+    ref: 'GS-' + new Date().getTime(),
+  };
+  try {
+    var response = UrlFetchApp.fetch(API_URL, {
+      method: 'post', contentType: 'application/json',
+      headers: { 'X-Api-Key': API_KEY },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true, followRedirects: true,
+    });
+    var code = response.getResponseCode();
+    var text = response.getContentText();
+    Logger.log('[PLATFORM] HTTP ' + code + ': ' + text);
+    if (code === 200 || code === 201) {
+      try {
+        var json = JSON.parse(text);
+        return json.success
+          ? { success: true, orderId: json.orderId || '' }
+          : { success: false, error: json.message || 'Erreur' };
+      } catch (_) { return { success: true, orderId: '' }; }
+    }
+    if (code === 402) return { success: false, error: 'Limite atteinte' };
+    if (code === 401) return { success: false, error: 'Clé invalide' };
+    if (code === 400) return { success: false, error: 'Données manquantes' };
+    return { success: false, error: 'HTTP ' + code };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function testConnection() {
+  var response = UrlFetchApp.fetch(API_URL, {
+    method: 'post', contentType: 'application/json',
+    headers: { 'X-Api-Key': API_KEY },
+    payload: JSON.stringify({ test: true }),
+    muteHttpExceptions: true,
+  });
+  Logger.log('Test HTTP ' + response.getResponseCode() + ': ' + response.getContentText());
+}
+
+function normalizeFields(rawParams) {
+  var aliasMap = {};
+  for (var field in COLUMN_ALIASES) {
+    var aliases = COLUMN_ALIASES[field];
+    for (var i = 0; i < aliases.length; i++) {
+      aliasMap[nk(aliases[i])] = field;
+    }
+  }
+  var result = {};
+  for (var rawKey in rawParams) {
+    var val = rawParams[rawKey];
+    if (!val || String(val).trim() === '') continue;
+    var canonical = aliasMap[nk(rawKey)];
+    if (canonical && !result[canonical]) result[canonical] = String(val).trim();
+  }
+  return result;
+}
+
+function nk(s) {
+  return String(s || '').toLowerCase()
+    .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
+function getOrCreateSheet(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  return sheet;
+}
+
+function ensureHeaders(sheet) {
+  var lastCol  = sheet.getLastColumn();
+  var existing = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  var headers  = COLUMN_ORDER.map(function(k) { return COLUMN_LABELS[k]; });
+  var same = headers.length === existing.length &&
+    headers.every(function(h, i) { return h === existing[i]; });
+  if (same) return;
+  var r = sheet.getRange(1, 1, 1, headers.length);
+  r.setValues([headers]).setFontWeight('bold')
+   .setBackground('#1E1B4B').setFontColor('#C5A059');
+  sheet.setFrozenRows(1);
+  for (var c = 1; c <= headers.length; c++) sheet.autoResizeColumn(c);
+}`;
+
+    res.json({ script, apiUrl, apiKey });
+  });
+
   app.get("/api/integrations/google-sheets/debug", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const all = await db.select({
