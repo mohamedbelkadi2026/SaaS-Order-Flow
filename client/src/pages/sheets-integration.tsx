@@ -31,6 +31,8 @@ export default function SheetsIntegrationPage() {
       if (!r.ok) throw new Error("Failed to check connection");
       return r.json();
     },
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
   });
 
   const { data: scriptText, isLoading: scriptLoading } = useQuery<string>({
@@ -82,7 +84,7 @@ export default function SheetsIntegrationPage() {
 
   if (statusLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
         <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
       </div>
     );
@@ -91,10 +93,7 @@ export default function SheetsIntegrationPage() {
   // ── CONNECTED STATE ──────────────────────────────────────────────────
   if (isConnected && !showGuide) {
     const lastSync = initialStatus.lastSyncAt
-      ? new Date(initialStatus.lastSyncAt).toLocaleString("fr-FR", {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })
+      ? new Date(initialStatus.lastSyncAt).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })
       : "—";
 
     return (
@@ -105,19 +104,13 @@ export default function SheetsIntegrationPage() {
               <div className="w-16 h-16 rounded-full bg-emerald-500 flex items-center justify-center shrink-0">
                 <CheckCircle2 className="w-9 h-9 text-white" />
               </div>
-              <div className="flex-1">
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-1">
-                  Google Sheets connecté ✅
-                </h1>
-                <p className="text-gray-700 dark:text-gray-300 mb-6">
-                  Vos commandes Google Sheets se synchronisent automatiquement avec la plateforme.
-                </p>
-
+              <div className="flex-1 min-w-0">
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-1">Google Sheets connecté ✅</h1>
+                <p className="text-gray-700 dark:text-gray-300 mb-6">Vos commandes se synchronisent automatiquement avec la plateforme.</p>
                 <div className="grid sm:grid-cols-2 gap-4 mb-6">
                   <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-emerald-100 dark:border-emerald-800/50">
                     <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-1">
-                      <FileSpreadsheet className="w-4 h-4" />
-                      Feuille connectée
+                      <FileSpreadsheet className="w-4 h-4" /> Feuille connectée
                     </div>
                     <div className="font-semibold text-gray-900 dark:text-white truncate" data-testid="text-spreadsheet-name">
                       {initialStatus.spreadsheetName || "Google Sheet"}
@@ -125,30 +118,17 @@ export default function SheetsIntegrationPage() {
                   </div>
                   <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-emerald-100 dark:border-emerald-800/50">
                     <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-1">
-                      <RefreshCw className="w-4 h-4" />
-                      Dernière synchronisation
+                      <RefreshCw className="w-4 h-4" /> Dernière synchronisation
                     </div>
-                    <div className="font-semibold text-gray-900 dark:text-white" data-testid="text-last-sync">
-                      {lastSync}
-                    </div>
+                    <div className="font-semibold text-gray-900 dark:text-white" data-testid="text-last-sync">{lastSync}</div>
                   </div>
                 </div>
-
                 <div className="flex flex-wrap gap-3">
-                  <Button
-                    onClick={() => window.location.href = '/orders'}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                    data-testid="button-view-orders"
-                  >
+                  <Button onClick={() => window.location.href = '/orders'} className="bg-emerald-600 hover:bg-emerald-700 text-white" data-testid="button-view-orders">
                     Voir mes commandes →
                   </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => setShowGuide(true)}
-                    data-testid="button-reconnect"
-                  >
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    Reconnecter / Changer de feuille
+                  <Button variant="outline" onClick={() => setShowGuide(true)} data-testid="button-reconnect">
+                    <RefreshCw className="w-4 h-4 mr-2" /> Connecter une autre feuille
                   </Button>
                 </div>
               </div>
@@ -170,18 +150,16 @@ export default function SheetsIntegrationPage() {
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
       <div className="max-w-4xl mx-auto">
         {isConnected && showGuide && (
-          <div className="mb-4 flex justify-between items-center">
+          <div className="mb-4">
             <Button variant="ghost" onClick={() => setShowGuide(false)} data-testid="button-back-to-status">
-              ← Retour au statut
+              ← Retour au statut connecté
             </Button>
           </div>
         )}
 
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
           <div className="px-8 py-6 border-b border-gray-100 dark:border-gray-700">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-              Guide d'intégration avec Google Sheets
-            </h1>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Guide d'intégration avec Google Sheets</h1>
           </div>
 
           <div className="px-8 py-6">
@@ -189,27 +167,17 @@ export default function SheetsIntegrationPage() {
 
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
               <div className="py-4 text-gray-700 dark:text-gray-300">
-                Ouvrez votre{" "}
-                <a href="https://docs.google.com/spreadsheets" target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline">
-                  compte Google Sheets
-                </a>.
+                Ouvrez votre <a href="https://docs.google.com/spreadsheets" target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline">compte Google Sheets</a>.
               </div>
               <div className="py-4 text-gray-700 dark:text-gray-300">
                 Allez dans <span className="font-medium">Extensions</span> &gt; <span className="font-medium">Apps Script</span>.
               </div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">Cliquez sur le bouton ci-dessous pour copier le script.</div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">Collez le script dans l'éditeur Apps Script.</div>
               <div className="py-4 text-gray-700 dark:text-gray-300">
-                Cliquez sur le bouton ci-dessous pour copier le script.
+                Enregistrez le script et exécutez la fonction <code className="px-2 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">setup</code>.
               </div>
-              <div className="py-4 text-gray-700 dark:text-gray-300">
-                Collez le script dans l'éditeur Apps Script.
-              </div>
-              <div className="py-4 text-gray-700 dark:text-gray-300">
-                Enregistrez le script et exécutez la fonction{" "}
-                <code className="px-2 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">setup</code>.
-              </div>
-              <div className="py-4 text-gray-700 dark:text-gray-300">
-                Accordez les autorisations à l'application pour accéder à vos données.
-              </div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">Accordez les autorisations à l'application pour accéder à vos données.</div>
             </div>
 
             <div className="mt-6 flex items-center justify-between flex-wrap gap-4">
@@ -223,12 +191,7 @@ export default function SheetsIntegrationPage() {
             </div>
 
             <div className="mt-6">
-              <Button
-                onClick={handleVerify}
-                disabled={!understood || verifying}
-                className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-white text-base font-medium disabled:opacity-50"
-                data-testid="button-verify-connection"
-              >
+              <Button onClick={handleVerify} disabled={!understood || verifying} className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-white text-base font-medium disabled:opacity-50" data-testid="button-verify-connection">
                 {verifying ? (<><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Vérification…</>) : "Verify Connection"}
               </Button>
             </div>

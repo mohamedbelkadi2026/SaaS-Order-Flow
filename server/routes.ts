@@ -10514,8 +10514,8 @@ function submitOrder(e){
     const customerCity    = pick("ville","city","town","localité","المدينة");
     const customerAddress = pick("adresse","address","rue","العنوان");
     const productName     = pick("produit","product","article","item","nom du produit","المنتج");
-    const priceRaw        = pick("prix","price","montant","total","tarif","amount","السعر");
-    const qtyRaw          = pick("quantité","quantity","qty","qté","nombre","الكمية");
+    const priceRaw        = pick("prix","price","prix (dh)","prix dh","prix total","montant","total","tarif","amount","السعر");
+    const qtyRaw          = pick("quantité","quantity","qty","qté","nombre","quantite","الكمية");
     const note            = pick("note","notes","commentaire","comment","message","remarque","ملاحظة");
     const refRaw          = pick("ref","reference","order_id","id","numéro de commande");
     if (!customerName && !customerPhone) return null;
@@ -10578,28 +10578,56 @@ function submitOrder(e){
           const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
           if (dup) { skipped++; continue; }
           const productNameLower = parsed.productName.toLowerCase().trim();
-          const matched = parsed.productName
-            ? storeProducts.find(p =>
+          let matched: any = parsed.productName
+            ? storeProducts.find((p: any) =>
                 (p.name && p.name.toLowerCase().trim() === productNameLower) ||
-                ((p as any).sku && (p as any).sku.toLowerCase().trim() === productNameLower)
+                (p.sku && p.sku.toLowerCase().trim() === productNameLower)
               )
             : undefined;
-          const orderItems = matched
-            ? [{ productId: matched.id, quantity: parsed.quantity, price: (matched as any).sellingPrice || parsed.totalPrice, orderId: 0 }]
-            : [];
-          let finalComment = parsed.note;
+
+          // ── AUTO-CREATE missing product ─────────────────────────────
           if (!matched && parsed.productName) {
-            const productTag = `[Produit: ${parsed.productName} × ${parsed.quantity}]`;
-            finalComment = parsed.note ? `${productTag} ${parsed.note}` : productTag;
+            try {
+              const newProduct = await storage.createProduct({
+                storeId,
+                name: parsed.productName,
+                sku: null,
+                costPrice: 0,
+                sellingPrice: parsed.totalPrice,
+                stock: 0,
+                isActive: 1,
+              } as any);
+              matched = newProduct;
+              storeProducts.push(newProduct);
+              console.log(`[SheetsScript] Auto-created product "${parsed.productName}" (id=${newProduct.id}) for store ${storeId}`);
+            } catch (createErr: any) {
+              console.warn(`[SheetsScript] Could not auto-create product "${parsed.productName}":`, createErr.message);
+            }
           }
+
+          const lineUnitPrice = parsed.totalPrice > 0
+            ? Math.round(parsed.totalPrice / Math.max(1, parsed.quantity))
+            : (matched?.sellingPrice || 0);
+
+          const orderItems = matched
+            ? [{ productId: matched.id, quantity: parsed.quantity, price: lineUnitPrice, orderId: 0 }]
+            : [];
+
+          const finalComment = parsed.note || null;
+
           const order = await storage.createOrder({
             storeId, magasinId,
             orderNumber: parsed.orderNumber,
-            customerName: parsed.customerName, customerPhone: parsed.customerPhone,
-            customerAddress: parsed.customerAddress, customerCity: parsed.customerCity,
-            status: "nouveau", totalPrice: parsed.totalPrice,
-            productCost: matched ? matched.costPrice : 0,
-            shippingCost: 0, adSpend: 0, source: "gsheets_script",
+            customerName: parsed.customerName,
+            customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress,
+            customerCity: parsed.customerCity,
+            status: "nouveau",
+            totalPrice: parsed.totalPrice,
+            productCost: matched ? (matched.costPrice || 0) * parsed.quantity : 0,
+            shippingCost: 0,
+            adSpend: 0,
+            source: "gsheets_script",
             comment: finalComment,
           } as any, orderItems);
           const nextAgentId = await storage.getNextAgent(storeId, magasinId, matched?.id, parsed.customerCity);

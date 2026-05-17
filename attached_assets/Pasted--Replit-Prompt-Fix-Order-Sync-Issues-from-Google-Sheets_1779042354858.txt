@@ -1,0 +1,432 @@
+🚀 Replit Prompt — Fix Order Sync Issues from Google Sheets
+Copy this entire prompt and paste it into Replit AI:
+
+I have a TajerGrow SaaS platform with Google Sheets Auto-Sync. Currently when an order arrives from the sheet, I have THREE problems:
+
+PROBLEM 1: The product name is empty — shows "Auto-rempli depuis la boutique" placeholder instead of the actual product (e.g. "mdya mos" from the sheet).
+
+PROBLEM 2: The total price is 0,00 DH and the Articles section shows 0 — the price and quantity from the sheet are not being saved into the order.
+
+PROBLEM 3: The Sheets Integration page does NOT show the "Already Connected" state with the spreadsheet name when reopened. It always shows the setup guide.
+
+═══════════════════════════════════════════════════════════════════════
+ROOT CAUSE ANALYSIS
+═══════════════════════════════════════════════════════════════════════
+Looking at /api/sheets/sync/:webhookKey in server/routes.ts:
+
+1. When the product name from the sheet doesn't match an existing store product:
+   - `orderItems = []` → no article gets attached → ARTICLES shows 0
+   - Order is created but no product reference, no price line item, no quantity
+
+2. The platform schema requires `products` and `orderItems` to display:
+   - "Nom du produit" → comes from orderItems[0].productName
+   - "Prix total" → comes from order.totalPrice (in cents)
+   - "Articles" count → counts orderItems
+
+3. The fix: when no product matches, AUTO-CREATE a lightweight product (or virtual line item) so the order has a proper article with the name + quantity + price from the sheet.
+
+═══════════════════════════════════════════════════════════════════════
+FIX #1 (BACKEND): Auto-create product + always attach orderItems
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the entire `POST /api/sheets/sync/:webhookKey` route. Inside the `for (const rawRow of newOrders)` loop, find this block:
+
+          // Try to match the product by name OR sku (case-insensitive)
+          const productNameLower = parsed.productName.toLowerCase().trim();
+          const matched = parsed.productName
+            ? storeProducts.find(p =>
+                (p.name && p.name.toLowerCase().trim() === productNameLower) ||
+                (p.sku && p.sku.toLowerCase().trim() === productNameLower)
+              )
+            : undefined;
+
+          const orderItems = matched
+            ? [{ productId: matched.id, quantity: parsed.quantity, price: matched.sellingPrice || parsed.totalPrice, orderId: 0 }]
+            : [];
+
+          // If the product wasn't matched but the sheet had a product name,
+          // prepend it to the comment so the agent still sees what was ordered.
+          let finalComment = parsed.note;
+          if (!matched && parsed.productName) {
+            const productTag = `[Produit: ${parsed.productName} × ${parsed.quantity}]`;
+            finalComment = parsed.note ? `${productTag} ${parsed.note}` : productTag;
+          }
+
+          const order = await storage.createOrder({
+            storeId, magasinId,
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName, customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress, customerCity: parsed.customerCity,
+            status: "nouveau", totalPrice: parsed.totalPrice,
+            productCost: matched ? matched.costPrice : 0,
+            shippingCost: 0, adSpend: 0, source: "gsheets_script",
+            comment: finalComment,
+          } as any, orderItems);
+
+REPLACE that entire block with this version that AUTO-CREATES a product when the name doesn't match:
+
+          // Try to match an existing store product by name OR sku (case-insensitive)
+          const productNameLower = parsed.productName.toLowerCase().trim();
+          let matched = parsed.productName
+            ? storeProducts.find(p =>
+                (p.name && p.name.toLowerCase().trim() === productNameLower) ||
+                (p.sku && p.sku.toLowerCase().trim() === productNameLower)
+              )
+            : undefined;
+
+          // ── AUTO-CREATE missing product ─────────────────────────────
+          // If the sheet contains a product name we've never seen, create
+          // a lightweight product so it shows up in "Nom du produit" and
+          // attaches a proper article line (qty × price) to the order.
+          if (!matched && parsed.productName) {
+            try {
+              const newProduct = await storage.createProduct({
+                storeId,
+                name: parsed.productName,
+                sku: null,
+                costPrice: 0,
+                sellingPrice: parsed.totalPrice, // already in cents
+                stock: 0,
+                isActive: 1,
+              } as any);
+              matched = newProduct;
+              storeProducts.push(newProduct); // cache for next rows in same batch
+              console.log(`[SheetsScript] Auto-created product "${parsed.productName}" (id=${newProduct.id}) for store ${storeId}`);
+            } catch (createErr: any) {
+              console.warn(`[SheetsScript] Could not auto-create product "${parsed.productName}":`, createErr.message);
+            }
+          }
+
+          // Always attach an article line if we have a product (matched OR just-created)
+          const lineUnitPrice = parsed.totalPrice > 0
+            ? Math.round(parsed.totalPrice / Math.max(1, parsed.quantity))
+            : (matched?.sellingPrice || 0);
+
+          const orderItems = matched
+            ? [{
+                productId: matched.id,
+                quantity: parsed.quantity,
+                price: lineUnitPrice,
+                orderId: 0,
+              }]
+            : [];
+
+          // Build the comment with the original sheet note (if any)
+          const finalComment = parsed.note || null;
+
+          const order = await storage.createOrder({
+            storeId, magasinId,
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName,
+            customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress,
+            customerCity: parsed.customerCity,
+            status: "nouveau",
+            totalPrice: parsed.totalPrice,
+            productCost: matched ? (matched.costPrice || 0) * parsed.quantity : 0,
+            shippingCost: 0,
+            adSpend: 0,
+            source: "gsheets_script",
+            comment: finalComment,
+          } as any, orderItems);
+
+═══════════════════════════════════════════════════════════════════════
+FIX #2 (BACKEND): Make sure parseSheetRowToOrder reads quantity correctly
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the `parseSheetRowToOrder` helper function. Verify the `quantity` and `price` parsing lines look like this (they should already, but confirm):
+
+    const quantity   = Math.max(1, parseInt(qtyRaw || "1") || 1);
+    const priceNum   = parseFloat(String(priceRaw).replace(",", ".")) || 0;
+    const totalPrice = Math.round(priceNum * 100);
+
+The Sheet has columns "Prix (DH)" and "Quantité" — these MUST be in the alias list. Find the `pick(...)` calls and make sure they include these exact aliases:
+
+    const priceRaw  = pick("prix","price","prix (dh)","prix dh","prix total","montant","total","tarif","amount","السعر");
+    const qtyRaw    = pick("quantité","quantity","qty","qté","nombre","quantite","الكمية");
+
+If `priceRaw` or `qtyRaw` don't already include "prix (dh)" or "quantite" (no accent), UPDATE the pick() calls to include them as shown above.
+
+═══════════════════════════════════════════════════════════════════════
+FIX #3 (BACKEND): Verify createProduct exists in storage
+═══════════════════════════════════════════════════════════════════════
+Check that `storage.createProduct` exists in server/storage.ts. If it does NOT exist (search for "createProduct" in storage.ts), add this method to the storage class:
+
+  async createProduct(data: any): Promise<any> {
+    const [product] = await db.insert(products).values(data).returning();
+    return product;
+  }
+
+And add the interface declaration near the top of the file where other product methods are declared:
+
+  createProduct(data: any): Promise<any>;
+
+If `createProduct` already exists, do nothing — just use the existing one.
+
+═══════════════════════════════════════════════════════════════════════
+FIX #4 (FRONTEND): "Already Connected" view must auto-load on page open
+═══════════════════════════════════════════════════════════════════════
+The /integrations/sheets-script page must check connection status immediately on mount and show the green "Connected" hero card if `lastSyncAt` exists.
+
+File: client/src/pages/sheets-integration.tsx
+
+Make sure the file matches THIS exact structure (replace the entire file content with the version below):
+
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Loader2, Copy, CheckCircle2, AlertCircle, RefreshCw, FileSpreadsheet } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+
+type ConnectionStatus = {
+  connected: boolean;
+  message: string;
+  spreadsheetName?: string | null;
+  lastSyncAt?: string;
+};
+
+export default function SheetsIntegrationPage() {
+  const { toast } = useToast();
+  const [understood, setUnderstood] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<ConnectionStatus | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+
+  // Auto-check connection status on page load (refetches on focus too)
+  const { data: initialStatus, isLoading: statusLoading, refetch: refetchStatus } = useQuery<ConnectionStatus>({
+    queryKey: ["/api/sheets/verify"],
+    queryFn: async () => {
+      const r = await fetch("/api/sheets/verify", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!r.ok) throw new Error("Failed to check connection");
+      return r.json();
+    },
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
+  });
+
+  const { data: scriptText, isLoading: scriptLoading } = useQuery<string>({
+    queryKey: ["/api/sheets/script"],
+    queryFn: async () => {
+      const r = await fetch("/api/sheets/script", { credentials: "include" });
+      if (!r.ok) throw new Error("Failed to load script");
+      return r.text();
+    },
+  });
+
+  const isConnected = initialStatus?.connected === true;
+
+  const handleCopy = async () => {
+    if (!scriptText) return;
+    try {
+      await navigator.clipboard.writeText(scriptText);
+      setCopied(true);
+      toast({ title: "✅ Script copié", description: "Collez-le dans Apps Script." });
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      toast({ title: "Erreur", description: "Impossible de copier.", variant: "destructive" });
+    }
+  };
+
+  const handleVerify = async () => {
+    setVerifying(true);
+    setVerifyResult(null);
+    try {
+      const r = await fetch("/api/sheets/verify", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await r.json();
+      setVerifyResult(data);
+      await refetchStatus();
+      toast({
+        title: data.connected ? "✅ Connexion vérifiée" : "⚠️ Pas encore connecté",
+        description: data.message,
+        variant: data.connected ? "default" : "destructive",
+      });
+    } catch {
+      setVerifyResult({ connected: false, message: "Erreur réseau." });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  // ── Loading state — wait for the initial status check ─────────────
+  if (statusLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+      </div>
+    );
+  }
+
+  // ── CONNECTED STATE — clean green success card ────────────────────
+  if (isConnected && !showGuide) {
+    const lastSync = initialStatus.lastSyncAt
+      ? new Date(initialStatus.lastSyncAt).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })
+      : "—";
+
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
+        <div className="max-w-4xl mx-auto">
+          <div className="bg-gradient-to-br from-emerald-50 to-green-50 dark:from-emerald-900/20 dark:to-green-900/20 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-8 shadow-sm">
+            <div className="flex items-start gap-4">
+              <div className="w-16 h-16 rounded-full bg-emerald-500 flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-9 h-9 text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-1">Google Sheets connecté ✅</h1>
+                <p className="text-gray-700 dark:text-gray-300 mb-6">Vos commandes se synchronisent automatiquement avec la plateforme.</p>
+                <div className="grid sm:grid-cols-2 gap-4 mb-6">
+                  <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-emerald-100 dark:border-emerald-800/50">
+                    <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-1">
+                      <FileSpreadsheet className="w-4 h-4" /> Feuille connectée
+                    </div>
+                    <div className="font-semibold text-gray-900 dark:text-white truncate" data-testid="text-spreadsheet-name">
+                      {initialStatus.spreadsheetName || "Google Sheet"}
+                    </div>
+                  </div>
+                  <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-emerald-100 dark:border-emerald-800/50">
+                    <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-1">
+                      <RefreshCw className="w-4 h-4" /> Dernière synchronisation
+                    </div>
+                    <div className="font-semibold text-gray-900 dark:text-white" data-testid="text-last-sync">{lastSync}</div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <Button onClick={() => window.location.href = '/orders'} className="bg-emerald-600 hover:bg-emerald-700 text-white" data-testid="button-view-orders">
+                    Voir mes commandes →
+                  </Button>
+                  <Button variant="outline" onClick={() => setShowGuide(true)} data-testid="button-reconnect">
+                    <RefreshCw className="w-4 h-4 mr-2" /> Connecter une autre feuille
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+            <p className="text-sm text-blue-900 dark:text-blue-200">
+              💡 <b>Astuce :</b> chaque nouvelle ligne ajoutée à votre Google Sheet sera importée automatiquement dans la plateforme dans les 40 secondes qui suivent.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── GUIDE / NOT-YET-CONNECTED STATE ───────────────────────────────
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
+      <div className="max-w-4xl mx-auto">
+        {isConnected && showGuide && (
+          <div className="mb-4">
+            <Button variant="ghost" onClick={() => setShowGuide(false)} data-testid="button-back-to-status">
+              ← Retour au statut connecté
+            </Button>
+          </div>
+        )}
+
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div className="px-8 py-6 border-b border-gray-100 dark:border-gray-700">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Guide d'intégration avec Google Sheets</h1>
+          </div>
+
+          <div className="px-8 py-6">
+            <h2 className="text-lg font-semibold text-blue-600 dark:text-blue-400 mb-4">Étapes :</h2>
+
+            <div className="divide-y divide-gray-100 dark:divide-gray-700">
+              <div className="py-4 text-gray-700 dark:text-gray-300">
+                Ouvrez votre <a href="https://docs.google.com/spreadsheets" target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline">compte Google Sheets</a>.
+              </div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">
+                Allez dans <span className="font-medium">Extensions</span> &gt; <span className="font-medium">Apps Script</span>.
+              </div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">Cliquez sur le bouton ci-dessous pour copier le script.</div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">Collez le script dans l'éditeur Apps Script.</div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">
+                Enregistrez le script et exécutez la fonction <code className="px-2 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">setup</code>.
+              </div>
+              <div className="py-4 text-gray-700 dark:text-gray-300">Accordez les autorisations à l'application pour accéder à vos données.</div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-between flex-wrap gap-4">
+              <Button onClick={handleCopy} disabled={scriptLoading || !scriptText} className="bg-blue-600 hover:bg-blue-700 text-white" data-testid="button-copy-script">
+                {scriptLoading ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…</>) : copied ? (<><CheckCircle2 className="w-4 h-4 mr-2" /> Copié !</>) : (<><Copy className="w-4 h-4 mr-2" /> Copy Code</>)}
+              </Button>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <Checkbox checked={understood} onCheckedChange={(v) => setUnderstood(v === true)} data-testid="checkbox-understood" />
+                <span className="text-gray-700 dark:text-gray-300">I understand the steps</span>
+              </label>
+            </div>
+
+            <div className="mt-6">
+              <Button onClick={handleVerify} disabled={!understood || verifying} className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-white text-base font-medium disabled:opacity-50" data-testid="button-verify-connection">
+                {verifying ? (<><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Vérification…</>) : "Verify Connection"}
+              </Button>
+            </div>
+
+            {verifyResult && (
+              <div className={`mt-4 p-4 rounded-lg border ${verifyResult.connected ? "bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800" : "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800"}`}>
+                <div className="flex items-start gap-3">
+                  {verifyResult.connected ? <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5" /> : <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />}
+                  <div className="flex-1">
+                    <p className={`font-medium ${verifyResult.connected ? "text-emerald-900 dark:text-emerald-200" : "text-amber-900 dark:text-amber-200"}`}>
+                      {verifyResult.connected ? "Connecté ✅" : "Non connecté"}
+                    </p>
+                    <p className="text-sm text-gray-700 dark:text-gray-300 mt-1">{verifyResult.message}</p>
+                    {verifyResult.spreadsheetName && (
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                        📄 Feuille connectée : <span className="font-medium">{verifyResult.spreadsheetName}</span>
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+After applying changes, test by adding a new row to your sheet with:
+  Nom: said
+  Téléphone: 632595440
+  Adresse: Test Address
+  Ville: Casablanca
+  Produit: mdya mos
+  Prix (DH): 599
+  Quantité: 1
+
+Then wait ~45 seconds and open the order in the platform. Verify:
+  ✅ "Nom du produit" shows "mdya mos" (NOT "Auto-rempli depuis la boutique")
+  ✅ "Prix Total" shows 599,00 DH (NOT 0,00)
+  ✅ "Articles" section shows 1 article: "mdya mos × 1 — 599 DH"
+  ✅ The product "mdya mos" was auto-created in the platform's products list (visible under /inventory)
+
+Also verify the integration page:
+  ✅ Opening /integrations/sheets-script after connecting shows the green "Connecté ✅" card with spreadsheet name + last sync date
+  ✅ Clicking "Connecter une autre feuille" reveals the setup guide again
+  ✅ Clicking "Voir mes commandes" navigates to /orders
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts server/storage.ts client/src/pages/sheets-integration.tsx
+git commit -m "fix(sheets): auto-create product, save price+qty, show connected state"
+git push origin main
+
+Apply all changes now and confirm each fix is complete.
