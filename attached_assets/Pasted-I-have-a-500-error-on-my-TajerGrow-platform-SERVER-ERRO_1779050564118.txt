@@ -1,0 +1,64 @@
+I have a 500 error on my TajerGrow platform:
+
+  [SERVER_ERROR] status=500 message=D.getOrCreateWebhookKey is not a function
+  TypeError: D.getOrCreateWebhookKey is not a function
+
+ROOT CAUSE:
+The code calls `storage.getOrCreateWebhookKey(storeId)` in TWO places, but the actual method defined in server/storage.ts is named `getOrGenerateWebhookKey`. This is a pre-existing typo bug that's now blocking the Sheets integration page.
+
+═══════════════════════════════════════════════════════════════════════
+FIX: Replace ALL occurrences of getOrCreateWebhookKey with getOrGenerateWebhookKey
+═══════════════════════════════════════════════════════════════════════
+
+File: server/routes.ts
+
+Search the ENTIRE file for this exact string:
+
+  getOrCreateWebhookKey
+
+There should be 2 occurrences:
+
+1. Around line 4027 in the existing GET /api/integrations/gsheets/apps-script route:
+       const apiKey = await storage.getOrCreateWebhookKey(storeId);
+   → Change to:
+       const apiKey = await storage.getOrGenerateWebhookKey(storeId);
+
+2. In our new GET /api/sheets/script route:
+       const apiKey = await storage.getOrGenerateWebhookKey(storeId);
+   → Already correct, do NOT change.
+
+If there are any OTHER `getOrCreateWebhookKey` calls anywhere else in the codebase, replace them ALL with `getOrGenerateWebhookKey`.
+
+Use a global find-and-replace in server/routes.ts (and any other server file):
+  FIND:    getOrCreateWebhookKey
+  REPLACE: getOrGenerateWebhookKey
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION
+═══════════════════════════════════════════════════════════════════════
+After the replace:
+
+1. Run a final grep to confirm zero matches remain:
+   $ grep -rn "getOrCreateWebhookKey" server/ client/ shared/
+   → should return NOTHING
+
+2. Confirm the method exists with the correct name in server/storage.ts:
+   $ grep -n "getOrGenerateWebhookKey" server/storage.ts
+   → should show the method definition + interface declaration
+
+3. Restart the server (npm run dev locally, or wait for Railway redeploy after push).
+
+4. Visit /integrations/sheets-script in the browser:
+   ✅ Page loads with the setup guide or connected state — no 500 error.
+
+5. Click "Copy Code":
+   ✅ Script copies to clipboard with the correct webhook URL.
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts
+git commit -m "fix: rename getOrCreateWebhookKey calls to getOrGenerateWebhookKey"
+git push origin main
+
+Apply the fix now and confirm grep returns zero matches.

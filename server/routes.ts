@@ -4024,7 +4024,7 @@ export async function registerRoutes(
 
   app.get("/api/integrations/gsheets/apps-script", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
-    const apiKey  = await storage.getOrCreateWebhookKey(storeId);
+    const apiKey  = await storage.getOrGenerateWebhookKey(storeId);
     const apiUrl  = `${req.protocol}://${req.get("host")}/api/integrations/google-sheets/webhook`;
 
     const script = `// ════════════════════════════════════════════════════════════════
