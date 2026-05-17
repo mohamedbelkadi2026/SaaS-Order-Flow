@@ -1,4 +1,143 @@
-import { useState } from "react";
+I have a TajerGrow SaaS platform with a Google Sheets Auto-Sync integration that's already partially working. I need you to FIX 4 specific issues. DO NOT touch anything else — only fix what's listed below.
+
+═══════════════════════════════════════════════════════════════════════
+ISSUE 1: Remove the other 2 tabs in the Google Sheets integration
+═══════════════════════════════════════════════════════════════════════
+Currently there are 3 tabs:
+  - 🚀 Auto-Sync (recommandé)   ← KEEP THIS ONE ONLY
+  - 🔗 URL publique              ← REMOVE
+  - 📜 Webhook avancé             ← REMOVE
+
+File: client/src/pages/integrations.tsx
+
+Find the Tabs block that looks like this:
+
+      <Tabs defaultValue="autosync" className="w-full">
+        <TabsList className="w-full">
+          <TabsTrigger value="autosync" className="flex-1">🚀 Auto-Sync (recommandé)</TabsTrigger>
+          <TabsTrigger value="url" className="flex-1">🔗 URL publique</TabsTrigger>
+          <TabsTrigger value="script" className="flex-1">📜 Webhook avancé</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="autosync" className="mt-4">
+          ... (the Auto-Sync card with the green button) ...
+        </TabsContent>
+
+        <TabsContent value="url" className="mt-4">
+          ... (all the URL publique content — many lines) ...
+        </TabsContent>
+
+        <TabsContent value="script" className="mt-4">
+          ... (all the Webhook avancé content — many lines) ...
+        </TabsContent>
+      </Tabs>
+
+REPLACE the entire `<Tabs>...</Tabs>` block with ONLY the Auto-Sync card (no tabs at all):
+
+      <div className="mt-4">
+        <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center text-2xl">⚡</div>
+            <div className="flex-1">
+              <h3 className="font-bold text-base">Synchronisation automatique en 2 minutes</h3>
+              <p className="text-sm text-muted-foreground">
+                Collez un script dans votre Google Sheet — toutes les commandes existantes et futures arrivent automatiquement dans la plateforme.
+              </p>
+            </div>
+          </div>
+          <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
+            <li>✅ Import initial automatique de toutes les lignes existantes</li>
+            <li>✅ Nouvelle commande dans le sheet = nouvelle commande dans la plateforme</li>
+            <li>✅ Aucune URL publique requise — votre sheet reste privé</li>
+            <li>✅ Anti-doublons intégré</li>
+          </ul>
+          <Button
+            onClick={() => window.location.href = '/integrations/sheets-script'}
+            className="w-full h-11 bg-emerald-500 hover:bg-emerald-600 text-white"
+            data-testid="button-open-autosync-guide"
+          >
+            Ouvrir le guide d'intégration →
+          </Button>
+        </div>
+      </div>
+
+IMPORTANT: Delete the OLD `<TabsContent value="url">` and `<TabsContent value="script">` blocks completely. Also remove unused imports (`Tabs`, `TabsList`, `TabsTrigger`, `TabsContent`) ONLY IF they are no longer used anywhere else in the file. If they are still used elsewhere, leave the imports.
+
+═══════════════════════════════════════════════════════════════════════
+ISSUE 2: Product name is not being saved from the Sheet
+═══════════════════════════════════════════════════════════════════════
+When a new order arrives from Google Sheets, the "Nom du produit" field shows "Auto-rempli depuis la boutique" instead of the actual product name from the sheet.
+
+ROOT CAUSE: In the bulk-sync route, we only create `orderItems` when `matched` (existing product) is found. If the product in the sheet doesn't match any existing store product, we create the order with NO product name attached. We also never save the raw product name string anywhere visible.
+
+File: server/routes.ts
+
+Find this block inside the `POST /api/sheets/sync/:webhookKey` route:
+
+          const matched = storeProducts.find(p => p.name === parsed.productName || p.sku === parsed.productName);
+          const orderItems = matched
+            ? [{ productId: matched.id, quantity: parsed.quantity, price: matched.sellingPrice || parsed.totalPrice, orderId: 0 }]
+            : [];
+          const order = await storage.createOrder({
+            storeId, magasinId,
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName, customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress, customerCity: parsed.customerCity,
+            status: "nouveau", totalPrice: parsed.totalPrice,
+            productCost: matched ? matched.costPrice : 0,
+            shippingCost: 0, adSpend: 0, source: "gsheets_script",
+            comment: parsed.note,
+          } as any, orderItems);
+
+REPLACE it with this version that handles BOTH cases (matched and unmatched products) and saves the product name into the order comment when no match is found:
+
+          // Try to match the product by name OR sku (case-insensitive)
+          const productNameLower = parsed.productName.toLowerCase().trim();
+          const matched = parsed.productName
+            ? storeProducts.find(p =>
+                (p.name && p.name.toLowerCase().trim() === productNameLower) ||
+                (p.sku && p.sku.toLowerCase().trim() === productNameLower)
+              )
+            : undefined;
+
+          const orderItems = matched
+            ? [{ productId: matched.id, quantity: parsed.quantity, price: matched.sellingPrice || parsed.totalPrice, orderId: 0 }]
+            : [];
+
+          // If the product wasn't matched but the sheet had a product name,
+          // prepend it to the comment so the agent still sees what was ordered.
+          let finalComment = parsed.note;
+          if (!matched && parsed.productName) {
+            const productTag = `[Produit: ${parsed.productName} × ${parsed.quantity}]`;
+            finalComment = parsed.note ? `${productTag} ${parsed.note}` : productTag;
+          }
+
+          const order = await storage.createOrder({
+            storeId, magasinId,
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName, customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress, customerCity: parsed.customerCity,
+            status: "nouveau", totalPrice: parsed.totalPrice,
+            productCost: matched ? matched.costPrice : 0,
+            shippingCost: 0, adSpend: 0, source: "gsheets_script",
+            comment: finalComment,
+          } as any, orderItems);
+
+═══════════════════════════════════════════════════════════════════════
+ISSUE 3: Sheets Integration page needs to show "Already Connected" state
+═══════════════════════════════════════════════════════════════════════
+When the user has already connected their Google Sheet (i.e., they previously ran setup() and the integration has lastSyncAt set), opening the integration page should:
+  - Show a green "✅ Connecté" banner at the top
+  - Show the connected spreadsheet name
+  - Show the last sync date
+  - Show the script ONLY in case they want to reconnect or change something
+  - The "Verify Connection" button changes to "Reconnecter" or stays the same
+
+File: client/src/pages/sheets-integration.tsx
+
+REPLACE THE ENTIRE FILE with this new version:
+
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, Copy, CheckCircle2, AlertCircle, RefreshCw, FileSpreadsheet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -20,6 +159,7 @@ export default function SheetsIntegrationPage() {
   const [copied, setCopied] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
 
+  // Auto-check connection status on page load
   const { data: initialStatus, isLoading: statusLoading, refetch: refetchStatus } = useQuery<ConnectionStatus>({
     queryKey: ["/api/sheets/verify"],
     queryFn: async () => {
@@ -33,6 +173,7 @@ export default function SheetsIntegrationPage() {
     },
   });
 
+  // Fetch the personalised script
   const { data: scriptText, isLoading: scriptLoading } = useQuery<string>({
     queryKey: ["/api/sheets/script"],
     queryFn: async () => {
@@ -80,15 +221,9 @@ export default function SheetsIntegrationPage() {
     }
   };
 
-  if (statusLoading) {
-    return (
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
-      </div>
-    );
-  }
-
-  // ── CONNECTED STATE ──────────────────────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────
+  // CONNECTED STATE — show a clean success card
+  // ────────────────────────────────────────────────────────────────────
   if (isConnected && !showGuide) {
     const lastSync = initialStatus.lastSyncAt
       ? new Date(initialStatus.lastSyncAt).toLocaleString("fr-FR", {
@@ -100,6 +235,7 @@ export default function SheetsIntegrationPage() {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
         <div className="max-w-4xl mx-auto">
+          {/* Hero connected card */}
           <div className="bg-gradient-to-br from-emerald-50 to-green-50 dark:from-emerald-900/20 dark:to-green-900/20 border border-emerald-200 dark:border-emerald-800 rounded-2xl p-8 shadow-sm">
             <div className="flex items-start gap-4">
               <div className="w-16 h-16 rounded-full bg-emerald-500 flex items-center justify-center shrink-0">
@@ -113,6 +249,7 @@ export default function SheetsIntegrationPage() {
                   Vos commandes Google Sheets se synchronisent automatiquement avec la plateforme.
                 </p>
 
+                {/* Info grid */}
                 <div className="grid sm:grid-cols-2 gap-4 mb-6">
                   <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-emerald-100 dark:border-emerald-800/50">
                     <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-1">
@@ -134,6 +271,7 @@ export default function SheetsIntegrationPage() {
                   </div>
                 </div>
 
+                {/* Actions */}
                 <div className="flex flex-wrap gap-3">
                   <Button
                     onClick={() => window.location.href = '/orders'}
@@ -155,6 +293,7 @@ export default function SheetsIntegrationPage() {
             </div>
           </div>
 
+          {/* Helpful tip */}
           <div className="mt-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
             <p className="text-sm text-blue-900 dark:text-blue-200">
               💡 <b>Astuce :</b> chaque nouvelle ligne ajoutée à votre Google Sheet sera importée automatiquement dans la plateforme dans les 40 secondes qui suivent.
@@ -165,7 +304,9 @@ export default function SheetsIntegrationPage() {
     );
   }
 
-  // ── GUIDE / NOT-YET-CONNECTED STATE ─────────────────────────────────
+  // ────────────────────────────────────────────────────────────────────
+  // GUIDE / NOT-YET-CONNECTED STATE — original setup flow
+  // ────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
       <div className="max-w-4xl mx-auto">
@@ -257,3 +398,23 @@ export default function SheetsIntegrationPage() {
     </div>
   );
 }
+
+═══════════════════════════════════════════════════════════════════════
+ISSUE 4: Verify the design matches and works correctly
+═══════════════════════════════════════════════════════════════════════
+After applying changes:
+  ✅ /integrations page shows ONLY the Auto-Sync card (no tabs anywhere)
+  ✅ Clicking "Ouvrir le guide" goes to /integrations/sheets-script
+  ✅ If already connected → shows green "✅ Connecté" hero card with spreadsheet name + last sync date + "Voir mes commandes" + "Reconnecter" buttons
+  ✅ If NOT connected → shows the original guide with steps + Copy Code + Verify Connection
+  ✅ New orders from the sheet now show the actual product name in the comment field (e.g. "[Produit: T-shirt rouge × 2]") when the product doesn't match an existing one in the store
+  ✅ Matched products still attach via orderItems as before
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts client/src/pages/integrations.tsx client/src/pages/sheets-integration.tsx
+git commit -m "fix(sheets): single auto-sync flow, show product name, connected-state UI"
+git push origin main
+
+Apply all 3 file changes now and confirm each is complete.

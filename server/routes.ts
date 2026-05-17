@@ -10577,10 +10577,21 @@ function submitOrder(e){
         try {
           const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
           if (dup) { skipped++; continue; }
-          const matched = storeProducts.find(p => p.name === parsed.productName || (p as any).sku === parsed.productName);
+          const productNameLower = parsed.productName.toLowerCase().trim();
+          const matched = parsed.productName
+            ? storeProducts.find(p =>
+                (p.name && p.name.toLowerCase().trim() === productNameLower) ||
+                ((p as any).sku && (p as any).sku.toLowerCase().trim() === productNameLower)
+              )
+            : undefined;
           const orderItems = matched
             ? [{ productId: matched.id, quantity: parsed.quantity, price: (matched as any).sellingPrice || parsed.totalPrice, orderId: 0 }]
             : [];
+          let finalComment = parsed.note;
+          if (!matched && parsed.productName) {
+            const productTag = `[Produit: ${parsed.productName} × ${parsed.quantity}]`;
+            finalComment = parsed.note ? `${productTag} ${parsed.note}` : productTag;
+          }
           const order = await storage.createOrder({
             storeId, magasinId,
             orderNumber: parsed.orderNumber,
@@ -10589,7 +10600,7 @@ function submitOrder(e){
             status: "nouveau", totalPrice: parsed.totalPrice,
             productCost: matched ? matched.costPrice : 0,
             shippingCost: 0, adSpend: 0, source: "gsheets_script",
-            comment: parsed.note,
+            comment: finalComment,
           } as any, orderItems);
           const nextAgentId = await storage.getNextAgent(storeId, magasinId, matched?.id, parsed.customerCity);
           if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
