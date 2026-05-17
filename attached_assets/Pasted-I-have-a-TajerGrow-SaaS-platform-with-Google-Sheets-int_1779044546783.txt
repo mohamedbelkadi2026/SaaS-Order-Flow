@@ -1,0 +1,111 @@
+I have a TajerGrow SaaS platform with Google Sheets integration. When I try to delete (disconnect) a connected sheet from the UI, I get this Postgres foreign-key error:
+
+  error: update or delete on table "store_integrations" violates foreign key constraint
+  "integration_logs_integration_id_store_integrations_id_fk" on table "integration_logs".
+  Key (id)=(19) is still referenced from table "integration_logs".
+
+ROOT CAUSE:
+The `integration_logs` table has a foreign key column `integration_id` that references `store_integrations.id`. When we created log entries during order syncing, they got linked to the integration row. Now Postgres refuses to delete the parent row because child log rows still reference it.
+
+FIX STRATEGY:
+Before deleting the store_integrations row, we must EITHER (a) delete the related integration_logs first, OR (b) null-out their integration_id. Approach (b) is better because it preserves the audit trail (logs remain visible in the Logs page even after disconnecting the sheet).
+
+═══════════════════════════════════════════════════════════════════════
+FIX: Update the DELETE /api/sheets/:id endpoint
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find this existing endpoint:
+
+  // ── DELETE /api/sheets/:id — disconnect a sheet ────────────────────────────
+  app.delete("/api/sheets/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: "Invalid id" });
+    try {
+      const [row] = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.id, id),
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      if (!row) return res.status(404).json({ success: false, message: "Sheet not found" });
+
+      await db.delete(storeIntegrations).where(eq(storeIntegrations.id, id));
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SheetsScript] Delete error:", err);
+      res.status(500).json({ success: false, message: "Delete failed" });
+    }
+  });
+
+REPLACE it with this version that detaches the logs first (preserves audit history):
+
+  // ── DELETE /api/sheets/:id — disconnect a sheet ────────────────────────────
+  // We null out integration_id on related logs first (preserves audit trail),
+  // then delete the integration row. This avoids the FK constraint violation
+  // while keeping the log history visible in /integrations/logs.
+  app.delete("/api/sheets/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: "Invalid id" });
+    try {
+      const [row] = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.id, id),
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      if (!row) return res.status(404).json({ success: false, message: "Sheet not found" });
+
+      // Step 1: detach any log rows that point to this integration so the
+      // foreign-key constraint won't block the delete. The logs themselves
+      // are kept (provider + message + storeId still meaningful for audit).
+      try {
+        await db.update(integrationLogs)
+          .set({ integrationId: null })
+          .where(eq(integrationLogs.integrationId, id));
+      } catch (logErr: any) {
+        console.warn("[SheetsScript] Could not detach logs:", logErr.message);
+      }
+
+      // Step 2: now safe to delete the integration row
+      await db.delete(storeIntegrations).where(eq(storeIntegrations.id, id));
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SheetsScript] Delete error:", err);
+      res.status(500).json({ success: false, message: "Delete failed", error: err.message });
+    }
+  });
+
+═══════════════════════════════════════════════════════════════════════
+VERIFY THE IMPORT IS PRESENT
+═══════════════════════════════════════════════════════════════════════
+At the top of server/routes.ts, find this existing import line:
+
+  import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema } from "@shared/schema";
+
+Confirm that `integrationLogs` is in the list. If it's NOT there, add it. If it IS there (which it should be — it's already used elsewhere in the file), do nothing.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+After applying the fix:
+
+1. Open /integrations/sheets-script
+2. Click the red trash icon on any connected sheet card
+3. Click "Déconnecter" in the confirmation dialog
+4. ✅ Card disappears (no error toast)
+5. ✅ Server logs show "[SheetsScript]" with no FK error
+6. ✅ Visit /integrations/logs — the old log entries from this sheet are still visible (provider = gsheets_script, message preserved), just no longer linked to a specific integration row
+7. ✅ Refresh /integrations/sheets-script — sheet count decreased by 1
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts
+git commit -m "fix(sheets): detach integration logs before delete to avoid FK violation"
+git push origin main
+
+Apply the change now and confirm the delete works.
