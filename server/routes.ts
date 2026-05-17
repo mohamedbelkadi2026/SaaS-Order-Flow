@@ -10530,9 +10530,33 @@ function submitOrder(e){
     return { customerName, customerPhone, customerCity, customerAddress, productName, quantity, totalPrice, orderNumber, note: note || null };
   }
 
+  app.get("/api/sheets/sync/:webhookKey", async (req: any, res: any) => {
+    const webhookKey = (req.params.webhookKey || "").trim();
+    const store = webhookKey.length >= 12 ? await storage.getStoreByWebhookKey(webhookKey) : null;
+    res.json({
+      ok: true,
+      message: "Sheets sync endpoint reachable",
+      authenticated: !!store,
+      storeName: store?.name || null,
+      method: "POST is the real endpoint — this GET is just a ping",
+    });
+  });
+
   app.post("/api/sheets/sync/:webhookKey", async (req, res) => {
     const webhookKey = (req.params.webhookKey || "").trim();
+    console.log("════════════════════════════════════════════════════");
+    console.log("[SheetsScript] 📥 INCOMING SYNC REQUEST");
+    console.log("[SheetsScript] webhookKey (first 8):", webhookKey.slice(0, 8) + "…");
+    console.log("[SheetsScript] body keys:", Object.keys(req.body || {}));
+    console.log("[SheetsScript] sheetId:", (req.body as any)?.sheetId);
+    console.log("[SheetsScript] fileName:", (req.body as any)?.fileName);
+    console.log("[SheetsScript] newOrders count:", Array.isArray((req.body as any)?.newOrders) ? (req.body as any).newOrders.length : "NOT_ARRAY");
+    if (Array.isArray((req.body as any)?.newOrders) && (req.body as any).newOrders.length > 0) {
+      console.log("[SheetsScript] FIRST ROW SAMPLE:", JSON.stringify((req.body as any).newOrders[0]).slice(0, 500));
+    }
+    console.log("════════════════════════════════════════════════════");
     if (!webhookKey || webhookKey.length < 12) {
+      console.warn("[SheetsScript] ❌ REJECTED: invalid webhook key");
       return res.status(401).json({ success: false, message: "Invalid webhook key" });
     }
     try {
@@ -10611,10 +10635,19 @@ function submitOrder(e){
       for (const rawRow of newOrders) {
         if (!rawRow || typeof rawRow !== "object") { skipped++; continue; }
         const parsed = parseSheetRowToOrder(rawRow);
-        if (!parsed) { skipped++; continue; }
+        if (!parsed) {
+          console.warn("[SheetsScript] ⚠️ Row skipped — no parseable customer:", JSON.stringify(rawRow).slice(0, 300));
+          skipped++;
+          continue;
+        }
+        console.log(`[SheetsScript] ✅ Parsed: name="${parsed.customerName}" phone="${parsed.customerPhone}" product="${parsed.productName}" qty=${parsed.quantity} price=${parsed.totalPrice}`);
         try {
           const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
-          if (dup) { skipped++; continue; }
+          if (dup) {
+            console.log(`[SheetsScript] ⚠️ DUPLICATE skipped: orderNumber="${parsed.orderNumber}" already exists as order #${dup.id}`);
+            skipped++;
+            continue;
+          }
           const productNameLower = parsed.productName.toLowerCase().trim();
           let matched: any = parsed.productName
             ? storeProducts.find((p: any) =>
@@ -10715,7 +10748,7 @@ function submitOrder(e){
         message: `${created} commande(s) créée(s), ${skipped} ignorée(s)`,
       });
 
-      console.log(`[SheetsScript] Store ${storeId}: ${created} created, ${skipped} skipped`);
+      console.log(`[SheetsScript] ✅ DONE: store=${storeId} created=${created} skipped=${skipped} errors=${errors.length}`);
       return res.json({ success: true, created, skipped, errors: errors.slice(0, 10), message: `${created} nouvelle(s) commande(s) importée(s)` });
     } catch (err: any) {
       console.error("[SheetsScript] Sync error:", err);
@@ -10727,14 +10760,14 @@ function submitOrder(e){
     const storeId = req.user!.storeId!;
     const apiKey = await storage.getOrGenerateWebhookKey(storeId);
     const apiUrl = `${req.protocol}://${req.get("host")}/api/sheets/sync/${apiKey}`;
-    const script = `// TajerGrow — Google Sheets Auto-Sync Script
+    const script = `// TajerGrow — Google Sheets Auto-Sync Script v3
 // Coller dans Extensions → Apps Script, puis exécuter setup()
 //
-// IMPORTANT : setup() ne synchronise PAS les commandes existantes.
-// Seules les NOUVELLES lignes ajoutées après setup() seront envoyées
-// automatiquement à la plateforme.
+// IMPORTANT : setup() NE synchronise PAS les commandes existantes.
+// Seules les NOUVELLES lignes ajoutées APRÈS setup() seront envoyées.
 
 var API_URL = '${apiUrl}';
+var STATUS_COLUMN = 'TajerGrow Status';
 
 function setup() {
   registerConnection();
@@ -10743,20 +10776,19 @@ function setup() {
   Logger.log('✅ Connexion établie. Les nouvelles commandes seront synchronisées automatiquement.');
 }
 
-// Sends only metadata (no orders) so the platform knows the sheet is connected
 function registerConnection() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet();
   const active = sheet.getActiveSheet();
-  sendToAPI({
+  const response = sendToAPI({
     sheetId: sheet.getId(),
     sheetName: active.getName(),
     fileName: sheet.getName(),
     headers: [],
     newOrders: []
   });
+  Logger.log('Register response: ' + response);
 }
 
-// Marks every existing row as "already synced" so onEditHandler won't re-send them
 function markExistingRowsAsSynced() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   const lastRow = sheet.getLastRow();
@@ -10772,8 +10804,29 @@ function setupEditTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
   const exists = triggers.some(function(t) { return t.getHandlerFunction() === 'onEditHandler'; });
   if (!exists) {
-    ScriptApp.newTrigger('onEditHandler').forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet()).onEdit().create();
+    ScriptApp.newTrigger('onEditHandler')
+      .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+      .onEdit()
+      .create();
   }
+}
+
+function getStatusColumnIndex(sheet) {
+  const lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return -1;
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim() === STATUS_COLUMN) return i + 1;
+  }
+  return -1;
+}
+
+function writeRowStatus(sheet, row, text, isError) {
+  const col = getStatusColumnIndex(sheet);
+  if (col < 1) return;
+  const cell = sheet.getRange(row, col);
+  cell.setValue(text);
+  cell.setFontColor(isError ? '#d93025' : '#0f9d58');
 }
 
 function onEditHandler(e) {
@@ -10782,7 +10835,6 @@ function onEditHandler(e) {
   const range = e.range;
   const firstRow = range.getRow();
   const lastRow = range.getLastRow();
-  const newOrders = [];
   const rowsToProcess = [];
 
   for (var currentRow = firstRow; currentRow <= lastRow; currentRow++) {
@@ -10797,13 +10849,16 @@ function onEditHandler(e) {
       if (cache.get(cacheKey)) continue;
       cache.put(cacheKey, 'pending', 720);
       rowsToProcess.push(currentRow);
-    } catch (err) { Logger.log('Erreur: ' + err); }
+    } catch (err) { Logger.log('Erreur lock: ' + err); }
     finally { lock.releaseLock(); }
   }
 
   if (rowsToProcess.length === 0) return;
 
   Utilities.sleep(40000);
+
+  const newOrders = [];
+  const processedRows = [];
 
   for (var i = 0; i < rowsToProcess.length; i++) {
     var row = rowsToProcess[i];
@@ -10816,23 +10871,41 @@ function onEditHandler(e) {
       newOrder[headers[h]] = (rowData[h] !== null && rowData[h] !== '') ? rowData[h] : null;
     }
     newOrders.push(newOrder);
+    processedRows.push(row);
   }
 
   if (newOrders.length === 0) return;
 
+  const responseText = sendToAPI({
+    sheetId: sheet.getParent().getId(),
+    sheetName: sheet.getName(),
+    fileName: sheet.getParent().getName(),
+    newOrders: newOrders
+  });
+
+  var success = false;
+  var createdCount = 0;
+  var apiMessage = '';
   try {
-    sendToAPI({
-      sheetId: sheet.getParent().getId(),
-      sheetName: sheet.getName(),
-      fileName: sheet.getParent().getName(),
-      newOrders: newOrders
-    });
-    for (var j = 0; j < rowsToProcess.length; j++) {
-      var r = rowsToProcess[j];
+    const parsed = JSON.parse(responseText);
+    success = parsed.success === true;
+    createdCount = parsed.created || 0;
+    apiMessage = parsed.message || '';
+  } catch (parseErr) {
+    Logger.log('Réponse non-JSON: ' + responseText);
+    apiMessage = 'Réponse invalide du serveur';
+  }
+
+  for (var j = 0; j < processedRows.length; j++) {
+    var r = processedRows[j];
+    if (success && createdCount > 0) {
       PropertiesService.getDocumentProperties().setProperty('row_' + r, new Date().toISOString());
-      CacheService.getScriptCache().remove('row_' + r);
+      writeRowStatus(sheet, r, '✅ Créée #', false);
+    } else {
+      writeRowStatus(sheet, r, '❌ ' + (apiMessage || 'Échec'), true);
     }
-  } catch (err) { Logger.log('Erreur envoi: ' + err); }
+    CacheService.getScriptCache().remove('row_' + r);
+  }
 }
 
 function sendToAPI(data) {
@@ -10844,11 +10917,17 @@ function sendToAPI(data) {
   };
   try {
     const response = UrlFetchApp.fetch(API_URL, options);
-    Logger.log('Réponse: ' + response.getContentText());
-  } catch (e) { Logger.log('Erreur API: ' + e.message); }
+    const text = response.getContentText();
+    const code = response.getResponseCode();
+    Logger.log('API ' + code + ': ' + text);
+    return text;
+  } catch (e) {
+    Logger.log('Erreur API: ' + e.message);
+    return '{"success":false,"message":"' + e.message + '"}';
+  }
 }
 
-// OPTIONAL: run this once to force-import ALL existing rows (e.g. on a fresh sheet)
+// Optional: force import of all existing rows (run once if needed)
 function forceImportAll() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet();
   const active = sheet.getActiveSheet();
@@ -10864,10 +10943,18 @@ function forceImportAll() {
       for (var i = 0; i < headers.length; i++) { obj[headers[i]] = row[i]; }
       return obj;
     });
-  sendToAPI({ sheetId: sheet.getId(), sheetName: active.getName(), fileName: sheet.getName(), headers: headers, newOrders: jsonData });
+  const response = sendToAPI({
+    sheetId: sheet.getId(),
+    sheetName: active.getName(),
+    fileName: sheet.getName(),
+    headers: headers,
+    newOrders: jsonData
+  });
+  Logger.log('Import forcé: ' + response);
   const properties = PropertiesService.getDocumentProperties();
-  for (var r = 2; r <= lastRow; r++) { properties.setProperty('row_' + r, new Date().toISOString()); }
-  Logger.log('Import forcé : ' + jsonData.length + ' lignes envoyées.');
+  for (var r = 2; r <= lastRow; r++) {
+    properties.setProperty('row_' + r, new Date().toISOString());
+  }
 }
 `;
     res.type("text/plain").send(script);

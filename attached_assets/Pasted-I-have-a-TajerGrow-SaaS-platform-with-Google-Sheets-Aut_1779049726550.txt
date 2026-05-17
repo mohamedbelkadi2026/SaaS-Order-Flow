@@ -1,0 +1,356 @@
+I have a TajerGrow SaaS platform with Google Sheets Auto-Sync. There's a critical bug:
+
+THE BUG:
+─────────────────────────────────────────────────────────────────────
+When I add a new row to my Google Sheet:
+- The Apps Script writes "✅ Créée #" in the TajerGrow Status column (column N)
+- BUT the order does NOT appear in the platform's /orders page
+
+This means EITHER:
+(a) The Apps Script running in the user's sheet is an OLD version (different endpoint, e.g. /api/integrations/google-sheets/webhook or /api/webhook/sheets/order/) and the new /api/sheets/sync/:webhookKey is never being called.
+(b) OR /api/sheets/sync is being called but the order creation is silently failing.
+(c) OR the request hits the route but the integration is marked inactive (isActive=0) so it returns "success: true, created: 0".
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1: ADD DETAILED LOGGING to /api/sheets/sync/:webhookKey
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the POST /api/sheets/sync/:webhookKey route. At the VERY TOP of the handler (right after the try { ), add this aggressive logging block so we can see EVERY incoming request in Railway logs:
+
+  app.post("/api/sheets/sync/:webhookKey", async (req, res) => {
+    const webhookKey = (req.params.webhookKey || "").trim();
+    console.log("════════════════════════════════════════════════════");
+    console.log("[SheetsScript] 📥 INCOMING SYNC REQUEST");
+    console.log("[SheetsScript] webhookKey (first 8):", webhookKey.slice(0, 8) + "…");
+    console.log("[SheetsScript] body keys:", Object.keys(req.body || {}));
+    console.log("[SheetsScript] sheetId:", req.body?.sheetId);
+    console.log("[SheetsScript] fileName:", req.body?.fileName);
+    console.log("[SheetsScript] newOrders count:", Array.isArray(req.body?.newOrders) ? req.body.newOrders.length : "NOT_ARRAY");
+    if (Array.isArray(req.body?.newOrders) && req.body.newOrders.length > 0) {
+      console.log("[SheetsScript] FIRST ROW SAMPLE:", JSON.stringify(req.body.newOrders[0]).slice(0, 500));
+    }
+    console.log("════════════════════════════════════════════════════");
+
+    if (!webhookKey || webhookKey.length < 12) {
+      console.warn("[SheetsScript] ❌ REJECTED: invalid webhook key");
+      return res.status(401).json({ success: false, message: "Invalid webhook key" });
+    }
+
+(keep the rest of the route unchanged below this)
+
+ALSO inside the inner `for (const rawRow of newOrders)` loop, add logging RIGHT after parseSheetRowToOrder:
+
+        const parsed = parseSheetRowToOrder(rawRow);
+        if (!parsed) {
+          console.warn("[SheetsScript] ⚠️ Row skipped — no parseable customer:", JSON.stringify(rawRow).slice(0, 300));
+          skipped++;
+          continue;
+        }
+        console.log(`[SheetsScript] ✅ Parsed: name="${parsed.customerName}" phone="${parsed.customerPhone}" product="${parsed.productName}" qty=${parsed.quantity} price=${parsed.totalPrice}`);
+
+ALSO in the `try { const dup = await storage.getOrderByNumber(...)` block, log when a dedupe-skip happens:
+
+          const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+          if (dup) {
+            console.log(`[SheetsScript] ⚠️ DUPLICATE skipped: orderNumber="${parsed.orderNumber}" already exists as order #${dup.id}`);
+            skipped++;
+            continue;
+          }
+
+ALSO at the very end of the route, log the final response:
+
+      console.log(`[SheetsScript] ✅ DONE: store=${storeId} created=${created} skipped=${skipped} errors=${errors.length}`);
+      return res.json({ success: true, created, skipped, errors: errors.slice(0, 10), message: `${created} nouvelle(s) commande(s) importée(s)` });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2: Add a DIAGNOSTIC route to confirm the URL is reachable
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Add this NEW route right BEFORE the POST /api/sheets/sync/:webhookKey route. It lets us GET the URL in a browser to confirm the platform is even reachable:
+
+  app.get("/api/sheets/sync/:webhookKey", async (req, res) => {
+    const webhookKey = (req.params.webhookKey || "").trim();
+    const store = webhookKey.length >= 12 ? await storage.getStoreByWebhookKey(webhookKey) : null;
+    res.json({
+      ok: true,
+      message: "Sheets sync endpoint reachable",
+      authenticated: !!store,
+      storeName: store?.name || null,
+      method: "POST is the real endpoint — this GET is just a ping",
+    });
+  });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3: REWRITE the Apps Script template to add Sheet-side logging + better error reporting
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the GET /api/sheets/script endpoint. REPLACE the entire `script` template-string content with this improved version. The KEY CHANGES:
+  - Adds a "TajerGrow Status" column auto-detection
+  - Only marks "✅ Créée #" AFTER the API confirms success
+  - Writes "❌ Erreur" if the API call fails or returns success=false
+  - Logs the full API response so we can see what's happening
+
+  app.get("/api/sheets/script", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const apiKey = await storage.getOrGenerateWebhookKey(storeId);
+    const apiUrl = `${req.protocol}://${req.get("host")}/api/sheets/sync/${apiKey}`;
+    const script = `// TajerGrow — Google Sheets Auto-Sync Script v3
+// Coller dans Extensions → Apps Script, puis exécuter setup()
+//
+// IMPORTANT : setup() NE synchronise PAS les commandes existantes.
+// Seules les NOUVELLES lignes ajoutées APRÈS setup() seront envoyées.
+
+var API_URL = '${apiUrl}';
+var STATUS_COLUMN = 'TajerGrow Status';
+
+function setup() {
+  registerConnection();
+  markExistingRowsAsSynced();
+  setupEditTrigger();
+  Logger.log('✅ Connexion établie. Les nouvelles commandes seront synchronisées automatiquement.');
+}
+
+function registerConnection() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const active = sheet.getActiveSheet();
+  const response = sendToAPI({
+    sheetId: sheet.getId(),
+    sheetName: active.getName(),
+    fileName: sheet.getName(),
+    headers: [],
+    newOrders: []
+  });
+  Logger.log('Register response: ' + response);
+}
+
+function markExistingRowsAsSynced() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const properties = PropertiesService.getDocumentProperties();
+  for (var r = 2; r <= lastRow; r++) {
+    properties.setProperty('row_' + r, new Date().toISOString());
+  }
+  Logger.log('Marqué ' + (lastRow - 1) + ' ligne(s) existante(s) comme déjà synchronisée(s).');
+}
+
+function setupEditTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  const exists = triggers.some(function(t) { return t.getHandlerFunction() === 'onEditHandler'; });
+  if (!exists) {
+    ScriptApp.newTrigger('onEditHandler')
+      .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+      .onEdit()
+      .create();
+  }
+}
+
+// Find the column index of the TajerGrow Status column (creates it if missing)
+function getStatusColumnIndex(sheet) {
+  const lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return -1;
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim() === STATUS_COLUMN) return i + 1;
+  }
+  return -1; // not found — we'll skip writing status
+}
+
+function writeRowStatus(sheet, row, text, isError) {
+  const col = getStatusColumnIndex(sheet);
+  if (col < 1) return;
+  const cell = sheet.getRange(row, col);
+  cell.setValue(text);
+  cell.setFontColor(isError ? '#d93025' : '#0f9d58');
+}
+
+function onEditHandler(e) {
+  if (!e) return;
+  const sheet = e.source.getActiveSheet();
+  const range = e.range;
+  const firstRow = range.getRow();
+  const lastRow = range.getLastRow();
+  const rowsToProcess = [];
+
+  for (var currentRow = firstRow; currentRow <= lastRow; currentRow++) {
+    if (currentRow === 1) continue;
+    const lock = LockService.getScriptLock();
+    try {
+      lock.waitLock(60000);
+      const cache = CacheService.getScriptCache();
+      const cacheKey = 'row_' + currentRow;
+      const properties = PropertiesService.getDocumentProperties();
+      if (properties.getProperty(cacheKey)) continue;
+      if (cache.get(cacheKey)) continue;
+      cache.put(cacheKey, 'pending', 720);
+      rowsToProcess.push(currentRow);
+    } catch (err) { Logger.log('Erreur lock: ' + err); }
+    finally { lock.releaseLock(); }
+  }
+
+  if (rowsToProcess.length === 0) return;
+
+  // Wait for user to finish typing
+  Utilities.sleep(40000);
+
+  const newOrders = [];
+  const processedRows = [];
+
+  for (var i = 0; i < rowsToProcess.length; i++) {
+    var row = rowsToProcess[i];
+    if (CacheService.getScriptCache().get('row_' + row) !== 'pending') continue;
+    var rowData = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+    if (rowData.every(function(c) { return !c || c.toString().trim() === ''; })) continue;
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var newOrder = {};
+    for (var h = 0; h < headers.length; h++) {
+      newOrder[headers[h]] = (rowData[h] !== null && rowData[h] !== '') ? rowData[h] : null;
+    }
+    newOrders.push(newOrder);
+    processedRows.push(row);
+  }
+
+  if (newOrders.length === 0) return;
+
+  const responseText = sendToAPI({
+    sheetId: sheet.getParent().getId(),
+    sheetName: sheet.getName(),
+    fileName: sheet.getParent().getName(),
+    newOrders: newOrders
+  });
+
+  // Parse response and update each row's status
+  var success = false;
+  var createdCount = 0;
+  var apiMessage = '';
+  try {
+    const parsed = JSON.parse(responseText);
+    success = parsed.success === true;
+    createdCount = parsed.created || 0;
+    apiMessage = parsed.message || '';
+  } catch (parseErr) {
+    Logger.log('Réponse non-JSON: ' + responseText);
+    apiMessage = 'Réponse invalide du serveur';
+  }
+
+  for (var j = 0; j < processedRows.length; j++) {
+    var r = processedRows[j];
+    if (success && createdCount > 0) {
+      PropertiesService.getDocumentProperties().setProperty('row_' + r, new Date().toISOString());
+      writeRowStatus(sheet, r, '✅ Créée #', false);
+    } else {
+      writeRowStatus(sheet, r, '❌ ' + (apiMessage || 'Échec'), true);
+    }
+    CacheService.getScriptCache().remove('row_' + r);
+  }
+}
+
+function sendToAPI(data) {
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(data),
+    muteHttpExceptions: true
+  };
+  try {
+    const response = UrlFetchApp.fetch(API_URL, options);
+    const text = response.getContentText();
+    const code = response.getResponseCode();
+    Logger.log('API ' + code + ': ' + text);
+    return text;
+  } catch (e) {
+    Logger.log('Erreur API: ' + e.message);
+    return '{"success":false,"message":"' + e.message + '"}';
+  }
+}
+
+// Optional: force import of all existing rows (run once if needed)
+function forceImportAll() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const active = sheet.getActiveSheet();
+  const lastCol = active.getLastColumn();
+  const lastRow = active.getLastRow();
+  if (lastRow < 2 || lastCol < 1) { Logger.log('Sheet vide'); return; }
+  const headers = active.getRange(1, 1, 1, lastCol).getValues()[0];
+  const values = active.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const jsonData = values
+    .filter(function(row) { return !row.every(function(c) { return !c || c.toString().trim() === ''; }); })
+    .map(function(row) {
+      var obj = {};
+      for (var i = 0; i < headers.length; i++) { obj[headers[i]] = row[i]; }
+      return obj;
+    });
+  const response = sendToAPI({
+    sheetId: sheet.getId(),
+    sheetName: active.getName(),
+    fileName: sheet.getName(),
+    headers: headers,
+    newOrders: jsonData
+  });
+  Logger.log('Import forcé: ' + response);
+  const properties = PropertiesService.getDocumentProperties();
+  for (var r = 2; r <= lastRow; r++) {
+    properties.setProperty('row_' + r, new Date().toISOString());
+  }
+}
+`;
+    res.type("text/plain").send(script);
+  });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4: USER ACTION CHECKLIST (read this carefully!)
+═══════════════════════════════════════════════════════════════════════
+After deploying the changes, the USER must do these steps EXACTLY:
+
+1. Open https://www.tajergrow.com/integrations/sheets-script
+   → If a sheet is already connected, click red trash → "Déconnecter"
+
+2. Open the Google Sheet → Extensions → Apps Script
+3. DELETE THE OLD CODE completely (Ctrl+A then Delete)
+4. Go back to /integrations/sheets-script in the platform
+5. Click "Copy Code" — this fetches the NEW v3 script
+6. Paste into Apps Script editor → Save (💾)
+7. Run setup() → grant authorization
+8. Look at "Execution Log" in Apps Script — should say "✅ Connexion établie"
+
+9. TEST: add a new row in the sheet with name + phone + product + price + quantity
+10. Wait ~45 seconds
+11. Check Apps Script "Executions" tab → should show onEditHandler ran
+12. Open "View → Logs" → should see "API 200: {success: true, created: 1, ...}"
+13. If created=0 or error: check the Railway logs for the "[SheetsScript] 📥 INCOMING SYNC REQUEST" line
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5: WHAT TO LOOK FOR IN RAILWAY LOGS
+═══════════════════════════════════════════════════════════════════════
+After the user adds a row and waits 45s, the Railway logs should show:
+
+  ════════════════════════════════════════════════════
+  [SheetsScript] 📥 INCOMING SYNC REQUEST
+  [SheetsScript] webhookKey (first 8): 51BVWFGL…
+  [SheetsScript] body keys: [ 'sheetId', 'sheetName', 'fileName', 'newOrders' ]
+  [SheetsScript] sheetId: 1XYZ...
+  [SheetsScript] fileName: My Orders Sheet
+  [SheetsScript] newOrders count: 1
+  [SheetsScript] FIRST ROW SAMPLE: {"Nom":"brahim","Téléphone":"688999999",...}
+  ════════════════════════════════════════════════════
+  [SheetsScript] ✅ Parsed: name="brahim" phone="688999999" product="mdya mos" qty=2 price=59900
+  [SheetsScript] Auto-created product "mdya mos" id=... for store ...
+  [SheetsScript] ✅ DONE: store=X created=1 skipped=0 errors=0
+
+If you DON'T see "INCOMING SYNC REQUEST" at all → the old Apps Script is calling a DIFFERENT URL. The user did not replace the script correctly. Tell them to delete ALL code in Apps Script and paste again from scratch.
+
+If you see "INCOMING SYNC REQUEST" but "Row skipped — no parseable customer" → the column header names don't match. Check the FIRST ROW SAMPLE log and tell us what keys are in it.
+
+If you see "INCOMING SYNC REQUEST" + "DUPLICATE skipped" → the ref/order_id column contains a value that already exists in the orders table. Check what the orderNumber resolves to.
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts
+git commit -m "debug(sheets): aggressive logging + improved Apps Script v3"
+git push origin main
+
+Apply all changes now and confirm each step is complete.
