@@ -1,0 +1,302 @@
+I have a TajerGrow SaaS platform with Google Sheets Auto-Sync. Looking at Railway logs:
+
+  [SheetsScript] sheetId: undefined
+  [SheetsScript] fileName: undefined
+  [SheetsScript] newOrders count: NOT_ARRAY
+
+This proves the Apps Script's onEditHandler is firing but sending an EMPTY/MALFORMED payload. Root causes of `onEdit` triggers being unreliable in Google Apps Script:
+
+1. `onEdit` triggers run as the SHEET OWNER but with LIMITED auth — `UrlFetchApp.fetch()` may silently fail or send empty body.
+2. `Utilities.sleep(40000)` can exceed Apps Script's execution-time limits for triggers.
+3. Multiple onEdit triggers can stack up from re-running setup(), causing duplicate/empty firings.
+4. Editing a single cell in column N (TajerGrow Status) re-triggers onEdit with no real new data.
+
+THE FIX: Replace the unreliable onEdit trigger with a TIME-BASED trigger that runs every 1 minute. It scans the sheet for new rows, sends them to the API, then marks them synced. This is the same pattern Garean uses and is rock-solid.
+
+═══════════════════════════════════════════════════════════════════════
+FIX: Rewrite the Apps Script template (server/routes.ts)
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the GET /api/sheets/script endpoint. REPLACE THE ENTIRE `script` template-string content with this v4 version (time-driven, not onEdit-based):
+
+  app.get("/api/sheets/script", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const apiKey = await storage.getOrGenerateWebhookKey(storeId);
+    const apiUrl = `${req.protocol}://${req.get("host")}/api/sheets/sync/${apiKey}`;
+    const script = `// TajerGrow — Google Sheets Auto-Sync v4 (Time-Driven)
+// Copier ce code, le coller dans Extensions → Apps Script, puis exécuter setup()
+//
+// COMMENT ÇA MARCHE :
+//   - setup() s'exécute une seule fois et installe un trigger toutes les minutes
+//   - Toutes les 60 secondes, syncNewRows() scanne le sheet, envoie les nouvelles
+//     lignes à la plateforme, puis marque la colonne "TajerGrow Status".
+//   - Les lignes EXISTANTES au moment du setup() sont marquées comme déjà
+//     synchronisées et NE seront PAS importées.
+
+var API_URL = '${apiUrl}';
+var STATUS_COLUMN_NAME = 'TajerGrow Status';
+
+function setup() {
+  removeOldTriggers();
+  registerConnection();
+  markExistingRowsAsSynced();
+  installTimeTrigger();
+  Logger.log('✅ Setup terminé. La synchronisation démarrera dans 1 minute.');
+}
+
+function removeOldTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'syncNewRows' || fn === 'onEditHandler') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+}
+
+function installTimeTrigger() {
+  ScriptApp.newTrigger('syncNewRows')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+  Logger.log('Trigger installé : syncNewRows toutes les 1 minute.');
+}
+
+function registerConnection() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const active = sheet.getActiveSheet();
+  const response = sendToAPI({
+    sheetId: sheet.getId(),
+    sheetName: active.getName(),
+    fileName: sheet.getName(),
+    headers: [],
+    newOrders: []
+  });
+  Logger.log('Register response: ' + response);
+}
+
+function markExistingRowsAsSynced() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const properties = PropertiesService.getDocumentProperties();
+  for (var r = 2; r <= lastRow; r++) {
+    properties.setProperty('row_' + r, new Date().toISOString());
+  }
+  Logger.log('Marqué ' + (lastRow - 1) + ' ligne(s) existante(s) comme déjà synchronisée(s).');
+}
+
+// Find or auto-create the "TajerGrow Status" column
+function getStatusColumnIndex(sheet) {
+  const lastCol = sheet.getLastColumn();
+  if (lastCol < 1) return -1;
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim() === STATUS_COLUMN_NAME) return i + 1;
+  }
+  return -1;
+}
+
+function writeRowStatus(sheet, row, text, isError) {
+  const col = getStatusColumnIndex(sheet);
+  if (col < 1) return;
+  try {
+    const cell = sheet.getRange(row, col);
+    cell.setValue(text);
+    cell.setFontColor(isError ? '#d93025' : '#0f9d58');
+    cell.setFontWeight('bold');
+  } catch (e) { Logger.log('writeRowStatus error: ' + e); }
+}
+
+// ★ MAIN SYNC FUNCTION — runs every 1 minute ★
+function syncNewRows() {
+  const lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(30000)) {
+      Logger.log('Une autre synchronisation est déjà en cours, on attend le prochain tick.');
+      return;
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getActiveSheet();
+    const lastCol = sheet.getLastColumn();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2 || lastCol < 1) {
+      Logger.log('Sheet vide — rien à synchroniser.');
+      return;
+    }
+
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const allValues = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    const properties = PropertiesService.getDocumentProperties();
+
+    const newOrders = [];
+    const newOrderRows = [];
+
+    for (var i = 0; i < allValues.length; i++) {
+      const rowNum = i + 2; // sheet row number
+      const rowData = allValues[i];
+
+      // Skip empty rows
+      if (rowData.every(function(c) { return !c || c.toString().trim() === ''; })) continue;
+
+      // Skip already-synced rows
+      if (properties.getProperty('row_' + rowNum)) continue;
+
+      // Build the order object
+      const obj = {};
+      for (var h = 0; h < headers.length; h++) {
+        obj[headers[h]] = (rowData[h] !== null && rowData[h] !== '') ? rowData[h] : null;
+      }
+      newOrders.push(obj);
+      newOrderRows.push(rowNum);
+    }
+
+    if (newOrders.length === 0) {
+      Logger.log('Aucune nouvelle ligne à synchroniser.');
+      return;
+    }
+
+    Logger.log('Envoi de ' + newOrders.length + ' nouvelle(s) ligne(s)...');
+
+    const responseText = sendToAPI({
+      sheetId: ss.getId(),
+      sheetName: sheet.getName(),
+      fileName: ss.getName(),
+      headers: headers,
+      newOrders: newOrders
+    });
+
+    var success = false;
+    var createdCount = 0;
+    var apiMessage = '';
+    try {
+      const parsed = JSON.parse(responseText);
+      success = parsed.success === true;
+      createdCount = parsed.created || 0;
+      apiMessage = parsed.message || '';
+    } catch (parseErr) {
+      Logger.log('Réponse non-JSON: ' + responseText);
+      apiMessage = 'Réponse invalide';
+    }
+
+    // Update status column for each processed row
+    for (var j = 0; j < newOrderRows.length; j++) {
+      const r = newOrderRows[j];
+      if (success) {
+        properties.setProperty('row_' + r, new Date().toISOString());
+        writeRowStatus(sheet, r, '✅ Synchronisée', false);
+      } else {
+        writeRowStatus(sheet, r, '❌ ' + apiMessage, true);
+      }
+    }
+
+    Logger.log('Sync terminée : ' + createdCount + ' commande(s) créée(s) sur ' + newOrders.length + ' envoyée(s).');
+  } catch (err) {
+    Logger.log('Erreur syncNewRows: ' + err);
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
+  }
+}
+
+// Optional manual function to re-import everything (use with caution!)
+function forceImportAll() {
+  const properties = PropertiesService.getDocumentProperties();
+  const props = properties.getProperties();
+  for (var k in props) {
+    if (k.indexOf('row_') === 0) properties.deleteProperty(k);
+  }
+  syncNewRows();
+}
+
+function sendToAPI(data) {
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(data),
+    muteHttpExceptions: true
+  };
+  try {
+    const response = UrlFetchApp.fetch(API_URL, options);
+    const text = response.getContentText();
+    const code = response.getResponseCode();
+    Logger.log('API ' + code + ': ' + text);
+    return text;
+  } catch (e) {
+    Logger.log('Erreur API: ' + e.message);
+    return '{"success":false,"message":"' + e.message + '"}';
+  }
+}
+`;
+    res.type("text/plain").send(script);
+  });
+
+═══════════════════════════════════════════════════════════════════════
+USER INSTRUCTIONS AFTER DEPLOY (CRITICAL!)
+═══════════════════════════════════════════════════════════════════════
+The user MUST do these steps in EXACT order:
+
+1. Wait for Railway to finish deploying (check the deploy log).
+
+2. Open https://www.tajergrow.com/integrations/sheets-script
+   → Click red trash on the existing connected sheet → "Déconnecter"
+
+3. Open the Google Sheet → Extensions → Apps Script
+
+4. CRITICAL — DELETE OLD TRIGGERS:
+   - In the left sidebar, click ⏰ "Triggers" (clock icon)
+   - Delete ALL triggers shown (any onEditHandler or syncNewRows from before)
+
+5. Go back to the Editor (< > icon)
+   → Select ALL code (Ctrl+A) → Delete
+
+6. Go back to /integrations/sheets-script in the platform
+   → Click "Copy Code" — this fetches the new v4 time-driven script
+   → Paste into the empty Apps Script editor
+   → Save (💾)
+
+7. Run setup() one time:
+   - Select "setup" from the function dropdown
+   - Click Run
+   - Grant authorization
+
+8. Check Execution Log: should say "Trigger installé : syncNewRows toutes les 1 minute."
+
+9. Check Triggers page (⏰ icon): should show ONE trigger named "syncNewRows" running every minute.
+
+10. TEST: add a new row to the sheet with all columns filled (Nom, Téléphone, Adresse, Ville, Produit, Prix, Quantité).
+
+11. Wait up to 60 seconds (the trigger fires once per minute).
+
+12. The "TajerGrow Status" cell should turn green with "✅ Synchronisée".
+
+13. Open /orders in the platform — the new order should be there with:
+     - Correct customer name
+     - Correct product name (NOT "Auto-rempli depuis la boutique")
+     - Correct price + quantity in Articles
+
+═══════════════════════════════════════════════════════════════════════
+EXPECTED RAILWAY LOGS AFTER A SUCCESSFUL SYNC
+═══════════════════════════════════════════════════════════════════════
+  ════════════════════════════════════════════════════
+  [SheetsScript] 📥 INCOMING SYNC REQUEST
+  [SheetsScript] webhookKey (first 8): 51BVWFGL…
+  [SheetsScript] body keys: [ 'sheetId', 'sheetName', 'fileName', 'headers', 'newOrders' ]
+  [SheetsScript] sheetId: 1ocvyZ7dgbinoZqrJlhjMdzxT8X1k2cx0GAKfoYDQXTE
+  [SheetsScript] fileName: Tajergrow orders
+  [SheetsScript] newOrders count: 1
+  [SheetsScript] FIRST ROW SAMPLE: {"Nom":"brahim","Téléphone":"688999999",...}
+  ════════════════════════════════════════════════════
+  [SheetsScript] ✅ Parsed: name="brahim" phone="688999999" product="mdya mos" qty=2 price=59900
+  [SheetsScript] Auto-created product "mdya mos" id=... for store ...
+  [SheetsScript] ✅ DONE: store=X created=1 skipped=0 errors=0
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts
+git commit -m "fix(sheets): replace onEdit with reliable time-driven trigger v4"
+git push origin main
+
+Apply the change now.

@@ -10760,20 +10760,43 @@ function submitOrder(e){
     const storeId = req.user!.storeId!;
     const apiKey = await storage.getOrGenerateWebhookKey(storeId);
     const apiUrl = `${req.protocol}://${req.get("host")}/api/sheets/sync/${apiKey}`;
-    const script = `// TajerGrow — Google Sheets Auto-Sync Script v3
-// Coller dans Extensions → Apps Script, puis exécuter setup()
+    const script = `// TajerGrow — Google Sheets Auto-Sync v4 (Time-Driven)
+// Copier ce code, le coller dans Extensions → Apps Script, puis exécuter setup()
 //
-// IMPORTANT : setup() NE synchronise PAS les commandes existantes.
-// Seules les NOUVELLES lignes ajoutées APRÈS setup() seront envoyées.
+// COMMENT ÇA MARCHE :
+//   - setup() s'exécute une seule fois et installe un trigger toutes les minutes
+//   - Toutes les 60 secondes, syncNewRows() scanne le sheet, envoie les nouvelles
+//     lignes à la plateforme, puis marque la colonne "TajerGrow Status".
+//   - Les lignes EXISTANTES au moment du setup() sont marquées comme déjà
+//     synchronisées et NE seront PAS importées.
 
 var API_URL = '${apiUrl}';
-var STATUS_COLUMN = 'TajerGrow Status';
+var STATUS_COLUMN_NAME = 'TajerGrow Status';
 
 function setup() {
+  removeOldTriggers();
   registerConnection();
   markExistingRowsAsSynced();
-  setupEditTrigger();
-  Logger.log('✅ Connexion établie. Les nouvelles commandes seront synchronisées automatiquement.');
+  installTimeTrigger();
+  Logger.log('✅ Setup terminé. La synchronisation démarrera dans 1 minute.');
+}
+
+function removeOldTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'syncNewRows' || fn === 'onEditHandler') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+}
+
+function installTimeTrigger() {
+  ScriptApp.newTrigger('syncNewRows')
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+  Logger.log('Trigger installé : syncNewRows toutes les 1 minute.');
 }
 
 function registerConnection() {
@@ -10800,23 +10823,12 @@ function markExistingRowsAsSynced() {
   Logger.log('Marqué ' + (lastRow - 1) + ' ligne(s) existante(s) comme déjà synchronisée(s).');
 }
 
-function setupEditTrigger() {
-  const triggers = ScriptApp.getProjectTriggers();
-  const exists = triggers.some(function(t) { return t.getHandlerFunction() === 'onEditHandler'; });
-  if (!exists) {
-    ScriptApp.newTrigger('onEditHandler')
-      .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
-      .onEdit()
-      .create();
-  }
-}
-
 function getStatusColumnIndex(sheet) {
   const lastCol = sheet.getLastColumn();
   if (lastCol < 1) return -1;
   const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   for (var i = 0; i < headers.length; i++) {
-    if (String(headers[i]).trim() === STATUS_COLUMN) return i + 1;
+    if (String(headers[i]).trim() === STATUS_COLUMN_NAME) return i + 1;
   }
   return -1;
 }
@@ -10824,88 +10836,106 @@ function getStatusColumnIndex(sheet) {
 function writeRowStatus(sheet, row, text, isError) {
   const col = getStatusColumnIndex(sheet);
   if (col < 1) return;
-  const cell = sheet.getRange(row, col);
-  cell.setValue(text);
-  cell.setFontColor(isError ? '#d93025' : '#0f9d58');
+  try {
+    const cell = sheet.getRange(row, col);
+    cell.setValue(text);
+    cell.setFontColor(isError ? '#d93025' : '#0f9d58');
+    cell.setFontWeight('bold');
+  } catch (e) { Logger.log('writeRowStatus error: ' + e); }
 }
 
-function onEditHandler(e) {
-  if (!e) return;
-  const sheet = e.source.getActiveSheet();
-  const range = e.range;
-  const firstRow = range.getRow();
-  const lastRow = range.getLastRow();
-  const rowsToProcess = [];
-
-  for (var currentRow = firstRow; currentRow <= lastRow; currentRow++) {
-    if (currentRow === 1) continue;
-    const lock = LockService.getScriptLock();
-    try {
-      lock.waitLock(60000);
-      const cache = CacheService.getScriptCache();
-      const cacheKey = 'row_' + currentRow;
-      const properties = PropertiesService.getDocumentProperties();
-      if (properties.getProperty(cacheKey)) continue;
-      if (cache.get(cacheKey)) continue;
-      cache.put(cacheKey, 'pending', 720);
-      rowsToProcess.push(currentRow);
-    } catch (err) { Logger.log('Erreur lock: ' + err); }
-    finally { lock.releaseLock(); }
-  }
-
-  if (rowsToProcess.length === 0) return;
-
-  Utilities.sleep(40000);
-
-  const newOrders = [];
-  const processedRows = [];
-
-  for (var i = 0; i < rowsToProcess.length; i++) {
-    var row = rowsToProcess[i];
-    if (CacheService.getScriptCache().get('row_' + row) !== 'pending') continue;
-    var rowData = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
-    if (rowData.every(function(c) { return !c || c.toString().trim() === ''; })) continue;
-    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    var newOrder = {};
-    for (var h = 0; h < headers.length; h++) {
-      newOrder[headers[h]] = (rowData[h] !== null && rowData[h] !== '') ? rowData[h] : null;
-    }
-    newOrders.push(newOrder);
-    processedRows.push(row);
-  }
-
-  if (newOrders.length === 0) return;
-
-  const responseText = sendToAPI({
-    sheetId: sheet.getParent().getId(),
-    sheetName: sheet.getName(),
-    fileName: sheet.getParent().getName(),
-    newOrders: newOrders
-  });
-
-  var success = false;
-  var createdCount = 0;
-  var apiMessage = '';
+// ★ MAIN SYNC FUNCTION — runs every 1 minute ★
+function syncNewRows() {
+  const lock = LockService.getScriptLock();
   try {
-    const parsed = JSON.parse(responseText);
-    success = parsed.success === true;
-    createdCount = parsed.created || 0;
-    apiMessage = parsed.message || '';
-  } catch (parseErr) {
-    Logger.log('Réponse non-JSON: ' + responseText);
-    apiMessage = 'Réponse invalide du serveur';
-  }
-
-  for (var j = 0; j < processedRows.length; j++) {
-    var r = processedRows[j];
-    if (success && createdCount > 0) {
-      PropertiesService.getDocumentProperties().setProperty('row_' + r, new Date().toISOString());
-      writeRowStatus(sheet, r, '✅ Créée #', false);
-    } else {
-      writeRowStatus(sheet, r, '❌ ' + (apiMessage || 'Échec'), true);
+    if (!lock.tryLock(30000)) {
+      Logger.log('Une autre synchronisation est déjà en cours, on attend le prochain tick.');
+      return;
     }
-    CacheService.getScriptCache().remove('row_' + r);
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getActiveSheet();
+    const lastCol = sheet.getLastColumn();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2 || lastCol < 1) {
+      Logger.log('Sheet vide — rien à synchroniser.');
+      return;
+    }
+
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const allValues = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    const properties = PropertiesService.getDocumentProperties();
+
+    const newOrders = [];
+    const newOrderRows = [];
+
+    for (var i = 0; i < allValues.length; i++) {
+      const rowNum = i + 2;
+      const rowData = allValues[i];
+      if (rowData.every(function(c) { return !c || c.toString().trim() === ''; })) continue;
+      if (properties.getProperty('row_' + rowNum)) continue;
+      const obj = {};
+      for (var h = 0; h < headers.length; h++) {
+        obj[headers[h]] = (rowData[h] !== null && rowData[h] !== '') ? rowData[h] : null;
+      }
+      newOrders.push(obj);
+      newOrderRows.push(rowNum);
+    }
+
+    if (newOrders.length === 0) {
+      Logger.log('Aucune nouvelle ligne à synchroniser.');
+      return;
+    }
+
+    Logger.log('Envoi de ' + newOrders.length + ' nouvelle(s) ligne(s)...');
+
+    const responseText = sendToAPI({
+      sheetId: ss.getId(),
+      sheetName: sheet.getName(),
+      fileName: ss.getName(),
+      headers: headers,
+      newOrders: newOrders
+    });
+
+    var success = false;
+    var createdCount = 0;
+    var apiMessage = '';
+    try {
+      const parsed = JSON.parse(responseText);
+      success = parsed.success === true;
+      createdCount = parsed.created || 0;
+      apiMessage = parsed.message || '';
+    } catch (parseErr) {
+      Logger.log('Réponse non-JSON: ' + responseText);
+      apiMessage = 'Réponse invalide';
+    }
+
+    for (var j = 0; j < newOrderRows.length; j++) {
+      const r = newOrderRows[j];
+      if (success) {
+        properties.setProperty('row_' + r, new Date().toISOString());
+        writeRowStatus(sheet, r, '✅ Synchronisée', false);
+      } else {
+        writeRowStatus(sheet, r, '❌ ' + apiMessage, true);
+      }
+    }
+
+    Logger.log('Sync terminée : ' + createdCount + ' commande(s) créée(s) sur ' + newOrders.length + ' envoyée(s).');
+  } catch (err) {
+    Logger.log('Erreur syncNewRows: ' + err);
+  } finally {
+    try { lock.releaseLock(); } catch (e) {}
   }
+}
+
+// Optional: clears all synced markers and re-imports everything (use with caution!)
+function forceImportAll() {
+  const properties = PropertiesService.getDocumentProperties();
+  const props = properties.getProperties();
+  for (var k in props) {
+    if (k.indexOf('row_') === 0) properties.deleteProperty(k);
+  }
+  syncNewRows();
 }
 
 function sendToAPI(data) {
@@ -10924,36 +10954,6 @@ function sendToAPI(data) {
   } catch (e) {
     Logger.log('Erreur API: ' + e.message);
     return '{"success":false,"message":"' + e.message + '"}';
-  }
-}
-
-// Optional: force import of all existing rows (run once if needed)
-function forceImportAll() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet();
-  const active = sheet.getActiveSheet();
-  const lastCol = active.getLastColumn();
-  const lastRow = active.getLastRow();
-  if (lastRow < 2 || lastCol < 1) { Logger.log('Sheet vide'); return; }
-  const headers = active.getRange(1, 1, 1, lastCol).getValues()[0];
-  const values = active.getRange(2, 1, lastRow - 1, lastCol).getValues();
-  const jsonData = values
-    .filter(function(row) { return !row.every(function(c) { return !c || c.toString().trim() === ''; }); })
-    .map(function(row) {
-      var obj = {};
-      for (var i = 0; i < headers.length; i++) { obj[headers[i]] = row[i]; }
-      return obj;
-    });
-  const response = sendToAPI({
-    sheetId: sheet.getId(),
-    sheetName: active.getName(),
-    fileName: sheet.getName(),
-    headers: headers,
-    newOrders: jsonData
-  });
-  Logger.log('Import forcé: ' + response);
-  const properties = PropertiesService.getDocumentProperties();
-  for (var r = 2; r <= lastRow; r++) {
-    properties.setProperty('row_' + r, new Date().toISOString());
   }
 }
 `;
