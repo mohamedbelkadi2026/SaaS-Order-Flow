@@ -10521,12 +10521,17 @@ function submitOrder(e){
     const priceRaw        = pick("prix (dh)","prix dh","prix","price","prix total","montant","total","tarif","amount","السعر");
     const qtyRaw          = pick("quantite","quantité","quantity","qty","qte","qté","nombre","الكمية");
     const note            = pick("note","notes","commentaire","comment","message","remarque","ملاحظة");
-    const refRaw          = pick("ref","reference","order_id","id","numero de commande","numéro de commande");
+    // IMPORTANT: do NOT use "Product ID" / sku columns as orderNumber — many sheets
+    // repeat the same product across rows, making all rows look like duplicates.
+    // Only an explicit order-reference column is allowed here.
+    const refRaw = pick("ref","reference","order_id","numero de commande","numéro de commande","order ref","ref commande");
     if (!customerName && !customerPhone) return null;
     const quantity   = Math.max(1, parseInt(qtyRaw || "1") || 1);
     const priceNum   = parseFloat(String(priceRaw).replace(",", ".")) || 0;
     const totalPrice = Math.round(priceNum * 100);
-    const orderNumber = refRaw || `GS-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Build a deterministic-but-unique fallback so retries dedup but different rows don't collide
+    const phoneTail = customerPhone.replace(/\D/g, "").slice(-6);
+    const orderNumber = refRaw || `GS-${Date.now()}-${phoneTail || Math.random().toString(36).slice(2, 8)}`;
     return { customerName, customerPhone, customerCity, customerAddress, productName, quantity, totalPrice, orderNumber, note: note || null };
   }
 
@@ -10749,7 +10754,15 @@ function submitOrder(e){
       });
 
       console.log(`[SheetsScript] ✅ DONE: store=${storeId} created=${created} skipped=${skipped} errors=${errors.length}`);
-      return res.json({ success: true, created, skipped, errors: errors.slice(0, 10), message: `${created} nouvelle(s) commande(s) importée(s)` });
+      return res.json({
+        success: true,
+        created,
+        skipped,
+        errors: errors.slice(0, 10),
+        message: created > 0
+          ? `${created} nouvelle(s) commande(s) importée(s)`
+          : (skipped > 0 ? `${skipped} ligne(s) ignorée(s) (doublons)` : "Aucune ligne à traiter"),
+      });
     } catch (err: any) {
       console.error("[SheetsScript] Sync error:", err);
       res.status(500).json({ success: false, message: "Processing failed" });
@@ -10912,9 +10925,13 @@ function syncNewRows() {
 
     for (var j = 0; j < newOrderRows.length; j++) {
       const r = newOrderRows[j];
-      if (success) {
+      if (success && createdCount > 0) {
         properties.setProperty('row_' + r, new Date().toISOString());
         writeRowStatus(sheet, r, '✅ Synchronisée', false);
+      } else if (success && createdCount === 0) {
+        // Backend accepted but skipped (duplicate or empty) — mark so user sees it was NOT created
+        properties.setProperty('row_' + r, new Date().toISOString());
+        writeRowStatus(sheet, r, '⚠️ Doublon (non créée)', true);
       } else {
         writeRowStatus(sheet, r, '❌ ' + apiMessage, true);
       }

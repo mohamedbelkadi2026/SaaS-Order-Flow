@@ -1,0 +1,136 @@
+I have a Google Sheets sync issue: rows are appearing in the sheet with "✅ Créée #" status (or "✅ Synchronisée" — depends on script version) but the orders DO NOT appear in the platform's /orders page.
+
+THE LIKELY ROOT CAUSE:
+My sheet has a "Product ID" column with the same value "SA030104CS0099" for every row. The parseSheetRowToOrder() helper uses this column as `refRaw` to build the orderNumber. Since every row gets the SAME orderNumber, the backend's duplicate check rejects all rows except the first one.
+
+Also: the Apps Script is auto-marking the row "✅ Synchronisée" even when the backend returned created=0 (duplicate skip).
+
+═══════════════════════════════════════════════════════════════════════
+FIX #1 (BACKEND): Make orderNumber unique per row, not per Product ID
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the `parseSheetRowToOrder` helper function. Find this line:
+
+    const refRaw          = pick("ref","reference","order_id","id","numero de commande","numéro de commande");
+
+REPLACE it with this version that does NOT use the Product ID column as the orderNumber:
+
+    // IMPORTANT: do NOT use "Product ID" / sku columns as orderNumber, because
+    // many sheets repeat the same product across rows → all become "duplicates".
+    // Only an explicit order-reference column is allowed.
+    const refRaw = pick("ref","reference","order_id","numero de commande","numéro de commande","order ref","ref commande");
+
+Note: I REMOVED "id" and any sku-like aliases. The orderNumber must only come from a column actually meant to identify an order (not a product).
+
+═══════════════════════════════════════════════════════════════════════
+FIX #2 (BACKEND): Add the customer phone+date to the auto-generated orderNumber
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+In the same `parseSheetRowToOrder` function, find this line:
+
+    const orderNumber = refRaw || `GS-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+REPLACE with:
+
+    // Build a deterministic-but-unique fallback so retries dedup but different rows don't collide
+    const phoneTail = customerPhone.replace(/\D/g, "").slice(-6);
+    const orderNumber = refRaw || `GS-${Date.now()}-${phoneTail || Math.random().toString(36).slice(2, 8)}`;
+
+═══════════════════════════════════════════════════════════════════════
+FIX #3 (BACKEND): Make the response tell the Apps Script when no orders were created
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+At the END of the POST /api/sheets/sync/:webhookKey route, find this final return:
+
+      console.log(`[SheetsScript] ✅ DONE: store=${storeId} created=${created} skipped=${skipped} errors=${errors.length}`);
+      return res.json({ success: true, created, skipped, errors: errors.slice(0, 10), message: `${created} nouvelle(s) commande(s) importée(s)` });
+
+REPLACE with this version that includes per-row info for the Apps Script:
+
+      console.log(`[SheetsScript] ✅ DONE: store=${storeId} created=${created} skipped=${skipped} errors=${errors.length}`);
+      return res.json({
+        success: true,
+        created,
+        skipped,
+        errors: errors.slice(0, 10),
+        message: created > 0
+          ? `${created} nouvelle(s) commande(s) importée(s)`
+          : (skipped > 0 ? `${skipped} ligne(s) ignorée(s) (doublons)` : "Aucune ligne à traiter"),
+      });
+
+═══════════════════════════════════════════════════════════════════════
+FIX #4 (APPS SCRIPT): Differentiate "created" from "skipped as duplicate"
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the GET /api/sheets/script endpoint. Find this block inside the syncNewRows function in the script template:
+
+    for (var j = 0; j < newOrderRows.length; j++) {
+      const r = newOrderRows[j];
+      if (success) {
+        properties.setProperty('row_' + r, new Date().toISOString());
+        writeRowStatus(sheet, r, '✅ Synchronisée', false);
+      } else {
+        writeRowStatus(sheet, r, '❌ ' + apiMessage, true);
+      }
+    }
+
+REPLACE with this version that shows a different status for duplicates vs created:
+
+    for (var j = 0; j < newOrderRows.length; j++) {
+      const r = newOrderRows[j];
+      if (success && createdCount > 0) {
+        properties.setProperty('row_' + r, new Date().toISOString());
+        writeRowStatus(sheet, r, '✅ Synchronisée', false);
+      } else if (success && createdCount === 0) {
+        // The backend accepted but skipped (duplicate or empty). Mark differently
+        // so the user sees that row WAS NOT created in the platform.
+        properties.setProperty('row_' + r, new Date().toISOString());
+        writeRowStatus(sheet, r, '⚠️ Doublon (non créée)', true);
+      } else {
+        writeRowStatus(sheet, r, '❌ ' + apiMessage, true);
+      }
+    }
+
+═══════════════════════════════════════════════════════════════════════
+FIX #5 (BACKEND): Add per-row logging to confirm dedup vs create
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Inside POST /api/sheets/sync/:webhookKey, find the duplicate-check line:
+
+          const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+          if (dup) {
+
+REPLACE the whole if-block with this more verbose version (only if it isn't already there):
+
+          const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+          if (dup) {
+            console.log(`[SheetsScript] ⚠️ DUPLICATE skipped: orderNumber="${parsed.orderNumber}" already exists as order #${dup.id} (customer="${dup.customerName}")`);
+            skipped++;
+            continue;
+          }
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts
+git commit -m "fix(sheets): unique orderNumber per row, expose dup status to Apps Script"
+git push origin main
+
+═══════════════════════════════════════════════════════════════════════
+USER ACTION AFTER DEPLOY
+═══════════════════════════════════════════════════════════════════════
+After Railway finishes deploying:
+1. Open the Apps Script editor
+2. Click ⏰ Triggers → delete the existing syncNewRows trigger
+3. Editor → Ctrl+A → Delete
+4. Go to /integrations/sheets-script in the platform → Copy Code (gets the new v5 script)
+5. Paste into Apps Script editor → Save → Run setup() → authorize
+6. ⚠️ Run `forceImportAll` ONCE to retry all unsync'd rows (it clears row markers and re-tries every row).
+7. Wait 60s → check status column in the sheet
+
+Apply all changes and confirm.
