@@ -10497,27 +10497,31 @@ function submitOrder(e){
     customerAddress: string; productName: string; quantity: number;
     totalPrice: number; orderNumber: string; note: string | null;
   } | null {
+    // Normalize keys: lowercase + strip diacritics (é→e, à→a, ç→c, etc.)
+    const stripAccents = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const norm: Record<string, any> = {};
     for (const k of Object.keys(raw || {})) {
       if (k === null || k === undefined) continue;
-      norm[String(k).toLowerCase().trim()] = raw[k];
+      const cleanKey = stripAccents(String(k).toLowerCase().trim());
+      norm[cleanKey] = raw[k];
     }
     const pick = (...keys: string[]): string => {
       for (const k of keys) {
-        const v = norm[k.toLowerCase()];
+        const cleanK = stripAccents(k.toLowerCase().trim());
+        const v = norm[cleanK];
         if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
       }
       return "";
     };
     const customerName    = pick("nom","name","nom client","nom du client","fullname","full name","client","customer","customer name","destinataire","الاسم","اسم العميل");
-    const customerPhone   = pick("téléphone","telephone","tel","phone","mobile","gsm","whatsapp","numéro","numero","رقم الهاتف","هاتف");
-    const customerCity    = pick("ville","city","town","localité","المدينة");
+    const customerPhone   = pick("telephone","téléphone","tel","phone","mobile","gsm","whatsapp","numero","numéro","numero de telephone","رقم الهاتف","هاتف");
+    const customerCity    = pick("ville","city","town","localite","localité","المدينة");
     const customerAddress = pick("adresse","address","rue","العنوان");
-    const productName     = pick("produit","product","article","item","nom du produit","المنتج");
-    const priceRaw        = pick("prix","price","prix (dh)","prix dh","prix total","montant","total","tarif","amount","السعر");
-    const qtyRaw          = pick("quantité","quantity","qty","qté","nombre","quantite","الكمية");
+    const productName     = pick("produit","product","article","item","nom du produit","name product","produit nom","المنتج");
+    const priceRaw        = pick("prix (dh)","prix dh","prix","price","prix total","montant","total","tarif","amount","السعر");
+    const qtyRaw          = pick("quantite","quantité","quantity","qty","qte","qté","nombre","الكمية");
     const note            = pick("note","notes","commentaire","comment","message","remarque","ملاحظة");
-    const refRaw          = pick("ref","reference","order_id","id","numéro de commande");
+    const refRaw          = pick("ref","reference","order_id","id","numero de commande","numéro de commande");
     if (!customerName && !customerPhone) return null;
     const quantity   = Math.max(1, parseInt(qtyRaw || "1") || 1);
     const priceNum   = parseFloat(String(priceRaw).replace(",", ".")) || 0;
@@ -10725,37 +10729,43 @@ function submitOrder(e){
     const apiUrl = `${req.protocol}://${req.get("host")}/api/sheets/sync/${apiKey}`;
     const script = `// TajerGrow — Google Sheets Auto-Sync Script
 // Coller dans Extensions → Apps Script, puis exécuter setup()
+//
+// IMPORTANT : setup() ne synchronise PAS les commandes existantes.
+// Seules les NOUVELLES lignes ajoutées après setup() seront envoyées
+// automatiquement à la plateforme.
 
 var API_URL = '${apiUrl}';
 
-function setup() { initialize(); setupEditTrigger(); }
+function setup() {
+  registerConnection();
+  markExistingRowsAsSynced();
+  setupEditTrigger();
+  Logger.log('✅ Connexion établie. Les nouvelles commandes seront synchronisées automatiquement.');
+}
 
-function initialize() {
+// Sends only metadata (no orders) so the platform knows the sheet is connected
+function registerConnection() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet();
   const active = sheet.getActiveSheet();
-  const sheetId = sheet.getId();
-  const sheetName = active.getName();
-  const fileName = sheet.getName();
-  const lastCol = active.getLastColumn();
-  const lastRow = active.getLastRow();
-  if (lastRow < 2 || lastCol < 1) {
-    sendToAPI({ sheetId: sheetId, sheetName: sheetName, fileName: fileName, headers: [], newOrders: [] });
-    return;
-  }
-  const headers = active.getRange(1, 1, 1, lastCol).getValues()[0];
-  const values = active.getRange(2, 1, lastRow - 1, lastCol).getValues();
-  const jsonData = values
-    .filter(function(row) { return !row.every(function(c) { return !c || c.toString().trim() === ''; }); })
-    .map(function(row) {
-      var obj = {};
-      for (var i = 0; i < headers.length; i++) { obj[headers[i]] = row[i]; }
-      return obj;
-    });
+  sendToAPI({
+    sheetId: sheet.getId(),
+    sheetName: active.getName(),
+    fileName: sheet.getName(),
+    headers: [],
+    newOrders: []
+  });
+}
+
+// Marks every existing row as "already synced" so onEditHandler won't re-send them
+function markExistingRowsAsSynced() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
   const properties = PropertiesService.getDocumentProperties();
   for (var r = 2; r <= lastRow; r++) {
     properties.setProperty('row_' + r, new Date().toISOString());
   }
-  sendToAPI({ sheetId: sheetId, sheetName: sheetName, fileName: fileName, headers: headers, newOrders: jsonData });
+  Logger.log('Marqué ' + (lastRow - 1) + ' ligne(s) existante(s) comme déjà synchronisée(s).');
 }
 
 function setupEditTrigger() {
@@ -10774,6 +10784,7 @@ function onEditHandler(e) {
   const lastRow = range.getLastRow();
   const newOrders = [];
   const rowsToProcess = [];
+
   for (var currentRow = firstRow; currentRow <= lastRow; currentRow++) {
     if (currentRow === 1) continue;
     const lock = LockService.getScriptLock();
@@ -10789,8 +10800,11 @@ function onEditHandler(e) {
     } catch (err) { Logger.log('Erreur: ' + err); }
     finally { lock.releaseLock(); }
   }
+
   if (rowsToProcess.length === 0) return;
+
   Utilities.sleep(40000);
+
   for (var i = 0; i < rowsToProcess.length; i++) {
     var row = rowsToProcess[i];
     if (CacheService.getScriptCache().get('row_' + row) !== 'pending') continue;
@@ -10803,7 +10817,9 @@ function onEditHandler(e) {
     }
     newOrders.push(newOrder);
   }
+
   if (newOrders.length === 0) return;
+
   try {
     sendToAPI({
       sheetId: sheet.getParent().getId(),
@@ -10820,11 +10836,38 @@ function onEditHandler(e) {
 }
 
 function sendToAPI(data) {
-  const options = { method: 'post', contentType: 'application/json', payload: JSON.stringify(data), muteHttpExceptions: true };
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(data),
+    muteHttpExceptions: true
+  };
   try {
     const response = UrlFetchApp.fetch(API_URL, options);
     Logger.log('Réponse: ' + response.getContentText());
   } catch (e) { Logger.log('Erreur API: ' + e.message); }
+}
+
+// OPTIONAL: run this once to force-import ALL existing rows (e.g. on a fresh sheet)
+function forceImportAll() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const active = sheet.getActiveSheet();
+  const lastCol = active.getLastColumn();
+  const lastRow = active.getLastRow();
+  if (lastRow < 2 || lastCol < 1) { Logger.log('Sheet vide'); return; }
+  const headers = active.getRange(1, 1, 1, lastCol).getValues()[0];
+  const values = active.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const jsonData = values
+    .filter(function(row) { return !row.every(function(c) { return !c || c.toString().trim() === ''; }); })
+    .map(function(row) {
+      var obj = {};
+      for (var i = 0; i < headers.length; i++) { obj[headers[i]] = row[i]; }
+      return obj;
+    });
+  sendToAPI({ sheetId: sheet.getId(), sheetName: active.getName(), fileName: sheet.getName(), headers: headers, newOrders: jsonData });
+  const properties = PropertiesService.getDocumentProperties();
+  for (var r = 2; r <= lastRow; r++) { properties.setProperty('row_' + r, new Date().toISOString()); }
+  Logger.log('Import forcé : ' + jsonData.length + ' lignes envoyées.');
 }
 `;
     res.type("text/plain").send(script);

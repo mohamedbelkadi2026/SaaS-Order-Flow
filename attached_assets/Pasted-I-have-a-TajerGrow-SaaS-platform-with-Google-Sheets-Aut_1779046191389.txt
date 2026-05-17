@@ -1,0 +1,366 @@
+I have a TajerGrow SaaS platform with Google Sheets Auto-Sync. I have TWO problems:
+
+PROBLEM 1: Product name and quantity from the sheet are NOT being saved into the order
+─────────────────────────────────────────────────────────────────────
+My sheet has these columns: Nom, Téléphone, Adresse, Ville, Produit, Prix (DH), Quantité, Note, Date, Source URL, UTM Campaign, UTM Source, Product ID, TajerGrow Status
+
+Example row:
+  Nom: said
+  Téléphone: 632595440
+  Adresse: Douar aghechi freija taroudant
+  Ville: 66
+  Produit: mdya mos       ← THIS is being lost
+  Prix (DH): 599          ← saved correctly
+  Quantité: 1             ← THIS is being lost
+  Note: N/A
+  Product ID: SA030104CS0099
+
+When the order arrives in the platform, "Nom du produit" shows "Auto-rempli depuis la boutique" placeholder and Articles count is 0. The product name "mdya mos" and quantity "1" never make it onto the order.
+
+ROOT CAUSE: The parseSheetRowToOrder() pick() lookups don't match "Produit" (capital P) and "Quantité" (with accent + capital Q). The function lowercases keys but my header values are stored verbatim. Also: even when productName IS detected, the route only attaches orderItems if matched=true, and matched is only true if the product already exists in storeProducts.
+
+PROBLEM 2: When connecting a sheet that already has 100 old orders, ALL 100 get imported
+─────────────────────────────────────────────────────────────────────
+I want the opposite: when a user FIRST connects a sheet (runs setup()), the script should mark all existing rows as "already synced" WITHOUT sending them to the platform. Only rows added AFTER setup() should sync.
+
+═══════════════════════════════════════════════════════════════════════
+FIX #1 (BACKEND): Bulletproof product name + quantity parsing
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the `parseSheetRowToOrder` helper function. REPLACE THE ENTIRE FUNCTION with this version that handles every variant of the column names from your sheet:
+
+  function parseSheetRowToOrder(raw: Record<string, any>): {
+    customerName: string; customerPhone: string; customerCity: string;
+    customerAddress: string; productName: string; quantity: number;
+    totalPrice: number; orderNumber: string; note: string | null;
+  } | null {
+    // Normalize ALL keys: lowercase, trim, strip diacritics (é→e, à→a, etc.)
+    const stripAccents = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const norm: Record<string, any> = {};
+    for (const k of Object.keys(raw || {})) {
+      if (k === null || k === undefined) continue;
+      const cleanKey = stripAccents(String(k).toLowerCase().trim());
+      norm[cleanKey] = raw[k];
+    }
+    const pick = (...keys: string[]): string => {
+      for (const k of keys) {
+        const cleanK = stripAccents(k.toLowerCase().trim());
+        const v = norm[cleanK];
+        if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+      }
+      return "";
+    };
+
+    // All aliases are matched accent-insensitive and case-insensitive
+    const customerName    = pick("nom","name","nom client","nom du client","fullname","full name","client","customer","customer name","destinataire","الاسم","اسم العميل");
+    const customerPhone   = pick("telephone","téléphone","tel","phone","mobile","gsm","whatsapp","numero","numéro","numero de telephone","رقم الهاتف","هاتف");
+    const customerCity    = pick("ville","city","town","localite","localité","المدينة");
+    const customerAddress = pick("adresse","address","rue","العنوان");
+    const productName     = pick("produit","product","article","item","nom du produit","name product","produit nom","المنتج");
+    const priceRaw        = pick("prix (dh)","prix dh","prix","price","prix total","montant","total","tarif","amount","السعر");
+    const qtyRaw          = pick("quantite","quantité","quantity","qty","qte","qté","nombre","الكمية");
+    const note            = pick("note","notes","commentaire","comment","message","remarque","ملاحظة");
+    const refRaw          = pick("ref","reference","order_id","id","numero de commande","numéro de commande");
+
+    if (!customerName && !customerPhone) return null;
+
+    const quantity   = Math.max(1, parseInt(qtyRaw || "1") || 1);
+    const priceNum   = parseFloat(String(priceRaw).replace(",", ".")) || 0;
+    const totalPrice = Math.round(priceNum * 100);
+    const orderNumber = refRaw || `GS-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    return {
+      customerName, customerPhone, customerCity, customerAddress,
+      productName, quantity, totalPrice, orderNumber,
+      note: note || null,
+    };
+  }
+
+═══════════════════════════════════════════════════════════════════════
+FIX #2 (BACKEND): Always attach orderItems with product name + quantity
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Inside POST /api/sheets/sync/:webhookKey, find the inner order-creation block where matched/orderItems get built. REPLACE the WHOLE block (from `// Try to match an existing store product` down through `await storage.createOrder(...)`) with this version:
+
+          // Try to match an existing store product by name OR sku (case-insensitive)
+          const productNameLower = parsed.productName.toLowerCase().trim();
+          let matched = parsed.productName
+            ? storeProducts.find(p =>
+                (p.name && p.name.toLowerCase().trim() === productNameLower) ||
+                (p.sku && p.sku.toLowerCase().trim() === productNameLower)
+              )
+            : undefined;
+
+          // AUTO-CREATE the product if the sheet has a name we've never seen.
+          // This guarantees "Nom du produit" + Articles always populate.
+          if (!matched && parsed.productName) {
+            try {
+              const newProduct = await storage.createProduct({
+                storeId,
+                name: parsed.productName,
+                sku: null,
+                costPrice: 0,
+                sellingPrice: parsed.totalPrice > 0 ? parsed.totalPrice : 0,
+                stock: 0,
+                isActive: 1,
+              } as any);
+              matched = newProduct;
+              storeProducts.push(newProduct);
+              console.log(`[SheetsScript] Auto-created product "${parsed.productName}" id=${newProduct.id} for store ${storeId}`);
+            } catch (createErr: any) {
+              console.warn(`[SheetsScript] Could not auto-create product "${parsed.productName}":`, createErr.message);
+            }
+          }
+
+          // Compute per-unit price for the order line
+          const lineUnitPrice = parsed.totalPrice > 0
+            ? Math.round(parsed.totalPrice / Math.max(1, parsed.quantity))
+            : (matched?.sellingPrice || 0);
+
+          // ALWAYS attach an article line whenever we have a product
+          const orderItems = matched
+            ? [{
+                productId: matched.id,
+                quantity: parsed.quantity,
+                price: lineUnitPrice,
+                orderId: 0,
+              }]
+            : [];
+
+          const finalComment = parsed.note || null;
+
+          const order = await storage.createOrder({
+            storeId, magasinId,
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName,
+            customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress,
+            customerCity: parsed.customerCity,
+            status: "nouveau",
+            totalPrice: parsed.totalPrice,
+            productCost: matched ? (matched.costPrice || 0) * parsed.quantity : 0,
+            shippingCost: 0,
+            adSpend: 0,
+            source: "gsheets_script",
+            comment: finalComment,
+          } as any, orderItems);
+
+═══════════════════════════════════════════════════════════════════════
+FIX #3 (APPS SCRIPT): Skip old rows on first connect — sync ONLY future rows
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the `GET /api/sheets/script` endpoint. REPLACE THE ENTIRE `script` template string with this new version. The key change: `initialize()` now marks all existing rows as "already synced" and sends a PING ONLY (empty newOrders array) — so the user's 100 old orders DON'T get imported, only future ones do.
+
+  app.get("/api/sheets/script", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const apiKey = await storage.getOrGenerateWebhookKey(storeId);
+    const apiUrl = `${req.protocol}://${req.get("host")}/api/sheets/sync/${apiKey}`;
+    const script = `// TajerGrow — Google Sheets Auto-Sync Script
+// Coller dans Extensions → Apps Script, puis exécuter setup()
+//
+// IMPORTANT : setup() ne synchronise PAS les commandes existantes.
+// Seules les NOUVELLES lignes ajoutées après setup() seront envoyées
+// automatiquement à la plateforme.
+
+var API_URL = '${apiUrl}';
+
+function setup() {
+  registerConnection();
+  markExistingRowsAsSynced();
+  setupEditTrigger();
+  Logger.log('✅ Connexion établie. Les nouvelles commandes seront synchronisées automatiquement.');
+}
+
+// Sends only metadata (no orders) so the platform knows the sheet is connected
+function registerConnection() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const active = sheet.getActiveSheet();
+  sendToAPI({
+    sheetId: sheet.getId(),
+    sheetName: active.getName(),
+    fileName: sheet.getName(),
+    headers: [],
+    newOrders: []   // ← empty = no import, just register the connection
+  });
+}
+
+// Marks every existing row in the sheet as "already synced" so onEditHandler
+// won't re-send them. This is what prevents the 100 old orders from importing.
+function markExistingRowsAsSynced() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const properties = PropertiesService.getDocumentProperties();
+  for (var r = 2; r <= lastRow; r++) {
+    properties.setProperty('row_' + r, new Date().toISOString());
+  }
+  Logger.log('Marqué ' + (lastRow - 1) + ' ligne(s) existante(s) comme déjà synchronisée(s).');
+}
+
+function setupEditTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  const exists = triggers.some(function(t) { return t.getHandlerFunction() === 'onEditHandler'; });
+  if (!exists) {
+    ScriptApp.newTrigger('onEditHandler')
+      .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+      .onEdit()
+      .create();
+  }
+}
+
+function onEditHandler(e) {
+  if (!e) return;
+  const sheet = e.source.getActiveSheet();
+  const range = e.range;
+  const firstRow = range.getRow();
+  const lastRow = range.getLastRow();
+  const newOrders = [];
+  const rowsToProcess = [];
+
+  for (var currentRow = firstRow; currentRow <= lastRow; currentRow++) {
+    if (currentRow === 1) continue;
+    const lock = LockService.getScriptLock();
+    try {
+      lock.waitLock(60000);
+      const cache = CacheService.getScriptCache();
+      const cacheKey = 'row_' + currentRow;
+      const properties = PropertiesService.getDocumentProperties();
+      // Already-synced rows (existed when setup() ran OR sent previously) are skipped
+      if (properties.getProperty(cacheKey)) continue;
+      if (cache.get(cacheKey)) continue;
+      cache.put(cacheKey, 'pending', 720);
+      rowsToProcess.push(currentRow);
+    } catch (err) { Logger.log('Erreur: ' + err); }
+    finally { lock.releaseLock(); }
+  }
+
+  if (rowsToProcess.length === 0) return;
+
+  // Wait 40s so user finishes filling the row before we ship it
+  Utilities.sleep(40000);
+
+  for (var i = 0; i < rowsToProcess.length; i++) {
+    var row = rowsToProcess[i];
+    if (CacheService.getScriptCache().get('row_' + row) !== 'pending') continue;
+    var rowData = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+    if (rowData.every(function(c) { return !c || c.toString().trim() === ''; })) continue;
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var newOrder = {};
+    for (var h = 0; h < headers.length; h++) {
+      newOrder[headers[h]] = (rowData[h] !== null && rowData[h] !== '') ? rowData[h] : null;
+    }
+    newOrders.push(newOrder);
+  }
+
+  if (newOrders.length === 0) return;
+
+  try {
+    sendToAPI({
+      sheetId: sheet.getParent().getId(),
+      sheetName: sheet.getName(),
+      fileName: sheet.getParent().getName(),
+      newOrders: newOrders
+    });
+    for (var j = 0; j < rowsToProcess.length; j++) {
+      var r = rowsToProcess[j];
+      PropertiesService.getDocumentProperties().setProperty('row_' + r, new Date().toISOString());
+      CacheService.getScriptCache().remove('row_' + r);
+    }
+  } catch (err) { Logger.log('Erreur envoi: ' + err); }
+}
+
+function sendToAPI(data) {
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(data),
+    muteHttpExceptions: true
+  };
+  try {
+    const response = UrlFetchApp.fetch(API_URL, options);
+    Logger.log('Réponse: ' + response.getContentText());
+  } catch (e) {
+    Logger.log('Erreur API: ' + e.message);
+  }
+}
+
+// OPTIONAL : si vous voulez forcer l'import de toutes les lignes existantes
+// (par exemple pour un sheet neuf), exécutez forceImportAll() une seule fois.
+function forceImportAll() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const active = sheet.getActiveSheet();
+  const lastCol = active.getLastColumn();
+  const lastRow = active.getLastRow();
+  if (lastRow < 2 || lastCol < 1) {
+    Logger.log('Sheet vide');
+    return;
+  }
+  const headers = active.getRange(1, 1, 1, lastCol).getValues()[0];
+  const values = active.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const jsonData = values
+    .filter(function(row) { return !row.every(function(c) { return !c || c.toString().trim() === ''; }); })
+    .map(function(row) {
+      var obj = {};
+      for (var i = 0; i < headers.length; i++) { obj[headers[i]] = row[i]; }
+      return obj;
+    });
+  sendToAPI({
+    sheetId: sheet.getId(),
+    sheetName: active.getName(),
+    fileName: sheet.getName(),
+    headers: headers,
+    newOrders: jsonData
+  });
+  // After forced import, mark them all as synced to avoid duplicate onEdit re-sends
+  const properties = PropertiesService.getDocumentProperties();
+  for (var r = 2; r <= lastRow; r++) {
+    properties.setProperty('row_' + r, new Date().toISOString());
+  }
+  Logger.log('Import forcé : ' + jsonData.length + ' lignes envoyées.');
+}
+`;
+    res.type("text/plain").send(script);
+  });
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+After applying changes:
+
+1. Open your existing sheet (the one with 100+ old orders).
+2. Open /integrations/sheets-script in the platform.
+3. If a sheet is already connected, click "Déconnecter" on it (red trash) so you start fresh.
+4. Click "Copy Code" → paste the NEW script into Apps Script → save → run setup() → authorize.
+5. ✅ The platform connection page shows "Connecté" with the sheet name.
+6. ✅ Go to /orders — your 100 OLD orders are NOT imported (only the 1 previous test or zero new ones).
+7. Add a brand-new row in the sheet with:
+     Nom: test
+     Téléphone: 600000000
+     Adresse: Test
+     Ville: Casablanca
+     Produit: mdya mos
+     Prix (DH): 599
+     Quantité: 2
+8. Wait ~45 seconds. Reload /orders.
+9. ✅ A new order appears with:
+     - Nom du produit: "mdya mos" (NOT "Auto-rempli depuis la boutique")
+     - Prix total: 599,00 DH
+     - Articles: 1 line showing "mdya mos × 2 — 299,50 DH each"
+10. Visit /inventory — the product "mdya mos" was auto-created (cost 0, selling price 599).
+
+BONUS: If a user has a brand-new empty sheet and wants ALL existing rows imported on first connect, they can run forceImportAll() once from the Apps Script editor.
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts
+git commit -m "fix(sheets): bulletproof product+qty parsing, skip old rows on first connect"
+git push origin main
+
+IMPORTANT REMINDER FOR THE USER:
+After deploy, the user MUST re-copy the script from /integrations/sheets-script and re-paste it into their Apps Script editor. The old version of the script still tries to import all existing rows on setup() — the new behavior only kicks in with the updated script.
+
+Apply all changes now and confirm each fix is complete.
