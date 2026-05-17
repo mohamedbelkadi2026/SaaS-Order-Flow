@@ -10539,21 +10539,48 @@ function submitOrder(e){
       const newOrders: any[] = Array.isArray(body.newOrders) ? body.newOrders : [];
 
       try {
-        const existing = await storage.getIntegrationByProvider(storeId, "gsheets_script");
+        const incomingSheetId = body.sheetId || null;
+        const allForStore = await db.select().from(storeIntegrations)
+          .where(and(
+            eq(storeIntegrations.storeId, storeId),
+            eq(storeIntegrations.provider, "gsheets_script")
+          ));
+        const existing = incomingSheetId
+          ? allForStore.find(r => r.spreadsheetId === incomingSheetId)
+          : allForStore[0];
         if (existing) {
           await db.update(storeIntegrations)
-            .set({ lastSyncAt: new Date(), status: "active" } as any)
+            .set({
+              lastSyncAt: new Date(), status: "active", isActive: 1,
+              spreadsheetName: body.fileName || existing.spreadsheetName,
+              spreadsheetId: incomingSheetId || existing.spreadsheetId,
+            } as any)
             .where(eq(storeIntegrations.id, existing.id));
         } else {
           await db.insert(storeIntegrations).values({
             storeId, provider: "gsheets_script", type: "webhook",
-            credentials: "{}", webhookKey, status: "active",
+            credentials: "{}", webhookKey, status: "active", isActive: 1,
             lastSyncAt: new Date(),
-            spreadsheetId: body.sheetId || null,
+            spreadsheetId: incomingSheetId,
             spreadsheetName: body.fileName || null,
+            ordersCount: 0,
           } as any);
         }
       } catch (e: any) { console.warn("[SheetsScript] Integration upsert failed:", e.message); }
+
+      // Block sync if this specific sheet was disabled in the UI
+      try {
+        const conditions: any[] = [
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script"),
+        ];
+        if (body.sheetId) conditions.push(eq(storeIntegrations.spreadsheetId, body.sheetId));
+        const [currentInt] = await db.select().from(storeIntegrations).where(and(...conditions));
+        if (currentInt && currentInt.isActive === 0) {
+          console.log(`[SheetsScript] Sheet ${body.sheetId} is disabled for store ${storeId} — skipping`);
+          return res.json({ success: true, created: 0, skipped: newOrders.length, message: "Sheet is disabled" });
+        }
+      } catch (_e) {}
 
       if (newOrders.length === 0) {
         return res.json({ success: true, message: "Connection registered", created: 0 });
@@ -10564,7 +10591,14 @@ function submitOrder(e){
         return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
       }
 
-      const integration = await storage.getIntegrationByProvider(storeId, "gsheets_script");
+      const allIntegrations = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      const integration = (body.sheetId
+        ? allIntegrations.find(r => r.spreadsheetId === body.sheetId)
+        : null) || allIntegrations[0];
       const magasinId = integration?.magasinId ?? null;
       const storeProducts = await storage.getProductsByStore(storeId);
       let created = 0, skipped = 0;
@@ -10660,6 +10694,14 @@ function submitOrder(e){
           errors.push(`${parsed.orderNumber}: ${rowErr.message}`);
           skipped++;
         }
+      }
+
+      if (integration?.id && created > 0) {
+        try {
+          await db.update(storeIntegrations)
+            .set({ ordersCount: (integration.ordersCount || 0) + created } as any)
+            .where(eq(storeIntegrations.id, integration.id));
+        } catch (e: any) { console.warn("[SheetsScript] ordersCount update failed:", e.message); }
       }
 
       await storage.createIntegrationLog({
@@ -10786,6 +10828,75 @@ function sendToAPI(data) {
 }
 `;
     res.type("text/plain").send(script);
+  });
+
+  app.get("/api/sheets/list", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ))
+        .orderBy(desc(storeIntegrations.createdAt));
+      const sheets = rows.map(r => ({
+        id: r.id,
+        spreadsheetId: r.spreadsheetId,
+        spreadsheetName: r.spreadsheetName || "Google Sheet",
+        ordersCount: (r as any).ordersCount || 0,
+        isActive: r.isActive === 1,
+        status: r.status,
+        lastSyncAt: r.lastSyncAt,
+        createdAt: r.createdAt,
+      }));
+      res.json({ count: sheets.length, sheets });
+    } catch (err: any) {
+      console.error("[SheetsScript] List error:", err);
+      res.status(500).json({ count: 0, sheets: [] });
+    }
+  });
+
+  app.post("/api/sheets/:id/toggle", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: "Invalid id" });
+    try {
+      const [row] = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.id, id),
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      if (!row) return res.status(404).json({ success: false, message: "Sheet not found" });
+      const newActive = row.isActive === 1 ? 0 : 1;
+      await db.update(storeIntegrations)
+        .set({ isActive: newActive, status: newActive ? "active" : "inactive" } as any)
+        .where(eq(storeIntegrations.id, id));
+      res.json({ success: true, isActive: newActive === 1 });
+    } catch (err: any) {
+      console.error("[SheetsScript] Toggle error:", err);
+      res.status(500).json({ success: false, message: "Toggle failed" });
+    }
+  });
+
+  app.delete("/api/sheets/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: "Invalid id" });
+    try {
+      const [row] = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.id, id),
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      if (!row) return res.status(404).json({ success: false, message: "Sheet not found" });
+      await db.delete(storeIntegrations).where(eq(storeIntegrations.id, id));
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SheetsScript] Delete error:", err);
+      res.status(500).json({ success: false, message: "Delete failed" });
+    }
   });
 
   app.post("/api/sheets/verify", requireAuth, async (req: any, res: any) => {

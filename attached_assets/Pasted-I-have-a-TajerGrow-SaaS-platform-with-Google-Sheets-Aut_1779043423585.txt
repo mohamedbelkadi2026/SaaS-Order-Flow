@@ -1,0 +1,573 @@
+I have a TajerGrow SaaS platform with Google Sheets Auto-Sync. I want to redesign the Google Sheets integration UI to look EXACTLY like the existing Shopify integrations page — showing all connected sheets as cards, with an "Intégrer un nouveau Google Sheet" button to add more.
+
+═══════════════════════════════════════════════════════════════════════
+WHAT I WANT (matches Shopify UI exactly)
+═══════════════════════════════════════════════════════════════════════
+When user clicks "Google Sheets" tab in /integrations:
+
+CASE A — No sheets connected yet:
+  → Show the original "Guide d'intégration" with Copy Code + Verify Connection
+
+CASE B — One or more sheets already connected:
+  → Show "Google Sheets — Intégrations" header
+  → Show "X feuille(s) connectée(s)"
+  → Show "+ Intégrer un nouveau Google Sheet" button (top right)
+  → Show a card for EACH connected sheet with:
+     - Sheet icon + sheet name
+     - Sheet ID badge (truncated)
+     - Order count (X commande(s))
+     - Active/inactive toggle (green switch)
+     - Delete button (red trash icon)
+  → Clicking "+ Intégrer un nouveau Google Sheet" opens the guide modal/page to connect another sheet
+
+═══════════════════════════════════════════════════════════════════════
+BACKEND CHANGES
+═══════════════════════════════════════════════════════════════════════
+
+──── FILE 1: server/routes.ts — Make the upsert support MULTIPLE sheets ────
+
+Currently the POST /api/sheets/sync/:webhookKey route uses getIntegrationByProvider() which returns only ONE integration row. We need to support multiple sheets per store, identified by spreadsheetId.
+
+Find this block inside POST /api/sheets/sync/:webhookKey:
+
+      try {
+        const existing = await storage.getIntegrationByProvider(storeId, "gsheets_script");
+        if (existing) {
+          await db.update(storeIntegrations)
+            .set({ lastSyncAt: new Date(), status: "active", isActive: 1 })
+            .where(eq(storeIntegrations.id, existing.id));
+        } else {
+          await db.insert(storeIntegrations).values({
+            storeId, provider: "gsheets_script", type: "webhook",
+            credentials: "{}", webhookKey, status: "active", isActive: 1,
+            lastSyncAt: new Date(),
+            spreadsheetId: body.sheetId || null,
+            spreadsheetName: body.fileName || null,
+          });
+        }
+      } catch (e: any) { console.warn("[SheetsScript] Integration upsert failed:", e.message); }
+
+REPLACE it with this version that matches by spreadsheetId (so each unique sheet is its own row):
+
+      try {
+        const incomingSheetId = body.sheetId || null;
+        // Find existing integration for THIS specific spreadsheet
+        const allForStore = await db.select().from(storeIntegrations)
+          .where(and(
+            eq(storeIntegrations.storeId, storeId),
+            eq(storeIntegrations.provider, "gsheets_script")
+          ));
+        const existing = incomingSheetId
+          ? allForStore.find(r => r.spreadsheetId === incomingSheetId)
+          : allForStore[0];
+
+        if (existing) {
+          await db.update(storeIntegrations)
+            .set({
+              lastSyncAt: new Date(),
+              status: "active",
+              isActive: 1,
+              spreadsheetName: body.fileName || existing.spreadsheetName,
+              spreadsheetId: incomingSheetId || existing.spreadsheetId,
+            })
+            .where(eq(storeIntegrations.id, existing.id));
+        } else {
+          await db.insert(storeIntegrations).values({
+            storeId,
+            provider: "gsheets_script",
+            type: "webhook",
+            credentials: "{}",
+            webhookKey,
+            status: "active",
+            isActive: 1,
+            lastSyncAt: new Date(),
+            spreadsheetId: incomingSheetId,
+            spreadsheetName: body.fileName || null,
+            ordersCount: 0,
+          });
+        }
+      } catch (e: any) { console.warn("[SheetsScript] Integration upsert failed:", e.message); }
+
+ALSO inside the same route, find this line near the bottom of the order loop:
+
+      const integration = await storage.getIntegrationByProvider(storeId, "gsheets_script");
+      const magasinId = integration?.magasinId ?? null;
+
+REPLACE with:
+
+      const allIntegrations = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      const integration = (body.sheetId
+        ? allIntegrations.find(r => r.spreadsheetId === body.sheetId)
+        : null) || allIntegrations[0];
+      const magasinId = integration?.magasinId ?? null;
+
+ALSO at the END of the order loop (just before `await storage.createIntegrationLog(...)`), add this line to increment the per-sheet order counter:
+
+      // Increment per-sheet order count
+      if (integration?.id) {
+        try {
+          await db.update(storeIntegrations)
+            .set({ ordersCount: (integration.ordersCount || 0) + created })
+            .where(eq(storeIntegrations.id, integration.id));
+        } catch (e: any) { console.warn("[SheetsScript] ordersCount update failed:", e.message); }
+      }
+
+──── FILE 2: server/routes.ts — Add 3 NEW management endpoints ────
+
+Add these endpoints right after the existing POST /api/sheets/verify endpoint (before `return httpServer;`):
+
+  // ── GET /api/sheets/list — list all connected sheets for the store ─────────
+  app.get("/api/sheets/list", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ))
+        .orderBy(desc(storeIntegrations.createdAt));
+
+      const sheets = rows.map(r => ({
+        id: r.id,
+        spreadsheetId: r.spreadsheetId,
+        spreadsheetName: r.spreadsheetName || "Google Sheet",
+        ordersCount: r.ordersCount || 0,
+        isActive: r.isActive === 1,
+        status: r.status,
+        lastSyncAt: r.lastSyncAt,
+        createdAt: r.createdAt,
+      }));
+
+      res.json({ count: sheets.length, sheets });
+    } catch (err: any) {
+      console.error("[SheetsScript] List error:", err);
+      res.status(500).json({ count: 0, sheets: [] });
+    }
+  });
+
+  // ── POST /api/sheets/:id/toggle — enable/disable a connected sheet ─────────
+  app.post("/api/sheets/:id/toggle", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: "Invalid id" });
+    try {
+      const [row] = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.id, id),
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      if (!row) return res.status(404).json({ success: false, message: "Sheet not found" });
+
+      const newActive = row.isActive === 1 ? 0 : 1;
+      await db.update(storeIntegrations)
+        .set({ isActive: newActive, status: newActive ? "active" : "inactive" })
+        .where(eq(storeIntegrations.id, id));
+
+      res.json({ success: true, isActive: newActive === 1 });
+    } catch (err: any) {
+      console.error("[SheetsScript] Toggle error:", err);
+      res.status(500).json({ success: false, message: "Toggle failed" });
+    }
+  });
+
+  // ── DELETE /api/sheets/:id — disconnect a sheet ────────────────────────────
+  app.delete("/api/sheets/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ success: false, message: "Invalid id" });
+    try {
+      const [row] = await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.id, id),
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script")
+        ));
+      if (!row) return res.status(404).json({ success: false, message: "Sheet not found" });
+
+      await db.delete(storeIntegrations).where(eq(storeIntegrations.id, id));
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[SheetsScript] Delete error:", err);
+      res.status(500).json({ success: false, message: "Delete failed" });
+    }
+  });
+
+──── FILE 3: server/routes.ts — Update POST /api/sheets/sync to BLOCK inactive sheets ────
+
+Inside POST /api/sheets/sync/:webhookKey, AFTER the integration upsert block, BEFORE the orders loop, add this check:
+
+      // If this specific sheet was disabled in the platform UI, refuse the sync
+      const currentIntegration = (await db.select().from(storeIntegrations)
+        .where(and(
+          eq(storeIntegrations.storeId, storeId),
+          eq(storeIntegrations.provider, "gsheets_script"),
+          ...(body.sheetId ? [eq(storeIntegrations.spreadsheetId, body.sheetId)] : [])
+        )))[0];
+      if (currentIntegration && currentIntegration.isActive === 0) {
+        console.log(`[SheetsScript] Sheet ${body.sheetId} is disabled for store ${storeId} — skipping`);
+        return res.json({ success: true, created: 0, skipped: newOrders.length, message: "Sheet is disabled" });
+      }
+
+═══════════════════════════════════════════════════════════════════════
+FRONTEND CHANGES
+═══════════════════════════════════════════════════════════════════════
+
+──── FILE 4: client/src/pages/sheets-integration.tsx — Complete redesign ────
+
+REPLACE THE ENTIRE FILE with this Shopify-style multi-sheet UI:
+
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, Copy, CheckCircle2, AlertCircle, Plus, Trash2, ArrowLeft } from "lucide-react";
+import { SiGooglesheets } from "react-icons/si";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
+type ConnectedSheet = {
+  id: number;
+  spreadsheetId: string | null;
+  spreadsheetName: string;
+  ordersCount: number;
+  isActive: boolean;
+  status: string;
+  lastSyncAt: string | null;
+  createdAt: string | null;
+};
+
+export default function SheetsIntegrationPage() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [showGuide, setShowGuide] = useState(false);
+  const [understood, setUnderstood] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+
+  // Fetch all connected sheets for this store
+  const { data: listData, isLoading: listLoading, refetch: refetchList } = useQuery<{ count: number; sheets: ConnectedSheet[] }>({
+    queryKey: ["/api/sheets/list"],
+    queryFn: async () => {
+      const r = await fetch("/api/sheets/list", { credentials: "include" });
+      if (!r.ok) throw new Error("Failed to load sheets");
+      return r.json();
+    },
+    refetchOnWindowFocus: true,
+    staleTime: 5_000,
+  });
+
+  // Fetch the personalised Apps Script
+  const { data: scriptText, isLoading: scriptLoading } = useQuery<string>({
+    queryKey: ["/api/sheets/script"],
+    queryFn: async () => {
+      const r = await fetch("/api/sheets/script", { credentials: "include" });
+      if (!r.ok) throw new Error("Failed to load script");
+      return r.text();
+    },
+    enabled: showGuide || (listData?.count === 0),
+  });
+
+  const sheets = listData?.sheets || [];
+  const count = listData?.count || 0;
+
+  const handleCopy = async () => {
+    if (!scriptText) return;
+    try {
+      await navigator.clipboard.writeText(scriptText);
+      setCopied(true);
+      toast({ title: "✅ Script copié", description: "Collez-le dans Apps Script." });
+      setTimeout(() => setCopied(false), 2500);
+    } catch {
+      toast({ title: "Erreur", description: "Impossible de copier.", variant: "destructive" });
+    }
+  };
+
+  const handleVerify = async () => {
+    setVerifying(true);
+    try {
+      const r = await fetch("/api/sheets/verify", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await r.json();
+      await refetchList();
+      if (data.connected) {
+        toast({ title: "✅ Connexion vérifiée", description: data.message });
+        setShowGuide(false);
+        setUnderstood(false);
+      } else {
+        toast({ title: "⚠️ Pas encore connecté", description: data.message, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur", description: "Vérification impossible.", variant: "destructive" });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleToggle = async (id: number) => {
+    try {
+      const r = await fetch(`/api/sheets/${id}/toggle`, { method: "POST", credentials: "include" });
+      const data = await r.json();
+      if (data.success) {
+        toast({ title: data.isActive ? "✅ Activé" : "⏸️ Désactivé", description: `Synchronisation ${data.isActive ? "activée" : "désactivée"}` });
+        await refetchList();
+      } else {
+        toast({ title: "Erreur", description: data.message || "Échec", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur réseau", variant: "destructive" });
+    }
+  };
+
+  const handleDelete = async () => {
+    if (deleteId === null) return;
+    try {
+      const r = await fetch(`/api/sheets/${deleteId}`, { method: "DELETE", credentials: "include" });
+      const data = await r.json();
+      if (data.success) {
+        toast({ title: "🗑️ Feuille déconnectée", description: "La connexion a été supprimée." });
+        await refetchList();
+      } else {
+        toast({ title: "Erreur", description: data.message || "Échec", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur réseau", variant: "destructive" });
+    } finally {
+      setDeleteId(null);
+    }
+  };
+
+  // ── LOADING STATE ───────────────────────────────────────────────────
+  if (listLoading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  GUIDE STATE — show setup steps (used for first connection OR
+  //  when user clicks "Intégrer un nouveau Google Sheet")
+  // ══════════════════════════════════════════════════════════════════
+  if (showGuide || count === 0) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
+        <div className="max-w-4xl mx-auto">
+          {count > 0 && (
+            <div className="mb-4">
+              <Button variant="ghost" onClick={() => setShowGuide(false)} data-testid="button-back-to-list">
+                <ArrowLeft className="w-4 h-4 mr-2" /> Retour à mes feuilles connectées
+              </Button>
+            </div>
+          )}
+
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="px-8 py-6 border-b border-gray-100 dark:border-gray-700">
+              <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Guide d'intégration avec Google Sheets</h1>
+            </div>
+
+            <div className="px-8 py-6">
+              <h2 className="text-lg font-semibold text-blue-600 dark:text-blue-400 mb-4">Étapes :</h2>
+
+              <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                <div className="py-4 text-gray-700 dark:text-gray-300">
+                  Ouvrez votre <a href="https://docs.google.com/spreadsheets" target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 hover:underline">compte Google Sheets</a>.
+                </div>
+                <div className="py-4 text-gray-700 dark:text-gray-300">
+                  Allez dans <span className="font-medium">Extensions</span> &gt; <span className="font-medium">Apps Script</span>.
+                </div>
+                <div className="py-4 text-gray-700 dark:text-gray-300">Cliquez sur le bouton ci-dessous pour copier le script.</div>
+                <div className="py-4 text-gray-700 dark:text-gray-300">Collez le script dans l'éditeur Apps Script.</div>
+                <div className="py-4 text-gray-700 dark:text-gray-300">
+                  Enregistrez le script et exécutez la fonction <code className="px-2 py-0.5 bg-gray-100 dark:bg-gray-700 rounded text-sm font-mono">setup</code>.
+                </div>
+                <div className="py-4 text-gray-700 dark:text-gray-300">Accordez les autorisations à l'application pour accéder à vos données.</div>
+              </div>
+
+              <div className="mt-6 flex items-center justify-between flex-wrap gap-4">
+                <Button onClick={handleCopy} disabled={scriptLoading || !scriptText} className="bg-blue-600 hover:bg-blue-700 text-white" data-testid="button-copy-script">
+                  {scriptLoading ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…</>) : copied ? (<><CheckCircle2 className="w-4 h-4 mr-2" /> Copié !</>) : (<><Copy className="w-4 h-4 mr-2" /> Copy Code</>)}
+                </Button>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <Checkbox checked={understood} onCheckedChange={(v) => setUnderstood(v === true)} data-testid="checkbox-understood" />
+                  <span className="text-gray-700 dark:text-gray-300">I understand the steps</span>
+                </label>
+              </div>
+
+              <div className="mt-6">
+                <Button onClick={handleVerify} disabled={!understood || verifying} className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-white text-base font-medium disabled:opacity-50" data-testid="button-verify-connection">
+                  {verifying ? (<><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Vérification…</>) : "Verify Connection"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  LIST STATE — Shopify-style cards for each connected sheet
+  // ══════════════════════════════════════════════════════════════════
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 py-8 px-4">
+      <div className="max-w-5xl mx-auto">
+        {/* Header */}
+        <div className="flex items-start justify-between mb-6 flex-wrap gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Google Sheets — Intégrations</h1>
+            <p className="text-gray-600 dark:text-gray-400 mt-1">{count} feuille(s) connectée(s)</p>
+          </div>
+          <Button
+            onClick={() => { setShowGuide(true); setUnderstood(false); }}
+            variant="outline"
+            className="border-dashed border-2 h-12 px-5"
+            data-testid="button-add-new-sheet"
+          >
+            <Plus className="w-5 h-5 mr-2" />
+            Intégrer un nouveau Google Sheet
+          </Button>
+        </div>
+
+        {/* Cards grid */}
+        <div className="grid sm:grid-cols-2 gap-4">
+          {sheets.map((sheet) => (
+            <div
+              key={sheet.id}
+              className="relative bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm p-5"
+              data-testid={`card-sheet-${sheet.id}`}
+            >
+              {/* Status badge */}
+              <div className="absolute top-3 right-3">
+                <span className={`text-xs font-medium px-3 py-1 rounded-md ${
+                  sheet.isActive
+                    ? "bg-emerald-500 text-white"
+                    : "bg-gray-300 text-gray-700 dark:bg-gray-600 dark:text-gray-200"
+                }`}>
+                  {sheet.isActive ? "Connecté" : "Désactivé"}
+                </span>
+              </div>
+
+              {/* Sheet info */}
+              <div className="flex items-start gap-3 mb-3 pr-20">
+                <SiGooglesheets className="w-8 h-8 text-green-600 shrink-0 mt-0.5" />
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-bold text-gray-900 dark:text-white truncate" data-testid={`text-sheet-name-${sheet.id}`}>
+                    {sheet.spreadsheetName}
+                  </h3>
+                  {sheet.spreadsheetId && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5 font-mono">
+                      🔗 ...{sheet.spreadsheetId.slice(-20)}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer: count + actions */}
+              <div className="flex items-center justify-between mt-4">
+                <span className="text-sm text-gray-600 dark:text-gray-400" data-testid={`text-orders-count-${sheet.id}`}>
+                  {sheet.ordersCount} commande(s)
+                </span>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={sheet.isActive}
+                    onCheckedChange={() => handleToggle(sheet.id)}
+                    className="data-[state=checked]:bg-emerald-500"
+                    data-testid={`switch-toggle-${sheet.id}`}
+                  />
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    onClick={() => setDeleteId(sheet.id)}
+                    className="border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:hover:bg-red-900/20"
+                    data-testid={`button-delete-${sheet.id}`}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Delete confirmation dialog */}
+        <AlertDialog open={deleteId !== null} onOpenChange={(open) => !open && setDeleteId(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Déconnecter cette feuille ?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Les commandes déjà importées resteront dans la plateforme, mais aucune nouvelle commande ne sera synchronisée depuis cette feuille. Vous pouvez la reconnecter à tout moment.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="button-cancel-delete">Annuler</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleDelete}
+                className="bg-red-600 hover:bg-red-700"
+                data-testid="button-confirm-delete"
+              >
+                Déconnecter
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    </div>
+  );
+}
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. Open /integrations/sheets-script with NO sheets connected:
+   ✅ Shows the original setup guide (Copy Code + Verify Connection)
+
+2. Connect one Google Sheet (paste script, run setup()), then reopen:
+   ✅ Shows "Google Sheets — Intégrations" header
+   ✅ Shows "1 feuille(s) connectée(s)"
+   ✅ Shows ONE card with the sheet name + Connecté badge + order count + green toggle + red trash button
+   ✅ Shows "+ Intégrer un nouveau Google Sheet" button (top right, dashed border)
+
+3. Click "+ Intégrer un nouveau Google Sheet":
+   ✅ Returns to setup guide with "← Retour à mes feuilles connectées" button at the top
+
+4. Connect a SECOND sheet (different Google Sheet, paste & run setup()):
+   ✅ Reopen page → shows 2 cards side by side (grid layout)
+   ✅ Each card shows its own sheet name + order count
+
+5. Click the toggle on one sheet:
+   ✅ Switch flips OFF, badge changes to "Désactivé"
+   ✅ Adding new rows to that sheet no longer creates orders in the platform
+   ✅ Click toggle again → switch flips ON, syncing resumes
+
+6. Click trash on a sheet:
+   ✅ Confirmation dialog appears
+   ✅ Click "Déconnecter" → card disappears, count decreases
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts client/src/pages/sheets-integration.tsx
+git commit -m "feat(sheets): Shopify-style multi-sheet UI with toggle + delete"
+git push origin main
+
+Apply all changes now and confirm each fix is complete.
