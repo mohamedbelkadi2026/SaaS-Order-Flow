@@ -10653,41 +10653,62 @@ function submitOrder(e){
             skipped++;
             continue;
           }
-          const productNameLower = parsed.productName.toLowerCase().trim();
-          let matched: any = parsed.productName
-            ? storeProducts.find((p: any) =>
-                (p.name && p.name.toLowerCase().trim() === productNameLower) ||
-                (p.sku && p.sku.toLowerCase().trim() === productNameLower)
-              )
-            : undefined;
+          // ─── Product resolution with full logging ─────────────────────
+          console.log(`[SheetsScript] 🔍 Resolving product: "${parsed.productName}" qty=${parsed.quantity} totalPrice=${parsed.totalPrice}`);
 
-          // ── AUTO-CREATE missing product ─────────────────────────────
-          if (!matched && parsed.productName) {
+          const productNameLower = (parsed.productName || "").toLowerCase().trim();
+          let matched: any = undefined;
+
+          if (productNameLower) {
+            matched = storeProducts.find((p: any) =>
+              (p.name && p.name.toLowerCase().trim() === productNameLower) ||
+              (p.sku && p.sku.toLowerCase().trim() === productNameLower)
+            );
+            if (matched) {
+              console.log(`[SheetsScript] ✅ Matched existing product id=${matched.id} name="${matched.name}"`);
+            } else {
+              console.log(`[SheetsScript] ⚠️ No existing product matches "${parsed.productName}" — will auto-create`);
+            }
+          }
+
+          // AUTO-CREATE if no match and we have a product name
+          if (!matched && productNameLower) {
             try {
-              const newProduct = await storage.createProduct({
+              const newProductData = {
                 storeId,
                 name: parsed.productName,
                 sku: null,
                 costPrice: 0,
-                sellingPrice: parsed.totalPrice,
+                sellingPrice: parsed.totalPrice > 0 ? parsed.totalPrice : 0,
                 stock: 0,
                 isActive: 1,
-              } as any);
-              matched = newProduct;
-              storeProducts.push(newProduct);
-              console.log(`[SheetsScript] Auto-created product "${parsed.productName}" (id=${newProduct.id}) for store ${storeId}`);
+              };
+              console.log(`[SheetsScript] 🆕 Creating product:`, JSON.stringify(newProductData));
+              const newProduct = await storage.createProduct(newProductData as any);
+              if (newProduct && newProduct.id) {
+                matched = newProduct;
+                storeProducts.push(newProduct);
+                console.log(`[SheetsScript] ✅ Auto-created product id=${newProduct.id} name="${parsed.productName}"`);
+              } else {
+                console.error(`[SheetsScript] ❌ createProduct returned no id`);
+              }
             } catch (createErr: any) {
-              console.warn(`[SheetsScript] Could not auto-create product "${parsed.productName}":`, createErr.message);
+              console.error(`[SheetsScript] ❌ Auto-create FAILED for "${parsed.productName}":`, createErr.message);
+              console.error(createErr.stack);
             }
           }
 
+          // Compute per-unit price
           const lineUnitPrice = parsed.totalPrice > 0
             ? Math.round(parsed.totalPrice / Math.max(1, parsed.quantity))
             : (matched?.sellingPrice || 0);
 
+          // Always attach orderItems if we resolved a product
           const orderItems = matched
             ? [{ productId: matched.id, quantity: parsed.quantity, price: lineUnitPrice, orderId: 0 }]
             : [];
+
+          console.log(`[SheetsScript] 📦 orderItems prepared: ${orderItems.length} line(s)`, orderItems.length > 0 ? JSON.stringify(orderItems[0]) : "(empty — no product)");
 
           const finalComment = parsed.note || null;
 

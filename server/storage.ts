@@ -350,8 +350,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProduct(product: InsertProduct): Promise<Product> {
-    const [newProduct] = await db.insert(products).values(product).returning();
-    return newProduct;
+    console.log("[Storage.createProduct] inserting:", JSON.stringify(product));
+    try {
+      const [newProduct] = await db.insert(products).values(product).returning();
+      console.log(`[Storage.createProduct] SUCCESS: id=${newProduct.id} name="${newProduct.name}"`);
+      return newProduct;
+    } catch (err: any) {
+      console.error(`[Storage.createProduct] FAILED:`, err.message, err);
+      throw err;
+    }
   }
 
   async updateProductStock(id: number, stockDelta: number): Promise<Product | undefined> {
@@ -776,10 +783,19 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createOrder(order: InsertOrder, items: InsertOrderItem[]): Promise<Order> {
+    console.log(`[Storage.createOrder] storeId=${order.storeId} orderNumber="${(order as any).orderNumber}" orderItems.length=${items.length}`);
+    if (items.length > 0) {
+      console.log(`[Storage.createOrder] FIRST ITEM:`, JSON.stringify(items[0]));
+    }
     const [newOrder] = await db.insert(orders).values(order).returning();
     
-    for (const item of items) {
-      await db.insert(orderItems).values({ ...item, orderId: newOrder.id });
+    if (items.length > 0) {
+      const itemsToInsert = items.map(item => ({ ...item, orderId: newOrder.id }));
+      console.log(`[Storage.createOrder] Inserting ${itemsToInsert.length} order_item(s):`, JSON.stringify(itemsToInsert));
+      for (const item of itemsToInsert) {
+        await db.insert(orderItems).values(item);
+      }
+      console.log(`[Storage.createOrder] order_items inserted ✅`);
     }
     
     return newOrder;

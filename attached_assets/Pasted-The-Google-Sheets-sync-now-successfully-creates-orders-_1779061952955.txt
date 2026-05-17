@@ -1,0 +1,212 @@
+The Google Sheets sync now successfully creates orders in the platform — customer name, phone, city, address, price are all saved correctly. BUT the product name and quantity from the sheet are NOT being attached to the order:
+
+  - "Nom du produit" shows "Auto-rempli depuis la boutique" (placeholder)
+  - "Articles" count is 0
+  - The product from the sheet (e.g. "mdya mos") is NOT auto-created in the inventory
+
+This means our previous auto-create-product fix was either not applied, or storage.createProduct doesn't exist / silently fails. We're going to fix BOTH the storage method and the route logic to GUARANTEE the product attaches.
+
+═══════════════════════════════════════════════════════════════════════
+FIX #1: Make sure storage.createProduct exists
+═══════════════════════════════════════════════════════════════════════
+File: server/storage.ts
+
+Search the file for `createProduct`. There should be a method that inserts into the `products` table.
+
+If `createProduct` does NOT exist, add it. Find the storage class implementation (the class that implements IStorage). Add this method anywhere inside the class:
+
+  async createProduct(data: any): Promise<any> {
+    const [product] = await db.insert(products).values(data).returning();
+    console.log(`[Storage] Product created: id=${product.id} name="${product.name}" storeId=${product.storeId}`);
+    return product;
+  }
+
+Also add this to the IStorage interface declaration at the top of the file (find the `interface IStorage {` block):
+
+  createProduct(data: any): Promise<any>;
+
+If `createProduct` already exists, leave it alone but ADD detailed logging:
+
+  async createProduct(data: any): Promise<any> {
+    console.log("[Storage.createProduct] inserting:", JSON.stringify(data));
+    try {
+      const [product] = await db.insert(products).values(data).returning();
+      console.log(`[Storage.createProduct] SUCCESS: id=${product.id}`);
+      return product;
+    } catch (err: any) {
+      console.error(`[Storage.createProduct] FAILED:`, err.message, err);
+      throw err;
+    }
+  }
+
+═══════════════════════════════════════════════════════════════════════
+FIX #2: Replace the order-creation block in /api/sheets/sync with verbose logging
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the POST /api/sheets/sync/:webhookKey route. Inside the `for (const rawRow of newOrders)` loop, find the section that starts with:
+
+          const productNameLower = parsed.productName.toLowerCase().trim();
+
+REPLACE the entire block (from `const productNameLower` down through `await storage.createOrder(...)`) with this fully-instrumented version:
+
+          // ─── Product resolution with full logging ─────────────────────
+          console.log(`[SheetsScript] 🔍 Resolving product: "${parsed.productName}" qty=${parsed.quantity} totalPrice=${parsed.totalPrice}`);
+
+          const productNameLower = (parsed.productName || "").toLowerCase().trim();
+          let matched: any = undefined;
+
+          if (parsed.productName && productNameLower) {
+            matched = storeProducts.find(p =>
+              (p.name && p.name.toLowerCase().trim() === productNameLower) ||
+              (p.sku && p.sku.toLowerCase().trim() === productNameLower)
+            );
+            if (matched) {
+              console.log(`[SheetsScript] ✅ Matched existing product id=${matched.id} name="${matched.name}"`);
+            } else {
+              console.log(`[SheetsScript] ⚠️ No existing product matches "${parsed.productName}" — will auto-create`);
+            }
+          }
+
+          // AUTO-CREATE if no match
+          if (!matched && parsed.productName && productNameLower) {
+            try {
+              const newProductData = {
+                storeId,
+                name: parsed.productName,
+                sku: null,
+                costPrice: 0,
+                sellingPrice: parsed.totalPrice > 0 ? parsed.totalPrice : 0,
+                stock: 0,
+                isActive: 1,
+              };
+              console.log(`[SheetsScript] 🆕 Creating product:`, JSON.stringify(newProductData));
+              const newProduct = await storage.createProduct(newProductData as any);
+              if (newProduct && newProduct.id) {
+                matched = newProduct;
+                storeProducts.push(newProduct);
+                console.log(`[SheetsScript] ✅ Auto-created product id=${newProduct.id} name="${parsed.productName}"`);
+              } else {
+                console.error(`[SheetsScript] ❌ createProduct returned no id`);
+              }
+            } catch (createErr: any) {
+              console.error(`[SheetsScript] ❌ Auto-create FAILED for "${parsed.productName}":`, createErr.message);
+              console.error(createErr.stack);
+            }
+          }
+
+          // Compute per-unit price
+          const lineUnitPrice = parsed.totalPrice > 0
+            ? Math.round(parsed.totalPrice / Math.max(1, parsed.quantity))
+            : (matched?.sellingPrice || 0);
+
+          // ALWAYS attach orderItems if we have a product
+          const orderItems = matched
+            ? [{
+                productId: matched.id,
+                quantity: parsed.quantity,
+                price: lineUnitPrice,
+                orderId: 0,
+              }]
+            : [];
+
+          console.log(`[SheetsScript] 📦 orderItems prepared: ${orderItems.length} line(s)`, orderItems.length > 0 ? JSON.stringify(orderItems[0]) : "(empty)");
+
+          const finalComment = parsed.note || null;
+
+          const order = await storage.createOrder({
+            storeId,
+            magasinId,
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName,
+            customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress,
+            customerCity: parsed.customerCity,
+            status: "nouveau",
+            totalPrice: parsed.totalPrice,
+            productCost: matched ? (matched.costPrice || 0) * parsed.quantity : 0,
+            shippingCost: 0,
+            adSpend: 0,
+            source: "gsheets_script",
+            comment: finalComment,
+          } as any, orderItems);
+
+          console.log(`[SheetsScript] 🎉 Order #${order.id} created with ${orderItems.length} article(s)`);
+
+═══════════════════════════════════════════════════════════════════════
+FIX #3: Verify storage.createOrder is actually inserting orderItems
+═══════════════════════════════════════════════════════════════════════
+File: server/storage.ts
+
+Search for `createOrder`. Find the method. At the START of the createOrder method body, add this logging:
+
+  async createOrder(orderData: any, orderItemsData: any[] = []): Promise<any> {
+    console.log(`[Storage.createOrder] storeId=${orderData.storeId} orderNumber="${orderData.orderNumber}" orderItems.length=${orderItemsData.length}`);
+    if (orderItemsData.length > 0) {
+      console.log(`[Storage.createOrder] FIRST ITEM:`, JSON.stringify(orderItemsData[0]));
+    }
+    // ... (keep the rest of the existing implementation below this)
+
+The existing implementation should already insert order_items rows. If it doesn't insert them (e.g. if the existing method ignores orderItemsData parameter), the orderItems will never appear. Inspect the existing createOrder logic carefully.
+
+If createOrder does NOT insert order_items, add this AFTER the orders insert and BEFORE the return statement:
+
+  // Insert order items (orderItemsData)
+  if (Array.isArray(orderItemsData) && orderItemsData.length > 0) {
+    const itemsToInsert = orderItemsData.map(item => ({
+      orderId: order.id,
+      productId: item.productId,
+      quantity: item.quantity,
+      price: item.price,
+    }));
+    console.log(`[Storage.createOrder] Inserting ${itemsToInsert.length} order_item(s):`, JSON.stringify(itemsToInsert));
+    await db.insert(orderItems).values(itemsToInsert);
+    console.log(`[Storage.createOrder] order_items inserted ✅`);
+  }
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts server/storage.ts
+git commit -m "fix(sheets): guarantee product + orderItems creation with full logging"
+git push origin main
+
+═══════════════════════════════════════════════════════════════════════
+USER ACTION AFTER DEPLOY
+═══════════════════════════════════════════════════════════════════════
+After Railway finishes deploying:
+
+1. Add a new row to the Google Sheet (e.g. "test_new", phone, "mdya mos", 599, qty=3)
+2. In the Google Sheet menu: 🚀 TajerGrow → ▶️ Synchroniser maintenant
+3. Wait for the toast confirmation
+4. Open the new order in the platform
+5. ✅ "Nom du produit" should show "mdya mos"
+6. ✅ Articles section should show 1 line: mdya mos × 3
+7. Open /inventory — "mdya mos" should exist as an auto-created product
+
+═══════════════════════════════════════════════════════════════════════
+IF IT STILL FAILS — CHECK RAILWAY LOGS
+═══════════════════════════════════════════════════════════════════════
+The new logs will show exactly where it breaks. Look for these lines:
+
+EXPECTED (success path):
+  [SheetsScript] 🔍 Resolving product: "mdya mos" qty=3 totalPrice=59900
+  [SheetsScript] ⚠️ No existing product matches "mdya mos" — will auto-create
+  [SheetsScript] 🆕 Creating product: {"storeId":1,"name":"mdya mos",...}
+  [Storage.createProduct] inserting: {...}
+  [Storage.createProduct] SUCCESS: id=42
+  [SheetsScript] ✅ Auto-created product id=42 name="mdya mos"
+  [SheetsScript] 📦 orderItems prepared: 1 line(s) {"productId":42,...}
+  [Storage.createOrder] storeId=1 orderNumber="GS-..." orderItems.length=1
+  [Storage.createOrder] FIRST ITEM: {"productId":42,...}
+  [Storage.createOrder] Inserting 1 order_item(s): [...]
+  [Storage.createOrder] order_items inserted ✅
+  [SheetsScript] 🎉 Order #123 created with 1 article(s)
+
+POSSIBLE FAILURES:
+- "Auto-create FAILED" → check the storage.createProduct error
+- "createProduct returned no id" → schema issue with products table
+- "orderItems prepared: 0 line(s)" → product matching/creation didn't work
+- No "[Storage.createOrder] order_items inserted" → createOrder ignores orderItemsData parameter
+
+Apply all changes now.
