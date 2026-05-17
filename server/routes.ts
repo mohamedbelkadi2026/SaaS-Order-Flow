@@ -10891,6 +10891,10 @@ function sendToAPI(data) {
           eq(storeIntegrations.provider, "gsheets_script")
         ));
       if (!row) return res.status(404).json({ success: false, message: "Sheet not found" });
+      // Nullify FK references in integration_logs before deleting
+      await db.update(integrationLogs)
+        .set({ integrationId: null } as any)
+        .where(eq(integrationLogs.integrationId, id));
       await db.delete(storeIntegrations).where(eq(storeIntegrations.id, id));
       res.json({ success: true });
     } catch (err: any) {
