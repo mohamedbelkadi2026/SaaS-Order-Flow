@@ -878,13 +878,33 @@ function resetActiveSheetStatuses() {
         </p>
       </div>
 
-      <Tabs defaultValue="url" className="w-full">
+      <Tabs defaultValue="autosync" className="w-full">
         <TabsList className="w-full">
-          <TabsTrigger value="url" className="flex-1">🔗 URL publique (recommandé)</TabsTrigger>
-          <TabsTrigger value="script" className="flex-1">📜 Apps Script (avancé)</TabsTrigger>
+          <TabsTrigger value="autosync" className="flex-1">🚀 Auto-Sync (recommandé)</TabsTrigger>
+          <TabsTrigger value="url" className="flex-1">🔗 URL publique</TabsTrigger>
+          <TabsTrigger value="script" className="flex-1">📜 Webhook avancé</TabsTrigger>
         </TabsList>
 
-        {/* ── Tab 1: URL publique — 3-step flow ─────────────────── */}
+        <TabsContent value="autosync" className="mt-4">
+          <div className="bg-white border rounded-2xl shadow-sm p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center text-2xl">⚡</div>
+              <div className="flex-1">
+                <h3 className="font-bold text-base">Synchronisation automatique en 2 minutes</h3>
+                <p className="text-sm text-muted-foreground">Collez un script dans votre Google Sheet — toutes les commandes existantes et futures arrivent automatiquement dans TajerGrow.</p>
+              </div>
+            </div>
+            <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-5">
+              <li>✅ Import initial automatique de toutes les lignes existantes</li>
+              <li>✅ Nouvelle commande dans le sheet = nouvelle commande dans la plateforme</li>
+              <li>✅ Aucune URL publique requise — votre sheet reste privé</li>
+              <li>✅ Anti-doublons intégré</li>
+            </ul>
+            <Button onClick={() => window.location.href = '/integrations/sheets-script'} className="w-full h-11 bg-emerald-500 hover:bg-emerald-600 text-white">Ouvrir le guide d'intégration →</Button>
+          </div>
+        </TabsContent>
+
+        {/* ── Tab 2: URL publique — 3-step flow ─────────────────── */}
         <TabsContent value="url" className="mt-4">
 
           {/* ── Step 1: paste URL ─────────────────────────────────── */}

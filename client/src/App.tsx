@@ -41,6 +41,7 @@ import Clients from "@/pages/clients";
 import Billing from "@/pages/billing";
 import Admin from "@/pages/admin";
 import Integrations from "@/pages/integrations";
+import SheetsIntegration from "@/pages/sheets-integration";
 import ShippingIntegrations from "@/pages/shipping-integrations";
 import IntegrationLogs from "@/pages/integration-logs";
 import Invoices from "@/pages/invoices";
@@ -243,6 +244,7 @@ function ProtectedRoutes() {
               <Route path="/billing" component={Billing} />
               <Route path="/profitability" component={Profitability} />
               <Route path="/integrations" component={Integrations} />
+              <Route path="/integrations/sheets-script" component={SheetsIntegration} />
               <Route path="/integrations/shipping" component={ShippingIntegrations} />
               <Route path="/integrations/logs" component={IntegrationLogs} />
               <Route path="/admin" component={Admin} />

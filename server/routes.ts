@@ -10488,5 +10488,286 @@ function submitOrder(e){
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  GOOGLE SHEETS — Apps Script bulk-sync integration (TajerGrow native)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  function parseSheetRowToOrder(raw: Record<string, any>): {
+    customerName: string; customerPhone: string; customerCity: string;
+    customerAddress: string; productName: string; quantity: number;
+    totalPrice: number; orderNumber: string; note: string | null;
+  } | null {
+    const norm: Record<string, any> = {};
+    for (const k of Object.keys(raw || {})) {
+      if (k === null || k === undefined) continue;
+      norm[String(k).toLowerCase().trim()] = raw[k];
+    }
+    const pick = (...keys: string[]): string => {
+      for (const k of keys) {
+        const v = norm[k.toLowerCase()];
+        if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
+      }
+      return "";
+    };
+    const customerName    = pick("nom","name","nom client","nom du client","fullname","full name","client","customer","customer name","destinataire","الاسم","اسم العميل");
+    const customerPhone   = pick("téléphone","telephone","tel","phone","mobile","gsm","whatsapp","numéro","numero","رقم الهاتف","هاتف");
+    const customerCity    = pick("ville","city","town","localité","المدينة");
+    const customerAddress = pick("adresse","address","rue","العنوان");
+    const productName     = pick("produit","product","article","item","nom du produit","المنتج");
+    const priceRaw        = pick("prix","price","montant","total","tarif","amount","السعر");
+    const qtyRaw          = pick("quantité","quantity","qty","qté","nombre","الكمية");
+    const note            = pick("note","notes","commentaire","comment","message","remarque","ملاحظة");
+    const refRaw          = pick("ref","reference","order_id","id","numéro de commande");
+    if (!customerName && !customerPhone) return null;
+    const quantity   = Math.max(1, parseInt(qtyRaw || "1") || 1);
+    const priceNum   = parseFloat(String(priceRaw).replace(",", ".")) || 0;
+    const totalPrice = Math.round(priceNum * 100);
+    const orderNumber = refRaw || `GS-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return { customerName, customerPhone, customerCity, customerAddress, productName, quantity, totalPrice, orderNumber, note: note || null };
+  }
+
+  app.post("/api/sheets/sync/:webhookKey", async (req, res) => {
+    const webhookKey = (req.params.webhookKey || "").trim();
+    if (!webhookKey || webhookKey.length < 12) {
+      return res.status(401).json({ success: false, message: "Invalid webhook key" });
+    }
+    try {
+      const store = await storage.getStoreByWebhookKey(webhookKey);
+      if (!store) return res.status(403).json({ success: false, message: "Invalid webhook key" });
+      const storeId = store.id;
+      const body = req.body || {};
+      const newOrders: any[] = Array.isArray(body.newOrders) ? body.newOrders : [];
+
+      try {
+        const existing = await storage.getIntegrationByProvider(storeId, "gsheets_script");
+        if (existing) {
+          await db.update(storeIntegrations)
+            .set({ lastSyncAt: new Date(), status: "active" } as any)
+            .where(eq(storeIntegrations.id, existing.id));
+        } else {
+          await db.insert(storeIntegrations).values({
+            storeId, provider: "gsheets_script", type: "webhook",
+            credentials: "{}", webhookKey, status: "active",
+            lastSyncAt: new Date(),
+            spreadsheetId: body.sheetId || null,
+            spreadsheetName: body.fileName || null,
+          } as any);
+        }
+      } catch (e: any) { console.warn("[SheetsScript] Integration upsert failed:", e.message); }
+
+      if (newOrders.length === 0) {
+        return res.json({ success: true, message: "Connection registered", created: 0 });
+      }
+
+      const paywall = await storage.checkPaywall(storeId);
+      if (paywall.isBlocked) {
+        return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
+      }
+
+      const integration = await storage.getIntegrationByProvider(storeId, "gsheets_script");
+      const magasinId = integration?.magasinId ?? null;
+      const storeProducts = await storage.getProductsByStore(storeId);
+      let created = 0, skipped = 0;
+      const errors: string[] = [];
+
+      for (const rawRow of newOrders) {
+        if (!rawRow || typeof rawRow !== "object") { skipped++; continue; }
+        const parsed = parseSheetRowToOrder(rawRow);
+        if (!parsed) { skipped++; continue; }
+        try {
+          const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+          if (dup) { skipped++; continue; }
+          const matched = storeProducts.find(p => p.name === parsed.productName || (p as any).sku === parsed.productName);
+          const orderItems = matched
+            ? [{ productId: matched.id, quantity: parsed.quantity, price: (matched as any).sellingPrice || parsed.totalPrice, orderId: 0 }]
+            : [];
+          const order = await storage.createOrder({
+            storeId, magasinId,
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName, customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress, customerCity: parsed.customerCity,
+            status: "nouveau", totalPrice: parsed.totalPrice,
+            productCost: matched ? matched.costPrice : 0,
+            shippingCost: 0, adSpend: 0, source: "gsheets_script",
+            comment: parsed.note,
+          } as any, orderItems);
+          const nextAgentId = await storage.getNextAgent(storeId, magasinId, matched?.id, parsed.customerCity);
+          if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+          await storage.incrementMonthlyOrders(storeId);
+          emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: "nouveau", source: "gsheets_script" });
+          pushOrderToSheet(storeId, {
+            action: "order.created",
+            orderNumber: parsed.orderNumber,
+            customerName: parsed.customerName,
+            customerPhone: parsed.customerPhone,
+            customerAddress: parsed.customerAddress,
+            customerCity: parsed.customerCity,
+            productName: parsed.productName,
+            totalPrice: parsed.totalPrice,
+            quantity: parsed.quantity,
+            note: parsed.note,
+            status: "nouveau",
+            utmSource: null, utmCampaign: null, productId: null, magasin: null,
+            createdAt: new Date().toLocaleString("fr-MA"),
+            sourceUrl: "gsheets_script",
+          }).catch(() => {});
+          if (getWaAutoSettings(storeId).aiConfirmation) {
+            triggerAIForNewOrder(storeId, order.id, parsed.customerPhone, parsed.customerName, matched?.id)
+              .catch(err => console.error(`[AI] SheetsScript trigger failed for order ${order.id}:`, err.message));
+          }
+          created++;
+        } catch (rowErr: any) {
+          console.error("[SheetsScript] Row error:", rowErr.message);
+          errors.push(`${parsed.orderNumber}: ${rowErr.message}`);
+          skipped++;
+        }
+      }
+
+      await storage.createIntegrationLog({
+        storeId, integrationId: integration?.id || null,
+        provider: "gsheets_script", action: "bulk_sync",
+        status: created > 0 ? "success" : "warning",
+        message: `${created} commande(s) créée(s), ${skipped} ignorée(s)`,
+      });
+
+      console.log(`[SheetsScript] Store ${storeId}: ${created} created, ${skipped} skipped`);
+      return res.json({ success: true, created, skipped, errors: errors.slice(0, 10), message: `${created} nouvelle(s) commande(s) importée(s)` });
+    } catch (err: any) {
+      console.error("[SheetsScript] Sync error:", err);
+      res.status(500).json({ success: false, message: "Processing failed" });
+    }
+  });
+
+  app.get("/api/sheets/script", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const apiKey = await storage.getOrGenerateWebhookKey(storeId);
+    const apiUrl = `${req.protocol}://${req.get("host")}/api/sheets/sync/${apiKey}`;
+    const script = `// TajerGrow — Google Sheets Auto-Sync Script
+// Coller dans Extensions → Apps Script, puis exécuter setup()
+
+var API_URL = '${apiUrl}';
+
+function setup() { initialize(); setupEditTrigger(); }
+
+function initialize() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet();
+  const active = sheet.getActiveSheet();
+  const sheetId = sheet.getId();
+  const sheetName = active.getName();
+  const fileName = sheet.getName();
+  const lastCol = active.getLastColumn();
+  const lastRow = active.getLastRow();
+  if (lastRow < 2 || lastCol < 1) {
+    sendToAPI({ sheetId: sheetId, sheetName: sheetName, fileName: fileName, headers: [], newOrders: [] });
+    return;
+  }
+  const headers = active.getRange(1, 1, 1, lastCol).getValues()[0];
+  const values = active.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const jsonData = values
+    .filter(function(row) { return !row.every(function(c) { return !c || c.toString().trim() === ''; }); })
+    .map(function(row) {
+      var obj = {};
+      for (var i = 0; i < headers.length; i++) { obj[headers[i]] = row[i]; }
+      return obj;
+    });
+  const properties = PropertiesService.getDocumentProperties();
+  for (var r = 2; r <= lastRow; r++) {
+    properties.setProperty('row_' + r, new Date().toISOString());
+  }
+  sendToAPI({ sheetId: sheetId, sheetName: sheetName, fileName: fileName, headers: headers, newOrders: jsonData });
+}
+
+function setupEditTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  const exists = triggers.some(function(t) { return t.getHandlerFunction() === 'onEditHandler'; });
+  if (!exists) {
+    ScriptApp.newTrigger('onEditHandler').forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet()).onEdit().create();
+  }
+}
+
+function onEditHandler(e) {
+  if (!e) return;
+  const sheet = e.source.getActiveSheet();
+  const range = e.range;
+  const firstRow = range.getRow();
+  const lastRow = range.getLastRow();
+  const newOrders = [];
+  const rowsToProcess = [];
+  for (var currentRow = firstRow; currentRow <= lastRow; currentRow++) {
+    if (currentRow === 1) continue;
+    const lock = LockService.getScriptLock();
+    try {
+      lock.waitLock(60000);
+      const cache = CacheService.getScriptCache();
+      const cacheKey = 'row_' + currentRow;
+      const properties = PropertiesService.getDocumentProperties();
+      if (properties.getProperty(cacheKey)) continue;
+      if (cache.get(cacheKey)) continue;
+      cache.put(cacheKey, 'pending', 720);
+      rowsToProcess.push(currentRow);
+    } catch (err) { Logger.log('Erreur: ' + err); }
+    finally { lock.releaseLock(); }
+  }
+  if (rowsToProcess.length === 0) return;
+  Utilities.sleep(40000);
+  for (var i = 0; i < rowsToProcess.length; i++) {
+    var row = rowsToProcess[i];
+    if (CacheService.getScriptCache().get('row_' + row) !== 'pending') continue;
+    var rowData = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+    if (rowData.every(function(c) { return !c || c.toString().trim() === ''; })) continue;
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var newOrder = {};
+    for (var h = 0; h < headers.length; h++) {
+      newOrder[headers[h]] = (rowData[h] !== null && rowData[h] !== '') ? rowData[h] : null;
+    }
+    newOrders.push(newOrder);
+  }
+  if (newOrders.length === 0) return;
+  try {
+    sendToAPI({
+      sheetId: sheet.getParent().getId(),
+      sheetName: sheet.getName(),
+      fileName: sheet.getParent().getName(),
+      newOrders: newOrders
+    });
+    for (var j = 0; j < rowsToProcess.length; j++) {
+      var r = rowsToProcess[j];
+      PropertiesService.getDocumentProperties().setProperty('row_' + r, new Date().toISOString());
+      CacheService.getScriptCache().remove('row_' + r);
+    }
+  } catch (err) { Logger.log('Erreur envoi: ' + err); }
+}
+
+function sendToAPI(data) {
+  const options = { method: 'post', contentType: 'application/json', payload: JSON.stringify(data), muteHttpExceptions: true };
+  try {
+    const response = UrlFetchApp.fetch(API_URL, options);
+    Logger.log('Réponse: ' + response.getContentText());
+  } catch (e) { Logger.log('Erreur API: ' + e.message); }
+}
+`;
+    res.type("text/plain").send(script);
+  });
+
+  app.post("/api/sheets/verify", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const integration = await storage.getIntegrationByProvider(storeId, "gsheets_script");
+      if (!integration || !integration.lastSyncAt) {
+        return res.json({ connected: false, message: "Aucune connexion détectée. Avez-vous exécuté setup() dans Apps Script ?" });
+      }
+      const lastSync = new Date(integration.lastSyncAt);
+      return res.json({
+        connected: true,
+        lastSyncAt: lastSync.toISOString(),
+        spreadsheetName: integration.spreadsheetName || null,
+        message: `Connexion active. Dernière synchronisation : ${lastSync.toLocaleString("fr-FR")}`,
+      });
+    } catch (err: any) {
+      console.error("[SheetsScript] Verify error:", err);
+      res.status(500).json({ connected: false, message: "Erreur serveur" });
+    }
+  });
+
   return httpServer;
 }
