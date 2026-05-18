@@ -1,0 +1,116 @@
+The Railway logs show the exact bug:
+
+  null value in column "sku" of relation "products" violates not-null constraint
+  detail: 'Failing row contains (33, 1, mdya mos, null, 0, 0, 59900, ...)'
+  code: '23502'
+  column: 'sku'
+
+The `products.sku` column has a NOT NULL constraint, but our auto-create-product code was passing `sku: null`. Fix: auto-generate a unique SKU from the product name + timestamp whenever the user doesn't provide one.
+
+═══════════════════════════════════════════════════════════════════════
+FIX: Auto-generate SKU in the sheets sync route
+═══════════════════════════════════════════════════════════════════════
+File: server/routes.ts
+
+Find the POST /api/sheets/sync/:webhookKey route. Inside the order-creation loop, find this block:
+
+          if (!matched && parsed.productName && productNameLower) {
+            try {
+              const newProductData = {
+                storeId,
+                name: parsed.productName,
+                sku: null,
+                costPrice: 0,
+                sellingPrice: parsed.totalPrice > 0 ? parsed.totalPrice : 0,
+                stock: 0,
+                isActive: 1,
+              };
+
+REPLACE the entire `newProductData` block with this version that auto-generates a unique SKU:
+
+          if (!matched && parsed.productName && productNameLower) {
+            try {
+              // Auto-generate a unique SKU from the product name + timestamp
+              const slugifiedName = parsed.productName
+                .toUpperCase()
+                .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // strip accents
+                .replace(/[^A-Z0-9]+/g, "-")                       // non-alphanumeric → dash
+                .replace(/^-+|-+$/g, "")                           // trim leading/trailing dashes
+                .slice(0, 20) || "PRODUCT";                        // cap at 20 chars
+              const autoSku = `${slugifiedName}-${Date.now().toString(36).toUpperCase()}`;
+
+              const newProductData = {
+                storeId,
+                name: parsed.productName,
+                sku: autoSku,
+                costPrice: 0,
+                sellingPrice: parsed.totalPrice > 0 ? parsed.totalPrice : 0,
+                stock: 0,
+                isActive: 1,
+              };
+
+═══════════════════════════════════════════════════════════════════════
+DEFENSIVE EXTRA: Inspect the products table schema for OTHER NOT NULL fields
+═══════════════════════════════════════════════════════════════════════
+File: shared/schema.ts
+
+Search for the `products` table definition. Confirm which columns are NOT NULL. The error log only mentioned `sku`, but there might be other required fields (e.g. `unit`, `category`, etc.).
+
+If any of these columns exist with `.notNull()` and are NOT in our newProductData object, ADD them with a safe default value:
+
+  Possible required columns to check:
+  - sku       → DONE (auto-generated above)
+  - unit      → default: "piece"
+  - category  → default: "default"
+  - currency  → default: "MAD"
+  - vatRate   → default: 0
+  - barcode   → default: ""
+
+In server/routes.ts inside the same `newProductData` object, add any missing NOT NULL fields with their defaults. For example, if `unit` is NOT NULL:
+
+              const newProductData = {
+                storeId,
+                name: parsed.productName,
+                sku: autoSku,
+                unit: "piece",          // ← add only if products.unit is NOT NULL
+                costPrice: 0,
+                sellingPrice: parsed.totalPrice > 0 ? parsed.totalPrice : 0,
+                stock: 0,
+                isActive: 1,
+              };
+
+Inspect the schema first, THEN decide which extra fields to add. Do NOT blindly add all of them — only add fields that the schema marks `.notNull()` AND don't have a default.
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/routes.ts
+git commit -m "fix(sheets): auto-generate unique SKU for sheet-imported products"
+git push origin main
+
+═══════════════════════════════════════════════════════════════════════
+USER ACTION AFTER DEPLOY
+═══════════════════════════════════════════════════════════════════════
+After Railway finishes deploying:
+
+1. Open the Google Sheet
+2. Add a new row with all columns filled (e.g. "test_final", phone, address, city, "TEST PRODUCT", 599, 3)
+3. Menu: 🚀 TajerGrow → ▶️ Synchroniser maintenant
+4. Wait for the toast notification
+
+EXPECTED IN RAILWAY LOGS:
+  [SheetsScript] 🔍 Resolving product: "TEST PRODUCT" qty=3 totalPrice=59900
+  [SheetsScript] 🆕 Creating product: {"storeId":1,"name":"TEST PRODUCT","sku":"TEST-PRODUCT-MAB1F9K2",...}
+  [Storage.createProduct] SUCCESS: id=34
+  [SheetsScript] ✅ Auto-created product id=34 name="TEST PRODUCT"
+  [SheetsScript] 📦 orderItems prepared: 1 line(s)
+  [Storage.createOrder] order_items inserted ✅
+  [SheetsScript] 🎉 Order #X created with 1 article(s)
+
+EXPECTED IN THE PLATFORM:
+- /orders → new order with product name "TEST PRODUCT"
+- Order detail → "Nom du produit" shows TEST PRODUCT
+- Order detail → "Articles" shows 1 line: TEST PRODUCT × 3
+- /inventory → "TEST PRODUCT" exists with auto-generated SKU
+
+Apply now.

@@ -10674,14 +10674,22 @@ function submitOrder(e){
           // AUTO-CREATE if no match and we have a product name
           if (!matched && productNameLower) {
             try {
+              // Auto-generate a unique SKU from the product name + timestamp (sku is NOT NULL in schema)
+              const slugifiedName = parsed.productName
+                .toUpperCase()
+                .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^A-Z0-9]+/g, "-")
+                .replace(/^-+|-+$/g, "")
+                .slice(0, 20) || "PRODUCT";
+              const autoSku = `${slugifiedName}-${Date.now().toString(36).toUpperCase()}`;
+
               const newProductData = {
                 storeId,
                 name: parsed.productName,
-                sku: null,
+                sku: autoSku,
                 costPrice: 0,
                 sellingPrice: parsed.totalPrice > 0 ? parsed.totalPrice : 0,
                 stock: 0,
-                isActive: 1,
               };
               console.log(`[SheetsScript] 🆕 Creating product:`, JSON.stringify(newProductData));
               const newProduct = await storage.createProduct(newProductData as any);
