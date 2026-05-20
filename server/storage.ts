@@ -116,6 +116,7 @@ export interface IStorage {
   deleteUser(id: number): Promise<void>;
 
   getCustomersByStore(storeId: number): Promise<Customer[]>;
+  getClientsWithStats(storeId: number, options?: { magasinId?: number | null }): Promise<any[]>;
   getOrCreateCustomer(storeId: number, name: string, phone: string, address?: string | null, city?: string | null): Promise<Customer>;
   updateCustomerStats(customerId: number, orderTotal: number): Promise<void>;
   syncCustomerOnDelivery(storeId: number, order: { customerName: string; customerPhone: string; customerAddress?: string | null; customerCity?: string | null; totalPrice: number }): Promise<void>;
@@ -1761,6 +1762,97 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(customers)
       .where(eq(customers.storeId, storeId))
       .orderBy(desc(customers.createdAt));
+  }
+
+  async getClientsWithStats(storeId: number, options?: { magasinId?: number | null }): Promise<any[]> {
+    const conditions: any[] = [eq(orders.storeId, storeId)];
+    if (options?.magasinId != null) {
+      conditions.push(eq(orders.magasinId, options.magasinId));
+    }
+
+    const allOrders = await db
+      .select({
+        orderId: orders.id,
+        customerName: orders.customerName,
+        customerPhone: orders.customerPhone,
+        customerCity: orders.customerCity,
+        totalPrice: orders.totalPrice,
+        status: orders.status,
+        createdAt: orders.createdAt,
+      })
+      .from(orders)
+      .where(and(...conditions))
+      .orderBy(desc(orders.createdAt));
+
+    const orderIds = allOrders.map(o => o.orderId);
+    let itemsByOrder: Record<number, { productName: string; quantity: number }[]> = {};
+
+    if (orderIds.length > 0) {
+      const items = await db
+        .select({
+          orderId: orderItems.orderId,
+          quantity: orderItems.quantity,
+          productName: products.name,
+          rawProductName: orderItems.rawProductName,
+        })
+        .from(orderItems)
+        .leftJoin(products, eq(orderItems.productId, products.id))
+        .where(inArray(orderItems.orderId, orderIds));
+
+      for (const it of items) {
+        if (!itemsByOrder[it.orderId]) itemsByOrder[it.orderId] = [];
+        itemsByOrder[it.orderId].push({
+          productName: it.productName || (it as any).rawProductName || "Produit inconnu",
+          quantity: it.quantity || 1,
+        });
+      }
+    }
+
+    const clientMap: Record<string, any> = {};
+
+    for (const order of allOrders) {
+      const key = (order.customerPhone || "").trim() || (order.customerName || "").trim().toLowerCase();
+      if (!key) continue;
+
+      if (!clientMap[key]) {
+        clientMap[key] = {
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerCity: order.customerCity,
+          orderCount: 0,
+          totalSpent: 0,
+          lastOrderDate: order.createdAt,
+          firstOrderDate: order.createdAt,
+          products: {},
+        };
+      }
+
+      const c = clientMap[key];
+      c.orderCount += 1;
+      c.totalSpent += order.totalPrice || 0;
+
+      if (order.createdAt && c.lastOrderDate && new Date(order.createdAt) > new Date(c.lastOrderDate)) {
+        c.lastOrderDate = order.createdAt;
+      }
+      if (order.createdAt && c.firstOrderDate && new Date(order.createdAt) < new Date(c.firstOrderDate)) {
+        c.firstOrderDate = order.createdAt;
+      }
+
+      const items = itemsByOrder[order.orderId] || [];
+      for (const it of items) {
+        c.products[it.productName] = (c.products[it.productName] || 0) + it.quantity;
+      }
+    }
+
+    const result = Object.values(clientMap).map((c: any) => ({
+      ...c,
+      isRepeat: c.orderCount > 1,
+      productsList: Object.entries(c.products).map(([name, qty]) => ({ name, quantity: qty })),
+      productsSummary: Object.entries(c.products).map(([name, qty]) => `${name} ×${qty}`).join(", "),
+    }));
+
+    result.sort((a: any, b: any) => b.totalSpent - a.totalSpent);
+    return result;
   }
 
   async getOrCreateCustomer(storeId: number, name: string, phone: string, address?: string | null, city?: string | null): Promise<Customer> {

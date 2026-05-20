@@ -5925,6 +5925,18 @@ function ensureHeaders(sheet) {
     res.json(await storage.getCustomersByStore(storeId));
   });
 
+  app.get("/api/clients/stats", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const magasinId = req.query.magasinId ? parseInt(req.query.magasinId as string) : null;
+    try {
+      const clients = await storage.getClientsWithStats(storeId, { magasinId });
+      res.json(clients);
+    } catch (err: any) {
+      console.error("[Clients/stats] Error:", err);
+      res.status(500).json({ message: "Erreur lors du chargement des clients" });
+    }
+  });
+
   app.post("/api/customers/migrate", requireAdmin, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;

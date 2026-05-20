@@ -1,0 +1,313 @@
+I want to ENHANCE the existing "Liste des Clients" (Clients List) page in my TajerGrow platform to show richer per-client information. For each client, I want to see:
+1. Which products they ordered (product names)
+2. Quantity of each product
+3. How many times they've ordered (total order count)
+4. Total amount spent (lifetime value)
+5. Repeat customer badge (if they ordered more than once)
+
+═══════════════════════════════════════════════════════════════════════
+CRITICAL RULES — DO NOT BREAK ANYTHING
+═══════════════════════════════════════════════════════════════════════
+1. This is an ENHANCEMENT, not a rewrite. The existing clients page must keep working exactly as before.
+2. DO NOT modify the database schema. Use existing tables (orders, orderItems, products, clients/customers).
+3. DO NOT remove or rename any existing fields, columns, or API responses.
+4. ADD new data to the existing response — don't replace the existing structure.
+5. Reuse existing storage methods where possible.
+6. Test that the page still loads before and after.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1: INSPECT THE EXISTING CODE FIRST
+═══════════════════════════════════════════════════════════════════════
+Before changing anything, locate and READ these files:
+
+1. The clients page frontend:
+   - Search client/src/pages/ for "clients" (likely client/src/pages/clients.tsx)
+
+2. The clients API endpoint:
+   - Search server/routes.ts for "/api/clients" or "getClients"
+
+3. The clients storage method:
+   - Search server/storage.ts for "getClients" or "getCustomers"
+
+Report back what you find:
+- What fields does the clients endpoint currently return?
+- How are clients currently identified (by phone? by customerName? a separate clients table)?
+- What does the current frontend table show?
+
+DO NOT proceed to Step 2 until you understand the existing structure.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2: ENHANCE THE STORAGE METHOD (server/storage.ts)
+═══════════════════════════════════════════════════════════════════════
+Find the existing method that returns clients (e.g. getClients or getCustomers).
+
+Create a NEW method (do NOT modify the existing one) called getClientsWithStats. This method aggregates per-client order data:
+
+  async getClientsWithStats(storeId: number, options?: { magasinId?: number | null }): Promise<any[]> {
+    // Build the where conditions
+    const conditions = [eq(orders.storeId, storeId)];
+    if (options?.magasinId != null) {
+      conditions.push(eq(orders.magasinId, options.magasinId));
+    }
+
+    // Fetch all orders for this store with their items + products
+    const allOrders = await db
+      .select({
+        orderId: orders.id,
+        customerName: orders.customerName,
+        customerPhone: orders.customerPhone,
+        customerCity: orders.customerCity,
+        totalPrice: orders.totalPrice,
+        status: orders.status,
+        createdAt: orders.createdAt,
+      })
+      .from(orders)
+      .where(and(...conditions))
+      .orderBy(desc(orders.createdAt));
+
+    // Fetch order items joined with product names for these orders
+    const orderIds = allOrders.map(o => o.orderId);
+    let itemsByOrder: Record<number, { productName: string; quantity: number }[]> = {};
+
+    if (orderIds.length > 0) {
+      const items = await db
+        .select({
+          orderId: orderItems.orderId,
+          quantity: orderItems.quantity,
+          productName: products.name,
+        })
+        .from(orderItems)
+        .leftJoin(products, eq(orderItems.productId, products.id))
+        .where(inArray(orderItems.orderId, orderIds));
+
+      for (const it of items) {
+        if (!itemsByOrder[it.orderId]) itemsByOrder[it.orderId] = [];
+        itemsByOrder[it.orderId].push({
+          productName: it.productName || "Produit inconnu",
+          quantity: it.quantity || 1,
+        });
+      }
+    }
+
+    // Group orders by customer (phone is the most reliable identifier; fallback to name)
+    const clientMap: Record<string, any> = {};
+
+    for (const order of allOrders) {
+      const key = (order.customerPhone || "").trim() || (order.customerName || "").trim().toLowerCase();
+      if (!key) continue;
+
+      if (!clientMap[key]) {
+        clientMap[key] = {
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerCity: order.customerCity,
+          orderCount: 0,
+          totalSpent: 0,           // in cents
+          lastOrderDate: order.createdAt,
+          firstOrderDate: order.createdAt,
+          products: {},            // productName → total quantity
+          orders: [],              // list of {date, total, status, items}
+        };
+      }
+
+      const c = clientMap[key];
+      c.orderCount += 1;
+      c.totalSpent += (order.totalPrice || 0);
+
+      // Track most recent + first order dates
+      if (order.createdAt && c.lastOrderDate && new Date(order.createdAt) > new Date(c.lastOrderDate)) {
+        c.lastOrderDate = order.createdAt;
+      }
+      if (order.createdAt && c.firstOrderDate && new Date(order.createdAt) < new Date(c.firstOrderDate)) {
+        c.firstOrderDate = order.createdAt;
+      }
+
+      // Aggregate products
+      const items = itemsByOrder[order.orderId] || [];
+      for (const it of items) {
+        c.products[it.productName] = (c.products[it.productName] || 0) + it.quantity;
+      }
+
+      // Keep a per-order summary (most recent first)
+      c.orders.push({
+        date: order.createdAt,
+        total: order.totalPrice || 0,
+        status: order.status,
+        items: items,
+      });
+    }
+
+    // Convert map to array + format products list
+    const result = Object.values(clientMap).map((c: any) => ({
+      ...c,
+      isRepeat: c.orderCount > 1,
+      productsList: Object.entries(c.products).map(([name, qty]) => ({
+        name,
+        quantity: qty,
+      })),
+      productsSummary: Object.entries(c.products)
+        .map(([name, qty]) => `${name} ×${qty}`)
+        .join(", "),
+    }));
+
+    // Sort by total spent (highest value clients first)
+    result.sort((a: any, b: any) => b.totalSpent - a.totalSpent);
+
+    return result;
+  }
+
+ALSO add the interface declaration near the top of the file in the IStorage interface:
+
+  getClientsWithStats(storeId: number, options?: { magasinId?: number | null }): Promise<any[]>;
+
+Make sure `orderItems`, `products`, `inArray`, `desc`, `and`, `eq` are all imported at the top of storage.ts. If any are missing, add them to the existing drizzle-orm import.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3: ADD A NEW API ENDPOINT (server/routes.ts)
+═══════════════════════════════════════════════════════════════════════
+Find where the existing clients route is (search "/api/clients").
+
+Add a NEW endpoint right after it (do NOT modify the existing one):
+
+  app.get("/api/clients/stats", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const magasinId = req.query.magasinId ? parseInt(req.query.magasinId as string) : null;
+    try {
+      const clients = await storage.getClientsWithStats(storeId, { magasinId });
+      res.json(clients);
+    } catch (err: any) {
+      console.error("[Clients/stats] Error:", err);
+      res.status(500).json({ message: "Erreur lors du chargement des clients" });
+    }
+  });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4: ENHANCE THE FRONTEND (client/src/pages/clients.tsx)
+═══════════════════════════════════════════════════════════════════════
+Look at the existing clients.tsx page. The goal is to enrich the table/cards with the new data WITHOUT removing the existing layout.
+
+1. Add a new query to fetch the enriched stats:
+
+  const { data: clientsStats, isLoading: statsLoading } = useQuery<any[]>({
+    queryKey: ["/api/clients/stats"],
+    queryFn: async () => {
+      const r = await fetch("/api/clients/stats", { credentials: "include" });
+      if (!r.ok) throw new Error("Failed to load client stats");
+      return r.json();
+    },
+  });
+
+2. Render the enriched client list. Match the EXISTING design system / components used in the rest of the platform (same Card, Badge, Table components, same Tailwind classes). Here's a reference structure — ADAPT IT to match the existing page's visual style (colors, spacing, component library):
+
+  {clientsStats?.map((client) => (
+    <div key={client.customerPhone || client.customerName} className="bg-white border rounded-xl p-5 hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between gap-4">
+        {/* Client identity */}
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-full bg-indigo-100 flex items-center justify-center font-bold text-indigo-700">
+            {(client.customerName || "?").charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <div className="font-semibold text-gray-900 flex items-center gap-2">
+              {client.customerName}
+              {client.isRepeat && (
+                <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                  🔁 Client fidèle
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-gray-500">
+              {client.customerPhone} · {client.customerCity}
+            </div>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="text-right">
+          <div className="text-2xl font-bold text-gray-900">
+            {(client.totalSpent / 100).toFixed(2)} DH
+          </div>
+          <div className="text-xs text-gray-500">
+            {client.orderCount} commande{client.orderCount > 1 ? "s" : ""}
+          </div>
+        </div>
+      </div>
+
+      {/* Products ordered */}
+      <div className="mt-4 pt-4 border-t border-gray-100">
+        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+          Produits commandés
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {client.productsList.map((p, i) => (
+            <span key={i} className="inline-flex items-center gap-1.5 text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5">
+              <span className="font-medium text-gray-800">{p.name}</span>
+              <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 rounded px-1.5">×{p.quantity}</span>
+            </span>
+          ))}
+          {client.productsList.length === 0 && (
+            <span className="text-sm text-gray-400 italic">Aucun produit détaillé</span>
+          )}
+        </div>
+      </div>
+
+      {/* Order timeline summary */}
+      <div className="mt-3 flex items-center gap-4 text-xs text-gray-500">
+        <span>📅 Dernière commande: {new Date(client.lastOrderDate).toLocaleDateString("fr-FR")}</span>
+        {client.isRepeat && (
+          <span>🗓 Client depuis: {new Date(client.firstOrderDate).toLocaleDateString("fr-FR")}</span>
+        )}
+      </div>
+    </div>
+  ))}
+
+IMPORTANT: Match the existing page's component library. If the existing page uses a `<Table>` component, render this data in table columns instead of cards. If it uses shadcn/ui Card, use Card. Inspect the existing imports and reuse them. The visual style must blend in with the rest of the platform — same fonts, same colors, same spacing.
+
+3. If the existing page already has a table, ADD new columns instead of replacing it:
+   - Column: "Produits" → show client.productsSummary (e.g. "mdya mos ×3, Corrector ×1")
+   - Column: "Commandes" → show client.orderCount with the repeat badge
+   - Column: "Total dépensé" → show (client.totalSpent / 100).toFixed(2) + " DH"
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5: OPTIONAL — Add summary metric cards at the top
+═══════════════════════════════════════════════════════════════════════
+If the page has space, add a row of summary cards above the client list:
+
+  const totalClients = clientsStats?.length || 0;
+  const repeatClients = clientsStats?.filter(c => c.isRepeat).length || 0;
+  const totalRevenue = clientsStats?.reduce((sum, c) => sum + c.totalSpent, 0) || 0;
+  const avgOrderValue = totalClients > 0
+    ? (totalRevenue / (clientsStats?.reduce((s, c) => s + c.orderCount, 0) || 1))
+    : 0;
+
+  Render 4 metric cards:
+  - Total clients: {totalClients}
+  - Clients fidèles: {repeatClients}
+  - Chiffre d'affaires: {(totalRevenue/100).toFixed(2)} DH
+  - Panier moyen: {(avgOrderValue/100).toFixed(2)} DH
+
+Match the existing metric-card style if the platform already has one (check dashboard.tsx for the pattern).
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+After applying changes:
+1. ✅ The /clients page still loads without errors
+2. ✅ Each client shows: name, phone, city
+3. ✅ Each client shows their products with quantities (e.g. "mdya mos ×3")
+4. ✅ Each client shows order count
+5. ✅ Each client shows total spent
+6. ✅ Repeat clients (>1 order) show a "Client fidèle" badge
+7. ✅ Clients are sorted by total spent (highest first)
+8. ✅ The existing /api/clients endpoint still works (regression check)
+9. ✅ No database migration was created
+10. ✅ The new section matches the existing platform's visual style
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/storage.ts server/routes.ts client/src/pages/clients.tsx
+git commit -m "feat(clients): add per-client order stats, products, repeat badge, LTV"
+git push origin main
+
+Apply all changes carefully. INSPECT FIRST (Step 1), then enhance. Confirm each step before moving on.
