@@ -118,6 +118,7 @@ export interface IStorage {
   getCustomersByStore(storeId: number): Promise<Customer[]>;
   getClientsWithStats(storeId: number, options?: { magasinId?: number | null }): Promise<any[]>;
   getLoyalClientsWithDeliveries(storeId: number, options?: { magasinId?: number | null }): Promise<any[]>;
+  getLoyalClients(storeId: number, options?: { magasinId?: number | null }): Promise<any[]>;
   getOrCreateCustomer(storeId: number, name: string, phone: string, address?: string | null, city?: string | null): Promise<Customer>;
   updateCustomerStats(customerId: number, orderTotal: number): Promise<void>;
   syncCustomerOnDelivery(storeId: number, order: { customerName: string; customerPhone: string; customerAddress?: string | null; customerCity?: string | null; totalPrice: number }): Promise<void>;
@@ -1963,6 +1964,124 @@ export class DatabaseStorage implements IStorage {
     });
 
     return result;
+  }
+
+  async getLoyalClients(storeId: number, options?: { magasinId?: number | null }): Promise<any[]> {
+    const DELIVERED_STATUSES = ['delivered'];
+
+    const conditions: any[] = [eq(orders.storeId, storeId)];
+    if (options?.magasinId != null) {
+      conditions.push(eq(orders.magasinId, options.magasinId));
+    }
+
+    const allOrders = await db
+      .select({
+        orderId: orders.id,
+        orderNumber: orders.orderNumber,
+        customerName: orders.customerName,
+        customerPhone: orders.customerPhone,
+        customerCity: orders.customerCity,
+        magasinId: orders.magasinId,
+        totalPrice: orders.totalPrice,
+        status: orders.status,
+        createdAt: orders.createdAt,
+        updatedAt: orders.updatedAt,
+      })
+      .from(orders)
+      .where(and(...conditions))
+      .orderBy(desc(orders.createdAt));
+
+    if (allOrders.length === 0) return [];
+
+    const orderIds = allOrders.map(o => o.orderId);
+    const itemsByOrder: Record<number, { productName: string; sku: string | null; quantity: number }[]> = {};
+
+    const items = await db
+      .select({
+        orderId: orderItems.orderId,
+        quantity: orderItems.quantity,
+        productName: products.name,
+        sku: products.sku,
+        rawProductName: orderItems.rawProductName,
+      })
+      .from(orderItems)
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(inArray(orderItems.orderId, orderIds));
+
+    for (const it of items) {
+      if (!itemsByOrder[it.orderId]) itemsByOrder[it.orderId] = [];
+      itemsByOrder[it.orderId].push({
+        productName: it.productName || (it as any).rawProductName || "Produit",
+        sku: it.sku || null,
+        quantity: it.quantity || 1,
+      });
+    }
+
+    const isDelivered = (status: string) =>
+      DELIVERED_STATUSES.some(s => (status || "").toLowerCase().trim() === s.toLowerCase().trim());
+
+    const clientMap: Record<string, any> = {};
+
+    for (const order of allOrders) {
+      const key = (order.customerPhone || "").trim() || (order.customerName || "").trim().toLowerCase();
+      if (!key) continue;
+
+      if (!clientMap[key]) {
+        clientMap[key] = {
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerCity: order.customerCity,
+          deliveredCount: 0,
+          totalOrders: 0,
+          totalSpentDelivered: 0,
+          lastDelivery: null,
+          firstDelivery: null,
+          orders: [],
+        };
+      }
+
+      const c = clientMap[key];
+      c.totalOrders += 1;
+      const del = isDelivered(order.status);
+
+      if (del) {
+        c.deliveredCount += 1;
+        c.totalSpentDelivered += order.totalPrice || 0;
+        const d = order.updatedAt || order.createdAt;
+        if (d) {
+          if (!c.lastDelivery || new Date(d) > new Date(c.lastDelivery)) c.lastDelivery = d;
+          if (!c.firstDelivery || new Date(d) < new Date(c.firstDelivery)) c.firstDelivery = d;
+        }
+      }
+
+      c.orders.push({
+        orderNumber: order.orderNumber,
+        customerName: order.customerName,
+        city: order.customerCity,
+        phone: order.customerPhone,
+        magasinId: order.magasinId,
+        status: order.status,
+        isDelivered: del,
+        date: order.createdAt,
+        deliveryDate: del ? (order.updatedAt || order.createdAt) : null,
+        total: order.totalPrice || 0,
+        products: itemsByOrder[order.orderId] || [],
+      });
+    }
+
+    const loyal = Object.values(clientMap)
+      .filter((c: any) => c.deliveredCount >= 2)
+      .map((c: any) => {
+        c.orders.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        return c;
+      });
+
+    loyal.sort((a: any, b: any) => {
+      if (b.deliveredCount !== a.deliveredCount) return b.deliveredCount - a.deliveredCount;
+      return b.totalSpentDelivered - a.totalSpentDelivered;
+    });
+
+    return loyal;
   }
 
   async getOrCreateCustomer(storeId: number, name: string, phone: string, address?: string | null, city?: string | null): Promise<Customer> {

@@ -5937,6 +5937,18 @@ function ensureHeaders(sheet) {
     }
   });
 
+  app.get("/api/clients/fideles", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const magasinId = req.query.magasinId ? parseInt(req.query.magasinId as string) : null;
+    try {
+      const clients = await storage.getLoyalClients(storeId, { magasinId });
+      res.json(clients);
+    } catch (err: any) {
+      console.error("[Clients/fideles] Error:", err);
+      res.status(500).json({ message: "Erreur" });
+    }
+  });
+
   app.get("/api/clients/loyal", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const magasinId = req.query.magasinId ? parseInt(req.query.magasinId as string) : null;
