@@ -1,0 +1,349 @@
+I need to FIX the "Détails" view in my TajerGrow "Liste des Clients" page. The current loyalty definition is WRONG.
+
+═══════════════════════════════════════════════════════════════════════
+THE BUG (see current behavior)
+═══════════════════════════════════════════════════════════════════════
+Right now the popup says: "Client fidèle — 1 commande livrée sur 2. Priorité haute ✅"
+But this client has only 1 DELIVERED order (the other is "En cours" / in progress).
+A client with only 1 delivered order is NOT loyal.
+
+═══════════════════════════════════════════════════════════════════════
+THE CORRECT DEFINITION (must implement exactly)
+═══════════════════════════════════════════════════════════════════════
+A client is "fidèle" (loyal) ONLY IF they have 2 OR MORE orders with status = DELIVERED.
+
+Examples:
+- Ordered 2, but only 1 delivered → NOT loyal (1 delivered)
+- Ordered 5, but only 1 delivered → NOT loyal (1 delivered)
+- Ordered 3, with 2 delivered → LOYAL (2 delivered) ✅
+- Ordered 4, with 3 delivered → LOYAL (3 delivered) ✅
+
+ONLY count orders whose status is the DELIVERED status. Orders that are "En cours", "Nouveau", "Annulé", etc. DO NOT count toward loyalty.
+
+═══════════════════════════════════════════════════════════════════════
+WHAT THE "DÉTAILS" VIEW SHOULD SHOW
+═══════════════════════════════════════════════════════════════════════
+1. Show ONLY loyal clients (deliveredCount >= 2). Hide everyone else from this view.
+2. Display them as a LIST, one client per row — same row layout as the "Tableau" view (consistent design).
+3. Sort by deliveredCount descending (most loyal first).
+4. Clicking a client row opens a popup/modal showing their full order history (exactly like the existing popup in the screenshot: CLIENT, VILLE, TÉLÉPHONE, PRODUIT, STATUT, MAGASIN, DATE columns).
+5. In the popup header banner, show the CORRECT count: "🏆 Client fidèle — X commandes livrées. Priorité haute ✅" where X is the real delivered count (must be >= 2).
+
+═══════════════════════════════════════════════════════════════════════
+CRITICAL RULES
+═══════════════════════════════════════════════════════════════════════
+1. INSPECT FIRST. The popup in the screenshot already exists — find it and reuse it.
+2. NO database schema changes.
+3. Find the EXACT delivered-status string (search 'livr' / 'delivered' / 'Livré' in storage.ts and routes.ts). Report what you find before coding.
+4. Don't break the "Tableau" view or the existing popup.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1: INSPECT
+═══════════════════════════════════════════════════════════════════════
+1. Open client/src/pages/clients.tsx.
+   - Find the "Tableau" view (the row list).
+   - Find the "Détails" view and what it currently shows.
+   - Find the order-history POPUP/MODAL component (the one in the screenshot with "Commandes — [phone]" header). Note its name and how it's triggered.
+
+2. Find the existing client/order endpoints in server/routes.ts.
+
+3. Find the EXACT delivered status string. Search for:
+   - 'Livré', 'livre', 'livree', 'livrée', 'delivered', 'Livrée'
+   Look at how an order's status is set when marked delivered.
+   REPORT the exact string before continuing.
+
+DO NOT code until you confirm the delivered-status string and locate the existing popup.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2: STORAGE METHOD (server/storage.ts)
+═══════════════════════════════════════════════════════════════════════
+Add a NEW method. Replace DELIVERED_STATUS with the real string from Step 1:
+
+  async getLoyalClients(storeId: number, options?: { magasinId?: number | null }): Promise<any[]> {
+    // ⚠️ Use the EXACT delivered status string(s) found in Step 1
+    const DELIVERED_STATUSES = ['Livré', 'livre', 'livree', 'livrée', 'Livrée', 'delivered'];
+
+    const conditions = [eq(orders.storeId, storeId)];
+    if (options?.magasinId != null) {
+      conditions.push(eq(orders.magasinId, options.magasinId));
+    }
+
+    // Fetch ALL orders (we need to show full history in the popup,
+    // but loyalty is computed only from DELIVERED ones)
+    const allOrders = await db
+      .select({
+        orderId: orders.id,
+        orderNumber: orders.orderNumber,
+        customerName: orders.customerName,
+        customerPhone: orders.customerPhone,
+        customerCity: orders.customerCity,
+        magasinId: orders.magasinId,
+        totalPrice: orders.totalPrice,
+        status: orders.status,
+        createdAt: orders.createdAt,
+        updatedAt: orders.updatedAt,
+      })
+      .from(orders)
+      .where(and(...conditions))
+      .orderBy(desc(orders.createdAt));
+
+    if (allOrders.length === 0) return [];
+
+    // Items + product names
+    const orderIds = allOrders.map(o => o.orderId);
+    const itemsByOrder: Record<number, { productName: string; sku: string | null; quantity: number }[]> = {};
+    const items = await db
+      .select({
+        orderId: orderItems.orderId,
+        quantity: orderItems.quantity,
+        productName: products.name,
+        sku: products.sku,
+      })
+      .from(orderItems)
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(inArray(orderItems.orderId, orderIds));
+    for (const it of items) {
+      if (!itemsByOrder[it.orderId]) itemsByOrder[it.orderId] = [];
+      itemsByOrder[it.orderId].push({
+        productName: it.productName || "Produit",
+        sku: it.sku || null,
+        quantity: it.quantity || 1,
+      });
+    }
+
+    const isDelivered = (status: string) =>
+      DELIVERED_STATUSES.some(s => (status || "").toLowerCase().trim() === s.toLowerCase().trim());
+
+    // Group by client
+    const clientMap: Record<string, any> = {};
+    for (const order of allOrders) {
+      const key = (order.customerPhone || "").trim() || (order.customerName || "").trim().toLowerCase();
+      if (!key) continue;
+
+      if (!clientMap[key]) {
+        clientMap[key] = {
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerCity: order.customerCity,
+          deliveredCount: 0,
+          totalOrders: 0,
+          totalSpentDelivered: 0,
+          lastDelivery: null,
+          firstDelivery: null,
+          orders: [],
+        };
+      }
+      const c = clientMap[key];
+      c.totalOrders += 1;
+
+      const delivered = isDelivered(order.status);
+      if (delivered) {
+        c.deliveredCount += 1;
+        c.totalSpentDelivered += (order.totalPrice || 0);
+        const d = order.updatedAt || order.createdAt;
+        if (d) {
+          if (!c.lastDelivery || new Date(d) > new Date(c.lastDelivery)) c.lastDelivery = d;
+          if (!c.firstDelivery || new Date(d) < new Date(c.firstDelivery)) c.firstDelivery = d;
+        }
+      }
+
+      // Full order record for the popup
+      c.orders.push({
+        orderNumber: order.orderNumber,
+        customerName: order.customerName,
+        city: order.customerCity,
+        phone: order.customerPhone,
+        magasinId: order.magasinId,
+        status: order.status,
+        isDelivered: delivered,
+        date: order.createdAt,
+        deliveryDate: delivered ? (order.updatedAt || order.createdAt) : null,
+        total: order.totalPrice || 0,
+        products: itemsByOrder[order.orderId] || [],
+      });
+    }
+
+    // Keep ONLY loyal clients: 2+ DELIVERED orders
+    const loyal = Object.values(clientMap)
+      .filter((c: any) => c.deliveredCount >= 2)
+      .map((c: any) => {
+        c.orders.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        return c;
+      });
+
+    // Sort: most delivered first, then total spent
+    loyal.sort((a: any, b: any) => {
+      if (b.deliveredCount !== a.deliveredCount) return b.deliveredCount - a.deliveredCount;
+      return b.totalSpentDelivered - a.totalSpentDelivered;
+    });
+
+    return loyal;
+  }
+
+Add to IStorage interface:
+
+  getLoyalClients(storeId: number, options?: { magasinId?: number | null }): Promise<any[]>;
+
+Ensure orderItems, products, inArray, desc, and, eq are imported.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3: API ENDPOINT (server/routes.ts)
+═══════════════════════════════════════════════════════════════════════
+  app.get("/api/clients/fideles", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const magasinId = req.query.magasinId ? parseInt(req.query.magasinId as string) : null;
+    try {
+      const clients = await storage.getLoyalClients(storeId, { magasinId });
+      res.json(clients);
+    } catch (err: any) {
+      console.error("[Clients/fideles] Error:", err);
+      res.status(500).json({ message: "Erreur" });
+    }
+  });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4: FRONTEND (client/src/pages/clients.tsx)
+═══════════════════════════════════════════════════════════════════════
+The "Détails" view should now show ONLY loyal clients as a row list (same style as Tableau), and clicking a row opens the existing popup.
+
+1. Add query:
+
+  const { data: fideles, isLoading: fidelesLoading } = useQuery<any[]>({
+    queryKey: ["/api/clients/fideles"],
+    queryFn: async () => {
+      const r = await fetch("/api/clients/fideles", { credentials: "include" });
+      if (!r.ok) throw new Error("Failed");
+      return r.json();
+    },
+  });
+
+2. Add state for the popup (reuse the existing popup component found in Step 1):
+
+  const [selectedClient, setSelectedClient] = useState<any>(null);
+
+3. Replace/define the "Détails" view content. Render loyal clients as rows matching the Tableau row layout. ADAPT classNames to match the existing table rows exactly:
+
+  {viewMode === 'details' && (
+    <div>
+      {/* Header banner */}
+      <div className="mb-4 px-5 py-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-3">
+        <span className="text-2xl">🏆</span>
+        <div>
+          <div className="font-bold text-emerald-800">
+            {fideles?.length || 0} clients fidèles
+          </div>
+          <div className="text-sm text-emerald-600">
+            Clients livrés 2 fois ou plus — priorité retargeting
+          </div>
+        </div>
+      </div>
+
+      {fidelesLoading && <div className="py-8 text-center text-gray-400">Chargement…</div>}
+
+      {!fidelesLoading && fideles?.length === 0 && (
+        <div className="py-12 text-center text-gray-400">
+          Aucun client fidèle pour le moment.<br/>
+          <span className="text-sm">Les clients livrés 2+ fois apparaîtront ici.</span>
+        </div>
+      )}
+
+      {/* Header row (match Tableau header style) */}
+      {fideles && fideles.length > 0 && (
+        <div className="hidden md:grid grid-cols-[2fr_1.2fr_1.5fr_1fr_1fr] gap-4 px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wide border-b">
+          <span>Nom du client</span>
+          <span>Téléphone</span>
+          <span>Ville</span>
+          <span className="text-center">Livraisons</span>
+          <span className="text-right">Total livré</span>
+        </div>
+      )}
+
+      {/* Client rows */}
+      {fideles?.map((client) => (
+        <div
+          key={client.customerPhone || client.customerName}
+          onClick={() => setSelectedClient(client)}
+          className="grid grid-cols-[2fr_1.2fr_1.5fr_1fr_1fr] gap-4 px-4 py-4 items-center border-b hover:bg-emerald-50/40 cursor-pointer transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center font-bold text-emerald-700 shrink-0">
+              {(client.customerName || "?").charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="font-semibold text-gray-900 truncate">{client.customerName}</div>
+              <div className="text-xs text-emerald-600 font-medium">🏆 Fidèle · {client.deliveredCount}× livré</div>
+            </div>
+          </div>
+          <div className="text-gray-700">{client.customerPhone}</div>
+          <div className="text-gray-700">{client.customerCity}</div>
+          <div className="text-center">
+            <span className="inline-flex items-center justify-center min-w-[32px] h-8 px-2 rounded-full bg-emerald-500 text-white font-bold text-sm">
+              {client.deliveredCount}
+            </span>
+          </div>
+          <div className="text-right font-bold text-gray-900">
+            {(client.totalSpentDelivered / 100).toFixed(2)} DH
+          </div>
+        </div>
+      ))}
+    </div>
+  )}
+
+4. The POPUP. Reuse the EXISTING popup component from the screenshot. When selectedClient is set, open it and pass selectedClient.orders. Update the banner text to use the correct delivered count:
+
+  Banner: "🏆 Client fidèle — {selectedClient.deliveredCount} commandes livrées. Priorité haute ✅"
+
+  The popup table should list selectedClient.orders with columns:
+  CLIENT (name + #orderNumber), VILLE, TÉLÉPHONE, PRODUIT (productName + SKU), STATUT (badge: green "Livré" if isDelivered else gray), MAGASIN, DATE.
+
+  Footer: "Total : {selectedClient.orders.length} commandes · {selectedClient.deliveredCount} livrées"
+
+  If the existing popup component already accepts an "orders" prop and a "client" prop, just reuse it:
+    {selectedClient && (
+      <ExistingOrderHistoryPopup
+        client={selectedClient}
+        orders={selectedClient.orders}
+        loyaltyText={`🏆 Client fidèle — ${selectedClient.deliveredCount} commandes livrées. Priorité haute ✅`}
+        onClose={() => setSelectedClient(null)}
+      />
+    )}
+
+  If the existing popup computes its own "fidèle" text internally with the wrong logic, FIX that internal logic to require deliveredCount >= 2 and show the correct count.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5: FIX THE EXISTING POPUP'S WRONG LOYALTY TEXT
+═══════════════════════════════════════════════════════════════════════
+Find where the popup currently renders "Client fidèle — 1 commande livrée sur 2".
+That logic is WRONG. Replace it so:
+- It counts only orders where status is delivered.
+- It shows "Client fidèle" ONLY when deliveredCount >= 2.
+- If deliveredCount < 2, show a neutral label instead, e.g. "Client — {deliveredCount} commande(s) livrée(s)" WITHOUT the "fidèle" / "Priorité haute" wording.
+
+  const deliveredCount = orders.filter(o => o.isDelivered).length;
+  const isLoyal = deliveredCount >= 2;
+  const bannerText = isLoyal
+    ? `🏆 Client fidèle — ${deliveredCount} commandes livrées. Priorité haute ✅`
+    : `Client — ${deliveredCount} commande(s) livrée(s) sur ${orders.length}`;
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ "Détails" view shows ONLY clients with 2+ DELIVERED orders
+2. ✅ A client with 1 delivered (even if ordered 5×) does NOT appear in Détails
+3. ✅ Clients shown as rows (one per line) like the Tableau view
+4. ✅ Sorted by delivered count (most loyal first)
+5. ✅ Clicking a row opens the order-history popup (same as screenshot)
+6. ✅ Popup banner shows correct count: "X commandes livrées" where X >= 2
+7. ✅ Popup no longer says "fidèle" for clients with only 1 delivery
+8. ✅ Popup shows products + SKU + status + magasin + date per order
+9. ✅ Tableau view unchanged, still works
+10. ✅ No DB migration
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/storage.ts server/routes.ts client/src/pages/clients.tsx
+git commit -m "fix(clients): Détails shows only true loyal clients (2+ delivered), correct popup count"
+git push origin main
+
+INSPECT FIRST. Confirm the delivered-status string and locate the existing popup before coding.
