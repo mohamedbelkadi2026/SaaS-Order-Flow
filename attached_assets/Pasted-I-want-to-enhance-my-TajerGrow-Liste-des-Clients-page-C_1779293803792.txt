@@ -1,0 +1,340 @@
+I want to enhance my TajerGrow "Liste des Clients" page. Currently it shows clients with at least one delivered order. I need a smarter "loyal customer" definition and richer data for retargeting.
+
+═══════════════════════════════════════════════════════════════════════
+THE CORRECT DEFINITION OF "LOYAL CLIENT" (CRITICAL)
+═══════════════════════════════════════════════════════════════════════
+A client is "fidèle" (loyal) ONLY IF they have MORE THAN ONE DELIVERED order.
+
+- A client who ordered 10 times but NONE were delivered = NOT loyal (0 delivered)
+- A client who had 1 order delivered, then came back and a 2nd order was also delivered = LOYAL (2 delivered)
+
+So loyalty is based on the COUNT OF DELIVERED ORDERS, not total orders placed.
+
+The "livré" / delivered status in this platform — check how delivered orders are marked. Likely status values: 'livre', 'livré', 'livree', 'livrée', 'delivered'. INSPECT the codebase first to find the exact status string(s) used for delivered orders (search server/storage.ts and server/routes.ts for 'livr' and 'delivered').
+
+═══════════════════════════════════════════════════════════════════════
+WHAT I WANT TO SEE PER CLIENT
+═══════════════════════════════════════════════════════════════════════
+1. Number of DELIVERED orders (not total orders)
+2. The products that were delivered to them (product names + quantity)
+3. The DATE of each delivery (so I know when to retarget)
+4. Loyal badge ONLY if delivered count > 1
+5. Total spent (only counting delivered orders)
+6. The list must be SORTED so clients with the MOST delivered orders appear FIRST
+
+═══════════════════════════════════════════════════════════════════════
+CRITICAL RULES — DO NOT BREAK ANYTHING
+═══════════════════════════════════════════════════════════════════════
+1. ENHANCEMENT only. Existing clients page must keep working.
+2. NO database schema changes. Use existing tables (orders, orderItems, products).
+3. Do NOT remove/rename existing fields or endpoints.
+4. INSPECT FIRST, then enhance.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1: INSPECT (do this before writing any code)
+═══════════════════════════════════════════════════════════════════════
+1. Open client/src/pages/clients.tsx — understand the current table structure (the columns shown: NOM, TÉLÉPHONE, VILLE, NOMBRE DE COMMANDES, TOTAL ACHAT, DATE D'AJOUT). Note the exact components and Tailwind classes used.
+
+2. Search server/routes.ts for the existing clients endpoint (e.g. "/api/clients").
+
+3. Search server/storage.ts for the existing client-fetching method.
+
+4. MOST IMPORTANT — find the exact "delivered" status string. Search for:
+   - 'livr' (will catch livre/livré/livree/livrée)
+   - 'delivered'
+   - look at how the orders table status column is set when an order is marked delivered
+   Report back: what exact string(s) represent a DELIVERED order?
+
+DO NOT proceed until you've confirmed the delivered-status string.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2: NEW STORAGE METHOD (server/storage.ts)
+═══════════════════════════════════════════════════════════════════════
+Add a NEW method (don't modify existing). Replace DELIVERED_STATUSES below with the actual delivered status string(s) you found in Step 1:
+
+  async getLoyalClientsWithDeliveries(storeId: number, options?: { magasinId?: number | null }): Promise<any[]> {
+    // ⚠️ REPLACE with the real delivered-status string(s) found in Step 1
+    const DELIVERED_STATUSES = ['livre', 'livré', 'livree', 'livrée', 'delivered'];
+
+    const conditions = [eq(orders.storeId, storeId)];
+    if (options?.magasinId != null) {
+      conditions.push(eq(orders.magasinId, options.magasinId));
+    }
+
+    // Fetch ONLY delivered orders for this store
+    const deliveredOrders = await db
+      .select({
+        orderId: orders.id,
+        orderNumber: orders.orderNumber,
+        customerName: orders.customerName,
+        customerPhone: orders.customerPhone,
+        customerCity: orders.customerCity,
+        totalPrice: orders.totalPrice,
+        status: orders.status,
+        createdAt: orders.createdAt,
+        updatedAt: orders.updatedAt,
+      })
+      .from(orders)
+      .where(and(
+        ...conditions,
+        inArray(orders.status, DELIVERED_STATUSES)
+      ))
+      .orderBy(desc(orders.updatedAt));
+
+    if (deliveredOrders.length === 0) return [];
+
+    // Fetch items + product names for these delivered orders
+    const orderIds = deliveredOrders.map(o => o.orderId);
+    const itemsByOrder: Record<number, { productName: string; quantity: number }[]> = {};
+
+    const items = await db
+      .select({
+        orderId: orderItems.orderId,
+        quantity: orderItems.quantity,
+        productName: products.name,
+      })
+      .from(orderItems)
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(inArray(orderItems.orderId, orderIds));
+
+    for (const it of items) {
+      if (!itemsByOrder[it.orderId]) itemsByOrder[it.orderId] = [];
+      itemsByOrder[it.orderId].push({
+        productName: it.productName || "Produit",
+        quantity: it.quantity || 1,
+      });
+    }
+
+    // Group by client (phone first, fallback to name)
+    const clientMap: Record<string, any> = {};
+
+    for (const order of deliveredOrders) {
+      const key = (order.customerPhone || "").trim() || (order.customerName || "").trim().toLowerCase();
+      if (!key) continue;
+
+      if (!clientMap[key]) {
+        clientMap[key] = {
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerCity: order.customerCity,
+          deliveredCount: 0,
+          totalSpent: 0,
+          firstDelivery: order.updatedAt || order.createdAt,
+          lastDelivery: order.updatedAt || order.createdAt,
+          products: {},
+          deliveries: [],
+        };
+      }
+
+      const c = clientMap[key];
+      c.deliveredCount += 1;
+      c.totalSpent += (order.totalPrice || 0);
+
+      const deliveryDate = order.updatedAt || order.createdAt;
+      if (deliveryDate) {
+        if (c.lastDelivery && new Date(deliveryDate) > new Date(c.lastDelivery)) c.lastDelivery = deliveryDate;
+        if (c.firstDelivery && new Date(deliveryDate) < new Date(c.firstDelivery)) c.firstDelivery = deliveryDate;
+      }
+
+      const orderItemsList = itemsByOrder[order.orderId] || [];
+      for (const it of orderItemsList) {
+        c.products[it.productName] = (c.products[it.productName] || 0) + it.quantity;
+      }
+
+      // Per-delivery record (for retargeting timeline)
+      c.deliveries.push({
+        orderNumber: order.orderNumber,
+        date: deliveryDate,
+        total: order.totalPrice || 0,
+        products: orderItemsList,
+      });
+    }
+
+    // Format + sort each client's deliveries by date (newest first)
+    const result = Object.values(clientMap).map((c: any) => {
+      c.deliveries.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      return {
+        ...c,
+        isLoyal: c.deliveredCount > 1,
+        productsList: Object.entries(c.products).map(([name, qty]) => ({ name, quantity: qty })),
+        productsSummary: Object.entries(c.products).map(([name, qty]) => `${name} ×${qty}`).join(", "),
+      };
+    });
+
+    // SORT: most delivered orders first, then by total spent
+    result.sort((a: any, b: any) => {
+      if (b.deliveredCount !== a.deliveredCount) return b.deliveredCount - a.deliveredCount;
+      return b.totalSpent - a.totalSpent;
+    });
+
+    return result;
+  }
+
+Add interface declaration in IStorage:
+
+  getLoyalClientsWithDeliveries(storeId: number, options?: { magasinId?: number | null }): Promise<any[]>;
+
+Make sure orderItems, products, inArray, desc, and, eq are imported.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3: NEW API ENDPOINT (server/routes.ts)
+═══════════════════════════════════════════════════════════════════════
+Add after the existing clients route:
+
+  app.get("/api/clients/loyal", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const magasinId = req.query.magasinId ? parseInt(req.query.magasinId as string) : null;
+    try {
+      const clients = await storage.getLoyalClientsWithDeliveries(storeId, { magasinId });
+      res.json(clients);
+    } catch (err: any) {
+      console.error("[Clients/loyal] Error:", err);
+      res.status(500).json({ message: "Erreur lors du chargement" });
+    }
+  });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4: FRONTEND (client/src/pages/clients.tsx)
+═══════════════════════════════════════════════════════════════════════
+Add a NEW view mode toggle. The page already has "Tableau" and "Détails" buttons — add a THIRD button: "🔁 Clients fidèles" that shows the loyal-clients view.
+
+1. Add the query:
+
+  const { data: loyalClients, isLoading: loyalLoading } = useQuery<any[]>({
+    queryKey: ["/api/clients/loyal"],
+    queryFn: async () => {
+      const r = await fetch("/api/clients/loyal", { credentials: "include" });
+      if (!r.ok) throw new Error("Failed");
+      return r.json();
+    },
+  });
+
+2. Add a view-mode state (reuse existing pattern if there's already a "Tableau"/"Détails" toggle):
+
+  const [viewMode, setViewMode] = useState<'tableau' | 'details' | 'fidele'>('tableau');
+
+3. Add the toggle button next to the existing Tableau/Détails buttons, matching their exact style:
+
+  <button
+    onClick={() => setViewMode('fidele')}
+    className={viewMode === 'fidele' ? '<active button classes from existing buttons>' : '<inactive classes>'}
+  >
+    🔁 Fidèles
+  </button>
+
+4. When viewMode === 'fidele', render this list. MATCH the existing page's visual style (same fonts, colors, card style, avatar circles). Filter to only show loyal clients (delivered > 1) at the top, but show all delivered clients sorted by delivered count:
+
+  {viewMode === 'fidele' && (
+    <div className="space-y-3">
+      {/* Summary banner */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-5 py-3">
+          <div className="text-2xl font-bold text-emerald-700">
+            {loyalClients?.filter(c => c.isLoyal).length || 0}
+          </div>
+          <div className="text-xs text-emerald-600 font-medium">Clients fidèles (livrés 2+ fois)</div>
+        </div>
+        <div className="bg-indigo-50 border border-indigo-200 rounded-xl px-5 py-3">
+          <div className="text-2xl font-bold text-indigo-700">
+            {loyalClients?.length || 0}
+          </div>
+          <div className="text-xs text-indigo-600 font-medium">Total clients livrés</div>
+        </div>
+      </div>
+
+      {loyalClients?.map((client) => (
+        <div
+          key={client.customerPhone || client.customerName}
+          className={`bg-white border rounded-xl p-5 transition-shadow hover:shadow-md ${client.isLoyal ? 'border-emerald-300 ring-1 ring-emerald-100' : 'border-gray-200'}`}
+        >
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-full bg-indigo-100 flex items-center justify-center font-bold text-indigo-700">
+                {(client.customerName || "?").charAt(0).toUpperCase()}
+              </div>
+              <div>
+                <div className="font-semibold text-gray-900 flex items-center gap-2 flex-wrap">
+                  {client.customerName}
+                  {client.isLoyal && (
+                    <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-500 text-white">
+                      🔁 Fidèle · {client.deliveredCount}× livré
+                    </span>
+                  )}
+                </div>
+                <div className="text-sm text-gray-500">
+                  {client.customerPhone} · {client.customerCity}
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-xl font-bold text-gray-900">{(client.totalSpent/100).toFixed(2)} DH</div>
+              <div className="text-xs text-gray-500">{client.deliveredCount} livraison{client.deliveredCount>1?'s':''}</div>
+            </div>
+          </div>
+
+          {/* Products delivered */}
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+              Produits livrés
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {client.productsList.map((p, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5 text-sm bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5">
+                  <span className="font-medium text-gray-800">{p.name}</span>
+                  <span className="text-xs font-bold text-indigo-600 bg-indigo-50 rounded px-1.5">×{p.quantity}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Delivery timeline (for retargeting) */}
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+              Historique des livraisons
+            </div>
+            <div className="space-y-1.5">
+              {client.deliveries.map((d, i) => (
+                <div key={i} className="flex items-center justify-between text-sm">
+                  <span className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span className="text-gray-700">
+                      {d.products.map(p => `${p.productName} ×${p.quantity}`).join(", ") || "Commande"}
+                    </span>
+                  </span>
+                  <span className="text-gray-400 text-xs whitespace-nowrap">
+                    📅 {new Date(d.date).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )}
+
+IMPORTANT: Adapt the className styles to EXACTLY match the existing platform's design. Look at the existing Tableau view's colors, the avatar circle style, the badge style. Reuse the same component library (if the platform uses shadcn Badge, Card, use those instead of raw divs). The new view must blend in perfectly.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Existing "Tableau" and "Détails" views still work unchanged
+2. ✅ New "🔁 Fidèles" button appears next to them
+3. ✅ Loyal clients = delivered count > 1 (NOT total orders placed)
+4. ✅ A client who ordered 10× but 0 delivered does NOT appear / not loyal
+5. ✅ A client delivered 2× shows "🔁 Fidèle · 2× livré" badge
+6. ✅ List sorted by delivered count (most loyal first)
+7. ✅ Each client shows products delivered + quantities
+8. ✅ Each client shows delivery dates (timeline) for retargeting
+9. ✅ Total spent counts only delivered orders
+10. ✅ No DB migration created
+11. ✅ Search still works (existing search bar)
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add server/storage.ts server/routes.ts client/src/pages/clients.tsx
+git commit -m "feat(clients): loyal clients view based on delivered repeat orders + retargeting timeline"
+git push origin main
+
+INSPECT FIRST (Step 1, confirm the delivered-status string), then apply. Confirm each step.

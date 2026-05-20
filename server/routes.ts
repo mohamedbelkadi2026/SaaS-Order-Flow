@@ -5937,6 +5937,18 @@ function ensureHeaders(sheet) {
     }
   });
 
+  app.get("/api/clients/loyal", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const magasinId = req.query.magasinId ? parseInt(req.query.magasinId as string) : null;
+    try {
+      const clients = await storage.getLoyalClientsWithDeliveries(storeId, { magasinId });
+      res.json(clients);
+    } catch (err: any) {
+      console.error("[Clients/loyal] Error:", err);
+      res.status(500).json({ message: "Erreur lors du chargement" });
+    }
+  });
+
   app.post("/api/customers/migrate", requireAdmin, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
