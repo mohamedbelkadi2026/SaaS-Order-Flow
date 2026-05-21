@@ -1,0 +1,111 @@
+I want to REDESIGN the "Guide d'intégration avec Google Sheets" page (client/src/pages/sheets-integration.tsx) so it matches my platform's visual theme. Right now it uses blue/emerald colors that don't match the rest of the app.
+
+═══════════════════════════════════════════════════════════════════════
+PLATFORM THEME (match these exactly)
+═══════════════════════════════════════════════════════════════════════
+My platform uses:
+- Sidebar / primary brand color: deep indigo/blue (around #2d3eb8 / indigo-700)
+- Active nav items: indigo background, white text
+- Page background: light gray (#f8f9fb / gray-50)
+- Cards: white with subtle border + soft shadow, rounded corners
+- Text: dark slate (#1e293b / slate-800)
+- Accent buttons: indigo (primary), with the same rounded style as the rest of the app
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1: FIND THE EXACT THEME TOKENS FIRST
+═══════════════════════════════════════════════════════════════════════
+Before changing colors, find the exact theme values used across the platform:
+
+1. Open tailwind.config.ts — look for custom colors (primary, brand, indigo definitions).
+2. Open the sidebar component (search client/src/components/ for "sidebar" or "app-layout" or the nav menu). Note the EXACT classes used for:
+   - The sidebar background color
+   - The active nav item background + text color
+   - The primary button style
+3. Open an existing well-styled page (e.g. client/src/pages/dashboard.tsx or clients.tsx) and note:
+   - The card style (bg, border, rounded, shadow classes)
+   - The page background
+   - The heading styles
+   - The primary button classes
+
+REPORT the exact color classes/hex values you find (e.g. "sidebar uses bg-indigo-700", "primary button uses bg-indigo-600 hover:bg-indigo-700", "cards use bg-white border border-gray-200 rounded-xl shadow-sm").
+
+DO NOT guess colors — use the actual values from the codebase.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2: REDESIGN client/src/pages/sheets-integration.tsx
+═══════════════════════════════════════════════════════════════════════
+Keep ALL the existing functionality (Copy Code, Verify Connection, the checkbox, the connected-sheets list, the back button). Only change the VISUAL STYLING to match the platform.
+
+Apply these changes using the EXACT theme tokens found in Step 1:
+
+A) PAGE BACKGROUND
+   - Change from whatever it is now to the platform's page background (likely bg-gray-50 or bg-slate-50). Match the dashboard page background.
+
+B) MAIN CARD
+   - Use the same card style as the rest of the platform: white background, the platform's border color, rounded corners (match the radius used elsewhere — likely rounded-xl or rounded-2xl), subtle shadow (shadow-sm).
+
+C) HEADING "Guide d'intégration avec Google Sheets"
+   - Use the platform's heading style (dark slate, the same font-weight and size as other page titles).
+
+D) "Étapes :" SUBHEADING
+   - Change from blue to the platform's PRIMARY indigo color (match the sidebar/brand indigo, NOT a generic blue).
+
+E) STEP LINKS (like "compte Google Sheets")
+   - Use the platform's indigo link color, not generic blue-600.
+
+F) "Copy Code" BUTTON
+   - Change from bright blue to the platform's PRIMARY button style (the same indigo as the sidebar active state). Match the exact button component/classes used elsewhere (e.g. if the platform uses a <Button> component with a primary variant, use that).
+
+G) "Verify Connection" BUTTON
+   - Change from the green/emerald to the platform's primary indigo (or a complementary success color that fits the theme). It should look like it belongs to this app. Match the platform's primary button radius and padding.
+
+H) "I understand the steps" CHECKBOX
+   - Use the platform's indigo accent color when checked (not blue).
+
+I) CONNECTED SHEETS LIST + LOYAL CLIENT CARDS (if present)
+   - Update any blue/emerald accents to the platform's indigo theme.
+   - Status badges, toggles, and delete buttons should use the platform's color conventions.
+
+J) The "← Retour à mes feuilles connectées" back button
+   - Match the platform's secondary/ghost button style and text color.
+
+═══════════════════════════════════════════════════════════════════════
+DESIGN CONSISTENCY RULES
+═══════════════════════════════════════════════════════════════════════
+1. Use the SAME indigo/brand color the sidebar uses — don't introduce a new blue.
+2. Use the SAME card radius, border, and shadow as other pages.
+3. Use the SAME button component the rest of the platform uses (check imports in dashboard.tsx / clients.tsx for a <Button> component from @/components/ui/button).
+4. Match font sizes and weights to the platform's existing pages.
+5. The page should look like it was designed by the same person who built the rest of the platform — seamless, not a separate "bolt-on" page.
+6. Keep it clean and professional. No bright/clashing colors.
+
+═══════════════════════════════════════════════════════════════════════
+DO NOT
+═══════════════════════════════════════════════════════════════════════
+- Do NOT change any functionality (Copy Code logic, Verify Connection fetch, the API calls, the connected-sheets list logic).
+- Do NOT change the French text content of the steps.
+- Do NOT break the responsive layout.
+- Do NOT remove the data-testid attributes.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Page background matches the platform (light gray, same as dashboard)
+2. ✅ The card looks identical in style to other platform cards
+3. ✅ "Étapes :" uses the platform indigo, not generic blue
+4. ✅ "Copy Code" button uses the platform's primary indigo
+5. ✅ "Verify Connection" button fits the theme (indigo or themed success)
+6. ✅ Checkbox uses indigo accent
+7. ✅ The page visually blends with the sidebar and the rest of the app
+8. ✅ All functionality still works (copy, verify, list, toggle, delete)
+9. ✅ Responsive on mobile
+10. ✅ No bright clashing colors remain
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add client/src/pages/sheets-integration.tsx
+git commit -m "style(sheets): redesign integration guide to match platform indigo theme"
+git push origin main
+
+INSPECT FIRST (Step 1 — find the exact theme tokens), then apply the redesign using those exact values.
