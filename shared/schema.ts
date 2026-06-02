@@ -238,19 +238,6 @@ export const ameexCities = pgTable("ameex_cities", {
 });
 export type AmeexCity = typeof ameexCities.$inferSelect;
 
-// ─── Express Coursier City ID Map — name → numeric ID ───────────────────────
-// Express Coursier's 'city' field in the shipment payload requires a numeric ID (e.g. "337"),
-// NOT the city name string. This table maps synced city names to their IDs.
-// Populated by "Synchroniser les villes" on the Express Coursier carrier account.
-export const expressCoursierCities = pgTable("express_coursier_cities", {
-  id:         serial("id").primaryKey(),
-  storeId:    integer("store_id").notNull(),
-  externalId: text("external_id").notNull(),   // Express Coursier numeric city ID, stored as text
-  name:       text("name").notNull(),
-  nameNorm:   text("name_norm").notNull(),      // lowercase + accent-stripped for fuzzy match
-  createdAt:  timestamp("created_at").defaultNow(),
-});
-export type ExpressCoursierCity = typeof expressCoursierCities.$inferSelect;
 
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),

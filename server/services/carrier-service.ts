@@ -919,11 +919,8 @@ export async function shipOrderToCarrier(
     if (!apiKey) {
       return { success: false, error: "Token Express Coursier manquant. Configurez votre compte dans Intégrations → Transporteurs.", carrierMessage: "missing token", httpStatus: 0, rawResponse: null, permanent: true };
     }
-    if (!input.cityId) {
-      const errMsg = `Express Coursier: ID de ville manquant pour "${input.city}". Synchronisez les villes Express Coursier dans Paramètres → Transporteurs puis réessayez.`;
-      console.error(`[CARRIER→EC][#${input.orderNumber}] ❌ ${errMsg}`);
-      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
-    }
+    const cityToSend = input.cityId || input.city; // numeric ID preferred; fall back to city name
+    console.log(`[EC-CITY-RESOLVE] order=${input.orderNumber} city="${input.city}" cityId="${input.cityId}" → sending "${cityToSend}"`);
     const ecSettings = (input as any).ecSettings || {};
     const ecStoreId = Number(ecSettings.expressCoursierStoreId || 0);
     const priceDH   = +(input.totalPrice / 100).toFixed(2);
@@ -933,7 +930,7 @@ export async function shipOrderToCarrier(
       packages: [{
         receiver_name: input.customerName,
         address:       input.address || input.city,
-        city:          String(input.cityId),
+        city:          String(cityToSend),
         phone:         sanitized,
         price:         String(priceDH),
         note:          input.note || "",

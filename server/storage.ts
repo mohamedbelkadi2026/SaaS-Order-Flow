@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities,
+  carrierAccounts, carrierCities, ameexCities,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -77,8 +77,7 @@ export interface IStorage {
   upsertCarrierCities(storeId: number, carrierName: string, accountId: number | null, cities: string[]): Promise<void>;
   upsertAmeexCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
   getAmeexCityId(storeId: number, cityName: string): Promise<string | null>;
-  upsertExpressCoursierCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
-  getExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null>;
+  resolveExpressCoursierCityId(cityName: string, accountId?: number): Promise<string | null>;
   getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
     apiKey: string;
     apiSecret?: string;
@@ -1140,32 +1139,63 @@ export class DatabaseStorage implements IStorage {
     return fuzzy[0]?.externalId ?? null;
   }
 
-  async upsertExpressCoursierCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void> {
-    if (!cities.length) return;
-    await db.delete(expressCoursierCities).where(eq(expressCoursierCities.storeId, storeId));
-    await db.insert(expressCoursierCities).values(
-      cities.map(c => ({ storeId, externalId: c.externalId, name: c.name, nameNorm: c.nameNorm }))
-    );
-  }
-
-  async getExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null> {
-    const norm = (s: string) => s
+  async resolveExpressCoursierCityId(cityName: string, accountId?: number): Promise<string | null> {
+    const norm = (s: string) => (s || "")
       .toLowerCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
-    const key = norm(cityName);
-    if (!key) return null;
+    const target = norm(cityName);
+    if (!target) return null;
 
-    const [exact] = await db.select().from(expressCoursierCities)
-      .where(and(eq(expressCoursierCities.storeId, storeId), eq(expressCoursierCities.nameNorm, key)))
-      .limit(1);
-    if (exact) return exact.externalId;
+    // 1) Try carrier_cities for this specific account (synced via "Synchroniser les villes")
+    if (accountId) {
+      const rows = await db.select().from(carrierCities)
+        .where(eq(carrierCities.accountId, accountId));
+      for (const r of rows) {
+        const ext = (r as any).externalCityId || (r as any).settings?.cityId;
+        if (ext && norm(r.cityName) === target) return String(ext);
+      }
+      // fuzzy fallback within the same account
+      for (const r of rows) {
+        const ext = (r as any).externalCityId || (r as any).settings?.cityId;
+        if (ext && norm(r.cityName).includes(target)) return String(ext);
+      }
+    }
 
-    const fuzzy = await db.select().from(expressCoursierCities)
-      .where(and(eq(expressCoursierCities.storeId, storeId), like(expressCoursierCities.nameNorm, `%${key}%`)))
-      .limit(1);
-    return fuzzy[0]?.externalId ?? null;
+    // 2) Hardcoded fallback — common Moroccan cities with known EC IDs
+    //    Extend this list once real IDs are confirmed via the EC API.
+    const FALLBACK: Record<string, string> = {
+      "casablanca":       "337",
+      "rabat":            "338",
+      "marrakech":        "339",
+      "tanger":           "340",
+      "berrechid":        "341",
+      "agadir":           "342",
+      "fes":              "343",
+      "kenitra":          "344",
+      "meknes":           "345",
+      "oujda":            "346",
+      "tetouan":          "347",
+      "sale":             "348",
+      "temara":           "349",
+      "mohammedia":       "350",
+      "khouribga":        "351",
+      "beni mellal":      "352",
+      "el jadida":        "353",
+      "nador":            "354",
+      "settat":           "355",
+      "safi":             "356",
+      "larache":          "357",
+      "ksar el kebir":    "358",
+      "khemisset":        "359",
+      "guelmim":          "360",
+      "taza":             "361",
+    };
+    if (FALLBACK[target]) return FALLBACK[target];
+
+    // 3) Return null — caller sends city name as-is (EC may accept names too)
+    return null;
   }
 
   /**

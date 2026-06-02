@@ -1448,10 +1448,15 @@ export async function registerRoutes(
 
             const settled = await Promise.allSettled(
               perOrderCtx.map(async ({ order, resolvedCity, orderCreds, bulkQty }) => {
-                console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
-                console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
-                console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId} qty=${bulkQty}`);
-                console.log(`[AMEEX-PRE-SHIP] order=${order.id} customerName="${order.customerName}" apiSecret="${(orderCreds as any).apiSecret}" settings=${JSON.stringify((orderCreds as any).settings || {})}`);
+                // Carrier-specific pre-ship debug
+                if (provider.toLowerCase() === 'digylog') {
+                  console.log(`[CREDS-DEBUG-BULK] carrierStoreName="${(orderCreds as any)?.carrierStoreName}"`);
+                  console.log(`[DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "${(orderCreds as any).carrierStoreName}"`);
+                  console.log(`[DIGYLOG-FINAL] order=${order.id} store="${(orderCreds as any).digylogStoreName || (orderCreds as any).carrierStoreName}" network=${(orderCreds as any).digylogNetworkId} qty=${bulkQty}`);
+                }
+                if (provider.toLowerCase() === 'ameex') {
+                  console.log(`[AMEEX-PRE-SHIP] order=${order.id} customerName="${order.customerName}" apiSecret="${(orderCreds as any).apiSecret}" settings=${JSON.stringify((orderCreds as any).settings || {})}`);
+                }
                 // Detect Ameex retry: order already has a PENDING placeholder from
                 // a previous attempt — warn the carrier service so it can log
                 // appropriately and avoid silent duplicates.
@@ -1477,21 +1482,13 @@ export async function registerRoutes(
                   ameexCityId = resolved;
                 }
 
-                // For Express Coursier: resolve city name → numeric city ID
+                // For Express Coursier: resolve city name → numeric city ID (or use name as-is)
                 let ecCityId: string | undefined;
                 if (provider.toLowerCase() === 'expresscoursier') {
-                  const resolved = await storage.getExpressCoursierCityId(storeId, resolvedCity);
-                  if (!resolved) {
-                    return {
-                      success:        false,
-                      error:          `Express Coursier: Ville "${resolvedCity}" non reconnue. Synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
-                      carrierMessage: 'City not found in express_coursier_cities',
-                      httpStatus:     0,
-                      rawResponse:    null,
-                      permanent:      true,
-                    };
-                  }
-                  ecCityId = resolved;
+                  const accountId = (orderCreds as any).id ?? undefined;
+                  const resolved = await storage.resolveExpressCoursierCityId(resolvedCity, accountId);
+                  ecCityId = resolved ?? resolvedCity; // fallback to city name if no ID found
+                  console.log(`[EC-CITY] order=${order.id} city="${resolvedCity}" → id="${ecCityId}"`);
                 }
 
                 const ecSettings = provider.toLowerCase() === 'expresscoursier'
@@ -2781,13 +2778,12 @@ export async function registerRoutes(
 
       // City ID entries — saved separately for city ID resolution at ship time
       let ameexCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
-      let ecCityEntries:    { externalId: string; name: string; nameNorm: string }[] = [];
-
       if (carrierKey === "expresscoursier") {
         // EC returns: { "cities": { "337": "Casablanca", "338": "Rabat", ... } }
         //         or: [ { "id": 337, "name": "Casablanca" }, ... ]
         const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
         const rawData = resp.data;
+        let ecCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
         if (typeof rawData === 'object' && !Array.isArray(rawData)) {
           const citiesObj = rawData?.cities || rawData?.data?.cities || rawData;
           ecCityEntries = Object.entries(citiesObj as Record<string, any>)
@@ -2844,12 +2840,6 @@ export async function registerRoutes(
       if (carrierKey === "ameex" && ameexCityEntries.length > 0) {
         await storage.upsertAmeexCities(storeId, ameexCityEntries);
         console.log(`[AMEEX-CITIES-SYNC]: Saved ${ameexCityEntries.length} city ID mappings to ameex_cities`);
-      }
-
-      // For Express Coursier: save id→name mapping
-      if (carrierKey === "expresscoursier" && ecCityEntries.length > 0) {
-        await storage.upsertExpressCoursierCities(storeId, ecCityEntries);
-        console.log(`[EC-CITIES-SYNC]: Saved ${ecCityEntries.length} city ID mappings to express_coursier_cities`);
       }
 
       console.log(`[CITY-SYNC]: Received ${cities.length} cities from ${acct.carrierName} API (storeId=${storeId})`);
@@ -8247,7 +8237,9 @@ function ensureHeaders(sheet) {
       console.log(`[SHIPPING-QTY] order=${orderId} items=${JSON.stringify((order.items as any[])?.map((i: any) => ({ p: i.rawProductName, q: i.quantity })))} → qty=${orderQuantity}`);
 
       // ── Call carrier API ──────────────────────────────────────────
-      console.log(`[DIGYLOG-FINAL] order=${orderId} store="${(creds as any).digylogStoreName || (creds as any).carrierStoreName}" network=${(creds as any).digylogNetworkId} qty=${orderQuantity}`);
+      if (provider.toLowerCase() === 'digylog') {
+        console.log(`[DIGYLOG-FINAL] order=${orderId} store="${(creds as any).digylogStoreName || (creds as any).carrierStoreName}" network=${(creds as any).digylogNetworkId} qty=${orderQuantity}`);
+      }
       // For Ameex: resolve city name → numeric city ID (required by Ameex API)
       let singleAmeexCityId: string | undefined;
       if (provider.toLowerCase() === 'ameex') {
@@ -8261,17 +8253,13 @@ function ensureHeaders(sheet) {
         singleAmeexCityId = resolved;
       }
 
-      // For Express Coursier: resolve city name → numeric city ID
+      // For Express Coursier: resolve city name → numeric city ID (or use name as-is)
       let singleEcCityId: string | undefined;
       if (provider.toLowerCase() === 'expresscoursier') {
-        const resolved = await storage.getExpressCoursierCityId(storeId, matchedCity);
-        if (!resolved) {
-          return res.status(422).json({
-            message: `Express Coursier: Ville "${matchedCity}" non reconnue. Synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
-            carrierMessage: 'City not found in express_coursier_cities',
-          });
-        }
-        singleEcCityId = resolved;
+        const accountId = (creds as any).id ?? undefined;
+        const resolved = await storage.resolveExpressCoursierCityId(matchedCity, accountId);
+        singleEcCityId = resolved ?? matchedCity; // fallback to city name if no ID found
+        console.log(`[EC-CITY] order=${orderId} city="${matchedCity}" → id="${singleEcCityId}"`);
       }
 
       const singleEcSettings = provider.toLowerCase() === 'expresscoursier'

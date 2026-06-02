@@ -1,0 +1,174 @@
+The Express Coursier integration is partially working but has 3 critical bugs visible in production logs. Fix all 3.
+
+═══════════════════════════════════════════════════════════════════════
+BUG REPORT (from production logs)
+═══════════════════════════════════════════════════════════════════════
+When I select Express Coursier and click "Expédier" on order #7966 (city: Berrechid), the logs show:
+
+  [BulkShip] Using pinned account id=19 (Connection 1) digylogStore="undefined" network=1
+  [SHIPPING-QTY] order=5758 items=[...] → bulkQty=1
+  [CREDS-DEBUG-BULK] carrierStoreName="undefined"
+  [DIGYLOG-STORE-DEBUG]: carrierStoreName from creds = "undefined"
+  [DIGYLOG-FINAL] order=5758 store="undefined" network=1 qty=1
+  [AMEEX-PRE-SHIP] order=5758 customerName="Abdelkoddouss" apiSecret="undefined" settings={}
+  [SHIPPING-LOG]: ❌ Order #7966 failed — HTTP ?: relation "express_coursier_cities" does not exist
+  POST /api/orders/bulk-ship 202 in 21ms :: {"queued":true,"total":1}
+  [BULK-SHIP:BG] Done — 0 shipped, 1 failed out of 1
+
+This reveals 3 problems:
+
+═══════════════════════════════════════════════════════════════════════
+BUG 1: Missing database table "express_coursier_cities"
+═══════════════════════════════════════════════════════════════════════
+The code references a table that doesn't exist in the production DB. Options:
+
+OPTION A (recommended — REMOVE the table dependency):
+- Delete the express_coursier_cities table reference entirely from the code.
+- Modify the city resolution logic to:
+  1. FIRST, try to use carrier_cities (existing table, per-account city list).
+  2. If not found, try a hardcoded fallback map for common Moroccan cities → Express Coursier numeric IDs (seed a small list inline in code).
+  3. If still not found, FALL BACK to sending the city name as-is (Express Coursier might accept names; only some APIs require numeric IDs — test their actual behavior).
+
+OPTION B (only if you must keep the table):
+- Add the table via Drizzle push: `npx drizzle-kit push` to sync schema.
+- Make sure the migration applies cleanly.
+
+Choose OPTION A. The table is unnecessary if we use the existing carrier_cities table that already supports per-account city lists.
+
+In server/storage.ts, update resolveExpressCoursierCityId to remove any reference to expressCoursierCities table:
+
+  async resolveExpressCoursierCityId(cityName: string, accountId?: number): Promise<string | null> {
+    const norm = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const target = norm(cityName);
+
+    // 1) Try carrier_cities for this account
+    if (accountId) {
+      const rows = await db.select().from(carrierCities).where(eq(carrierCities.accountId, accountId));
+      for (const r of rows) {
+        if (norm(r.cityName) === target) {
+          const ext = (r as any).settings?.cityId || (r as any).externalCityId || (r as any).cityId;
+          if (ext) return String(ext);
+        }
+      }
+    }
+    // 2) Hardcoded fallback (extend as needed)
+    const fallback: Record<string, string> = {
+      "casablanca": "337",
+      "rabat": "338",
+      "marrakech": "339",
+      "tanger": "340",
+      "berrechid": "341",
+      "agadir": "342",
+      "fes": "343",
+      "kenitra": "344",
+      // add more as you learn the IDs
+    };
+    if (fallback[target]) return fallback[target];
+
+    // 3) Return null — let the caller decide whether to send city name as-is
+    return null;
+  }
+
+In server/services/carrier-service.ts (shipOrderToExpressCoursier), if the resolver returns null, try sending the city name as-is rather than failing — Express Coursier may accept names:
+
+  const cityId = await storage.resolveExpressCoursierCityId(cityName, creds.accountId);
+  const cityToSend = cityId || cityName;  // fallback to name
+  // ...
+  packages: [{ ..., city: String(cityToSend), ... }]
+
+If Express Coursier rejects with 400 because of city format, we'll fix it after we know exact behavior. For now don't BLOCK shipping on missing city ID.
+
+═══════════════════════════════════════════════════════════════════════
+BUG 2: Provider dispatcher runs ALL carriers for one order
+═══════════════════════════════════════════════════════════════════════
+Logs show DIGYLOG-FINAL, AMEEX-PRE-SHIP, AND the express_coursier_cities error ALL for the same order. This means the bulk-ship dispatcher is NOT properly branching on the selected provider — it's executing all carrier code paths.
+
+Open server/routes.ts → /api/orders/bulk-ship handler and server/services/carrier-service.ts → shipOrderToCarrier.
+
+The dispatcher MUST be a strict if/else (or switch) that runs ONLY the selected carrier:
+
+  async function shipOrderToCarrier(order, creds, options = {}) {
+    const provider = (options.provider || creds.carrierName || "").toLowerCase().trim();
+
+    switch (provider) {
+      case "digylog":
+        return await shipOrderToDigylog(order, creds, options);
+      case "ameex":
+        return await shipOrderToAmeex(order, creds, options);
+      case "expresscoursier":
+        return await shipOrderToExpressCoursier(order, creds, options);
+      default:
+        throw new Error(`Provider "${provider}" non supporté.`);
+    }
+  }
+
+NO fallthrough. NO running multiple branches. Each provider path must be isolated.
+
+If the existing code has Digylog/Ameex logic OUTSIDE the switch (running unconditionally as "pre-ship" steps), MOVE that logic INSIDE its own case. The [AMEEX-PRE-SHIP] log line running for an Express Coursier order is a smoking gun — Ameex prep code is running unconditionally.
+
+Search for [DIGYLOG-FINAL] and [AMEEX-PRE-SHIP] log strings and trace what wraps them. Wrap each carrier's prep + ship logic inside an `if (provider === "X")` block.
+
+═══════════════════════════════════════════════════════════════════════
+BUG 3: Status not updating after successful ship
+═══════════════════════════════════════════════════════════════════════
+User wants: when bulk-ship succeeds for an order, the order status changes AUTOMATICALLY to "Expédié" (or whatever the existing carriers do).
+
+Check how Digylog/Ameex update the order status after success. Mirror the same logic for Express Coursier. The shipOrderToCarrier success path should:
+
+  // After successful carrier API call:
+  await storage.updateOrderStatus(order.id, "Expédié");  // use the exact status string the platform uses
+  await storage.updateOrderTracking(order.id, {
+    provider: "expresscoursier",
+    trackingNumber: result.trackingNumber,
+    shippedAt: new Date(),
+    accountId: creds.accountId,
+  });
+
+If Digylog/Ameex already do this in a shared post-ship function (e.g. `finalizeShippedOrder`), make sure shipOrderToExpressCoursier also calls it. Don't duplicate — reuse.
+
+═══════════════════════════════════════════════════════════════════════
+STEP-BY-STEP FIX PLAN
+═══════════════════════════════════════════════════════════════════════
+
+STEP 1 — Inspect (no code changes yet):
+  a. Read /api/orders/bulk-ship handler in server/routes.ts. Find where it calls shipOrderToCarrier (or equivalent).
+  b. Read shipOrderToCarrier in server/services/carrier-service.ts. Confirm whether it has proper if/else branching or if Digylog/Ameex code runs unconditionally.
+  c. Find what status string is set after Digylog success (search for "Expédié", "updateOrderStatus" near the digylog ship).
+  d. Report findings.
+
+STEP 2 — Apply Bug 1 fix:
+  e. Remove all references to expressCoursierCities table (the schema definition, imports, the query in resolveExpressCoursierCityId).
+  f. Replace with carrier_cities + hardcoded fallback as shown above.
+  g. Make shipOrderToExpressCoursier send city as-is when ID isn't found (don't throw).
+
+STEP 3 — Apply Bug 2 fix:
+  h. Refactor shipOrderToCarrier into a strict switch. Move any prep code that's running unconditionally INTO each carrier's case.
+
+STEP 4 — Apply Bug 3 fix:
+  i. Add status update + tracking save in the Express Coursier success path. Mirror exactly how Digylog/Ameex do it.
+
+STEP 5 — Test before pushing:
+  j. Run `npm run build` — must pass with no TypeScript errors.
+  k. Push to Railway.
+  l. Test bulk-ship on a single order with Express Coursier selected. Logs should show ONLY [EXPRESSCOURSIER-*] lines, NOT [DIGYLOG-FINAL] or [AMEEX-PRE-SHIP].
+  m. Verify the order status changes to "Expédié" and the tracking number is saved.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ No more "relation express_coursier_cities does not exist" error
+2. ✅ Selecting Express Coursier only runs Express Coursier code (no Digylog/Ameex logs)
+3. ✅ City "Berrechid" either resolves to an ID or sends as-is (not blocked)
+4. ✅ On successful ship, order status auto-updates to "Expédié"
+5. ✅ Tracking number is saved on the order
+6. ✅ Digylog and Ameex still work for their own accounts (no regression)
+7. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(expresscoursier): remove unused table, isolate dispatcher, auto-update status"
+git push origin main
+
+INSPECT FIRST (Step 1), report what you find about the dispatcher and the status-update flow, then apply fixes one by one.
