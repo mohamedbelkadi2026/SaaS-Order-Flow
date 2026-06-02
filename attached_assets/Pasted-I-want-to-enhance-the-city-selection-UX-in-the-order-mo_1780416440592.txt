@@ -1,0 +1,225 @@
+I want to enhance the city selection UX in the order modal AND the bulk-ship modal. Right now, the city dropdown shows ALL cities regardless of which carrier was selected. I want:
+
+1. The city dropdown should show ONLY cities that the SELECTED carrier (Digylog / Ameex / Express Coursier) actually covers.
+2. Each city option should display the LOGO of the carrier that covers it.
+3. The selector itself should show carrier logos (not just text).
+
+═══════════════════════════════════════════════════════════════════════
+THE DESIRED UX
+═══════════════════════════════════════════════════════════════════════
+
+Scenario A — User opens order modal:
+1. User picks a carrier account (e.g. "Digylog — Yassine") from the Transporteur selector.
+2. The VILLE dropdown IMMEDIATELY filters to show ONLY cities Digylog-Yassine covers.
+3. Each city row shows the Digylog logo (small icon, 16-20px) next to the city name.
+
+Scenario B — User changes carrier:
+4. User switches to "Express Coursier — Connection 1".
+5. The VILLE dropdown re-filters: now shows ONLY Express Coursier cities, each with the Express Coursier logo.
+
+Scenario C — User picks city first:
+6. If the user types/selects a city BEFORE choosing a carrier, the Transporteur selector should highlight only carriers that cover that city (we already have ✅ Couvre / ⚠️ Non couverte badges — keep those).
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT FIRST (no code yet)
+═══════════════════════════════════════════════════════════════════════
+1. Find the city dropdown component(s):
+   - In the single-order modal (search for "VILLE" or "selectedCity").
+   - In the bulk-ship modal (search for "Sélectionner un compte transporteur" — the city selection there too if any).
+
+2. Find where the cities list comes from:
+   - /api/carriers/cities/all endpoint and its frontend useQuery hook.
+   - Note the shape of the response: probably `[{ accountId, carrierName, cities: [...] }]` or similar.
+
+3. Find the carrier+account selector (the one with Digylog/Ameex/Express Coursier radio buttons).
+   - Note its state variable name (likely `selectedAccountId` or similar).
+
+4. Find where carrier names are displayed currently in the UI (e.g. the Expédier modal that shows "Expresscoursier — Connection 1").
+   - We'll add logos alongside those text labels.
+
+5. Check public/ folder (or wherever static assets live). Note if there are existing logo files for Digylog / Ameex.
+
+REPORT findings before any code changes.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — ADD CARRIER LOGOS
+═══════════════════════════════════════════════════════════════════════
+A) Place logo files in the public folder (or client/public, depending on Vite config). Use these EXACT filenames:
+   - public/logos/digylog.png    (or .svg if you have it)
+   - public/logos/ameex.png
+   - public/logos/expresscoursier.png   ← I'll upload this; the file is in attached_assets
+
+If logos for Digylog and Ameex don't exist yet, create simple fallback initials icons in the LogoBadge component below — never break the layout if a logo is missing.
+
+B) Create a small reusable component CarrierLogo:
+
+  // client/src/components/CarrierLogo.tsx
+  import React from "react";
+
+  type Props = {
+    carrierName: string;          // "digylog" | "ameex" | "expresscoursier"
+    size?: number;                // px, default 20
+    className?: string;
+  };
+
+  const LOGO_MAP: Record<string, { src?: string; bg: string; text: string }> = {
+    digylog:         { src: "/logos/digylog.png",         bg: "#0ea5e9", text: "D" },
+    ameex:           { src: "/logos/ameex.png",           bg: "#ea580c", text: "A" },
+    expresscoursier: { src: "/logos/expresscoursier.png", bg: "#06b6d4", text: "E" },
+  };
+
+  export function CarrierLogo({ carrierName, size = 20, className = "" }: Props) {
+    const key = (carrierName || "").toLowerCase().trim();
+    const cfg = LOGO_MAP[key] || { bg: "#6b7280", text: (carrierName || "?").charAt(0).toUpperCase() };
+    const [errored, setErrored] = React.useState(false);
+
+    if (cfg.src && !errored) {
+      return (
+        <img
+          src={cfg.src}
+          alt={carrierName}
+          width={size}
+          height={size}
+          onError={() => setErrored(true)}
+          className={`inline-block rounded object-contain bg-white p-0.5 border border-gray-100 ${className}`}
+          style={{ width: size, height: size }}
+        />
+      );
+    }
+    return (
+      <span
+        className={`inline-flex items-center justify-center rounded text-white font-bold ${className}`}
+        style={{ width: size, height: size, fontSize: size * 0.5, background: cfg.bg }}
+      >
+        {cfg.text}
+      </span>
+    );
+  }
+
+Use this <CarrierLogo carrierName="expresscoursier" size={18} /> everywhere a carrier is referenced.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — REPLACE TEXT-ONLY CARRIER LABELS WITH LOGO + TEXT
+═══════════════════════════════════════════════════════════════════════
+Wherever the carrier name is shown:
+  - In the Transporteur radio selector (order modal): logo + "Digylog — Yassine"
+  - In the Expédier les commandes modal: logo + "Expresscoursier — Connection 1 (défaut)"
+  - In the store cards (Intégrations page): logo + carrier badge
+
+Use the <CarrierLogo /> component. Keep existing text. Just prepend the logo.
+
+  <div className="flex items-center gap-2">
+    <CarrierLogo carrierName={acct.carrierName} size={18} />
+    <span className="font-semibold capitalize">{acct.carrierName} — {acct.connectionName}</span>
+  </div>
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — FILTER THE VILLE DROPDOWN BY SELECTED CARRIER
+═══════════════════════════════════════════════════════════════════════
+The city dropdown currently shows ALL cities. Change it to show only cities the selected carrier account covers.
+
+A) In the order modal, you should already have:
+   - selectedAccountId (or selectedAccount) state — the currently chosen carrier+account
+   - carrierCities query result — list with cities per accountId
+
+B) Compute the filtered city list:
+
+  const norm = (s: string) =>
+    (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+
+  const citiesForSelectedAccount = useMemo(() => {
+    if (!selectedAccountId || !carrierCities) return [];
+    const entry = carrierCities.find((c: any) => c.accountId === selectedAccountId);
+    return entry?.cities || [];
+  }, [selectedAccountId, carrierCities]);
+
+  // Each city item annotated with the carrier (for the logo)
+  const cityOptions = useMemo(() => {
+    const carrierName =
+      activeAccounts?.find((a: any) => a.id === selectedAccountId)?.carrierName || "";
+    return citiesForSelectedAccount.map((city: any) => ({
+      name: typeof city === "string" ? city : (city.cityName || city.name),
+      carrierName,
+    }));
+  }, [citiesForSelectedAccount, activeAccounts, selectedAccountId]);
+
+C) Render the city dropdown options with the logo. If the existing dropdown is a native <select>, native options can't render images — switch to a custom dropdown (e.g. a button + popover with a scrollable list). If a custom dropdown component (Combobox, shadcn Select) is already in use, just add the logo to each option:
+
+  <CommandItem
+    key={opt.name}
+    value={opt.name}
+    onSelect={() => setSelectedCity(opt.name)}
+  >
+    <CarrierLogo carrierName={opt.carrierName} size={16} className="mr-2" />
+    <span>{opt.name}</span>
+  </CommandItem>
+
+If the existing dropdown is a native <select>, REPLACE it with a custom searchable combobox using the same component library the platform already uses (check imports in clients.tsx or filters.tsx — likely shadcn's Combobox / Command). Match the styling EXACTLY to other dropdowns in the platform.
+
+D) Edge cases:
+   - No carrier selected yet: show ALL cities from ALL active accounts (deduped by name), each with the logo of the carrier that covers it. If a city is covered by multiple carriers, show the first carrier's logo and a small "+N" indicator.
+   - Selected carrier has 0 cities synced: show a helpful empty state ("Aucune ville synchronisée pour ce compte. Synchroniser les villes dans Intégrations.").
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — ALSO APPLY TO THE BULK-SHIP MODAL
+═══════════════════════════════════════════════════════════════════════
+The "Expédier les commandes" modal (the one with "Sélectionner un compte transporteur") doesn't have a city dropdown (city is per-order), but it DOES show carrier names. Add the logo there too:
+
+  Expresscoursier — Connection 1 (défaut)
+  →
+  [logo] Expresscoursier — Connection 1 (défaut)
+
+Use <CarrierLogo carrierName={acct.carrierName} size={20} />.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — INTEGRATIONS PAGE: logos on the carrier cards
+═══════════════════════════════════════════════════════════════════════
+On the Intégrations → Sociétés de Livraison page, where each saved account card is displayed, show the carrier logo prominently (e.g. 32-40px on the left of the card).
+
+═══════════════════════════════════════════════════════════════════════
+STEP 7 — STORE CARDS: replace text badge with logo + text
+═══════════════════════════════════════════════════════════════════════
+On the magasin cards (where the badge "expresscoursier" currently shows next to "Ouvert" and "Ramassage"), prepend the logo:
+
+  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-violet-300 bg-violet-50 text-violet-700 text-sm font-semibold">
+    <CarrierLogo carrierName="expresscoursier" size={16} />
+    expresscoursier
+  </span>
+
+═══════════════════════════════════════════════════════════════════════
+DESIGN RULES
+═══════════════════════════════════════════════════════════════════════
+1. Logos always have a transparent or white background (the Express Coursier logo I'll upload has a black background — use the white-bg wrapper from CarrierLogo to make it pop).
+2. Logo size: 16-18px in dropdowns, 20-24px in selectors/badges, 32-40px in cards.
+3. Always fall back to initials if the image fails to load (the CarrierLogo component already handles this).
+4. Match the existing platform theme — don't introduce new colors.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ CarrierLogo component created and used everywhere a carrier name appears
+2. ✅ City dropdown in order modal filters by selected carrier
+3. ✅ Each city option in the dropdown shows the carrier's logo
+4. ✅ Changing the carrier instantly re-filters the city list
+5. ✅ Bulk-ship modal shows logos next to "Expresscoursier — Connection 1", "Digylog — Connection 1", "Ameex — Connection 1"
+6. ✅ Store cards show logos next to carrier name badges
+7. ✅ Intégrations page carrier account cards show prominent logos
+8. ✅ Missing logo images gracefully fall back to colored initials (no broken images)
+9. ✅ No regression on existing single-ship / bulk-ship / store creation flows
+10. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+ASSETS NEEDED
+═══════════════════════════════════════════════════════════════════════
+The user will upload these files to public/logos/ in Replit before testing:
+- expresscoursier.png  (provided)
+- digylog.png          (use existing if any; else fallback initials will show)
+- ameex.png            (use existing if any; else fallback initials will show)
+
+The CarrierLogo component already handles missing files gracefully — initials with brand colors will show instead.
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(carri
