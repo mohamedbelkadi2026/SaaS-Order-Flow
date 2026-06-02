@@ -1,0 +1,141 @@
+Express Coursier ship is failing with this exact error from their API:
+
+  {
+    "success": false,
+    "message": "Store ID '0' is not accessible with this token",
+    "errors": { "store_id": "Invalid store access" }
+  }
+
+ROOT CAUSE: We're sending `store_id: 0` because the Express Coursier account form doesn't capture (or doesn't persist) the carrier's store_id. Express Coursier requires the merchant's specific store_id in their dashboard, not 0.
+
+═══════════════════════════════════════════════════════════════════════
+FIX PLAN
+═══════════════════════════════════════════════════════════════════════
+
+STEP 1 — INSPECT
+  a. Open the Integrations page where Express Coursier accounts are added/edited (likely client/src/pages/integrations.tsx or a sub-component).
+  b. Find the form for "Connecter Express Coursier" / "Editer compte". Check if it has a "Store ID" field.
+  c. Open server/storage.ts → find createCarrierAccount and updateCarrierAccount. Check whether they persist a `expressCoursierStoreId` (in settings JSON or a dedicated column).
+  d. Open server/services/carrier-service.ts → shipOrderToExpressCoursier. Find this line (or similar):
+       const storeId = creds.expressCoursierStoreId || (creds.settings as any)?.expressCoursierStoreId || 0;
+     Note where it reads from.
+
+REPORT what you find:
+  - Does the form have a Store ID input? (yes/no)
+  - Where (if at all) is it saved on the carrierAccount?
+  - What does the shipping service read?
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — FRONTEND: add the Store ID field
+═══════════════════════════════════════════════════════════════════════
+In the Express Coursier account form (the modal/page where users connect a new account), add a required "Store ID Express Coursier" input ALONGSIDE the API Token field.
+
+Mirror the existing inputs' styling (same Tailwind classes, same labels pattern). Required field, numeric input.
+
+  <div className="mb-4">
+    <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+      Store ID Express Coursier <span className="text-red-500">*</span>
+    </label>
+    <input
+      type="text"
+      inputMode="numeric"
+      placeholder="ex: 1234"
+      value={form.expressCoursierStoreId || ""}
+      onChange={e => setForm({...form, expressCoursierStoreId: e.target.value.replace(/\D/g, "")})}
+      required
+      className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none text-sm"
+    />
+    <p className="text-xs text-gray-500 mt-1.5">
+      Trouvez votre Store ID dans votre tableau de bord Express Coursier (Paramètres → API).
+    </p>
+  </div>
+
+When the form submits, include `expressCoursierStoreId` in the payload sent to /api/carrier-accounts (or whatever endpoint creates/updates the account). Validate: must be present and numeric for Express Coursier carrier.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — BACKEND: persist the Store ID
+═══════════════════════════════════════════════════════════════════════
+A) The carrierAccounts table has a `settings` JSONB column (from earlier work). Save the Store ID there:
+
+In the createCarrierAccount / updateCarrierAccount handler (server/routes.ts or server/storage.ts), when carrierName === "expresscoursier", merge the storeId into settings:
+
+  const settings = {
+    ...(input.settings || {}),
+    expressCoursierStoreId: String(input.expressCoursierStoreId || "").trim(),
+  };
+  // then save the account with this settings object
+
+If a dedicated column already exists (e.g. carrierStoreName on the account), use that AS WELL for consistency with how Digylog stores its carrier store name.
+
+B) Validate on the server: if carrierName === "expresscoursier" and no valid numeric storeId, return 400 with a clear message.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — SHIPPING: read the Store ID correctly
+═══════════════════════════════════════════════════════════════════════
+In server/services/carrier-service.ts → shipOrderToExpressCoursier, fix the storeId resolution. Read from multiple possible locations (in priority order), and FAIL FAST with a clear error if it's missing — DO NOT default to 0.
+
+  // Robust resolution: accept whichever field the persistence layer used
+  const settings = (creds.settings as any) || {};
+  const rawStoreId =
+    creds.expressCoursierStoreId ??
+    settings.expressCoursierStoreId ??
+    settings.storeId ??
+    creds.carrierStoreName ??  // some integrations reused this field
+    null;
+
+  const storeIdNum = Number(String(rawStoreId || "").trim());
+  if (!storeIdNum || !Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+    throw new Error(
+      `Store ID Express Coursier manquant ou invalide pour ce compte. ` +
+      `Allez dans Intégrations → Sociétés de Livraison → modifier le compte, et ajoutez votre Store ID Express Coursier.`
+    );
+  }
+
+  // Use storeIdNum (not 0) in the payload:
+  const payload = {
+    store_id: storeIdNum,
+    packages: [{ /* ... */ }],
+  };
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — UI: show "Store ID" on the existing connected account card
+═══════════════════════════════════════════════════════════════════════
+On the Express Coursier card in the Integrations page (the one showing "expresscoursier" badge + "Connection 1"), show the saved Store ID and provide an "Edit" button. This avoids silent misconfiguration.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — IMMEDIATE FIX FOR THE EXISTING ACCOUNT
+═══════════════════════════════════════════════════════════════════════
+The user already has 1 Express Coursier account saved with `expressCoursierStoreId` missing/0. After deploying:
+  1. They open Intégrations → Sociétés de Livraison
+  2. Edit the Express Coursier account
+  3. Fill in the real Store ID from their Express Coursier dashboard
+  4. Save
+  5. Retry shipping order #7966
+
+If the form doesn't load the existing storeId on edit, fix the GET /api/carrier-accounts/:id endpoint to return settings.expressCoursierStoreId so the form can pre-fill it.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Express Coursier connect form has a "Store ID" required field
+2. ✅ Form validates Store ID is numeric and present
+3. ✅ Backend saves it in carrierAccounts.settings.expressCoursierStoreId
+4. ✅ Edit form pre-fills the saved Store ID
+5. ✅ shipOrderToExpressCoursier reads the real Store ID, never falls back to 0
+6. ✅ If Store ID is missing, ship throws a clear "configurez votre Store ID" error (not Express Coursier's generic error)
+7. ✅ After user adds the Store ID, retry on #7966 succeeds and returns a tracking number
+8. ✅ Digylog and Ameex still work (regression)
+9. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(expresscoursier): require and persist store_id in account settings"
+git push origin main
+
+WORKFLOW:
+1. INSPECT first (Step 1). Report findings.
+2. Apply Steps 2–5.
+3. `npm run build` must pass before push.
+4. After deploy, tell me to edit the existing Express Coursier account and add the real Store ID, then retry the order.

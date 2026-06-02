@@ -922,7 +922,17 @@ export async function shipOrderToCarrier(
     const cityToSend = input.cityId || input.city; // numeric ID preferred; fall back to city name
     console.log(`[EC-CITY-RESOLVE] order=${input.orderNumber} city="${input.city}" cityId="${input.cityId}" → sending "${cityToSend}"`);
     const ecSettings = (input as any).ecSettings || {};
-    const ecStoreId = Number(ecSettings.expressCoursierStoreId || 0);
+    const rawStoreId =
+      ecSettings.expressCoursierStoreId ??
+      ecSettings.storeId ??
+      (input as any).carrierStoreName ??
+      null;
+    const ecStoreId = Number(String(rawStoreId ?? "").trim());
+    if (!ecStoreId || !Number.isFinite(ecStoreId) || ecStoreId <= 0) {
+      const errMsg = `Store ID Express Coursier manquant ou invalide (valeur: "${rawStoreId}"). Allez dans Intégrations → Sociétés de Livraison → modifier le compte Express Coursier, et renseignez votre Store ID.`;
+      console.error(`[EC][#${input.orderNumber}] ❌ ${errMsg}`);
+      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
     const priceDH   = +(input.totalPrice / 100).toFixed(2);
     const sanitized = sanitizePhone(input.phone);
     const ecPayload = {

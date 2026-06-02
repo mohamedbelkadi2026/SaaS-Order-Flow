@@ -349,8 +349,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           if (ameexApiId.trim())    body.apiSecret       = ameexApiId;
           body.carrierStoreName = ameexStoreName.trim() || null;
         } else if (isExpressCoursier) {
+          const ecStoreIdNum = Number(ecStoreId.trim());
+          if (!ecStoreIdNum || ecStoreIdNum <= 0) {
+            throw new Error("Le Store ID Express Coursier est obligatoire. Trouvez-le dans votre tableau de bord EC (Paramètres → API).");
+          }
           if (apiKey.trim()) body.apiKey = apiKey;
-          body.settings = { ...((existingAccount?.settings as object) || {}), expressCoursierStoreId: Number(ecStoreId) || 0 };
+          body.settings = { ...((existingAccount?.settings as object) || {}), expressCoursierStoreId: ecStoreIdNum };
         } else {
           if (apiKey.trim()) body.apiKey = apiKey;
           if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
@@ -374,8 +378,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           payload.carrierStoreName = ameexStoreName.trim() || undefined;
           payload.storeName       = resolvedStoreName;
         } else if (isExpressCoursier) {
+          const ecStoreIdNum = Number(ecStoreId.trim());
+          if (!ecStoreIdNum || ecStoreIdNum <= 0) {
+            throw new Error("Le Store ID Express Coursier est obligatoire. Trouvez-le dans votre tableau de bord EC (Paramètres → API).");
+          }
           payload.storeName = resolvedStoreName;
-          payload.settings  = { expressCoursierStoreId: Number(ecStoreId) || 0 };
+          payload.settings  = { expressCoursierStoreId: ecStoreIdNum };
         } else if (isCustom) {
           payload.apiUrl    = apiUrl.trim() || undefined;
           payload.storeName = resolvedStoreName;
@@ -538,18 +546,19 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="ec_store_id_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
-                    Store ID <span className="text-xs font-normal text-muted-foreground">(optionnel)</span>
+                    Store ID Express Coursier <span className="text-red-500">*</span>
                   </Label>
                   <Input
                     id="ec_store_id_edit"
                     data-testid="input-ec-store-id"
-                    type="number"
-                    placeholder="Ex: 42"
+                    inputMode="numeric"
+                    placeholder="ex: 1234"
                     value={ecStoreId}
-                    onChange={e => setEcStoreId(e.target.value)}
-                    className="h-10 text-sm"
+                    onChange={e => setEcStoreId(e.target.value.replace(/\D/g, ""))}
+                    className={`h-10 text-sm ${isExpressCoursier && !ecStoreId.trim() && submitError ? "border-red-400" : ""}`}
+                    required
                   />
-                  <p className="text-[10px] text-muted-foreground">Identifiant numérique de votre boutique Express Coursier</p>
+                  <p className="text-[10px] text-muted-foreground">Trouvez votre Store ID dans votre tableau de bord Express Coursier (Paramètres → API)</p>
                 </div>
               </>
             ) : (
@@ -1007,18 +1016,19 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="ec_store_id_create" className="font-semibold text-sm" style={{ color: NAVY }}>
-                  Store ID <span className="text-xs font-normal text-muted-foreground">(optionnel)</span>
+                  Store ID Express Coursier <span className="text-red-500">*</span>
                 </Label>
                 <Input
                   id="ec_store_id_create"
                   data-testid="input-ec-store-id"
-                  type="number"
-                  placeholder="Ex: 42"
+                  inputMode="numeric"
+                  placeholder="ex: 1234"
                   value={ecStoreId}
-                  onChange={e => setEcStoreId(e.target.value)}
-                  className="h-10 text-sm"
+                  onChange={e => setEcStoreId(e.target.value.replace(/\D/g, ""))}
+                  className={`h-10 text-sm ${isExpressCoursier && !ecStoreId.trim() && submitError ? "border-red-400" : ""}`}
+                  required
                 />
-                <p className="text-[10px] text-muted-foreground">Identifiant numérique de votre boutique Express Coursier</p>
+                <p className="text-[10px] text-muted-foreground">Trouvez votre Store ID dans votre tableau de bord Express Coursier (Paramètres → API)</p>
               </div>
             </>
           ) : isAmeex ? (
