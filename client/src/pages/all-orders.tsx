@@ -54,6 +54,8 @@ const ALL_STATUSES = [
 
 const CARRIER_LOGOS: Record<string, string> = {
   digylog: '/carriers/digylog.svg',
+  expresscoursier: '/carriers/expresscoursier.png',
+  'express coursier': '/carriers/expresscoursier.png',
   onessta: '/carriers/onessta.svg',
   ozoneexpress: '/carriers/ozon.svg',
   'ozone express': '/carriers/ozon.svg',
