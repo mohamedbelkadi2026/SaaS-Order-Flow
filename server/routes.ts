@@ -271,6 +271,7 @@ function getDefaultCitiesForProvider(provider: string): string[] {
   if (p.includes("digylog")||p.includes("ecotrack")||p.includes("eco-track")) return DIGYLOG_CITIES_DEFAULT;
   if (p.includes("cathedis")) return CATHEDIS_CITIES_DEFAULT;
   if (p.includes("ameex")) return AMEEX_CITIES_DEFAULT;
+  if (p.includes("expresscoursier") || p.includes("express coursier")) return MOROCCAN_CITIES_DEFAULT;
   return MOROCCAN_CITIES_DEFAULT;
 }
 
@@ -295,6 +296,8 @@ const CARRIER_LOGOS_SERVER: Record<string, string> = {
   quicklivraison: '/carriers/ql.svg',
   'quick livraison': '/carriers/ql.svg',
   ql: '/carriers/ql.svg',
+  expresscoursier: '/carriers/expresscoursier.png',
+  'express coursier': '/carriers/expresscoursier.png',
 };
 
 /** Auto-match a raw city name against a carrier's city list. Returns best match or null. */
@@ -1474,6 +1477,27 @@ export async function registerRoutes(
                   ameexCityId = resolved;
                 }
 
+                // For Express Coursier: resolve city name → numeric city ID
+                let ecCityId: string | undefined;
+                if (provider.toLowerCase() === 'expresscoursier') {
+                  const resolved = await storage.getExpressCoursierCityId(storeId, resolvedCity);
+                  if (!resolved) {
+                    return {
+                      success:        false,
+                      error:          `Express Coursier: Ville "${resolvedCity}" non reconnue. Synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
+                      carrierMessage: 'City not found in express_coursier_cities',
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
+                  }
+                  ecCityId = resolved;
+                }
+
+                const ecSettings = provider.toLowerCase() === 'expresscoursier'
+                  ? ((orderCreds as any).settings || {})
+                  : {};
+
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -1493,7 +1517,8 @@ export async function registerRoutes(
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
                   previousAttemptHadPlaceholder: isAmeexRetry,
-                  cityId:           ameexCityId,
+                  cityId:           ameexCityId ?? ecCityId,
+                  ecSettings,
                 });
               })
             );
@@ -2684,6 +2709,8 @@ export async function registerRoutes(
           .replace(/api\.digylog\.ma/i, "api.digylog.com")
           .replace(/app\.digylog\.com/i, "api.digylog.com");
         citiesUrl = `${base}/cities`;
+      } else if (carrierKey === "expresscoursier") {
+        citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
@@ -2695,6 +2722,8 @@ export async function registerRoutes(
         // Ameex uses C-Api-Key / C-Api-Id header pair — strip any HTML wrapping
         reqHeaders["C-Api-Key"] = stripHtml(acct.apiKey);
         reqHeaders["C-Api-Id"]  = stripHtml((acct as any).apiSecret || (acct as any).storeName || "");
+      } else if (carrierKey === "expresscoursier") {
+        // Token is embedded in the URL path — no Authorization header needed
       } else {
         reqHeaders["Authorization"] = `Bearer ${apiKey}`;
         reqHeaders["Referer"] = "https://apiseller.digylog.com";
@@ -2750,10 +2779,35 @@ export async function registerRoutes(
       // Parse city names — carrier-specific response shapes
       let cities: string[] = [];
 
-      // Ameex city ID entries (id → name) — saved separately for city ID resolution at ship time
+      // City ID entries — saved separately for city ID resolution at ship time
       let ameexCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
+      let ecCityEntries:    { externalId: string; name: string; nameNorm: string }[] = [];
 
-      if (carrierKey === "ameex") {
+      if (carrierKey === "expresscoursier") {
+        // EC returns: { "cities": { "337": "Casablanca", "338": "Rabat", ... } }
+        //         or: [ { "id": 337, "name": "Casablanca" }, ... ]
+        const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+        const rawData = resp.data;
+        if (typeof rawData === 'object' && !Array.isArray(rawData)) {
+          const citiesObj = rawData?.cities || rawData?.data?.cities || rawData;
+          ecCityEntries = Object.entries(citiesObj as Record<string, any>)
+            .map(([id, val]: any) => {
+              const cityName = (typeof val === 'string' ? val : val?.name || val?.ville || "").trim();
+              return { externalId: String(id), name: cityName, nameNorm: normName(cityName) };
+            })
+            .filter(e => e.name && !isNaN(Number(e.externalId)));
+        } else if (Array.isArray(rawData)) {
+          const arr: any[] = rawData?.length ? rawData : resp.data?.data || [];
+          ecCityEntries = arr
+            .map((c: any) => {
+              const cityName = (c.name || c.ville || c.label || "").trim();
+              const cityId   = String(c.id || c.city_id || "");
+              return { externalId: cityId, name: cityName, nameNorm: normName(cityName) };
+            })
+            .filter(e => e.name && e.externalId);
+        }
+        cities = ecCityEntries.map(e => e.name).sort();
+      } else if (carrierKey === "ameex") {
         // Ameex returns: {"login":"success","api":{"cities":{"1":{"name":"Marrakech",...},"2":...}}}
         const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
         const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
@@ -2790,6 +2844,12 @@ export async function registerRoutes(
       if (carrierKey === "ameex" && ameexCityEntries.length > 0) {
         await storage.upsertAmeexCities(storeId, ameexCityEntries);
         console.log(`[AMEEX-CITIES-SYNC]: Saved ${ameexCityEntries.length} city ID mappings to ameex_cities`);
+      }
+
+      // For Express Coursier: save id→name mapping
+      if (carrierKey === "expresscoursier" && ecCityEntries.length > 0) {
+        await storage.upsertExpressCoursierCities(storeId, ecCityEntries);
+        console.log(`[EC-CITIES-SYNC]: Saved ${ecCityEntries.length} city ID mappings to express_coursier_cities`);
       }
 
       console.log(`[CITY-SYNC]: Received ${cities.length} cities from ${acct.carrierName} API (storeId=${storeId})`);
@@ -7683,6 +7743,110 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // ── Express Coursier webhook receiver ──────────────────────────────────────
+  // URL format: POST /api/webhooks/shipping/expresscoursier/:storeId
+  // Payload: { package_id, delivery_status (int), event_time, notif_type }
+  // notif_type: "ChangeStatus" | "package_paid" | "package_unpaid"
+  //
+  // delivery_status codes:
+  //   1=En attente  2=En cours ramassage  3=Ramassé  4=En transit
+  //   5=En livraison  6=Livré  7=Échoué  8=Retour en cours  9=Retourné
+  const EC_STATUS_MAP: Record<number, string> = {
+    1: "confirme",
+    2: "confirme",
+    3: "expedition",
+    4: "expedition",
+    5: "expedition",
+    6: "delivered",
+    7: "refused",
+    8: "En Cours De Retour",
+    9: "Retour Recu",
+  };
+
+  app.post("/api/webhooks/shipping/expresscoursier/:storeId", async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      if (!storeId) return res.status(400).json({ message: "Invalid storeId" });
+
+      const body = req.body || {};
+      console.log(`[EC-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);
+
+      // Extract tracking (package_id) and status (delivery_status)
+      const packageId: string | undefined =
+        body.package_id || body.tracking_number || body.id || body.code;
+      const deliveryStatus: number | undefined =
+        body.delivery_status != null ? Number(body.delivery_status) : undefined;
+      const notifType: string = body.notif_type || "";
+
+      if (!packageId) {
+        console.warn(`[EC-WEBHOOK] Missing package_id — ignoring`);
+        return res.json({ success: true, matched: false });
+      }
+
+      // Log the event
+      await storage.createIntegrationLog({
+        storeId,
+        integrationId: null,
+        provider: "expresscoursier",
+        action: "webhook_received",
+        status: "ok",
+        message: `EC webhook: package_id=${packageId} status=${deliveryStatus} type=${notifType}`,
+      });
+
+      // Find order by tracking number
+      const order = await storage.getOrderByTrackingNumber(storeId, String(packageId));
+      if (!order) {
+        console.warn(`[EC-WEBHOOK] No order found for package_id=${packageId} store=${storeId}`);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "expresscoursier",
+          action: "webhook_no_match", status: "ok",
+          message: `EC webhook: package_id=${packageId} not matched to any order`,
+        });
+        return res.json({ success: true, matched: false });
+      }
+
+      // Map status and update
+      if (deliveryStatus != null) {
+        const mappedStatus = EC_STATUS_MAP[deliveryStatus];
+        if (mappedStatus && mappedStatus !== order.status) {
+          await storage.updateOrderStatus(order.id, mappedStatus);
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: "Express Coursier Webhook",
+            note:      `Statut mis à jour via webhook: EC status ${deliveryStatus} → ${mappedStatus}`,
+          });
+          await storage.createIntegrationLog({
+            storeId, integrationId: null, provider: "expresscoursier",
+            action: "status_update", status: "ok",
+            message: `Commande #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC status ${deliveryStatus})`,
+          });
+          console.log(`[EC-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mappedStatus}`);
+        }
+      }
+
+      res.json({ success: true, matched: true, orderId: order.id });
+    } catch (err: any) {
+      console.error("[EC-WEBHOOK] Error:", err?.message);
+      res.status(500).json({ message: "Webhook processing failed" });
+    }
+  });
+
+  // Express Coursier statuses proxy (returns delivery status code descriptions)
+  app.get("/api/expresscoursier/statuses", requireAuth, async (req, res) => {
+    res.json({
+      1: "En attente",
+      2: "En cours de ramassage",
+      3: "Ramassé",
+      4: "En transit",
+      5: "En livraison",
+      6: "Livré",
+      7: "Échoué",
+      8: "Retour en cours",
+      9: "Retourné",
+    });
+  });
+
   // NOTE (P0-7 cleanup): the previous duplicate route
   //   POST /api/webhooks/carrier/:storeId/ameex
   // has been REMOVED. POST/PUT/etc. requests to that URL are handled by
@@ -8097,6 +8261,23 @@ function ensureHeaders(sheet) {
         singleAmeexCityId = resolved;
       }
 
+      // For Express Coursier: resolve city name → numeric city ID
+      let singleEcCityId: string | undefined;
+      if (provider.toLowerCase() === 'expresscoursier') {
+        const resolved = await storage.getExpressCoursierCityId(storeId, matchedCity);
+        if (!resolved) {
+          return res.status(422).json({
+            message: `Express Coursier: Ville "${matchedCity}" non reconnue. Synchronisez les villes dans Paramètres → Transporteurs, puis réessayez.`,
+            carrierMessage: 'City not found in express_coursier_cities',
+          });
+        }
+        singleEcCityId = resolved;
+      }
+
+      const singleEcSettings = provider.toLowerCase() === 'expresscoursier'
+        ? ((creds as any).settings || {})
+        : {};
+
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -8115,7 +8296,8 @@ function ensureHeaders(sheet) {
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
         apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
         apiSecret:        (creds as any).apiSecret || '',
-        cityId:           singleAmeexCityId,
+        cityId:           singleAmeexCityId ?? singleEcCityId,
+        ecSettings:       singleEcSettings,
       });
 
       if (!shipResult.success) {

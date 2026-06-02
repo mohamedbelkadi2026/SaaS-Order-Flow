@@ -31,6 +31,7 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   ozoneexpress:   "https://api.ozoneexpress.ma/api/v1/orders",
   sendit:         "https://api.sendit.ma/api/v1/orders",
   ameex:          "https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add",
+  expresscoursier: "https://expresscoursier.ma/v1.0/batch",
   speedex:        "https://api.speedex.ma/api/v1/orders",
   kargoexpress:   "https://api.kargoexpress.ma/api/v1/orders",
   forcelog:       "https://api.forcelog.ma/api/v1/orders",
@@ -268,11 +269,13 @@ export interface CarrierShipInput {
   // placeholder from a previous attempt — signals that the parcel may already
   // exist in Ameex's portal and we should be careful about recreating it.
   previousAttemptHadPlaceholder?: boolean;
-  // Ameex-specific: numeric city ID resolved from city name via ameex_cities table.
-  // Ameex's API requires the city field to be an integer ID, not a name string.
+  // Ameex/Express Coursier: numeric city ID resolved from city name via *_cities table.
+  // Both APIs require the city field to be an integer ID, not a name string.
   cityId?: string;
   // Ameex-specific: product catalog UUID for stock-managed Ameex accounts.
   ameexProductId?: string;
+  // Express Coursier: settings JSONB object from carrierAccounts (contains expressCoursierStoreId)
+  ecSettings?: Record<string, unknown>;
 }
 
 export interface CarrierShipResult {
@@ -910,6 +913,71 @@ export async function shipOrderToCarrier(
   console.log(`${"═".repeat(70)}\n`);
 
   // ── 5. HTTP request via axios (timeout per carrier, SSL bypass) ──────────
+
+  // ── Express Coursier: token embedded in URL path, JSON body with packages array ──
+  if (providerKey === 'expresscoursier') {
+    if (!apiKey) {
+      return { success: false, error: "Token Express Coursier manquant. Configurez votre compte dans Intégrations → Transporteurs.", carrierMessage: "missing token", httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    if (!input.cityId) {
+      const errMsg = `Express Coursier: ID de ville manquant pour "${input.city}". Synchronisez les villes Express Coursier dans Paramètres → Transporteurs puis réessayez.`;
+      console.error(`[CARRIER→EC][#${input.orderNumber}] ❌ ${errMsg}`);
+      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    const ecSettings = (input as any).ecSettings || {};
+    const ecStoreId = Number(ecSettings.expressCoursierStoreId || 0);
+    const priceDH   = +(input.totalPrice / 100).toFixed(2);
+    const sanitized = sanitizePhone(input.phone);
+    const ecPayload = {
+      store_id: ecStoreId,
+      packages: [{
+        receiver_name: input.customerName,
+        address:       input.address || input.city,
+        city:          String(input.cityId),
+        phone:         sanitized,
+        price:         String(priceDH),
+        note:          input.note || "",
+        product:       input.productName || "Produit",
+        internal_id:   input.orderNumber || `ORD-${input.orderId}`,
+      }],
+    };
+    const ecUrl = `https://expresscoursier.ma/v1.0/batch/${encodeURIComponent(apiKey.trim())}`;
+    console.log(`[EC-SEND] order=${input.orderNumber} url=${ecUrl}`);
+    console.log(`[EC-PAYLOAD] ${JSON.stringify(ecPayload)}`);
+    try {
+      const ecResp = await axios.post(ecUrl, ecPayload, {
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        timeout: 30_000,
+        httpsAgent: SSL_AGENT,
+        validateStatus: () => true,
+      });
+      const ecData: any = ecResp.data;
+      console.log(`[EC-RESP] HTTP ${ecResp.status}: ${JSON.stringify(ecData).slice(0, 500)}`);
+      if (ecResp.status >= 400) {
+        const msg = ecData?.message || ecData?.error || ecData?.detail || `HTTP ${ecResp.status}`;
+        console.error(`[EC][#${input.orderNumber}] ❌ ${msg}`);
+        return { success: false, error: `Express Coursier: ${msg}`, carrierMessage: msg, httpStatus: ecResp.status, rawResponse: ecData };
+      }
+      // Response: { "packages": [{ "package_id": "EC-00012345", ... }] }
+      const pkgs  = ecData?.packages || ecData?.data?.packages || ecData?.data || [];
+      const first = Array.isArray(pkgs) ? pkgs[0] : pkgs;
+      const packageId =
+        first?.package_id || first?.id || first?.tracking_number ||
+        ecData?.package_id || ecData?.id || null;
+      if (!packageId) {
+        const msg = `Express Coursier a accepté la commande mais n'a pas retourné de numéro de suivi. Vérifiez le portail EC.`;
+        console.warn(`[EC][#${input.orderNumber}] ⚠️ ${msg}. Raw: ${JSON.stringify(ecData)}`);
+        return { success: false, error: msg, carrierMessage: msg, httpStatus: ecResp.status, rawResponse: ecData };
+      }
+      console.log(`[EC][#${input.orderNumber}] ✅ SUCCESS! package_id=${packageId}`);
+      return { success: true, trackingNumber: String(packageId), httpStatus: ecResp.status, rawResponse: ecData };
+    } catch (ecErr: any) {
+      const msg = ecErr?.message || "Erreur réseau Express Coursier";
+      console.error(`[EC][#${input.orderNumber}] ❌ Network error: ${msg}`);
+      return { success: false, error: `Express Coursier: ${msg}`, carrierMessage: msg };
+    }
+  }
+
   if (providerKey === 'ameex') {
     // Pre-flight validation — refuse to call Ameex if mandatory fields are missing
     // or contain only invisible characters. permanent=true stops the retry loop.

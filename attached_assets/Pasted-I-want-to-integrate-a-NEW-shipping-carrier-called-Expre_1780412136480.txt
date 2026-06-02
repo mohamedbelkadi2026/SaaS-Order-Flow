@@ -1,0 +1,364 @@
+I want to integrate a NEW shipping carrier called "Express Coursier" (expresscoursier.ma) into my TajerGrow platform. It should work alongside the existing Digylog and Ameex integrations — same patterns, same UI, same flow.
+
+═══════════════════════════════════════════════════════════════════════
+EXPRESS COURSIER API SPEC (verified from their docs)
+═══════════════════════════════════════════════════════════════════════
+Base URL:    https://expresscoursier.ma
+Batch endpoint:  POST /v1.0/batch/{TOKEN}
+Statuses endpoint: GET /v1.0/statuses     (returns delivery_status id → name mapping)
+Auth:        Token in URL path (NOT a Bearer header)
+Content-Type: application/json
+
+Batch payload format:
+{
+  "store_id": 0000,
+  "packages": [
+    {
+      "receiver_name": "Ahmed Mohamed",
+      "address": "123 Rue Example",
+      "city": "337",            // NUMERIC city ID (string)
+      "phone": "0612345678",
+      "price": "150",           // string
+      "note": "Livraison rapide",
+      "product": "Smartphone (Qty: 1)",
+      "internal_id": "ORD-001"
+    }
+  ]
+}
+
+HTTP responses:
+- 200 OK       → batch successfully processed
+- 400 Bad      → missing/invalid data
+- 401 Unauth   → invalid/expired token
+- 403 Forbidden → insufficient permissions
+- 429 Rate Limit
+- 500 Server error
+
+Webhook notifications (Express Coursier → us):
+- POST {our webhook URL}
+- Body: { "package_id": "CL-EXP-...", "delivery_status": 3, "event_time": "YYYY-MM-DD HH:MM:SS", "notif_type": "ChangeStatus" | "package_paid" | "package_unpaid" }
+- NO signature header — verify by checking package_id exists in our DB
+- Respond 200 within 5s, then process async
+- Idempotency key: (package_id, notif_type, delivery_status)
+- Case sensitivity: package_paid / package_unpaid in snake_case, ChangeStatus in PascalCase — exact match
+
+═══════════════════════════════════════════════════════════════════════
+GOAL: full feature parity with Digylog/Ameex
+═══════════════════════════════════════════════════════════════════════
+1. Add "expresscoursier" as a new carrier across the platform
+2. Multi-account support (Yassine, Abdellah, etc.) — same as Digylog
+3. City coverage per account (uses numeric city IDs like Ameex)
+4. Single-order ship + bulk-ship support
+5. Webhook receiver for status updates
+6. Appears in the carrier+account selector in the order modal
+7. Appears in the integrations page (Sociétés de Livraison)
+8. Test webhook endpoint (like in the screenshot)
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1: INSPECT FIRST — understand the existing carrier pattern
+═══════════════════════════════════════════════════════════════════════
+Before writing any code, read and report on these:
+
+1. server/services/carrier-service.ts (or similar) — find how Digylog and Ameex are implemented:
+   - shipOrderToCarrier function — how does it branch on provider?
+   - The Digylog ship function (likely shipOrderToDigylog)
+   - The Ameex ship function (likely shipOrderToAmeex)
+   - How city IDs are resolved for Ameex (the ameexCities table)
+
+2. shared/schema.ts — confirm these tables exist:
+   - carrierAccounts (with carrierName field)
+   - carrierCities (per-account city list)
+   - ameexCities (numeric city ID mapping)
+   - integrationLogs
+
+3. server/routes.ts:
+   - The /api/orders/:id/ship endpoint
+   - The /api/orders/bulk-ship endpoint
+   - The /api/shipping/active-accounts endpoint
+   - The /api/carriers/cities/all endpoint
+   - The Digylog/Ameex webhook receivers (search for "webhook" + "digylog" or "ameex")
+
+4. client/src/pages/integrations.tsx (or wherever carriers are connected):
+   - How a new Digylog/Ameex account is added (form, fields, save logic)
+
+REPORT what you find. Specifically: the exact function names and file locations for the existing Digylog/Ameex ship flow, so we can mirror them.
+
+DO NOT write code until you've reported these findings.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2: SCHEMA — new table for Express Coursier cities (no migration if avoidable)
+═══════════════════════════════════════════════════════════════════════
+Express Coursier uses numeric city IDs (like Ameex). We have two options:
+
+OPTION A (preferred — NO migration): reuse the existing carrier_cities table.
+The carrier_cities table already stores cities per accountId. We just add city entries with the numeric ID stored in the city name field (or in a settings JSON). Confirm whether carrier_cities has a "cityId" or "settings" column — if yes, store the numeric ID there.
+
+OPTION B (only if A is impossible): add a new table express_coursier_cities mirroring ameex_cities:
+  export const expressCoursierCities = pgTable("express_coursier_cities", {
+    id: serial("id").primaryKey(),
+    cityId: text("city_id").notNull(),       // "337"
+    cityName: text("city_name").notNull(),   // "Casablanca"
+    createdAt: timestamp("created_at").defaultNow(),
+  });
+
+Pick OPTION A if at all possible. Report which option you took and why.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3: BACKEND SERVICE — server/services/carrier-service.ts
+═══════════════════════════════════════════════════════════════════════
+Add a new function shipOrderToExpressCoursier mirroring the existing Digylog/Ameex pattern. Use the exact creds resolution pattern that the existing carriers use.
+
+  async function shipOrderToExpressCoursier(order, creds, options = {}) {
+    const token = creds.apiKey || creds.apiToken;
+    const storeId = creds.expressCoursierStoreId || (creds.settings as any)?.expressCoursierStoreId || 0;
+
+    if (!token) {
+      throw new Error("Token Express Coursier manquant pour ce compte.");
+    }
+
+    // Resolve city name → numeric city ID (mirror Ameex logic)
+    const cityName = (order.customerCity || "").trim();
+    const cityId = await resolveExpressCoursierCityId(cityName, creds.accountId);
+    if (!cityId) {
+      throw new Error(`Ville "${cityName}" non couverte par Express Coursier. Synchronisez les villes du compte ou choisissez une autre ville.`);
+    }
+
+    // Compute total quantity from order items (mirror existing logic)
+    const totalQty = await computeOrderQuantity(order.id);
+    const productLine = await buildProductLineText(order.id, totalQty);  // "Product name (Qty: X)"
+
+    const payload = {
+      store_id: Number(storeId),
+      packages: [{
+        receiver_name: order.customerName || "",
+        address:       order.customerAddress || "",
+        city:          String(cityId),
+        phone:         (order.customerPhone || "").replace(/\s/g, ""),
+        price:         String(Math.round((order.totalPrice || 0) / 100)),  // adjust if totalPrice is in cents
+        note:          order.note || "",
+        product:       productLine,
+        internal_id:   order.orderNumber || `ORD-${order.id}`,
+      }],
+    };
+
+    const url = `https://expresscoursier.ma/v1.0/batch/${encodeURIComponent(token)}`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await resp.text();
+    let data: any = null;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    if (!resp.ok) {
+      const msg = data?.message || data?.error || text || `HTTP ${resp.status}`;
+      throw new Error(`Express Coursier: ${msg}`);
+    }
+
+    // Extract the carrier package id (their tracking number)
+    // Their response format usually returns the created package_id; adapt to actual response shape
+    const packageId =
+      data?.packages?.[0]?.package_id ||
+      data?.data?.[0]?.package_id ||
+      data?.package_id ||
+      null;
+
+    return {
+      success: true,
+      trackingNumber: packageId,
+      carrierResponse: data,
+    };
+  }
+
+Helper to fetch & cache the statuses map (id → name) from GET /v1.0/statuses, used by the webhook handler. Cache in-memory for 1 hour to avoid hitting their API on every webhook.
+
+Update the master shipOrderToCarrier dispatcher to handle the new provider:
+
+  if (provider === "expresscoursier") {
+    return await shipOrderToExpressCoursier(order, creds, options);
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4: STORAGE — server/storage.ts
+═══════════════════════════════════════════════════════════════════════
+Add a city-resolution helper that mirrors the Ameex one:
+
+  async resolveExpressCoursierCityId(cityName: string, accountId?: number): Promise<string | null> {
+    const norm = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const target = norm(cityName);
+
+    // First, try per-account carrier_cities (Option A from Step 2)
+    if (accountId) {
+      const rows = await db.select().from(carrierCities).where(eq(carrierCities.accountId, accountId));
+      for (const r of rows) {
+        // city name match (case+accent insensitive)
+        if (norm(r.cityName) === target) {
+          // City ID lives in settings JSON or a dedicated column — adapt to schema
+          const idFromSettings = (r as any).settings?.cityId || (r as any).cityId;
+          if (idFromSettings) return String(idFromSettings);
+        }
+      }
+    }
+    return null;
+  }
+
+If the existing carrier_cities table doesn't have a cityId column or settings JSON, fall back to Option B (new table express_coursier_cities) and seed it manually for now. The user can sync the full city list later.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5: ROUTES — server/routes.ts
+═══════════════════════════════════════════════════════════════════════
+A) The existing /api/orders/:id/ship and /api/orders/bulk-ship already dispatch by provider name. They will automatically work for "expresscoursier" once Step 3 is done. VERIFY this — make sure the provider whitelist isn't hardcoded to only ["digylog", "ameex"]. If it is, add "expresscoursier".
+
+B) Add the webhook receiver:
+
+  app.post("/api/webhooks/expresscoursier/:storeWebhookKey", express.json(), async (req, res) => {
+    // ALWAYS respond 200 fast (within 5s), then process async
+    res.status(200).send("OK");
+
+    try {
+      const { storeWebhookKey } = req.params;
+      const { package_id, delivery_status, event_time, notif_type } = req.body || {};
+
+      if (!package_id || !notif_type) {
+        console.warn("[ExpressCoursier webhook] missing fields", req.body);
+        return;
+      }
+
+      // Find the store by webhook key (reuse existing helper)
+      const store = await storage.getStoreByWebhookKey(storeWebhookKey);
+      if (!store) {
+        console.warn(`[ExpressCoursier webhook] unknown store key ${storeWebhookKey}`);
+        return;
+      }
+
+      // Find the order by carrier tracking number
+      const order = await storage.getOrderByTrackingNumber(store.id, String(package_id));
+      if (!order) {
+        console.warn(`[ExpressCoursier webhook] no order for package_id=${package_id}`);
+        return;
+      }
+
+      // Idempotency: skip if we already processed this exact event
+      const idemKey = `expresscoursier:${package_id}:${notif_type}:${delivery_status ?? "-"}`;
+      const seen = await storage.checkWebhookIdempotency?.(idemKey);
+      if (seen) return;
+
+      // Resolve delivery_status id → friendly name (cached map)
+      let statusName: string | null = null;
+      if (typeof delivery_status !== "undefined" && delivery_status !== null) {
+        statusName = await getExpressCoursierStatusName(Number(delivery_status));
+      }
+
+      // Branch on notif_type — EXACT case match
+      if (notif_type === "package_paid") {
+        await storage.markOrderPaid(order.id, { source: "expresscoursier", eventTime: event_time });
+      } else if (notif_type === "package_unpaid") {
+        await storage.markOrderUnpaid(order.id, { source: "expresscoursier", eventTime: event_time });
+      } else if (notif_type === "ChangeStatus") {
+        await storage.updateOrderCarrierStatus(order.id, {
+          provider: "expresscoursier",
+          carrierStatusId: delivery_status,
+          carrierStatusName: statusName,
+          eventTime: event_time,
+        });
+        // Optionally map to internal status (Livré / En cours / etc.)
+        await maybeMapExpressCoursierStatusToInternal(order.id, delivery_status, statusName);
+      }
+
+      await storage.recordWebhookIdempotency?.(idemKey);
+      await storage.createIntegrationLog?.({
+        storeId: store.id,
+        provider: "expresscoursier",
+        eventType: notif_type,
+        orderId: order.id,
+        payload: req.body,
+      });
+    } catch (err: any) {
+      console.error("[ExpressCoursier webhook] processing error:", err);
+    }
+  });
+
+If any of the helper methods (getOrderByTrackingNumber, markOrderPaid, markOrderUnpaid, updateOrderCarrierStatus, checkWebhookIdempotency, recordWebhookIdempotency) don't exist yet, REUSE whatever the Digylog/Ameex webhook handlers use. If those carriers don't have webhooks yet, create minimal versions that just update the carrier_status fields on the order.
+
+C) Add the GET statuses proxy/cache:
+
+  app.get("/api/carriers/expresscoursier/statuses", requireAuth, async (req, res) => {
+    try {
+      const list = await getExpressCoursierStatusesList();  // cached for 1h
+      res.json(list);
+    } catch (err: any) {
+      res.status(500).json({ message: "Failed to fetch statuses" });
+    }
+  });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6: FRONTEND — Integrations page (Sociétés de Livraison)
+═══════════════════════════════════════════════════════════════════════
+Open client/src/pages/integrations.tsx (or wherever Digylog/Ameex accounts are added).
+
+Add Express Coursier as a new carrier card, mirroring exactly how Digylog or Ameex is presented:
+- Logo / brand name "Express Coursier"
+- "Connecter" button
+- Account form: connection name (e.g. "Compte Yassine"), API Token (the path token), store_id, optional webhook URL toggle
+- Save to carrier_accounts with carrierName = "expresscoursier"
+
+For the webhook URL field: auto-generate one in the form like:
+  https://www.tajergrow.com/api/webhooks/expresscoursier/{store.webhookKey}
+Display it read-only with a "Copy" button, and tell the user to paste it in their Express Coursier dashboard (the Génerér Token API page that has "URL Webhook (optionnel)" field — see the screenshot).
+
+═══════════════════════════════════════════════════════════════════════
+STEP 7: FRONTEND — Order modal carrier selector
+═══════════════════════════════════════════════════════════════════════
+The existing carrier+account selector (the one we built that shows "Digylog — Yassine ✅ Couvre / ⚠️ Non couverte") should AUTOMATICALLY pick up Express Coursier accounts once they exist in carrier_accounts. VERIFY this works:
+- Express Coursier accounts appear in the radio list
+- Coverage badge works for Express Coursier cities (uses /api/carriers/cities/all)
+- "Expédier" sends provider="expresscoursier" + accountId, and the backend dispatcher routes to shipOrderToExpressCoursier
+
+If anything is hardcoded for digylog/ameex only (e.g. provider whitelist, icon mapping, label formatting), add the expresscoursier case.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 8: TEST
+═══════════════════════════════════════════════════════════════════════
+1. Run `npm run build` locally. Build must pass with NO errors before pushing.
+2. Manual test plan:
+   a. Add an Express Coursier account in Integrations (with a real token).
+   b. Sync cities (or seed a few manually for testing).
+   c. Open an order, select a covered city, choose Express Coursier from the selector.
+   d. Click Expédier. Check that the order ships and the tracking number is saved.
+   e. Configure the webhook URL in Express Coursier dashboard, trigger a "Test Webhook" from their side, verify our endpoint receives and processes it (check integration_logs).
+3. Verify the existing Digylog and Ameex flows still work (regression check).
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Express Coursier appears as a carrier in Integrations page
+2. ✅ Can add multiple Express Coursier accounts (multi-account works)
+3. ✅ Express Coursier accounts appear in the order modal selector
+4. ✅ City coverage badge works for Express Coursier
+5. ✅ Single-order /api/orders/:id/ship works with provider="expresscoursier"
+6. ✅ Bulk-ship /api/orders/bulk-ship works with provider="expresscoursier"
+7. ✅ Webhook URL is auto-generated per store and shown in the integration form
+8. ✅ Webhook receiver at /api/webhooks/expresscoursier/:key responds 200 fast
+9. ✅ ChangeStatus webhook updates the order's carrier status
+10. ✅ package_paid / package_unpaid webhooks update the order's paid state
+11. ✅ Idempotency prevents duplicate processing
+12. ✅ Digylog and Ameex still work (no regression)
+13. ✅ Build passes with no TypeScript errors
+14. ✅ No DB migration created (or minimal one for express_coursier_cities only if Option B was needed)
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(carriers): integrate Express Coursier with multi-account, city coverage, webhook receiver"
+git push origin main
+
+WORKFLOW:
+1. INSPECT FIRST (Step 1) — report findings before any code.
+2. Apply Steps 2–7 incrementally, checking the existing patterns at each step.
+3. Run `npm run build` BEFORE pushing.
+4. Push only when build is green.
+
+If you're unsure about a field mapping (especially `price` — is the order's totalPrice stored in cents or dirhams?), check how Digylog/Ameex handle it and mirror exactly.

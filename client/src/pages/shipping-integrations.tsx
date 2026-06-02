@@ -44,8 +44,9 @@ const PROVIDERS = [
   { id: "powerdelivery",  name: "PowerDelivery",     cities: 350, logo: null                     },
   { id: "caledex",        name: "Caledex",           cities: 270, logo: null                     },
   { id: "oscario",        name: "Oscario",           cities: 390, logo: null                     },
-  { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                     },
-  { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                   },
+  { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                             },
+  { id: "expresscoursier", name: "Express Coursier", cities: 450, logo: "/carriers/expresscoursier.png" },
+  { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                         },
 ];
 
 /* ─── Webhook domain ─────────────────────────────────────────── */
@@ -195,6 +196,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [ameexApiId,     setAmeexApiId]     = useState<string>("");
   const [showAmeexKey,   setShowAmeexKey]   = useState(false);
 
+  // ── Express Coursier-specific fields ─────────────────────────────────────
+  const isExpressCoursier = providerId === "expresscoursier";
+  const [ecStoreId, setEcStoreId] = useState<string>(
+    String(existingAccount?.settings?.expressCoursierStoreId ?? "")
+  );
+
   // ── Custom carrier fields ─────────────────────────────────────────────────
   const isCustom = providerId === "custom";
   const [customCarrierName, setCustomCarrierName] = useState<string>("");
@@ -321,8 +328,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   // even if the token or API key is updated.
   const resolvedStoreId = existingAccount?.storeId || selectedStoreId;
   const webhookUrl = resolvedStoreId
-    ? `${domain}/api/webhooks/carrier/${resolvedStoreId}/${providerId}`
-    : `${domain}/api/webhooks/carrier/{STORE_ID}/${providerId}`;
+    ? (providerId === "expresscoursier"
+        ? `${domain}/api/webhooks/shipping/expresscoursier/${resolvedStoreId}`
+        : `${domain}/api/webhooks/carrier/${resolvedStoreId}/${providerId}`)
+    : (providerId === "expresscoursier"
+        ? `${domain}/api/webhooks/shipping/expresscoursier/{STORE_ID}`
+        : `${domain}/api/webhooks/carrier/{STORE_ID}/${providerId}`);
 
   /* Resolve display name for the selected store */
   const selectedStore = stores.find((s: any) => s.id?.toString() === selectedStoreId);
@@ -337,6 +348,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           if (apiKey.trim())        body.apiKey          = apiKey;
           if (ameexApiId.trim())    body.apiSecret       = ameexApiId;
           body.carrierStoreName = ameexStoreName.trim() || null;
+        } else if (isExpressCoursier) {
+          if (apiKey.trim()) body.apiKey = apiKey;
+          body.settings = { ...((existingAccount?.settings as object) || {}), expressCoursierStoreId: Number(ecStoreId) || 0 };
         } else {
           if (apiKey.trim()) body.apiKey = apiKey;
           if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
@@ -359,6 +373,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           payload.apiSecret       = ameexApiId.trim() || undefined;
           payload.carrierStoreName = ameexStoreName.trim() || undefined;
           payload.storeName       = resolvedStoreName;
+        } else if (isExpressCoursier) {
+          payload.storeName = resolvedStoreName;
+          payload.settings  = { expressCoursierStoreId: Number(ecStoreId) || 0 };
         } else if (isCustom) {
           payload.apiUrl    = apiUrl.trim() || undefined;
           payload.storeName = resolvedStoreName;
@@ -424,6 +441,11 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
         setSubmitError("La clé API est requise.");
         return;
       }
+    } else if (isExpressCoursier) {
+      if (!existingAccount && !apiKey.trim()) {
+        setSubmitError("Le Token Express Coursier est requis.");
+        return;
+      }
     } else if (isAmeex) {
       if (!existingAccount && !apiKey.trim()) {
         setSubmitError("Le C-Api-Key est requis.");
@@ -470,6 +492,68 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
 
           <div className="space-y-5 py-2 max-h-[70vh] overflow-y-auto pr-1">
 
+            {/* ══════════ EXPRESS COURSIER EDIT FIELDS ══════════ */}
+            {isExpressCoursier ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ec_token_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Token API
+                  </Label>
+                  {existingAccount?.hasApiKey && !isEditingToken ? (
+                    <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-green-200 bg-green-50">
+                      <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
+                      <span className="text-[12px] font-semibold text-green-700 flex-1">Token enregistré</span>
+                      <button
+                        type="button"
+                        data-testid="button-edit-ec-token"
+                        onClick={() => { setIsEditingToken(true); setApiKey(""); }}
+                        className="shrink-0 text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline"
+                      >
+                        Modifier
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <Input
+                        id="ec_token_edit"
+                        data-testid="input-ec-token"
+                        data-lpignore="true"
+                        data-form-type="other"
+                        autoComplete="new-password"
+                        type={showKey ? "text" : "password"}
+                        placeholder="Nouveau token..."
+                        value={apiKey}
+                        onChange={e => { setApiKey(e.target.value); setIsEditingToken(true); }}
+                        className="pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300"
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        onClick={() => setShowKey(v => !v)}
+                      >
+                        {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ec_store_id_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Store ID <span className="text-xs font-normal text-muted-foreground">(optionnel)</span>
+                  </Label>
+                  <Input
+                    id="ec_store_id_edit"
+                    data-testid="input-ec-store-id"
+                    type="number"
+                    placeholder="Ex: 42"
+                    value={ecStoreId}
+                    onChange={e => setEcStoreId(e.target.value)}
+                    className="h-10 text-sm"
+                  />
+                  <p className="text-[10px] text-muted-foreground">Identifiant numérique de votre boutique Express Coursier</p>
+                </div>
+              </>
+            ) : (
+            <>
             {/* ══════════════ AMEEX EDIT FIELDS ══════════════ */}
             {isAmeex ? (
               <>
@@ -727,6 +811,8 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                 )}
               </>
             )}
+            </>
+            )}
 
             {/* ── Frais de livraison (edit mode, all carriers) ── */}
             <div className="space-y-1.5">
@@ -884,8 +970,58 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             )}
           </div>
 
-          {/* ══════════════ CUSTOM / AMEEX / GENERIC CREATE FIELDS ══════════════ */}
-          {isAmeex ? (
+          {/* ══════════════ CUSTOM / AMEEX / EC / GENERIC CREATE FIELDS ══════════════ */}
+          {isExpressCoursier ? (
+            <>
+              {/* ── Express Coursier: Token + Store ID ── */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="ec_token_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Token API <span className="text-red-500">*</span>
+                  </Label>
+                  <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
+                    Clé API
+                  </span>
+                </div>
+                <div className="relative">
+                  <Input
+                    id="ec_token_create"
+                    data-testid="input-ec-token"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showKey ? "text" : "password"}
+                    placeholder="Entrez votre token Express Coursier..."
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    className={`pr-8 font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowKey(v => !v)}
+                  >
+                    {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ec_store_id_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  Store ID <span className="text-xs font-normal text-muted-foreground">(optionnel)</span>
+                </Label>
+                <Input
+                  id="ec_store_id_create"
+                  data-testid="input-ec-store-id"
+                  type="number"
+                  placeholder="Ex: 42"
+                  value={ecStoreId}
+                  onChange={e => setEcStoreId(e.target.value)}
+                  className="h-10 text-sm"
+                />
+                <p className="text-[10px] text-muted-foreground">Identifiant numérique de votre boutique Express Coursier</p>
+              </div>
+            </>
+          ) : isAmeex ? (
             <>
               {/* Store Name */}
               <div className="space-y-1.5">
