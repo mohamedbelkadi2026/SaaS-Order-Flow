@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useFilteredOrders, useUpdateOrderStatus, useAssignAgent, useAgents, useIntegrations, useShipOrder, useUpdateOrder, useBulkAssign, useBulkShip, useStore, useOrderFollowUpLogs, useCreateFollowUpLog, useFilterOptions, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectSeparator } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
@@ -379,6 +379,10 @@ function FollowUpLogsPanel({ orderId }: { orderId: number }) {
   );
 }
 
+// "Tout sélectionner" fetch limit: high enough to load every order in a store's
+// filtered set in one page, so cross-page selection acts on real, loaded IDs.
+const SELECT_ALL_LIMIT = 100000;
+
 export default function Orders() {
   const [, params] = useRoute("/orders/:filter");
   const filterKey = params?.filter || "";
@@ -466,6 +470,11 @@ export default function Orders() {
 
   useRealtime(); // live order + status updates via Socket.io
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // When ON, the page-size dropdown ("Tout sélectionner") raises the fetch limit so
+  // EVERY order matching the current filter is actually loaded — that way the existing
+  // ID-based bulk endpoints (delete/ship/assign) operate on real, loaded IDs across all
+  // "pages" instead of silently acting on only the visible page.
+  const [selectAllPages, setSelectAllPages] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<Set<number>>(new Set());
   const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
@@ -904,6 +913,47 @@ export default function Orders() {
   const isOrderSelectable = (o: any) => !(urlStatus === 'confirme' && !isOrderShippable(o));
   const selectableOrders = filteredOrders.filter(isOrderSelectable);
 
+  // "Tout sélectionner": select every loaded selectable order ONCE, right after the
+  // full set finishes loading. Deliberately a one-time sync (not on every data change)
+  // so it never re-selects survivors after a bulk delete, nor fights manual un-ticks.
+  const allModeSynced = useRef(false);
+  useEffect(() => {
+    if (!selectAllPages) { allModeSynced.current = false; return; }
+    if (!isLoading && !allModeSynced.current) {
+      allModeSynced.current = true;
+      setSelectedIds(new Set(selectableOrders.map((o: any) => o.id)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectAllPages, isLoading, filteredOrders]);
+
+  // If the selection is emptied while all-mode is active (header un-check, "tout
+  // désélectionner", or a bulk action that clears it), exit all-mode and restore the
+  // normal page size so the banner/dropdown never falsely claim "all selected".
+  useEffect(() => {
+    if (selectAllPages && allModeSynced.current && selectedIds.size === 0) {
+      setSelectAllPages(false);
+      setFilters(f => (f.limit === SELECT_ALL_LIMIT ? { ...f, limit: 25 } : f));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds, selectAllPages]);
+
+  // Exit "Tout sélectionner" whenever the effective filter set or tab changes — covers
+  // every entry point (tab/route, magasin, product, search, dates…), including the ones
+  // that bypass updateFilter. limit/page are intentionally excluded so enabling all-mode
+  // (which itself raises the limit) doesn't immediately cancel itself.
+  const filterSignature = `${urlStatus}|${filters.statusFilter}|${filters.search}|${filters.productId}|${filters.city}|${filters.agentId}|${filters.source}|${filters.utmSource}|${filters.utmCampaign}|${dateRange.from}|${dateRange.to}|${filters.dateType}|${selectedMagasin ?? ''}`;
+  const prevFilterSignature = useRef(filterSignature);
+  useEffect(() => {
+    if (prevFilterSignature.current === filterSignature) return;
+    prevFilterSignature.current = filterSignature;
+    if (selectAllPages) {
+      setSelectAllPages(false);
+      setSelectedIds(new Set());
+      setFilters(f => (f.limit === SELECT_ALL_LIMIT ? { ...f, limit: 25 } : f));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterSignature]);
+
   const toggleSelect = (id: number) => {
     if (id == null) return;
     setSelectedIds(prev => {
@@ -981,14 +1031,43 @@ export default function Orders() {
   };
 
   const updateFilter = (key: string, value: any) => {
-    setFilters(f => ({ ...f, [key]: value, page: key === 'page' ? value : 1 }));
+    // Any real filter/page change exits "Tout sélectionner" and restores the normal
+    // page size so we don't keep fetching the entire (now-different) result set.
+    setSelectAllPages(false);
+    setFilters(f => ({
+      ...f,
+      [key]: value,
+      page: key === 'page' ? value : 1,
+      limit: f.limit === SELECT_ALL_LIMIT ? 25 : f.limit,
+    }));
     setSelectedIds(new Set());
   };
 
+  // "Tout sélectionner" handler for the page-size dropdown: load every matching order
+  // (raise the limit) and flag all-pages mode; the effect below selects them once loaded.
+  const handlePageSizeChange = (v: string) => {
+    if (v === 'all') {
+      setSelectAllPages(true);
+      setFilters(f => ({ ...f, limit: SELECT_ALL_LIMIT, page: 1 }));
+    } else {
+      setSelectAllPages(false);
+      setSelectedIds(new Set());
+      setFilters(f => ({ ...f, limit: Number(v), page: 1 }));
+    }
+  };
+
+  const cancelSelectAllPages = () => {
+    setSelectAllPages(false);
+    setSelectedIds(new Set());
+    setFilters(f => ({ ...f, limit: 25, page: 1 }));
+  };
+
   const resetFilters = () => {
-    setFilters(f => ({ ...f, statusFilter: '', agentId: '', source: '', utmSource: '', utmCampaign: '', search: '', page: 1 }));
+    setSelectAllPages(false);
+    setFilters(f => ({ ...f, statusFilter: '', agentId: '', source: '', utmSource: '', utmCampaign: '', search: '', page: 1, limit: f.limit === SELECT_ALL_LIMIT ? 25 : f.limit }));
     setDateRange({ from: '', to: '' });
     setSelectedMagasin(null);
+    setSelectedIds(new Set());
   };
 
   const hasActiveFilters = !!(filters.statusFilter || filters.agentId || filters.source || filters.utmSource || filters.utmCampaign || filters.search || dateRange.from || dateRange.to || selectedMagasin);
@@ -1142,7 +1221,7 @@ export default function Orders() {
           {/* ── Menu (page size) ── */}
           <div className="flex flex-col shrink-0">
             <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground mb-1 ml-0.5">Menu</span>
-            <Select value={String(filters.limit)} onValueChange={(v) => updateFilter('limit', Number(v))}>
+            <Select value={selectAllPages ? "all" : String(filters.limit)} onValueChange={handlePageSizeChange}>
               <SelectTrigger className="w-[72px] h-9 text-xs bg-background border-border/60" data-testid="filter-page-size">
                 <SelectValue />
               </SelectTrigger>
@@ -1151,6 +1230,8 @@ export default function Orders() {
                 <SelectItem value="25">25</SelectItem>
                 <SelectItem value="50">50</SelectItem>
                 <SelectItem value="100">100</SelectItem>
+                <SelectSeparator />
+                <SelectItem value="all" className="text-blue-600 font-semibold" data-testid="filter-select-all-pages">☑️ Tout sélectionner</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -1364,6 +1445,21 @@ export default function Orders() {
 
         </div>
       </Card>
+
+      {selectAllPages && (
+        <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg px-4 py-2.5 mb-3" data-testid="banner-select-all-pages">
+          <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
+            ✅ Toutes les commandes sont sélectionnées ({selectedIds.size})
+          </span>
+          <button
+            onClick={cancelSelectAllPages}
+            className="text-sm text-red-500 hover:text-red-700 underline font-medium"
+            data-testid="button-cancel-select-all-pages"
+          >
+            Annuler
+          </button>
+        </div>
+      )}
 
       <div className="hidden md:block bg-card rounded-xl border border-border/50 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
