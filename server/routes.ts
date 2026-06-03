@@ -1269,6 +1269,8 @@ export async function registerRoutes(
         if (pinned && pinned.storeId === storeId && pinned.isActive === 1) {
           const ps = (pinned.settings as any) || {};
           pinnedCreds = {
+            id:               pinned.id,
+            settings:         ps,
             apiKey:           pinned.apiKey,
             apiSecret:        pinned.apiSecret        ?? undefined,
             apiUrl:           pinned.apiUrl           ?? undefined,
@@ -1367,6 +1369,8 @@ export async function registerRoutes(
         const extractAcctCreds = (a: any): Record<string, any> => {
           const s = (a.settings as any) || {};
           return {
+            id:               a.id,
+            settings:         s,
             apiKey:           a.apiKey,
             apiSecret:        a.apiSecret || (a.settings as any)?.apiId || '',
             apiUrl:           a.apiUrl           || '',
@@ -1482,12 +1486,22 @@ export async function registerRoutes(
                   ameexCityId = resolved;
                 }
 
-                // For Express Coursier: resolve city name → numeric city ID (or use name as-is)
+                // For Express Coursier: resolve city name → numeric city ID.
+                // EC rejects city names, so fail fast if no numeric ID is found.
                 let ecCityId: string | undefined;
                 if (provider.toLowerCase() === 'expresscoursier') {
-                  const accountId = (orderCreds as any).id ?? undefined;
-                  const resolved = await storage.resolveExpressCoursierCityId(resolvedCity, accountId);
-                  ecCityId = resolved ?? resolvedCity; // fallback to city name if no ID found
+                  const resolved = await storage.resolveExpressCoursierCityId(storeId, resolvedCity);
+                  if (!resolved) {
+                    return {
+                      success:        false,
+                      error:          `Express Coursier: Ville "${resolvedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
+                      carrierMessage: 'City not found in express_coursier_cities',
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
+                  }
+                  ecCityId = resolved;
                   console.log(`[EC-CITY] order=${order.id} city="${resolvedCity}" → id="${ecCityId}"`);
                 }
 
@@ -2378,6 +2392,7 @@ export async function registerRoutes(
         isActive: 1,
         assignmentRule: assignmentRule || "default",
         settings: {
+          ...(req.body.settings || {}),
           ...(networkId !== undefined ? { networkId: Number(networkId) } : {}),
           ...(carrierName.toLowerCase() === 'ameex' && rawApiSecret ? { apiId: rawApiSecret } : {}),
         },
@@ -2451,10 +2466,18 @@ export async function registerRoutes(
       const acct = await storage.getCarrierAccount(id);
       if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
 
-      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, networkId, assignmentRule, isDefault, isActive, assignmentData, deliveryFee: patchDeliveryFee } = req.body;
+      const { connectionName, apiKey: rawPatchKey, apiSecret: rawPatchSecret, apiUrl, storeName, carrierStoreName, networkId, assignmentRule, isDefault, isActive, assignmentData, deliveryFee: patchDeliveryFee, settings: bodySettings } = req.body;
       const cleanKey = (s: string | undefined | null) =>
         (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
       const tokenUpdated = !!(rawPatchKey && rawPatchKey !== "");
+      // Merge settings: existing ⊕ body.settings ⊕ networkId keys. Written once
+      // so storeId (expressCoursierStoreId) and networkId never clobber each other.
+      const hasSettingsUpdate = bodySettings !== undefined || networkId !== undefined;
+      const mergedSettings = hasSettingsUpdate ? {
+        ...((acct.settings as any) || {}),
+        ...(bodySettings || {}),
+        ...(networkId !== undefined ? { networkId: Number(networkId), digylogNetworkId: Number(networkId) } : {}),
+      } : undefined;
       const updated = await storage.updateCarrierAccount(id, {
         ...(connectionName    !== undefined && { connectionName }),
         ...(tokenUpdated                    && { apiKey: cleanKey(rawPatchKey) }),
@@ -2467,15 +2490,9 @@ export async function registerRoutes(
         ...(isActive          !== undefined && { isActive: isActive ? 1 : 0 }),
         ...(assignmentData      !== undefined && { assignmentData }),
         ...(patchDeliveryFee    !== undefined && { deliveryFee: Math.round(Number(patchDeliveryFee)) }),
-        // Write networkId under BOTH the legacy key (networkId) and the canonical key (digylogNetworkId)
-        // so that pickFields in getAccountForShipping always finds it regardless of which key was written first.
-        ...(networkId !== undefined && {
-          settings: {
-            ...(acct.settings as any || {}),
-            networkId:        Number(networkId),
-            digylogNetworkId: Number(networkId),
-          },
-        }),
+        // Persist merged settings (expressCoursierStoreId, networkId, etc.) in a
+        // single write so no key is dropped or clobbered.
+        ...(mergedSettings !== undefined && { settings: mergedSettings }),
       });
       if (tokenUpdated) {
         console.log(`[CARRIER-UPDATE] Token updated for account #${id} (store ${storeId}) — new length: ${cleanKey(rawPatchKey).length}`);
@@ -2778,12 +2795,12 @@ export async function registerRoutes(
 
       // City ID entries — saved separately for city ID resolution at ship time
       let ameexCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
+      let ecCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
       if (carrierKey === "expresscoursier") {
         // EC returns: { "cities": { "337": "Casablanca", "338": "Rabat", ... } }
         //         or: [ { "id": 337, "name": "Casablanca" }, ... ]
         const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
         const rawData = resp.data;
-        let ecCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
         if (typeof rawData === 'object' && !Array.isArray(rawData)) {
           const citiesObj = rawData?.cities || rawData?.data?.cities || rawData;
           ecCityEntries = Object.entries(citiesObj as Record<string, any>)
@@ -2840,6 +2857,12 @@ export async function registerRoutes(
       if (carrierKey === "ameex" && ameexCityEntries.length > 0) {
         await storage.upsertAmeexCities(storeId, ameexCityEntries);
         console.log(`[AMEEX-CITIES-SYNC]: Saved ${ameexCityEntries.length} city ID mappings to ameex_cities`);
+      }
+
+      // For Express Coursier: save id→name mapping — EC requires numeric city IDs at ship time
+      if (carrierKey === "expresscoursier" && ecCityEntries.length > 0) {
+        await storage.upsertExpressCoursierCities(storeId, ecCityEntries);
+        console.log(`[EC-CITIES-SYNC]: Saved ${ecCityEntries.length} city ID mappings to express_coursier_cities`);
       }
 
       console.log(`[CITY-SYNC]: Received ${cities.length} cities from ${acct.carrierName} API (storeId=${storeId})`);
@@ -8253,12 +8276,17 @@ function ensureHeaders(sheet) {
         singleAmeexCityId = resolved;
       }
 
-      // For Express Coursier: resolve city name → numeric city ID (or use name as-is)
+      // For Express Coursier: resolve city name → numeric city ID.
+      // EC rejects city names, so fail fast if no numeric ID is found.
       let singleEcCityId: string | undefined;
       if (provider.toLowerCase() === 'expresscoursier') {
-        const accountId = (creds as any).id ?? undefined;
-        const resolved = await storage.resolveExpressCoursierCityId(matchedCity, accountId);
-        singleEcCityId = resolved ?? matchedCity; // fallback to city name if no ID found
+        const resolved = await storage.resolveExpressCoursierCityId(storeId, matchedCity);
+        if (!resolved) {
+          return res.status(422).json({
+            message: `Express Coursier: Ville "${matchedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
+          });
+        }
+        singleEcCityId = resolved;
         console.log(`[EC-CITY] order=${orderId} city="${matchedCity}" → id="${singleEcCityId}"`);
       }
 

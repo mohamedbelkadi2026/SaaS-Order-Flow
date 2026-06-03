@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities,
+  carrierAccounts, carrierCities, ameexCities, expressCoursierCities,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -77,8 +77,11 @@ export interface IStorage {
   upsertCarrierCities(storeId: number, carrierName: string, accountId: number | null, cities: string[]): Promise<void>;
   upsertAmeexCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
   getAmeexCityId(storeId: number, cityName: string): Promise<string | null>;
-  resolveExpressCoursierCityId(cityName: string, accountId?: number): Promise<string | null>;
+  upsertExpressCoursierCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
+  resolveExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null>;
   getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
+    id?: number;
+    settings?: Record<string, any>;
     apiKey: string;
     apiSecret?: string;
     apiUrl?: string;
@@ -1139,62 +1142,47 @@ export class DatabaseStorage implements IStorage {
     return fuzzy[0]?.externalId ?? null;
   }
 
-  async resolveExpressCoursierCityId(cityName: string, accountId?: number): Promise<string | null> {
+  // ── Express Coursier city ID mapping (name → numeric ID) ─────────────────
+  // EC's shipment API requires the 'city' field to be a numeric ID, not a name.
+  // This table is populated by "Synchroniser les villes" on the EC account,
+  // which fetches the official id→name map from the EC cities endpoint.
+
+  async upsertExpressCoursierCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void> {
+    if (!cities.length) return;
+    // Replace all rows for this store with fresh data from the sync.
+    // Wrapped in a transaction so a concurrent ship never observes zero rows
+    // between the delete and the insert (which would wrongly fail-fast).
+    await db.transaction(async (tx) => {
+      await tx.delete(expressCoursierCities).where(eq(expressCoursierCities.storeId, storeId));
+      await tx.insert(expressCoursierCities).values(
+        cities.map(c => ({ storeId, externalId: c.externalId, name: c.name, nameNorm: c.nameNorm }))
+      );
+    });
+  }
+
+  async resolveExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null> {
     const norm = (s: string) => (s || "")
       .toLowerCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
-    const target = norm(cityName);
-    if (!target) return null;
+    const key = norm(cityName);
+    if (!key) return null;
 
-    // 1) Try carrier_cities for this specific account (synced via "Synchroniser les villes")
-    if (accountId) {
-      const rows = await db.select().from(carrierCities)
-        .where(eq(carrierCities.accountId, accountId));
-      for (const r of rows) {
-        const ext = (r as any).externalCityId || (r as any).settings?.cityId;
-        if (ext && norm(r.cityName) === target) return String(ext);
-      }
-      // fuzzy fallback within the same account
-      for (const r of rows) {
-        const ext = (r as any).externalCityId || (r as any).settings?.cityId;
-        if (ext && norm(r.cityName).includes(target)) return String(ext);
-      }
-    }
+    // 1. Exact normalized match against synced EC cities
+    const [exact] = await db.select().from(expressCoursierCities)
+      .where(and(eq(expressCoursierCities.storeId, storeId), eq(expressCoursierCities.nameNorm, key)))
+      .limit(1);
+    if (exact && /^\d+$/.test(exact.externalId)) return exact.externalId;
 
-    // 2) Hardcoded fallback — common Moroccan cities with known EC IDs
-    //    Extend this list once real IDs are confirmed via the EC API.
-    const FALLBACK: Record<string, string> = {
-      "casablanca":       "337",
-      "rabat":            "338",
-      "marrakech":        "339",
-      "tanger":           "340",
-      "berrechid":        "341",
-      "agadir":           "342",
-      "fes":              "343",
-      "kenitra":          "344",
-      "meknes":           "345",
-      "oujda":            "346",
-      "tetouan":          "347",
-      "sale":             "348",
-      "temara":           "349",
-      "mohammedia":       "350",
-      "khouribga":        "351",
-      "beni mellal":      "352",
-      "el jadida":        "353",
-      "nador":            "354",
-      "settat":           "355",
-      "safi":             "356",
-      "larache":          "357",
-      "ksar el kebir":    "358",
-      "khemisset":        "359",
-      "guelmim":          "360",
-      "taza":             "361",
-    };
-    if (FALLBACK[target]) return FALLBACK[target];
+    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
+    const fuzzy = await db.select().from(expressCoursierCities)
+      .where(and(eq(expressCoursierCities.storeId, storeId), like(expressCoursierCities.nameNorm, `%${key}%`)))
+      .limit(1);
+    if (fuzzy[0] && /^\d+$/.test(fuzzy[0].externalId)) return fuzzy[0].externalId;
 
-    // 3) Return null — caller sends city name as-is (EC may accept names too)
+    // 3. Not found → return null. The caller MUST fail fast — never send the
+    //    city name, which EC rejects ("Ville invalide").
     return null;
   }
 
@@ -1226,6 +1214,8 @@ export class DatabaseStorage implements IStorage {
       // digylogStoreName: prefer settings key, fall back to DB column
       const resolvedDigylogStore = s.digylogStoreName ?? a.carrierStoreName ?? undefined;
       return {
+        id:               a.id,
+        settings:         s,
         apiKey:           a.apiKey,
         apiSecret:        a.apiSecret        ?? undefined,
         apiUrl:           a.apiUrl           ?? undefined,

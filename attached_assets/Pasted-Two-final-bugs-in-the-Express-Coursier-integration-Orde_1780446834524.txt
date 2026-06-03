@@ -1,0 +1,237 @@
+Two final bugs in the Express Coursier integration. Order #1086 still fails. Logs show:
+
+  [EC-CITY-RESOLVE] order=1086 city="Azrou" cityId="Azrou" → sending "Azrou"
+  [EC][#1086] ❌ Store ID Express Coursier manquant ou invalide (valeur: "")
+
+Two issues:
+  A) Store ID is saved as empty string ("") — either the form isn't sending it or the backend isn't persisting it.
+  B) City resolver returned "Azrou" as cityId — that means it fell through to returning the city NAME instead of finding the numeric ID. Express Coursier rejects city names; it requires numeric IDs.
+
+═══════════════════════════════════════════════════════════════════════
+BUG A FIX: Store ID truly persists in carrier_accounts.settings
+═══════════════════════════════════════════════════════════════════════
+This was supposedly fixed before but the value is still empty. Diagnose with these exact steps:
+
+STEP 1 — Trace the POST/PUT payload:
+  In server/routes.ts, find the create/update carrier account handler. Add a temporary log at the very start:
+    console.log("[CarrierAccount UPSERT] body =", JSON.stringify(req.body));
+  After saving, log what was actually stored:
+    console.log("[CarrierAccount UPSERT] saved settings =", JSON.stringify(saved.settings));
+
+STEP 2 — Verify the frontend form sends the field:
+  In the Integrations page → Express Coursier edit form, find the submit handler. Just before fetch/mutation call, log:
+    console.log("[Form Submit] payload =", payload);
+  The payload MUST contain a non-empty expressCoursierStoreId (OR settings.expressCoursierStoreId).
+
+STEP 3 — Common causes & fixes:
+
+CAUSE 1: The form input's `value` is bound to a state field that's never initialized when EDITING an existing account.
+  Fix: when opening the edit modal, prefill from account.settings.expressCoursierStoreId:
+    useEffect(() => {
+      if (editingAccount) {
+        setForm({
+          ...form,
+          connectionName: editingAccount.connectionName || "",
+          apiKey: editingAccount.apiKey || "",
+          expressCoursierStoreId:
+            (editingAccount.settings as any)?.expressCoursierStoreId ||
+            (editingAccount as any).expressCoursierStoreId || "",
+        });
+      }
+    }, [editingAccount]);
+
+CAUSE 2: The form sends the field at top-level but the backend reads it from settings (or vice versa).
+  Fix: in the backend handler, accept BOTH locations defensively:
+    const ecStoreId = String(
+      req.body.expressCoursierStoreId ||
+      req.body.settings?.expressCoursierStoreId ||
+      ""
+    ).trim();
+    if (req.body.carrierName === "expresscoursier") {
+      if (!/^\d+$/.test(ecStoreId)) {
+        return res.status(400).json({ message: "Store ID Express Coursier requis et doit être numérique." });
+      }
+    }
+    const mergedSettings = {
+      ...(existingAccount?.settings || {}),
+      ...(req.body.settings || {}),
+      expressCoursierStoreId: ecStoreId,
+    };
+
+CAUSE 3: The update is happening on the wrong row (creating a new row instead of updating).
+  Fix: confirm the PUT endpoint uses the account id from the URL param, not from body.
+
+STEP 4 — Verify after save:
+  In the database (drizzle studio or psql), confirm:
+    SELECT id, carrier_name, settings FROM carrier_accounts WHERE carrier_name = 'expresscoursier';
+  The settings JSON MUST contain expressCoursierStoreId with a non-empty value.
+
+═══════════════════════════════════════════════════════════════════════
+BUG B FIX: City resolver must return a NUMERIC ID, never the city name
+═══════════════════════════════════════════════════════════════════════
+Current behavior (from logs):
+  city="Azrou" cityId="Azrou" → sending "Azrou"
+
+This means resolveExpressCoursierCityId returned the city NAME because no numeric ID was found, and the shipping service used it as fallback. That's wrong for Express Coursier — they require numeric IDs.
+
+FIX:
+
+STEP 1 — Make the resolver NEVER return a non-numeric value:
+
+In server/storage.ts, fix resolveExpressCoursierCityId so it returns null when no numeric ID is found (instead of falling back to the name):
+
+  async resolveExpressCoursierCityId(cityName: string, accountId?: number): Promise<string | null> {
+    const norm = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const target = norm(cityName);
+    if (!target) return null;
+
+    // 1) Per-account carrier_cities (preferred)
+    if (accountId) {
+      const rows = await db.select().from(carrierCities).where(eq(carrierCities.accountId, accountId));
+      for (const r of rows) {
+        if (norm(r.cityName) === target) {
+          const ext =
+            (r as any).settings?.cityId ||
+            (r as any).externalCityId ||
+            (r as any).cityId ||
+            null;
+          // Only return if it's actually numeric
+          if (ext && /^\d+$/.test(String(ext))) return String(ext);
+        }
+      }
+    }
+
+    // 2) Hardcoded fallback (MUST be numeric)
+    const fallback: Record<string, string> = {
+      "casablanca": "337",
+      "rabat": "338",
+      "marrakech": "339",
+      "tanger": "340",
+      "berrechid": "341",
+      "agadir": "342",
+      "fes": "343",
+      "kenitra": "344",
+      // ⚠️ These are placeholders. Replace with real Express Coursier city IDs.
+    };
+    if (fallback[target] && /^\d+$/.test(fallback[target])) return fallback[target];
+
+    // 3) Not found → return null (DO NOT fall back to the name)
+    return null;
+  }
+
+STEP 2 — Update the shipping service to FAIL FAST with a helpful message when ID is missing:
+
+In server/services/carrier-service.ts → shipOrderToExpressCoursier, REMOVE the fallback that sends the city name as-is. Replace it with a clear error:
+
+  const cityName = (order.customerCity || "").trim();
+  const cityId = await storage.resolveExpressCoursierCityId(cityName, creds.accountId);
+
+  if (!cityId) {
+    throw new Error(
+      `Ville "${cityName}" non synchronisée avec Express Coursier. ` +
+      `Synchronisez les villes du compte dans Intégrations → Express Coursier, ` +
+      `ou demandez à Express Coursier l'ID numérique de cette ville et ajoutez-la manuellement.`
+    );
+  }
+
+  // Use cityId (guaranteed numeric) in the payload
+  const payload = {
+    store_id: storeIdNum,
+    packages: [{
+      receiver_name: order.customerName || "",
+      address:       order.customerAddress || "",
+      city:          cityId,                          // numeric ID, never the name
+      phone:         (order.customerPhone || "").replace(/\s/g, ""),
+      price:         String(Math.round((order.totalPrice || 0))),  // adjust if cents
+      note:          order.note || "",
+      product:       productLine,
+      internal_id:   order.orderNumber || `ORD-${order.id}`,
+    }],
+  };
+
+STEP 3 — Add a manual city seeding endpoint so the user can add Azrou and others NOW:
+
+In server/routes.ts:
+
+  app.post("/api/carriers/expresscoursier/seed-cities/:accountId", requireAuth, async (req, res) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const account = await storage.getCarrierAccount(accountId);
+      if (!account || account.carrierName !== "expresscoursier") {
+        return res.status(404).json({ message: "Compte Express Coursier introuvable" });
+      }
+      const cities: Array<{ cityId: string; cityName: string }> = req.body.cities || [];
+      if (!Array.isArray(cities) || cities.length === 0) {
+        return res.status(400).json({ message: "Liste de villes requise" });
+      }
+      let inserted = 0;
+      for (const c of cities) {
+        const cityId = String(c.cityId || "").trim();
+        const cityName = String(c.cityName || "").trim();
+        if (!/^\d+$/.test(cityId) || !cityName) continue;
+        // Upsert: insert if not exists for this account+cityName
+        const existing = await db.select().from(carrierCities)
+          .where(and(eq(carrierCities.accountId, accountId), eq(carrierCities.cityName, cityName)));
+        if (existing.length === 0) {
+          await db.insert(carrierCities).values({
+            accountId,
+            cityName,
+            // Store the numeric ID — adapt to actual column or settings JSON
+            settings: { cityId },
+          } as any);
+          inserted += 1;
+        } else {
+          // Update existing
+          await db.update(carrierCities)
+            .set({ settings: { ...(existing[0] as any).settings, cityId } } as any)
+            .where(eq(carrierCities.id, existing[0].id));
+        }
+      }
+      res.json({ ok: true, inserted, total: cities.length });
+    } catch (err: any) {
+      console.error("[Seed Cities] error:", err);
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+STEP 4 — Add a simple UI button to seed cities for testing:
+
+On the Express Coursier account card in Intégrations, add a small "Importer villes (JSON)" button that opens a modal with a textarea. The user pastes JSON like:
+
+  [
+    {"cityId": "337", "cityName": "Casablanca"},
+    {"cityId": "338", "cityName": "Rabat"},
+    {"cityId": "401", "cityName": "Azrou"}
+  ]
+
+Submit calls POST /api/carriers/expresscoursier/seed-cities/{accountId}.
+
+This is the fastest way to unblock shipping right now. Once Express Coursier provides their cities API, replace with auto-sync.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Console logs prove Store ID is sent in form payload (non-empty)
+2. ✅ Console logs prove Store ID is saved in DB settings (non-empty)
+3. ✅ Re-opening edit modal pre-fills the saved Store ID
+4. ✅ resolveExpressCoursierCityId returns null when no numeric ID found (never returns city name)
+5. ✅ Shipping fails fast with "Ville non synchronisée" if ID is missing — does NOT send the name
+6. ✅ Seed endpoint accepts JSON and inserts numeric IDs into carrier_cities
+7. ✅ UI has "Importer villes (JSON)" button on Express Coursier account
+8. ✅ After seeding Azrou with its real numeric ID, order #1086 ships successfully and returns a tracking number
+9. ✅ Logs show: [EC-CITY-RESOLVE] order=1086 city="Azrou" cityId="<numeric>" → sending "<numeric>"
+10. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(expresscoursier): enforce numeric cityId, persist storeId, add manual cities seed"
+git push origin main
+
+WORKFLOW:
+1. Add the diagnostic console.log lines first (Bug A Step 1 + 2). Push and reload the integrations page → edit Express Coursier account → save with Store ID. Report what the logs show — that will tell us exactly why Store ID isn't persisting.
+2. Apply the fixes for whichever cause matches.
+3. Apply Bug B fixes (resolver + seed endpoint + UI button).
+4. `npm run build` before push.
+5. After deploy, seed Azrou with its real city ID and retry order #1086.
