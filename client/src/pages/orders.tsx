@@ -898,8 +898,14 @@ export default function Orders() {
   // duplicate tracking numbers in the carrier system).
   const isOrderShippable = (o: any) => o?.status === 'confirme' && !o?.trackNumber;
   const shippableOrders = filteredOrders.filter(isOrderShippable);
+  // Rows are only un-selectable on the Confirmées tab when not shippable
+  // (a stale trackNumber means it can't be re-shipped). On every other tab
+  // all displayed rows are selectable, so "select all" must target them.
+  const isOrderSelectable = (o: any) => !(urlStatus === 'confirme' && !isOrderShippable(o));
+  const selectableOrders = filteredOrders.filter(isOrderSelectable);
 
   const toggleSelect = (id: number) => {
+    if (id == null) return;
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -908,12 +914,12 @@ export default function Orders() {
   };
 
   const toggleAll = () => {
-    // Only ever select rows that are actually shippable; never reach into
-    // already-shipped orders.
-    if (selectedIds.size >= shippableOrders.length && shippableOrders.length > 0) {
+    // Select / deselect every selectable row currently displayed.
+    const allSelected = selectableOrders.length > 0 && selectableOrders.every((o: any) => selectedIds.has(o.id));
+    if (allSelected) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(shippableOrders.map((o: any) => o.id)));
+      setSelectedIds(new Set(selectableOrders.map((o: any) => o.id)));
     }
   };
 
@@ -1366,10 +1372,10 @@ export default function Orders() {
               <TableRow>
                 <TableHead className="w-10 px-2">
                   <Checkbox
-                    checked={shippableOrders.length > 0 && selectedIds.size >= shippableOrders.length}
+                    checked={selectableOrders.length > 0 && selectableOrders.every((o: any) => selectedIds.has(o.id))}
                     onCheckedChange={toggleAll}
-                    disabled={shippableOrders.length === 0}
-                    title={shippableOrders.length === 0 ? "Aucune commande expédiable" : `Sélectionner ${shippableOrders.length} commande(s) expédiable(s)`}
+                    disabled={selectableOrders.length === 0}
+                    title={selectableOrders.length === 0 ? "Aucune commande sélectionnable" : `Sélectionner ${selectableOrders.length} commande(s)`}
                     data-testid="checkbox-select-all"
                   />
                 </TableHead>
@@ -1889,8 +1895,8 @@ export default function Orders() {
                       <Checkbox
                         checked={selectedIds.has(order.id)}
                         onCheckedChange={() => toggleSelect(order.id)}
-                        disabled={!isOrderShippable(order)}
-                        title={!isOrderShippable(order) ? 'Cette commande a déjà été expédiée ou n\'est pas confirmée' : undefined}
+                        disabled={!isOrderSelectable(order)}
+                        title={!isOrderSelectable(order) ? 'Cette commande a déjà été expédiée ou n\'est pas confirmée' : undefined}
                         className="shrink-0 border-border"
                         data-testid={`checkbox-mobile-${order.id}`}
                       />
@@ -2082,7 +2088,7 @@ export default function Orders() {
             {/* Select all */}
             <div className="flex items-center gap-2 shrink-0">
               <Checkbox
-                checked={selectedIds.size === filteredOrders.length && filteredOrders.length > 0}
+                checked={selectableOrders.length > 0 && selectableOrders.every((o: any) => selectedIds.has(o.id))}
                 onCheckedChange={toggleAll}
                 className="border-border"
                 data-testid="checkbox-select-all-mobile"

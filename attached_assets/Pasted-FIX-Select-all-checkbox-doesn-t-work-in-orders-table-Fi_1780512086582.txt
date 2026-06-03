@@ -1,0 +1,56 @@
+FIX: Select all checkbox doesn't work in orders table
+File to change: client/src/pages/orders.tsx only
+Problem: The "select all" checkbox in the orders table header doesn't select all orders. The issue is either in the handleSelectAll function or the header checkbox logic not using the displayed orders array correctly.
+
+Fix 1 — Header "select all" checkbox
+Find the header checkbox that selects all orders. It looks something like:
+tsx<input
+  type="checkbox"
+  checked={selectedIds.size > 0 && selectedIds.size === orders.length}
+  onChange={...}
+/>
+or
+tsx<Checkbox
+  checked={selectedIds.size === filteredOrders.length}
+  onCheckedChange={...}
+/>
+Replace the checked condition and onChange/onCheckedChange with:
+tsxchecked={
+  displayedOrders.length > 0 &&
+  displayedOrders.every(o => selectedIds.has(o.id))
+}
+onCheckedChange={(checked) => {
+  if (checked) {
+    setSelectedIds(new Set(displayedOrders.map(o => o.id)));
+  } else {
+    setSelectedIds(new Set());
+  }
+}}
+Where displayedOrders is the array of orders currently rendered in the table (the filtered + paginated list). Use whatever variable name already exists in the file for this list — it might be called filteredOrders, paginatedOrders, ordersToShow, currentOrders, or just orders. Inspect the file first to find the correct variable name.
+
+Fix 2 — Each row checkbox
+Find the individual order row checkbox. Make sure it has a guard for missing order.id:
+tsxonChange={(e) => {
+  if (!order?.id) return;
+  const next = new Set(selectedIds);
+  if (e.target.checked) next.add(order.id);
+  else next.delete(order.id);
+  setSelectedIds(next);
+}}
+or if using shadcn Checkbox:
+tsxonCheckedChange={(checked) => {
+  if (!order?.id) return;
+  const next = new Set(selectedIds);
+  if (checked) next.add(order.id);
+  else next.delete(order.id);
+  setSelectedIds(next);
+}}
+
+Fix 3 — The "Filtr." filter row must NOT have a checkbox
+Find the <tr> that renders the inline filter row (the one showing "Filtr." in the CODE column). Make sure this row does not contain any <input type="checkbox"> or <Checkbox> component. The first <td> of this row should be empty or contain only the "Filtr." label:
+tsx<tr data-filter-row="true">
+  <td></td>  {/* no checkbox */}
+  <td>Filtr.</td>
+  ...
+</tr>
+If there is a checkbox in this row, remove it.
