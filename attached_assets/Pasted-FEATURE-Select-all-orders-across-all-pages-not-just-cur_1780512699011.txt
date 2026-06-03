@@ -1,0 +1,78 @@
+FEATURE: Select all orders across all pages (not just current page)
+File to change: client/src/pages/orders.tsx only
+Problem: When clicking the header checkbox, it only selects the 25/50/100 orders visible on the current page. If there are 5000 orders, the user has to go page by page. Need a "select all pages" option.
+
+Change 1 — Add selectAllPages state
+Near the existing selectedIds state, add:
+tsconst [selectAllPages, setSelectAllPages] = useState(false);
+
+Change 2 — After header checkbox is checked, show a banner
+Find the header checkbox <td> or <th>. After it (still inside the <thead>), add a banner row that appears when all current page items are selected:
+tsx{selectedIds.size > 0 && selectedIds.size === displayedOrders.length && !selectAllPages && (
+  <tr>
+    <td colSpan={99} className="bg-blue-50 border-b border-blue-200 px-4 py-2 text-center text-sm">
+      <span className="text-blue-700">
+        {selectedIds.size} commandes sélectionnées sur cette page.
+      </span>
+      <button
+        onClick={() => setSelectAllPages(true)}
+        className="ml-2 text-blue-600 underline font-semibold hover:text-blue-800"
+      >
+        Sélectionner toutes les commandes ({totalOrderCount || "toutes"})
+      </button>
+    </td>
+  </tr>
+)}
+{selectAllPages && (
+  <tr>
+    <td colSpan={99} className="bg-emerald-50 border-b border-emerald-200 px-4 py-2 text-center text-sm">
+      <span className="text-emerald-700 font-semibold">
+        ✅ Toutes les commandes sont sélectionnées.
+      </span>
+      <button
+        onClick={() => { setSelectAllPages(false); setSelectedIds(new Set()); }}
+        className="ml-2 text-red-500 underline hover:text-red-700"
+      >
+        Annuler la sélection
+      </button>
+    </td>
+  </tr>
+)}
+Where totalOrderCount is the total number of orders for the current filter (the number shown in the page title like "NOUVELLES — 12"). Find this variable in the existing code.
+
+Change 3 — Pass selectAllPages to bulk action handlers
+Find every bulk action that uses selectedIds (expédition, delete, export, etc.). When selectAllPages === true, pass a special flag to the API instead of the IDs list.
+3a. In the bulk ship handler, find where selectedIds is converted to an array for the API call:
+tsconst orderIds = Array.from(selectedIds);
+Replace with:
+tsconst orderIds = selectAllPages ? [] : Array.from(selectedIds);
+const useAllPages = selectAllPages;
+Then in the API call body, add:
+tsbody: JSON.stringify({
+  orderIds,
+  selectAllPages: useAllPages,
+  // existing filters so server knows which orders to include
+  status: urlStatus,
+  storeId: ...,
+})
+3b. Do the same for delete and export bulk actions.
+
+Change 4 — Reset selectAllPages on filter/page change
+Add setSelectAllPages(false) wherever these change:
+
+Page number changes
+Filter changes (search, product, status, date)
+Tab changes
+
+Find the existing setSelectedIds(new Set()) calls — add setSelectAllPages(false) right next to each one.
+
+Change 5 — Update header checkbox behavior
+Find the header checkbox. Update it so unchecking also resets selectAllPages:
+tsxonCheckedChange={(checked) => {
+  setSelectAllPages(false);
+  if (checked) {
+    setSelectedIds(new Set(displayedOrders.map((o: any) => o.id)));
+  } else {
+    setSelectedIds(new Set());
+  }
+}}
