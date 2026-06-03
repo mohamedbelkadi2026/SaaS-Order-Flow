@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -100,6 +100,7 @@ interface ProductSummary {
   totalShipping: number;
   rowCount: number;
   buyingCost: string;
+  packagingCost: string;
   confirmationFee: string;
   adSpend: string;
   suggestedPrice?: number;
@@ -112,6 +113,7 @@ interface ProfitResult {
   shippingFromFile: number;
   caNet: number;
   cogs: number;
+  packaging: number;
   confirmation: number;
   adSpend: number;
   totalCost: number;
@@ -271,6 +273,51 @@ export default function ProfitAnalyzer() {
   const [globalAdSpend, setGlobalAdSpend] = useState("0");
   const [results, setResults] = useState<ProfitResult[]>([]);
 
+  /* ── Product selector state (Step 1) ── */
+  const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
+  const [productSearchQuery, setProductSearchQuery] = useState("");
+
+  /* Initialize: select all products by default when detection completes */
+  useEffect(() => {
+    if (previewProducts.length > 0 && selectedProductKeys.size === 0) {
+      setSelectedProductKeys(new Set(previewProducts.map(p => p.name)));
+    }
+  }, [previewProducts]);
+
+  /* Filtered products for the selector search */
+  const filteredPreviewProducts = useMemo(() => {
+    const q = productSearchQuery.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    if (!q) return previewProducts;
+    return previewProducts.filter(p => {
+      const name = p.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      return name.includes(q);
+    });
+  }, [previewProducts, productSearchQuery]);
+
+  /* Estimated lines for selected products */
+  const totalSelectedLines = useMemo(() => {
+    return previewProducts.reduce((sum, p) => {
+      return selectedProductKeys.has(p.name) ? sum + p.rowCount : sum;
+    }, 0);
+  }, [previewProducts, selectedProductKeys]);
+
+  const handleToggleAll = () => {
+    if (selectedProductKeys.size === previewProducts.length) {
+      setSelectedProductKeys(new Set());
+    } else {
+      setSelectedProductKeys(new Set(previewProducts.map(p => p.name)));
+    }
+  };
+
+  const handleToggleProduct = (key: string) => {
+    setSelectedProductKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   const { data: inventoryStats } = useQuery<any>({
     queryKey: ["/api/inventory/stats"],
     retry: false,
@@ -318,10 +365,11 @@ export default function ProfitAnalyzer() {
     if (Object.keys(groupMap).length === 0) return { ok: false, error: "⚠️ Aucun produit valide trouvé. Vérifiez le format du fichier." };
     const summaries: ProductSummary[] = Object.entries(groupMap).map(([, d]) => ({
       name: d.displayName, totalQty: d.qty, totalRevenue: d.rev, totalShipping: d.ship,
-      rowCount: d.count, buyingCost: "", confirmationFee: "", adSpend: "0",
+      rowCount: d.count, buyingCost: "", packagingCost: "", confirmationFee: "", adSpend: "0",
       suggestedPrice: getSuggestedPrice(d.displayName),
     })).sort((a, b) => b.totalQty - a.totalQty);
     setPreviewProducts(summaries);
+    setSelectedProductKeys(new Set(summaries.map(p => p.name)));
     setPreviewMeta({ totalRows, filteredRows: relevantRows.length, noStatusFilter: !hasStatus });
     setParseError(null);
     return { ok: true };
@@ -330,6 +378,7 @@ export default function ProfitAnalyzer() {
   async function processFile(file: File) {
     setIsLoading(true); setParseError(null); setHasParsed(false);
     setFileName(file.name); setPreviewProducts([]);
+    setSelectedProductKeys(new Set()); setProductSearchQuery("");
     try {
       const buffer = await file.arrayBuffer();
       const XLSX = await import("xlsx");
@@ -368,7 +417,11 @@ export default function ProfitAnalyzer() {
     }
   }
 
-  function goToStep2() { setProducts(previewProducts.map(p => ({ ...p }))); setStep(2); }
+  function goToStep2() {
+    const filtered = previewProducts.filter(p => selectedProductKeys.has(p.name));
+    setProducts(filtered.map(p => ({ ...p })));
+    setStep(2);
+  }
 
   function updateProduct(idx: number, field: keyof ProductSummary, val: string) {
     setProducts(prev => { const next = [...prev]; (next[idx] as any)[field] = val; return next; });
@@ -390,12 +443,13 @@ export default function ProfitAnalyzer() {
       const caNet = caBrut - shippingFromFile;
       const qty = p.totalQty;
       const cogs = toNum(p.buyingCost) * qty;
+      const packaging = toNum(p.packagingCost) * qty;
       const confirmation = toNum(p.confirmationFee) * qty;
       const adS = adMode === "specific" ? toNum(p.adSpend) : totalRevAll > 0 ? globalAd * (caBrut / totalRevAll) : globalAd / products.length;
-      const totalCost = shippingFromFile + cogs + confirmation + adS;
+      const totalCost = shippingFromFile + cogs + packaging + confirmation + adS;
       const netProfit = caBrut - totalCost;
       const roi = cogs > 0 ? (netProfit / cogs) * 100 : 0;
-      return { name: p.name, qty, caBrut, shippingFromFile, caNet, cogs, confirmation, adSpend: adS, totalCost, netProfit, roi };
+      return { name: p.name, qty, caBrut, shippingFromFile, caNet, cogs, packaging, confirmation, adSpend: adS, totalCost, netProfit, roi };
     });
     setResults(res); setStep(3);
   }
@@ -406,19 +460,21 @@ export default function ProfitAnalyzer() {
     setColMap({ product: "", qty: "", cod: "", status: "", shipping: "" });
     setPreviewProducts([]); setProducts([]); setResults([]);
     setGlobalAdSpend("0"); setAdMode("global");
+    setSelectedProductKeys(new Set()); setProductSearchQuery("");
     if (fileRef.current) fileRef.current.value = "";
   }
 
   /* ── CSV report aggregates ── */
-  const totalCaBrut   = results.reduce((s, r) => s + r.caBrut, 0);
-  const totalShipFile = results.reduce((s, r) => s + r.shippingFromFile, 0);
-  const totalCaNet    = results.reduce((s, r) => s + r.caNet, 0);
-  const totalCost     = results.reduce((s, r) => s + r.totalCost, 0);
-  const totalNet      = results.reduce((s, r) => s + r.netProfit, 0);
-  const totalCOGS     = results.reduce((s, r) => s + r.cogs, 0);
-  const totalConfirm  = results.reduce((s, r) => s + r.confirmation, 0);
-  const totalAd       = results.reduce((s, r) => s + r.adSpend, 0);
-  const globalROI     = totalCOGS > 0 ? (totalNet / totalCOGS) * 100 : 0;
+  const totalCaBrut    = results.reduce((s, r) => s + r.caBrut, 0);
+  const totalShipFile  = results.reduce((s, r) => s + r.shippingFromFile, 0);
+  const totalCaNet     = results.reduce((s, r) => s + r.caNet, 0);
+  const totalCost      = results.reduce((s, r) => s + r.totalCost, 0);
+  const totalNet       = results.reduce((s, r) => s + r.netProfit, 0);
+  const totalCOGS      = results.reduce((s, r) => s + r.cogs, 0);
+  const totalPackaging = results.reduce((s, r) => s + r.packaging, 0);
+  const totalConfirm   = results.reduce((s, r) => s + r.confirmation, 0);
+  const totalAd        = results.reduce((s, r) => s + r.adSpend, 0);
+  const globalROI      = totalCOGS > 0 ? (totalNet / totalCOGS) * 100 : 0;
   const barData = results.map(r => ({
     name: r.name.length > 14 ? r.name.slice(0, 14) + "…" : r.name,
     "CA Brut": Math.round(r.caBrut),
@@ -426,10 +482,11 @@ export default function ProfitAnalyzer() {
     "Profit":  Math.round(r.netProfit),
   }));
   const pieData = [
-    { name: "Sourcing",     value: Math.round(totalCOGS),    color: "#3b82f6" },
-    { name: "Livraison",    value: Math.round(totalShipFile), color: "#f59e0b" },
-    { name: "Confirmation", value: Math.round(totalConfirm),  color: "#06b6d4" },
-    { name: "Publicité",    value: Math.round(totalAd),       color: "#8b5cf6" },
+    { name: "Sourcing",     value: Math.round(totalCOGS),      color: "#3b82f6" },
+    { name: "Livraison",    value: Math.round(totalShipFile),   color: "#f59e0b" },
+    { name: "Emballage",    value: Math.round(totalPackaging),  color: "#ec4899" },
+    { name: "Confirmation", value: Math.round(totalConfirm),    color: "#06b6d4" },
+    { name: "Publicité",    value: Math.round(totalAd),         color: "#8b5cf6" },
     { name: "Profit net",   value: Math.max(0, Math.round(totalNet)), color: "#10b981" },
   ].filter(d => d.value > 0);
 
@@ -795,7 +852,8 @@ export default function ProfitAnalyzer() {
                         </span>
                       </div>
                       <Button onClick={goToStep2} size="sm"
-                        className="gap-2 font-bold text-xs"
+                        disabled={selectedProductKeys.size === 0}
+                        className={`gap-2 font-bold text-xs ${selectedProductKeys.size === 0 ? "opacity-40 cursor-not-allowed" : ""}`}
                         style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #e8b56a 100%)`, color: NAVY }}
                         data-testid="button-next-step2">
                         Continuer <ArrowRight className="w-3.5 h-3.5" />
@@ -831,6 +889,74 @@ export default function ProfitAnalyzer() {
                       </div>
                     </div>
 
+                    {/* ── Product selector ── */}
+                    <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-5">
+                      <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
+                        <div>
+                          <h3 className="text-sm font-bold text-white">Sélection des produits à analyser</h3>
+                          <p className="text-xs text-slate-400 mt-1">
+                            Décochez les produits que vous voulez exclure du calcul.
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleToggleAll}
+                          data-testid="button-toggle-all-products"
+                          className="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-semibold transition-colors"
+                        >
+                          {selectedProductKeys.size === previewProducts.length ? "✗ Tout désélectionner" : "✓ Tout sélectionner"}
+                        </button>
+                      </div>
+
+                      {/* Search */}
+                      <input
+                        type="text"
+                        placeholder="🔍 Rechercher un produit..."
+                        value={productSearchQuery}
+                        onChange={e => setProductSearchQuery(e.target.value)}
+                        data-testid="input-product-search"
+                        className="w-full mb-3 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-500 focus:border-amber-500 outline-none text-sm transition-colors"
+                      />
+
+                      {/* Counter */}
+                      <div className="text-xs font-semibold mb-3" style={{ color: GOLD }}>
+                        {selectedProductKeys.size} / {previewProducts.length} produits sélectionnés · ≈ {totalSelectedLines} lignes
+                      </div>
+
+                      {/* Product list with checkboxes */}
+                      <div className="max-h-80 overflow-y-auto space-y-1 pr-1">
+                        {filteredPreviewProducts.map(p => {
+                          const checked = selectedProductKeys.has(p.name);
+                          return (
+                            <label
+                              key={p.name}
+                              className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                                checked ? "bg-slate-800/60 hover:bg-slate-800" : "bg-transparent hover:bg-slate-800/40 opacity-60"
+                              }`}
+                              data-testid={`label-product-${norm(p.name)}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => handleToggleProduct(p.name)}
+                                className="w-4 h-4 accent-amber-500 shrink-0"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm text-white truncate font-medium">{p.name}</div>
+                                <div className="text-[11px] text-slate-400">
+                                  {p.rowCount} livraisons · {fmtDH(p.totalRevenue)}
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })}
+                        {filteredPreviewProducts.length === 0 && (
+                          <div className="text-center text-slate-500 text-sm py-6">
+                            Aucun produit ne correspond à la recherche.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
                     {/* Preview table */}
                     <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
                       <CardHeader className="pb-2 pt-3 px-4">
@@ -849,7 +975,7 @@ export default function ProfitAnalyzer() {
                             </TableHeader>
                             <TableBody>
                               {previewProducts.map((p, i) => (
-                                <TableRow key={i} className="border-white/8 hover:bg-white/4">
+                                <TableRow key={i} className={`border-white/8 hover:bg-white/4 ${!selectedProductKeys.has(p.name) ? "opacity-40" : ""}`}>
                                   <TableCell className="text-white text-xs py-2 font-medium max-w-[200px] truncate">{p.name}</TableCell>
                                   <TableCell className="text-center text-xs py-2 text-amber-300">{p.totalQty}</TableCell>
                                   <TableCell className="text-right text-xs py-2 text-emerald-300">{fmtDH(p.totalRevenue)}</TableCell>
@@ -917,7 +1043,10 @@ export default function ProfitAnalyzer() {
                             <TableHead className="text-slate-500 text-xs py-3">Produit</TableHead>
                             <TableHead className="text-slate-500 text-xs py-3 text-center">Qté</TableHead>
                             <TableHead className="text-slate-500 text-xs py-3 text-center">CA Brut</TableHead>
-                            <TableHead className="text-slate-500 text-xs py-3 text-center">Prix achat/u *</TableHead>
+                            <TableHead className="text-slate-500 text-xs py-3 text-center">
+                              Prix achat/u <span style={{ color: GOLD }}>*</span>
+                            </TableHead>
+                            <TableHead className="text-slate-500 text-xs py-3 text-center">Emballage/u</TableHead>
                             <TableHead className="text-slate-500 text-xs py-3 text-center">Confirm./u</TableHead>
                             {adMode === "specific" && <TableHead className="text-slate-500 text-xs py-3 text-center">Pub (DH)</TableHead>}
                           </TableRow>
@@ -944,6 +1073,12 @@ export default function ProfitAnalyzer() {
                                   type="number" min="0" placeholder="ex: 45"
                                   className="h-7 w-24 text-xs bg-white/5 border-white/20 text-white mx-auto"
                                   data-testid={`input-buying-cost-${i}`} />
+                              </TableCell>
+                              <TableCell className="text-center py-2">
+                                <Input value={p.packagingCost} onChange={e => updateProduct(i, "packagingCost", e.target.value)}
+                                  type="number" min="0" placeholder="ex: 5"
+                                  className="h-7 w-24 text-xs bg-white/5 border-white/20 text-white mx-auto"
+                                  data-testid={`input-packaging-cost-${i}`} />
                               </TableCell>
                               <TableCell className="text-center py-2">
                                 <Input value={p.confirmationFee} onChange={e => updateProduct(i, "confirmationFee", e.target.value)}
@@ -1011,7 +1146,7 @@ export default function ProfitAnalyzer() {
                       <div className="sm:ml-auto text-center sm:text-right">
                         <p className="text-[10px] text-slate-500 uppercase tracking-widest">Formule appliquée</p>
                         <p className="text-[11px] text-slate-300 mt-0.5 font-mono">
-                          Bénéf. = CA Brut − Livr. − (Achat × Qté) − (Confirm. × Qté) − Pub
+                          Bénéf. = CA Brut − Livr. − (Achat × Qté) − (Emball. × Qté) − (Confirm. × Qté) − Pub
                         </p>
                       </div>
                     </div>
@@ -1052,16 +1187,17 @@ export default function ProfitAnalyzer() {
                         <TableHeader>
                           <TableRow className="border-white/10 hover:bg-transparent">
                             {[
-                              { label: "Produit",        sub: "",               cls: "" },
-                              { label: "Total Unités",   sub: "",               cls: "text-center" },
-                              { label: "CA Brut",        sub: "price total",    cls: "text-right text-emerald-400/80" },
-                              { label: "Frais Livr.",    sub: "du fichier",     cls: "text-right text-amber-400/70" },
-                              { label: "CA Net",         sub: "brut − livr.",   cls: "text-right text-cyan-400/80" },
-                              { label: "Sourcing Total", sub: "achat × unités", cls: "text-right" },
-                              { label: "Commissions",    sub: "confirm. × u",   cls: "text-right" },
-                              { label: "Pub",            sub: "",               cls: "text-right" },
-                              { label: "Bénéfice Net",   sub: "",               cls: "text-right" },
-                              { label: "ROI",            sub: "",               cls: "text-right" },
+                              { label: "Produit",          sub: "",                cls: "" },
+                              { label: "Total Unités",     sub: "",                cls: "text-center" },
+                              { label: "CA Brut",          sub: "price total",     cls: "text-right text-emerald-400/80" },
+                              { label: "Frais Livr.",      sub: "du fichier",      cls: "text-right text-amber-400/70" },
+                              { label: "CA Net",           sub: "brut − livr.",    cls: "text-right text-cyan-400/80" },
+                              { label: "Sourcing Total",   sub: "achat × unités",  cls: "text-right" },
+                              { label: "Emballage Total",  sub: "emball. × unités",cls: "text-right text-pink-400/80" },
+                              { label: "Commissions",      sub: "confirm. × u",    cls: "text-right" },
+                              { label: "Pub",              sub: "",                cls: "text-right" },
+                              { label: "Bénéfice Net",     sub: "",                cls: "text-right" },
+                              { label: "ROI",              sub: "",                cls: "text-right" },
                             ].map(({ label, sub, cls }) => (
                               <TableHead key={label} className={`text-slate-500 text-xs font-semibold whitespace-nowrap ${cls}`}>
                                 {label}
@@ -1084,6 +1220,7 @@ export default function ProfitAnalyzer() {
                                 <TableCell className="text-right text-red-400 text-sm py-3">−{fmtDH(r.shippingFromFile)}</TableCell>
                                 <TableCell className="text-right text-cyan-300 font-semibold text-sm py-3">{fmtDH(r.caNet)}</TableCell>
                                 <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtDH(r.cogs)}</TableCell>
+                                <TableCell className="text-right text-pink-300 text-sm py-3">−{fmtDH(r.packaging)}</TableCell>
                                 <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtDH(r.confirmation)}</TableCell>
                                 <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtDH(r.adSpend)}</TableCell>
                                 <TableCell className={`text-right text-sm py-3 ${profCls}`}>{fmtDH(r.netProfit)}</TableCell>
@@ -1097,6 +1234,7 @@ export default function ProfitAnalyzer() {
                             <TableCell className="text-right text-red-400 font-bold text-sm py-3">−{fmtDH(totalShipFile)}</TableCell>
                             <TableCell className="text-right text-cyan-300 font-bold text-sm py-3">{fmtDH(totalCaNet)}</TableCell>
                             <TableCell className="text-right text-slate-300 font-bold text-sm py-3">−{fmtDH(totalCOGS)}</TableCell>
+                            <TableCell className="text-right text-pink-300 font-bold text-sm py-3">−{fmtDH(totalPackaging)}</TableCell>
                             <TableCell className="text-right text-slate-300 font-bold text-sm py-3">−{fmtDH(totalConfirm)}</TableCell>
                             <TableCell className="text-right text-slate-300 font-bold text-sm py-3">−{fmtDH(totalAd)}</TableCell>
                             <TableCell className={`text-right font-extrabold text-sm py-3 ${totalNet >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtDH(totalNet)}</TableCell>
@@ -1159,12 +1297,13 @@ export default function ProfitAnalyzer() {
                 </div>
 
                 {/* Cost breakdown bars */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                   {[
-                    { label: "Sourcing",           val: totalCOGS,    color: "#3b82f6" },
-                    { label: "Livraison (fichier)", val: totalShipFile, color: "#f59e0b" },
-                    { label: "Confirmation",        val: totalConfirm,  color: "#06b6d4" },
-                    { label: "Publicité",           val: totalAd,       color: "#8b5cf6" },
+                    { label: "Sourcing",            val: totalCOGS,      color: "#3b82f6" },
+                    { label: "Livraison (fichier)",  val: totalShipFile,  color: "#f59e0b" },
+                    { label: "Emballage",            val: totalPackaging, color: "#ec4899" },
+                    { label: "Confirmation",         val: totalConfirm,   color: "#06b6d4" },
+                    { label: "Publicité",            val: totalAd,        color: "#8b5cf6" },
                   ].map(item => {
                     const pct = totalCost > 0 ? (item.val / totalCost) * 100 : 0;
                     return (
