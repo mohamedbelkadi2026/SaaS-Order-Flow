@@ -1,0 +1,224 @@
+I want to enhance the "Profit Analyzer Pro" page (the Import CSV mode) with three new features:
+
+1. PRODUCT SELECTOR — after import, let the user CHOOSE which products to include in the profit analysis (all, none, or a custom selection)
+2. PACKAGING COST per product — input field for coût d'emballage (per unit)
+3. CONFIRMATION COST per order — input field for coût de confirmation (paid to the call agent / driya per confirmed order)
+
+Both costs must be subtracted from the gross revenue to compute the real net profit.
+
+═══════════════════════════════════════════════════════════════════════
+CURRENT STATE (from screenshot)
+═══════════════════════════════════════════════════════════════════════
+The Import CSV flow currently:
+- Step 1: Import fichier — shows "40 produits détectés (391/391 lignes livrées)"
+- Step 2: Saisie des coûts — collects costs per product
+- Step 3: Rapport final — shows profit/ROI
+
+The "Saisie des coûts" step needs to be extended with:
+- Coût emballage (per unit)
+- Coût confirmation (per order, fixed)
+
+And before that, on Step 1 (after detection), the user must be able to filter which products go to Step 2.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT FIRST
+═══════════════════════════════════════════════════════════════════════
+1. Open the Profit Analyzer page. Search client/src/pages/ for "ProfitAnalyzer" or "profit-analyzer" — likely client/src/pages/profit-analyzer.tsx (the route was nav.profitAnalyzer based on earlier sidebar).
+
+2. Find:
+   - The detected-products state (probably an array like `detectedProducts` or `products`)
+   - The 3-step wizard state (probably activeStep or currentStep)
+   - Where the cost input fields live for Step 2 — see what fields already exist (cost of goods, ads cost, shipping cost, return rate, etc.)
+   - The profit calculation function (probably `computeProfit` or inline in the report rendering)
+   - The total/per-product revenue computation
+
+3. REPORT:
+   - The component file path
+   - The fields currently captured in Step 2
+   - The exact profit formula used (so we know where to inject the two new costs)
+   - The shape of a "detected product" object (name, qty, revenue, etc.)
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — PRODUCT SELECTOR (Step 1 of the wizard)
+═══════════════════════════════════════════════════════════════════════
+On the import step, after detection, display the 40 products as a checkbox list. Default: all selected.
+
+UI (match the existing dark navy + gold theme of the Profit Analyzer):
+
+  ┌─────────────────────────────────────────────────────────┐
+  │ ✅ 40 produits détectés                                  │
+  │                                                          │
+  │ Filtrer les produits à analyser :                       │
+  │   [✓ Tout sélectionner]  [✗ Tout désélectionner]        │
+  │   [🔍 Rechercher un produit...]                          │
+  │                                                          │
+  │   ☑ تيشورت شد الجسم الرجالي (3 livraisons · 1.099 DH)  │
+  │   ☑ قطرات العسل والزيت الزجاجية (5 livraisons · ...)    │
+  │   ☐ ... (unchecked = exclu de l'analyse)                │
+  │                                                          │
+  │   Sélectionnés : 35/40 produits · 320/391 lignes        │
+  │                                                [Continuer]│
+  └─────────────────────────────────────────────────────────┘
+
+State:
+
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
+    new Set(detectedProducts.map(p => p.id || p.name))
+  );
+
+  const filteredDelivered = useMemo(
+    () => deliveredRows.filter(row => selectedProductIds.has(row.productKey)),
+    [deliveredRows, selectedProductIds]
+  );
+
+  const handleToggleAll = () => {
+    if (selectedProductIds.size === detectedProducts.length) setSelectedProductIds(new Set());
+    else setSelectedProductIds(new Set(detectedProducts.map(p => p.id || p.name)));
+  };
+
+The "Continuer" button passes ONLY the selected products' rows to Step 2.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — ADD PACKAGING + CONFIRMATION COST INPUTS (Step 2 of the wizard)
+═══════════════════════════════════════════════════════════════════════
+On the Saisie des coûts step, after each existing cost field, add the two new ones.
+
+A) Per-product packaging cost (input per product):
+
+  For each selected product, in the existing per-product cost editor, add a column/field:
+
+    Coût emballage (DH/unité)  [____]
+
+  Example layout for a product row:
+    Product name | Coût achat: __ | Coût emballage: __ | Coût pub: __ | Frais livraison: __ | ...
+
+  Default value: 0 (user fills in).
+
+B) Confirmation cost — global setting for the entire analysis:
+
+  Place ABOVE the per-product table (one global value applied to all):
+
+    💰 Coût de confirmation (par commande confirmée)
+       Input: [____] DH
+       (Coût payé à l'équipe de confirmation pour chaque commande validée)
+
+  Default: 0.
+
+Per-product state shape extension:
+
+  interface ProductCostRow {
+    productId: string;
+    productName: string;
+    coutAchat: number;
+    coutEmballage: number;       // NEW
+    coutPub: number;
+    fraisLivraison: number;
+    tauxRetour: number;          // existing
+    // ... other existing fields
+  }
+
+Global state:
+
+  const [coutConfirmation, setCoutConfirmation] = useState<number>(0);   // DH per confirmed order
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — UPDATE THE PROFIT FORMULA
+═══════════════════════════════════════════════════════════════════════
+Modify the profit calculation to subtract both new costs. Pseudo-formula (adapt to the exact existing formula):
+
+  For each product:
+    units_delivered    = sum of quantities from delivered rows for this product
+    revenue            = sum of (price * qty) from delivered rows
+    cost_goods         = units_delivered * coutAchat
+    cost_packaging     = units_delivered * coutEmballage           ← NEW
+    cost_shipping      = units_delivered * fraisLivraison
+    cost_ads           = coutPub                                    (already an absolute total OR per-order, keep existing behavior)
+
+  Global (applied across all selected orders):
+    confirmed_orders   = count of orders that were confirmed (delivered + cancelled-after-confirm + returned-after-confirm)
+                         If the CSV doesn't have a separate "confirmed" status column, fall back to:
+                         confirmed_orders = delivered_count + (returned_count if known) + (cancelled_after_confirm_count if known)
+                         Simplest reasonable default: confirmed_orders = total rows in selected dataset that have status != "Pas de réponse" and != "Annulé avant confirmation"
+                         If the CSV only has delivered rows (as in the current screenshot), confirmed_orders = total delivered rows.
+    cost_confirmation_total = confirmed_orders * coutConfirmation
+
+  Net profit (per product):
+    profit = revenue - cost_goods - cost_packaging - cost_shipping - cost_ads - (cost_confirmation_total * product_share)
+    where product_share = product's units_delivered / total_units_delivered
+
+  Or, simpler model: spread coutConfirmation per delivered order rather than per product. Pick the simpler one if the existing code does it per delivered order — match the existing convention.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — UPDATE THE REPORT (Step 3)
+═══════════════════════════════════════════════════════════════════════
+In the final report, show the new cost lines so the user sees them in the breakdown:
+
+  Chiffre d'affaires      :    XXX DH
+  Coût des produits       :   -XXX DH
+  Coût emballage          :   -XXX DH  ← NEW
+  Coût publicité          :   -XXX DH
+  Frais de livraison      :   -XXX DH
+  Coût confirmation       :   -XXX DH  ← NEW (X commandes × Y DH)
+  ─────────────────────────────────────
+  PROFIT NET              :    XXX DH
+  ROI                     :    XX %
+
+Also show in the per-product table a "Coût conf." column with the share allocated to that product.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — PERSIST USER PREFERENCES (optional but nice)
+═══════════════════════════════════════════════════════════════════════
+The user will run this analysis many times with similar costs. Persist the last-used values per product so they're prefilled next time:
+
+  - Save coutAchat, coutEmballage, fraisLivraison, coutConfirmation per (storeId, productName) in a new lightweight table (or extend an existing settings JSON on products).
+  - Schema option (no migration if products table has settings JSON):
+      products.settings.profitCostsDefaults = { coutAchat, coutEmballage, fraisLivraison }
+    plus a store-level setting:
+      store.settings.coutConfirmation
+  - Add small endpoints:
+      GET  /api/profit-analyzer/defaults?storeId=X     → returns {coutConfirmation, productDefaults: {...}}
+      POST /api/profit-analyzer/defaults                → saves
+  - Auto-load on Step 2 mount; auto-save when user clicks "Calculer".
+
+If the products schema doesn't have a settings column, skip persistence for now and just show a tooltip "Astuce : les valeurs ne sont pas encore sauvegardées entre analyses." — that's acceptable for v1.
+
+═══════════════════════════════════════════════════════════════════════
+DESIGN RULES
+═══════════════════════════════════════════════════════════════════════
+1. Match the existing dark navy + gold (#c5a059) theme of Profit Analyzer Pro.
+2. Number inputs should accept decimals and show DH suffix.
+3. Validation: costs must be >= 0. Empty = 0.
+4. Real-time recalculation: as the user types in cost fields, the totals update at the bottom of Step 2.
+5. The "Continuer" button on Step 1 is disabled if 0 products are selected.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ After import, all 40 products show with checkboxes
+2. ✅ "Tout sélectionner" / "Tout désélectionner" buttons work
+3. ✅ Search filter narrows the checkbox list
+4. ✅ Counter updates: "Sélectionnés: X/40 produits · Y/391 lignes"
+5. ✅ Continuer button disabled when 0 selected
+6. ✅ Step 2 shows ONLY the selected products
+7. ✅ Per-product Coût emballage input present, defaulting to 0
+8. ✅ Global Coût confirmation input present, defaulting to 0
+9. ✅ Real-time totals at the bottom of Step 2 reflect both new costs
+10. ✅ Step 3 report breaks down both new cost lines
+11. ✅ Profit formula correctly subtracts both
+12. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(profit-analyzer): product selector + packaging + confirmation costs"
+git push origin main
+
+WORKFLOW:
+1. INSPECT FIRST (Step 1). Report:
+   - The component file path
+   - The current cost fields and formula
+   - Whether products table has a settings JSON column for persistence
+2. Apply Steps 2–5 incrementally.
+3. Step 6 (persistence) only if products.settings exists; otherwise skip.
+4. `npm run build` before push.
