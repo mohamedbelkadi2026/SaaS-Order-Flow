@@ -1,0 +1,355 @@
+I need to add an "Import Historical Orders" feature to my TajerGrow platform. New clients come with their existing data in Google Sheets/Excel: confirmed orders, delivered orders (with tracking), pas de réponse orders, etc. They need to import this history INTO the platform WITHOUT losing the real status or tracking numbers, so they can start from where they were instead of from scratch.
+
+═══════════════════════════════════════════════════════════════════════
+THE GOAL
+═══════════════════════════════════════════════════════════════════════
+1. A new client connects their account.
+2. They go to "Importer Historique" page.
+3. They upload an Excel/CSV file (exported from Google Sheets) OR paste a Google Sheets URL.
+4. The system:
+   - Maps columns (name, phone, address, city, product, price, status, tracking, date, etc.)
+   - Lets the user PREVIEW + map columns + select default magasin/store
+   - Bulk creates orders in their store with:
+     * Correct status (Confirmé / Pas de réponse / Livré / Annulé / etc.)
+     * Tracking number preserved (if delivered/shipped)
+     * Carrier name preserved (if known)
+     * Original creation date preserved
+     * Products + quantities
+   - Skips duplicates (same phone + product within X days, or same tracking number)
+
+═══════════════════════════════════════════════════════════════════════
+SCOPE
+═══════════════════════════════════════════════════════════════════════
+1. New page: client/src/pages/import-history.tsx
+2. New backend endpoint: POST /api/orders/import-bulk
+3. Excel/CSV parser (use xlsx library — likely already installed since we have Sheets integration)
+4. Column mapping UI (user picks which column = name, which = phone, etc.)
+5. Status mapping UI (user picks: their "OK" string = our "Confirmé", their "Delivered" = our "Livré", etc.)
+6. Preview table (first 10 rows with mapped columns)
+7. Submit → bulk insert with duplicate detection
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT FIRST
+═══════════════════════════════════════════════════════════════════════
+1. Check shared/schema.ts:
+   - orders table → confirm fields: customerName, customerPhone, customerAddress, customerCity, status, trackingNumber, createdAt, magasinId, storeId, totalPrice, source, notes
+   - Confirm orderItems table fields (productId, quantity, price, sku)
+   - Confirm products table — we'll auto-create products by name+SKU if they don't exist
+
+2. Check server/storage.ts:
+   - createOrder method signature
+   - getOrCreateProduct or similar (we'll need to auto-create products from CSV product names)
+   - getNextAgent, getMagasin helpers we should reuse
+
+3. Check existing CSV/Excel parsing:
+   - Search for "xlsx", "csv", "papaparse", "papa parse" — we should reuse the same library the platform already uses
+   - The existing Google Sheets integration in server/routes.ts (POST /api/sheets/sync/:webhookKey) shows how columns are mapped — REUSE the parseSheetRowToOrder helper or its column-matching logic (accent-insensitive)
+
+4. Check what status strings the platform uses internally (search "Confirmé", "Livré", "Annulé", "Pas de réponse" in server/storage.ts and shared/schema.ts) — we need to map user statuses to THESE exact strings.
+
+REPORT findings before any code changes.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — BACKEND: bulk import endpoint
+═══════════════════════════════════════════════════════════════════════
+
+  app.post("/api/orders/import-bulk", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const {
+        rows,                  // array of mapped order objects
+        magasinId,             // user-picked magasin
+        defaultStatus,         // fallback status if a row has none
+        defaultSource,         // e.g. "import"
+        skipDuplicates,        // boolean
+        duplicateStrategy,     // "phone+product" | "tracking" | "both"
+      } = req.body;
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ message: "Aucune ligne à importer" });
+      }
+      if (rows.length > 5000) {
+        return res.status(400).json({ message: "Maximum 5000 commandes par import. Divisez votre fichier." });
+      }
+
+      // Pre-fetch existing orders for duplicate detection (last 90 days, this store)
+      const cutoff = new Date(Date.now() - 90 * 86400 * 1000);
+      const existingOrders = await storage.getOrdersSince(storeId, cutoff);
+
+      const phoneProductSet = new Set<string>();
+      const trackingSet = new Set<string>();
+      for (const o of existingOrders) {
+        if (o.customerPhone) {
+          // We don't know product here cheaply; use phone+date approximation
+          phoneProductSet.add(`${(o.customerPhone || "").replace(/\D/g, "")}|${o.customerName?.toLowerCase().trim() || ""}`);
+        }
+        if (o.trackingNumber) trackingSet.add(o.trackingNumber);
+      }
+
+      const results = { created: 0, skipped: 0, errors: [] as any[] };
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        try {
+          const phone = String(row.customerPhone || "").replace(/\D/g, "");
+          const name = String(row.customerName || "").trim();
+          const tracking = String(row.trackingNumber || "").trim();
+
+          // Duplicate detection
+          const dupKey = `${phone}|${name.toLowerCase()}`;
+          const isDupByPhoneName = skipDuplicates && phoneProductSet.has(dupKey);
+          const isDupByTracking = skipDuplicates && tracking && trackingSet.has(tracking);
+          if (isDupByPhoneName || isDupByTracking) {
+            results.skipped += 1;
+            continue;
+          }
+
+          // Map status — accept multiple variants, normalize to platform statuses
+          const rawStatus = String(row.status || "").toLowerCase().trim();
+          const status = mapImportedStatus(rawStatus, defaultStatus || "Confirmé");
+
+          // Parse date (handle multiple formats: ISO, dd/mm/yyyy, etc.)
+          const createdAt = parseFlexibleDate(row.createdAt) || new Date();
+
+          // Auto-create or find product
+          let productId: number | null = null;
+          let unitPrice = Number(row.price) || 0;
+          let quantity = Number(row.quantity) || 1;
+          if (row.productName) {
+            const product = await storage.getOrCreateProductByName(storeId, {
+              name: String(row.productName).trim(),
+              sku: row.productSku ? String(row.productSku).trim() : null,
+              price: unitPrice,
+            });
+            productId = product?.id || null;
+            if (product?.price && !unitPrice) unitPrice = product.price;
+          }
+
+          // Create the order
+          const order = await storage.createOrder({
+            storeId,
+            magasinId: magasinId || null,
+            customerName: name || "Client importé",
+            customerPhone: phone,
+            customerAddress: String(row.customerAddress || "").trim(),
+            customerCity: String(row.customerCity || "").trim(),
+            status,
+            trackingNumber: tracking || null,
+            carrierProvider: row.carrierProvider ? String(row.carrierProvider).toLowerCase().trim() : null,
+            totalPrice: Math.round((unitPrice * quantity) * 100) / 100,  // adjust if stored as integer cents
+            notes: row.notes ? String(row.notes).trim() : null,
+            source: defaultSource || "import",
+            createdAt,
+            updatedAt: createdAt,
+          } as any);
+
+          // Add item
+          if (productId && order?.id) {
+            await storage.createOrderItem({
+              orderId: order.id,
+              productId,
+              quantity,
+              price: unitPrice,
+            } as any);
+          }
+
+          // If delivered, set shippedAt + deliveredAt to the row date
+          if (status === "Livré" && order?.id) {
+            await storage.updateOrderTimestamps(order.id, {
+              shippedAt: createdAt,
+              deliveredAt: createdAt,
+            });
+          }
+
+          // Mark as processed for subsequent duplicate detection in same batch
+          phoneProductSet.add(dupKey);
+          if (tracking) trackingSet.add(tracking);
+          results.created += 1;
+        } catch (err: any) {
+          results.errors.push({ row: i + 1, message: err.message || "Erreur ligne" });
+        }
+      }
+
+      res.json(results);
+    } catch (err: any) {
+      console.error("[ImportBulk] error:", err);
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+Add helper functions at the top of routes.ts (or in server/utils):
+
+  // Map user-supplied status strings to platform statuses
+  function mapImportedStatus(raw: string, fallback: string): string {
+    const s = (raw || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    if (!s) return fallback;
+
+    // Delivered
+    if (["livre", "livree", "delivered", "delivere", "completed", "done", "ok livre"].some(v => s === v || s.includes(v))) return "Livré";
+    // Confirmed
+    if (["confirme", "confirmed", "confirm", "ok", "valid", "valide", "oui"].some(v => s === v || s.includes(v))) return "Confirmé";
+    // No answer
+    if (["pas de reponse", "no answer", "ne repond pas", "no reply", "nrp", "no answer yet"].some(v => s === v || s.includes(v))) return "Pas de réponse";
+    // Cancelled / refused
+    if (["annule", "cancel", "cancelled", "refuse", "refused", "no", "non"].some(v => s === v || s.includes(v))) return "Annulé";
+    // Returned
+    if (["retour", "return", "returned", "rendu"].some(v => s === v || s.includes(v))) return "Retour";
+    // Shipped / in transit
+    if (["expedie", "shipped", "in transit", "en cours", "en route"].some(v => s === v || s.includes(v))) return "Expédié";
+    // Reported / postponed
+    if (["reporte", "report", "postponed", "later"].some(v => s === v || s.includes(v))) return "Reporté";
+
+    return fallback;
+  }
+
+  function parseFlexibleDate(input: any): Date | null {
+    if (!input) return null;
+    if (input instanceof Date) return isNaN(input.getTime()) ? null : input;
+    const s = String(input).trim();
+    // ISO
+    const iso = new Date(s);
+    if (!isNaN(iso.getTime())) return iso;
+    // dd/mm/yyyy or dd-mm-yyyy
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+    if (m) {
+      const dd = parseInt(m[1]), mm = parseInt(m[2]) - 1;
+      let yy = parseInt(m[3]);
+      if (yy < 100) yy += 2000;
+      const d = new Date(yy, mm, dd);
+      if (!isNaN(d.getTime())) return d;
+    }
+    return null;
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — STORAGE HELPERS
+═══════════════════════════════════════════════════════════════════════
+Add these methods if they don't exist (match the existing platform conventions):
+
+  - getOrdersSince(storeId, since): returns recent orders (id, customerPhone, customerName, trackingNumber)
+  - getOrCreateProductByName(storeId, { name, sku, price }): finds existing product (case-insensitive name match within store) or creates one with auto-SKU like we did for Google Sheets
+  - createOrderItem(...) — likely already exists
+  - updateOrderTimestamps(orderId, { shippedAt, deliveredAt }) — adapt to actual order columns
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — FRONTEND: Import page (3-step wizard)
+═══════════════════════════════════════════════════════════════════════
+Create client/src/pages/import-history.tsx. Match the platform's indigo/navy theme exactly. Three steps:
+
+STEP A — Upload:
+  - Big drop zone: "Glissez votre fichier Excel/CSV ici"
+  - Accepted: .xlsx, .xls, .csv
+  - Parse on the client using SheetJS (xlsx) library — extract headers and first N rows
+  - Show file name, total row count
+
+STEP B — Map columns:
+  For each platform field, show a dropdown to pick the source column:
+
+    Nom du client     → [select from CSV headers]
+    Téléphone         → [select]
+    Adresse           → [select]
+    Ville             → [select]
+    Produit           → [select]
+    Prix              → [select]
+    Quantité          → [select, default 1]
+    Statut            → [select]
+    Tracking number   → [select, optional]
+    Transporteur      → [select, optional]
+    Date              → [select, optional]
+    Notes             → [select, optional]
+
+  Auto-suggest mapping: if the CSV header matches a known alias (accent-insensitive), pre-select it. Aliases:
+    name:     ["nom", "name", "client", "destinataire", "full name", "fullname", "recipient"]
+    phone:    ["telephone", "phone", "tel", "gsm", "mobile", "numero", "tlf"]
+    address:  ["adresse", "address", "rue"]
+    city:     ["ville", "city", "town"]
+    product:  ["produit", "product", "nom du produit", "article", "item"]
+    price:    ["prix", "price", "montant", "amount", "total"]
+    quantity: ["qty", "quantite", "quantity", "qnt", "qte"]
+    status:   ["statut", "status", "etat", "state"]
+    tracking: ["tracking", "tracking number", "code", "code colis", "package id", "tracking-number"]
+    carrier:  ["transporteur", "carrier", "société livraison", "société de livraison"]
+    date:     ["date", "created", "date creation", "date de creation"]
+    notes:    ["note", "notes", "remarque", "remarques", "commentaire"]
+
+  Also show:
+    - Magasin selector (dropdown of user's magasins, required)
+    - Default status (if some rows don't have status)
+    - Status mapping table: detected unique statuses in their file → mapped platform status (auto-detected via mapImportedStatus, but user can override)
+    - "Ignorer les doublons" checkbox (default on)
+    - Duplicate strategy radio: phone+name / tracking / both
+
+STEP C — Preview & Confirm:
+  - Show first 10 rows with the mapped fields rendered (so user sees exactly what will be created)
+  - Show counts: "X commandes seront créées · Y dupliquées seront ignorées (estimation)"
+  - Button: "Importer X commandes" (large indigo button)
+  - Progress bar during upload (chunked POSTs of 200 rows at a time so we don't time out)
+  - Final result modal: "✅ X créées, Y ignorées, Z erreurs"
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — UPLOAD CHUNKING (avoid timeouts)
+═══════════════════════════════════════════════════════════════════════
+For files > 500 rows, send the import in chunks of 200 rows. The endpoint already accepts an array; the frontend just loops and accumulates results. Show a progress bar.
+
+  async function importInChunks(allRows: any[], chunkSize = 200) {
+    const totals = { created: 0, skipped: 0, errors: [] as any[] };
+    for (let i = 0; i < allRows.length; i += chunkSize) {
+      const chunk = allRows.slice(i, i + chunkSize);
+      const resp = await fetch("/api/orders/import-bulk", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rows: chunk,
+          magasinId: selectedMagasinId,
+          defaultStatus,
+          defaultSource: "import",
+          skipDuplicates: true,
+          duplicateStrategy: "phone+name",
+        }),
+      });
+      const r = await resp.json();
+      totals.created += r.created || 0;
+      totals.skipped += r.skipped || 0;
+      totals.errors.push(...(r.errors || []));
+      setProgress(Math.min(100, Math.round(((i + chunkSize) / allRows.length) * 100)));
+    }
+    return totals;
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — ADD MENU LINK
+═══════════════════════════════════════════════════════════════════════
+Add the import page to the platform's sidebar/menu. Place it under "Nouvelle commande" or as its own item: "📥 Importer Historique" (visible only to store admins, not to drivers/agents — match the existing permission model).
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ /import-history page accessible from sidebar
+2. ✅ File upload accepts .xlsx, .xls, .csv
+3. ✅ Column mapping UI auto-detects common headers (case + accent insensitive)
+4. ✅ Status mapping correctly converts Livré/Confirmé/Pas de réponse/Annulé variants
+5. ✅ Tracking numbers preserved on imported orders
+6. ✅ Carrier provider preserved (if column mapped)
+7. ✅ Original dates preserved (createdAt from CSV, not "now")
+8. ✅ Products auto-created if not in DB (with auto-generated SKU)
+9. ✅ Duplicate detection works (phone+name OR tracking)
+10. ✅ Chunked upload prevents timeouts for large files
+11. ✅ Progress bar shows during import
+12. ✅ Final result modal: created / skipped / errors
+13. ✅ Imported orders show in /orders with correct status filters
+14. ✅ Imported Livré orders count toward "Clients fidèles" if customer has 2+
+15. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(import): bulk import historical orders with status + tracking preservation"
+git push origin main
+
+WORKFLOW:
+1. INSPECT FIRST (Step 1). Report findings about: status strings used in DB, getOrCreateProduct helper, existing CSV/Excel parser library.
+2. Apply Steps 2–6 incrementally.
+3. `npm run build` BEFORE pushing.
+4. After deploy, test with a small CSV (10 rows) first, then a larger one.

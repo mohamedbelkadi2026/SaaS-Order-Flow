@@ -5285,6 +5285,215 @@ function ensureHeaders(sheet) {
   });
 
   // ============================================================
+  // HISTORICAL ORDERS BULK IMPORT
+  // ============================================================
+  // Map user-supplied status strings (any language/casing/accents) to the
+  // platform's internal status codes. Falls back to `fallback` when unknown.
+  function mapImportedStatus(raw: string, fallback: string): string {
+    const s = (raw || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    if (!s) return fallback;
+    const has = (...v: string[]) => v.some(x => s === x || s.includes(x));
+    // Returned / refused / cancelled are checked FIRST: phrases like
+    // "Retour Reçu" or "Colis refusé reçu" contain delivered tokens ("recu")
+    // but must NOT be classified as delivered.
+    if (has("retour", "return", "returned", "rendu", "renvoye")) return "retourné";
+    if (has("refuse", "refused", "refus", "rejected")) return "refused";
+    if (has("annule", "annulee", "cancel", "cancelled", "canceled", "fake", "faux")) return "Annulé (fake)";
+    // Delivered
+    if (has("livre", "livree", "delivered", "delivere", "completed", "complete", "done", "termine", "recu", "recue")) return "delivered";
+    // Shipped / in transit / out for delivery
+    if (has("ramassage", "pickup", "a ramasser", "attente de ramassage")) return "Attente De Ramassage";
+    if (has("expedie", "shipped", "in transit", "en transit", "en cours de livraison", "out for delivery", "sorti pour livraison")) return "expédié";
+    if (has("en cours", "in progress", "in_progress")) return "in_progress";
+    // No answer
+    if (has("pas de reponse", "no answer", "ne repond pas", "no reply", "nrp", "injoignable", "unreachable")) return "Pas de réponse 1";
+    if (has("rappel", "callback", "recall", "rappeler")) return "rappel";
+    // Confirmed
+    if (has("confirme", "confirmee", "confirmed", "confirm", "ok", "valid", "valide", "oui", "yes")) return "confirme";
+    // New
+    if (has("nouveau", "nouvelle", "new", "pending", "en attente")) return "nouveau";
+    return fallback;
+  }
+
+  function parseFlexibleDate(input: any): Date | null {
+    if (!input) return null;
+    if (input instanceof Date) return isNaN(input.getTime()) ? null : input;
+    // Excel serial date number (days since 1899-12-30)
+    if (typeof input === "number" && isFinite(input) && input > 0 && input < 100000) {
+      const d = new Date(Math.round((input - 25569) * 86400 * 1000));
+      if (!isNaN(d.getTime())) return d;
+    }
+    const s = String(input).trim();
+    if (!s) return null;
+    // Excel serial date that arrived as a numeric STRING (e.g. "45123").
+    // sheet_to_json with raw:false can stringify date cells, so handle it here.
+    if (/^\d{4,6}(\.\d+)?$/.test(s)) {
+      const n = parseFloat(s);
+      if (isFinite(n) && n > 20000 && n < 100000) {
+        const d = new Date(Math.round((n - 25569) * 86400 * 1000));
+        if (!isNaN(d.getTime())) return d;
+      }
+    }
+    // dd/mm/yyyy or dd-mm-yyyy (try this BEFORE Date() which assumes mm/dd)
+    const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+    if (m) {
+      const dd = parseInt(m[1], 10), mm = parseInt(m[2], 10) - 1;
+      let yy = parseInt(m[3], 10);
+      if (yy < 100) yy += 2000;
+      const d = new Date(yy, mm, dd);
+      if (!isNaN(d.getTime())) return d;
+    }
+    const iso = new Date(s);
+    if (!isNaN(iso.getTime())) return iso;
+    return null;
+  }
+
+  // POST /api/orders/import-bulk — admin-only. Accepts already-parsed+mapped rows
+  // (the frontend parses the spreadsheet client-side and posts JSON in chunks).
+  // Preserves real status, tracking number, carrier and original creation date,
+  // and skips duplicates. Status is written directly on insert (NO stock
+  // deduction) because these are historical orders, not live sales.
+  app.post("/api/orders/import-bulk", requireAuth, requireAdmin, requireActiveSubscription, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const {
+        rows,
+        magasinId,
+        defaultStatus,
+        defaultSource,
+        skipDuplicates,
+        duplicateStrategy,
+        baseRowIndex,
+      } = req.body as {
+        rows: any[];
+        magasinId?: number | null;
+        defaultStatus?: string;
+        defaultSource?: string;
+        skipDuplicates?: boolean;
+        duplicateStrategy?: "phone+name" | "tracking" | "both";
+        baseRowIndex?: number;
+      };
+      // Offset so error line numbers map to the true source-file row across chunks.
+      const rowOffset = Number.isFinite(baseRowIndex as number) ? Number(baseRowIndex) : 0;
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ message: "Aucune ligne à importer" });
+      }
+      if (rows.length > 5000) {
+        return res.status(400).json({ message: "Maximum 5000 commandes par envoi. Divisez votre fichier." });
+      }
+
+      // Validate magasin belongs to this owner (prevents cross-tenant spoofing)
+      let safeMagasinId: number | null = null;
+      if (magasinId) {
+        const owned = await storage.getStoresByOwner(req.user!.id);
+        if (!owned.some(m => m.id === magasinId)) {
+          return res.status(403).json({ message: "Magasin non autorisé" });
+        }
+        safeMagasinId = magasinId;
+      }
+
+      const fallbackStatus = defaultStatus || "nouveau";
+      const strategy = duplicateStrategy || "phone+name";
+      const dedupe = skipDuplicates !== false;
+
+      // Pre-load recent orders (last 90 days) for duplicate detection
+      const cutoff = new Date(Date.now() - 90 * 86400 * 1000);
+      const existing = await storage.getOrdersSince(storeId, cutoff);
+      const phoneNameSet = new Set<string>();
+      const trackingSet = new Set<string>();
+      for (const o of existing) {
+        const ph = (o.customerPhone || "").replace(/\D/g, "");
+        const nm = (o.customerName || "").toLowerCase().trim();
+        if (ph) phoneNameSet.add(`${ph}|${nm}`);
+        if (o.trackNumber) trackingSet.add(String(o.trackNumber).trim());
+      }
+
+      const results = { created: 0, skipped: 0, errors: [] as { row: number; message: string }[] };
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i] || {};
+        try {
+          const phone = String(row.customerPhone ?? "").replace(/\D/g, "");
+          const name = String(row.customerName ?? "").trim();
+          const tracking = String(row.trackingNumber ?? "").trim();
+
+          if (!name && !phone) { results.skipped += 1; continue; }
+
+          const dupKey = `${phone}|${name.toLowerCase()}`;
+          const dupByPhoneName = (strategy === "phone+name" || strategy === "both") && !!phone && phoneNameSet.has(dupKey);
+          const dupByTracking = (strategy === "tracking" || strategy === "both") && !!tracking && trackingSet.has(tracking);
+          if (dedupe && (dupByPhoneName || dupByTracking)) { results.skipped += 1; continue; }
+
+          const status = mapImportedStatus(String(row.status ?? ""), fallbackStatus);
+          const createdAt = parseFlexibleDate(row.createdAt) || new Date();
+
+          // price arrives in DH (decimal) → store as integer centimes
+          const unitPriceDh = parseFloat(String(row.price ?? "").replace(",", ".")) || 0;
+          const quantity = Math.max(1, parseInt(String(row.quantity ?? "1"), 10) || 1);
+          const totalPrice = Math.round(unitPriceDh * quantity * 100);
+
+          const productName = String(row.productName ?? "").trim();
+          let productId: number | null = null;
+          if (productName) {
+            const product = await storage.getOrCreateProductByName(storeId, {
+              name: productName,
+              sku: row.productSku ? String(row.productSku).trim() : null,
+              sellingPrice: Math.round(unitPriceDh * 100),
+            });
+            productId = product?.id ?? null;
+          }
+
+          const carrierName = String(row.carrierProvider ?? "").trim();
+          const phoneTail = phone.slice(-6);
+          const orderNumber = `IMP-${Date.now()}-${i}-${phoneTail || Math.random().toString(36).slice(2, 6)}`;
+
+          await storage.createOrder({
+            storeId,
+            magasinId: safeMagasinId,
+            orderNumber,
+            customerName: name || "Client importé",
+            customerPhone: phone,
+            customerAddress: String(row.customerAddress ?? "").trim(),
+            customerCity: String(row.customerCity ?? "").trim(),
+            status,
+            totalPrice,
+            productCost: 0,
+            shippingCost: 0,
+            adSpend: 0,
+            trackNumber: tracking || null,
+            carrierName: carrierName || null,
+            shippingProvider: carrierName ? carrierName.toLowerCase() : null,
+            comment: row.notes ? String(row.notes).trim() : null,
+            source: defaultSource || "import",
+            rawProductName: productName || null,
+            createdAt,
+          } as any, productName ? [{
+            orderId: 0,
+            productId,
+            rawProductName: productName,
+            sku: row.productSku ? String(row.productSku).trim() : null,
+            quantity,
+            price: Math.round(unitPriceDh * 100),
+          }] as any : []);
+
+          // Track within this batch so later rows dedupe against earlier ones
+          if (phone) phoneNameSet.add(dupKey);
+          if (tracking) trackingSet.add(tracking);
+          results.created += 1;
+        } catch (err: any) {
+          results.errors.push({ row: rowOffset + i + 1, message: err?.message || "Erreur ligne" });
+        }
+      }
+
+      res.json(results);
+    } catch (err: any) {
+      console.error("[ImportBulk] error:", err);
+      res.status(500).json({ message: err?.message || "Erreur" });
+    }
+  });
+
+  // ============================================================
   // MANUAL ORDER CREATION
   // ============================================================
   app.post("/api/orders", requireAuth, requireActiveSubscription, async (req, res) => {

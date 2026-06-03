@@ -40,9 +40,11 @@ export interface IStorage {
   getProductsByStore(storeId: number): Promise<Product[]>;
   getProduct(id: number): Promise<Product | undefined>;
   createProduct(product: InsertProduct): Promise<Product>;
+  getOrCreateProductByName(storeId: number, opts: { name: string; sku?: string | null; sellingPrice?: number }): Promise<Product>;
   updateProductStock(id: number, stockDelta: number): Promise<Product | undefined>;
   
   getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]>;
+  getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
   getOrdersByPhone(storeId: number, phone: string): Promise<OrderWithDetails[]>;
   getOrder(id: number): Promise<OrderWithDetails | undefined>;
@@ -370,6 +372,38 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  // Find an existing product by case-insensitive name within a store, or create
+  // a new one. Used by historical bulk import where rows carry only product names.
+  async getOrCreateProductByName(
+    storeId: number,
+    opts: { name: string; sku?: string | null; sellingPrice?: number },
+  ): Promise<Product> {
+    const name = (opts.name || "").trim();
+    if (!name) throw new Error("Nom du produit requis");
+
+    const [existing] = await db.select().from(products).where(
+      and(
+        eq(products.storeId, storeId),
+        sql`lower(${products.name}) = lower(${name})`,
+      ),
+    );
+    if (existing) return existing;
+
+    const sku = (opts.sku && String(opts.sku).trim())
+      ? String(opts.sku).trim()
+      : `IMP-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+    const [created] = await db.insert(products).values({
+      storeId,
+      name,
+      sku,
+      stock: 0,
+      costPrice: 0,
+      sellingPrice: Math.max(0, Math.round(opts.sellingPrice || 0)),
+    }).returning();
+    return created;
+  }
+
   async updateProductStock(id: number, stockDelta: number): Promise<Product | undefined> {
     const [product] = await db.select().from(products).where(eq(products.id, id));
     if (!product) return undefined;
@@ -379,6 +413,13 @@ export class DatabaseStorage implements IStorage {
       .where(eq(products.id, id))
       .returning();
     return updated;
+  }
+
+  // Lightweight fetch of recent orders for duplicate detection during import.
+  async getOrdersSince(storeId: number, since: Date): Promise<Order[]> {
+    return await db.select().from(orders).where(
+      and(eq(orders.storeId, storeId), gte(orders.createdAt, since)),
+    );
   }
 
   async getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]> {

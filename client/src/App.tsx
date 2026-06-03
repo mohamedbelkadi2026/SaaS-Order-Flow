@@ -58,6 +58,7 @@ import AutomationPage from "@/pages/automation";
 import VerifyEmailPage from "@/pages/verify-email";
 import LpView from "@/pages/lp-view";
 import DeliveryStats from "@/pages/delivery-stats";
+import ImportHistory from "@/pages/import-history";
 
 // ── Purely public paths — always rendered, no auth/verification check ─────────
 // Any path listed here is served directly from AppRouter before any auth logic.
@@ -78,6 +79,7 @@ const PRIVATE_PREFIXES = [
   "/invoices", "/billing", "/profitability", "/integrations",
   "/admin", "/media-buyers", "/mes-depenses", "/publicites",
   "/profile", "/calculator", "/checkout", "/automation", "/profit-analyzer",
+  "/import-history",
 ];
 
 function isPrivatePath(path: string) {
@@ -233,6 +235,7 @@ function ProtectedRoutes() {
               <Route path="/orders/all" component={AllOrders} />
               <Route path="/orders/add" component={NewOrderAdd} />
               <Route path="/orders/import" component={NewOrderImport} />
+              <Route path="/import-history" component={ImportHistory} />
               <Route path="/orders/new" component={NewOrder} />
               <Route path="/orders" component={Orders} />
               <Route path="/orders/:filter" component={Orders} />

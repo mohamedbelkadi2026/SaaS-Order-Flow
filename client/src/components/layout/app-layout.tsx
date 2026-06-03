@@ -109,8 +109,9 @@ const INTEGRATION_SUB_ITEMS = [
 ];
 
 const NOUVELLE_SUB_ITEMS = [
-  { name: "Ajouter",   href: "/orders/add" },
-  { name: "Importer",  href: "/orders/import" },
+  { name: "Ajouter",              href: "/orders/add" },
+  { name: "Importer",             href: "/orders/import" },
+  { name: "Importer Historique",  href: "/import-history" },
 ];
 
 /* ─── i18n key maps ───────────────────────────────────────────── */
@@ -153,8 +154,9 @@ const INTEGRATION_SUB_KEYS: Record<string, string> = {
   "Journal":               "integrationSub.logs",
 };
 const NOUVELLE_SUB_KEYS: Record<string, string> = {
-  "Ajouter":  "newOrderSub.add",
-  "Importer": "newOrderSub.import",
+  "Ajouter":             "newOrderSub.add",
+  "Importer":            "newOrderSub.import",
+  "Importer Historique": "newOrderSub.importHistory",
 };
 
 const LANG_OPTIONS = [
