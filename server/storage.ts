@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities,
+  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -79,6 +79,8 @@ export interface IStorage {
   getAmeexCityId(storeId: number, cityName: string): Promise<string | null>;
   upsertExpressCoursierCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
   resolveExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null>;
+  upsertOzonExpressCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
+  resolveOzonExpressCityId(storeId: number, cityName: string): Promise<string | null>;
   getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
     id?: number;
     settings?: Record<string, any>;
@@ -1183,6 +1185,49 @@ export class DatabaseStorage implements IStorage {
 
     // 3. Not found → return null. The caller MUST fail fast — never send the
     //    city name, which EC rejects ("Ville invalide").
+    return null;
+  }
+
+  // ── Ozon Express city ID mapping (name → numeric ID) ─────────────────────
+  // Ozon Express's add-parcel API requires 'parcel-city' to be a numeric ID,
+  // not a name. Populated by "Synchroniser les villes" on the Ozon account,
+  // which fetches the official id→name map from GET /cities.
+
+  async upsertOzonExpressCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void> {
+    if (!cities.length) return;
+    // Replace all rows for this store with fresh data — wrapped in a transaction
+    // so a concurrent ship never observes zero rows between delete and insert.
+    await db.transaction(async (tx) => {
+      await tx.delete(ozonExpressCities).where(eq(ozonExpressCities.storeId, storeId));
+      await tx.insert(ozonExpressCities).values(
+        cities.map(c => ({ storeId, externalId: c.externalId, name: c.name, nameNorm: c.nameNorm }))
+      );
+    });
+  }
+
+  async resolveOzonExpressCityId(storeId: number, cityName: string): Promise<string | null> {
+    const norm = (s: string) => (s || "")
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const key = norm(cityName);
+    if (!key) return null;
+
+    // 1. Exact normalized match against synced Ozon cities
+    const [exact] = await db.select().from(ozonExpressCities)
+      .where(and(eq(ozonExpressCities.storeId, storeId), eq(ozonExpressCities.nameNorm, key)))
+      .limit(1);
+    if (exact && /^\d+$/.test(exact.externalId)) return exact.externalId;
+
+    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
+    const fuzzy = await db.select().from(ozonExpressCities)
+      .where(and(eq(ozonExpressCities.storeId, storeId), like(ozonExpressCities.nameNorm, `%${key}%`)))
+      .limit(1);
+    if (fuzzy[0] && /^\d+$/.test(fuzzy[0].externalId)) return fuzzy[0].externalId;
+
+    // 3. Not found → return null. The caller MUST fail fast — never send the
+    //    city name, which Ozon Express rejects.
     return null;
   }
 

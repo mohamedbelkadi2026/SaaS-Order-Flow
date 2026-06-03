@@ -1,0 +1,350 @@
+I want to integrate Ozon Express (api.ozonexpress.ma) as a new shipping carrier into my TajerGrow platform. It must work alongside the existing Digylog, Ameex, and Express Coursier integrations — same patterns, same UI, same flow.
+
+═══════════════════════════════════════════════════════════════════════
+OZON EXPRESS API SPEC (verified from their docs)
+═══════════════════════════════════════════════════════════════════════
+Base URL: https://api.ozonexpress.ma
+Auth: customer_id + api_key embedded in URL path (NOT bearer header)
+Body format: form-data (multipart/form-data), NOT JSON ⚠️
+
+Endpoints we'll use:
+
+1) Add new parcel (ship order):
+   POST /customers/{CUSTOMER_ID}/{API_KEY}/add-parcel
+   Form fields:
+     - tracking-number    (optional) - custom tracking number
+     - parcel-receiver    (required) - recipient full name
+     - parcel-phone       (required) - recipient phone
+     - parcel-city        (required) - city ID (numeric)
+     - parcel-address     (required) - full address
+     - parcel-note        (optional) - special instructions
+     - parcel-price       (required) - price in MAD
+     - parcel-declared-value (required if price empty, 0, or > 5000, min 50)
+     - parcel-nature      (optional) - description
+     - parcel-stock       (required) - 1 = stock, 0 = pickup
+     - parcel-open        (optional) - 1 = open allowed, 2 = not (default 1)
+     - parcel-fragile     (optional) - 1/0 (default 0)
+     - parcel-replace     (optional) - 1/0 (default 0)
+     - products           (optional) - JSON: [{"ref": "PROD001", "qnty": 2}]
+
+2) List cities:
+   GET /cities
+   Returns the list of cities Ozon Express covers, with their numeric IDs.
+
+3) Parcel info:
+   POST /customers/{CUSTOMER_ID}/{API_KEY}/parcel-info
+   Form: tracking-number = "..."
+
+4) Tracking (single or bulk):
+   POST /customers/{CUSTOMER_ID}/{API_KEY}/tracking
+   Form (single): tracking-number = "OZE..."
+   JSON (bulk):   { "tracking-number": ["OZE1", "OZE2", "OZE3"] }
+
+5) Delivery Note (4-step workflow — implement basic version):
+   a) POST /customers/{ID}/{KEY}/add-delivery-note  → returns { ref: "BL..." }
+   b) POST /customers/{ID}/{KEY}/add-parcel-to-delivery-note  form: Ref=BL_REF, Codes[0]=..., Codes[1]=...
+   c) POST /customers/{ID}/{KEY}/save-delivery-note  form: Ref=BL_REF
+   d) PDF link: https://client.ozoneexpress.ma/pdf-delivery-note?dn-ref={BL_REF}
+
+═══════════════════════════════════════════════════════════════════════
+GOAL: full feature parity with Digylog/Ameex/Express Coursier
+═══════════════════════════════════════════════════════════════════════
+1. Add "ozonexpress" as a new carrier
+2. Multi-account support (Connection 1, Connection 2, etc.)
+3. City coverage per account (sync from GET /cities)
+4. Single-order + bulk-ship support
+5. Tracking number extraction + status updates
+6. Webhook receiver (if Ozon Express supports webhooks — check; if not, poll via /parcel-info)
+7. Appears in the carrier+account selector with logo
+8. Appears in the Intégrations page (Sociétés de Livraison)
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1: INSPECT FIRST — mirror the Express Coursier integration
+═══════════════════════════════════════════════════════════════════════
+Open and READ these files (the Express Coursier integration is the most recent, well-tested template):
+
+1. server/services/carrier-service.ts
+   - shipOrderToExpressCoursier function — this is the most recent, working template
+   - The master shipOrderToCarrier dispatcher (the strict switch we built)
+
+2. server/routes.ts
+   - /api/orders/:id/ship and /api/orders/bulk-ship — they should already dispatch by provider
+   - /api/shipping/active-accounts
+   - /api/carriers/cities/all
+   - /api/carriers/expresscoursier/seed-cities/:accountId (the manual cities seed we added)
+   - The carrier account create/update endpoint
+
+3. server/storage.ts
+   - resolveExpressCoursierCityId
+   - findCoveringCarrierAccount (the per-city carrier resolver for the badge)
+
+4. client/src/pages/integrations.tsx (or wherever carriers connect)
+   - The Express Coursier connect/edit form
+
+5. client/src/components/CarrierLogo.tsx
+   - The LOGO_MAP — we'll add ozonexpress there
+
+REPORT what you find. Especially: the exact pattern shipOrderToExpressCoursier uses (response parsing, status update, tracking extraction). We'll mirror it.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2: ADD LOGO + COLOR
+═══════════════════════════════════════════════════════════════════════
+The user will upload public/logos/ozonexpress.png. In client/src/components/CarrierLogo.tsx, add a new entry to LOGO_MAP:
+
+  const LOGO_MAP: Record<string, { src?: string; bg: string; text: string }> = {
+    digylog:         { src: "/logos/digylog.png",         bg: "#0ea5e9", text: "D" },
+    ameex:           { src: "/logos/ameex.png",           bg: "#ea580c", text: "A" },
+    expresscoursier: { src: "/logos/expresscoursier.png", bg: "#06b6d4", text: "E" },
+    ozonexpress:     { src: "/logos/ozonexpress.png",     bg: "#dc2626", text: "O" },  // red for Ozon
+  };
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3: BACKEND SERVICE — shipOrderToOzonExpress
+═══════════════════════════════════════════════════════════════════════
+Add in server/services/carrier-service.ts. IMPORTANT: Ozon Express uses form-data, NOT JSON.
+
+  async function shipOrderToOzonExpress(order: any, creds: any, options: any = {}) {
+    const settings = (creds.settings as any) || {};
+    const customerId = String(
+      settings.ozonCustomerId ||
+      creds.ozonCustomerId ||
+      creds.carrierStoreName ||
+      ""
+    ).trim();
+    const apiKey = String(creds.apiKey || creds.apiToken || "").trim();
+
+    if (!customerId || !apiKey) {
+      throw new Error(
+        `Identifiants Ozon Express manquants. Allez dans Intégrations → Sociétés de Livraison → modifier le compte, ` +
+        `et renseignez votre Customer ID et API Key Ozon Express.`
+      );
+    }
+
+    // Resolve city → numeric Ozon city ID
+    const cityName = (order.customerCity || "").trim();
+    const cityId = await storage.resolveOzonExpressCityId(cityName, creds.accountId);
+    if (!cityId) {
+      throw new Error(
+        `Ville "${cityName}" non synchronisée avec Ozon Express. ` +
+        `Synchronisez les villes du compte dans Intégrations → Ozon Express.`
+      );
+    }
+
+    // Compute product line + quantity
+    const totalQty = await computeOrderQuantity(order.id);
+    const productLine = await buildProductLineText(order.id, totalQty);
+
+    // Build form-data
+    const form = new FormData();
+    form.append("parcel-receiver", order.customerName || "");
+    form.append("parcel-phone", (order.customerPhone || "").replace(/\s/g, ""));
+    form.append("parcel-city", String(cityId));
+    form.append("parcel-address", order.customerAddress || "");
+    form.append("parcel-price", String(Math.round(order.totalPrice || 0)));  // adjust if cents
+    form.append("parcel-stock", "1");                                          // default to stock
+    form.append("parcel-note", order.note || "");
+    form.append("parcel-nature", productLine);
+    // Optional: order number as custom tracking
+    if (order.orderNumber) {
+      form.append("tracking-number", `TG-${order.orderNumber}`);
+    }
+    // Optional: products array
+    const items = await storage.getOrderItemsWithProducts(order.id);
+    if (items && items.length > 0) {
+      const products = items.map((it: any) => ({
+        ref: it.sku || it.productSku || String(it.productId),
+        qnty: it.quantity || 1,
+      }));
+      form.append("products", JSON.stringify(products));
+    }
+
+    const url = `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/add-parcel`;
+    const resp = await fetch(url, { method: "POST", body: form });
+    const text = await resp.text();
+    let data: any = null;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    if (!resp.ok) {
+      const msg = data?.message || data?.error || text || `HTTP ${resp.status}`;
+      throw new Error(`Ozon Express: ${msg}`);
+    }
+
+    // Extract tracking number — try multiple known shapes; log raw if missing
+    const trackingNumber =
+      data?.["tracking-number"] ||
+      data?.tracking_number ||
+      data?.trackingNumber ||
+      data?.data?.["tracking-number"] ||
+      data?.data?.tracking_number ||
+      data?.parcel?.tracking_number ||
+      null;
+
+    if (!trackingNumber) {
+      console.warn(`[OZON][#${order.orderNumber}] No tracking number in response. Raw:`, JSON.stringify(data));
+      return {
+        success: true,
+        trackingNumber: null,
+        warning: "Expédition acceptée par Ozon Express mais aucun numéro de suivi retourné. Vérifiez le portail Ozon.",
+        carrierResponse: data,
+      };
+    }
+
+    console.log(`[OZON][#${order.orderNumber}] ✅ Shipped — tracking=${trackingNumber}`);
+    return {
+      success: true,
+      trackingNumber: String(trackingNumber),
+      carrierResponse: data,
+    };
+  }
+
+Add the case to the dispatcher (mirror the existing strict switch):
+
+  switch (provider) {
+    case "digylog":         return await shipOrderToDigylog(order, creds, options);
+    case "ameex":           return await shipOrderToAmeex(order, creds, options);
+    case "expresscoursier": return await shipOrderToExpressCoursier(order, creds, options);
+    case "ozonexpress":     return await shipOrderToOzonExpress(order, creds, options);
+    default: throw new Error(`Provider "${provider}" non supporté.`);
+  }
+
+If `FormData` isn't already imported in the file, use the global Web API (Node 18+ supports it natively) or import `form-data` if needed. Match what shipOrderToExpressCoursier or any existing file already uses.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4: STORAGE — city resolver + cities sync
+═══════════════════════════════════════════════════════════════════════
+Add in server/storage.ts (mirror resolveExpressCoursierCityId):
+
+  async resolveOzonExpressCityId(cityName: string, accountId?: number): Promise<string | null> {
+    const norm = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const target = norm(cityName);
+    if (!target) return null;
+    if (accountId) {
+      const rows = await db.select().from(carrierCities).where(eq(carrierCities.accountId, accountId));
+      for (const r of rows) {
+        if (norm(r.cityName) === target) {
+          const ext = (r as any).settings?.cityId || (r as any).externalCityId || (r as any).cityId;
+          if (ext && /^\d+$/.test(String(ext))) return String(ext);
+        }
+      }
+    }
+    return null;  // NEVER fall back to the name — Ozon Express requires numeric IDs
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5: ROUTES — sync cities + seed + tracking poll
+═══════════════════════════════════════════════════════════════════════
+Add these endpoints in server/routes.ts:
+
+A) Sync cities from Ozon Express API:
+
+  app.post("/api/carriers/ozonexpress/sync-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const account = await storage.getCarrierAccount(accountId);
+      if (!account || account.carrierName !== "ozonexpress") {
+        return res.status(404).json({ message: "Compte Ozon Express introuvable" });
+      }
+
+      // Public endpoint — no auth needed for /cities
+      const resp = await fetch("https://api.ozonexpress.ma/cities");
+      if (!resp.ok) {
+        return res.status(502).json({ message: `Ozon Express API: ${resp.status}` });
+      }
+      const data = await resp.json();
+
+      // Adapt to actual response shape — common shapes:
+      //   { cities: [{ id: 1, name: "Casablanca" }, ...] }
+      //   { data: [...] }
+      //   [...]
+      const cities = Array.isArray(data) ? data
+                   : Array.isArray(data?.cities) ? data.cities
+                   : Array.isArray(data?.data) ? data.data
+                   : [];
+
+      let inserted = 0, updated = 0;
+      for (const c of cities) {
+        const cityId = String(c.id || c.city_id || c.ID || "").trim();
+        const cityName = String(c.name || c.city_name || c.ville || "").trim();
+        if (!/^\d+$/.test(cityId) || !cityName) continue;
+
+        const existing = await db.select().from(carrierCities)
+          .where(and(eq(carrierCities.accountId, accountId), eq(carrierCities.cityName, cityName)));
+        if (existing.length === 0) {
+          await db.insert(carrierCities).values({
+            accountId, cityName, settings: { cityId },
+          } as any);
+          inserted += 1;
+        } else {
+          await db.update(carrierCities)
+            .set({ settings: { ...(existing[0] as any).settings, cityId } } as any)
+            .where(eq(carrierCities.id, existing[0].id));
+          updated += 1;
+        }
+      }
+      res.json({ ok: true, inserted, updated, total: cities.length });
+    } catch (err: any) {
+      console.error("[Ozon SyncCities] error:", err);
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+B) Manual seed (same shape as Express Coursier — for fallback / testing):
+
+  app.post("/api/carriers/ozonexpress/seed-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    /* mirror Express Coursier seed endpoint, same body shape */
+  });
+
+C) Tracking lookup (Ozon Express doesn't push webhooks by default — we poll):
+
+  app.post("/api/carriers/ozonexpress/track/:accountId", requireAuth, async (req: any, res: any) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const account = await storage.getCarrierAccount(accountId);
+      if (!account || account.carrierName !== "ozonexpress") return res.status(404).json({ message: "Not found" });
+      const settings = (account.settings as any) || {};
+      const customerId = String(settings.ozonCustomerId || "").trim();
+      const apiKey = String(account.apiKey || "").trim();
+      const trackingNumbers: string[] = Array.isArray(req.body.trackingNumbers) ? req.body.trackingNumbers : [];
+      if (!customerId || !apiKey) return res.status(400).json({ message: "Customer ID ou API Key manquant" });
+      if (trackingNumbers.length === 0) return res.status(400).json({ message: "Aucun tracking number fourni" });
+
+      const url = `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/tracking`;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ "tracking-number": trackingNumbers }),
+      });
+      const data = await resp.json().catch(() => null);
+      res.json({ ok: resp.ok, data });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+D) OPTIONAL — background tracking poller (runs every 30 min, updates order statuses). Mirror any existing carrier polling job if one exists. If not, skip this for now and add it later.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6: CARRIER ACCOUNT FORM — capture Customer ID + API Key
+═══════════════════════════════════════════════════════════════════════
+In the Integrations page, add Ozon Express as a new carrier card (mirror Express Coursier). The connect/edit form needs:
+- Connection name (e.g. "Compte principal")
+- Customer ID (numeric, required)
+- API Key (required, masked input)
+- Optional: webhook URL display (Ozon Express may not support webhooks, leave for future)
+- Save button
+
+Backend persistence: when carrierName === "ozonexpress", merge into settings:
+
+  const ozonCustomerId = String(req.body.ozonCustomerId || req.body.settings?.ozonCustomerId || "").trim();
+  if (req.body.carrierName === "ozonexpress") {
+    if (!/^\d+$/.test(ozonCustomerId)) {
+      return res.status(400).json({ message: "Customer ID Ozon Express requis (numérique)." });
+    }
+  }
+  const mergedSettings = {
+    ...(existing?.settings || {}),
+    ...(req.body.settings || {}),
+    ozonCustomerId,
+  };
+
+On the account card, also add a "Synchroniser les villes" button (calls /api/

@@ -278,9 +278,11 @@ function getDefaultCitiesForProvider(provider: string): string[] {
 const CARRIER_LOGOS_SERVER: Record<string, string> = {
   digylog: '/carriers/digylog.svg',
   onessta: '/carriers/onessta.svg',
-  ozoneexpress: '/carriers/ozon.svg',
-  'ozone express': '/carriers/ozon.svg',
-  ozon: '/carriers/ozon.svg',
+  ozonexpress: '/carriers/ozonexpress.png',
+  'ozon express': '/carriers/ozonexpress.png',
+  ozoneexpress: '/carriers/ozonexpress.png',
+  'ozone express': '/carriers/ozonexpress.png',
+  ozon: '/carriers/ozonexpress.png',
   sendit: '/carriers/sendit.svg',
   ameex: '/carriers/ameex.svg',
   cathedis: '/carriers/cathidis.svg',
@@ -1509,6 +1511,29 @@ export async function registerRoutes(
                   ? ((orderCreds as any).settings || {})
                   : {};
 
+                // For Ozon Express: resolve city name → numeric Ozon city ID.
+                // Ozon rejects city names, so fail fast if no numeric ID is found.
+                let ozonCityId: string | undefined;
+                if (provider.toLowerCase() === 'ozonexpress') {
+                  const resolved = await storage.resolveOzonExpressCityId(storeId, resolvedCity);
+                  if (!resolved) {
+                    return {
+                      success:        false,
+                      error:          `Ozon Express: Ville "${resolvedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
+                      carrierMessage: 'City not found in ozon_express_cities',
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
+                  }
+                  ozonCityId = resolved;
+                  console.log(`[OZON-CITY] order=${order.id} city="${resolvedCity}" → id="${ozonCityId}"`);
+                }
+
+                const ozonSettings = provider.toLowerCase() === 'ozonexpress'
+                  ? ((orderCreds as any).settings || {})
+                  : {};
+
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -1528,8 +1553,9 @@ export async function registerRoutes(
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
                   previousAttemptHadPlaceholder: isAmeexRetry,
-                  cityId:           ameexCityId ?? ecCityId,
+                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId,
                   ecSettings,
+                  ozonSettings,
                 });
               })
             );
@@ -2382,6 +2408,13 @@ export async function registerRoutes(
       if (!carrierName || !rawApiKey) {
         return res.status(400).json({ message: "carrierName et apiKey sont obligatoires" });
       }
+      // Ozon Express requires a numeric Customer ID alongside the API key.
+      if (String(carrierName).toLowerCase() === 'ozonexpress') {
+        const cid = String(req.body.settings?.ozonExpressCustomerId ?? "").trim();
+        if (!/^\d+$/.test(cid)) {
+          return res.status(400).json({ message: "Customer ID Ozon Express requis (numérique)." });
+        }
+      }
       // Strip control chars / newlines from token before persisting
       const cleanKey = (s: string | undefined | null) =>
         (s || "").replace(/[\r\n\t\x00-\x1F\x7F]/g, "").trim();
@@ -2745,6 +2778,8 @@ export async function registerRoutes(
         citiesUrl = `${base}/cities`;
       } else if (carrierKey === "expresscoursier") {
         citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
+      } else if (carrierKey === "ozonexpress") {
+        citiesUrl = "https://api.ozonexpress.ma/cities";
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
@@ -2758,6 +2793,8 @@ export async function registerRoutes(
         reqHeaders["C-Api-Id"]  = stripHtml((acct as any).apiSecret || (acct as any).storeName || "");
       } else if (carrierKey === "expresscoursier") {
         // Token is embedded in the URL path — no Authorization header needed
+      } else if (carrierKey === "ozonexpress") {
+        // Public cities endpoint — no Authorization header needed
       } else {
         reqHeaders["Authorization"] = `Bearer ${apiKey}`;
         reqHeaders["Referer"] = "https://apiseller.digylog.com";
@@ -2816,6 +2853,7 @@ export async function registerRoutes(
       // City ID entries — saved separately for city ID resolution at ship time
       let ameexCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
       let ecCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
+      let ozonCityEntries: { externalId: string; name: string; nameNorm: string }[] = [];
       if (carrierKey === "expresscoursier") {
         // EC returns: { "cities": { "337": "Casablanca", "338": "Rabat", ... } }
         //         or: [ { "id": 337, "name": "Casablanca" }, ... ]
@@ -2840,6 +2878,36 @@ export async function registerRoutes(
             .filter(e => e.name && e.externalId);
         }
         cities = ecCityEntries.map(e => e.name).sort();
+      } else if (carrierKey === "ozonexpress") {
+        // Ozon /cities returns one of:
+        //   { "cities": { "1": "Casablanca", ... } }            (id→name object)
+        //   { "cities": [ { "id": 1, "name": "Casablanca" } ] }  (array)
+        //   [ { "id": 1, "name": "Casablanca" }, ... ]           (bare array)
+        const normName = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+        const rawData = resp.data;
+        const arr: any[] =
+          Array.isArray(rawData)         ? rawData :
+          Array.isArray(rawData?.cities) ? rawData.cities :
+          Array.isArray(rawData?.data)   ? rawData.data :
+          Array.isArray(rawData?.result) ? rawData.result : [];
+        if (arr.length > 0) {
+          ozonCityEntries = arr
+            .map((c: any) => {
+              const cityName = String((typeof c === 'string' ? c : (c?.name || c?.city_name || c?.ville || c?.label || ""))).trim();
+              const cityId   = String(c?.id ?? c?.city_id ?? c?.ID ?? c?.cityId ?? "");
+              return { externalId: cityId, name: cityName, nameNorm: normName(cityName) };
+            })
+            .filter(e => e.name && /^\d+$/.test(e.externalId));
+        } else if (rawData && typeof rawData === 'object') {
+          const citiesObj = rawData.cities || rawData.data?.cities || rawData.data || rawData;
+          ozonCityEntries = Object.entries(citiesObj as Record<string, any>)
+            .map(([id, val]: any) => {
+              const cityName = String(typeof val === 'string' ? val : (val?.name || val?.ville || "")).trim();
+              return { externalId: String(id), name: cityName, nameNorm: normName(cityName) };
+            })
+            .filter(e => e.name && /^\d+$/.test(e.externalId));
+        }
+        cities = ozonCityEntries.map(e => e.name).sort();
       } else if (carrierKey === "ameex") {
         // Ameex returns: {"login":"success","api":{"cities":{"1":{"name":"Marrakech",...},"2":...}}}
         const citiesObj = resp.data?.api?.cities || resp.data?.cities || {};
@@ -2883,6 +2951,12 @@ export async function registerRoutes(
       if (carrierKey === "expresscoursier" && ecCityEntries.length > 0) {
         await storage.upsertExpressCoursierCities(storeId, ecCityEntries);
         console.log(`[EC-CITIES-SYNC]: Saved ${ecCityEntries.length} city ID mappings to express_coursier_cities`);
+      }
+
+      // For Ozon Express: save id→name mapping — Ozon requires numeric city IDs at ship time
+      if (carrierKey === "ozonexpress" && ozonCityEntries.length > 0) {
+        await storage.upsertOzonExpressCities(storeId, ozonCityEntries);
+        console.log(`[OZON-CITIES-SYNC]: Saved ${ozonCityEntries.length} city ID mappings to ozon_express_cities`);
       }
 
       console.log(`[CITY-SYNC]: Received ${cities.length} cities from ${acct.carrierName} API (storeId=${storeId})`);
@@ -8314,6 +8388,23 @@ function ensureHeaders(sheet) {
         ? ((creds as any).settings || {})
         : {};
 
+      // For Ozon Express: resolve city name → numeric Ozon city ID.
+      let singleOzonCityId: string | undefined;
+      if (provider.toLowerCase() === 'ozonexpress') {
+        const resolved = await storage.resolveOzonExpressCityId(storeId, matchedCity);
+        if (!resolved) {
+          return res.status(422).json({
+            message: `Ozon Express: Ville "${matchedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
+          });
+        }
+        singleOzonCityId = resolved;
+        console.log(`[OZON-CITY] order=${orderId} city="${matchedCity}" → id="${singleOzonCityId}"`);
+      }
+
+      const singleOzonSettings = provider.toLowerCase() === 'ozonexpress'
+        ? ((creds as any).settings || {})
+        : {};
+
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -8332,8 +8423,9 @@ function ensureHeaders(sheet) {
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
         apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
         apiSecret:        (creds as any).apiSecret || '',
-        cityId:           singleAmeexCityId ?? singleEcCityId,
+        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId,
         ecSettings:       singleEcSettings,
+        ozonSettings:     singleOzonSettings,
       });
 
       if (!shipResult.success) {

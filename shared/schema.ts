@@ -252,6 +252,20 @@ export const expressCoursierCities = pgTable("express_coursier_cities", {
 });
 export type ExpressCoursierCity = typeof expressCoursierCities.$inferSelect;
 
+// ─── Ozon Express City ID Map — name → Ozon numeric ID ──────────────────────
+// Ozon Express's add-parcel API requires the 'parcel-city' field to be a numeric
+// ID, NOT the city name string. This table maps synced city names to their IDs.
+// Populated by "Synchroniser les villes" on the Ozon Express carrier account.
+export const ozonExpressCities = pgTable("ozon_express_cities", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull(),
+  externalId: text("external_id").notNull(),   // Ozon numeric city ID, stored as text
+  name:       text("name").notNull(),
+  nameNorm:   text("name_norm").notNull(),      // lowercase + accent-stripped for fuzzy match
+  createdAt:  timestamp("created_at").defaultNow(),
+});
+export type OzonExpressCity = typeof ozonExpressCities.$inferSelect;
+
 
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),

@@ -214,6 +214,26 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: ameex_cities table verified/created.");
 
+    // ── 5b-bis. ozon_express_cities — Ozon Express city name → numeric ID map ─
+    // Ozon Express's add-parcel API requires 'parcel-city' as a numeric ID, not
+    // a name. Populated by "Synchroniser les villes" on the Ozon Express account.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.ozon_express_cities (
+        id          SERIAL PRIMARY KEY,
+        store_id    INTEGER NOT NULL,
+        external_id TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        name_norm   TEXT NOT NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        UNIQUE(store_id, external_id)
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_ozon_express_cities_store_norm
+        ON public.ozon_express_cities (store_id, name_norm);
+    `);
+    console.log("[DATABASE]: ozon_express_cities table verified/created.");
+
     // ── 5c. orders: offer_name + ameex_product_id enrichment columns ─────────
     await client.query(`
       ALTER TABLE public.orders

@@ -29,7 +29,7 @@ const NAVY = "#1e1b4b";
 const PROVIDERS = [
   { id: "digylog",        name: "Digylog",          cities: 581, logo: "/carriers/digylog.svg"  },
   { id: "onessta",        name: "Onessta",           cities: 378, logo: "/carriers/onessta.svg"  },
-  { id: "ozoneexpress",   name: "Ozone Express",     cities: 628, logo: "/carriers/ozon.svg"     },
+  { id: "ozonexpress",    name: "Ozon Express",      cities: 628, logo: "/carriers/ozonexpress.png" },
   { id: "sendit",         name: "Sendit",            cities: 500, logo: "/carriers/sendit.svg"   },
   { id: "ameex",          name: "Ameex",             cities: 420, logo: "/carriers/ameex.svg"    },
   { id: "cathedis",       name: "Cathedis",          cities: 520, logo: "/carriers/cathidis.svg" },
@@ -202,6 +202,12 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
     String(existingAccount?.settings?.expressCoursierStoreId ?? "")
   );
 
+  // ── Ozon Express-specific fields ─────────────────────────────────────────
+  const isOzonExpress = providerId === "ozonexpress";
+  const [ozonCustomerId, setOzonCustomerId] = useState<string>(
+    String(existingAccount?.settings?.ozonExpressCustomerId ?? "")
+  );
+
   // ── Custom carrier fields ─────────────────────────────────────────────────
   const isCustom = providerId === "custom";
   const [customCarrierName, setCustomCarrierName] = useState<string>("");
@@ -355,6 +361,13 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           }
           if (apiKey.trim()) body.apiKey = apiKey;
           body.settings = { ...((existingAccount?.settings as object) || {}), expressCoursierStoreId: ecStoreIdNum };
+        } else if (isOzonExpress) {
+          const cid = ozonCustomerId.trim();
+          if (!/^\d+$/.test(cid)) {
+            throw new Error("Le Customer ID Ozon Express est obligatoire (numérique).");
+          }
+          if (apiKey.trim()) body.apiKey = apiKey;
+          body.settings = { ...((existingAccount?.settings as object) || {}), ozonExpressCustomerId: cid };
         } else {
           if (apiKey.trim()) body.apiKey = apiKey;
           if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
@@ -384,6 +397,13 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
           }
           payload.storeName = resolvedStoreName;
           payload.settings  = { expressCoursierStoreId: ecStoreIdNum };
+        } else if (isOzonExpress) {
+          const cid = ozonCustomerId.trim();
+          if (!/^\d+$/.test(cid)) {
+            throw new Error("Le Customer ID Ozon Express est obligatoire (numérique).");
+          }
+          payload.storeName = resolvedStoreName;
+          payload.settings  = { ozonExpressCustomerId: cid };
         } else if (isCustom) {
           payload.apiUrl    = apiUrl.trim() || undefined;
           payload.storeName = resolvedStoreName;
@@ -559,6 +579,66 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     required
                   />
                   <p className="text-[10px] text-muted-foreground">Trouvez votre Store ID dans votre tableau de bord Express Coursier (Paramètres → API)</p>
+                </div>
+              </>
+            ) : isOzonExpress ? (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ozon_token_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    API Key
+                  </Label>
+                  {existingAccount?.hasApiKey && !isEditingToken ? (
+                    <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-green-200 bg-green-50">
+                      <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
+                      <span className="text-[12px] font-semibold text-green-700 flex-1">Clé API enregistrée</span>
+                      <button
+                        type="button"
+                        data-testid="button-edit-ozon-token"
+                        onClick={() => { setIsEditingToken(true); setApiKey(""); }}
+                        className="shrink-0 text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline"
+                      >
+                        Modifier
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <Input
+                        id="ozon_token_edit"
+                        data-testid="input-ozon-token"
+                        data-lpignore="true"
+                        data-form-type="other"
+                        autoComplete="new-password"
+                        type={showKey ? "text" : "password"}
+                        placeholder="Nouvelle clé API..."
+                        value={apiKey}
+                        onChange={e => { setApiKey(e.target.value); setIsEditingToken(true); }}
+                        className="pr-8 h-10 text-xs font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300"
+                      />
+                      <button
+                        type="button"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        onClick={() => setShowKey(v => !v)}
+                      >
+                        {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ozon_customer_id_edit" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    Customer ID Ozon Express <span className="text-red-500">*</span>
+                  </Label>
+                  <Input
+                    id="ozon_customer_id_edit"
+                    data-testid="input-ozon-customer-id"
+                    inputMode="numeric"
+                    placeholder="ex: 123456"
+                    value={ozonCustomerId}
+                    onChange={e => setOzonCustomerId(e.target.value.replace(/\D/g, ""))}
+                    className={`h-10 text-sm ${isOzonExpress && !ozonCustomerId.trim() && submitError ? "border-red-400" : ""}`}
+                    required
+                  />
+                  <p className="text-[10px] text-muted-foreground">Trouvez votre Customer ID et API Key dans votre tableau de bord Ozon Express.</p>
                 </div>
               </>
             ) : (
@@ -1029,6 +1109,57 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   required
                 />
                 <p className="text-[10px] text-muted-foreground">Trouvez votre Store ID dans votre tableau de bord Express Coursier (Paramètres → API)</p>
+              </div>
+            </>
+          ) : isOzonExpress ? (
+            <>
+              {/* ── Ozon Express: API Key + Customer ID ── */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="ozon_token_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                    API Key <span className="text-red-500">*</span>
+                  </Label>
+                  <span className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
+                    Clé API
+                  </span>
+                </div>
+                <div className="relative">
+                  <Input
+                    id="ozon_token_create"
+                    data-testid="input-ozon-token"
+                    data-lpignore="true"
+                    data-form-type="other"
+                    autoComplete="new-password"
+                    type={showKey ? "text" : "password"}
+                    placeholder="Entrez votre API Key Ozon Express..."
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    className={`pr-8 font-mono bg-amber-50/40 border-amber-200 focus-visible:ring-amber-300 ${!apiKey.trim() && submitError ? "border-red-400" : ""}`}
+                  />
+                  <button
+                    type="button"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowKey(v => !v)}
+                  >
+                    {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ozon_customer_id_create" className="font-semibold text-sm" style={{ color: NAVY }}>
+                  Customer ID Ozon Express <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="ozon_customer_id_create"
+                  data-testid="input-ozon-customer-id"
+                  inputMode="numeric"
+                  placeholder="ex: 123456"
+                  value={ozonCustomerId}
+                  onChange={e => setOzonCustomerId(e.target.value.replace(/\D/g, ""))}
+                  className={`h-10 text-sm ${isOzonExpress && !ozonCustomerId.trim() && submitError ? "border-red-400" : ""}`}
+                  required
+                />
+                <p className="text-[10px] text-muted-foreground">Trouvez votre Customer ID et API Key dans votre tableau de bord Ozon Express.</p>
               </div>
             </>
           ) : isAmeex ? (

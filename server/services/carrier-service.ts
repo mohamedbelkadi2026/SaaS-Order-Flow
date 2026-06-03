@@ -28,7 +28,7 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
   "eco-track":    "https://app.ecotrack.ma/api/v1/orders",
   cathedis:       "https://app.cathedis.ma/api/v1/parcels",
   onessta:        "https://api.onessta.com/api/v1/orders",
-  ozoneexpress:   "https://api.ozoneexpress.ma/api/v1/orders",
+  ozonexpress:    "https://api.ozonexpress.ma",
   sendit:         "https://api.sendit.ma/api/v1/orders",
   ameex:          "https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Add",
   expresscoursier: "https://expresscoursier.ma/v1.0/batch",
@@ -276,6 +276,8 @@ export interface CarrierShipInput {
   ameexProductId?: string;
   // Express Coursier: settings JSONB object from carrierAccounts (contains expressCoursierStoreId)
   ecSettings?: Record<string, unknown>;
+  // Ozon Express: settings JSONB object from carrierAccounts (contains ozonExpressCustomerId)
+  ozonSettings?: Record<string, unknown>;
 }
 
 export interface CarrierShipResult {
@@ -1017,6 +1019,98 @@ export async function shipOrderToCarrier(
       const msg = ecErr?.message || "Erreur réseau Express Coursier";
       console.error(`[EC][#${input.orderNumber}] ❌ Network error: ${msg}`);
       return { success: false, error: `Express Coursier: ${msg}`, carrierMessage: msg };
+    }
+  }
+
+  // ── Ozon Express: customer_id + api_key embedded in URL path, multipart/form-data body ──
+  if (providerKey === 'ozonexpress') {
+    const ozonSettings = (input as any).ozonSettings || {};
+    const customerId = String(
+      ozonSettings.ozonExpressCustomerId ??
+      ozonSettings.ozonCustomerId ??
+      ""
+    ).trim();
+    if (!customerId || !/^\d+$/.test(customerId)) {
+      const errMsg = `Customer ID Ozon Express manquant ou invalide (valeur: "${customerId}"). Allez dans Intégrations → Sociétés de Livraison → modifier le compte Ozon Express, et renseignez votre Customer ID.`;
+      console.error(`[OZON][#${input.orderNumber}] ❌ ${errMsg}`);
+      return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    if (!apiKey) {
+      return { success: false, error: "Clé API Ozon Express manquante. Configurez votre compte dans Intégrations → Transporteurs.", carrierMessage: "missing api key", httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    const cityId = input.cityId; // numeric Ozon city ID, resolved upstream from ozon_express_cities
+    if (!cityId || !/^\d+$/.test(String(cityId))) {
+      const errMsg = `Ville "${input.city}" non synchronisée avec Ozon Express. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`;
+      console.error(`[OZON][#${input.orderNumber}] ❌ ${errMsg}`);
+      return { success: false, error: errMsg, carrierMessage: 'City not found in ozon_express_cities', httpStatus: 0, rawResponse: null, permanent: true };
+    }
+    const priceDH   = Math.round(input.totalPrice / 100); // Ozon expects MAD as an integer
+    const sanitized = sanitizePhone(input.phone);
+    const FormDataLib = (await import('form-data')).default;
+    const fd = new FormDataLib();
+    fd.append('parcel-receiver', input.customerName || '');
+    fd.append('parcel-phone',    sanitized);
+    fd.append('parcel-city',     String(cityId));
+    fd.append('parcel-address',  input.address || input.city || '');
+    fd.append('parcel-price',    String(priceDH));
+    fd.append('parcel-stock',    '1');                                   // 1 = stock, 0 = pickup
+    fd.append('parcel-note',     input.note || '');
+    fd.append('parcel-nature',   input.productName || 'Produit');
+    if (input.orderNumber) fd.append('tracking-number', `TG-${input.orderNumber}`);
+
+    const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey.trim())}/add-parcel`;
+    console.log(`[OZON-SEND] order=${input.orderNumber} url=https://api.ozonexpress.ma/customers/${customerId}/***/add-parcel city=${cityId} price=${priceDH}`);
+    try {
+      const ozonResp = await axios.post(ozonUrl, fd, {
+        headers: { ...fd.getHeaders(), Accept: 'application/json' },
+        timeout: 30_000,
+        httpsAgent: SSL_AGENT,
+        validateStatus: () => true,
+      });
+      const ozonData: any = ozonResp.data;
+      console.log(`[OZON-RESP] HTTP ${ozonResp.status}: ${JSON.stringify(ozonData).slice(0, 500)}`);
+      if (ozonResp.status >= 400) {
+        const msg = ozonData?.message || ozonData?.error || (typeof ozonData === 'string' ? ozonData : '') || `HTTP ${ozonResp.status}`;
+        console.error(`[OZON][#${input.orderNumber}] ❌ ${msg}`);
+        return { success: false, error: `Ozon Express: ${msg}`, carrierMessage: msg, httpStatus: ozonResp.status, rawResponse: ozonData };
+      }
+
+      // Ozon may signal a logical failure inside a 200 body — guard for it.
+      const okFlag =
+        ozonData?.success !== false &&
+        String(ozonData?.STATUS ?? ozonData?.status ?? '').toLowerCase() !== 'error' &&
+        ozonData?.error == null;
+      if (!okFlag) {
+        const reason = ozonData?.message || ozonData?.error || ozonData?.MESSAGE || "Échec à l'import côté Ozon Express";
+        console.error(`[OZON][#${input.orderNumber}] ❌ ${reason}`);
+        return { success: false, error: `Ozon Express: ${reason}`, carrierMessage: reason, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+      }
+
+      // Extract the tracking number from the known response shapes.
+      const trackingNumber =
+        ozonData?.['tracking-number'] ||
+        ozonData?.tracking_number ||
+        ozonData?.trackingNumber ||
+        ozonData?.data?.['tracking-number'] ||
+        ozonData?.data?.tracking_number ||
+        ozonData?.parcel?.tracking_number ||
+        ozonData?.parcel?.['tracking-number'] ||
+        null;
+
+      if (!trackingNumber) {
+        // Ozon accepted the shipment but returned no tracking number.
+        // Do NOT mark the order as failed — surface a warning instead.
+        const warn = `Expédition acceptée par Ozon Express mais aucun numéro de suivi retourné. Vérifiez le portail Ozon.`;
+        console.warn(`[OZON][#${input.orderNumber}] ⚠️ ${warn}. Raw: ${JSON.stringify(ozonData)}`);
+        return { success: true, trackingNumber: undefined, warning: warn, httpStatus: ozonResp.status, rawResponse: ozonData };
+      }
+
+      console.log(`[OZON][#${input.orderNumber}] ✅ SUCCESS! tracking=${trackingNumber}`);
+      return { success: true, trackingNumber: String(trackingNumber), httpStatus: ozonResp.status, rawResponse: ozonData };
+    } catch (ozonErr: any) {
+      const msg = ozonErr?.message || "Erreur réseau Ozon Express";
+      console.error(`[OZON][#${input.orderNumber}] ❌ Network error: ${msg}`);
+      return { success: false, error: `Ozon Express: ${msg}`, carrierMessage: msg };
     }
   }
 
