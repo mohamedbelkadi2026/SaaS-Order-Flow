@@ -1326,7 +1326,7 @@ export async function registerRoutes(
       }
 
       // ── Pre-load everything needed for the background job ────────
-      type ShipResult = { orderId: number; orderNumber?: string; trackingNumber?: string; labelLink?: string; status: 'shipped' | 'failed'; error?: string };
+      type ShipResult = { orderId: number; orderNumber?: string; trackingNumber?: string; labelLink?: string; status: 'shipped' | 'failed'; error?: string; warning?: string };
       const total = eligible.length + blockedOrders.length;
 
       // Pre-load all active carrier accounts for smart city-based dispatch
@@ -1541,8 +1541,28 @@ export async function registerRoutes(
               if (outcome.status === 'fulfilled' && outcome.value.success) {
                 const { trackingNumber, labelUrl } = outcome.value;
 
-                // Hard guard: never save undefined as the tracking number
-                if (!trackingNumber) {
+                const shipWarning = (outcome.value as any).warning as string | undefined;
+                // Success without a tracking number:
+                //  - If the carrier explicitly ACCEPTED the shipment (warning set),
+                //    still mark the order shipped — never fail it.
+                //  - Otherwise keep the strict guard (treat as failure).
+                if (!trackingNumber && shipWarning) {
+                  console.warn(`[SHIPPING-LOG]: ⚠️ Order #${ref} accepted by ${provider} without tracking — ${shipWarning}`);
+                  allDbUpdates.push(
+                    storage.updateOrder(order.id, {
+                      shippingProvider: provider,
+                      carrierName:      provider,
+                      status:           'Attente De Ramassage',
+                    } as any)
+                  );
+                  allLogUpdates.push(storage.createIntegrationLog({
+                    storeId, integrationId: null, provider,
+                    action: 'shipping_sent', status: 'success',
+                    message: `⚠️ Commande #${ref} expédiée via ${provider} sans numéro de suivi. ${shipWarning}`,
+                  }));
+                  results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'shipped', warning: shipWarning });
+                  shippedCount++;
+                } else if (!trackingNumber) {
                   console.error(`[SHIPPING-LOG]: ❌ Order #${ref} — carrier returned success but no tracking number. Skipping DB save.`);
                   allLogUpdates.push(storage.createIntegrationLog({
                     storeId, integrationId: null, provider,
@@ -8334,6 +8354,25 @@ function ensureHeaders(sheet) {
 
       // ── Success — update DB only after carrier confirms ───────────
       const { trackingNumber, labelUrl } = shipResult;
+
+      // Success without a tracking number:
+      //  - If the carrier explicitly ACCEPTED the shipment (warning set), still
+      //    mark the order shipped and surface the warning — never fail it.
+      //  - Otherwise keep the strict guard (treat as failure).
+      if (!trackingNumber && shipResult.warning) {
+        console.warn(`[SHIPPING-LOG]: ⚠️ Order #${order.orderNumber} accepted by ${provider} without tracking — ${shipResult.warning}`);
+        await storage.updateOrder(orderId, {
+          shippingProvider: provider,
+          carrierName:      provider,
+          status:           'Attente De Ramassage',
+        } as any);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider,
+          action: 'shipping_sent', status: 'success',
+          message: `⚠️ Commande #${order.orderNumber} expédiée via ${provider} sans numéro de suivi. ${shipResult.warning}`,
+        });
+        return res.json({ trackingNumber: null, provider, success: true, warning: shipResult.warning });
+      }
 
       // Hard guard: never save undefined/empty as the tracking number
       if (!trackingNumber) {

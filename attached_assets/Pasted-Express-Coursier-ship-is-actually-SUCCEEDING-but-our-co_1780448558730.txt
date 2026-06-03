@@ -1,0 +1,164 @@
+Express Coursier ship is actually SUCCEEDING but our code is marking orders as failed because it can't find the tracking number in their response structure.
+
+═══════════════════════════════════════════════════════════════════════
+EVIDENCE (from logs for order #1086)
+═══════════════════════════════════════════════════════════════════════
+The real response from Express Coursier is:
+
+{
+  "success": true,
+  "data": {
+    "summary": { "total_submitted": 1, "successful_imports": 1, "failed_imports": 0 },
+    "successful_packages": [
+      {
+        "index": 0,
+        "package_id": "CL-EXP-2606030055-14337X59721748",
+        "data": {
+          "package_id": "CL-EXP-2606030055-14337X59721748",
+          "receiver_name": "brahim",
+          "phone": "0677899989",
+          "address": "...",
+          "city": 391,
+          "price": 329,
+          "description": "...",
+          "note": ""
+        }
+      }
+    ],
+    "failed_packages": []
+  },
+  "message": "All 1 packages imported successfully",
+  "errors": [],
+  "timestamp": "2026-06-03 00:55:59"
+}
+
+The tracking number lives at `data.data.successful_packages[0].package_id`.
+Our current code looks at `data.packages[0].package_id`, `data.data[0].package_id`, `data.package_id` — all wrong. So it falls back to "no tracking" and marks the order as failed, even though Express Coursier actually accepted the shipment.
+
+═══════════════════════════════════════════════════════════════════════
+FIX
+═══════════════════════════════════════════════════════════════════════
+In server/services/carrier-service.ts → shipOrderToExpressCoursier, replace the tracking extraction and success detection with the CORRECT structure:
+
+  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const text = await resp.text();
+  let data: any = null;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+  // Check the top-level success flag first
+  const apiSuccess = data?.success === true;
+  const inner = data?.data || {};
+  const successful = Array.isArray(inner.successful_packages) ? inner.successful_packages : [];
+  const failed = Array.isArray(inner.failed_packages) ? inner.failed_packages : [];
+
+  if (!resp.ok || !apiSuccess) {
+    // Real API error
+    const msg = data?.message || data?.errors?.[0]?.message || text || `HTTP ${resp.status}`;
+    throw new Error(`Express Coursier: ${msg}`);
+  }
+
+  // The package may live in successful_packages OR (rarely) failed
+  if (failed.length > 0 && successful.length === 0) {
+    const failedReason = failed[0]?.message || failed[0]?.error || "Échec à l'import côté Express Coursier";
+    throw new Error(`Express Coursier: ${failedReason}`);
+  }
+
+  // Extract tracking number (CORRECT path)
+  const firstSuccess = successful[0] || {};
+  const trackingNumber =
+    firstSuccess.package_id ||
+    firstSuccess?.data?.package_id ||
+    null;
+
+  if (!trackingNumber) {
+    // Truly missing — but the API said success, so do NOT mark as failed.
+    // Mark the order as shipped without tracking and warn.
+    console.warn(`[EC][#${order.orderNumber}] No tracking number found in successful response. Raw:`, JSON.stringify(data));
+    return {
+      success: true,
+      trackingNumber: null,
+      warning: "Expédition acceptée par Express Coursier mais aucun numéro de suivi retourné. Vérifiez le portail EC.",
+      carrierResponse: data,
+    };
+  }
+
+  console.log(`[EC][#${order.orderNumber}] ✅ Shipped — tracking=${trackingNumber}`);
+  return {
+    success: true,
+    trackingNumber,
+    carrierResponse: data,
+  };
+
+═══════════════════════════════════════════════════════════════════════
+ALSO IMPORTANT: don't mark the order as failed when there's a warning
+═══════════════════════════════════════════════════════════════════════
+In the bulk-ship / single-ship handler that consumes shipOrderToCarrier's return value, make sure that:
+  - result.success === true AND result.trackingNumber → mark order Expédié, save tracking
+  - result.success === true AND NO trackingNumber → STILL mark order Expédié (or a new "Expédié sans tracking" sub-state), save the warning, do NOT fail
+  - Only when shipOrderToExpressCoursier THROWS should the order be marked failed
+
+Pseudo-code:
+
+  try {
+    const result = await shipOrderToCarrier(order, creds, { provider });
+    if (result?.success) {
+      await storage.updateOrderStatus(order.id, "Expédié");
+      if (result.trackingNumber) {
+        await storage.updateOrderTracking(order.id, {
+          provider,
+          trackingNumber: result.trackingNumber,
+          shippedAt: new Date(),
+          accountId: creds.accountId,
+        });
+      } else if (result.warning) {
+        await storage.createIntegrationLog({
+          storeId: order.storeId,
+          provider,
+          eventType: "ship_no_tracking",
+          orderId: order.id,
+          payload: { warning: result.warning, response: result.carrierResponse },
+        });
+      }
+      return { shipped: true, orderId: order.id, trackingNumber: result.trackingNumber };
+    }
+    throw new Error("Échec inconnu");
+  } catch (err: any) {
+    console.error(`[SHIPPING-LOG]: ❌ Order #${order.orderNumber} failed — ${err.message}`);
+    return { shipped: false, orderId: order.id, error: err.message };
+  }
+
+═══════════════════════════════════════════════════════════════════════
+IMMEDIATELY FIX ORDER #1086 (manual recovery)
+═══════════════════════════════════════════════════════════════════════
+Order #1086 was actually shipped successfully on Express Coursier (package_id CL-EXP-2606030055-14337X59721748), but in our DB it's still marked as failed/confirmé. Add a one-time recovery:
+
+After deploying the fix, run this SQL (or a temporary admin endpoint) to update #1086:
+
+  UPDATE orders
+  SET status = 'Expédié',
+      tracking_number = 'CL-EXP-2606030055-14337X59721748',
+      shipped_at = NOW()
+  WHERE order_number = '1086';
+
+Adapt column names to the actual schema.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ shipOrderToExpressCoursier reads tracking from data.data.successful_packages[0].package_id
+2. ✅ Returns { success: true, trackingNumber: "CL-EXP-..." }
+3. ✅ When successful_packages is empty but success=true, returns success with warning (not throw)
+4. ✅ When failed_packages has entries and successful is empty, throws clear error
+5. ✅ Order status updates to "Expédié" with saved tracking number
+6. ✅ Order #1086 manually corrected with its real tracking number
+7. ✅ New test ship works end-to-end and tracking shows in the orders list
+8. ✅ Build passes before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(expresscoursier): parse successful_packages correctly to extract tracking"
+git push origin main
+
+After deploying, manually run the SQL to fix #1086, then create a NEW test order and ship it — should now show Expédié + tracking in one shot.

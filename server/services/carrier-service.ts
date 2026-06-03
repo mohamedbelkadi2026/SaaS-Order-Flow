@@ -288,6 +288,12 @@ export interface CarrierShipResult {
   carrierMessage?: string;
   attempts?: number;
   permanent?: boolean;
+  /**
+   * Set when the carrier ACCEPTED the shipment (success=true) but did not
+   * return a tracking number. The order must still be marked shipped — never
+   * failed — and this message surfaced to the user.
+   */
+  warning?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -965,17 +971,46 @@ export async function shipOrderToCarrier(
         console.error(`[EC][#${input.orderNumber}] ❌ ${msg}`);
         return { success: false, error: `Express Coursier: ${msg}`, carrierMessage: msg, httpStatus: ecResp.status, rawResponse: ecData };
       }
-      // Response: { "packages": [{ "package_id": "EC-00012345", ... }] }
-      const pkgs  = ecData?.packages || ecData?.data?.packages || ecData?.data || [];
-      const first = Array.isArray(pkgs) ? pkgs[0] : pkgs;
-      const packageId =
-        first?.package_id || first?.id || first?.tracking_number ||
-        ecData?.package_id || ecData?.id || null;
-      if (!packageId) {
-        const msg = `Express Coursier a accepté la commande mais n'a pas retourné de numéro de suivi. Vérifiez le portail EC.`;
-        console.warn(`[EC][#${input.orderNumber}] ⚠️ ${msg}. Raw: ${JSON.stringify(ecData)}`);
-        return { success: false, error: msg, carrierMessage: msg, httpStatus: ecResp.status, rawResponse: ecData };
+
+      // ── Real EC batch response shape ────────────────────────────────────
+      // { success: true,
+      //   data: { summary: {...},
+      //           successful_packages: [{ index, package_id, data: { package_id, ... } }],
+      //           failed_packages: [] },
+      //   message, errors, timestamp }
+      // The tracking number lives at data.successful_packages[0].package_id
+      // (or nested .data.package_id). Older/alternate shapes are tolerated too.
+      const inner      = ecData?.data || {};
+      const successful = Array.isArray(inner.successful_packages) ? inner.successful_packages : [];
+      const failed     = Array.isArray(inner.failed_packages)    ? inner.failed_packages    : [];
+      const apiSuccess = ecData?.success !== false; // treat absent flag as success (HTTP was <400)
+
+      // Explicit failure: EC reported the package(s) as failed and none succeeded.
+      if ((!apiSuccess && successful.length === 0) || (failed.length > 0 && successful.length === 0)) {
+        const reason =
+          failed[0]?.message || failed[0]?.error ||
+          ecData?.message || ecData?.errors?.[0]?.message ||
+          "Échec à l'import côté Express Coursier";
+        console.error(`[EC][#${input.orderNumber}] ❌ ${reason}`);
+        return { success: false, error: `Express Coursier: ${reason}`, carrierMessage: reason, httpStatus: ecResp.status, rawResponse: ecData, permanent: true };
       }
+
+      // Extract the tracking number from the correct path, with legacy fallbacks.
+      const firstSuccess = successful[0] || {};
+      const packageId =
+        firstSuccess.package_id ||
+        firstSuccess?.data?.package_id ||
+        (Array.isArray(ecData?.packages) ? ecData.packages[0]?.package_id : null) ||
+        ecData?.package_id || ecData?.id || null;
+
+      if (!packageId) {
+        // EC accepted the shipment (success=true) but returned no tracking number.
+        // Do NOT mark the order as failed — surface a warning instead.
+        const warn = `Expédition acceptée par Express Coursier mais aucun numéro de suivi retourné. Vérifiez le portail EC.`;
+        console.warn(`[EC][#${input.orderNumber}] ⚠️ ${warn}. Raw: ${JSON.stringify(ecData)}`);
+        return { success: true, trackingNumber: undefined, warning: warn, httpStatus: ecResp.status, rawResponse: ecData };
+      }
+
       console.log(`[EC][#${input.orderNumber}] ✅ SUCCESS! package_id=${packageId}`);
       return { success: true, trackingNumber: String(packageId), httpStatus: ecResp.status, rawResponse: ecData };
     } catch (ecErr: any) {
