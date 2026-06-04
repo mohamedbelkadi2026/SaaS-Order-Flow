@@ -69,6 +69,21 @@ function cleanProductName(raw: string): string {
     .trim();
 }
 
+/* Parse Cathedis/carrier composite Ref cell, e.g.:
+     "Ref : -\nDesignation : قطرات العسل\nQuantity : 2"
+   Returns designation (display name) and qty per row.
+   qtyPerRow = 0 means no embedded Quantity line was found. */
+function parseRefCell(val: any): { designation: string; qtyPerRow: number } {
+  const text = String(val ?? "").trim();
+  const designationMatch = text.match(/Designation\s*:\s*([^\n\r]+)/i);
+  const quantityMatch    = text.match(/Quantity\s*:\s*(\d+)/i);
+  const designation = designationMatch
+    ? designationMatch[1].trim()
+    : cleanProductName(text.split(/[\n\r]/)[0]);  // fallback: first line, cleaned
+  const qtyPerRow = quantityMatch ? Math.max(1, parseInt(quantityMatch[1], 10)) : 0;
+  return { designation, qtyPerRow };
+}
+
 function parseNum(val: any): number {
   if (val == null || val === "") return 0;
   if (typeof val === "number") return val;
@@ -335,41 +350,62 @@ export default function ProfitAnalyzer() {
     const sIdx  = headers.indexOf(map.status);
     const shIdx = headers.indexOf(map.shipping);
     if (pIdx === -1) return { ok: false, error: "⚠️ Impossible de détecter la colonne Produit. Sélectionnez-la manuellement." };
-    const hasStatus = sIdx !== -1;
-    const hasQty = qIdx !== -1;
-    const hasCod = cIdx !== -1;
+    const hasStatus   = sIdx !== -1;
+    // A separate qty column is only trusted when it's a different column from product
+    const hasQtyCol   = qIdx !== -1 && qIdx !== pIdx;
+    const hasCod      = cIdx !== -1;
     const hasShipping = shIdx !== -1;
-    const totalRows = dataRows.filter(r => cleanProductName(String(r[pIdx] ?? "").trim()) !== "").length;
+
+    // Count rows with a non-empty designation (before status filter)
+    const totalRows = dataRows.filter(r => {
+      const { designation } = parseRefCell(r[pIdx]);
+      return designation !== "";
+    }).length;
+
+    // Keep only delivered rows (or all if no status column)
     const relevantRows = dataRows.filter(r => {
-      const name = cleanProductName(String(r[pIdx] ?? "").trim());
-      if (!name) return false;
+      const { designation } = parseRefCell(r[pIdx]);
+      if (!designation) return false;
       if (!hasStatus) return true;
       return isDelivered(String(r[sIdx] ?? ""));
     });
+
     if (totalRows > 0 && relevantRows.length === 0 && hasStatus) {
       return { ok: false, error: `⚠️ Aucune ligne avec statut "Livré/Livrée/Delivered" trouvée dans ${totalRows} lignes. Vérifiez la colonne Statut ou sélectionnez "(aucune)" pour tout inclure.` };
     }
+
     const groupMap: Record<string, { qty: number; rev: number; ship: number; count: number; displayName: string }> = {};
     for (const row of relevantRows) {
-      const rawVal = String(row[pIdx] ?? "").trim();
-      if (!rawVal) continue;
-      const name = cleanProductName(rawVal);
-      if (!name) continue;
-      const key = norm(name);
-      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: name };
-      // Qty: only trust mapped column if it's NOT the same column as product and parses to
-      // a valid positive number ≤ 10 000. Tracking-number columns (e.g. "CAT-21") strip to
-      // negative values via parseNum — guard against that entirely.
+      // parseRefCell handles both simple product names AND composite Cathedis/carrier Ref cells:
+      //   "Ref : -\nDesignation : product name\nQuantity : 2"
+      const { designation, qtyPerRow: embeddedQty } = parseRefCell(row[pIdx]);
+      if (!designation) continue;
+      const key = norm(designation);
+      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: designation };
+
+      // Qty priority (highest → lowest):
+      //   1. Explicit separate qty column — valid positive number ≤ 10 000
+      //      (guards against tracking-number columns like "CAT-21" → -21 via parseNum)
+      //   2. Embedded "Quantity : N" parsed from the Ref cell text
+      //   3. Fall back to 1 per row (one row = one delivered commande)
       let rowQty = 1;
-      if (hasQty && qIdx !== pIdx) {
+      if (hasQtyCol) {
         const parsed = parseNum(row[qIdx]);
-        if (parsed > 0 && parsed <= 10000) rowQty = parsed;
+        if (parsed > 0 && parsed <= 10000) {
+          rowQty = parsed;
+        } else if (embeddedQty > 0) {
+          rowQty = embeddedQty;
+        }
+      } else if (embeddedQty > 0) {
+        rowQty = embeddedQty;
       }
+
       groupMap[key].qty   += rowQty;
       groupMap[key].rev   += hasCod      ? parseNum(row[cIdx])  : 0;
       groupMap[key].ship  += hasShipping ? parseNum(row[shIdx]) : 0;
       groupMap[key].count++;
     }
+
     if (Object.keys(groupMap).length === 0) return { ok: false, error: "⚠️ Aucun produit valide trouvé. Vérifiez le format du fichier." };
     const summaries: ProductSummary[] = Object.entries(groupMap).map(([, d]) => ({
       name: d.displayName, totalQty: d.qty, totalRevenue: d.rev, totalShipping: d.ship,
@@ -897,6 +933,11 @@ export default function ProfitAnalyzer() {
                                   ⚠️ Même colonne que Produit — 1 unité/livraison utilisée
                                 </p>
                               )}
+                              {field === "qty" && !isQtyConflict && !colMap.qty && (
+                                <p className="text-[10px] text-slate-500 leading-tight mt-0.5">
+                                  Astuce : si la qté est dans le texte produit (ex: "Quantity: 2"), laissez "(aucune)".
+                                </p>
+                              )}
                             </div>
                           );
                         })}
@@ -957,7 +998,11 @@ export default function ProfitAnalyzer() {
                               <div className="flex-1 min-w-0">
                                 <div className="text-sm text-white truncate font-medium">{p.name}</div>
                                 <div className="text-[11px] text-slate-400">
-                                  {p.rowCount} livraisons · {fmtDH(p.totalRevenue)}
+                                  {p.rowCount} livraisons
+                                  {p.totalQty !== p.rowCount && (
+                                    <span className="text-amber-400 font-semibold"> · {p.totalQty} unités</span>
+                                  )}
+                                  {" · "}{fmtDH(p.totalRevenue)}
                                 </div>
                               </div>
                             </label>
