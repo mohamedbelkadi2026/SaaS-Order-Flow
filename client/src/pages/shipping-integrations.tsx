@@ -14,10 +14,11 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Link2, CheckCircle, Loader2, Eye, EyeOff,
   MapPin, Video, Home, ChevronRight,
-  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw, ShieldCheck,
+  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw, ShieldCheck, Upload, FileJson,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
@@ -1774,6 +1775,39 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     }),
   });
 
+  // ── Seed-cities (manual JSON import) ─────────────────────────────────────
+  const [seedModalOpen,  setSeedModalOpen]  = useState(false);
+  const [seedAccountId,  setSeedAccountId]  = useState<number | null>(null);
+  const [seedJson,       setSeedJson]       = useState("");
+  const [seedLoading,    setSeedLoading]    = useState(false);
+  const isSeedCarrier = providerId === "ozonexpress" || providerId === "expresscoursier";
+
+  const handleSeedCities = async () => {
+    if (!seedAccountId) return;
+    setSeedLoading(true);
+    try {
+      let parsed: any;
+      try { parsed = JSON.parse(seedJson.trim()); } catch {
+        toast({ title: "JSON invalide", description: "Vérifiez la syntaxe du JSON.", variant: "destructive" });
+        setSeedLoading(false);
+        return;
+      }
+      const body = Array.isArray(parsed) ? parsed : (parsed?.cities ?? parsed);
+      const result = await apiRequest("POST", `/api/carriers/${providerId}/seed-cities/${seedAccountId}`, body);
+      toast({
+        title: "✅ Villes importées",
+        description: result?.message || `${result?.inserted ?? 0} villes importées.`,
+      });
+      qc.invalidateQueries({ queryKey: ["/api/carriers/cities"] });
+      setSeedModalOpen(false);
+      setSeedJson("");
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+    } finally {
+      setSeedLoading(false);
+    }
+  };
+
   // Generic single-button sync — works for any carrier the dispatcher supports.
   // Refreshes order lists & dashboard stats so KPIs reflect the new statuses without a manual reload.
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
@@ -2049,6 +2083,18 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
                       Synchroniser les villes
                     </Button>
+                    {isSeedCarrier && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-blue-200 text-blue-700 hover:bg-blue-50 font-semibold"
+                        onClick={() => { setSeedAccountId(acct.id); setSeedJson(""); setSeedModalOpen(true); }}
+                        data-testid={`button-seed-cities-${acct.id}`}
+                      >
+                        <FileJson className="w-3.5 h-3.5 mr-1" />
+                        Importer villes (JSON)
+                      </Button>
+                    )}
                     <div className="flex items-center gap-2 ml-auto">
                       <Switch
                         checked={acct.isActive === 1}
@@ -2171,6 +2217,51 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
         initialStoreName={digylogPrefsAcct?.settings?.digylogStoreName || digylogPrefsAcct?.carrierStoreName}
         initialNetworkId={digylogPrefsAcct?.settings?.digylogNetworkId}
       />
+
+      {/* ── Seed-cities (manual JSON) modal ─────────────────────────────── */}
+      <Dialog open={seedModalOpen} onOpenChange={(v) => { if (!v && !seedLoading) { setSeedModalOpen(false); setSeedJson(""); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileJson className="w-5 h-5 text-blue-500" />
+              Importer villes (JSON) — {providerName}
+            </DialogTitle>
+            <DialogDescription>
+              Collez un tableau JSON de villes avec leurs identifiants numériques.
+              Format accepté : <code className="bg-muted px-1 rounded text-xs">[{"{"}"cityId": "1", "cityName": "Casablanca"{"}"}]</code>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Textarea
+              placeholder={`[\n  {"cityId": "1", "cityName": "Casablanca"},\n  {"cityId": "2", "cityName": "Rabat"}\n]`}
+              className="font-mono text-xs min-h-[200px] resize-y"
+              value={seedJson}
+              onChange={e => setSeedJson(e.target.value)}
+              data-testid="textarea-seed-cities-json"
+            />
+            <p className="text-xs text-muted-foreground">
+              Clés acceptées : <code className="bg-muted px-0.5 rounded">cityId</code> / <code className="bg-muted px-0.5 rounded">id</code> et <code className="bg-muted px-0.5 rounded">cityName</code> / <code className="bg-muted px-0.5 rounded">name</code>. L'identifiant doit être numérique.
+            </p>
+          </div>
+          <div className="flex gap-2 justify-end pt-1">
+            <Button variant="outline" size="sm" onClick={() => { setSeedModalOpen(false); setSeedJson(""); }}>
+              Annuler
+            </Button>
+            <Button
+              size="sm"
+              className="bg-blue-600 hover:bg-blue-700 text-white gap-1.5"
+              disabled={!seedJson.trim() || seedLoading}
+              onClick={handleSeedCities}
+              data-testid="button-confirm-seed-cities"
+            >
+              {seedLoading
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <Upload className="w-3.5 h-3.5" />}
+              Importer
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -1,0 +1,437 @@
+I want to add product deletion features to the Stock/Inventaire page. Currently there are 1707 products and many of them are obsolete/duplicates/test items. I need:
+
+1. SINGLE DELETE — a trash icon on each product row (with confirmation)
+2. BULK DELETE — checkboxes + bulk action bar
+3. SMART CLEANUP — quick filters to find deletable products
+4. SAFETY — never delete products that have linked orders (or handle them properly)
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT FIRST
+═══════════════════════════════════════════════════════════════════════
+Find and report:
+
+1. The Stock/Inventaire page file (likely client/src/pages/stock.tsx or inventory.tsx)
+2. The product table component rendering each row
+3. shared/schema.ts:
+   - products table structure
+   - order_items table — confirm it has FK on productId (this is the safety concern)
+4. server/storage.ts:
+   - getProducts / getInventoryProducts method
+   - Is there an existing deleteProduct method?
+5. server/routes.ts:
+   - Is there a DELETE /api/products/:id endpoint?
+
+REPORT findings before any code changes. Specifically:
+- The FK constraint on order_items.productId (CASCADE? RESTRICT? SET NULL?)
+- Whether soft-delete (deletedAt column) already exists on products
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — BACKEND: Safe delete logic
+═══════════════════════════════════════════════════════════════════════
+Add/extend these endpoints in server/routes.ts:
+
+A) Check if a product is deletable (has no linked orders):
+
+  app.get("/api/products/:id/usage", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    try {
+      const usage = await storage.getProductUsage(storeId, productId);
+      // usage = { ordersCount, deliveredCount, inStockOrders, totalRevenue }
+      res.json(usage);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+B) Delete a single product:
+
+  app.delete("/api/products/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    const force = req.query.force === "true";  // allow deletion even if has orders (soft delete)
+
+    try {
+      const product = await storage.getProduct(productId);
+      if (!product || product.storeId !== storeId) {
+        return res.status(404).json({ message: "Produit introuvable" });
+      }
+
+      const usage = await storage.getProductUsage(storeId, productId);
+
+      // Has linked orders? Decide based on force flag
+      if (usage.ordersCount > 0 && !force) {
+        return res.status(409).json({
+          message: "Ce produit est lié à des commandes",
+          usage,
+          hint: "Utilisez force=true pour archiver (soft delete) au lieu de supprimer",
+        });
+      }
+
+      if (usage.ordersCount > 0 && force) {
+        // Soft delete: mark as archived, keep order_items intact
+        await storage.archiveProduct(productId);
+        return res.json({ ok: true, mode: "archived" });
+      }
+
+      // Hard delete (no linked orders)
+      await storage.deleteProduct(productId);
+      res.json({ ok: true, mode: "deleted" });
+    } catch (err: any) {
+      console.error("[Delete Product] error:", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+C) Bulk delete:
+
+  app.post("/api/products/bulk-delete", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const { productIds, force } = req.body || {};
+
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ message: "Liste de produits vide" });
+    }
+    if (productIds.length > 500) {
+      return res.status(400).json({ message: "Maximum 500 produits par opération" });
+    }
+
+    const results = { deleted: 0, archived: 0, skipped: 0, errors: [] as any[] };
+
+    for (const id of productIds) {
+      try {
+        const product = await storage.getProduct(id);
+        if (!product || product.storeId !== storeId) {
+          results.skipped += 1;
+          continue;
+        }
+        const usage = await storage.getProductUsage(storeId, id);
+        if (usage.ordersCount > 0) {
+          if (force) {
+            await storage.archiveProduct(id);
+            results.archived += 1;
+          } else {
+            results.skipped += 1;
+          }
+        } else {
+          await storage.deleteProduct(id);
+          results.deleted += 1;
+        }
+      } catch (err: any) {
+        results.errors.push({ id, message: err.message });
+      }
+    }
+
+    res.json(results);
+  });
+
+D) Smart cleanup filter endpoint:
+
+  app.get("/api/products/cleanup-suggestions", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const type = String(req.query.type || "no_orders");  // no_orders | no_deliveries | duplicates | archived
+
+    try {
+      let products: any[] = [];
+
+      if (type === "no_orders") {
+        // Products with 0 orders ever
+        products = await storage.getProductsWithoutOrders(storeId);
+      } else if (type === "no_deliveries") {
+        // Products with orders but 0 livrées
+        products = await storage.getProductsWithoutDeliveries(storeId);
+      } else if (type === "duplicates") {
+        // Products sharing the same normalized name (and possibly variant) within store
+        products = await storage.getDuplicateProducts(storeId);
+      } else if (type === "archived") {
+        products = await storage.getArchivedProducts(storeId);
+      }
+
+      res.json({ type, count: products.length, products });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — STORAGE METHODS (server/storage.ts)
+═══════════════════════════════════════════════════════════════════════
+Add these methods:
+
+  async getProductUsage(storeId: number, productId: number) {
+    const items = await db.select().from(orderItems).where(eq(orderItems.productId, productId));
+    if (items.length === 0) return { ordersCount: 0, deliveredCount: 0, inStockOrders: 0, totalRevenue: 0 };
+
+    const orderIds = Array.from(new Set(items.map(i => i.orderId)));
+    const ordersList = await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), inArray(orders.id, orderIds)));
+
+    const deliveredCount = ordersList.filter(o => /livr/i.test(String(o.status || ""))).length;
+    const inStockOrders = ordersList.filter(o => !/livr|annul|retour/i.test(String(o.status || ""))).length;
+    const totalRevenue = ordersList
+      .filter(o => /livr/i.test(String(o.status || "")))
+      .reduce((sum, o) => sum + (Number(o.totalPrice) || 0), 0);
+
+    return {
+      ordersCount: ordersList.length,
+      deliveredCount,
+      inStockOrders,
+      totalRevenue,
+    };
+  }
+
+  async deleteProduct(productId: number) {
+    // Hard delete. Safe only when no order_items reference it.
+    await db.delete(products).where(eq(products.id, productId));
+  }
+
+  async archiveProduct(productId: number) {
+    // Soft delete. Add `archived_at` column if not present (see STEP 4).
+    await db.update(products).set({ archivedAt: new Date() } as any).where(eq(products.id, productId));
+  }
+
+  async getProductsWithoutOrders(storeId: number) {
+    // Products with no row in order_items
+    const allProducts = await db.select().from(products).where(eq(products.storeId, storeId));
+    const result: any[] = [];
+    for (const p of allProducts) {
+      const items = await db.select().from(orderItems).where(eq(orderItems.productId, p.id)).limit(1);
+      if (items.length === 0) result.push(p);
+    }
+    return result;
+  }
+
+  async getProductsWithoutDeliveries(storeId: number) {
+    const all = await db.select().from(products).where(eq(products.storeId, storeId));
+    const result: any[] = [];
+    for (const p of all) {
+      const items = await db.select().from(orderItems).where(eq(orderItems.productId, p.id));
+      if (items.length === 0) continue;  // handled by "no_orders" type
+      const orderIds = items.map(i => i.orderId);
+      const delivered = await db.select().from(orders).where(and(
+        inArray(orders.id, orderIds),
+        sql`LOWER(${orders.status}) LIKE '%livr%'`
+      )).limit(1);
+      if (delivered.length === 0) result.push(p);
+    }
+    return result;
+  }
+
+  async getDuplicateProducts(storeId: number) {
+    // Group by normalized name; return products in groups of 2+
+    const all = await db.select().from(products).where(eq(products.storeId, storeId));
+    const norm = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const groups: Record<string, any[]> = {};
+    for (const p of all) {
+      const key = norm(p.name);
+      (groups[key] ||= []).push(p);
+    }
+    const dupes: any[] = [];
+    for (const [key, items] of Object.entries(groups)) {
+      if (items.length >= 2) {
+        // Keep the most-used one out of the suggested-deletion list
+        // Sort by createdAt desc, suggest the older copies for deletion
+        const sorted = [...items].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        for (let i = 1; i < sorted.length; i++) dupes.push({ ...sorted[i], duplicateGroup: key });
+      }
+    }
+    return dupes;
+  }
+
+  async getArchivedProducts(storeId: number) {
+    return await db.select().from(products).where(and(
+      eq(products.storeId, storeId),
+      sql`${products.archivedAt} IS NOT NULL`
+    ));
+  }
+
+ALSO update getProducts / getInventoryProducts to EXCLUDE archived by default (add a filter param to include archived if requested):
+
+  async getProducts(storeId: number, opts: { includeArchived?: boolean } = {}) {
+    const conditions = [eq(products.storeId, storeId)];
+    if (!opts.includeArchived) conditions.push(sql`${products.archivedAt} IS NULL`);
+    return await db.select().from(products).where(and(...conditions));
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — SCHEMA (only if archived_at doesn't already exist)
+═══════════════════════════════════════════════════════════════════════
+In shared/schema.ts, add to the products table if missing:
+
+  archivedAt: timestamp("archived_at"),  // nullable
+
+If you must avoid a migration, store the archived state in an existing settings JSON column on products instead:
+  products.settings = { ...existing, archivedAt: "ISO date string" }
+And adapt the storage methods accordingly. Prefer the column if Drizzle push is available — it's cleaner.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — FRONTEND: Stock page (client/src/pages/stock.tsx)
+═══════════════════════════════════════════════════════════════════════
+
+A) Add a "Sélection" column at the left of the table:
+
+  <th>
+    <input type="checkbox"
+      checked={selectedIds.size === products.length && products.length > 0}
+      onChange={handleToggleAll}
+      className="w-4 h-4 accent-indigo-500"
+    />
+  </th>
+  ...
+  <td>
+    <input type="checkbox"
+      checked={selectedIds.has(product.id)}
+      onChange={() => toggleOne(product.id)}
+      className="w-4 h-4 accent-indigo-500"
+    />
+  </td>
+
+B) Add a delete icon (red trash) in each row's action area (next to the existing icons on the right):
+
+  <button
+    onClick={() => confirmDelete(product)}
+    className="p-1.5 hover:bg-red-50 rounded text-red-500 hover:text-red-700"
+    title="Supprimer ce produit"
+  >
+    <Trash2 className="w-4 h-4" />
+  </button>
+
+C) Selection bar (appears at the top when ≥1 item is selected):
+
+  {selectedIds.size > 0 && (
+    <div className="sticky top-0 z-10 bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-2.5 mb-3 flex items-center justify-between">
+      <div className="text-sm font-semibold text-indigo-700">
+        {selectedIds.size} produit{selectedIds.size > 1 ? "s" : ""} sélectionné{selectedIds.size > 1 ? "s" : ""}
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setSelectedIds(new Set())}
+          className="text-xs px-3 py-1.5 rounded bg-white border border-gray-200 hover:bg-gray-50"
+        >Désélectionner</button>
+        <button
+          onClick={confirmBulkDelete}
+          className="text-xs px-3 py-1.5 rounded bg-red-600 text-white hover:bg-red-700 font-semibold flex items-center gap-1.5"
+        ><Trash2 className="w-3.5 h-3.5" /> Supprimer la sélection</button>
+      </div>
+    </div>
+  )}
+
+D) "Nettoyage intelligent" dropdown button (place next to "+ Nouveau Produit"):
+
+  <DropdownMenu>
+    <DropdownMenuTrigger asChild>
+      <button className="px-4 py-2.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-800 font-semibold text-sm flex items-center gap-2">
+        🧹 Nettoyage intelligent
+      </button>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent>
+      <DropdownMenuItem onClick={() => runCleanup("no_orders")}>
+        Produits sans aucune commande
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => runCleanup("no_deliveries")}>
+        Produits avec 0 livraison
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => runCleanup("duplicates")}>
+        Doublons (même nom)
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => runCleanup("archived")}>
+        Produits archivés
+      </DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
+
+  function runCleanup(type: string) {
+    fetch(`/api/products/cleanup-suggestions?type=${type}`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d.count) {
+          toast.info("Aucun produit ne correspond à ce filtre.");
+          return;
+        }
+        // Auto-select all matching products and show the cleanup modal
+        setSelectedIds(new Set(d.products.map((p: any) => p.id)));
+        toast.success(`${d.count} produits identifiés et sélectionnés.`);
+      });
+  }
+
+E) Confirmation modal (single + bulk delete share the same modal):
+
+  - Shows the product name(s)
+  - Calls GET /api/products/:id/usage for each (or just shows aggregated counts for bulk)
+  - If any has orders: shows a warning "X produit(s) sont liés à des commandes — ils seront archivés (les données restent visibles dans les rapports)"
+  - Two buttons: "Annuler" (gray) | "Confirmer la suppression" (red)
+  - "Force archive" toggle for products with orders
+
+F) Delete handlers:
+
+  async function confirmDelete(product: any) {
+    const usage = await fetch(`/api/products/${product.id}/usage`).then(r => r.json());
+    setDeleteModal({ products: [product], usage });
+  }
+
+  async function executeDelete() {
+    const ids = deleteModal.products.map((p: any) => p.id);
+    if (ids.length === 1) {
+      const force = deleteModal.usage.ordersCount > 0;
+      const resp = await fetch(`/api/products/${ids[0]}?force=${force}`, { method: "DELETE" });
+      const r = await resp.json();
+      toast.success(r.mode === "archived" ? "Produit archivé" : "Produit supprimé");
+    } else {
+      const resp = await fetch("/api/products/bulk-delete", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productIds: ids, force: true }),
+      });
+      const r = await resp.json();
+      toast.success(`${r.deleted} supprimés · ${r.archived} archivés · ${r.skipped} ignorés`);
+    }
+    setDeleteModal(null);
+    setSelectedIds(new Set());
+    refetchProducts();
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — SHOW "Archivé" BADGE
+═══════════════════════════════════════════════════════════════════════
+When viewing the archived list (via cleanup filter), each row should show a gray "Archivé" badge. Provide a "Désarchiver" action to bring it back (set archivedAt = null).
+
+═══════════════════════════════════════════════════════════════════════
+DESIGN RULES
+═══════════════════════════════════════════════════════════════════════
+1. Match the existing platform theme (indigo + amber accents on this page).
+2. Destructive actions (delete) use red. Archive uses amber/yellow.
+3. Confirmation modal mandatory for all delete operations — no silent deletes.
+4. Show counts clearly: "X commandes, Y livraisons" before letting user confirm.
+5. Disable the delete buttons while the request is in flight (avoid double-clicks).
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Each row in Inventaire has a trash icon
+2. ✅ Clicking trash opens confirmation modal with usage info
+3. ✅ Product with 0 orders is hard-deleted from DB
+4. ✅ Product with orders is archived (not hard-deleted) and disappears from default Inventaire view
+5. ✅ Checkboxes appear on each row + header
+6. ✅ Bulk selection bar appears when ≥1 selected
+7. ✅ Bulk delete sends all selected IDs to /api/products/bulk-delete
+8. ✅ Cleanup dropdown has 4 filters: no_orders, no_deliveries, duplicates, archived
+9. ✅ Running a cleanup auto-selects matching products
+10. ✅ "Archivé" badge visible when viewing archived list
+11. ✅ "Désarchiver" restores the product
+12. ✅ Orders/reports remain intact after archiving (data not lost)
+13. ✅ Build passes locally
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(stock): delete + bulk delete + smart cleanup with safe archive fallback"
+git push origin main
+
+WORKFLOW:
+1. INSPECT FIRST (Step 1). Report:
+   - The exact file path of the stock page
+   - Whether products has an archivedAt column or a settings JSON
+   - The FK behavior of order_items.productId
+2. Apply Steps 2–6 incrementally.
+3. `npm run build` BEFORE pushing.
+4. After deploy, test on a single product with 0 orders (hard delete), then on a product with orders (archive), then bulk on 10 products via cleanup filter.

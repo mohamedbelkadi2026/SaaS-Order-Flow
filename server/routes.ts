@@ -2779,7 +2779,87 @@ export async function registerRoutes(
       } else if (carrierKey === "expresscoursier") {
         citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
       } else if (carrierKey === "ozonexpress") {
-        citiesUrl = "https://api.ozonexpress.ma/cities";
+        // ── Ozon Express multi-URL fallback ──────────────────────────────────
+        // The public /cities endpoint returns nothing. Ozon uses authenticated
+        // URLs scoped per customer: /customers/{CUSTOMER_ID}/{API_KEY}/cities
+        const settings = (acct.settings as any) || {};
+        const customerId = String(settings.ozonCustomerId || "").trim();
+        if (!customerId) {
+          return res.status(400).json({
+            message: "Customer ID Ozon Express manquant. Ouvrez 'Modifier le compte' et renseignez votre Customer ID.",
+          });
+        }
+        const candidateUrls = [
+          `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/cities`,
+          `https://api.ozonexpress.ma/cities/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}`,
+          `https://api.ozonexpress.ma/cities`,
+        ];
+        const normNameOzon = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+        let lastOzonError: string | null = null;
+        let ozonFinalEntries: { externalId: string; name: string; nameNorm: string }[] = [];
+        let usedOzonUrl = "";
+        const axiosOzon = (await import("axios")).default;
+        for (const url of candidateUrls) {
+          try {
+            console.log(`[Ozon-SyncCities] Trying ${url}`);
+            const r = await axiosOzon.get(url, {
+              headers: { Accept: "application/json" },
+              timeout: 15_000,
+              httpsAgent: new (await import("https")).default.Agent({ rejectUnauthorized: false }),
+              validateStatus: () => true,
+            });
+            console.log(`[Ozon-SyncCities] ${url} → HTTP ${r.status} — preview: ${JSON.stringify(r.data).slice(0, 200)}`);
+            if (r.status !== 200) { lastOzonError = `HTTP ${r.status} on ${url}`; continue; }
+            const raw = r.data;
+            const arr: any[] =
+              Array.isArray(raw)         ? raw :
+              Array.isArray(raw?.cities) ? raw.cities :
+              Array.isArray(raw?.data)   ? raw.data   :
+              Array.isArray(raw?.result) ? raw.result : [];
+            if (arr.length > 0) {
+              ozonFinalEntries = arr
+                .map((c: any) => {
+                  const name = String(typeof c === "string" ? c : (c?.name || c?.city_name || c?.ville || c?.label || "")).trim();
+                  const id   = String(c?.id ?? c?.city_id ?? c?.ID ?? c?.cityId ?? "");
+                  return { externalId: id, name, nameNorm: normNameOzon(name) };
+                })
+                .filter(e => e.name && /^\d+$/.test(e.externalId));
+              if (ozonFinalEntries.length === 0) {
+                lastOzonError = `Empty/invalid city array from ${url}`;
+                continue;
+              }
+              usedOzonUrl = url;
+              break;
+            }
+            // id→name object shape
+            if (raw && typeof raw === "object") {
+              const obj = raw.cities || raw.data?.cities || raw.data || raw;
+              const entries = Object.entries(obj as Record<string, any>)
+                .map(([id, val]: any) => {
+                  const name = String(typeof val === "string" ? val : (val?.name || val?.ville || "")).trim();
+                  return { externalId: String(id), name, nameNorm: normNameOzon(name) };
+                })
+                .filter(e => e.name && /^\d+$/.test(e.externalId));
+              if (entries.length > 0) {
+                ozonFinalEntries = entries;
+                usedOzonUrl = url;
+                break;
+              }
+            }
+            lastOzonError = `Empty cities from ${url}`;
+          } catch (e: any) {
+            lastOzonError = `Fetch error on ${url}: ${e.message}`;
+          }
+        }
+        if (ozonFinalEntries.length === 0) {
+          return res.status(422).json({
+            message: `Aucune ville reçue de Ozon Express. Dernière erreur : ${lastOzonError || "inconnu"}. Vérifiez votre Customer ID et API Key, ou utilisez "Importer villes (JSON)".`,
+          });
+        }
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, ozonFinalEntries.map(e => e.name));
+        await storage.upsertOzonExpressCities(storeId, ozonFinalEntries);
+        console.log(`[Ozon-SyncCities] ✅ Saved ${ozonFinalEntries.length} cities via ${usedOzonUrl}`);
+        return res.json({ count: ozonFinalEntries.length, usedUrl: usedOzonUrl, cities: ozonFinalEntries.map(e => e.name), syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
@@ -2793,8 +2873,6 @@ export async function registerRoutes(
         reqHeaders["C-Api-Id"]  = stripHtml((acct as any).apiSecret || (acct as any).storeName || "");
       } else if (carrierKey === "expresscoursier") {
         // Token is embedded in the URL path — no Authorization header needed
-      } else if (carrierKey === "ozonexpress") {
-        // Public cities endpoint — no Authorization header needed
       } else {
         reqHeaders["Authorization"] = `Bearer ${apiKey}`;
         reqHeaders["Referer"] = "https://apiseller.digylog.com";
@@ -2965,6 +3043,75 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[CitiesSync] Error:", err?.message);
       res.status(502).json({ message: `Impossible de contacter ${(acct as any)?.carrierName || "le transporteur"}: ${err?.message || "erreur réseau"}` });
+    }
+  });
+
+  // ── Manual city seed — Ozon Express ─────────────────────────────────────────
+  // Accepts JSON array: [{cityId, cityName}] or {id, name} or plain objects.
+  app.post("/api/carriers/ozonexpress/seed-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const storeId   = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(accountId);
+      if (!acct || acct.storeId !== storeId || (acct.carrierName || "").toLowerCase() !== "ozonexpress") {
+        return res.status(404).json({ message: "Compte Ozon Express introuvable" });
+      }
+      const raw: any[] = req.body?.cities || req.body;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return res.status(400).json({ message: "JSON invalide. Attendu: [{cityId, cityName}, ...]" });
+      }
+      const normName = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+      const entries: { externalId: string; name: string; nameNorm: string }[] = [];
+      let skipped = 0;
+      for (const c of raw) {
+        const id   = String(c?.cityId ?? c?.id ?? c?.city_id ?? c?.ID ?? "").trim();
+        const name = String(c?.cityName ?? c?.name ?? c?.ville ?? c?.label ?? "").trim();
+        if (!id || !/^\d+$/.test(id) || !name) { skipped += 1; continue; }
+        entries.push({ externalId: id, name, nameNorm: normName(name) });
+      }
+      if (entries.length === 0) {
+        return res.status(422).json({ message: `Aucune ville valide. Vérifiez le format : [{cityId, cityName}]. ${skipped} lignes ignorées.` });
+      }
+      await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, entries.map(e => e.name));
+      await storage.upsertOzonExpressCities(storeId, entries);
+      return res.json({ ok: true, inserted: entries.length, skipped, message: `${entries.length} villes importées, ${skipped} ignorées.` });
+    } catch (err: any) {
+      console.error("[Ozon SeedCities] error:", err);
+      return res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ── Manual city seed — Express Coursier ─────────────────────────────────────
+  app.post("/api/carriers/expresscoursier/seed-cities/:accountId", requireAuth, async (req: any, res: any) => {
+    try {
+      const accountId = parseInt(req.params.accountId);
+      const storeId   = req.user!.storeId!;
+      const acct = await storage.getCarrierAccount(accountId);
+      if (!acct || acct.storeId !== storeId || (acct.carrierName || "").toLowerCase() !== "expresscoursier") {
+        return res.status(404).json({ message: "Compte Express Coursier introuvable" });
+      }
+      const raw: any[] = req.body?.cities || req.body;
+      if (!Array.isArray(raw) || raw.length === 0) {
+        return res.status(400).json({ message: "JSON invalide. Attendu: [{cityId, cityName}, ...]" });
+      }
+      const normName = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+      const entries: { externalId: string; name: string; nameNorm: string }[] = [];
+      let skipped = 0;
+      for (const c of raw) {
+        const id   = String(c?.cityId ?? c?.id ?? c?.city_id ?? c?.ID ?? "").trim();
+        const name = String(c?.cityName ?? c?.name ?? c?.ville ?? c?.label ?? "").trim();
+        if (!id || !/^\d+$/.test(id) || !name) { skipped += 1; continue; }
+        entries.push({ externalId: id, name, nameNorm: normName(name) });
+      }
+      if (entries.length === 0) {
+        return res.status(422).json({ message: `Aucune ville valide. Vérifiez le format : [{cityId, cityName}]. ${skipped} lignes ignorées.` });
+      }
+      await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, entries.map(e => e.name));
+      await storage.upsertExpressCoursierCities(storeId, entries);
+      return res.json({ ok: true, inserted: entries.length, skipped, message: `${entries.length} villes importées, ${skipped} ignorées.` });
+    } catch (err: any) {
+      console.error("[EC SeedCities] error:", err);
+      return res.status(500).json({ message: err.message || "Erreur" });
     }
   });
 
