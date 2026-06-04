@@ -189,8 +189,100 @@ function CleanupModal({
   );
 }
 
+/* ── Nuclear Delete Modal ─────────────────────────────────────────────────── */
+function NuclearDeleteModal({
+  open, onClose, selectedCount, onConfirm,
+}: {
+  open: boolean;
+  onClose: () => void;
+  selectedCount: number;
+  onConfirm: (opts: { archiveIfHasOrders: boolean; confirmText: string }) => Promise<void>;
+}) {
+  const [confirmText, setConfirmText] = useState("");
+  const [archiveIfHasOrders, setArchiveIfHasOrders] = useState(true);
+  const [running, setRunning] = useState(false);
+
+  const isConfirmed = confirmText === "SUPPRIMER TOUT";
+
+  const handleSubmit = async () => {
+    if (!isConfirmed || running) return;
+    setRunning(true);
+    try {
+      await onConfirm({ archiveIfHasOrders, confirmText });
+    } finally {
+      setRunning(false);
+      setConfirmText("");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v && !running) { onClose(); setConfirmText(""); } }}>
+      <DialogContent className="sm:max-w-md rounded-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-red-700 flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 shrink-0" />
+            Action irréversible
+          </DialogTitle>
+          <DialogDescription>
+            Vous êtes sur le point de traiter <strong>{selectedCount}</strong> produit{selectedCount > 1 ? "s" : ""}.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-1">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-3 text-xs text-amber-800 dark:text-amber-300">
+            <div className="font-bold mb-1.5">Ce qui va se passer :</div>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Produits <strong>sans commandes</strong> → supprimés définitivement</li>
+              <li>Produits <strong>avec commandes</strong> → archivés (historique préservé)</li>
+            </ul>
+          </div>
+          <label className="flex items-center gap-2.5 cursor-pointer text-sm text-gray-700 dark:text-gray-300">
+            <input
+              type="checkbox"
+              checked={archiveIfHasOrders}
+              onChange={(e) => setArchiveIfHasOrders(e.target.checked)}
+              className="w-4 h-4 accent-amber-500"
+            />
+            Archiver les produits liés à des commandes (recommandé)
+          </label>
+          <div>
+            <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">
+              Tapez <span className="font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-red-700 dark:text-red-400">SUPPRIMER TOUT</span> pour confirmer :
+            </label>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              className="w-full px-3 py-2 border-2 border-gray-200 dark:border-gray-700 rounded-lg focus:border-red-500 outline-none text-sm font-mono bg-white dark:bg-gray-900 dark:text-white"
+              placeholder="SUPPRIMER TOUT"
+              disabled={running}
+              data-testid="input-nuclear-confirm"
+            />
+          </div>
+        </div>
+        <DialogFooter className="gap-2 pt-2">
+          <Button variant="outline" onClick={() => { onClose(); setConfirmText(""); }} disabled={running} data-testid="button-nuclear-cancel">
+            Annuler
+          </Button>
+          <Button
+            disabled={!isConfirmed || running}
+            onClick={handleSubmit}
+            className="bg-red-600 hover:bg-red-700 text-white font-bold"
+            data-testid="button-nuclear-submit"
+          >
+            {running ? (
+              <span className="flex items-center gap-2"><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" /> En cours…</span>
+            ) : (
+              <span className="flex items-center gap-1.5"><Trash2 className="w-3.5 h-3.5" /> Confirmer la suppression</span>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Inventory() {
-  const { data: inventoryData, isLoading: statsLoading } = useInventoryStats();
+  const { data: inventoryData, isLoading: statsLoading, refetch: refetchStats } = useInventoryStats();
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
   const deleteProduct = useDeleteProduct();
@@ -201,6 +293,9 @@ export default function Inventory() {
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  // Nuclear delete modal
+  const [nuclearOpen, setNuclearOpen] = useState(false);
 
   // Safe-delete confirmation dialog (single product)
   const [deleteDialog, setDeleteDialog] = useState<{ product: any; usage: any } | null>(null);
@@ -512,6 +607,46 @@ export default function Inventory() {
     }
   };
 
+  const selectAllAcrossPages = async () => {
+    try {
+      const resp = await fetch("/api/products/all-ids", { credentials: "include" });
+      const data = await resp.json();
+      setSelectedIds(new Set(data.ids));
+    } catch {
+      toast({ title: "Erreur", description: "Impossible de récupérer tous les IDs", variant: "destructive" });
+    }
+  };
+
+  const handleNuclearConfirm = async ({ archiveIfHasOrders, confirmText }: { archiveIfHasOrders: boolean; confirmText: string }) => {
+    try {
+      const resp = await fetch("/api/products/bulk-delete-all", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "selected_ids",
+          productIds: Array.from(selectedIds),
+          archiveIfHasOrders,
+          confirmText,
+        }),
+      });
+      const r = await resp.json();
+      if (!resp.ok) throw new Error(r.message || "Erreur");
+      toast({
+        title: "✅ Nettoyage terminé",
+        description: `${r.deleted} supprimés · ${r.archived} archivés · ${r.skipped} ignorés`,
+      });
+      setNuclearOpen(false);
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      refetchStats();
+    } catch (e: any) {
+      toast({ title: "Erreur", description: e.message, variant: "destructive" });
+      throw e;
+    }
+  };
+
   const handleToggleSelect = (id: number) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -630,9 +765,23 @@ export default function Inventory() {
         </Button>
       </div>
 
+      {/* "Select all across pages" banner */}
+      {selectedIds.size > 0 && selectedIds.size === filtered.length && filtered.length < (productStats.length) && (
+        <div className="flex items-center justify-between px-4 py-2 rounded-xl border border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30 text-sm text-indigo-700 dark:text-indigo-300">
+          <span>{filtered.length} produits filtrés sélectionnés.</span>
+          <button
+            onClick={selectAllAcrossPages}
+            className="font-bold underline hover:text-indigo-900 dark:hover:text-indigo-100"
+            data-testid="button-select-all-pages"
+          >
+            Sélectionner les {productStats.length} produits
+          </button>
+        </div>
+      )}
+
       {/* Bulk action bar — visible when items are selected */}
       {selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 animate-in slide-in-from-top-2">
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 animate-in slide-in-from-top-2 flex-wrap">
           <CheckSquare className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
           <span className="text-sm font-semibold text-red-700 dark:text-red-300">
             {selectedIds.size} produit{selectedIds.size > 1 ? "s" : ""} sélectionné{selectedIds.size > 1 ? "s" : ""}
@@ -660,6 +809,18 @@ export default function Inventory() {
             <Archive className="w-3.5 h-3.5" />
             Archiver tous
           </Button>
+          {selectedIds.size >= 100 && (
+            <Button
+              size="sm"
+              className="bg-red-600 hover:bg-red-700 text-white font-bold gap-1.5"
+              disabled={bulkDeleting}
+              onClick={() => setNuclearOpen(true)}
+              data-testid="button-bulk-nuclear"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              TOUT supprimer / archiver
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
@@ -1479,6 +1640,14 @@ export default function Inventory() {
             setBulkDeleting(false);
           }
         }}
+      />
+
+      {/* ── Nuclear delete modal ─────────────────────────────────────────── */}
+      <NuclearDeleteModal
+        open={nuclearOpen}
+        onClose={() => setNuclearOpen(false)}
+        selectedCount={selectedIds.size}
+        onConfirm={handleNuclearConfirm}
       />
 
       {/* ── Restock dialog ──────────────────────────────────────────────── */}

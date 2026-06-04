@@ -6335,18 +6335,91 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // GET /api/products/all-ids — lightweight: returns only IDs for "select all across pages"
+  app.get("/api/products/all-ids", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const rows = await storage.getProductsByStore(storeId);
+      res.json({ ids: rows.map((r: any) => r.id), total: rows.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // POST /api/products/bulk-delete
   app.post("/api/products/bulk-delete", requireAuth, async (req: any, res: any) => {
     const storeId = req.user!.storeId!;
     const { productIds, force = false } = req.body || {};
     if (!Array.isArray(productIds) || productIds.length === 0)
       return res.status(400).json({ message: "Liste de produits vide" });
-    if (productIds.length > 500)
-      return res.status(400).json({ message: "Maximum 500 produits par opération" });
     try {
       const results = await storage.bulkDeleteProducts(storeId, productIds, !!force);
       res.json(results);
     } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // POST /api/products/bulk-delete-all — handles unlimited quantities with server-side chunking
+  app.post("/api/products/bulk-delete-all", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const { mode, productIds, archiveIfHasOrders = true, confirmText } = req.body || {};
+
+    if (mode === "all" && confirmText !== "SUPPRIMER TOUT") {
+      return res.status(400).json({ message: "Confirmation requise. Tapez exactement 'SUPPRIMER TOUT' pour confirmer." });
+    }
+
+    try {
+      let candidates: any[] = [];
+      if (mode === "no_orders") {
+        candidates = await storage.getProductsWithoutOrders(storeId);
+      } else if (mode === "all") {
+        candidates = await storage.getProductsByStore(storeId);
+        // exclude already archived
+        candidates = candidates.filter((p: any) => !p.archivedAt);
+      } else if (mode === "selected_ids") {
+        if (!Array.isArray(productIds) || productIds.length === 0)
+          return res.status(400).json({ message: "Liste de produits vide" });
+        if (confirmText !== "SUPPRIMER TOUT")
+          return res.status(400).json({ message: "Confirmation requise. Tapez exactement 'SUPPRIMER TOUT' pour confirmer." });
+        // Validate ownership
+        const allRows = await storage.getProductsByStore(storeId);
+        const owned = new Set(allRows.map((r: any) => r.id));
+        candidates = productIds
+          .map((id: any) => allRows.find((r: any) => r.id === Number(id)))
+          .filter((p: any) => p && owned.has(p.id) && !p.archivedAt);
+      } else {
+        return res.status(400).json({ message: "Mode invalide" });
+      }
+
+      const results = { total: candidates.length, deleted: 0, archived: 0, skipped: 0, errors: [] as any[] };
+      const CHUNK = 100;
+      for (let i = 0; i < candidates.length; i += CHUNK) {
+        const slice = candidates.slice(i, i + CHUNK);
+        for (const product of slice) {
+          try {
+            const usage = await storage.getProductUsage(storeId, product.id);
+            if (usage.ordersCount > 0) {
+              if (archiveIfHasOrders) {
+                await storage.archiveProduct(product.id);
+                results.archived += 1;
+              } else {
+                results.skipped += 1;
+              }
+            } else {
+              await storage.deleteProduct(product.id);
+              results.deleted += 1;
+            }
+          } catch (err: any) {
+            results.errors.push({ id: product.id, message: err.message });
+          }
+        }
+      }
+
+      console.log(`[BulkDeleteAll] storeId=${storeId} mode=${mode} total=${results.total} deleted=${results.deleted} archived=${results.archived} skipped=${results.skipped} errors=${results.errors.length}`);
+      res.json(results);
+    } catch (err: any) {
+      console.error("[BulkDeleteAll] error:", err);
       res.status(500).json({ message: err.message });
     }
   });
