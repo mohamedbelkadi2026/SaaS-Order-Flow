@@ -605,6 +605,13 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] products.archived_at ensured ✅');
 
+    // ── products.settings — per-product profit defaults (JSONB) ───────────────
+    await client.query(`
+      ALTER TABLE public.products
+        ADD COLUMN IF NOT EXISTS settings JSONB;
+    `);
+    console.log('[Migration] products.settings ensured ✅');
+
     await client.query(`
       ALTER TABLE public.orders
         ADD COLUMN IF NOT EXISTS last_action_at TIMESTAMP,
