@@ -6134,6 +6134,7 @@ function ensureHeaders(sheet) {
           price:            orderItems.price,
           productName:      products.name,
           productCostPrice: products.costPrice,
+          productSettings:  products.settings,
         })
         .from(orderItems)
         .leftJoin(products, eq(orderItems.productId, products.id))
@@ -6145,7 +6146,7 @@ function ensureHeaders(sheet) {
         id: number; name: string;
         totalOrders: number; confirmedOrders: number; deliveredOrders: number;
         refusedOrders: number; returnedOrders: number;
-        revenue: number; productCost: number; shippingCost: number; adSpend: number;
+        revenue: number; productCost: number; shippingCost: number; packagingCost: number; adSpend: number;
         netProfit: number; margin: number; roi: number;
         confirmRate: number; deliveryRate: number;
       };
@@ -6168,7 +6169,7 @@ function ensureHeaders(sheet) {
             id: pid, name,
             totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
             refusedOrders: 0, returnedOrders: 0,
-            revenue: 0, productCost: 0, shippingCost: 0, adSpend: 0,
+            revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, adSpend: 0,
             netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
           };
         }
@@ -6185,9 +6186,12 @@ function ensureHeaders(sheet) {
 
         if (isDelivered) {
           // All amounts stored in centimes — divide by 100 to get DH
-          s.revenue      += Number((order as any).totalPrice  || 0) / 100;
-          s.productCost  += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
-          s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+          s.revenue        += Number((order as any).totalPrice  || 0) / 100;
+          s.productCost    += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
+          s.shippingCost   += Number((order as any).shippingCost || 0) / 100;
+          // Packaging cost (DH/commande) stored per-product in settings.profitDefaults
+          const emballageDH = Number((item.productSettings as any)?.profitDefaults?.coutEmballage || 0);
+          s.packagingCost  += emballageDH;
           // adSpend comes from adSpendTracking table, applied after aggregation
         }
       }
@@ -6196,12 +6200,12 @@ function ensureHeaders(sheet) {
         // ONLY use spend explicitly tagged to this product — never split global spend
         const totalAdSpend = productAdSpendMap[s.id] || 0;
 
-        const netProfit    = s.revenue - s.productCost - s.shippingCost - totalAdSpend;
+        const netProfit    = s.revenue - s.productCost - s.shippingCost - s.packagingCost - totalAdSpend;
         const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
         const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
         const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
         const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
-        return { ...s, adSpend: totalAdSpend, netProfit, margin, roi, confirmRate, deliveryRate };
+        return { ...s, adSpend: totalAdSpend, packagingCost: s.packagingCost, netProfit, margin, roi, confirmRate, deliveryRate };
       }).sort((a, b) => b.netProfit - a.netProfit);
 
       // Global ad spend (not tagged to any product) shown separately in summary
@@ -6223,7 +6227,7 @@ function ensureHeaders(sheet) {
             id: sp.id, name: sp.name,
             totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
             refusedOrders: 0, returnedOrders: 0,
-            revenue: 0, productCost: 0, shippingCost: 0, adSpend: 0,
+            revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, adSpend: 0,
             netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
             noData: true,
           } as any);
