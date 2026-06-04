@@ -16,6 +16,9 @@
 
 import axios, { AxiosError } from "axios";
 import https from "https";
+import { db } from "../db";
+import { orderItems } from "@shared/schema";
+import { eq } from "drizzle-orm";
 
 // ── SSL agent — bypasses self-signed / expired certs (common in .ma APIs) ────
 const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
@@ -789,7 +792,15 @@ function preValidate(input: CarrierShipInput, tag: string): string | null {
 function extractOzonTracking(data: any): string | null {
   if (!data || typeof data !== 'object') return null;
 
+  const ap = data?.['ADD-PARCEL'] || data?.add_parcel;
+
   const candidates = [
+    // ADD-PARCEL shape (the real Ozon response envelope)
+    ap?.['TRACKING-NUMBER'],
+    ap?.tracking_number,
+    ap?.PARCEL?.['TRACKING-NUMBER'],
+    ap?.PARCEL?.tracking_number,
+    // Flat shapes
     data['tracking-number'],
     data.tracking_number,
     data.trackingNumber,
@@ -807,17 +818,20 @@ function extractOzonTracking(data: any): string | null {
     data?.parcel?.['TRACKING-NUMBER'],
   ];
   for (const v of candidates) {
-    if (v && String(v).trim()) return String(v).trim();
+    const s = v == null ? '' : String(v).trim();
+    // Must look like a tracking number (alphanum+dashes, 6+ chars, no spaces)
+    if (s && /^[A-Z0-9][A-Z0-9\-_]{5,}$/i.test(s) && !/\s/.test(s)) return s;
   }
 
-  // Last-resort: recursive key search for anything matching /tracking[-_]?number/i
+  // Last-resort: recursive key search for anything matching /tracking[-_]?number|tracking[-_]?code/i
   const stack: any[] = [data];
   while (stack.length) {
     const cur = stack.pop();
     if (!cur || typeof cur !== 'object') continue;
     for (const [k, v] of Object.entries(cur)) {
-      if (/tracking[-_]?number/i.test(k) && v && typeof v !== 'object') {
-        return String(v).trim();
+      if (/tracking[-_]?number|tracking[-_]?code/i.test(k) && v && typeof v !== 'object') {
+        const s = String(v).trim();
+        if (s) return s;
       }
       if (v && typeof v === 'object') stack.push(v);
     }
@@ -1106,6 +1120,39 @@ export async function shipOrderToCarrier(
     fd.append('parcel-nature',   input.productName || 'Produit');
     if (input.orderNumber) fd.append('tracking-number', `TG-${input.orderNumber}`);
 
+    // ── REQUIRED for stock parcels (parcel-stock=1): products field ──
+    // Ozon rejects with "Products data required for stock parcels" when this is absent.
+    // Build from order_items; fall back to product name / synthetic ref.
+    {
+      let rawItems: Array<{ sku: string | null; rawProductName: string | null; quantity: number }> = [];
+      try {
+        rawItems = await db
+          .select({ sku: orderItems.sku, rawProductName: orderItems.rawProductName, quantity: orderItems.quantity })
+          .from(orderItems)
+          .where(eq(orderItems.orderId, input.orderId));
+      } catch (itemErr: any) {
+        console.warn(`[OZON-SHIP][#${input.orderNumber}] Could not fetch order items: ${itemErr.message}`);
+      }
+
+      const productsArr: Array<{ ref: string; qnty: number }> = [];
+      for (const it of rawItems) {
+        const sku = String(it.sku || '').trim();
+        const fallback = String(it.rawProductName || `P-${input.orderId}`).trim().slice(0, 40);
+        const ref = sku || fallback;
+        const qnty = Math.max(1, parseInt(String(it.quantity ?? 1), 10) || 1);
+        if (ref) productsArr.push({ ref, qnty });
+      }
+      // Last-resort: at least one line so Ozon doesn't reject the request
+      if (productsArr.length === 0) {
+        productsArr.push({
+          ref: String(input.productName || input.orderNumber || `ORD-${input.orderId}`).slice(0, 40),
+          qnty: Math.max(1, input.quantity ?? 1),
+        });
+      }
+      fd.append('products', JSON.stringify(productsArr));
+      console.log(`[OZON-SHIP][#${input.orderNumber}] products payload: ${JSON.stringify(productsArr)}`);
+    }
+
     const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey.trim())}/add-parcel`;
     console.log(`[OZON-SEND] order=${input.orderNumber} url=https://api.ozonexpress.ma/customers/${customerId}/***/add-parcel city=${cityId} price=${priceDH}`);
     try {
@@ -1133,6 +1180,27 @@ export async function shipOrderToCarrier(
         const errMsg = `Ozon Express: la réponse contient seulement une validation API (Valide API Key), aucun colis créé. Vérifiez les paramètres d'envoi (Customer ID, City ID, format form-data).`;
         console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ Validation-only response. Full data: ${JSON.stringify(ozonData)}`);
         return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+      }
+
+      // ── Guard: ADD-PARCEL envelope (real Ozon response shape) ──
+      // Shape: { "ADD-PARCEL": { "CUSTOMER": { "RESULT": "SUCCESS" }, "RESULT": "ERROR"|"SUCCESS", "MESSAGE": "..." } }
+      const addParcel = ozonData?.['ADD-PARCEL'] || ozonData?.add_parcel;
+      if (addParcel && typeof addParcel === 'object') {
+        const customerResult = String(addParcel?.CUSTOMER?.RESULT || addParcel?.customer?.result || '');
+        const parcelResult   = String(addParcel?.RESULT   || addParcel?.result   || '');
+        const parcelMessage  = String(addParcel?.MESSAGE  || addParcel?.message  || '');
+
+        if (/error/i.test(customerResult)) {
+          const errMsg = `Ozon Express (Customer): ${addParcel?.CUSTOMER?.MESSAGE || customerResult}`;
+          console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ ${errMsg}`);
+          return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+        }
+        if (/error/i.test(parcelResult)) {
+          const errMsg = `Ozon Express: ${parcelMessage || parcelResult}`;
+          console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ ${errMsg}`);
+          return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+        }
+        // ADD-PARCEL.RESULT === "SUCCESS" — fall through to tracking extraction
       }
 
       // ── Guard: logical failure embedded in a 200 body ──

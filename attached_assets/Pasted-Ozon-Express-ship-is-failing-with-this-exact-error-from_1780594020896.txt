@@ -1,0 +1,172 @@
+Ozon Express ship is failing with this exact error from their API:
+
+  {
+    "ADD-PARCEL": {
+      "CUSTOMER": { "RESULT": "SUCCESS", "MESSAGE": "Valid Customer" },
+      "RESULT": "ERROR",
+      "MESSAGE": "Products data required for stock parcels"
+    }
+  }
+
+ROOT CAUSE IDENTIFIED: When parcel-stock=1, Ozon Express REQUIRES the `products` form field with the list of SKUs and quantities. Right now we're either not sending it or sending it empty. The earlier integration treated `products` as optional, but it's only optional when parcel-stock=0 (pickup mode).
+
+═══════════════════════════════════════════════════════════════════════
+THE FIX — TWO PARTS
+═══════════════════════════════════════════════════════════════════════
+A) Properly populate the `products` field for stock parcels
+B) Use the existing ADD-PARCEL.RESULT === "ERROR" path to throw a clear error instead of falsely succeeding
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+In server/services/carrier-service.ts → shipOrderToOzonExpress.
+
+Report:
+1. Does the function append `products` to the form? If yes, what does the source data look like?
+2. Is `parcel-stock` hardcoded to "1"? If yes, every shipment needs `products`.
+3. How are order items fetched? (storage.getOrderItemsWithProducts? getOrderItems?)
+4. Are SKUs present on the items? If not, we'll fall back to product name or a synthetic ref.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — BUILD A VALID PRODUCTS PAYLOAD
+═══════════════════════════════════════════════════════════════════════
+Ozon docs format:
+  products = JSON-encoded array of { "ref": "<SKU>", "qnty": <integer> }
+  Example: [{"ref": "PROD001", "qnty": 2}, {"ref": "PROD002", "qnty": 1}]
+
+In shipOrderToOzonExpress, REPLACE the products handling with:
+
+  // Fetch items with their products joined (need SKU)
+  const items = await storage.getOrderItemsWithProducts(order.id);
+
+  const productsArr: Array<{ ref: string; qnty: number }> = [];
+  if (Array.isArray(items) && items.length > 0) {
+    for (const it of items) {
+      const sku = String(
+        it?.sku ||
+        it?.productSku ||
+        it?.product?.sku ||
+        ""
+      ).trim();
+      // Fallback ref when SKU is missing: use product name truncated, or a synthetic id
+      const fallback = String(it?.product?.name || it?.productName || `P-${it?.productId || "X"}`)
+        .trim().slice(0, 40);
+      const ref = sku || fallback;
+      const qnty = Math.max(1, parseInt(String(it?.quantity ?? 1), 10) || 1);
+      if (ref) productsArr.push({ ref, qnty });
+    }
+  }
+
+  // Last-resort fallback: at least one product line so Ozon doesn't reject
+  if (productsArr.length === 0) {
+    productsArr.push({
+      ref: String(order.orderNumber || `ORD-${order.id}`),
+      qnty: 1,
+    });
+  }
+
+  form.append("products", JSON.stringify(productsArr));
+
+  // DIAGNOSTIC
+  console.log(`[OZON-SHIP][#${order.orderNumber}] products payload:`, JSON.stringify(productsArr));
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — DETECT ADD-PARCEL.RESULT === "ERROR" CORRECTLY
+═══════════════════════════════════════════════════════════════════════
+The Ozon response shape we observed:
+  { "ADD-PARCEL": { "CUSTOMER": {...}, "RESULT": "ERROR" | "SUCCESS", "MESSAGE": "..." } }
+
+After parsing the response, BEFORE looking for tracking, check the explicit result:
+
+  const addParcel = data?.["ADD-PARCEL"] || data?.add_parcel || null;
+  if (addParcel && typeof addParcel === "object") {
+    const customerResult = addParcel?.CUSTOMER?.RESULT || addParcel?.customer?.result;
+    const parcelResult = addParcel?.RESULT || addParcel?.result;
+    const parcelMessage = addParcel?.MESSAGE || addParcel?.message || "";
+
+    if (customerResult && /error/i.test(String(customerResult))) {
+      throw new Error(`Ozon Express (Customer): ${addParcel?.CUSTOMER?.MESSAGE || customerResult}`);
+    }
+    if (parcelResult && /error/i.test(String(parcelResult))) {
+      throw new Error(`Ozon Express: ${parcelMessage || parcelResult}`);
+    }
+  }
+
+  // If we got here, customer was validated and parcel was accepted — now find tracking
+  const trackingNumber = extractOzonTracking(data);
+  // ... (existing logic from previous fix)
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — EXTEND TRACKING EXTRACTOR FOR ADD-PARCEL SHAPE
+═══════════════════════════════════════════════════════════════════════
+Update extractOzonTracking to also look inside ADD-PARCEL:
+
+  function extractOzonTracking(data: any): string | null {
+    if (!data || typeof data !== "object") return null;
+
+    const candidates = [
+      data?.["ADD-PARCEL"]?.["TRACKING-NUMBER"],
+      data?.["ADD-PARCEL"]?.tracking_number,
+      data?.["ADD-PARCEL"]?.PARCEL?.["TRACKING-NUMBER"],
+      data?.["ADD-PARCEL"]?.PARCEL?.tracking_number,
+      data?.["ADD-PARCEL"]?.RESULT === "SUCCESS" ? data?.["ADD-PARCEL"]?.MESSAGE : null, // some APIs return the code in MESSAGE
+      data?.["tracking-number"],
+      data?.tracking_number,
+      data?.trackingNumber,
+      data?.PARCEL?.["TRACKING-NUMBER"],
+      data?.PARCEL?.tracking_number,
+      data?.data?.["tracking-number"],
+    ];
+    for (const v of candidates) {
+      const s = v == null ? "" : String(v).trim();
+      // Must look like a tracking number, not a message
+      if (s && /^[A-Z0-9][A-Z0-9\-_]{5,}$/i.test(s) && !/\s/.test(s)) return s;
+    }
+
+    // Recursive search for any key containing tracking
+    const stack: any[] = [data];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== "object") continue;
+      for (const [k, v] of Object.entries(cur)) {
+        if (/tracking[-_]?number|tracking[-_]?code/i.test(k) && v && typeof v !== "object") {
+          const s = String(v).trim();
+          if (s) return s;
+        }
+        if (v && typeof v === "object") stack.push(v);
+      }
+    }
+    return null;
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — RETRY LOGIC FROM THE EXISTING UI
+═══════════════════════════════════════════════════════════════════════
+The "Réessayer" button already exists in the UI (shown in screenshot). After applying the fix, retrying order #16977 should now succeed because the products field is included.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ shipOrderToOzonExpress always includes a non-empty `products` form field
+2. ✅ Each product entry has { ref, qnty } with ref non-empty and qnty >= 1
+3. ✅ Logs show: [OZON-SHIP][#XXXX] products payload: [{"ref":"...","qnty":1}]
+4. ✅ When response contains ADD-PARCEL.RESULT="ERROR", the ship throws with the exact Ozon error message
+5. ✅ When response contains ADD-PARCEL.RESULT="SUCCESS", we extract tracking and mark Expédié
+6. ✅ Order #16977 ships successfully on retry
+7. ✅ Tracking number visible in Suivi des colis
+8. ✅ Shipment appears in Ozon Express portal
+9. ✅ Build passes
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(ozon): include products payload for stock parcels + detect ADD-PARCEL errors"
+git push origin main
+
+WORKFLOW:
+1. Inspect (Step 1) and report whether products field is currently sent.
+2. Apply Steps 2-4 in one push.
+3. After deploy, click "Réessayer" on the failed order #16977.
+4. Capture Railway logs — should now show tracking number in the response.
+5. Verify in Ozon Express portal that the parcel was created.
