@@ -1063,6 +1063,11 @@ export default function Inventory() {
               </div>
             </div>
             <div className="space-y-2">
+              <Label className="text-xs font-medium">📦 Frais d'emballage (DH / commande)</Label>
+              <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} data-testid="input-cout-emballage" />
+              <p className="text-xs text-muted-foreground">Utilisé automatiquement dans l'Analyseur de profit</p>
+            </div>
+            <div className="space-y-2">
               <Label>Description</Label>
               <Textarea data-testid="input-product-description" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Description du produit..." rows={2} />
             </div>
@@ -1108,36 +1113,6 @@ export default function Inventory() {
                   <p className="text-sm font-medium text-center">Glissez une photo ici<br /><span className="text-xs text-muted-foreground font-normal">ou cliquez pour choisir (JPG, PNG, WEBP)</span></p>
                 </div>
               )}
-            </div>
-
-            {/* Cost defaults for Profit Analyzer */}
-            <div className="border-t pt-4 space-y-3">
-              <div>
-                <p className="text-sm font-semibold">💰 Coûts (Analyseur de profit)</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Ces valeurs seront pré-remplies automatiquement dans l'Analyseur de profit.</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Prix d'achat (DH / unité)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 45" value={form.coutAchat} onChange={e => setForm(f => ({ ...f, coutAchat: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-achat" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Prix de vente (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 149" value={form.prixVente} onChange={e => setForm(f => ({ ...f, prixVente: e.target.value }))} className="h-9 text-sm" data-testid="input-prix-vente" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">📦 Frais d'emballage (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-emballage" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">🚚 Frais de livraison (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 25" value={form.coutLivraison} onChange={e => setForm(f => ({ ...f, coutLivraison: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-livraison" />
-                </div>
-                <div className="col-span-2 space-y-1.5">
-                  <Label className="text-xs">📞 Frais de confirmation (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 8" value={form.coutConfirmation} onChange={e => setForm(f => ({ ...f, coutConfirmation: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-confirmation" />
-                </div>
-              </div>
             </div>
 
             <div className="flex items-center gap-3 pt-2 border-t">
@@ -1225,6 +1200,11 @@ export default function Inventory() {
                 <Label>Stock</Label>
                 <Input data-testid="input-edit-product-stock" type="number" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">📦 Frais d'emballage (DH / commande)</Label>
+              <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} data-testid="input-edit-cout-emballage" />
+              <p className="text-xs text-muted-foreground">Utilisé automatiquement dans l'Analyseur de profit</p>
             </div>
             <div className="space-y-2">
               <Label>Description</Label>
@@ -1322,36 +1302,6 @@ export default function Inventory() {
                   data-testid="input-edit-product-image-file"
                   onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ""; }}
                 />
-              </div>
-            </div>
-
-            {/* Cost defaults for Profit Analyzer */}
-            <div className="border-t pt-4 space-y-3">
-              <div>
-                <p className="text-sm font-semibold">💰 Coûts (Analyseur de profit)</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Ces valeurs seront pré-remplies automatiquement dans l'Analyseur de profit.</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Prix d'achat (DH / unité)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 45" value={form.coutAchat} onChange={e => setForm(f => ({ ...f, coutAchat: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-achat" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Prix de vente (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 149" value={form.prixVente} onChange={e => setForm(f => ({ ...f, prixVente: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-prix-vente" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">📦 Frais d'emballage (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-emballage" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">🚚 Frais de livraison (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 25" value={form.coutLivraison} onChange={e => setForm(f => ({ ...f, coutLivraison: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-livraison" />
-                </div>
-                <div className="col-span-2 space-y-1.5">
-                  <Label className="text-xs">📞 Frais de confirmation (DH / commande)</Label>
-                  <Input type="number" min="0" step="0.01" placeholder="ex: 8" value={form.coutConfirmation} onChange={e => setForm(f => ({ ...f, coutConfirmation: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-confirmation" />
-                </div>
               </div>
             </div>
 
