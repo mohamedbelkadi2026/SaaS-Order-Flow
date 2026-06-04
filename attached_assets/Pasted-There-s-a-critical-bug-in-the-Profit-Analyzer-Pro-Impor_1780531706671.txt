@@ -1,0 +1,156 @@
+There's a critical bug in the Profit Analyzer Pro → Import CSV flow. The "Aperçu produits" table at the bottom of Step 1 shows WRONG quantities (negative, huge numbers) while the "Sélection des produits à analyser" section above shows the CORRECT delivery counts.
+
+═══════════════════════════════════════════════════════════════════════
+EVIDENCE
+═══════════════════════════════════════════════════════════════════════
+Example product: "رافعة يدوية 2 طن" (Designation: 1)
+
+In the Sélection section (CORRECT):
+  ✅ 67 livraisons · 15.289,00 DH
+
+In the Aperçu produits table (WRONG):
+  ❌ QTÉ: -1407
+  ❌ CA Brut: 15.289,00 DH (correct)
+  ❌ Frais livr: 2.265,00 DH (correct)
+
+Other products in the Aperçu table all show negative quantities:
+  -44, -75, -84, -212, -213, -242, -723, -1055, -1407
+
+These are clearly NOT real delivery counts. The Sélection section has the right counts (67, 19, 17, etc.) but the Aperçu uses a different (broken) computation.
+
+═══════════════════════════════════════════════════════════════════════
+ROOT CAUSE HYPOTHESES
+═══════════════════════════════════════════════════════════════════════
+1. The Aperçu table reads from a different state/array than the Sélection section.
+2. Two different functions compute quantity:
+   - One in detectProducts() (used by Sélection) — works correctly
+   - Another inline in the Aperçu render — broken
+3. The Aperçu may be reading the wrong CSV column (e.g. reading `Price` and subtracting something, producing negatives), OR summing differences instead of counts.
+4. The QUANTITÉ mapping dropdown was set to "Ref" (visible in screenshot), which is wrong — the user mapped "Ref" as both PRODUIT and QUANTITÉ. The Aperçu may be using the QUANTITÉ mapping naively, while Sélection uses row counts.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+Open the Profit Analyzer page (client/src/pages/profit-analyzer.tsx or wherever it lives).
+
+Find and report:
+
+1. The function/code that builds the "Sélection des produits à analyser" list. Note what it does to count livraisons per product (it works correctly — likely counts unique rows per product key).
+
+2. The function/code that builds the "Aperçu produits" table (the lower section showing QTÉ -1407 etc.). Find the QTÉ value computation. Look for:
+   - Whether it uses the column mapping `quantityColumn` to read a value per row
+   - Whether it sums or counts
+   - Whether it can produce negative numbers (subtraction somewhere?)
+
+3. The column mapping dropdowns (PRODUIT, QUANTITÉ, PRIX/COD, STATUT, FRAIS LIVR). Note the state variable name (e.g. `columnMapping` or `mapping`).
+
+REPORT what you find before changing anything.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — FIX
+═══════════════════════════════════════════════════════════════════════
+The fix has two parts:
+
+A) Unify the quantity computation. Both Sélection AND Aperçu must use the SAME source of truth. The Sélection section is correct, so make the Aperçu use the same computation.
+
+Create a single helper function (place it where the parsing logic lives):
+
+  function computeProductStats(rows, mapping) {
+    // rows = parsed CSV rows (delivered only, after status filter)
+    // mapping = { product, quantity, price, status, shipping }
+    const stats = new Map();
+
+    for (const row of rows) {
+      const productKey = String(row[mapping.product] || "").trim();
+      if (!productKey) continue;
+
+      // QUANTITY: prefer the mapped quantity column.
+      // If quantityColumn is set and parses to a positive number, use it.
+      // Otherwise default to 1 per row (one row = one delivery of 1 unit).
+      let qty = 1;
+      if (mapping.quantity && mapping.quantity !== "(aucune)") {
+        const raw = row[mapping.quantity];
+        const parsed = parseFloat(String(raw).replace(",", "."));
+        if (!isNaN(parsed) && parsed > 0) qty = parsed;
+      }
+
+      const price = parseFloat(String(row[mapping.price] || 0).replace(",", ".")) || 0;
+      const shipping = parseFloat(String(row[mapping.shipping] || 0).replace(",", ".")) || 0;
+
+      if (!stats.has(productKey)) {
+        stats.set(productKey, {
+          productKey,
+          productName: productKey,
+          livraisons: 0,
+          totalQty: 0,
+          totalRevenue: 0,
+          totalShipping: 0,
+        });
+      }
+      const s = stats.get(productKey);
+      s.livraisons += 1;        // count of rows = count of deliveries
+      s.totalQty += qty;        // sum of quantities
+      s.totalRevenue += price;
+      s.totalShipping += shipping;
+    }
+
+    return Array.from(stats.values());
+  }
+
+Use this function for BOTH:
+- The Sélection section (each card shows `livraisons` and `totalRevenue`)
+- The Aperçu produits table (QTÉ shows `totalQty`, CA BRUT shows `totalRevenue`, FRAIS LIVR shows `totalShipping`)
+
+KEY DECISION:
+- If the column mapped to QUANTITÉ is "Ref" (a non-numeric ID) — which is exactly what happened in the screenshot — `parseFloat` returns NaN, so we fall back to qty=1 per row. That means QTÉ = number of rows = number of livraisons (matches Sélection).
+- If user maps a real numeric Quantity column, qty per row uses that value.
+
+B) Validate quantity values. If parsed qty is negative OR over a sane threshold (e.g. > 10000 per row), treat it as invalid and fall back to 1. Negative and huge values are clearly parsing errors:
+
+  if (!isNaN(parsed) && parsed > 0 && parsed <= 10000) qty = parsed;
+
+C) Guard the mapping. In the column mapping dropdowns, prevent the user from mapping the same column to both PRODUIT and QUANTITÉ. If they pick the same column for both, ignore the QUANTITÉ mapping (treat as "(aucune)") and show a warning:
+
+  {mapping.product && mapping.quantity === mapping.product && (
+    <div className="text-xs text-amber-400 mt-1">
+      ⚠️ La même colonne ne peut pas servir pour Produit et Quantité. Quantité ignorée (1 unité par livraison).
+    </div>
+  )}
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — VERIFY ON THE SCREENSHOT EXAMPLE
+═══════════════════════════════════════════════════════════════════════
+For "رافعة يدوية 2 طن":
+- 67 delivered rows
+- QUANTITÉ mapped to "Ref" (non-numeric) → falls back to qty=1 per row
+- Expected QTÉ in Aperçu: 67
+- Expected CA Brut: 15,289 DH
+- Expected Frais Livr: 2,265 DH
+
+For the other products, QTÉ should match exactly the "livraisons" count shown in the Sélection section.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ The QTÉ column in Aperçu produits shows POSITIVE numbers
+2. ✅ For each product, QTÉ in Aperçu equals "livraisons" in Sélection (when QUANTITÉ is not a valid numeric column)
+3. ✅ "رافعة يدوية 2 طن" shows QTÉ = 67 (not -1407)
+4. ✅ Warning appears if user maps the same column to both PRODUIT and QUANTITÉ
+5. ✅ Step 2 (Saisie des coûts) uses the same correct QTÉ values
+6. ✅ Step 3 profit calculation uses correct QTÉ (the negative number was likely poisoning the formula)
+7. ✅ Build passes locally before push
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(profit-analyzer): unify product stats source, guard non-numeric quantity column"
+git push origin main
+
+WORKFLOW:
+1. INSPECT first (Step 1). Report:
+   - The current quantity computation in the Aperçu table
+   - Whether Sélection and Aperçu use different code paths
+2. Apply Step 2 fixes.
+3. `npm run build` before push.
+4. After deploy, reload the same file and confirm QTÉ values match livraisons counts.

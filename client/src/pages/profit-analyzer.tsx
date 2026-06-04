@@ -357,9 +357,17 @@ export default function ProfitAnalyzer() {
       if (!name) continue;
       const key = norm(name);
       if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: name };
-      groupMap[key].qty   += hasQty      ? (parseNum(row[qIdx]) || 1) : 1;
-      groupMap[key].rev   += hasCod      ? parseNum(row[cIdx])        : 0;
-      groupMap[key].ship  += hasShipping ? parseNum(row[shIdx])       : 0;
+      // Qty: only trust mapped column if it's NOT the same column as product and parses to
+      // a valid positive number ≤ 10 000. Tracking-number columns (e.g. "CAT-21") strip to
+      // negative values via parseNum — guard against that entirely.
+      let rowQty = 1;
+      if (hasQty && qIdx !== pIdx) {
+        const parsed = parseNum(row[qIdx]);
+        if (parsed > 0 && parsed <= 10000) rowQty = parsed;
+      }
+      groupMap[key].qty   += rowQty;
+      groupMap[key].rev   += hasCod      ? parseNum(row[cIdx])  : 0;
+      groupMap[key].ship  += hasShipping ? parseNum(row[shIdx]) : 0;
       groupMap[key].count++;
     }
     if (Object.keys(groupMap).length === 0) return { ok: false, error: "⚠️ Aucun produit valide trouvé. Vérifiez le format du fichier." };
@@ -869,11 +877,12 @@ export default function ProfitAnalyzer() {
                       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                         {(["product", "qty", "cod", "status", "shipping"] as (keyof ColMap)[]).map(field => {
                           const labels: Record<keyof ColMap, string> = { product: "Produit *", qty: "Quantité", cod: "Prix / COD", status: "Statut", shipping: "Frais livr." };
+                          const isQtyConflict = field === "qty" && colMap.qty && colMap.qty === colMap.product;
                           return (
                             <div key={field} className="space-y-1">
                               <label className="text-[10px] text-slate-500 uppercase tracking-wide font-semibold">{labels[field]}</label>
                               <Select value={colMap[field] || "__none__"} onValueChange={v => remapCol(field, v)}>
-                                <SelectTrigger className="h-7 text-xs bg-white/5 border-white/15 text-white" data-testid={`select-col-${field}`}>
+                                <SelectTrigger className={`h-7 text-xs bg-white/5 text-white ${isQtyConflict ? "border-amber-500/60" : "border-white/15"}`} data-testid={`select-col-${field}`}>
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -883,6 +892,11 @@ export default function ProfitAnalyzer() {
                                   ))}
                                 </SelectContent>
                               </Select>
+                              {isQtyConflict && (
+                                <p className="text-[10px] text-amber-400 leading-tight mt-0.5">
+                                  ⚠️ Même colonne que Produit — 1 unité/livraison utilisée
+                                </p>
+                              )}
                             </div>
                           );
                         })}
