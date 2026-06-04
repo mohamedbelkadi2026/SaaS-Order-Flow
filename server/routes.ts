@@ -2779,23 +2779,74 @@ export async function registerRoutes(
       } else if (carrierKey === "expresscoursier") {
         citiesUrl = `https://expresscoursier.ma/v1.0/cities/${encodeURIComponent(apiKey)}`;
       } else if (carrierKey === "ozonexpress") {
-        // ── Ozon Express multi-URL fallback ──────────────────────────────────
-        // The public /cities endpoint returns nothing. Ozon uses authenticated
-        // URLs scoped per customer: /customers/{CUSTOMER_ID}/{API_KEY}/cities
+        // ── Ozon Express city sync ────────────────────────────────────────────
+        // Confirmed working endpoint: GET https://api.ozonexpress.ma/cities (public, no auth)
+        // Response shape: { CITIES: { "37": { ID, REF, NAME, "DELIVERED-PRICE", ... } } }
         const settings = (acct.settings as any) || {};
         // Accept both key variants: ozonExpressCustomerId (current) and ozonCustomerId (legacy)
         const customerId = String(settings.ozonExpressCustomerId || settings.ozonCustomerId || "").trim();
-        if (!customerId) {
-          return res.status(400).json({
-            message: "Customer ID Ozon Express manquant. Ouvrez 'Modifier le compte' et renseignez votre Customer ID.",
-          });
-        }
-        const candidateUrls = [
-          `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/cities`,
-          `https://api.ozonexpress.ma/cities/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}`,
-          `https://api.ozonexpress.ma/cities`,
-        ];
+
+        // Parser that handles ALL known Ozon / Moroccan carrier response shapes
         const normNameOzon = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+        function extractOzonCities(data: any): { externalId: string; name: string; nameNorm: string }[] {
+          if (!data) return [];
+          // ① Official Ozon Express shape: { CITIES: { "37": { ID, NAME, "DELIVERED-PRICE" } } }
+          if (data.CITIES && typeof data.CITIES === "object" && !Array.isArray(data.CITIES)) {
+            return Object.entries(data.CITIES as Record<string, any>)
+              .map(([key, c]: [string, any]) => ({
+                externalId: String(c?.ID ?? key).trim(),
+                name:       String(c?.NAME ?? "").trim(),
+                nameNorm:   normNameOzon(String(c?.NAME ?? "")),
+              }))
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          // ② Bare array: [{ id, name }]
+          if (Array.isArray(data)) {
+            return data
+              .map((c: any) => {
+                const name = String(typeof c === "string" ? c : (c?.NAME ?? c?.name ?? c?.city_name ?? c?.ville ?? c?.label ?? "")).trim();
+                const id   = String(c?.ID ?? c?.id ?? c?.city_id ?? c?.cityId ?? "");
+                return { externalId: id, name, nameNorm: normNameOzon(name) };
+              })
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          // ③ Wrapped array: { cities: [...] } | { data: [...] } | { data: { cities: [...] } }
+          const arr =
+            (Array.isArray(data?.cities)       && data.cities)       ||
+            (Array.isArray(data?.data)         && data.data)         ||
+            (Array.isArray(data?.data?.cities) && data.data.cities)  ||
+            (Array.isArray(data?.result)       && data.result)       ||
+            null;
+          if (arr) {
+            return arr
+              .map((c: any) => {
+                const name = String(typeof c === "string" ? c : (c?.NAME ?? c?.name ?? c?.city_name ?? c?.ville ?? "")).trim();
+                const id   = String(c?.ID ?? c?.id ?? c?.city_id ?? "");
+                return { externalId: id, name, nameNorm: normNameOzon(name) };
+              })
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          // ④ Top-level object keyed by numeric IDs: { "37": { NAME: "Agadir" } }
+          const topEntries = Object.entries(data as Record<string, any>)
+            .filter(([k, v]) => /^\d+$/.test(k) && v && typeof v === "object");
+          if (topEntries.length > 0) {
+            return topEntries
+              .map(([key, c]: [string, any]) => {
+                const name = String(c?.NAME ?? c?.name ?? c?.ville ?? "").trim();
+                return { externalId: String(c?.ID ?? key), name, nameNorm: normNameOzon(name) };
+              })
+              .filter(x => /^\d+$/.test(x.externalId) && x.name);
+          }
+          return [];
+        }
+
+        // Confirmed-working URL first; authenticated URL as fallback
+        const candidateUrls = [
+          `https://api.ozonexpress.ma/cities`,
+          ...(customerId
+            ? [`https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey)}/cities`]
+            : []),
+        ];
         let lastOzonError: string | null = null;
         let ozonFinalEntries: { externalId: string; name: string; nameNorm: string }[] = [];
         let usedOzonUrl = "";
@@ -2809,45 +2860,16 @@ export async function registerRoutes(
               httpsAgent: new (await import("https")).default.Agent({ rejectUnauthorized: false }),
               validateStatus: () => true,
             });
-            console.log(`[Ozon-SyncCities] ${url} → HTTP ${r.status} — preview: ${JSON.stringify(r.data).slice(0, 200)}`);
+            const preview = JSON.stringify(r.data).slice(0, 300);
+            console.log(`[Ozon-SyncCities] ${url} → HTTP ${r.status} — preview: ${preview}`);
             if (r.status !== 200) { lastOzonError = `HTTP ${r.status} on ${url}`; continue; }
-            const raw = r.data;
-            const arr: any[] =
-              Array.isArray(raw)         ? raw :
-              Array.isArray(raw?.cities) ? raw.cities :
-              Array.isArray(raw?.data)   ? raw.data   :
-              Array.isArray(raw?.result) ? raw.result : [];
-            if (arr.length > 0) {
-              ozonFinalEntries = arr
-                .map((c: any) => {
-                  const name = String(typeof c === "string" ? c : (c?.name || c?.city_name || c?.ville || c?.label || "")).trim();
-                  const id   = String(c?.id ?? c?.city_id ?? c?.ID ?? c?.cityId ?? "");
-                  return { externalId: id, name, nameNorm: normNameOzon(name) };
-                })
-                .filter(e => e.name && /^\d+$/.test(e.externalId));
-              if (ozonFinalEntries.length === 0) {
-                lastOzonError = `Empty/invalid city array from ${url}`;
-                continue;
-              }
+            const parsed = extractOzonCities(r.data);
+            if (parsed.length > 0) {
+              ozonFinalEntries = parsed;
               usedOzonUrl = url;
               break;
             }
-            // id→name object shape
-            if (raw && typeof raw === "object") {
-              const obj = raw.cities || raw.data?.cities || raw.data || raw;
-              const entries = Object.entries(obj as Record<string, any>)
-                .map(([id, val]: any) => {
-                  const name = String(typeof val === "string" ? val : (val?.name || val?.ville || "")).trim();
-                  return { externalId: String(id), name, nameNorm: normNameOzon(name) };
-                })
-                .filter(e => e.name && /^\d+$/.test(e.externalId));
-              if (entries.length > 0) {
-                ozonFinalEntries = entries;
-                usedOzonUrl = url;
-                break;
-              }
-            }
-            lastOzonError = `Empty cities from ${url}`;
+            lastOzonError = `Empty parsed cities from ${url}`;
           } catch (e: any) {
             lastOzonError = `Fetch error on ${url}: ${e.message}`;
           }
@@ -2859,7 +2881,7 @@ export async function registerRoutes(
         }
         await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, ozonFinalEntries.map(e => e.name));
         await storage.upsertOzonExpressCities(storeId, ozonFinalEntries);
-        console.log(`[Ozon-SyncCities] ✅ Saved ${ozonFinalEntries.length} cities via ${usedOzonUrl}`);
+        console.log(`[Ozon-SyncCities] ✅ Parsed ${ozonFinalEntries.length} cities from ${usedOzonUrl}`);
         return res.json({ count: ozonFinalEntries.length, usedUrl: usedOzonUrl, cities: ozonFinalEntries.map(e => e.name), syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
