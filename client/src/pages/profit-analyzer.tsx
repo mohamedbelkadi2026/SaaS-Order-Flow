@@ -514,6 +514,39 @@ export default function ProfitAnalyzer() {
     if (fileRef.current) fileRef.current.value = "";
   }
 
+  // Auto-load product profit defaults from Stock when user reaches Step 2
+  useEffect(() => {
+    if (step !== 2 || products.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch("/api/products", { credentials: "include" });
+        if (!resp.ok || cancelled) return;
+        const apiProds: any[] = await resp.json();
+        const defaultsMap = new Map<string, any>();
+        for (const p of apiProds || []) {
+          const key = norm(p.name || "");
+          const d = (p.settings as any)?.profitDefaults;
+          if (key && d) defaultsMap.set(key, d);
+        }
+        if (defaultsMap.size === 0 || cancelled) return;
+        setProducts(prev => prev.map(p => {
+          const d = defaultsMap.get(norm(p.name));
+          if (!d) return p;
+          return {
+            ...p,
+            buyingCost:      (!p.buyingCost      || p.buyingCost      === "0") ? String(d.coutAchat      || "") : p.buyingCost,
+            packagingCost:   (!p.packagingCost   || p.packagingCost   === "0") ? String(d.coutEmballage  || "") : p.packagingCost,
+            confirmationFee: (!p.confirmationFee || p.confirmationFee === "0") ? String(d.coutConfirmation || "") : p.confirmationFee,
+          };
+        }));
+      } catch (err) {
+        console.warn("[ProfitAnalyzer] Could not load product defaults:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [step, products.length]);
+
   /* ── CSV report aggregates ── */
   const totalCaBrut    = results.reduce((s, r) => s + r.caBrut, 0);
   const totalShipFile  = results.reduce((s, r) => s + r.shippingFromFile, 0);

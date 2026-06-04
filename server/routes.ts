@@ -5954,19 +5954,25 @@ function ensureHeaders(sheet) {
         reference: z.string().nullable().optional(),
         hasVariants: z.number().optional().default(0),
         variants: z.array(variantSchema).optional(),
+        coutAchat: z.number().min(0).optional(),
+        prixVente: z.number().min(0).optional(),
+        coutEmballage: z.number().min(0).optional(),
+        coutLivraison: z.number().min(0).optional(),
+        coutConfirmation: z.number().min(0).optional(),
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
-      const { variants, ...productData } = data;
-      
+      const { variants, coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, ...productData } = data;
+      const productSettings = { profitDefaults: { coutAchat: coutAchat ?? 0, prixVente: prixVente ?? 0, coutEmballage: coutEmballage ?? 0, coutLivraison: coutLivraison ?? 0, coutConfirmation: coutConfirmation ?? 0 } };
+
       if (variants && variants.length > 0) {
         const product = await storage.createProductWithVariants(
-          { ...productData, storeId, hasVariants: 1, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null },
+          { ...productData, storeId, hasVariants: 1, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any,
           variants.map(v => ({ ...v, productId: 0, storeId, imageUrl: v.imageUrl || null }))
         );
         res.status(201).json(product);
       } else {
-        const product = await storage.createProduct({ ...productData, storeId, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null });
+        const product = await storage.createProduct({ ...productData, storeId, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any);
         res.status(201).json(product);
       }
     } catch (err) {
@@ -6279,25 +6285,43 @@ function ensureHeaders(sheet) {
         reference: z.string().nullable().optional(),
         descriptionDarija: z.string().nullable().optional(),
         aiFeatures: z.string().nullable().optional(), // stored as JSON string
+        coutAchat: z.number().min(0).optional(),
+        prixVente: z.number().min(0).optional(),
+        coutEmballage: z.number().min(0).optional(),
+        coutLivraison: z.number().min(0).optional(),
+        coutConfirmation: z.number().min(0).optional(),
       });
       const data = schema.parse(req.body);
+      const { coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, ...updateData } = data;
+      const hasCostFields = [coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation].some(v => v !== undefined);
+      if (hasCostFields) {
+        const existingSettings = (product.settings as any) || {};
+        const existingDefs = existingSettings.profitDefaults || {};
+        (updateData as any).settings = { ...existingSettings, profitDefaults: {
+          coutAchat: coutAchat ?? existingDefs.coutAchat ?? 0,
+          prixVente: prixVente ?? existingDefs.prixVente ?? 0,
+          coutEmballage: coutEmballage ?? existingDefs.coutEmballage ?? 0,
+          coutLivraison: coutLivraison ?? existingDefs.coutLivraison ?? 0,
+          coutConfirmation: coutConfirmation ?? existingDefs.coutConfirmation ?? 0,
+        }};
+      }
 
       // If a manual stock edit slipped in via PATCH (legacy path — restock UI
       // should use POST /restock instead), record an 'adjustment' ledger row
       // for the delta so the audit trail is never silently broken.
-      if (typeof data.stock === 'number' && data.stock !== product.stock) {
-        const delta = data.stock - product.stock;
+      if (typeof updateData.stock === 'number' && updateData.stock !== product.stock) {
+        const delta = updateData.stock - product.stock;
         await db.insert(stockMovements).values({
           storeId: product.storeId!,
           productId: product.id,
           type: 'adjustment',
           quantity: delta,
           userId: req.user!.id,
-          reason: `Édition manuelle du stock (${product.stock} → ${data.stock})`,
+          reason: `Édition manuelle du stock (${product.stock} → ${updateData.stock})`,
         });
       }
 
-      const updated = await storage.updateProduct(productId, data);
+      const updated = await storage.updateProduct(productId, updateData as any);
       res.json(updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });

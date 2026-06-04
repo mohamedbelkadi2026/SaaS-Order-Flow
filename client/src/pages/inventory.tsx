@@ -390,6 +390,7 @@ export default function Inventory() {
     name: "", sku: "", stock: "", costPrice: "", sellingPrice: "",
     description: "", reference: "",
     descriptionDarija: "", aiFeatures: "", imageUrl: "",
+    coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "",
   });
 
   // File upload state — shared between Add and Edit dialogs (only one open at a time)
@@ -400,13 +401,18 @@ export default function Inventory() {
 
   const handleFileSelect = useCallback((file: File) => {
     if (!file.type.startsWith("image/")) return;
+    if (file.size > 2 * 1024 * 1024) { alert("Image trop grande (max 2 MB)."); return; }
     setPendingFile(file);
-    const objectUrl = URL.createObjectURL(file);
-    setPreviewUrl(objectUrl);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = reader.result as string;
+      setPreviewUrl(base64);
+      setForm(f => ({ ...f, imageUrl: base64 }));
+    };
+    reader.readAsDataURL(file);
   }, []);
 
   const clearFile = () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPendingFile(null);
     setPreviewUrl(null);
   };
@@ -427,7 +433,7 @@ export default function Inventory() {
   };
 
   const resetForm = () => {
-    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "" });
+    setForm({ name: "", sku: "", stock: "", costPrice: "", sellingPrice: "", description: "", reference: "", descriptionDarija: "", aiFeatures: "", imageUrl: "", coutAchat: "", prixVente: "", coutEmballage: "", coutLivraison: "", coutConfirmation: "" });
     setHasVariants(false);
     setVariants([]);
     clearFile();
@@ -455,13 +461,6 @@ export default function Inventory() {
       return;
     }
     try {
-      // Upload image first if a file was selected
-      let resolvedImageUrl: string | null = null;
-      if (pendingFile) {
-        resolvedImageUrl = await uploadFile();
-        clearFile();
-      }
-
       const payload: any = {
         name: form.name,
         sku: form.sku,
@@ -470,7 +469,12 @@ export default function Inventory() {
         sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : 0,
         description: form.description || null,
         reference: form.reference || null,
-        imageUrl: resolvedImageUrl,
+        imageUrl: form.imageUrl || null,
+        coutAchat: parseFloat(form.coutAchat) || 0,
+        prixVente: parseFloat(form.prixVente) || 0,
+        coutEmballage: parseFloat(form.coutEmballage) || 0,
+        coutLivraison: parseFloat(form.coutLivraison) || 0,
+        coutConfirmation: parseFloat(form.coutConfirmation) || 0,
       };
       if (hasVariants && variants.length > 0) {
         payload.hasVariants = 1;
@@ -514,15 +518,9 @@ export default function Inventory() {
   const handleEdit = async () => {
     if (!editingProduct) return;
     try {
-      // Upload new image if one was selected
-      let resolvedImageUrl: string | null | undefined = undefined; // undefined = don't change
-      if (pendingFile) {
-        resolvedImageUrl = await uploadFile();
-        clearFile();
-      } else if (form.imageUrl !== (editingProduct.imageUrl || "")) {
-        // User may have cleared the existing image
-        resolvedImageUrl = form.imageUrl || null;
-      }
+      // Image is stored as base64 in form.imageUrl — no separate upload step needed
+      const imageChanged = (form.imageUrl || null) !== (editingProduct.imageUrl || null);
+      clearFile();
 
       // Build AI features as JSON array if provided (comma-separated input)
       let aiFeaturesParsed: string | null = null;
@@ -541,8 +539,13 @@ export default function Inventory() {
         reference: form.reference || undefined,
         descriptionDarija: form.descriptionDarija || null,
         aiFeatures: aiFeaturesParsed,
+        coutAchat: parseFloat(form.coutAchat) || 0,
+        prixVente: parseFloat(form.prixVente) || 0,
+        coutEmballage: parseFloat(form.coutEmballage) || 0,
+        coutLivraison: parseFloat(form.coutLivraison) || 0,
+        coutConfirmation: parseFloat(form.coutConfirmation) || 0,
       };
-      if (resolvedImageUrl !== undefined) updatePayload.imageUrl = resolvedImageUrl;
+      if (imageChanged) updatePayload.imageUrl = form.imageUrl || null;
       await updateProduct.mutateAsync(updatePayload);
       toast({ title: "Produit mis à jour", description: `${form.name} a été modifié` });
       setEditOpen(false);
@@ -675,6 +678,7 @@ export default function Inventory() {
         aiFeaturesDisplay = product.aiFeatures;
       }
     }
+    const pd = (product.settings as any)?.profitDefaults || {};
     setForm({
       name: product.name,
       sku: product.sku,
@@ -686,6 +690,11 @@ export default function Inventory() {
       descriptionDarija: product.descriptionDarija || "",
       aiFeatures: aiFeaturesDisplay,
       imageUrl: product.imageUrl || "",
+      coutAchat: pd.coutAchat ? String(pd.coutAchat) : "",
+      prixVente: pd.prixVente ? String(pd.prixVente) : "",
+      coutEmballage: pd.coutEmballage ? String(pd.coutEmballage) : "",
+      coutLivraison: pd.coutLivraison ? String(pd.coutLivraison) : "",
+      coutConfirmation: pd.coutConfirmation ? String(pd.coutConfirmation) : "",
     });
     setEditOpen(true);
   };
@@ -1076,7 +1085,7 @@ export default function Inventory() {
                   <img src={previewUrl} alt="Aperçu" className="w-28 h-28 rounded-xl object-cover border-2 border-primary/30" />
                   <button
                     type="button"
-                    onClick={clearFile}
+                    onClick={() => { clearFile(); setForm(f => ({ ...f, imageUrl: "" })); }}
                     className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-destructive text-white flex items-center justify-center shadow"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -1099,6 +1108,36 @@ export default function Inventory() {
                   <p className="text-sm font-medium text-center">Glissez une photo ici<br /><span className="text-xs text-muted-foreground font-normal">ou cliquez pour choisir (JPG, PNG, WEBP)</span></p>
                 </div>
               )}
+            </div>
+
+            {/* Cost defaults for Profit Analyzer */}
+            <div className="border-t pt-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">💰 Coûts (Analyseur de profit)</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Ces valeurs seront pré-remplies automatiquement dans l'Analyseur de profit.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Prix d'achat (DH / unité)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 45" value={form.coutAchat} onChange={e => setForm(f => ({ ...f, coutAchat: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-achat" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Prix de vente (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 149" value={form.prixVente} onChange={e => setForm(f => ({ ...f, prixVente: e.target.value }))} className="h-9 text-sm" data-testid="input-prix-vente" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">📦 Frais d'emballage (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-emballage" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">🚚 Frais de livraison (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 25" value={form.coutLivraison} onChange={e => setForm(f => ({ ...f, coutLivraison: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-livraison" />
+                </div>
+                <div className="col-span-2 space-y-1.5">
+                  <Label className="text-xs">📞 Frais de confirmation (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 8" value={form.coutConfirmation} onChange={e => setForm(f => ({ ...f, coutConfirmation: e.target.value }))} className="h-9 text-sm" data-testid="input-cout-confirmation" />
+                </div>
+              </div>
             </div>
 
             <div className="flex items-center gap-3 pt-2 border-t">
@@ -1283,6 +1322,36 @@ export default function Inventory() {
                   data-testid="input-edit-product-image-file"
                   onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ""; }}
                 />
+              </div>
+            </div>
+
+            {/* Cost defaults for Profit Analyzer */}
+            <div className="border-t pt-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold">💰 Coûts (Analyseur de profit)</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Ces valeurs seront pré-remplies automatiquement dans l'Analyseur de profit.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Prix d'achat (DH / unité)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 45" value={form.coutAchat} onChange={e => setForm(f => ({ ...f, coutAchat: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-achat" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Prix de vente (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 149" value={form.prixVente} onChange={e => setForm(f => ({ ...f, prixVente: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-prix-vente" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">📦 Frais d'emballage (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 3" value={form.coutEmballage} onChange={e => setForm(f => ({ ...f, coutEmballage: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-emballage" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">🚚 Frais de livraison (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 25" value={form.coutLivraison} onChange={e => setForm(f => ({ ...f, coutLivraison: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-livraison" />
+                </div>
+                <div className="col-span-2 space-y-1.5">
+                  <Label className="text-xs">📞 Frais de confirmation (DH / commande)</Label>
+                  <Input type="number" min="0" step="0.01" placeholder="ex: 8" value={form.coutConfirmation} onChange={e => setForm(f => ({ ...f, coutConfirmation: e.target.value }))} className="h-9 text-sm" data-testid="input-edit-cout-confirmation" />
+                </div>
               </div>
             </div>
 

@@ -86,6 +86,7 @@ export const products = pgTable("products", {
   imageUrl: text("image_url"),
   reference: text("reference"),
   hasVariants: integer("has_variants").default(0),
+  settings: jsonb("settings"),
   createdAt: timestamp("created_at").defaultNow(),
   archivedAt: timestamp("archived_at"),
 });
