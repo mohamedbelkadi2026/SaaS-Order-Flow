@@ -123,7 +123,8 @@ interface ProductSummary {
 
 interface ProfitResult {
   name: string;
-  qty: number;
+  qty: number;        // total UNITS (sum of qtyPerRow × livraisons)
+  commandes: number;  // total LIVRAISONS (row count) — used for packaging & confirmation
   caBrut: number;
   shippingFromFile: number;
   caNet: number;
@@ -485,15 +486,20 @@ export default function ProfitAnalyzer() {
       const caBrut = p.totalRevenue;
       const shippingFromFile = p.totalShipping;
       const caNet = caBrut - shippingFromFile;
-      const qty = p.totalQty;
-      const cogs = toNum(p.buyingCost) * qty;
-      const packaging = toNum(p.packagingCost) * qty;
-      const confirmation = toNum(p.confirmationFee) * qty;
+      const qty = p.totalQty;           // UNITS — physical items sold
+      const commandes = p.rowCount;     // LIVRAISONS — number of deliveries
+      // Cost multipliers:
+      //   Prix Achat  × UNITS    (each physical item has a purchase cost)
+      //   Emballage   × LIVRAISONS (one carton per delivery, not per unit inside)
+      //   Confirmation× LIVRAISONS (one call per confirmed order, not per unit)
+      const cogs         = toNum(p.buyingCost)     * qty;
+      const packaging    = toNum(p.packagingCost)  * commandes;
+      const confirmation = toNum(p.confirmationFee)* commandes;
       const adS = adMode === "specific" ? toNum(p.adSpend) : totalRevAll > 0 ? globalAd * (caBrut / totalRevAll) : globalAd / products.length;
       const totalCost = shippingFromFile + cogs + packaging + confirmation + adS;
       const netProfit = caBrut - totalCost;
       const roi = cogs > 0 ? (netProfit / cogs) * 100 : 0;
-      return { name: p.name, qty, caBrut, shippingFromFile, caNet, cogs, packaging, confirmation, adSpend: adS, totalCost, netProfit, roi };
+      return { name: p.name, qty, commandes, caBrut, shippingFromFile, caNet, cogs, packaging, confirmation, adSpend: adS, totalCost, netProfit, roi };
     });
     setResults(res); setStep(3);
   }
@@ -1093,6 +1099,24 @@ export default function ProfitAnalyzer() {
                 </div>
 
                 {/* Per-product cost table */}
+                {/* Info banner — totals summary */}
+                {(() => {
+                  const totalCmd = products.reduce((s, p) => s + p.rowCount, 0);
+                  const totalUnits = products.reduce((s, p) => s + p.totalQty, 0);
+                  const hasMultiUnit = totalUnits !== totalCmd;
+                  return (
+                    <div className="rounded-lg border border-white/10 bg-white/4 px-4 py-2.5 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-400">
+                      <span>💡 <span className="text-slate-300 font-semibold">{totalCmd}</span> commandes livrées</span>
+                      {hasMultiUnit && (
+                        <span>· <span className="text-amber-300 font-semibold">{totalUnits}</span> unités physiques</span>
+                      )}
+                      {hasMultiUnit && (
+                        <span className="text-slate-500">· Emballage &amp; Confirmation × commandes ; Prix achat × unités</span>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
                   <CardContent className="p-0">
                     <div className="overflow-x-auto">
@@ -1100,13 +1124,22 @@ export default function ProfitAnalyzer() {
                         <TableHeader>
                           <TableRow className="border-white/10 hover:bg-transparent">
                             <TableHead className="text-slate-500 text-xs py-3">Produit</TableHead>
-                            <TableHead className="text-slate-500 text-xs py-3 text-center">Qté</TableHead>
+                            <TableHead className="text-slate-500 text-xs py-3 text-center">
+                              <div>Cmd / Unités</div>
+                            </TableHead>
                             <TableHead className="text-slate-500 text-xs py-3 text-center">CA Brut</TableHead>
                             <TableHead className="text-slate-500 text-xs py-3 text-center">
-                              Prix achat/u <span style={{ color: GOLD }}>*</span>
+                              <div>Prix achat / unité <span style={{ color: GOLD }}>*</span></div>
+                              <div className="text-[9px] font-normal text-slate-600 normal-case">× unités</div>
                             </TableHead>
-                            <TableHead className="text-slate-500 text-xs py-3 text-center">Emballage/u</TableHead>
-                            <TableHead className="text-slate-500 text-xs py-3 text-center">Confirm./u</TableHead>
+                            <TableHead className="text-slate-500 text-xs py-3 text-center">
+                              <div>Emballage / cde</div>
+                              <div className="text-[9px] font-normal text-slate-600 normal-case">× commandes</div>
+                            </TableHead>
+                            <TableHead className="text-slate-500 text-xs py-3 text-center">
+                              <div>Confirm. / cde</div>
+                              <div className="text-[9px] font-normal text-slate-600 normal-case">× commandes</div>
+                            </TableHead>
                             {adMode === "specific" && <TableHead className="text-slate-500 text-xs py-3 text-center">Pub (DH)</TableHead>}
                           </TableRow>
                         </TableHeader>
@@ -1125,7 +1158,12 @@ export default function ProfitAnalyzer() {
                                   </button>
                                 )}
                               </TableCell>
-                              <TableCell className="text-center text-amber-300 text-xs py-2">{p.totalQty}</TableCell>
+                              <TableCell className="text-center py-2">
+                                <div className="text-amber-300 text-xs font-semibold">{p.rowCount} cmd</div>
+                                {p.totalQty !== p.rowCount && (
+                                  <div className="text-[10px] text-slate-400">{p.totalQty} u</div>
+                                )}
+                              </TableCell>
                               <TableCell className="text-center text-emerald-300 text-xs py-2">{fmtDH(p.totalRevenue)}</TableCell>
                               <TableCell className="text-center py-2">
                                 <Input value={p.buyingCost} onChange={e => updateProduct(i, "buyingCost", e.target.value)}
@@ -1205,7 +1243,7 @@ export default function ProfitAnalyzer() {
                       <div className="sm:ml-auto text-center sm:text-right">
                         <p className="text-[10px] text-slate-500 uppercase tracking-widest">Formule appliquée</p>
                         <p className="text-[11px] text-slate-300 mt-0.5 font-mono">
-                          Bénéf. = CA Brut − Livr. − (Achat × Qté) − (Emball. × Qté) − (Confirm. × Qté) − Pub
+                          Bénéf. = CA Brut − Livr. − (Achat × unités) − (Emball. × cmd) − (Confirm. × cmd) − Pub
                         </p>
                       </div>
                     </div>
@@ -1251,9 +1289,9 @@ export default function ProfitAnalyzer() {
                               { label: "CA Brut",          sub: "price total",     cls: "text-right text-emerald-400/80" },
                               { label: "Frais Livr.",      sub: "du fichier",      cls: "text-right text-amber-400/70" },
                               { label: "CA Net",           sub: "brut − livr.",    cls: "text-right text-cyan-400/80" },
-                              { label: "Sourcing Total",   sub: "achat × unités",  cls: "text-right" },
-                              { label: "Emballage Total",  sub: "emball. × unités",cls: "text-right text-pink-400/80" },
-                              { label: "Commissions",      sub: "confirm. × u",    cls: "text-right" },
+                              { label: "Sourcing Total",   sub: "achat × unités",   cls: "text-right" },
+                              { label: "Emballage Total",  sub: "emball. × cmd",    cls: "text-right text-pink-400/80" },
+                              { label: "Commissions",      sub: "confirm. × cmd",   cls: "text-right" },
                               { label: "Pub",              sub: "",                cls: "text-right" },
                               { label: "Bénéfice Net",     sub: "",                cls: "text-right" },
                               { label: "ROI",              sub: "",                cls: "text-right" },

@@ -1,0 +1,192 @@
+CRITICAL business logic fix in Profit Analyzer Pro. Different costs have different multipliers, but right now they're all being multiplied by the same number, which gives wrong profit calculations.
+
+═══════════════════════════════════════════════════════════════════════
+THE BUSINESS LOGIC (very important)
+═══════════════════════════════════════════════════════════════════════
+When a Moroccan COD merchant sells "Pack of 2 bottles" (Quantity: 2) and gets 42 deliveries:
+  - 42 deliveries × 2 bottles each = 84 physical bottles
+  - But only 42 cartons shipped (one carton per delivery)
+  - Only 42 confirmation calls made by the call agent
+  - Only 42 shipments paid to the carrier
+
+So the cost multipliers are DIFFERENT per cost type:
+
+  💰 PRIX ACHAT/U (purchase price)  → multiply by UNITS (84)
+     Because each individual bottle has a cost.
+
+  📦 EMBALLAGE/U (packaging)         → multiply by COMMANDES (42)
+     Because each delivery uses ONE carton/box, regardless of how many items inside.
+
+  📞 CONFIRM./U (confirmation cost)  → multiply by COMMANDES (42)
+     The call agent confirms one order, not one bottle.
+
+  🚚 FRAIS LIVRAISON (shipping)      → multiply by COMMANDES (42)
+     The carrier charges per delivery, not per bottle. (Or use the sum from the Shipping cost column if provided.)
+
+  📢 PUB (advertising)               → existing logic (global or per product), no multiplier change
+
+═══════════════════════════════════════════════════════════════════════
+EXAMPLE TO VERIFY AFTER FIX
+═══════════════════════════════════════════════════════════════════════
+Product: قطرات العسل والزيت زجاجية, Quantity:2 group, 42 livraisons
+  Revenue:                   12,262 DH
+  Prix achat (50 × 84):       -4,200 DH   ← 84 units
+  Emballage (3 × 42):           -126 DH   ← 42 commandes
+  Confirmation (8 × 42):        -336 DH   ← 42 commandes
+  Shipping (sum from CSV):    -1,230 DH
+  ─────────────────────────────────────
+  PROFIT:                      6,370 DH
+
+If you instead multiplied emballage and confirmation by 84 (units), you'd subtract 252 + 672 = 924 DH instead of 126 + 336 = 462 DH — a 462 DH error per product variant.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+Open the Profit Analyzer page (client/src/pages/profit-analyzer.tsx).
+
+Find and report:
+1. The buildProductStats function added in the previous fix. Confirm it returns BOTH livraisons (row count) AND totalQty (sum of qtyPerRow).
+2. The profit computation function. Note how it currently multiplies each cost.
+3. The Step 2 column headers labelled "PRIX ACHAT/U", "EMBALLAGE/U", "CONFIRM./U" — the /U currently suggests "per unit" for all three, but that's wrong for emballage and confirmation.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — UPDATE LABELS (UX clarity)
+═══════════════════════════════════════════════════════════════════════
+Rename columns in Step 2 to be unambiguous:
+
+  PRIX ACHAT / unité       (per unit — physical item)
+  EMBALLAGE / commande     (per delivery / per carton)
+  CONFIRM. / commande      (per confirmed order)
+
+Add a small ℹ️ tooltip next to each header explaining the multiplier:
+
+  PRIX ACHAT / unité ℹ️
+    "Multiplié par le nombre TOTAL d'unités livrées (ex: 84 si pack de 2 × 42 livraisons)"
+
+  EMBALLAGE / commande ℹ️
+    "Multiplié par le nombre de COMMANDES (ex: 42 cartons pour 42 commandes, même si chaque carton contient 2 unités)"
+
+  CONFIRM. / commande ℹ️
+    "Multiplié par le nombre de COMMANDES (l'agent confirme la commande, pas chaque unité)"
+
+Also add an info row at the top of the Step 2 table:
+
+  💡 Total commandes: {sum of livraisons} · Total unités: {sum of totalQty}
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — FIX THE PROFIT FORMULA
+═══════════════════════════════════════════════════════════════════════
+In the profit/report computation, change cost multipliers. For each product row:
+
+  // Inputs from buildProductStats
+  const livraisons   = product.livraisons;       // count of commandes (rows)
+  const totalUnits   = product.totalQty;          // sum of units (livraisons × qtyPerRow)
+  const totalRevenue = product.totalRevenue;
+  const totalShipping = product.totalShipping;   // sum from CSV "Shipping cost" column
+
+  // Inputs from Step 2 (user-entered)
+  const prixAchatU    = row.prixAchatU || 0;     // per UNIT
+  const emballageU    = row.emballageU || 0;     // per COMMANDE (was per unit, that's the fix)
+  const confirmU      = row.confirmU || 0;       // per COMMANDE (was per unit, that's the fix)
+
+  // Cost calculation — CORRECT multipliers
+  const costGoods         = totalUnits  * prixAchatU;   // ← UNITS
+  const costPackaging     = livraisons  * emballageU;   // ← COMMANDES (FIX)
+  const costConfirmation  = livraisons  * confirmU;     // ← COMMANDES (FIX)
+  const costShipping      = totalShipping;              // already a sum
+
+  // Ads cost — preserve existing logic
+  // (Global: prorata du CA / Par produit: user input — DON'T change this)
+  const costAds = ... (existing);
+
+  const totalCost = costGoods + costPackaging + costConfirmation + costShipping + costAds;
+  const profit = totalRevenue - totalCost;
+  const roi = totalCost > 0 ? (profit / totalCost) * 100 : 0;
+
+  return {
+    ...product,
+    units: totalUnits,
+    commandes: livraisons,
+    costGoods, costPackaging, costConfirmation, costShipping, costAds,
+    totalCost, profit, roi,
+  };
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — STEP 2 TABLE: show both Commandes AND Unités
+═══════════════════════════════════════════════════════════════════════
+Currently the QTÉ column shows totalUnits. Add a second visible value so the user understands what's being multiplied:
+
+In the QTÉ cell, show both side by side:
+
+  ┌──────────────────────────┐
+  │ COMMANDES / UNITÉS       │
+  │ 42 / 84                  │
+  └──────────────────────────┘
+
+Or compact:
+
+  QTÉ
+  42 cmd · 84 u
+
+This makes the multipliers transparent. Users will see "ah, emballage × 42, prix achat × 84" naturally.
+
+If keeping the existing QTÉ as a single number is cleaner, at least add a small subtitle:
+  84  (42 cmd × 2 u)
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — STEP 3 RAPPORT: show the breakdown per product clearly
+═══════════════════════════════════════════════════════════════════════
+In the final report, for each product, show the math so the user trusts the numbers:
+
+  📦 قطرات العسل والزيت زجاجية (Qty: 2)
+     42 commandes · 84 unités · 12.262 DH CA
+
+     Coût achat       :  84 × 50  = -4.200 DH
+     Coût emballage   :  42 × 3   =   -126 DH
+     Coût confirmation:  42 × 8   =   -336 DH
+     Frais livraison  :         -1.230 DH
+     Pub allouée      :           -350 DH
+     ─────────────────────────────────────
+     PROFIT NET                  : 6.020 DH
+     ROI                         : 96 %
+
+For products that span multiple qty variants (e.g., قطرات has Qty:1, Qty:2, Qty:3, Qty:5...), aggregate them into a single product row in the report, but the math holds because totalUnits already sums correctly.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — INPUT VALIDATION
+═══════════════════════════════════════════════════════════════════════
+- All cost inputs accept decimals (e.g. 2.5 DH)
+- Min 0. Empty = 0.
+- Real-time recalculation when user edits any cell.
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Column headers say "/ unité" for Prix Achat and "/ commande" for Emballage + Confirm
+2. ✅ Tooltips on each header explain the multiplier
+3. ✅ Step 2 row shows both commandes AND unités for each product
+4. ✅ Profit formula multiplies:
+       - Prix Achat × totalUnits
+       - Emballage × livraisons (NOT totalUnits)
+       - Confirmation × livraisons (NOT totalUnits)
+       - Shipping = sum from CSV (unchanged)
+5. ✅ For قطرات العسل (Qty:2 × 42 livraisons):
+       Coût achat = 84 × prixAchat
+       Coût emballage = 42 × emballage  (NOT 84)
+       Coût confirmation = 42 × confirm (NOT 84)
+6. ✅ Step 3 report shows the breakdown math per product line
+7. ✅ Build passes locally
+8. ✅ No regression — products with Qty:1 (where commandes === units) still compute correctly
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(profit-analyzer): correct cost multipliers (units vs commandes per cost type)"
+git push origin main
+
+WORKFLOW:
+1. INSPECT (Step 1) and report findings.
+2. Apply Steps 2–5 incrementally.
+3. `npm run build` before push.
+4. After deploy, reload the same Excel file and verify the math on قطرات العسل والزيت زجاجية and رافعة يدوية 2 طن.
