@@ -1,0 +1,168 @@
+Same bug as we had with Express Coursier Store ID, but now for Ozon Express Customer ID. The user added the Ozon Express account, the Authorization (API Key) is saved, but Customer ID is missing — so the cities sync fails with "400: Customer ID Ozon Express manquant".
+
+The credentials table on the modal shows only:
+  - Authorization: 332e••••••••...
+  - WebHook URL: https://www.tajergrow.com/a...
+
+The Customer ID row is MISSING. Either the form doesn't capture it, or it's not persisted, or the credentials display doesn't include it.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+1. Find the Ozon Express account form. Likely in client/src/pages/integrations.tsx or a sub-component. Search for "ozonexpress" or "Ozon Express".
+
+2. Find:
+   - The form fields when ADDING a new Ozon Express account
+   - The form fields when EDITING an existing Ozon Express account
+   - Confirm if there's an input for "Customer ID" / "ozonCustomerId"
+
+3. Check the backend POST/PUT carrier-accounts handler in server/routes.ts:
+   - Does it read `req.body.ozonCustomerId` or `req.body.settings.ozonCustomerId`?
+   - Where does it persist it?
+
+4. Check the credentials display panel (the table showing "Authorization" / "WebHook URL" in the screenshot):
+   - It's iterating some credentials object. Find that.
+   - Add a row for Customer ID if not present.
+
+REPORT findings before any code.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — FRONTEND: form must have Customer ID input
+═══════════════════════════════════════════════════════════════════════
+In the Ozon Express connect/edit form (mirror Express Coursier Store ID approach), add a required Customer ID field ALONGSIDE the API Key (Authorization) field:
+
+  <div className="mb-4">
+    <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+      Customer ID Ozon Express <span className="text-red-500">*</span>
+    </label>
+    <input
+      type="text"
+      inputMode="numeric"
+      placeholder="ex: 12345"
+      value={form.ozonCustomerId || ""}
+      onChange={(e) => setForm({ ...form, ozonCustomerId: e.target.value.replace(/\D/g, "") })}
+      required
+      className="<copy exact className from the Authorization input>"
+    />
+    <p className="text-xs text-gray-500 mt-1.5">
+      Trouvez votre Customer ID dans votre tableau de bord Ozon Express
+      (Compte → Générer votre API key — l'ID s'affiche en haut).
+    </p>
+  </div>
+
+When the form submits, include `ozonCustomerId` in the payload sent to /api/carrier-accounts.
+
+When opening EDIT modal for an existing account, prefill the field:
+
+  useEffect(() => {
+    if (editingAccount && editingAccount.carrierName === "ozonexpress") {
+      setForm((f) => ({
+        ...f,
+        ozonCustomerId:
+          (editingAccount.settings as any)?.ozonCustomerId ||
+          (editingAccount as any).ozonCustomerId ||
+          "",
+      }));
+    }
+  }, [editingAccount]);
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — BACKEND: persist Customer ID
+═══════════════════════════════════════════════════════════════════════
+In server/routes.ts → carrier-accounts create/update handler. Defensive read + validation:
+
+  const ozonCustomerId = String(
+    req.body.ozonCustomerId ||
+    req.body.settings?.ozonCustomerId ||
+    ""
+  ).trim();
+
+  if (req.body.carrierName === "ozonexpress") {
+    if (!/^\d+$/.test(ozonCustomerId)) {
+      return res.status(400).json({
+        message: "Customer ID Ozon Express requis (numérique).",
+      });
+    }
+  }
+
+  const mergedSettings = {
+    ...(existingAccount?.settings || {}),
+    ...(req.body.settings || {}),
+    ozonCustomerId,  // ensure it lands in settings JSON
+  };
+
+Save the account with mergedSettings. Add a `console.log("[CarrierAccount] saved settings:", mergedSettings)` temporarily to confirm persistence.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — DISPLAY: show Customer ID in the credentials table
+═══════════════════════════════════════════════════════════════════════
+The credentials panel (the "CREDENTIAL / VALEUR / COPIER" table in the screenshot) currently shows Authorization + WebHook URL. Add a Customer ID row at the top.
+
+Find the array/object that drives that table. It probably looks like:
+
+  const credentials = [
+    { label: "Authorization", value: account.apiKey, mask: true },
+    { label: "WebHook URL", value: webhookUrl, mask: false },
+  ];
+
+Update to include Customer ID for Ozon Express:
+
+  const credentials = [];
+  if (account.carrierName === "ozonexpress") {
+    credentials.push({
+      label: "Customer ID",
+      value: (account.settings as any)?.ozonCustomerId || "—",
+      mask: false,
+    });
+  }
+  if (account.carrierName === "expresscoursier") {
+    credentials.push({
+      label: "Store ID",
+      value: (account.settings as any)?.expressCoursierStoreId || "—",
+      mask: false,
+    });
+  }
+  credentials.push({ label: "Authorization", value: account.apiKey, mask: true });
+  credentials.push({ label: "WebHook URL", value: webhookUrl, mask: false });
+
+Show "—" with a red color or amber warning badge when missing, so it's immediately visible. Add a "⚠️ Manquant — Modifier" link next to it that opens the edit modal.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — SHIP & SYNC must use the persisted Customer ID
+═══════════════════════════════════════════════════════════════════════
+The Ozon shipping function (shipOrderToOzonExpress) and the sync-cities endpoint MUST read the Customer ID from the saved settings (not from a hardcoded field). Confirm both look at:
+
+  const settings = (creds.settings as any) || {};
+  const customerId = String(settings.ozonCustomerId || "").trim();
+
+If empty → throw an explicit error like the user already saw. The fix in this prompt is to make sure the form ACTUALLY saves it.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — IMMEDIATE FIX FOR THE EXISTING ACCOUNT
+═══════════════════════════════════════════════════════════════════════
+The user already created an Ozon account with empty Customer ID. Steps after this code deploys:
+
+1. User opens Intégrations → Ozon Express → click "Modifier"
+2. The form will now show the Customer ID field (empty)
+3. User pastes their real Customer ID from the Ozon portal
+4. Save
+5. The credentials table now shows the Customer ID row
+6. Click "Synchroniser les villes" → should now work (assuming the cities endpoint URL is correct from the previous fix)
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Ozon Express connect/edit form has a "Customer ID" required field
+2. ✅ Edit form pre-fills from settings.ozonCustomerId
+3. ✅ Backend rejects save when ozonCustomerId is missing or non-numeric
+4. ✅ Backend persists ozonCustomerId in settings JSON
+5. ✅ Credentials display panel shows a "Customer ID" row for Ozon accounts
+6. ✅ If Customer ID is missing, show "⚠️ Manquant" with link to edit
+7. ✅ Synchroniser les villes reads from settings.ozonCustomerId
+8. ✅ Build passes
+9. ✅ After deploy, user adds the real Customer ID → sync works
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add

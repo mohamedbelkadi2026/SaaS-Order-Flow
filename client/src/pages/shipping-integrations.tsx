@@ -2119,6 +2119,70 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         </tr>
                       </thead>
                       <tbody>
+                        {/* Ozon Express: show Customer ID with warning if missing */}
+                        {(acct.carrierName || "").toLowerCase() === "ozonexpress" && (() => {
+                          const cid = (acct.settings as any)?.ozonExpressCustomerId || (acct.settings as any)?.ozonCustomerId || "";
+                          return (
+                            <tr className="border-b border-border/20">
+                              <td className="px-4 py-3 font-medium">Customer ID</td>
+                              <td className="px-4 py-3">
+                                {cid ? (
+                                  <span className="font-mono text-xs text-muted-foreground">{cid}</span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                    Manquant — cliquez Modifier
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                {cid && (
+                                  <button
+                                    onClick={() => copyText(cid, `cid-${acct.id}`)}
+                                    className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
+                                    data-testid={`button-copy-cid-${acct.id}`}
+                                  >
+                                    {copiedKey === `cid-${acct.id}`
+                                      ? <Check className="w-3.5 h-3.5 text-green-500" />
+                                      : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })()}
+                        {/* Express Coursier: show Store ID */}
+                        {(acct.carrierName || "").toLowerCase() === "expresscoursier" && (() => {
+                          const sid = String((acct.settings as any)?.expressCoursierStoreId || "");
+                          return (
+                            <tr className="border-b border-border/20">
+                              <td className="px-4 py-3 font-medium">Store ID</td>
+                              <td className="px-4 py-3">
+                                {sid ? (
+                                  <span className="font-mono text-xs text-muted-foreground">{sid}</span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                    Manquant — cliquez Modifier
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                {sid && (
+                                  <button
+                                    onClick={() => copyText(sid, `sid-${acct.id}`)}
+                                    className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
+                                    data-testid={`button-copy-sid-${acct.id}`}
+                                  >
+                                    {copiedKey === `sid-${acct.id}`
+                                      ? <Check className="w-3.5 h-3.5 text-green-500" />
+                                      : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })()}
                         <tr className="border-b border-border/20">
                           <td className="px-4 py-3 font-medium">Authorization</td>
                           <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-[180px] truncate">

@@ -2783,7 +2783,8 @@ export async function registerRoutes(
         // The public /cities endpoint returns nothing. Ozon uses authenticated
         // URLs scoped per customer: /customers/{CUSTOMER_ID}/{API_KEY}/cities
         const settings = (acct.settings as any) || {};
-        const customerId = String(settings.ozonCustomerId || "").trim();
+        // Accept both key variants: ozonExpressCustomerId (current) and ozonCustomerId (legacy)
+        const customerId = String(settings.ozonExpressCustomerId || settings.ozonCustomerId || "").trim();
         if (!customerId) {
           return res.status(400).json({
             message: "Customer ID Ozon Express manquant. Ouvrez 'Modifier le compte' et renseignez votre Customer ID.",
