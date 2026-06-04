@@ -116,6 +116,12 @@ export interface IStorage {
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
+  archiveProduct(id: number): Promise<void>;
+  getProductUsage(storeId: number, productId: number): Promise<{ ordersCount: number; deliveredCount: number; inStockOrders: number; totalRevenue: number }>;
+  bulkDeleteProducts(storeId: number, productIds: number[], force: boolean): Promise<{ deleted: number; archived: number; skipped: number; errors: any[] }>;
+  getProductsWithoutOrders(storeId: number): Promise<any[]>;
+  getDuplicateProducts(storeId: number): Promise<any[]>;
+  getArchivedProducts(storeId: number): Promise<any[]>;
   getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]>;
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
@@ -1490,6 +1496,86 @@ export class DatabaseStorage implements IStorage {
   async deleteProduct(id: number): Promise<void> {
     await db.delete(productVariants).where(eq(productVariants.productId, id));
     await db.delete(products).where(eq(products.id, id));
+  }
+
+  async archiveProduct(id: number): Promise<void> {
+    await db.update(products).set({ archivedAt: new Date() } as any).where(eq(products.id, id));
+  }
+
+  async getProductUsage(storeId: number, productId: number): Promise<{ ordersCount: number; deliveredCount: number; inStockOrders: number; totalRevenue: number }> {
+    const items = await db.select({ orderId: orderItems.orderId })
+      .from(orderItems)
+      .where(eq(orderItems.productId, productId));
+    if (items.length === 0) return { ordersCount: 0, deliveredCount: 0, inStockOrders: 0, totalRevenue: 0 };
+    const orderIds = Array.from(new Set(items.map(i => i.orderId)));
+    const ordersList = await db.select().from(orders)
+      .where(and(eq(orders.storeId, storeId), inArray(orders.id, orderIds)));
+    const deliveredCount = ordersList.filter(o => /livr/i.test(String(o.status || ""))).length;
+    const inStockOrders = ordersList.filter(o => !/livr|annul|retour/i.test(String(o.status || ""))).length;
+    const totalRevenue = ordersList
+      .filter(o => /livr/i.test(String(o.status || "")))
+      .reduce((sum, o) => sum + (Number(o.totalPrice) || 0), 0);
+    return { ordersCount: ordersList.length, deliveredCount, inStockOrders, totalRevenue };
+  }
+
+  async bulkDeleteProducts(storeId: number, productIds: number[], force: boolean): Promise<{ deleted: number; archived: number; skipped: number; errors: any[] }> {
+    const results = { deleted: 0, archived: 0, skipped: 0, errors: [] as any[] };
+    for (const id of productIds) {
+      try {
+        const product = await this.getProduct(id);
+        if (!product || product.storeId !== storeId) { results.skipped += 1; continue; }
+        const usage = await this.getProductUsage(storeId, id);
+        if (usage.ordersCount > 0) {
+          if (force) { await this.archiveProduct(id); results.archived += 1; }
+          else { results.skipped += 1; }
+        } else {
+          await this.deleteProduct(id); results.deleted += 1;
+        }
+      } catch (err: any) {
+        results.errors.push({ id, message: err.message });
+      }
+    }
+    return results;
+  }
+
+  async getProductsWithoutOrders(storeId: number): Promise<any[]> {
+    const allProducts = await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`));
+    if (allProducts.length === 0) return [];
+    const productIds = allProducts.map(p => p.id);
+    const usedItems = await db.selectDistinct({ productId: orderItems.productId })
+      .from(orderItems)
+      .where(and(inArray(orderItems.productId, productIds), sql`${orderItems.productId} IS NOT NULL`));
+    const usedIds = new Set(usedItems.map(i => i.productId));
+    return allProducts.filter(p => !usedIds.has(p.id));
+  }
+
+  async getDuplicateProducts(storeId: number): Promise<any[]> {
+    const allProducts = await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NULL`))
+      .orderBy(desc(products.createdAt));
+    const normName = (s: string) => (s || "").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const groups: Record<string, typeof allProducts> = {};
+    for (const p of allProducts) {
+      const key = normName(p.name);
+      (groups[key] ||= []).push(p);
+    }
+    const dupes: any[] = [];
+    for (const items of Object.values(groups)) {
+      if (items.length >= 2) {
+        for (let i = 1; i < items.length; i++) {
+          dupes.push({ ...items[i], duplicateGroup: normName(items[i].name), keepId: items[0].id });
+        }
+      }
+    }
+    return dupes;
+  }
+
+  async getArchivedProducts(storeId: number): Promise<any[]> {
+    return await db.select().from(products)
+      .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NOT NULL`))
+      .orderBy(desc(products.archivedAt));
   }
 
   async getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]> {

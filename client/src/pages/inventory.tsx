@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -25,6 +25,170 @@ interface VariantForm {
   stock: string;
 }
 
+/* ── Smart Cleanup Modal ──────────────────────────────────────────────────── */
+function CleanupModal({
+  open, onClose, cleanupType, setCleanupType, cleanupSelectedIds, setCleanupSelectedIds, onBulkDelete,
+}: {
+  open: boolean;
+  onClose: () => void;
+  cleanupType: "no_orders" | "duplicates" | "archived";
+  setCleanupType: (t: "no_orders" | "duplicates" | "archived") => void;
+  cleanupSelectedIds: Set<number>;
+  setCleanupSelectedIds: (s: Set<number>) => void;
+  onBulkDelete: (ids: number[], force: boolean) => Promise<void>;
+}) {
+  const { data, isLoading, refetch } = useQuery<{ type: string; count: number; products: any[] }>({
+    queryKey: ["/api/products/cleanup-suggestions", cleanupType],
+    queryFn: () => fetch(`/api/products/cleanup-suggestions?type=${cleanupType}`, { credentials: "include" }).then(r => r.json()),
+    enabled: open,
+  });
+  const { toast } = useToast();
+  const [running, setRunning] = useState(false);
+
+  const prods = data?.products ?? [];
+  const allChecked = cleanupSelectedIds.size === prods.length && prods.length > 0;
+
+  const toggleOne = (id: number) => {
+    setCleanupSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const toggleAll = () => {
+    setCleanupSelectedIds(allChecked ? new Set() : new Set(prods.map((p: any) => p.id)));
+  };
+
+  const handleRun = async (force: boolean) => {
+    if (cleanupSelectedIds.size === 0) {
+      toast({ title: "Aucun produit sélectionné", variant: "destructive" }); return;
+    }
+    setRunning(true);
+    await onBulkDelete(Array.from(cleanupSelectedIds), force);
+    setCleanupSelectedIds(new Set());
+    refetch();
+    setRunning(false);
+  };
+
+  const typeLabels: Record<string, string> = {
+    no_orders: "Sans commandes",
+    duplicates: "Doublons",
+    archived: "Archivés",
+  };
+  const typeDesc: Record<string, string> = {
+    no_orders: "Produits qui n'ont jamais été commandés — sans risque de suppression.",
+    duplicates: "Produits avec le même nom normalisé — gardez le plus récent, supprimez les copies.",
+    archived: "Produits déjà archivés (liés à des commandes) — vous pouvez les supprimer définitivement si nécessaire.",
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Filter className="w-5 h-5 text-orange-500" />
+            Nettoyage intelligent de l'inventaire
+          </DialogTitle>
+          <DialogDescription>
+            Identifiez et supprimez rapidement les produits obsolètes, doublons ou non utilisés.
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Filter tabs */}
+        <div className="flex gap-2 flex-wrap">
+          {(["no_orders", "duplicates", "archived"] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => { setCleanupType(t); setCleanupSelectedIds(new Set()); }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                cleanupType === t
+                  ? "bg-orange-500 text-white"
+                  : "bg-muted text-muted-foreground hover:bg-muted/80"
+              }`}
+              data-testid={`cleanup-tab-${t}`}
+            >
+              {typeLabels[t]}
+              {data?.type === t && ` (${data.count})`}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">{typeDesc[cleanupType]}</p>
+
+        {/* Product list */}
+        <div className="flex-1 overflow-y-auto border rounded-xl min-h-[200px]">
+          {isLoading ? (
+            <div className="py-12 text-center text-sm text-muted-foreground">Analyse en cours...</div>
+          ) : prods.length === 0 ? (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-emerald-500 opacity-60" />
+              Aucun produit à nettoyer dans cette catégorie.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-muted/30 sticky top-0">
+                <tr>
+                  <th className="w-10 pl-4 py-2 text-left">
+                    <input type="checkbox" className="w-4 h-4 accent-orange-500" checked={allChecked} onChange={toggleAll} />
+                  </th>
+                  <th className="text-left py-2 font-medium text-muted-foreground">Produit</th>
+                  <th className="text-left py-2 font-medium text-muted-foreground pr-3">SKU</th>
+                  {cleanupType === "duplicates" && (
+                    <th className="text-left py-2 font-medium text-muted-foreground pr-3">Groupe</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {prods.map((p: any) => (
+                  <tr key={p.id} className={`border-t border-border/30 ${cleanupSelectedIds.has(p.id) ? "bg-orange-50/40 dark:bg-orange-950/20" : ""}`}>
+                    <td className="pl-4 py-2">
+                      <input type="checkbox" className="w-4 h-4 accent-orange-500" checked={cleanupSelectedIds.has(p.id)} onChange={() => toggleOne(p.id)} />
+                    </td>
+                    <td className="py-2 font-medium max-w-[240px] truncate">{p.name}</td>
+                    <td className="py-2 font-mono text-xs text-muted-foreground pr-3">{p.sku}</td>
+                    {cleanupType === "duplicates" && (
+                      <td className="py-2 text-xs text-muted-foreground pr-3 max-w-[180px] truncate">{p.duplicateGroup}</td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Action row */}
+        <div className="flex items-center gap-3 pt-2 border-t flex-wrap">
+          <span className="text-sm text-muted-foreground flex-1">
+            {cleanupSelectedIds.size > 0 ? `${cleanupSelectedIds.size} sélectionné${cleanupSelectedIds.size > 1 ? "s" : ""}` : "Cochez les produits à traiter"}
+          </span>
+          <Button variant="outline" size="sm" onClick={onClose}>Fermer</Button>
+          {cleanupType === "archived" ? (
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={cleanupSelectedIds.size === 0 || running}
+              onClick={() => handleRun(true)}
+              className="gap-1.5"
+              data-testid="button-cleanup-delete-archived"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Supprimer définitivement
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              className="gap-1.5 bg-orange-500 hover:bg-orange-600 text-white"
+              disabled={cleanupSelectedIds.size === 0 || running}
+              onClick={() => handleRun(false)}
+              data-testid="button-cleanup-delete"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Supprimer la sélection
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Inventory() {
   const { data: inventoryData, isLoading: statsLoading } = useInventoryStats();
   const createProduct = useCreateProduct();
@@ -33,6 +197,19 @@ export default function Inventory() {
   const { toast } = useToast();
   const [logsProductId, setLogsProductId] = useState<number | null>(null);
   const [logsProductName, setLogsProductName] = useState<string>("");
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  // Safe-delete confirmation dialog (single product)
+  const [deleteDialog, setDeleteDialog] = useState<{ product: any; usage: any } | null>(null);
+  const [deleteDialogLoading, setDeleteDialogLoading] = useState(false);
+
+  // Smart cleanup modal
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupType, setCleanupType] = useState<"no_orders" | "duplicates" | "archived">("no_orders");
+  const [cleanupSelectedIds, setCleanupSelectedIds] = useState<Set<number>>(new Set());
 
   // Insights side-sheet
   const [insightsProductId, setInsightsProductId] = useState<number | null>(null);
@@ -282,12 +459,72 @@ export default function Inventory() {
   };
 
   const handleDelete = async (product: any) => {
-    if (!confirm(`Supprimer ${product.name} ?`)) return;
+    setDeleteDialogLoading(true);
     try {
-      await deleteProduct.mutateAsync(product.id);
-      toast({ title: "Supprimé", description: `${product.name} a été supprimé` });
+      const usage = await apiRequest("GET", `/api/products/${product.id}/usage`);
+      setDeleteDialog({ product, usage });
+    } catch {
+      setDeleteDialog({ product, usage: { ordersCount: 0, deliveredCount: 0, inStockOrders: 0, totalRevenue: 0 } });
+    } finally {
+      setDeleteDialogLoading(false);
+    }
+  };
+
+  const confirmDelete = async (force: boolean) => {
+    if (!deleteDialog) return;
+    try {
+      const qs = force ? "?force=true" : "";
+      await apiRequest("DELETE", `/api/products/${deleteDialog.product.id}${qs}`);
+      toast({
+        title: force ? "📦 Archivé" : "🗑️ Supprimé",
+        description: force
+          ? `"${deleteDialog.product.name}" a été archivé (commandes conservées).`
+          : `"${deleteDialog.product.name}" a été supprimé définitivement.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
     } catch (err: any) {
       toast({ title: "Erreur", description: err.message?.replace(/^\d+:\s*/, '') || "Erreur", variant: "destructive" });
+    } finally {
+      setDeleteDialog(null);
+    }
+  };
+
+  const handleBulkDelete = async (force: boolean) => {
+    if (selectedIds.size === 0) return;
+    setBulkDeleting(true);
+    try {
+      const result = await apiRequest("POST", "/api/products/bulk-delete", {
+        productIds: Array.from(selectedIds),
+        force,
+      });
+      toast({
+        title: "Opération terminée",
+        description: `${result.deleted} supprimés · ${result.archived} archivés · ${result.skipped} ignorés`,
+      });
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message || "Erreur", variant: "destructive" });
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const handleToggleSelect = (id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleToggleAll = () => {
+    if (selectedIds.size === filtered.length && filtered.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filtered.map((p: any) => p.id)));
     }
   };
 
@@ -382,12 +619,72 @@ export default function Inventory() {
             <SelectItem value="out_of_stock">Rupture</SelectItem>
           </SelectContent>
         </Select>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2 border-orange-300 text-orange-600 hover:bg-orange-50 dark:border-orange-700 dark:text-orange-400 dark:hover:bg-orange-950/30"
+          onClick={() => { setCleanupType("no_orders"); setCleanupSelectedIds(new Set()); setCleanupOpen(true); }}
+          data-testid="button-open-cleanup"
+        >
+          <Filter className="w-4 h-4" /> Nettoyage intelligent
+        </Button>
       </div>
+
+      {/* Bulk action bar — visible when items are selected */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 animate-in slide-in-from-top-2">
+          <CheckSquare className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+          <span className="text-sm font-semibold text-red-700 dark:text-red-300">
+            {selectedIds.size} produit{selectedIds.size > 1 ? "s" : ""} sélectionné{selectedIds.size > 1 ? "s" : ""}
+          </span>
+          <div className="flex-1" />
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-red-300 text-red-600 hover:bg-red-100 dark:border-red-700 dark:text-red-400 gap-1.5"
+            disabled={bulkDeleting}
+            onClick={() => handleBulkDelete(false)}
+            data-testid="button-bulk-delete"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Supprimer sans commandes
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 gap-1.5"
+            disabled={bulkDeleting}
+            onClick={() => handleBulkDelete(true)}
+            data-testid="button-bulk-archive"
+          >
+            <Archive className="w-3.5 h-3.5" />
+            Archiver tous
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground"
+            onClick={() => setSelectedIds(new Set())}
+            data-testid="button-bulk-cancel"
+          >
+            Annuler
+          </Button>
+        </div>
+      )}
 
       <Card className="rounded-2xl border-border/50 shadow-sm overflow-x-auto">
         <Table>
           <TableHeader className="bg-muted/30">
             <TableRow>
+              <TableHead className="w-10 pl-4">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 accent-red-500 cursor-pointer"
+                  checked={selectedIds.size === filtered.length && filtered.length > 0}
+                  onChange={handleToggleAll}
+                  data-testid="checkbox-select-all"
+                />
+              </TableHead>
               <TableHead className="min-w-[180px]">Produit</TableHead>
               <TableHead>SKU</TableHead>
               <TableHead className="text-center">Variantes</TableHead>
@@ -415,7 +712,16 @@ export default function Inventory() {
               </TableRow>
             ) : (
               filtered.map((product: any) => (
-                <TableRow key={product.id} data-testid={`row-product-${product.id}`}>
+                <TableRow key={product.id} data-testid={`row-product-${product.id}`} className={selectedIds.has(product.id) ? "bg-red-50/40 dark:bg-red-950/20" : ""}>
+                  <TableCell className="pl-4">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 accent-red-500 cursor-pointer"
+                      checked={selectedIds.has(product.id)}
+                      onChange={() => handleToggleSelect(product.id)}
+                      data-testid={`checkbox-product-${product.id}`}
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-3">
                       {product.imageUrl ? (
@@ -1084,6 +1390,96 @@ export default function Inventory() {
           )}
         </SheetContent>
       </Sheet>
+
+      {/* ── Safe-delete confirmation dialog ─────────────────────────────── */}
+      <Dialog open={!!deleteDialog} onOpenChange={(v) => { if (!v) setDeleteDialog(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600 dark:text-red-400">
+              <ShieldAlert className="w-5 h-5" />
+              Supprimer le produit
+            </DialogTitle>
+          </DialogHeader>
+          {deleteDialog && (
+            <div className="space-y-4 py-2">
+              <p className="font-semibold text-sm">{deleteDialog.product.name}</p>
+              {deleteDialog.usage.ordersCount > 0 ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-semibold text-sm">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    Ce produit est lié à des commandes
+                  </div>
+                  <ul className="text-sm text-amber-700 dark:text-amber-400 space-y-1 pl-6 list-disc">
+                    <li>{deleteDialog.usage.ordersCount} commande{deleteDialog.usage.ordersCount > 1 ? "s" : ""} au total</li>
+                    <li>{deleteDialog.usage.deliveredCount} livrée{deleteDialog.usage.deliveredCount > 1 ? "s" : ""}</li>
+                    {deleteDialog.usage.inStockOrders > 0 && (
+                      <li className="text-red-600 dark:text-red-400 font-semibold">{deleteDialog.usage.inStockOrders} commande{deleteDialog.usage.inStockOrders > 1 ? "s" : ""} encore en cours !</li>
+                    )}
+                  </ul>
+                  <p className="text-xs text-amber-600 dark:text-amber-500 mt-2">
+                    Vous pouvez <strong>archiver</strong> ce produit — il sera masqué de l'inventaire mais les commandes liées restent intactes.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-300">
+                  Ce produit n'a aucune commande liée. La suppression est définitive et irréversible.
+                </div>
+              )}
+              <DialogFooter className="flex-col sm:flex-row gap-2">
+                <Button variant="outline" onClick={() => setDeleteDialog(null)} className="flex-1">
+                  Annuler
+                </Button>
+                {deleteDialog.usage.ordersCount > 0 && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 border-amber-400 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 gap-1.5"
+                    onClick={() => confirmDelete(true)}
+                    data-testid="button-confirm-archive"
+                  >
+                    <Archive className="w-4 h-4" /> Archiver
+                  </Button>
+                )}
+                {deleteDialog.usage.ordersCount === 0 && (
+                  <Button
+                    variant="destructive"
+                    className="flex-1 gap-1.5"
+                    onClick={() => confirmDelete(false)}
+                    data-testid="button-confirm-delete"
+                  >
+                    <Trash2 className="w-4 h-4" /> Supprimer définitivement
+                  </Button>
+                )}
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Smart Cleanup modal ──────────────────────────────────────────── */}
+      <CleanupModal
+        open={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        cleanupType={cleanupType}
+        setCleanupType={setCleanupType}
+        cleanupSelectedIds={cleanupSelectedIds}
+        setCleanupSelectedIds={setCleanupSelectedIds}
+        onBulkDelete={async (ids, force) => {
+          setBulkDeleting(true);
+          try {
+            const result = await apiRequest("POST", "/api/products/bulk-delete", { productIds: ids, force });
+            toast({
+              title: "Nettoyage terminé",
+              description: `${result.deleted} supprimés · ${result.archived} archivés · ${result.skipped} ignorés`,
+            });
+            queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+            queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+          } catch (err: any) {
+            toast({ title: "Erreur", description: err.message || "Erreur", variant: "destructive" });
+          } finally {
+            setBulkDeleting(false);
+          }
+        }}
+      />
 
       {/* ── Restock dialog ──────────────────────────────────────────────── */}
       <Dialog open={restockProduct !== null} onOpenChange={(v) => { if (!v && !restockSaving) setRestockProduct(null); }}>

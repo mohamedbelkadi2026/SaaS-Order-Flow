@@ -6135,13 +6135,69 @@ function ensureHeaders(sheet) {
     }
   });
 
-  app.delete("/api/products/:id", requireAuth, async (req, res) => {
+  // GET /api/products/cleanup-suggestions — smart filter for deletable products
+  // NOTE: must be BEFORE /:id to prevent "cleanup-suggestions" being parsed as an id
+  app.get("/api/products/cleanup-suggestions", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const type = String(req.query.type || "no_orders");
+    try {
+      let prods: any[] = [];
+      if (type === "no_orders") prods = await storage.getProductsWithoutOrders(storeId);
+      else if (type === "duplicates") prods = await storage.getDuplicateProducts(storeId);
+      else if (type === "archived") prods = await storage.getArchivedProducts(storeId);
+      res.json({ type, count: prods.length, products: prods });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // GET /api/products/:id/usage — check how many orders link to a product
+  app.get("/api/products/:id/usage", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    try {
+      const product = await storage.getProduct(productId);
+      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
+      const usage = await storage.getProductUsage(storeId, productId);
+      res.json(usage);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // POST /api/products/bulk-delete
+  app.post("/api/products/bulk-delete", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const { productIds, force = false } = req.body || {};
+    if (!Array.isArray(productIds) || productIds.length === 0)
+      return res.status(400).json({ message: "Liste de produits vide" });
+    if (productIds.length > 500)
+      return res.status(400).json({ message: "Maximum 500 produits par opération" });
+    try {
+      const results = await storage.bulkDeleteProducts(storeId, productIds, !!force);
+      res.json(results);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/products/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
     const productId = Number(req.params.id);
+    const force = req.query.force === "true";
     const product = await storage.getProduct(productId);
     if (!product) return res.status(404).json({ message: "Produit non trouvé" });
-    if (product.storeId !== req.user!.storeId) return res.status(403).json({ message: "Accès refusé" });
+    if (product.storeId !== storeId) return res.status(403).json({ message: "Accès refusé" });
+    const usage = await storage.getProductUsage(storeId, productId);
+    if (usage.ordersCount > 0 && !force) {
+      return res.status(409).json({ message: "Ce produit est lié à des commandes", usage });
+    }
+    if (usage.ordersCount > 0 && force) {
+      await storage.archiveProduct(productId);
+      return res.json({ ok: true, mode: "archived" });
+    }
     await storage.deleteProduct(productId);
-    res.json({ message: "Supprimé" });
+    res.json({ ok: true, mode: "deleted" });
   });
 
   // ─────────────────────────────────────────────────────────────────────────

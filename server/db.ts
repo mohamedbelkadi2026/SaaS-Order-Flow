@@ -598,6 +598,13 @@ export async function initializeDatabase(): Promise<void> {
     // auto-assign). Powers the Team page "Actions du jour" column so we count
     // agent ACTIONS taken today (per-magasin filterable) instead of all-time
     // assignments. Distribution math is untouched.
+    // ── products.archived_at — soft-delete support ────────────────────────────
+    await client.query(`
+      ALTER TABLE public.products
+        ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP;
+    `);
+    console.log('[Migration] products.archived_at ensured ✅');
+
     await client.query(`
       ALTER TABLE public.orders
         ADD COLUMN IF NOT EXISTS last_action_at TIMESTAMP,
