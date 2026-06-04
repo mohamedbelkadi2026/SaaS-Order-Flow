@@ -208,6 +208,9 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   const [ozonCustomerId, setOzonCustomerId] = useState<string>(
     String(existingAccount?.settings?.ozonExpressCustomerId ?? "")
   );
+  const [ozonParcelStock, setOzonParcelStock] = useState<string>(
+    (existingAccount?.settings as any)?.ozonParcelStock === "1" ? "1" : "0"
+  );
 
   // ── Custom carrier fields ─────────────────────────────────────────────────
   const isCustom = providerId === "custom";
@@ -368,7 +371,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             throw new Error("Le Customer ID Ozon Express est obligatoire (numérique).");
           }
           if (apiKey.trim()) body.apiKey = apiKey;
-          body.settings = { ...((existingAccount?.settings as object) || {}), ozonExpressCustomerId: cid };
+          body.settings = { ...((existingAccount?.settings as object) || {}), ozonExpressCustomerId: cid, ozonParcelStock: ozonParcelStock === "1" ? "1" : "0" };
         } else {
           if (apiKey.trim()) body.apiKey = apiKey;
           if (apiUrl.trim()) body.apiUrl = apiUrl.trim();
@@ -404,7 +407,7 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
             throw new Error("Le Customer ID Ozon Express est obligatoire (numérique).");
           }
           payload.storeName = resolvedStoreName;
-          payload.settings  = { ozonExpressCustomerId: cid };
+          payload.settings  = { ozonExpressCustomerId: cid, ozonParcelStock: ozonParcelStock === "1" ? "1" : "0" };
         } else if (isCustom) {
           payload.apiUrl    = apiUrl.trim() || undefined;
           payload.storeName = resolvedStoreName;
@@ -640,6 +643,40 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                     required
                   />
                   <p className="text-[10px] text-muted-foreground">Trouvez votre Customer ID et API Key dans votre tableau de bord Ozon Express.</p>
+                </div>
+                {/* ── Ozon parcel-stock mode toggle ── */}
+                <div className="space-y-2">
+                  <label className="font-semibold text-sm" style={{ color: "#1e293b" }}>
+                    Mode d'expédition
+                  </label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock !== "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input
+                      type="radio"
+                      name="ozonParcelStockEdit"
+                      value="0"
+                      checked={ozonParcelStock !== "1"}
+                      onChange={() => setOzonParcelStock("0")}
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">📦 Pickup (Ramassage) — Recommandé</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Ozon vient récupérer les colis chez vous. Idéal pour COD / Dropshipping.</div>
+                    </div>
+                  </label>
+                  <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock === "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                    <input
+                      type="radio"
+                      name="ozonParcelStockEdit"
+                      value="1"
+                      checked={ozonParcelStock === "1"}
+                      onChange={() => setOzonParcelStock("1")}
+                      className="mt-1"
+                    />
+                    <div>
+                      <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Ozon</div>
+                      <div className="text-xs text-gray-500 mt-0.5">Produits stockés dans les entrepôts Ozon. Chaque SKU doit être pré-enregistré dans votre portail Ozon.</div>
+                    </div>
+                  </label>
                 </div>
               </>
             ) : (
@@ -1161,6 +1198,40 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
                   required
                 />
                 <p className="text-[10px] text-muted-foreground">Trouvez votre Customer ID et API Key dans votre tableau de bord Ozon Express.</p>
+              </div>
+              {/* ── Ozon parcel-stock mode toggle ── */}
+              <div className="space-y-2">
+                <label className="font-semibold text-sm" style={{ color: "#1e293b" }}>
+                  Mode d'expédition
+                </label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock !== "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                  <input
+                    type="radio"
+                    name="ozonParcelStockCreate"
+                    value="0"
+                    checked={ozonParcelStock !== "1"}
+                    onChange={() => setOzonParcelStock("0")}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="font-semibold text-sm text-gray-800">📦 Pickup (Ramassage) — Recommandé</div>
+                    <div className="text-xs text-gray-500 mt-0.5">Ozon vient récupérer les colis chez vous. Idéal pour COD / Dropshipping.</div>
+                  </div>
+                </label>
+                <label className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors ${ozonParcelStock === "1" ? "border-indigo-500 bg-indigo-50" : "border-gray-200"}`}>
+                  <input
+                    type="radio"
+                    name="ozonParcelStockCreate"
+                    value="1"
+                    checked={ozonParcelStock === "1"}
+                    onChange={() => setOzonParcelStock("1")}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Ozon</div>
+                    <div className="text-xs text-gray-500 mt-0.5">Produits stockés dans les entrepôts Ozon. Chaque SKU doit être pré-enregistré dans votre portail Ozon.</div>
+                  </div>
+                </label>
               </div>
             </>
           ) : isAmeex ? (
@@ -2151,6 +2222,18 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                             </tr>
                           );
                         })()}
+                        {/* Ozon Express: show Mode d'expédition */}
+                        {(acct.carrierName || "").toLowerCase() === "ozonexpress" && (
+                          <tr className="border-b border-border/20">
+                            <td className="px-4 py-3 font-medium">Mode d'expédition</td>
+                            <td className="px-4 py-3 col-span-2">
+                              <span className="text-xs text-muted-foreground">
+                                {(acct.settings as any)?.ozonParcelStock === "1" ? "🏬 Stock chez Ozon" : "📦 Pickup (Ramassage)"}
+                              </span>
+                            </td>
+                            <td />
+                          </tr>
+                        )}
                         {/* Express Coursier: show Store ID */}
                         {(acct.carrierName || "").toLowerCase() === "expresscoursier" && (() => {
                           const sid = String((acct.settings as any)?.expressCoursierStoreId || "");

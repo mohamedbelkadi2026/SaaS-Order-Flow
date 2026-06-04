@@ -1,0 +1,179 @@
+Ozon Express ship is still failing with "Products data required for stock parcels" even though we're sending the products payload. The root cause: Ozon requires registered SKUs for `parcel-stock=1` (stock mode), not just any text. Our product refs are platform-generated names/SKUs that Ozon doesn't recognize.
+
+THE FIX: switch to `parcel-stock=0` (pickup mode), which is the correct default for COD merchants and dropshippers. In pickup mode:
+- Ozon comes to pick up the parcels from the merchant
+- The merchant manages their own stock
+- The `products` field becomes optional
+- No need to pre-register SKUs with Ozon
+
+Add a per-account setting "ozonParcelStock" so each merchant can choose Pickup (0) or Stock (1). Default to 0.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+In server/services/carrier-service.ts → shipOrderToOzonExpress.
+
+Find the line that sets parcel-stock. Report whether it's hardcoded to "1" today.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — MAKE parcel-stock CONFIGURABLE PER ACCOUNT
+═══════════════════════════════════════════════════════════════════════
+Replace the parcel-stock logic in shipOrderToOzonExpress:
+
+  // Read mode from account settings; default to "0" (Pickup/Ramassage) — recommended for COD merchants
+  const settings = (creds.settings as any) || {};
+  const parcelStockMode = String(settings.ozonParcelStock ?? "0").trim() === "1" ? "1" : "0";
+
+  form.append("parcel-stock", parcelStockMode);
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — PRODUCTS PAYLOAD ONLY WHEN NEEDED
+═══════════════════════════════════════════════════════════════════════
+Only append `products` when in stock mode AND items are present. In pickup mode, omit it entirely:
+
+  if (parcelStockMode === "1") {
+    // Stock mode requires registered SKUs at Ozon
+    const items = await storage.getOrderItemsWithProducts(order.id);
+    const productsArr: Array<{ ref: string; qnty: number }> = [];
+    if (Array.isArray(items)) {
+      for (const it of items) {
+        const sku = String(it?.sku || it?.productSku || it?.product?.sku || "").trim();
+        if (!sku) continue;  // Skip items without registered SKU; stock mode strictly needs them
+        const qnty = Math.max(1, parseInt(String(it?.quantity ?? 1), 10) || 1);
+        productsArr.push({ ref: sku, qnty });
+      }
+    }
+    if (productsArr.length === 0) {
+      throw new Error(
+        `Ozon Express (mode Stock): aucun SKU valide trouvé pour cette commande. ` +
+        `Enregistrez les produits dans votre portail Ozon Express ou passez en mode Pickup.`
+      );
+    }
+    form.append("products", JSON.stringify(productsArr));
+    console.log(`[OZON-SHIP][#${order.orderNumber}] products payload:`, JSON.stringify(productsArr));
+  } else {
+    console.log(`[OZON-SHIP][#${order.orderNumber}] pickup mode — products field omitted`);
+  }
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — ADD UI TOGGLE IN OZON ACCOUNT FORM
+═══════════════════════════════════════════════════════════════════════
+In the Ozon Express edit form (the "Modifier" modal), add a clear toggle BELOW the Customer ID field:
+
+  <div className="mb-4">
+    <label className="block text-sm font-semibold text-gray-700 mb-2">
+      Mode d'expédition Ozon Express
+    </label>
+
+    <div className="space-y-2">
+      <label className="flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors {form.ozonParcelStock !== '1' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200'}">
+        <input
+          type="radio"
+          name="ozonParcelStock"
+          value="0"
+          checked={form.ozonParcelStock !== "1"}
+          onChange={() => setForm({ ...form, ozonParcelStock: "0" })}
+          className="mt-1"
+        />
+        <div>
+          <div className="font-semibold text-sm text-gray-800">📦 Pickup (Ramassage) — Recommandé</div>
+          <div className="text-xs text-gray-600 mt-0.5">
+            Ozon vient récupérer les colis chez vous. Vous gérez votre stock vous-même.
+            Idéal pour les marchands COD / Dropshipping.
+          </div>
+        </div>
+      </label>
+
+      <label className="flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-colors {form.ozonParcelStock === '1' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200'}">
+        <input
+          type="radio"
+          name="ozonParcelStock"
+          value="1"
+          checked={form.ozonParcelStock === "1"}
+          onChange={() => setForm({ ...form, ozonParcelStock: "1" })}
+          className="mt-1"
+        />
+        <div>
+          <div className="font-semibold text-sm text-gray-800">🏬 Stock chez Ozon</div>
+          <div className="text-xs text-gray-600 mt-0.5">
+            Vos produits sont stockés dans les entrepôts Ozon. Chaque SKU doit être
+            préalablement enregistré dans votre portail Ozon Express.
+          </div>
+        </div>
+      </label>
+    </div>
+  </div>
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — PERSIST IN BACKEND
+═══════════════════════════════════════════════════════════════════════
+In server/routes.ts → carrier-accounts create/update handler, when carrierName === "ozonexpress", merge the mode into settings:
+
+  const ozonParcelStock = String(req.body.ozonParcelStock ?? "0").trim() === "1" ? "1" : "0";
+
+  const mergedSettings = {
+    ...(existingAccount?.settings || {}),
+    ...(req.body.settings || {}),
+    ozonCustomerId: (existingAccount?.settings?.ozonCustomerId || req.body.ozonCustomerId || "").toString().trim(),
+    ozonParcelStock,
+  };
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — PRE-FILL ON EDIT
+═══════════════════════════════════════════════════════════════════════
+When opening the edit modal:
+
+  useEffect(() => {
+    if (editingAccount?.carrierName === "ozonexpress") {
+      setForm((f) => ({
+        ...f,
+        ozonCustomerId: (editingAccount.settings as any)?.ozonCustomerId || "",
+        ozonParcelStock: ((editingAccount.settings as any)?.ozonParcelStock === "1") ? "1" : "0",
+      }));
+    }
+  }, [editingAccount]);
+
+═══════════════════════════════════════════════════════════════════════
+STEP 7 — DISPLAY THE MODE IN CREDENTIALS PANEL
+═══════════════════════════════════════════════════════════════════════
+In the Credentials view modal (the one showing Customer ID, Authorization, WebHook URL), add a "Mode d'expédition" row:
+
+  // After the Customer ID row, before Authorization:
+  {
+    label: "Mode d'expédition",
+    value: (account.settings as any)?.ozonParcelStock === "1" ? "Stock chez Ozon" : "Pickup (Ramassage)",
+    mask: false,
+  }
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Edit modal shows two radio options (Pickup / Stock) with Pickup pre-selected
+2. ✅ Saved value persists in settings.ozonParcelStock
+3. ✅ Edit modal pre-fills the saved choice
+4. ✅ Credentials panel shows "Mode d'expédition: Pickup (Ramassage)"
+5. ✅ shipOrderToOzonExpress sends parcel-stock="0" by default
+6. ✅ Products field is OMITTED in pickup mode
+7. ✅ Retry on order #16977 succeeds (no more "Products data required" error)
+8. ✅ Tracking number captured and visible in Suivi des colis
+9. ✅ Shipment appears in Ozon Express portal
+10. ✅ Build passes
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "feat(ozon): add Pickup/Stock mode toggle, default to Pickup for COD merchants"
+git push origin main
+
+WORKFLOW:
+1. Inspect (Step 1) and confirm parcel-stock is hardcoded.
+2. Apply Steps 2-7 in one push.
+3. After deploy:
+   a. Open Ozon Express → Modifier
+   b. Verify "Pickup (Ramassage)" is selected by default
+   c. Save (no change needed)
+   d. Retry order #16977
+   e. Logs should show "pickup mode — products field omitted"
+   f. Response should contain TRACKING-NUMBER
+   g. Verify in Ozon portal that parcel was created

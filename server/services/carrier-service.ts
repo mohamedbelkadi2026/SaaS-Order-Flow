@@ -1115,19 +1115,22 @@ export async function shipOrderToCarrier(
     fd.append('parcel-city',     String(cityId));
     fd.append('parcel-address',  input.address || input.city || '');
     fd.append('parcel-price',    String(priceDH));
-    fd.append('parcel-stock',    '1');                                   // 1 = stock, 0 = pickup
+    // parcel-stock: "0" = Pickup/Ramassage (default, recommended for COD/dropshipping)
+    //              "1" = Stock chez Ozon (requires SKUs pre-registered in Ozon portal)
+    const parcelStockMode = String(ozonSettings.ozonParcelStock ?? '0').trim() === '1' ? '1' : '0';
+    fd.append('parcel-stock', parcelStockMode);
     fd.append('parcel-note',     input.note || '');
     fd.append('parcel-nature',   input.productName || 'Produit');
     if (input.orderNumber) fd.append('tracking-number', `TG-${input.orderNumber}`);
 
-    // ── REQUIRED for stock parcels (parcel-stock=1): products field ──
-    // Ozon rejects with "Products data required for stock parcels" when this is absent.
-    // Build from order_items; fall back to product name / synthetic ref.
-    {
-      let rawItems: Array<{ sku: string | null; rawProductName: string | null; quantity: number }> = [];
+    // ── Products field: required only in stock mode (parcel-stock=1) ──
+    // In pickup mode Ozon ignores the field — omitting it avoids the
+    // "Products data required for stock parcels" rejection.
+    if (parcelStockMode === '1') {
+      let rawItems: Array<{ sku: string | null; quantity: number }> = [];
       try {
         rawItems = await db
-          .select({ sku: orderItems.sku, rawProductName: orderItems.rawProductName, quantity: orderItems.quantity })
+          .select({ sku: orderItems.sku, quantity: orderItems.quantity })
           .from(orderItems)
           .where(eq(orderItems.orderId, input.orderId));
       } catch (itemErr: any) {
@@ -1137,20 +1140,19 @@ export async function shipOrderToCarrier(
       const productsArr: Array<{ ref: string; qnty: number }> = [];
       for (const it of rawItems) {
         const sku = String(it.sku || '').trim();
-        const fallback = String(it.rawProductName || `P-${input.orderId}`).trim().slice(0, 40);
-        const ref = sku || fallback;
+        if (!sku) continue; // Stock mode strictly needs pre-registered SKUs
         const qnty = Math.max(1, parseInt(String(it.quantity ?? 1), 10) || 1);
-        if (ref) productsArr.push({ ref, qnty });
+        productsArr.push({ ref: sku, qnty });
       }
-      // Last-resort: at least one line so Ozon doesn't reject the request
       if (productsArr.length === 0) {
-        productsArr.push({
-          ref: String(input.productName || input.orderNumber || `ORD-${input.orderId}`).slice(0, 40),
-          qnty: Math.max(1, input.quantity ?? 1),
-        });
+        const errMsg = `Ozon Express (mode Stock): aucun SKU valide trouvé pour cette commande. Enregistrez les produits dans votre portail Ozon Express ou passez en mode Pickup dans les paramètres du compte.`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ ${errMsg}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: 0, rawResponse: null, permanent: true };
       }
       fd.append('products', JSON.stringify(productsArr));
-      console.log(`[OZON-SHIP][#${input.orderNumber}] products payload: ${JSON.stringify(productsArr)}`);
+      console.log(`[OZON-SHIP][#${input.orderNumber}] products payload (stock mode): ${JSON.stringify(productsArr)}`);
+    } else {
+      console.log(`[OZON-SHIP][#${input.orderNumber}] pickup mode — products field omitted`);
     }
 
     const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(customerId)}/${encodeURIComponent(apiKey.trim())}/add-parcel`;
