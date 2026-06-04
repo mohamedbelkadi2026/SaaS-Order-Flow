@@ -783,6 +783,54 @@ function preValidate(input: CarrierShipInput, tag: string): string | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Ozon Express helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function extractOzonTracking(data: any): string | null {
+  if (!data || typeof data !== 'object') return null;
+
+  const candidates = [
+    data['tracking-number'],
+    data.tracking_number,
+    data.trackingNumber,
+    data?.PARCEL?.['TRACKING-NUMBER'],
+    data?.PARCEL?.['tracking-number'],
+    data?.PARCEL?.tracking_number,
+    data?.DELIVERY?.['TRACKING-NUMBER'],
+    data?.DELIVERY?.['tracking-number'],
+    data?.RESULT?.['TRACKING-NUMBER'],
+    data?.data?.['tracking-number'],
+    data?.data?.tracking_number,
+    data?.data?.PARCEL?.['TRACKING-NUMBER'],
+    data?.parcel?.tracking_number,
+    data?.parcel?.['tracking-number'],
+    data?.parcel?.['TRACKING-NUMBER'],
+  ];
+  for (const v of candidates) {
+    if (v && String(v).trim()) return String(v).trim();
+  }
+
+  // Last-resort: recursive key search for anything matching /tracking[-_]?number/i
+  const stack: any[] = [data];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object') continue;
+    for (const [k, v] of Object.entries(cur)) {
+      if (/tracking[-_]?number/i.test(k) && v && typeof v !== 'object') {
+        return String(v).trim();
+      }
+      if (v && typeof v === 'object') stack.push(v);
+    }
+  }
+  return null;
+}
+
+function isOzonValidationOnly(data: any): boolean {
+  const msg = data?.CHECK_API?.MESSAGE || data?.check_api?.message || data?.CHECK_API?.message;
+  return !!msg && /valide/i.test(String(msg));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1068,44 +1116,48 @@ export async function shipOrderToCarrier(
         validateStatus: () => true,
       });
       const ozonData: any = ozonResp.data;
-      console.log(`[OZON-RESP] HTTP ${ozonResp.status}: ${JSON.stringify(ozonData).slice(0, 500)}`);
+
+      // ── DIAGNOSTIC: log full response so we can see the real shape ──
+      console.log(`[OZON-SHIP][#${input.orderNumber}] HTTP ${ozonResp.status}`);
+      console.log(`[OZON-SHIP][#${input.orderNumber}] Response body (first 1000 chars): ${JSON.stringify(ozonData).slice(0, 1000)}`);
+
       if (ozonResp.status >= 400) {
-        const msg = ozonData?.message || ozonData?.error || (typeof ozonData === 'string' ? ozonData : '') || `HTTP ${ozonResp.status}`;
-        console.error(`[OZON][#${input.orderNumber}] ❌ ${msg}`);
+        const msg = ozonData?.message || ozonData?.error || ozonData?.MESSAGE || (typeof ozonData === 'string' ? ozonData : '') || `HTTP ${ozonResp.status}`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ HTTP error: ${msg}`);
         return { success: false, error: `Ozon Express: ${msg}`, carrierMessage: msg, httpStatus: ozonResp.status, rawResponse: ozonData };
       }
 
-      // Ozon may signal a logical failure inside a 200 body — guard for it.
+      // ── Guard: validation-only response means NO parcel was created ──
+      // Shape: { "CHECK_API": { "RESULT": "SUCCESS", "MESSAGE": "Valide API Key" } }
+      if (isOzonValidationOnly(ozonData)) {
+        const errMsg = `Ozon Express: la réponse contient seulement une validation API (Valide API Key), aucun colis créé. Vérifiez les paramètres d'envoi (Customer ID, City ID, format form-data).`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ Validation-only response. Full data: ${JSON.stringify(ozonData)}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
+      }
+
+      // ── Guard: logical failure embedded in a 200 body ──
       const okFlag =
         ozonData?.success !== false &&
         String(ozonData?.STATUS ?? ozonData?.status ?? '').toLowerCase() !== 'error' &&
         ozonData?.error == null;
       if (!okFlag) {
         const reason = ozonData?.message || ozonData?.error || ozonData?.MESSAGE || "Échec à l'import côté Ozon Express";
-        console.error(`[OZON][#${input.orderNumber}] ❌ ${reason}`);
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ Logical failure: ${reason}`);
         return { success: false, error: `Ozon Express: ${reason}`, carrierMessage: reason, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
       }
 
-      // Extract the tracking number from the known response shapes.
-      const trackingNumber =
-        ozonData?.['tracking-number'] ||
-        ozonData?.tracking_number ||
-        ozonData?.trackingNumber ||
-        ozonData?.data?.['tracking-number'] ||
-        ozonData?.data?.tracking_number ||
-        ozonData?.parcel?.tracking_number ||
-        ozonData?.parcel?.['tracking-number'] ||
-        null;
+      // ── Extract tracking number (handles uppercase keys + recursive search) ──
+      const trackingNumber = extractOzonTracking(ozonData);
 
       if (!trackingNumber) {
-        // Ozon accepted the shipment but returned no tracking number.
-        // Do NOT mark the order as failed — surface a warning instead.
-        const warn = `Expédition acceptée par Ozon Express mais aucun numéro de suivi retourné. Vérifiez le portail Ozon.`;
-        console.warn(`[OZON][#${input.orderNumber}] ⚠️ ${warn}. Raw: ${JSON.stringify(ozonData)}`);
-        return { success: true, trackingNumber: undefined, warning: warn, httpStatus: ozonResp.status, rawResponse: ozonData };
+        // CRITICAL: Ozon returned HTTP 200 but no tracking number → parcel was NOT created.
+        // Throw so the caller never marks the order as shipped.
+        const errMsg = `Ozon Express a répondu HTTP 200 mais aucun numéro de suivi n'a été retourné. Le colis n'a probablement pas été créé — vérifiez le portail Ozon. Réponse: ${JSON.stringify(ozonData).slice(0, 300)}`;
+        console.error(`[OZON-SHIP][#${input.orderNumber}] ❌ No tracking number in response. Full data: ${JSON.stringify(ozonData)}`);
+        return { success: false, error: errMsg, carrierMessage: errMsg, httpStatus: ozonResp.status, rawResponse: ozonData, permanent: true };
       }
 
-      console.log(`[OZON][#${input.orderNumber}] ✅ SUCCESS! tracking=${trackingNumber}`);
+      console.log(`[OZON-SHIP][#${input.orderNumber}] ✅ tracking=${trackingNumber}`);
       return { success: true, trackingNumber: String(trackingNumber), httpStatus: ozonResp.status, rawResponse: ozonData };
     } catch (ozonErr: any) {
       const msg = ozonErr?.message || "Erreur réseau Ozon Express";

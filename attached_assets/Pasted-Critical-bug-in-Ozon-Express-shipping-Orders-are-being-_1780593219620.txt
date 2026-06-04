@@ -1,0 +1,264 @@
+Critical bug in Ozon Express shipping. Orders are being marked "Expédié" in our platform, BUT:
+1. The shipment never appears in the Ozon Express portal
+2. The tracking number is NOT saved in our database
+3. The "Suivi des colis" view shows nothing
+
+Same family of bug as Express Coursier had earlier. The fix has 3 parts:
+A) Diagnose by logging the FULL raw response
+B) Fix the tracking number parser
+C) DO NOT mark order as Expédié unless shipment was confirmed AND tracking captured
+
+═══════════════════════════════════════════════════════════════════════
+STEP 1 — INSPECT
+═══════════════════════════════════════════════════════════════════════
+Open server/services/carrier-service.ts.
+
+Find `shipOrderToOzonExpress`. Report:
+1. The exact URL it POSTs to
+2. The body format (form-data confirmed earlier)
+3. How it currently extracts the tracking number from the response
+4. What it returns when tracking is missing (does it throw? return success: false? return success: true with null tracking?)
+5. The post-ship code in the bulk-ship handler — does it ALWAYS update status to "Expédié", or only if tracking is present?
+
+═══════════════════════════════════════════════════════════════════════
+STEP 2 — ADD DIAGNOSTIC LOGGING (essential first step)
+═══════════════════════════════════════════════════════════════════════
+Before changing logic, ADD logs so we can see Ozon's exact response shape. In shipOrderToOzonExpress, right after the fetch call:
+
+  const resp = await fetch(url, { method: "POST", body: form });
+  const text = await resp.text();
+  let data: any = null;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+  // DIAGNOSTIC — capture everything
+  console.log(`[OZON-SHIP][#${order.orderNumber}] URL: ${url}`);
+  console.log(`[OZON-SHIP][#${order.orderNumber}] HTTP ${resp.status}`);
+  console.log(`[OZON-SHIP][#${order.orderNumber}] Response headers:`, JSON.stringify(Object.fromEntries(resp.headers.entries())));
+  console.log(`[OZON-SHIP][#${order.orderNumber}] Response body (first 1000 chars):`, text.slice(0, 1000));
+
+  if (!resp.ok) {
+    throw new Error(`Ozon Express: HTTP ${resp.status} — ${text.slice(0, 200)}`);
+  }
+
+After deploying this, try one ship and the Railway logs will show the real response shape. WAIT — apply Step 3 in the same push so we don't have to deploy twice.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 3 — ROBUST TRACKING EXTRACTION
+═══════════════════════════════════════════════════════════════════════
+Ozon Express responses likely follow their cities pattern (uppercase keys). Possible shapes — handle all:
+
+  Shape A (mirroring CITIES style):
+    { "PARCEL": { "TRACKING-NUMBER": "OZE...", "STATUS": "..." } }
+    { "DELIVERY": { "TRACKING-NUMBER": "OZE..." } }
+
+  Shape B (snake_case):
+    { "tracking-number": "OZE...", "status": "ok" }
+    { "data": { "tracking-number": "OZE..." } }
+
+  Shape C (validation-only, like cities did):
+    { "CHECK_API": { "RESULT": "SUCCESS", "MESSAGE": "Valide API Key" } }
+    → This means the call was just AUTH-validated, NOT that a parcel was created.
+    Treat this as FAILURE if no tracking number anywhere.
+
+Replace the tracking extraction with this defensive parser:
+
+  function extractOzonTracking(data: any): string | null {
+    if (!data || typeof data !== "object") return null;
+
+    // Direct possibilities
+    const candidates = [
+      data["tracking-number"],
+      data.tracking_number,
+      data.trackingNumber,
+      data?.PARCEL?.["TRACKING-NUMBER"],
+      data?.PARCEL?.["tracking-number"],
+      data?.PARCEL?.tracking_number,
+      data?.DELIVERY?.["TRACKING-NUMBER"],
+      data?.RESULT?.["TRACKING-NUMBER"],
+      data?.data?.["tracking-number"],
+      data?.data?.tracking_number,
+      data?.data?.PARCEL?.["TRACKING-NUMBER"],
+    ];
+    for (const v of candidates) {
+      if (v && String(v).trim()) return String(v).trim();
+    }
+
+    // Last-resort recursive search: any key matching /tracking[-_]?number/i within the object tree
+    const stack = [data];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== "object") continue;
+      for (const [k, v] of Object.entries(cur)) {
+        if (/tracking[-_]?number/i.test(k) && v && typeof v !== "object") {
+          return String(v).trim();
+        }
+        if (v && typeof v === "object") stack.push(v);
+      }
+    }
+    return null;
+  }
+
+  function isOzonValidationOnly(data: any): boolean {
+    // Detect the "Valide API Key" sentinel response — means parcel was NOT created
+    const msg = data?.CHECK_API?.MESSAGE || data?.check_api?.message;
+    return !!msg && /valide/i.test(String(msg));
+  }
+
+Then in shipOrderToOzonExpress:
+
+  if (isOzonValidationOnly(data)) {
+    throw new Error(
+      `Ozon Express: la réponse contient seulement une validation API, pas de colis créé. ` +
+      `Vérifiez les paramètres d'envoi (Customer ID, City ID, format form-data).`
+    );
+  }
+
+  const trackingNumber = extractOzonTracking(data);
+
+  if (!trackingNumber) {
+    // CRITICAL: do NOT silently succeed without a tracking number for Ozon
+    console.error(`[OZON-SHIP][#${order.orderNumber}] No tracking in response. Full data:`, JSON.stringify(data));
+    throw new Error(
+      `Ozon Express a répondu HTTP 200 mais aucun numéro de suivi n'a été retourné. ` +
+      `Le colis n'a probablement pas été créé. Vérifiez le portail Ozon. Réponse: ${JSON.stringify(data).slice(0, 300)}`
+    );
+  }
+
+  console.log(`[OZON-SHIP][#${order.orderNumber}] ✅ tracking=${trackingNumber}`);
+  return { success: true, trackingNumber, carrierResponse: data };
+
+═══════════════════════════════════════════════════════════════════════
+STEP 4 — STATUS GUARD IN THE BULK-SHIP HANDLER
+═══════════════════════════════════════════════════════════════════════
+Find the bulk-ship handler in server/routes.ts. The current logic likely marks orders as "Expédié" before validating the carrier response. Tighten it:
+
+  try {
+    const result = await shipOrderToCarrier(order, creds, { provider });
+
+    // Required: success AND tracking number to consider it shipped
+    if (result?.success && result.trackingNumber) {
+      await storage.updateOrderTracking(order.id, {
+        provider,
+        trackingNumber: result.trackingNumber,
+        shippedAt: new Date(),
+        accountId: creds.accountId,
+      });
+      await storage.updateOrderStatus(order.id, "Expédié");
+      await storage.createIntegrationLog({
+        storeId: order.storeId,
+        provider,
+        eventType: "ship_success",
+        orderId: order.id,
+        status: "ok",
+        message: `Tracking: ${result.trackingNumber}`,
+      });
+      return { shipped: true, orderId: order.id, trackingNumber: result.trackingNumber };
+    }
+
+    // Success without tracking → treat as failure for Ozon (no silent acceptance)
+    throw new Error(result?.warning || "Aucun numéro de suivi retourné");
+  } catch (err: any) {
+    console.error(`[SHIPPING-LOG]: ❌ Order #${order.orderNumber} (${provider}) failed — ${err.message}`);
+    // Make sure status was NOT moved to Expédié
+    // If the previous code did move it, roll it back here:
+    try {
+      const current = await storage.getOrder(order.id);
+      if (current && current.status === "Expédié" && !current.trackingNumber) {
+        await storage.updateOrderStatus(order.id, "Confirmé");
+      }
+    } catch {}
+
+    await storage.createIntegrationLog?.({
+      storeId: order.storeId,
+      provider,
+      eventType: "ship_failure",
+      orderId: order.id,
+      status: "error",
+      message: err.message,
+    });
+    return { shipped: false, orderId: order.id, error: err.message };
+  }
+
+KEY RULE: status="Expédié" and trackingNumber MUST be set together, atomically. Never one without the other.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 5 — REPAIR THE ORDERS ALREADY MARKED Expédié WITHOUT TRACKING
+═══════════════════════════════════════════════════════════════════════
+The user already has orders marked "Expédié" via Ozon that have no tracking number and don't exist in Ozon's portal. Add a one-time cleanup endpoint:
+
+  app.post("/api/orders/repair-ghost-shipments", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const ghosts = await db.select().from(orders).where(and(
+        eq(orders.storeId, storeId),
+        eq(orders.status, "Expédié"),
+        sql`(${orders.trackingNumber} IS NULL OR ${orders.trackingNumber} = '')`,
+      ));
+      let reverted = 0;
+      for (const o of ghosts) {
+        await storage.updateOrderStatus(o.id, "Confirmé");
+        reverted += 1;
+      }
+      res.json({ ok: true, reverted, total: ghosts.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+After deploy, the user can call this once to restore those orders to "Confirmé" so they can retry shipping properly.
+
+═══════════════════════════════════════════════════════════════════════
+STEP 6 — VERIFY THE SHIP REQUEST FORMAT (sanity check)
+═══════════════════════════════════════════════════════════════════════
+Confirm shipOrderToOzonExpress sends form-data (NOT JSON) to:
+  https://api.ozonexpress.ma/customers/{CUSTOMER_ID}/{API_KEY}/add-parcel
+
+Required form fields (from Ozon docs):
+  parcel-receiver   (recipient name)
+  parcel-phone      (phone)
+  parcel-city       (NUMERIC city ID — from carrier_cities.settings.cityId after the sync we just fixed)
+  parcel-address    (full address)
+  parcel-price      (price in MAD)
+  parcel-stock      (1 or 0)
+Optional but recommended:
+  parcel-note
+  parcel-nature    (description / product line)
+  tracking-number  (custom; we send "TG-{orderNumber}")
+
+If any required field is empty or non-numeric where it should be numeric (parcel-city, parcel-price), Ozon may silently return a validation-only response instead of creating the parcel. Add validation BEFORE the fetch:
+
+  if (!/^\d+$/.test(String(cityId))) {
+    throw new Error(`Ozon Express: parcel-city doit être un ID numérique, reçu: ${cityId}`);
+  }
+  if (!order.customerPhone || !order.customerName || !order.customerAddress) {
+    throw new Error(`Ozon Express: champs obligatoires manquants (nom/téléphone/adresse)`);
+  }
+
+═══════════════════════════════════════════════════════════════════════
+VERIFICATION CHECKLIST
+═══════════════════════════════════════════════════════════════════════
+1. ✅ Railway logs show the full Ozon response for every ship attempt
+2. ✅ extractOzonTracking finds the tracking number in the real response
+3. ✅ If response is just "Valide API Key", ship throws explicit error
+4. ✅ Order is NEVER marked Expédié without a tracking number
+5. ✅ /repair-ghost-shipments reverts existing ghost orders to "Confirmé"
+6. ✅ After retry, the order ships AND appears in Ozon Express portal
+7. ✅ Tracking number visible in Suivi des colis
+8. ✅ Build passes
+
+═══════════════════════════════════════════════════════════════════════
+COMMIT
+═══════════════════════════════════════════════════════════════════════
+git add -A
+git commit -m "fix(ozon): robust tracking parser + status guard + ghost shipment repair"
+git push origin main
+
+WORKFLOW:
+1. Inspect first and report current shipOrderToOzonExpress + post-ship status update.
+2. Apply Steps 2–6 in one push.
+3. After deploy:
+   a. Run POST /api/orders/repair-ghost-shipments to revert ghost orders.
+   b. Try to ship ONE order to Ozon Express.
+   c. Capture the Railway log line `[OZON-SHIP][#XXXX]` — that shows the actual response.
+   d. Report it back so we know the real tracking field name.
+   e. Verify the shipment appears in Ozon's portal.

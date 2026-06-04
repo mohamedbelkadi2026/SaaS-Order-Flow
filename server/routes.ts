@@ -9047,6 +9047,39 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // ──────────────────────────────────────────────────────────────────
+  // REPAIR GHOST SHIPMENTS — revert Ozon orders marked Expédié/Attente
+  // De Ramassage without a tracking number back to Confirmé
+  // ──────────────────────────────────────────────────────────────────
+  app.post("/api/orders/repair-ghost-shipments", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const ghosts = await db
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            sql`${orders.status} IN ('Expédié', 'Attente De Ramassage', 'expédié', 'attente de ramassage')`,
+            sql`(${orders.trackNumber} IS NULL OR TRIM(${orders.trackNumber}) = '')`,
+          )
+        );
+
+      let reverted = 0;
+      for (const o of ghosts) {
+        await storage.updateOrderStatus(o.id, 'Confirmé');
+        reverted += 1;
+        console.log(`[REPAIR-GHOST] Reverted order #${(o as any).orderNumber || o.id} (id=${o.id}) → Confirmé`);
+      }
+
+      console.log(`[REPAIR-GHOST] storeId=${storeId} → reverted ${reverted}/${ghosts.length} ghost shipments`);
+      res.json({ ok: true, reverted, total: ghosts.length });
+    } catch (err: any) {
+      console.error('[REPAIR-GHOST] Error:', err.message);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════
   // CARRIER CITY MAPPING
   // ══════════════════════════════════════════════════════════════════
