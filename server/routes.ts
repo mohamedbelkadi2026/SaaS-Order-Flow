@@ -671,6 +671,28 @@ export async function registerRoutes(
       deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
     );
 
+    const storeProducts = await storage.getProductsByStore(storeId);
+    const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
+
+    // Per-product packaging map (DH/commande) for accurate profit calc
+    const emballageByPid = new Map<number, number>();
+    for (const p of storeProducts as any[]) {
+      const val = Number(p.settings?.profitDefaults?.coutEmballage ?? 0);
+      if (val > 0) emballageByPid.set(p.id, val);
+    }
+    // Order items map for delivered orders (needed for per-order packaging)
+    const deliveredFilterIds = deliveredInFilter.map((o: any) => o.id);
+    const statsOrderItems = deliveredFilterIds.length > 0
+      ? await db.select({ orderId: orderItems.orderId, productId: orderItems.productId })
+          .from(orderItems).where(inArray(orderItems.orderId, deliveredFilterIds))
+      : [];
+    const statsItemsByOrder = new Map<number, { productId: number | null }[]>();
+    for (const item of statsOrderItems) {
+      const arr = statsItemsByOrder.get(item.orderId) ?? [];
+      arr.push({ productId: item.productId });
+      statsItemsByOrder.set(item.orderId, arr);
+    }
+
     // Delivery tracking
     let totalShipped = 0, deliveredShipped = 0, refusedShipped = 0, pendingShipped = 0;
     const byCarrier: Record<string, { total: number; delivered: number; pending: number; refused: number }> = {};
@@ -758,28 +780,6 @@ export async function registerRoutes(
       }
     });
     const daily = Object.entries(dailyMap).map(([date, d]) => ({ date, count: d.total, confirmed: d.confirmed, delivered: d.delivered }));
-
-    const storeProducts = await storage.getProductsByStore(storeId);
-    const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
-
-    // Per-product packaging map (DH/commande) for accurate profit calc
-    const emballageByPid = new Map<number, number>();
-    for (const p of storeProducts as any[]) {
-      const val = Number(p.settings?.profitDefaults?.coutEmballage ?? 0);
-      if (val > 0) emballageByPid.set(p.id, val);
-    }
-    // Order items map for delivered orders (needed for per-order packaging)
-    const deliveredFilterIds = deliveredInFilter.map((o: any) => o.id);
-    const statsOrderItems = deliveredFilterIds.length > 0
-      ? await db.select({ orderId: orderItems.orderId, productId: orderItems.productId })
-          .from(orderItems).where(inArray(orderItems.orderId, deliveredFilterIds))
-      : [];
-    const statsItemsByOrder = new Map<number, { productId: number | null }[]>();
-    for (const item of statsOrderItems) {
-      const arr = statsItemsByOrder.get(item.orderId) ?? [];
-      arr.push({ productId: item.productId });
-      statsItemsByOrder.set(item.orderId, arr);
-    }
 
     const rawProductMap: Record<string, { name: string; total: number; confirme: number; inProgress: number; delivered: number; inStock: boolean }> = {};
     allOrders.forEach(o => {
