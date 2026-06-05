@@ -1,0 +1,73 @@
+Two changes to the "Ajouter une commande" page (client/src/pages/new-order-add.tsx)
+and its backend POST /api/orders/manual in server/routes.ts.
+
+────────────────────────────────────────
+FEATURE 1 — Add an order "Source" selector with brand logos.
+The orders table already has a `source` column, but manual orders hard-code it to 'manual'
+and the form never sends it. Fix the whole chain:
+
+A) FRONTEND (new-order-add.tsx):
+   - Add state: const [source, setSource] = useState<string>('manual');
+   - Use react-icons for brand logos (if not installed: `npm i react-icons`). Import:
+       import { FaFacebook, FaInstagram, FaTiktok, FaGoogle, FaWhatsapp } from 'react-icons/fa';
+   - Define the options list:
+       const SOURCES = [
+         { value: 'facebook',  label: 'Facebook',  Icon: FaFacebook,  color: '#1877F2' },
+         { value: 'instagram', label: 'Instagram', Icon: FaInstagram, color: '#E4405F' },
+         { value: 'tiktok',    label: 'TikTok',    Icon: FaTiktok,    color: '#000000' },
+         { value: 'google',    label: 'Google',    Icon: FaGoogle,    color: '#EA4335' },
+         { value: 'whatsapp',  label: 'WhatsApp',  Icon: FaWhatsapp,  color: '#25D366' },
+         { value: 'manual',    label: 'Manuel',    Icon: null,        color: '#64748b' },
+       ];
+   - Add a "Source" field in the top form grid (next to Status / Equipe). Render a Select where
+     each item shows the brand <Icon> in its brand color + the label:
+        <Select value={source} onValueChange={setSource}>
+          <SelectTrigger><SelectValue placeholder="Source de la commande" /></SelectTrigger>
+          <SelectContent>
+            {SOURCES.map(s => (
+              <SelectItem key={s.value} value={s.value}>
+                <span className="flex items-center gap-2">
+                  {s.Icon && <s.Icon style={{ color: s.color }} />} {s.label}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+   - Add `source,` to the payload object sent to POST /api/orders/manual.
+
+B) BACKEND (server/routes.ts, POST /api/orders/manual):
+   - In the zod schema add:  source: z.string().optional().default('manual'),
+   - In the storage.createOrder({...}) call, REPLACE the hard-coded `source: 'manual'` with
+     `source: data.source || 'manual'`.
+   - Also pass the real source to emitNewOrder(...) and pushOrderToSheet(...) (they currently
+     send 'manual' literally — use data.source || 'manual').
+
+C) DISPLAY: the orders list (all-orders.tsx) already has a "source" column. Make that column
+   render the matching brand logo + label using the same SOURCES mapping (small icon in brand
+   color), instead of the raw text, so the source is visible with its logo.
+
+────────────────────────────────────────
+FEATURE 2 — Selected "Equipe" must appear in the "Action By" column.
+The chain SHOULD already work: the form sends `agentId`; the backend does
+`if (agentId) await storage.assignOrder(order.id, agentId)`; and the order list hydrates
+`order.agent` from assignedToId, shown in "Action By" as `order.agent?.username`.
+Verify and fix wherever it breaks:
+   1. Confirm the form actually sends the chosen agentId (not null) when an équipe is selected
+      — the payload uses `agentId: agentId ? parseInt(agentId) : null`. Make sure selecting an
+      agent sets a numeric id and that the "none"/"Non assigné" option maps to null cleanly
+      (parseInt('none') is NaN → must send null, not NaN).
+   2. In POST /api/orders/manual, ensure the EXPLICITLY selected agent always wins over the
+      auto round-robin: it must be `const finalAgent = data.agentId ?? await storage.getNextAgent(...)`
+      and then `if (finalAgent) await storage.assignOrder(order.id, finalAgent)`. The selected
+      équipe must never be overridden by auto-assignment.
+   3. Confirm hydrateOrders attaches `agent` for the newly assigned order, and that the page the
+      user views (all-orders.tsx "Action By", and orders.tsx if it has the column) reads
+      `order.agent?.username`. After creating an order with an équipe selected, that agent's name
+      must immediately show in "Action By" (invalidate the orders queries after creation so the
+      list refetches).
+
+VERIFY:
+- Creating an order with Source = TikTok saves source='tiktok' and the list shows the TikTok
+  logo in the source column.
+- Creating an order with an équipe selected shows that agent's username in "Action By".
+- App compiles; POST /api/orders/manual returns 200.

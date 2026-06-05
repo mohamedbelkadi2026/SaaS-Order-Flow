@@ -15,6 +15,16 @@ import { Loader2, Plus, Trash2, Save, Upload } from "lucide-react";
 import { CityCombobox } from "@/components/city-combobox";
 import { MOROCCAN_CITIES } from "@/lib/carrier-cities";
 import { ProductCombobox, type ProductOption } from "@/components/product-combobox";
+import { FaFacebook, FaInstagram, FaTiktok, FaGoogle, FaWhatsapp } from 'react-icons/fa';
+
+const SOURCES = [
+  { value: 'facebook',  label: 'Facebook',  Icon: FaFacebook,  color: '#1877F2' },
+  { value: 'instagram', label: 'Instagram', Icon: FaInstagram, color: '#E4405F' },
+  { value: 'tiktok',    label: 'TikTok',    Icon: FaTiktok,    color: '#000000' },
+  { value: 'google',    label: 'Google',    Icon: FaGoogle,    color: '#EA4335' },
+  { value: 'whatsapp',  label: 'WhatsApp',  Icon: FaWhatsapp,  color: '#25D366' },
+  { value: 'manual',    label: 'Manuel',    Icon: null,        color: '#64748b' },
+];
 
 const ORDER_STATUSES = [
   { value: "nouveau", label: "Nouveau" },
@@ -68,6 +78,7 @@ export default function NewOrderAdd() {
   const [canOpen, setCanOpen] = useState(true);
   const [isStock, setIsStock] = useState(false);
   const [replace, setReplace] = useState(false);
+  const [source, setSource] = useState<string>('manual');
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
@@ -171,7 +182,8 @@ export default function NewOrderAdd() {
         canOpen: canOpen ? 1 : 0,
         isStock: isStock ? 1 : 0,
         replace: replace ? 1 : 0,
-        agentId: agentId ? parseInt(agentId) : null,
+        agentId: agentId && agentId !== 'none' ? parseInt(agentId) : null,
+        source,
         comment: comment.trim() || null,
         totalPrice: itemsTotal,
         magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : null,
@@ -326,6 +338,21 @@ export default function NewOrderAdd() {
                 <SelectTrigger className="text-sm"><SelectValue placeholder="Sélectionnez une Status" /></SelectTrigger>
                 <SelectContent>
                   {ORDER_STATUSES.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs mb-1.5 block">Source</Label>
+              <Select value={source} onValueChange={setSource} data-testid="select-source">
+                <SelectTrigger className="text-sm"><SelectValue placeholder="Source de la commande" /></SelectTrigger>
+                <SelectContent>
+                  {SOURCES.map(s => (
+                    <SelectItem key={s.value} value={s.value}>
+                      <span className="flex items-center gap-2">
+                        {s.Icon && <s.Icon style={{ color: s.color }} />} {s.label}
+                      </span>
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

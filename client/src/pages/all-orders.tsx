@@ -16,6 +16,7 @@ import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, ListOrdered, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { SiWhatsapp, SiShopify } from "react-icons/si";
+import { FaFacebook, FaInstagram, FaTiktok, FaGoogle, FaWhatsapp } from 'react-icons/fa';
 import { useToast } from "@/hooks/use-toast";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
@@ -83,6 +84,28 @@ function getCarrierLogo(provider: string | null | undefined): string | null {
   if (!provider) return null;
   const key = provider.toLowerCase().replace(/\s+/g, '');
   return CARRIER_LOGOS[key] || CARRIER_LOGOS[provider.toLowerCase()] || null;
+}
+
+const SOURCE_CONFIG: Record<string, { label: string; Icon: React.ComponentType<any> | null; color: string }> = {
+  facebook:  { label: 'Facebook',  Icon: FaFacebook,  color: '#1877F2' },
+  instagram: { label: 'Instagram', Icon: FaInstagram, color: '#E4405F' },
+  tiktok:    { label: 'TikTok',    Icon: FaTiktok,    color: '#000000' },
+  google:    { label: 'Google',    Icon: FaGoogle,    color: '#EA4335' },
+  whatsapp:  { label: 'WhatsApp',  Icon: FaWhatsapp,  color: '#25D366' },
+  manual:    { label: 'Manuel',    Icon: null,        color: '#64748b' },
+};
+
+function SourceBadge({ source }: { source?: string | null }) {
+  const key = (source || 'manual').toLowerCase();
+  const cfg = SOURCE_CONFIG[key];
+  if (!cfg) return <span className="capitalize text-muted-foreground">{source || 'manual'}</span>;
+  const { label, Icon, color } = cfg;
+  return (
+    <span className="flex items-center gap-1.5" style={{ color }}>
+      {Icon && <Icon size={12} />}
+      <span className="text-[11px] font-medium">{label}</span>
+    </span>
+  );
 }
 
 const ALL_COLUMNS = [
@@ -1000,7 +1023,7 @@ export default function AllOrders() {
                       {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}
                       {isColVisible('source') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          <span className="capitalize text-muted-foreground">{order.source || 'manual'}</span>
+                          <SourceBadge source={order.source} />
                         </TableCell>
                       )}
                       {isColVisible('utmSource') && (

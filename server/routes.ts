@@ -5262,6 +5262,7 @@ function ensureHeaders(sheet) {
         isStock: z.number().optional().default(0),
         replace: z.number().optional().default(0),
         agentId: z.number().nullable().optional(),
+        source: z.string().optional().default('manual'),
         comment: z.string().nullable().optional(),
         totalPrice: z.number().optional().default(0),
         items: z.array(z.object({
@@ -5325,7 +5326,7 @@ function ensureHeaders(sheet) {
         productCost: computedProductCost,
         shippingCost: 0,
         adSpend: 0,
-        source: 'manual',
+        source: data.source || 'manual',
         comment: data.comment || null,
         rawProductName,
         canOpen: data.canOpen,
@@ -5345,13 +5346,13 @@ function ensureHeaders(sheet) {
         await storage.updateOrderStatus(order.id, 'confirme');
       }
 
-      const agentId = data.agentId || await storage.getNextAgent(storeId, manualMagasinId, undefined, data.customerCity);
-      if (agentId) await storage.assignOrder(order.id, agentId);
+      const finalAgent = data.agentId ?? await storage.getNextAgent(storeId, manualMagasinId, undefined, data.customerCity);
+      if (finalAgent) await storage.assignOrder(order.id, finalAgent);
 
       await storage.incrementMonthlyOrders(storeId);
 
       // Real-time push
-      emitNewOrder(storeId, { id: order.id, orderNumber, customerName: data.customerName, status: data.status, source: 'manual' });
+      emitNewOrder(storeId, { id: order.id, orderNumber, customerName: data.customerName, status: data.status, source: data.source || 'manual' });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
