@@ -145,9 +145,13 @@ interface LiveProductStat {
   deliveredOrders: number;
   refusedOrders: number;
   returnedOrders: number;
+  totalUnits?: number;
+  deliveredUnits?: number;
   revenue: number;
   productCost: number;
   shippingCost: number;
+  packagingCost?: number;
+  confirmationCost?: number;
   adSpend: number;
   netProfit: number;
   margin: number;
@@ -778,7 +782,12 @@ export default function ProfitAnalyzer() {
                               </td>
                             ) : (
                               <>
-                                <td className="px-3 py-3 text-center text-slate-300 font-bold">{p.totalOrders}</td>
+                                <td className="px-3 py-3 text-center text-slate-300 font-bold">
+                                  <div className="font-bold">{p.totalOrders} cmd</div>
+                                  {p.totalUnits != null && p.totalUnits !== p.totalOrders && (
+                                    <div className="text-[11px] text-slate-400">{p.totalUnits} u</div>
+                                  )}
+                                </td>
                                 <td className="px-3 py-3 text-center font-bold" style={{ color: '#06b6d4' }}>{p.confirmedOrders}</td>
                                 <td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.deliveredOrders}</td>
                                 <td className="px-3 py-3 text-center font-bold" style={{ color: p.refusedOrders > 0 ? '#f43f5e' : '#94a3b8' }}>{p.refusedOrders}</td>
