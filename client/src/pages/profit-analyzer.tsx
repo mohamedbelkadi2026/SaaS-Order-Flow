@@ -743,7 +743,7 @@ export default function ProfitAnalyzer() {
                   </span>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
+                  <table className="text-xs" style={{ minWidth: '1200px', width: '100%' }}>
                     <thead>
                       <tr className="border-b border-white/5 text-slate-400 text-[10px] uppercase tracking-wider">
                         <th className="text-left px-4 py-2.5 font-semibold min-w-[200px]">Produit</th>
@@ -751,11 +751,14 @@ export default function ProfitAnalyzer() {
                         <th className="text-center px-3 py-2.5">Conf</th>
                         <th className="text-center px-3 py-2.5">Livré</th>
                         <th className="text-center px-3 py-2.5">Refusé</th>
-                        <th className="text-right px-3 py-2.5">CA (DH)</th>
-                        <th className="text-right px-3 py-2.5">Coût</th>
-                        <th className="text-right px-3 py-2.5">Livraison</th>
+                        <th className="text-right px-3 py-2.5"><div>CA Brut</div><div className="text-[9px] text-slate-500 normal-case font-normal">price total</div></th>
+                        <th className="text-right px-3 py-2.5"><div>Frais Livr.</div><div className="text-[9px] text-slate-500 normal-case font-normal">du fichier</div></th>
+                        <th className="text-right px-3 py-2.5"><div>CA Net</div><div className="text-[9px] text-slate-500 normal-case font-normal">brut − livr.</div></th>
+                        <th className="text-right px-3 py-2.5"><div>Sourcing Total</div><div className="text-[9px] text-slate-500 normal-case font-normal">achat × unités</div></th>
+                        <th className="text-right px-3 py-2.5"><div>Emballage Total</div><div className="text-[9px] text-slate-500 normal-case font-normal">emball. × cmd</div></th>
+                        <th className="text-right px-3 py-2.5"><div>Commissions</div><div className="text-[9px] text-slate-500 normal-case font-normal">confirm. × cmd</div></th>
                         <th className="text-right px-3 py-2.5">Pub</th>
-                        <th className="text-right px-4 py-2.5">Profit Net</th>
+                        <th className="text-right px-4 py-2.5">Bénéfice Net</th>
                         <th className="text-center px-3 py-2.5">Marge</th>
                         <th className="text-center px-3 py-2.5">ROI</th>
                         <th className="text-right px-3 py-2.5 font-semibold">Par Livr.</th>
@@ -764,8 +767,9 @@ export default function ProfitAnalyzer() {
                     <tbody>
                       {liveProducts.map((p: any, i: number) => {
                         const fmt = (n: number) => n.toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                        const profitColor  = p.netProfit > 0 ? '#10b981' : p.netProfit < 0 ? '#f43f5e' : '#94a3b8';
-                        const marginColor  = p.margin >= 30 ? '#10b981' : p.margin >= 10 ? '#f59e0b' : '#f43f5e';
+                        const caNet       = (p.revenue ?? 0) - (p.shippingCost ?? 0);
+                        const profitColor = p.netProfit > 0 ? '#10b981' : p.netProfit < 0 ? '#f43f5e' : '#94a3b8';
+                        const marginColor = p.margin >= 30 ? '#10b981' : p.margin >= 10 ? '#f59e0b' : '#f43f5e';
                         return (
                           <tr key={i} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${p.noData ? "opacity-50" : ""}`} data-testid={`row-live-product-${i}`}>
                             <td className="px-4 py-3 text-white font-semibold min-w-[200px] max-w-[260px]" title={p.name} style={{ wordBreak: 'break-word', whiteSpace: 'normal', lineHeight: '1.3' }}>
@@ -777,7 +781,7 @@ export default function ProfitAnalyzer() {
                               )}
                             </td>
                             {p.noData ? (
-                              <td colSpan={11} className="px-3 py-3 text-center text-slate-500 text-[11px] italic">
+                              <td colSpan={15} className="px-3 py-3 text-center text-slate-500 text-[11px] italic">
                                 Aucune commande sur cette période
                               </td>
                             ) : (
@@ -791,21 +795,51 @@ export default function ProfitAnalyzer() {
                                 <td className="px-3 py-3 text-center font-bold" style={{ color: '#06b6d4' }}>{p.confirmedOrders}</td>
                                 <td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.deliveredOrders}</td>
                                 <td className="px-3 py-3 text-center font-bold" style={{ color: p.refusedOrders > 0 ? '#f43f5e' : '#94a3b8' }}>{p.refusedOrders}</td>
-                                <td className="px-3 py-3 text-right font-bold text-white">{p.revenue > 0 ? fmt(p.revenue) : <span className="text-slate-500">—</span>}</td>
-                                <td className="px-3 py-3 text-right text-slate-300">{p.productCost > 0 ? fmt(p.productCost) : <span className="text-slate-500">0</span>}</td>
-                                <td className="px-3 py-3 text-right" style={{ color: p.shippingCost > 0 ? '#f59e0b' : '#475569' }}>{fmt(p.shippingCost)}</td>
-                                <td className="px-3 py-3 text-right" style={{ color: p.adSpend > 0 ? '#8b5cf6' : '#475569' }}>{fmt(p.adSpend)}</td>
-                                <td className="px-4 py-3 text-right font-extrabold text-sm" style={{ color: profitColor }}>{fmt(p.netProfit)}</td>
+                                {/* CA Brut */}
+                                <td className="px-3 py-3 text-right font-bold" style={{ color: '#10b981' }}>
+                                  {p.revenue > 0 ? fmt(p.revenue) : <span className="text-slate-500">—</span>}
+                                </td>
+                                {/* Frais Livr. */}
+                                <td className="px-3 py-3 text-right font-medium" style={{ color: p.shippingCost > 0 ? '#f43f5e' : '#475569' }}>
+                                  {p.shippingCost > 0 ? `−${fmt(p.shippingCost)} DH` : '—'}
+                                </td>
+                                {/* CA Net */}
+                                <td className="px-3 py-3 text-right font-bold" style={{ color: '#06b6d4' }}>
+                                  {fmt(caNet)} DH
+                                </td>
+                                {/* Sourcing Total */}
+                                <td className="px-3 py-3 text-right text-slate-300">
+                                  {p.productCost > 0 ? `−${fmt(p.productCost)} DH` : '—'}
+                                </td>
+                                {/* Emballage Total */}
+                                <td className="px-3 py-3 text-right" style={{ color: '#ec4899' }}>
+                                  {`−${fmt(p.packagingCost ?? 0)} DH`}
+                                </td>
+                                {/* Commissions */}
+                                <td className="px-3 py-3 text-right text-slate-300">
+                                  {`−${fmt(p.confirmationCost ?? 0)} DH`}
+                                </td>
+                                {/* Pub */}
+                                <td className="px-3 py-3 text-right" style={{ color: p.adSpend > 0 ? '#8b5cf6' : '#475569' }}>
+                                  {`−${fmt(p.adSpend ?? 0)} DH`}
+                                </td>
+                                {/* Bénéfice Net */}
+                                <td className="px-4 py-3 text-right font-extrabold text-sm" style={{ color: profitColor }}>
+                                  {fmt(p.netProfit)} DH
+                                </td>
+                                {/* Marge */}
                                 <td className="px-3 py-3 text-center">
                                   <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: marginColor + '20', color: marginColor, border: `1px solid ${marginColor}40` }}>
                                     {p.margin.toFixed(1)}%
                                   </span>
                                 </td>
+                                {/* ROI */}
                                 <td className="px-3 py-3 text-center">
                                   <span className="text-[11px] font-bold" style={{ color: p.roi > 0 ? '#10b981' : '#f43f5e' }}>
                                     {p.roi.toFixed(0)}%
                                   </span>
                                 </td>
+                                {/* Par Livr. */}
                                 <td className="px-3 py-3 text-right">
                                   {p.deliveredOrders > 0 ? (
                                     <span className="text-[12px] font-bold" style={{ color: (p.netProfit / p.deliveredOrders) > 0 ? "#10b981" : "#f43f5e" }}>

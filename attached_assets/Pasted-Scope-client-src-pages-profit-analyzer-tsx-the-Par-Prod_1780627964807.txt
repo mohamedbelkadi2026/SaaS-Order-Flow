@@ -1,0 +1,42 @@
+Scope: client/src/pages/profit-analyzer.tsx — the "Par Produit (Live)" per-product table only.
+The GET /api/products/profitability endpoint ALREADY returns every needed field per product:
+revenue, shippingCost, productCost, packagingCost, confirmationCost, adSpend, netProfit,
+margin, roi, totalOrders, totalUnits, confirmedOrders, deliveredOrders, refusedOrders,
+deliveredUnits. Do NOT change the endpoint. Only restructure the Live table columns so it
+shows the full cost breakdown like the CSV-import "DÉTAIL PAR PRODUIT" table.
+
+Replace the Live table's <thead> row so the columns become, in this exact order:
+  Produit | Cmd | Conf | Livré | Refusé | CA Brut | Frais Livr. | CA Net | Sourcing Total |
+  Emballage Total | Commissions | Pub | Bénéfice Net | Marge | ROI | Par Livr.
+Add small grey sub-labels under the financial headers, matching the CSV table:
+  CA Brut → "price total" ; Frais Livr. → "du fichier" ; CA Net → "brut − livr." ;
+  Sourcing Total → "achat × unités" ; Emballage Total → "emball. × cmd" ;
+  Commissions → "confirm. × cmd".
+
+Then update each product row (the non-noData branch) so the financial cells map to:
+  - CA Brut          = fmt(p.revenue)                      green (#10b981)
+  - Frais Livr.      = p.shippingCost>0 ? "−"+fmt(p.shippingCost)+" DH" : "—"   red (#f43f5e)
+  - CA Net           = fmt(p.revenue - p.shippingCost) + " DH"                  cyan (#06b6d4)
+  - Sourcing Total   = p.productCost>0 ? "−"+fmt(p.productCost)+" DH" : "—"     slate-300
+  - Emballage Total  = p.packagingCost>0 ? "−"+fmt(p.packagingCost)+" DH" : "−0,00 DH"   pink (#ec4899)
+  - Commissions      = p.confirmationCost>0 ? "−"+fmt(p.confirmationCost)+" DH" : "−0,00 DH"  slate-300
+  - Pub              = p.adSpend>0 ? "−"+fmt(p.adSpend)+" DH" : "−0,00 DH"      purple (#8b5cf6)
+  - Bénéfice Net     = fmt(p.netProfit) + " DH"   bold, green if ≥0 else red
+  - Marge            = keep existing badge using p.margin
+  - ROI              = keep existing p.roi rendering
+  - Par Livr.        = keep existing (p.netProfit / p.deliveredOrders)
+Keep the existing Cmd cell exactly as-is (it already shows "{totalOrders} cmd" + "{totalUnits} u").
+Keep Conf / Livré / Refusé cells as-is.
+Use the existing `fmt` helper for numbers. Negative deductions must be shown in red/their colour
+with a leading "−", exactly like the CSV "DÉTAIL PAR PRODUIT" table the user referenced.
+
+IMPORTANT — fix the empty-state colSpan: the noData branch currently uses colSpan={11}.
+The table now has 16 columns total (15 after the Produit column), so change that colSpan to 15
+so the "Aucune commande sur cette période" cell spans correctly.
+
+Make the table horizontally scrollable on small screens (wrap in a div with overflow-x-auto and
+keep a sensible min-width) so all columns stay readable. Do not change the "Par Plateforme"
+table or the CSV-import table. App must compile.
+
+VERIFY: CA Net = CA Brut − Frais Livr.; and
+Bénéfice Net = CA Brut − Frais Livr. − Sourcing − Emballage − Commissions − Pub for every row.
