@@ -1718,6 +1718,9 @@ export class DatabaseStorage implements IStorage {
         reference: p.reference,
         hasVariants: p.hasVariants,
         baseStock: p.stock,
+        settings: p.settings,
+        descriptionDarija: p.descriptionDarija,
+        aiFeatures: p.aiFeatures,
         stock: totalStock,
         variantCount: variants.length || 1,
         recu,
@@ -3398,9 +3401,6 @@ export class DatabaseStorage implements IStorage {
     byAgent: { agentId: number; agentName: string; commissionRate: number; deliveredCount: number; totalCommission: number }[];
     ordersCount: number;
   }> {
-    const store = await db.select().from(stores).where(eq(stores.id, storeId)).limit(1);
-    const storePackaging = store[0]?.packagingCost ?? 0;
-
     // --- Delivered orders (COD: only status='delivered' counts) ---
     const orderConds: any[] = [eq(orders.storeId, storeId), eq(orders.status, 'delivered')];
     if (dateFrom) orderConds.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
@@ -3422,13 +3422,37 @@ export class DatabaseStorage implements IStorage {
     // --- COGS: use order_items × products.cost_price (ground truth), fallback to orders.product_cost ---
     const cogsMap = await this.computeOrdersCOGS(deliveredOrders.map(o => ({ id: o.id, productCost: o.productCost })));
 
+    // --- Per-product packaging cost map (DH/commande from settings.profitDefaults.coutEmballage) ---
+    const storeProductsList = await db.select({ id: products.id, settings: products.settings }).from(products).where(eq(products.storeId, storeId));
+    const emballageByProductId = new Map<number, number>();
+    for (const p of storeProductsList) {
+      const val = Number((p.settings as any)?.profitDefaults?.coutEmballage ?? 0);
+      if (val > 0) emballageByProductId.set(p.id, val);
+    }
+
+    // --- Order items map for delivered orders (needed for per-order packaging) ---
+    const deliveredOrderIds = deliveredOrders.map(o => o.id);
+    const deliveredItems = deliveredOrderIds.length > 0
+      ? await db.select({ orderId: orderItems.orderId, productId: orderItems.productId })
+          .from(orderItems).where(inArray(orderItems.orderId, deliveredOrderIds))
+      : [];
+    const itemsByOrderId = new Map<number, { productId: number | null }[]>();
+    for (const item of deliveredItems) {
+      const arr = itemsByOrderId.get(item.orderId) ?? [];
+      arr.push({ productId: item.productId });
+      itemsByOrderId.set(item.orderId, arr);
+    }
+
     // --- Revenue & order costs (delivered only) --- strict Number() to prevent concatenation ---
     let revenue = 0, productCost = 0, shippingCost = 0, packagingCostTotal = 0;
     for (const o of deliveredOrders) {
       revenue += Number(o.totalPrice ?? 0);
       productCost += Number(cogsMap.get(o.id) ?? 0);
       shippingCost += Number(o.shippingCost ?? 0);
-      packagingCostTotal += Number(storePackaging);
+      // Packaging: per order (not per quantity) — sum coutEmballage(DH) over items, convert to centimes
+      const orderEmballageDH = (itemsByOrderId.get(o.id) ?? [])
+        .reduce((sum, item) => sum + (emballageByProductId.get(item.productId ?? 0) ?? 0), 0);
+      packagingCostTotal += Math.round(orderEmballageDH * 100);
     }
 
     // --- Agent commissions (delivered orders only) ---
@@ -3494,7 +3518,9 @@ export class DatabaseStorage implements IStorage {
       const agentComm = o.assignedToId ? Number(agentMap.get(o.assignedToId)?.commissionRate ?? 0) * 100 : 0;
       const realCogs = Number(cogsMap.get(o.id) ?? 0);
       existing.revenue += Number(o.totalPrice ?? 0);
-      existing.orderProfit += Number(o.totalPrice ?? 0) - realCogs - Number(o.shippingCost ?? 0) - Number(storePackaging) - agentComm;
+      const orderPkgDH = (itemsByOrderId.get(o.id) ?? [])
+        .reduce((sum, item) => sum + (emballageByProductId.get(item.productId ?? 0) ?? 0), 0);
+      existing.orderProfit += Number(o.totalPrice ?? 0) - realCogs - Number(o.shippingCost ?? 0) - Math.round(orderPkgDH * 100) - agentComm;
       buyerOrderMap.set(attributedId, existing);
     }
     const buyerAdSpendMap = new Map<number, number>();

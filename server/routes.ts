@@ -659,9 +659,7 @@ export async function registerRoutes(
     let pasReponse = 0, rappel = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
 
-    // Fetch store packaging cost and agent commission rates for accurate profit calc
-    const storeData = await storage.getStore(storeId);
-    const storePackagingCost = (storeData as any)?.packagingCost ?? 0;
+    // Fetch agent commission rates for accurate profit calc
     const agentSettingsList = await storage.getStoreAgentSettings(storeId);
     const agentCommissionMap = new Map<number, number>(
       agentSettingsList.map((s: any) => [s.agentId, s.commissionRate ?? 0])
@@ -711,7 +709,10 @@ export async function registerRoutes(
         revenue += (o.totalPrice ?? 0);
         totalProductCost += statsCogsMap.get(o.id) ?? 0;
         totalShipping += (o.shippingCost ?? 0);
-        totalPackaging += storePackagingCost;
+        // Packaging: per order (not per quantity) — sum coutEmballage(DH) over items → centimes
+        const orderPkgDH = (statsItemsByOrder.get(o.id) ?? [])
+          .reduce((sum: number, item: any) => sum + (emballageByPid.get(item.productId ?? 0) ?? 0), 0);
+        totalPackaging += Math.round(orderPkgDH * 100);
         // Agent commission: stored in DH, convert to cents
         if (o.assignedToId) {
           const rate = agentCommissionMap.get(o.assignedToId) ?? 0;
@@ -760,6 +761,25 @@ export async function registerRoutes(
 
     const storeProducts = await storage.getProductsByStore(storeId);
     const internalProductNames = new Set(storeProducts.map((p: any) => p.name.toLowerCase().trim()));
+
+    // Per-product packaging map (DH/commande) for accurate profit calc
+    const emballageByPid = new Map<number, number>();
+    for (const p of storeProducts as any[]) {
+      const val = Number(p.settings?.profitDefaults?.coutEmballage ?? 0);
+      if (val > 0) emballageByPid.set(p.id, val);
+    }
+    // Order items map for delivered orders (needed for per-order packaging)
+    const deliveredFilterIds = deliveredInFilter.map((o: any) => o.id);
+    const statsOrderItems = deliveredFilterIds.length > 0
+      ? await db.select({ orderId: orderItems.orderId, productId: orderItems.productId })
+          .from(orderItems).where(inArray(orderItems.orderId, deliveredFilterIds))
+      : [];
+    const statsItemsByOrder = new Map<number, { productId: number | null }[]>();
+    for (const item of statsOrderItems) {
+      const arr = statsItemsByOrder.get(item.orderId) ?? [];
+      arr.push({ productId: item.productId });
+      statsItemsByOrder.set(item.orderId, arr);
+    }
 
     const rawProductMap: Record<string, { name: string; total: number; confirme: number; inProgress: number; delivered: number; inStock: boolean }> = {};
     allOrders.forEach(o => {

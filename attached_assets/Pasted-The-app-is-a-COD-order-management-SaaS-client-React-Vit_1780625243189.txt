@@ -1,0 +1,84 @@
+The app is a COD order-management SaaS (client = React/Vite, server = Express + Drizzle).
+Fix the following 4 issues precisely. Do NOT change anything unrelated. Keep the app compiling.
+
+────────────────────────────────────────
+FIX 1 — Per-product packaging fee (and AI fields) disappear when reopening the product Edit dialog.
+
+Root cause: server/storage.ts → getInventoryStats() builds each productStats.push({...})
+object WITHOUT the `settings` field (and without descriptionDarija / aiFeatures / imageUrl /
+hasVariants). The Edit dialog in client/src/pages/inventory.tsx (openEditDialog) reads
+product.settings?.profitDefaults, so it always gets {} and shows empty fields. The value IS
+saved in the DB; the list just doesn't return it.
+
+Action: in getInventoryStats(), inside the productStats.push({ ... }) object, ADD these fields
+from the product `p`:
+   settings: p.settings,
+   descriptionDarija: p.descriptionDarija,
+   aiFeatures: p.aiFeatures,
+   imageUrl: p.imageUrl,
+   hasVariants: p.hasVariants,
+   baseStock: p.stock,
+Keep all existing fields. After this, reopening Edit must show the saved packaging fee, Darija
+description and features.
+
+────────────────────────────────────────
+FIX 2 — Packaging cost is ignored in the global profit (Dashboard "Profit Net" AND
+"Rentabilité Avancée" show Coût emballage = 0).
+
+Root cause: profit is computed from the STORE-level store.packagingCost (= 0) instead of the
+PER-PRODUCT settings.profitDefaults.coutEmballage. Note: the per-product profitability endpoint
+(GET /api/products/profitability) already does it correctly using
+item.productSettings.profitDefaults.coutEmballage — make the other two match it.
+
+IMPORTANT UNIT RULE: in getAdminProfitSummary() and in the /api/stats handler, all money is in
+CENTIMES (totalPrice, productCost, shippingCost are centimes; agent commission is rate*100).
+But coutEmballage is stored in DH. So when adding packaging there you MUST multiply by 100
+(DH → centimes). Packaging is per ORDER ("DH / commande"), so add it once per delivered order,
+NOT multiplied by quantity.
+
+2a) server/storage.ts → getAdminProfitSummary():
+   - Stop using storePackaging (store[0].packagingCost) for packaging.
+   - Build a map productId → coutEmballage(DH) from the store products' settings.profitDefaults.coutEmballage.
+   - For each delivered order, compute its packaging = SUM over its order_items of
+     (coutEmballage of that item's product) , in DH, then ×100 to centimes.
+   - Replace `packagingCostTotal += Number(storePackaging)` with this per-order packaging (×100).
+   - In the byBuyer loop, replace the `- Number(storePackaging)` term with the SAME per-order
+     packaging value (×100) for that order.
+
+2b) server/routes.ts → the GET /api/stats handler (the dashboard stats):
+   - In the loop over delivered orders, replace `totalPackaging += storePackagingCost` with the
+     per-order packaging computed from each order's items' product coutEmballage (DH) ×100.
+   - Build the productId→coutEmballage map once before the loop (from storeProducts settings),
+     and an orderId→items map, so you can sum per order.
+
+After this, with a product whose coutEmballage = 3 DH and 7 delivered orders of that product,
+"Coût emballage" must show -21.00 DH (not 0), and Profit Net must drop accordingly, identically
+on the Dashboard, in Rentabilité Avancée, and in the per-product Profitability table.
+
+────────────────────────────────────────
+FIX 3 — Verify quantity correctness (keep it exact, do not double-count).
+   - COGS (product cost) must stay = SUM(products.cost_price × order_items.quantity). It already
+     is in computeOrdersCOGS — keep it.
+   - Revenue stays = order.totalPrice (already reflects quantity).
+   - Packaging stays PER ORDER (do NOT multiply by quantity).
+   - Shipping stays per order (order.shippingCost).
+Just confirm these and fix any place that multiplies packaging by quantity or that uses a flat
+product cost without quantity.
+
+────────────────────────────────────────
+FIX 4 — "Modifier le produit" / "Nouveau Produit" dialogs are not responsive (broken on phone).
+
+In client/src/pages/inventory.tsx, for BOTH the create and the edit <DialogContent>:
+   - Change the width classes to be responsive, e.g.:
+       className="w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6"
+   - Make the field grids responsive: change every `grid-cols-2` to
+     `grid-cols-1 sm:grid-cols-2`, and every `grid-cols-3` to `grid-cols-1 sm:grid-cols-3`.
+   - Ensure the dialog title row and the close (X) button stay visible and not clipped on small
+     screens, and that the footer buttons (Annuler / Mettre à jour / Enregistrer) wrap properly
+     (use flex-col gap-2 on mobile, sm:flex-row sm:justify-end on desktop).
+Test at ~375px width (phone) and desktop: no horizontal overflow, all fields readable.
+
+────────────────────────────────────────
+After all fixes: create a product with packaging fee = 3, save, reopen Edit → fee still 3.
+Deliver 1 order of it → Dashboard Profit Net and Rentabilité Avancée both subtract 3 DH packaging.
+Open both dialogs on mobile → fully responsive.
