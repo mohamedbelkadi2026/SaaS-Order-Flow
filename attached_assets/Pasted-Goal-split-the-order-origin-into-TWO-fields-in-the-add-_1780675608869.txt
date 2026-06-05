@@ -1,0 +1,60 @@
+Goal: split the order origin into TWO fields in the add-order form, and show brand logos on
+the UTM Source side (not on Source).
+- "Source" = the entry method → for manually added orders it is "Manuel".
+- "Source UTM" = the marketing channel with brand logos (Facebook, Instagram, TikTok, Google,
+  WhatsApp).
+
+FILE 1 — client/src/pages/new-order-add.tsx
+1. Keep a `source` state defaulting to 'manual'. Replace the current brand "Source" <Select>
+   with a simple read-only "Source" field showing "Manuel":
+     <div>
+       <Label className="text-xs mb-1.5 block">Source</Label>
+       <Input value="Manuel" readOnly className="bg-gray-50 text-sm" data-testid="input-source" />
+     </div>
+   (source stays 'manual' in the payload — it represents the manual entry method.)
+2. Add a NEW "Source UTM" <Select> with the brand logos, bound to a new `utmSource` state.
+   Reuse the existing SOURCES list but keep ONLY the brand entries (facebook, instagram, tiktok,
+   google, whatsapp) — remove the 'manual' entry from this UTM list. Add:
+     const [utmSource, setUtmSource] = useState<string>('');
+     ...
+     <div>
+       <Label className="text-xs mb-1.5 block">Source UTM</Label>
+       <Select value={utmSource} onValueChange={setUtmSource} data-testid="select-utm-source">
+         <SelectTrigger className="text-sm"><SelectValue placeholder="Choisir la source" /></SelectTrigger>
+         <SelectContent>
+           {UTM_SOURCES.map(s => (
+             <SelectItem key={s.value} value={s.value}>
+               <span className="flex items-center gap-2">
+                 {s.Icon && <s.Icon style={{ color: s.color }} />} {s.label}
+               </span>
+             </SelectItem>
+           ))}
+         </SelectContent>
+       </Select>
+     </div>
+   (where UTM_SOURCES = the brand-only list with Facebook/Instagram/TikTok/Google/WhatsApp +
+   their Fa icons and brand colors, same icons already imported.)
+3. In the POST /api/orders/manual payload, keep `source` and ADD `utmSource: utmSource || null`.
+
+FILE 2 — server/routes.ts, POST /api/orders/manual
+4. In the zod schema add:  utmSource: z.string().nullable().optional(),
+5. In the storage.createOrder({...}) call add:  utmSource: data.utmSource || null,
+   (keep source: data.source || 'manual' as is.)
+6. Where emitNewOrder / pushOrderToSheet send utmSource, use data.utmSource || null.
+
+FILE 3 — client/src/pages/all-orders.tsx (the list)
+7. The "UTM Source" column currently shows a violet text Badge. Replace its content (BOTH the
+   desktop cell around the `order.utmSource ? <Badge>...</Badge>` and the mobile card Badge)
+   with the brand-logo badge:
+       {order.utmSource ? <SourceBadge source={order.utmSource} /> : <span className="text-muted-foreground">-</span>}
+   So the UTM Source column shows the Facebook/TikTok/WhatsApp/Google/Instagram logo + label,
+   exactly like the dropdown in the form.
+8. Leave the "Source" column as-is (it shows SourceBadge(order.source) → "Manuel" for manual
+   orders).
+
+VERIFY:
+- The add-order form shows a read-only "Source = Manuel" AND a "Source UTM" selector with brand
+  logos.
+- Creating an order with Source UTM = TikTok saves utmSource='tiktok'; the list "UTM Source"
+  column shows the TikTok logo + label; the "Source" column shows "Manuel".
+- App compiles; POST /api/orders/manual returns 200.

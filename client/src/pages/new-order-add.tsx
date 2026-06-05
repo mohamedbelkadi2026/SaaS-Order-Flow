@@ -26,6 +26,8 @@ const SOURCES = [
   { value: 'manual',    label: 'Manuel',    Icon: null,        color: '#64748b' },
 ];
 
+const UTM_SOURCES = SOURCES.filter(s => s.value !== 'manual');
+
 const ORDER_STATUSES = [
   { value: "nouveau", label: "Nouveau" },
   { value: "confirme", label: "Confirmé" },
@@ -78,7 +80,8 @@ export default function NewOrderAdd() {
   const [canOpen, setCanOpen] = useState(true);
   const [isStock, setIsStock] = useState(false);
   const [replace, setReplace] = useState(false);
-  const [source, setSource] = useState<string>('manual');
+  const [source] = useState<string>('manual');
+  const [utmSource, setUtmSource] = useState<string>('');
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
@@ -184,6 +187,7 @@ export default function NewOrderAdd() {
         replace: replace ? 1 : 0,
         agentId: agentId && agentId !== 'none' ? parseInt(agentId) : null,
         source,
+        utmSource: utmSource || null,
         comment: comment.trim() || null,
         totalPrice: itemsTotal,
         magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : (storeData?.id ?? null),
@@ -343,10 +347,14 @@ export default function NewOrderAdd() {
             </div>
             <div>
               <Label className="text-xs mb-1.5 block">Source</Label>
-              <Select value={source} onValueChange={setSource} data-testid="select-source">
-                <SelectTrigger className="text-sm"><SelectValue placeholder="Source de la commande" /></SelectTrigger>
+              <Input value="Manuel" readOnly className="bg-gray-50 text-sm" data-testid="input-source" />
+            </div>
+            <div>
+              <Label className="text-xs mb-1.5 block">Source UTM</Label>
+              <Select value={utmSource} onValueChange={setUtmSource} data-testid="select-utm-source">
+                <SelectTrigger className="text-sm"><SelectValue placeholder="Choisir la source" /></SelectTrigger>
                 <SelectContent>
-                  {SOURCES.map(s => (
+                  {UTM_SOURCES.map(s => (
                     <SelectItem key={s.value} value={s.value}>
                       <span className="flex items-center gap-2">
                         {s.Icon && <s.Icon style={{ color: s.color }} />} {s.label}

@@ -1034,9 +1034,7 @@ export default function AllOrders() {
                       )}
                       {isColVisible('utmSource') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          {order.utmSource ? (
-                            <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[10px] font-medium">{order.utmSource}</Badge>
-                          ) : <span className="text-muted-foreground">-</span>}
+                          {order.utmSource ? <SourceBadge source={order.utmSource} /> : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
                       {isColVisible('utmCampaign') && (
@@ -1139,7 +1137,7 @@ export default function AllOrders() {
                       : <Badge className="mt-1 ml-1 bg-blue-100 text-blue-700 border-blue-200 text-[10px]">{carrier}</Badge>;
                   })()}
                   {order.utmSource && (
-                    <Badge className="mt-1 ml-1 bg-violet-100 text-violet-700 border-violet-200 text-[10px]">{order.utmSource}</Badge>
+                    <span className="mt-1 ml-1 inline-flex"><SourceBadge source={order.utmSource} /></span>
                   )}
                 </div>
               </div>
