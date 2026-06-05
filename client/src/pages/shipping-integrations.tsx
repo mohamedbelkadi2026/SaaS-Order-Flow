@@ -1938,6 +1938,18 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     errorTitle: "Erreur de synchronisation Digylog",
   });
 
+  const ozonSyncPending = syncingProvider === "ozonexpress";
+  const handleOzonSync = () => syncCarrier("ozonexpress", {
+    successTitle: "✅ Statuts Ozon Express synchronisés",
+    errorTitle: "Erreur de synchronisation Ozon Express",
+  });
+
+  const ecSyncPending = syncingProvider === "expresscoursier";
+  const handleEcSync = () => syncCarrier("expresscoursier", {
+    successTitle: "✅ Statuts Express Coursier synchronisés",
+    errorTitle: "Erreur de synchronisation Express Coursier",
+  });
+
   const safeTab = Math.min(activeTab, Math.max(0, accounts.length - 1));
   const acct = accounts[safeTab] || null;
 
@@ -2083,6 +2095,36 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                           ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
                           : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
                         Synchroniser Digylog
+                      </Button>
+                    )}
+                    {providerId === "ozonexpress" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleOzonSync}
+                        disabled={ozonSyncPending}
+                        data-testid={`button-ozon-sync-statuses-${acct.id}`}
+                      >
+                        {ozonSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser Ozon Express
+                      </Button>
+                    )}
+                    {providerId === "expresscoursier" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleEcSync}
+                        disabled={ecSyncPending}
+                        data-testid={`button-ec-sync-statuses-${acct.id}`}
+                      >
+                        {ecSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser Express Coursier
                       </Button>
                     )}
                     {providerId === "digylog" && (

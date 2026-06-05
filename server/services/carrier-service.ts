@@ -2231,5 +2231,106 @@ export async function trackByCarrier(
     return { status: r.status, rawStatus: r.rawStatus, error: r.error };
   }
 
+  if (p === 'ozonexpress') {
+    const r = await trackOzonExpressShipment(trackingNumber, apiKey, account);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
+  if (p === 'expresscoursier') {
+    const r = await trackExpressCoursierShipment(trackingNumber, apiKey);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
   return { status: null, rawStatus: null, error: `Carrier "${provider}" sync not implemented yet` };
+}
+
+// ─── Ozon Express tracking ────────────────────────────────────────────────────
+
+export const OZON_STATUS_MAP: Record<string, string> = {
+  // TODO: fill real Ozon Express status labels → internal codes once API docs confirmed
+  "Livré":      "delivered",
+  "Delivered":  "delivered",
+  "Retourné":   "refused",
+  "Refusé":     "refused",
+  "En cours":   "in_progress",
+  "Expédié":    "expedie",
+  "Reçu":       "expedie",
+};
+
+export function mapOzonStatus(raw: string): string | null {
+  return OZON_STATUS_MAP[(raw || '').trim()] ?? null;
+}
+
+export async function trackOzonExpressShipment(
+  trackingNumber: string,
+  apiKey: string,
+  account: any
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; error?: string }> {
+  const customerId =
+    account?.settings?.ozonExpressCustomerId ??
+    account?.ozonSettings?.ozonExpressCustomerId;
+  // TODO: confirm real tracking endpoint URL with Ozon Express API docs
+  const url = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}/parcel-info`;
+  try {
+    const r = await axios.post(
+      url,
+      { "TRACKING-NUMBER": trackingNumber },
+      { timeout: 15000, validateStatus: () => true }
+    );
+    const body = r.data;
+    // TODO: confirm where the status field lives in the Ozon Express response
+    const rawStatus =
+      body?.['PARCEL-INFO']?.STATUS ??
+      body?.STATUS ??
+      body?.status ??
+      null;
+    return {
+      status: rawStatus ? mapOzonStatus(rawStatus) : null,
+      rawStatus,
+      rawResponse: body,
+      error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
+    };
+  } catch (e: any) {
+    return { status: null, rawStatus: null, rawResponse: null, error: e?.message || 'Ozon track error' };
+  }
+}
+
+// ─── Express Coursier tracking ────────────────────────────────────────────────
+
+export const EC_STATUS_MAP: Record<string, string> = {
+  // TODO: fill real Express Coursier status labels → internal codes once API docs confirmed
+  "delivered":  "delivered",
+  "livre":      "delivered",
+  "retour":     "refused",
+  "refuse":     "refused",
+  "in_transit": "in_progress",
+};
+
+export function mapEcStatus(raw: string): string | null {
+  return EC_STATUS_MAP[(raw || '').toLowerCase().trim()] ?? null;
+}
+
+export async function trackExpressCoursierShipment(
+  trackingNumber: string,
+  apiKey: string
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; error?: string }> {
+  // TODO: confirm real tracking endpoint URL with Express Coursier API docs
+  const url = `https://expresscoursier.ma/v1.0/track/${encodeURIComponent(apiKey.trim())}/${encodeURIComponent(trackingNumber)}`;
+  try {
+    const r = await axios.get(url, { timeout: 15000, validateStatus: () => true });
+    const body = r.data;
+    const rawStatus =
+      body?.status ??
+      body?.data?.status ??
+      body?.tracking?.status ??
+      null;
+    return {
+      status: rawStatus ? mapEcStatus(rawStatus) : null,
+      rawStatus,
+      rawResponse: body,
+      error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
+    };
+  } catch (e: any) {
+    return { status: null, rawStatus: null, rawResponse: null, error: e?.message || 'EC track error' };
+  }
 }
