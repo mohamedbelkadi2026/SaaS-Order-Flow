@@ -6,6 +6,7 @@ import { OrderDetailsModal } from "@/components/order-details-modal";
 import { CustomerHistoryModal } from "@/components/customer-history-modal";
 import { formatCurrency, cn } from "@/lib/utils";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { SourceBadge } from '@/components/source-badge';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -1837,13 +1838,13 @@ export default function Orders() {
                       {isColVisible('reference') && <TableCell className="text-[10px] font-medium text-muted-foreground max-w-[100px] truncate">{productRef}</TableCell>}
                       {isColVisible('source') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
-                          <span className="capitalize text-muted-foreground">{order.source || 'manual'}</span>
+                          <SourceBadge source={order.source} />
                         </TableCell>
                       )}
                       {isColVisible('utmSource') && (
                         <TableCell className="whitespace-nowrap text-[11px]">
                           {order.utmSource ? (
-                            <Badge className="bg-violet-100 text-violet-700 border-violet-200 text-[10px] font-medium">{order.utmSource}</Badge>
+                            <SourceBadge source={order.utmSource} />
                           ) : <span className="text-muted-foreground">-</span>}
                         </TableCell>
                       )}
@@ -2151,9 +2152,9 @@ export default function Orders() {
                       </button>
                     )}
                     {order.utmSource && (
-                      <Badge className="text-[9px] font-mono bg-violet-50 text-violet-700 border-violet-200 ml-1">{order.utmSource}</Badge>
+                      <span className="ml-1 inline-flex"><SourceBadge source={order.utmSource} /></span>
                     )}
-                    <span className="ml-auto text-[10px] text-muted-foreground/70 font-medium capitalize">{order.source || 'manual'}</span>
+                    <span className="ml-auto"><SourceBadge source={order.source} /></span>
                   </div>
                 </div>
               );
