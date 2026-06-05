@@ -5315,7 +5315,7 @@ function ensureHeaders(sheet) {
       const manualMagasinId = (data as any).magasinId ?? null;
       const order = await storage.createOrder({
         storeId,
-        magasinId: manualMagasinId,
+        magasinId: manualMagasinId ?? storeId,
         orderNumber,
         customerName: data.customerName,
         customerPhone: data.customerPhone,

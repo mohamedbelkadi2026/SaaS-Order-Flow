@@ -96,9 +96,15 @@ const SOURCE_CONFIG: Record<string, { label: string; Icon: React.ComponentType<a
 };
 
 function SourceBadge({ source }: { source?: string | null }) {
-  const key = (source || 'manual').toLowerCase();
+  const raw = (source || 'manual').toLowerCase().trim();
+  let key = raw;
+  if (/whats|(\bwa\b)/.test(raw)) key = 'whatsapp';
+  else if (/face|(\bfb\b)/.test(raw)) key = 'facebook';
+  else if (/insta|(\big\b)/.test(raw)) key = 'instagram';
+  else if (/tiktok|(\btt\b)/.test(raw)) key = 'tiktok';
+  else if (/google|adwords|gads/.test(raw)) key = 'google';
   const cfg = SOURCE_CONFIG[key];
-  if (!cfg) return <span className="capitalize text-muted-foreground">{source || 'manual'}</span>;
+  if (!cfg) return <span className="capitalize text-muted-foreground text-[11px]">{source || 'manual'}</span>;
   const { label, Icon, color } = cfg;
   return (
     <span className="flex items-center gap-1.5" style={{ color }}>
@@ -1144,7 +1150,7 @@ export default function AllOrders() {
                 <Button variant="outline" size="sm" className="h-7 w-7 p-0" onClick={() => openOrder(order)} data-testid={`all-edit-mobile-${order.id}`}>
                   <Pencil className="w-3 h-3" />
                 </Button>
-                <span className="ml-auto text-[10px] text-muted-foreground capitalize">{order.source || 'manual'}</span>
+                <span className="ml-auto"><SourceBadge source={order.source} /></span>
               </div>
             </Card>
           ))

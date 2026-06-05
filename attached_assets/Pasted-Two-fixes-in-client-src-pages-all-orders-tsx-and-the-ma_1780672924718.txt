@@ -1,0 +1,61 @@
+Two fixes in client/src/pages/all-orders.tsx and the manual-order backend.
+
+────────────────────────────────────────
+FIX 1 — Source column must always show the brand logo (like the form dropdown),
+including for imported orders and on mobile.
+The SourceBadge component + SOURCE_CONFIG already exist and are used in the desktop table,
+but: (a) imported source strings (e.g. "Whatsapp", "WhatsApp", "FB", "IG", "google ads")
+don't exactly match the config keys, so they fall back to plain text; (b) the mobile card
+render shows plain `{order.source}` text instead of the badge.
+
+A) Make SourceBadge robust — normalize + alias-match before lookup. Replace its body with:
+   function SourceBadge({ source }: { source?: string | null }) {
+     const raw = (source || 'manual').toLowerCase().trim();
+     let key = raw;
+     if (/whats|(\bwa\b)/.test(raw)) key = 'whatsapp';
+     else if (/face|(\bfb\b)/.test(raw)) key = 'facebook';
+     else if (/insta|(\big\b)/.test(raw)) key = 'instagram';
+     else if (/tiktok|(\btt\b)/.test(raw)) key = 'tiktok';
+     else if (/google|adwords|gads/.test(raw)) key = 'google';
+     const cfg = SOURCE_CONFIG[key];
+     if (!cfg) return <span className="capitalize text-muted-foreground text-[11px]">{source || 'manual'}</span>;
+     const { label, Icon, color } = cfg;
+     return (
+       <span className="flex items-center gap-1.5" style={{ color }}>
+         {Icon && <Icon size={12} />}
+         <span className="text-[11px] font-medium">{label}</span>
+       </span>
+     );
+   }
+
+B) In the MOBILE card render, replace the plain source span
+   ( <span className="ml-auto text-[10px] text-muted-foreground capitalize">{order.source || 'manual'}</span> )
+   with: <span className="ml-auto"><SourceBadge source={order.source} /></span>
+
+────────────────────────────────────────
+FIX 2 — Manual orders must show the boutique in the "Boutique" column (currently "—").
+Cause: the add-order form only sends magasinId when there is more than one magasin; with a
+single boutique it sends null, so order.magasin is null and the column shows "—".
+
+Backend — server/routes.ts, POST /api/orders/manual:
+  In the storage.createOrder({ ... }) call, change the magasin line so it defaults to the
+  user's own store when none was explicitly chosen:
+      magasinId: manualMagasinId ?? storeId,
+  (Keep the existing ownership validation that runs only when a magasinId was explicitly sent —
+  do not validate the storeId fallback; storeId always belongs to the user.)
+  Note: order.magasin is hydrated from the `stores` table by magasinId, and storeId is a valid
+  stores.id, so the column will display the store's name (e.g. "Klaim shoes").
+
+Frontend — client/src/pages/new-order-add.tsx (optional but recommended):
+  Also send the current boutique explicitly so it's correct even if backend default changes:
+  in the payload, replace
+      magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : null,
+  with
+      magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : (storeData?.id ?? null),
+
+VERIFY:
+- A newly created manual order shows the boutique name (e.g. "Klaim shoes") in the Boutique
+  column instead of "—".
+- The Source column shows the correct brand logo + label for manual AND imported orders, on
+  desktop and mobile (e.g. an imported "Whatsapp" order shows the green WhatsApp logo).
+- App compiles; POST /api/orders/manual returns 200.

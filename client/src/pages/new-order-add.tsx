@@ -186,7 +186,7 @@ export default function NewOrderAdd() {
         source,
         comment: comment.trim() || null,
         totalPrice: itemsTotal,
-        magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : null,
+        magasinId: selectedMagasinId ? parseInt(selectedMagasinId) : (storeData?.id ?? null),
         items: items
           .filter(it => it.rawProductName.trim())
           .map(it => ({
