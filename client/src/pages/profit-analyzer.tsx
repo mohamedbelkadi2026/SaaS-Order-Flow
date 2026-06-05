@@ -784,9 +784,9 @@ export default function ProfitAnalyzer() {
                             ) : (
                               <>
                                 <td className="px-3 py-3 text-center">
-                                  <div className="font-bold" style={{ color: '#f59e0b' }}>{p.totalOrders} cmd</div>
-                                  {p.totalUnits != null && p.totalUnits !== p.totalOrders && (
-                                    <div className="text-[11px] text-slate-400">{p.totalUnits} u</div>
+                                  <div className="font-bold" style={{ color: '#f59e0b' }}>{p.deliveredOrders} cmd</div>
+                                  {p.deliveredUnits != null && p.deliveredUnits !== p.deliveredOrders && (
+                                    <div className="text-[11px] text-slate-400">{p.deliveredUnits} u</div>
                                   )}
                                 </td>
                                 {/* CA Brut */}
