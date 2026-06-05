@@ -6162,6 +6162,12 @@ function ensureHeaders(sheet) {
 
       const orderMap = new Map(storeOrders.map(o => [o.id, o]));
 
+      // Fetch agent commission rates (DH per delivered order)
+      const agentSettings = await storage.getStoreAgentSettings(storeId);
+      const agentRateMap = new Map<number, number>(
+        agentSettings.map((s: any) => [s.agentId, Number(s.commissionRate ?? 0)])
+      );
+
       type ProductStats = {
         id: number; name: string;
         totalOrders: number; confirmedOrders: number; deliveredOrders: number;
@@ -6173,6 +6179,11 @@ function ensureHeaders(sheet) {
       };
 
       const statsMap: Record<string, ProductStats> = {};
+      // Guard: per-order costs (revenue, shipping, packaging, commission) counted once per product per order
+      const countedOrderForProduct = new Set<string>();
+      // Guard: order-level counts (totalOrders, status counters) counted once per order per product
+      const countedOrderStatForProduct = new Set<string>();
+
       const CONFIRMED_SET = new Set(["confirme","confirmé","expédié","attente de ramassage","in_progress","delivered","livré","livrée"]);
       const REFUSED_SET   = new Set(["refused","refusé"]);
       const RETURN_SET    = new Set(["retourné","retour en cours","retourné à l'expéditeur","tentative échouée","article retourné"]);
@@ -6200,26 +6211,41 @@ function ensureHeaders(sheet) {
         const status = ((order as any).status || '').toLowerCase().trim();
         const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
 
-        s.totalOrders++;
-        s.totalUnits += Number(item.quantity || 1);
-        if (CONFIRMED_SET.has(status)) s.confirmedOrders++;
-        if (isDelivered)               s.deliveredOrders++;
-        if (REFUSED_SET.has(status))   s.refusedOrders++;
-        if (RETURN_SET.has(status))    s.returnedOrders++;
+        // Order-level status counters: count once per order per product key
+        const statGuardKey = `stat_${key}_${item.orderId}`;
+        if (!countedOrderStatForProduct.has(statGuardKey)) {
+          countedOrderStatForProduct.add(statGuardKey);
+          s.totalOrders++;
+          if (CONFIRMED_SET.has(status)) s.confirmedOrders++;
+          if (isDelivered)               s.deliveredOrders++;
+          if (REFUSED_SET.has(status))   s.refusedOrders++;
+          if (RETURN_SET.has(status))    s.returnedOrders++;
+        }
 
+        // Unit counts are per item row (quantity matters)
+        s.totalUnits += Number(item.quantity || 1);
         if (isDelivered) {
           s.deliveredUnits += Number(item.quantity || 1);
-          // All amounts stored in centimes — divide by 100 to get DH
-          s.revenue        += Number((order as any).totalPrice  || 0) / 100;
-          s.productCost    += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
-          s.shippingCost   += Number((order as any).shippingCost || 0) / 100;
-          // Packaging cost (DH/commande) — per delivered order, NOT multiplied by quantity
-          const emballageDH = Number((item.productSettings as any)?.profitDefaults?.coutEmballage || 0);
-          s.packagingCost  += emballageDH;
-          // Confirmation cost (DH/commande) — per delivered order, NOT multiplied by quantity
-          const confDH = Number((item.productSettings as any)?.profitDefaults?.coutConfirmation || 0);
-          s.confirmationCost += confDH;
-          // adSpend comes from adSpendTracking table, applied after aggregation
+          // COGS: per item × quantity (varies per item row)
+          s.productCost += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
+        }
+
+        if (isDelivered) {
+          // Revenue, shipping, packaging, commissions: charged ONCE per order per product key
+          const guardKey = `${key}_${item.orderId}`;
+          if (!countedOrderForProduct.has(guardKey)) {
+            countedOrderForProduct.add(guardKey);
+            // All monetary values in DB are in centimes — divide by 100 to get DH
+            s.revenue      += Number((order as any).totalPrice   || 0) / 100;
+            s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+            // Packaging cost (DH/order, from per-product settings)
+            const emballageDH = Number((item.productSettings as any)?.profitDefaults?.coutEmballage || 0);
+            s.packagingCost   += emballageDH;
+            // Confirmation fee (DH/order) + agent commission (DH/order)
+            const confDH   = Number((item.productSettings as any)?.profitDefaults?.coutConfirmation || 0);
+            const agentDH  = agentRateMap.get((order as any).assignedToId) ?? 0;
+            s.confirmationCost += confDH + agentDH;
+          }
         }
       }
 

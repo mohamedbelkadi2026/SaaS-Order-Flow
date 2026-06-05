@@ -747,10 +747,7 @@ export default function ProfitAnalyzer() {
                     <thead>
                       <tr className="border-b border-white/5 text-slate-400 text-[10px] uppercase tracking-wider">
                         <th className="text-left px-4 py-2.5 font-semibold min-w-[200px]">Produit</th>
-                        <th className="text-center px-3 py-2.5">Cmd</th>
-                        <th className="text-center px-3 py-2.5">Conf</th>
-                        <th className="text-center px-3 py-2.5">Livré</th>
-                        <th className="text-center px-3 py-2.5">Refusé</th>
+                        <th className="text-center px-3 py-2.5"><div>Cmd / Unités</div></th>
                         <th className="text-right px-3 py-2.5"><div>CA Brut</div><div className="text-[9px] text-slate-500 normal-case font-normal">price total</div></th>
                         <th className="text-right px-3 py-2.5"><div>Frais Livr.</div><div className="text-[9px] text-slate-500 normal-case font-normal">du fichier</div></th>
                         <th className="text-right px-3 py-2.5"><div>CA Net</div><div className="text-[9px] text-slate-500 normal-case font-normal">brut − livr.</div></th>
@@ -781,20 +778,17 @@ export default function ProfitAnalyzer() {
                               )}
                             </td>
                             {p.noData ? (
-                              <td colSpan={15} className="px-3 py-3 text-center text-slate-500 text-[11px] italic">
+                              <td colSpan={12} className="px-3 py-3 text-center text-slate-500 text-[11px] italic">
                                 Aucune commande sur cette période
                               </td>
                             ) : (
                               <>
-                                <td className="px-3 py-3 text-center text-slate-300 font-bold">
-                                  <div className="font-bold">{p.totalOrders} cmd</div>
+                                <td className="px-3 py-3 text-center">
+                                  <div className="font-bold" style={{ color: '#f59e0b' }}>{p.totalOrders} cmd</div>
                                   {p.totalUnits != null && p.totalUnits !== p.totalOrders && (
                                     <div className="text-[11px] text-slate-400">{p.totalUnits} u</div>
                                   )}
                                 </td>
-                                <td className="px-3 py-3 text-center font-bold" style={{ color: '#06b6d4' }}>{p.confirmedOrders}</td>
-                                <td className="px-3 py-3 text-center font-bold" style={{ color: '#10b981' }}>{p.deliveredOrders}</td>
-                                <td className="px-3 py-3 text-center font-bold" style={{ color: p.refusedOrders > 0 ? '#f43f5e' : '#94a3b8' }}>{p.refusedOrders}</td>
                                 {/* CA Brut */}
                                 <td className="px-3 py-3 text-right font-bold" style={{ color: '#10b981' }}>
                                   {p.revenue > 0 ? fmt(p.revenue) : <span className="text-slate-500">—</span>}

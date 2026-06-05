@@ -1,0 +1,64 @@
+Scope: the "Par Produit (Live)" profit analyzer.
+Backend = GET /api/products/profitability in server/routes.ts.
+Frontend = client/src/pages/profit-analyzer.tsx (Live per-product table only).
+Do NOT touch the CSV-import path or the "Par Plateforme" table.
+
+PART 1 — BACKEND: make the COMMISSIONS column actually compute (currently always 0).
+The endpoint only reads per-product coutConfirmation (which is empty). It must ALSO include
+the agent commission that the dashboard/Rentabilité Avancée already uses
+(storeAgentSettings.commissionRate, in DH per delivered order, charged to the order's
+assigned agent). All money in this endpoint is in DH.
+
+1. After fetching storeOrders, also fetch agent commission rates:
+     const agentSettings = await storage.getStoreAgentSettings(storeId);
+     const agentRateMap = new Map<number, number>(
+       agentSettings.map((s: any) => [s.agentId, Number(s.commissionRate ?? 0)])
+     );
+2. Per-order costs (packaging, confirmation fee, agent commission) must be counted ONCE PER
+   ORDER, not per order-item (an order can have multiple items of the same product). Add a
+   guard so each delivered order is only charged once per product. For example keep a
+   Set<string> `countedOrderForProduct` and inside the `if (isDelivered)` block do:
+       const guardKey = `${key}_${item.orderId}`;
+       if (!countedOrderForProduct.has(guardKey)) {
+         countedOrderForProduct.add(guardKey);
+         const emballageDH = Number((item.productSettings as any)?.profitDefaults?.coutEmballage || 0);
+         const confDH      = Number((item.productSettings as any)?.profitDefaults?.coutConfirmation || 0);
+         const agentDH      = agentRateMap.get((order as any).assignedToId) ?? 0;
+         s.packagingCost    += emballageDH;
+         s.confirmationCost += confDH + agentDH;   // ← commission now includes agent rate
+       }
+   Move the existing packaging line into this guarded block (so it is no longer added twice
+   for multi-item orders). productCost / revenue / shippingCost stay where they are
+   (productCost stays per item × quantity; revenue & shipping are per order so guard them too
+   if needed to avoid double-count — revenue/shipping should also be added once per order).
+3. netProfit formula is unchanged (it already subtracts s.confirmationCost), so the agent
+   commission now flows into both the COMMISSIONS column and Bénéfice Net automatically.
+
+PART 2 — FRONTEND: merge the 4 status columns into ONE "CMD / UNITÉS" column.
+In the Live table, REMOVE these 4 header cells: Cmd, Conf, Livré, Refusé, and REPLACE them
+with a single header:
+     <th className="text-center px-3 py-2.5"><div>Cmd / Unités</div></th>
+Correspondingly, in the row body REMOVE the 4 cells that render p.totalOrders(+units),
+p.confirmedOrders, p.deliveredOrders, p.refusedOrders, and REPLACE them with one cell:
+     <td className="px-3 py-3 text-center">
+       <div className="font-bold" style={{ color: '#f59e0b' }}>{p.totalOrders} cmd</div>
+       {p.totalUnits != null && p.totalUnits !== p.totalOrders && (
+         <div className="text-[11px] text-slate-400">{p.totalUnits} u</div>
+       )}
+     </td>
+Keep all the financial columns (CA Brut, Frais Livr., CA Net, Sourcing Total, Emballage Total,
+Commissions, Pub, Bénéfice Net, Marge, ROI, Par Livr.) exactly as they are.
+
+IMPORTANT — the empty-state cell currently uses colSpan={15}. After removing 3 columns
+(4 status cols → 1 combined col = net −3), the table now has 13 columns total, i.e. 12 after
+the Produit column. Change that colSpan from 15 to 12.
+
+VERIFY:
+- The Live table header is: Produit | Cmd / Unités | CA Brut | Frais Livr. | CA Net |
+  Sourcing Total | Emballage Total | Commissions | Pub | Bénéfice Net | Marge | ROI | Par Livr.
+- COMMISSIONS is no longer 0 for products whose delivered orders were handled by an agent that
+  has a commission rate (e.g. 8 DH) — it equals (agent rate + per-product confirmation fee) ×
+  number of delivered orders, matching the dashboard's commission logic.
+- Bénéfice Net decreases by the new commission amount.
+- The "Aucune commande" empty row spans the full width (colSpan 12).
+- App compiles, /api/products/profitability returns 200.
