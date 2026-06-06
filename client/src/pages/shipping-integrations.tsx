@@ -1943,10 +1943,13 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
   });
 
   const ozonSyncPending = syncingProvider === "ozonexpress";
-  const handleOzonSync = () => syncCarrier("ozonexpress", {
-    successTitle: "✅ Statuts Ozon Express synchronisés",
-    errorTitle: "Erreur de synchronisation Ozon Express",
-  });
+  const handleOzonSync = () => {
+    const storeId = acct?.storeId;
+    toast({
+      title: "ℹ️ Ozon Express utilise les webhooks",
+      description: `Les statuts Ozon arrivent automatiquement via webhook. Configurez l'URL https://www.tajergrow.com/api/webhooks/shipping/ozonexpress/${storeId ?? "<STORE_ID>"} dans Ozon → Notifications (Webhooks).`,
+    });
+  };
 
   const ecSyncPending = syncingProvider === "expresscoursier";
   const handleEcSync = () => syncCarrier("expresscoursier", {
