@@ -2246,8 +2246,8 @@ export async function trackByCarrier(
 
 // ─── Ozon Express tracking ────────────────────────────────────────────────────
 
-// Ozon sends status CODES (not French text). Map CODE → internal status.
-// Unknown/financial codes intentionally absent so they never overwrite current status.
+// ── Status CODES (sent by webhook + possibly by tracking endpoint) ────────────
+// Unknown/financial codes intentionally absent — they return null (keep current status).
 export const OZON_STATUS_MAP: Record<string, string> = {
   DELIVERED:             "delivered",
   PAID:                  "delivered",
@@ -2279,10 +2279,50 @@ export const OZON_STATUS_MAP: Record<string, string> = {
   // INVOICED, NOT_PAID, REMBOURSED, EN, INT, SANS_ADRE, OUT_OF_AREA, SCTR, NCVRT, BAM_SEIZED, DAMAGED
 };
 
+// ── French STATUS NAMES (returned by the tracking/polling endpoint) ───────────
+export const OZON_NAME_MAP: Record<string, string> = {
+  "paye":                              "delivered",
+  "livre":                             "delivered",
+  "retourne":                          "Retour Recu",
+  "refuse":                            "refused",
+  "annule":                            "annule",
+  "nouveau colis":                     "Attente De Ramassage",
+  "attente de ramassage":              "Attente De Ramassage",
+  "pre ramasse":                       "Attente De Ramassage",
+  "ramasse":                           "transit",
+  "expedie":                           "transit",
+  "recu":                              "transit",
+  "mise en distribution":              "transit",
+  "en cours":                          "transit",
+  "programme":                         "transit",
+  "retarde":                           "transit",
+  "livraison sous conditions":         "transit",
+  "envoye a l'agence":                 "transit",
+  "recu en agence de livraison":       "transit",
+  "reporte":                           "confirme_reporte",
+  "reporte aujourd hui":               "confirme_reporte",
+  "pas de reponse + sms":              "unreachable",
+  "pas reponse +deplacement":          "unreachable",
+  "pas de reponse j+2":                "unreachable",
+  "pas de reponse j+3":                "unreachable",
+  "pas reponse + deplacement j+2":     "unreachable",
+  "pas reponse + deplacement j+3":     "unreachable",
+  // Intentionally unmapped (null): facture, hors-zone, erreur numero, client interesse,
+  // non paye, sans adresse, rembourse, saisi par barid al-maghrib, endommage, hors secteur
+};
+
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
 export function mapOzonStatus(raw: string): string | null {
   if (!raw) return null;
+  // Try CODE lookup first (webhook path)
   const code = raw.toString().trim().toUpperCase().replace(/[\s-]+/g, "_");
-  return OZON_STATUS_MAP[code] ?? null; // unknown → null = keep current status, just log
+  if (OZON_STATUS_MAP[code]) return OZON_STATUS_MAP[code];
+  // Fall back to French name lookup (polling/tracking path)
+  const name = stripAccents(raw.toString().toLowerCase().trim());
+  return OZON_NAME_MAP[name] ?? null; // unknown → null = keep current status, just log
 }
 
 export async function trackOzonExpressShipment(
@@ -2295,43 +2335,55 @@ export async function trackOzonExpressShipment(
     account?.ozonSettings?.ozonExpressCustomerId ??
     (account as any)?.customerId;
   const base = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}`;
-  const url  = `${base}/parcel-info`;
 
-  try {
-    // Ozon uses multipart/form-data for its add-parcel calls; send form-data here too
-    const { default: FormData } = await import('form-data');
-    const form = new FormData();
-    form.append('tracking-number', trackingNumber);
+  // Try the tracking endpoint first, then fall back to parcel-info
+  const tryEndpoints = [
+    `${base}/parcels/tracking`,
+    `${base}/tracking`,
+    `${base}/parcel-info`,
+  ];
 
-    const r = await axios.post(url, form, {
-      headers: { ...form.getHeaders() },
-      timeout: 15000,
-      validateStatus: () => true,
-    });
+  const { default: FormData } = await import('form-data');
+  let body: any = null;
+  let usedUrl = "";
 
-    // Always log the full raw response so the exact shape can be confirmed
-    console.log(`[OZON-TRACK] ${trackingNumber} HTTP ${r.status}: ${JSON.stringify(r.data)}`);
-
-    const b = r.data;
-    // Read status CODE from all known Ozon polling response shapes
-    const code =
-      b?.['PARCEL-INFOS']?.['LAST-TRACKING']?.['STATUT-CODE'] ??
-      b?.['PARCEL-INFOS']?.STATUT ??
-      b?.STATUT ??
-      b?.orderStatus ??
-      b?.status ??
-      null;
-
-    return {
-      status: code ? mapOzonStatus(code) : null,
-      rawStatus: code,
-      rawResponse: b,
-      error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
-    };
-  } catch (e: any) {
-    console.error(`[OZON-TRACK] ${trackingNumber} exception: ${e?.message}`);
-    return { status: null, rawStatus: null, rawResponse: null, error: e?.message || 'Ozon track error' };
+  for (const url of tryEndpoints) {
+    try {
+      const fd = new FormData();
+      fd.append('tracking-number', trackingNumber);
+      const r = await axios.post(url, fd, {
+        headers: { ...fd.getHeaders() },
+        timeout: 15000,
+        validateStatus: () => true,
+      });
+      console.log(`[OZON-TRACK] ${trackingNumber} via ${url} HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+      if (r.status < 400 && r.data) { body = r.data; usedUrl = url; break; }
+    } catch (e: any) {
+      console.log(`[OZON-TRACK] ${trackingNumber} ${url} error: ${e?.message}`);
+    }
   }
+
+  if (!body) {
+    return { status: null, rawStatus: null, rawResponse: null, error: "Ozon: no tracking response" };
+  }
+
+  // Extract status from the common Ozon tracking response shapes
+  const t = body['TRACKING'] || body['PARCEL-TRACKING'] || body['PARCEL-INFO'] || body;
+  const rawStatus =
+    t?.['LAST-TRANSITION']?.['STATUT'] ??
+    t?.['LAST-TRANSITION']?.['STATUS'] ??
+    (Array.isArray(t?.['TRANSITIONS']) && t['TRANSITIONS'].length
+      ? t['TRANSITIONS'][t['TRANSITIONS'].length - 1]?.['STATUT'] : null) ??
+    (Array.isArray(t?.['TRACKING']) && t['TRACKING'].length
+      ? t['TRACKING'][t['TRACKING'].length - 1]?.['STATUT'] : null) ??
+    t?.['STATUT'] ?? t?.['STATUS'] ?? t?.['INFOS']?.['STATUT'] ?? null;
+
+  return {
+    status: rawStatus ? mapOzonStatus(rawStatus) : null,
+    rawStatus,
+    rawResponse: body,
+    error: undefined,
+  };
 }
 
 // ─── Express Coursier tracking ────────────────────────────────────────────────
