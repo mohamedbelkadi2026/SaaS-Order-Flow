@@ -16,7 +16,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 
@@ -8543,6 +8543,70 @@ function ensureHeaders(sheet) {
     } catch (err: any) {
       console.error("[EC-WEBHOOK] Error:", err?.message);
       res.status(500).json({ message: "Webhook processing failed" });
+    }
+  });
+
+  // ── Ozon Express webhook receiver ────────────────────────────────────────────
+  // Register this URL in the Ozon dashboard → Notifications (Webhooks):
+  //   https://<domain>/api/webhooks/shipping/ozonexpress/<YOUR_STORE_ID>
+  app.post("/api/webhooks/shipping/ozonexpress/:storeId", async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      if (!storeId) return res.status(400).json({ message: "Invalid storeId" });
+
+      // Active-account guard: ignore if Ozon not connected for this store
+      const accts = await storage.getCarrierAccounts(storeId, "ozonexpress");
+      if (!accts || accts.length === 0) {
+        console.log(`[OZON-WEBHOOK] store=${storeId} ignored — no active Ozon Express account`);
+        return res.json({ success: true, ignored: true, reason: "no_active_account" });
+      }
+
+      const body = req.body || {};
+      console.log(`[OZON-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);
+
+      const trackingCode = (body.orderId || body.tracking_number || body.code || "").toString().trim();
+      const statusCode   = (body.orderStatus || body.status || "").toString().trim();
+      const note         = (body.note || "").toString();
+
+      if (!trackingCode) return res.json({ success: true, matched: false });
+
+      await storage.createIntegrationLog({
+        storeId, integrationId: null, provider: "ozonexpress",
+        action: "webhook_received", status: "ok",
+        message: `Ozon webhook: orderId=${trackingCode} status=${statusCode}`,
+      });
+
+      const order = await storage.getOrderByTrackingNumber(storeId, trackingCode);
+      if (!order) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "ozonexpress",
+          action: "webhook_no_match", status: "ok",
+          message: `Ozon webhook: orderId=${trackingCode} not matched to any order`,
+        });
+        return res.json({ success: true, matched: false });
+      }
+
+      const mapped = mapOzonStatus(statusCode);
+      if (mapped && mapped !== order.status) {
+        await storage.updateOrderStatus(order.id, mapped);
+        await storage.createOrderFollowUpLog({
+          orderId:   order.id,
+          agentId:   null,
+          agentName: "Ozon Express Webhook",
+          note: `Statut via webhook: ${statusCode} → ${mapped}${note ? " · " + note : ""}`,
+        });
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "ozonexpress",
+          action: "status_update", status: "ok",
+          message: `Ozon: #${order.orderNumber} ${order.status} → ${mapped}`,
+        });
+        console.log(`[OZON-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mapped}`);
+      }
+
+      res.json({ success: true, matched: true, newStatus: mapped });
+    } catch (err: any) {
+      console.error("[OZON-WEBHOOK] Error:", err?.message);
+      res.status(500).json({ message: "Ozon webhook processing failed" });
     }
   });
 

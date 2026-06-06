@@ -2246,27 +2246,43 @@ export async function trackByCarrier(
 
 // ─── Ozon Express tracking ────────────────────────────────────────────────────
 
-// NOTE: Finalize these labels once you see a real [OZON-TRACK] log line.
-// The map is case-insensitive — mapOzonStatus lowercases both key and input.
+// Ozon sends status CODES (not French text). Map CODE → internal status.
+// Unknown/financial codes intentionally absent so they never overwrite current status.
 export const OZON_STATUS_MAP: Record<string, string> = {
-  "livré":                    "delivered",
-  "delivered":                "delivered",
-  "retourné":                 "refused",
-  "refusé par le client":     "refused",
-  "refusé":                   "refused",
-  "annulé":                   "cancelled",
-  "mise en distribution":     "in_progress",
-  "en cours de livraison":    "in_progress",
-  "en cours":                 "in_progress",
-  "reçu":                     "expedie",
-  "ramassé":                  "expedie",
-  "expédié":                  "expedie",
-  "pas de réponse":           "pas_reponse",
-  "reporté":                  "reporte",
+  DELIVERED:             "delivered",
+  PAID:                  "delivered",
+  RETURNED:              "Retour Recu",
+  REFUSE:                "refused",
+  CANCELED:              "annule",
+  NEW_PARCEL:            "Attente De Ramassage",
+  WAITING_PICKUP:        "Attente De Ramassage",
+  PRE_PICKED_UP:         "Attente De Ramassage",
+  PICKED_UP:             "transit",
+  SENT:                  "transit",
+  SENT_TO_AGENCY:        "transit",
+  RECEIVED:              "transit",
+  RECEIVED_IN_AGENCY:    "transit",
+  DISTRIBUTION:          "transit",
+  IN_PROGRESS:           "transit",
+  DELAYED:               "transit",
+  VLMN:                  "transit",
+  PROGRAMED:             "transit",
+  NOANSWER:              "unreachable",
+  NOANSWER_DAY_2:        "unreachable",
+  NOANSWER_DAY_3:        "unreachable",
+  DEPLA:                 "unreachable",
+  DEPLA_DAY_2:           "unreachable",
+  DEPLA_DAY_3:           "unreachable",
+  POSTPONED:             "confirme_reporte",
+  RPO:                   "confirme_reporte",
+  // Intentionally unmapped (financial/edge — never overwrite):
+  // INVOICED, NOT_PAID, REMBOURSED, EN, INT, SANS_ADRE, OUT_OF_AREA, SCTR, NCVRT, BAM_SEIZED, DAMAGED
 };
 
 export function mapOzonStatus(raw: string): string | null {
-  return OZON_STATUS_MAP[(raw || '').toLowerCase().trim()] ?? null;
+  if (!raw) return null;
+  const code = raw.toString().trim().toUpperCase().replace(/[\s-]+/g, "_");
+  return OZON_STATUS_MAP[code] ?? null; // unknown → null = keep current status, just log
 }
 
 export async function trackOzonExpressShipment(
@@ -2297,19 +2313,18 @@ export async function trackOzonExpressShipment(
     console.log(`[OZON-TRACK] ${trackingNumber} HTTP ${r.status}: ${JSON.stringify(r.data)}`);
 
     const b = r.data;
-    // Try all known Ozon response shapes — adjust once real logs confirm the field path
-    const rawStatus =
-      b?.['PARCEL-INFOS']?.['LAST-TRACKING']?.STATUT ??
+    // Read status CODE from all known Ozon polling response shapes
+    const code =
+      b?.['PARCEL-INFOS']?.['LAST-TRACKING']?.['STATUT-CODE'] ??
       b?.['PARCEL-INFOS']?.STATUT ??
-      b?.['PARCEL-INFO']?.STATUS ??
-      b?.PARCEL?.STATUT ??
       b?.STATUT ??
+      b?.orderStatus ??
       b?.status ??
       null;
 
     return {
-      status: rawStatus ? mapOzonStatus(rawStatus) : null,
-      rawStatus,
+      status: code ? mapOzonStatus(code) : null,
+      rawStatus: code,
       rawResponse: b,
       error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
     };
