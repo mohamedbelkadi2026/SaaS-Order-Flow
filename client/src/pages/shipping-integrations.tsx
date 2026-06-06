@@ -1942,11 +1942,6 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     errorTitle: "Erreur de synchronisation Digylog",
   });
 
-  const ozonSyncPending = syncingProvider === "ozonexpress";
-  const handleOzonSync = () => syncCarrier("ozonexpress", {
-    successTitle: "✅ Statuts Ozon Express synchronisés",
-    errorTitle: "Erreur de synchronisation Ozon Express",
-  });
 
   const ecSyncPending = syncingProvider === "expresscoursier";
   const handleEcSync = () => syncCarrier("expresscoursier", {
@@ -2101,21 +2096,36 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         Synchroniser Digylog
                       </Button>
                     )}
-                    {providerId === "ozonexpress" && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
-                        onClick={handleOzonSync}
-                        disabled={ozonSyncPending}
-                        data-testid={`button-ozon-sync-statuses-${acct.id}`}
-                      >
-                        {ozonSyncPending
-                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
-                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
-                        Synchroniser Ozon Express
-                      </Button>
-                    )}
+                    {providerId === "ozonexpress" && (() => {
+                      const webhookUrl = `https://www.tajergrow.com/api/webhooks/shipping/ozonexpress/${acct.storeId}`;
+                      return (
+                        <div className="flex flex-col gap-2 w-full">
+                          <p className="text-[11px] text-muted-foreground leading-snug">
+                            Ozon envoie les statuts automatiquement via webhook. Collez cette URL dans <strong>Ozon → Notifications (Webhooks)</strong>.
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <input
+                              readOnly
+                              value={webhookUrl}
+                              className="flex-1 text-[11px] font-mono bg-muted/50 border rounded px-2 py-1 text-muted-foreground select-all"
+                              data-testid={`input-ozon-webhook-url-${acct.id}`}
+                            />
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="shrink-0 border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                              data-testid={`button-ozon-copy-webhook-${acct.id}`}
+                              onClick={() => {
+                                navigator.clipboard.writeText(webhookUrl);
+                                toast({ title: "✅ URL copiée — collez-la dans Ozon → Notifications (Webhooks)." });
+                              }}
+                            >
+                              <Copy className="w-3.5 h-3.5 mr-1" /> Copier l'URL Webhook
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {providerId === "expresscoursier" && (
                       <Button
                         size="sm"

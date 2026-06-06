@@ -8019,6 +8019,13 @@ function ensureHeaders(sheet) {
     skipped?: boolean;
   }> {
     const p = (provider || '').toLowerCase();
+
+    // Ozon Express has no working pull API — statuses arrive via webhook only
+    if (p === 'ozonexpress') {
+      return { synced: 0, updated: 0, details: [], errors: [],
+        message: 'Ozon Express utilise les webhooks — configurez l\'URL webhook dans Ozon → Notifications.' };
+    }
+
     const lockKey = `${storeId}:${p}`;
     if (inFlightSyncs.has(lockKey)) {
       return { synced: 0, updated: 0, details: [], errors: [], skipped: true, message: `Une synchro ${p} est déjà en cours.` };
