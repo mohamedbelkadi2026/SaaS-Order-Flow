@@ -8565,29 +8565,56 @@ function ensureHeaders(sheet) {
       const body = req.body || {};
       console.log(`[OZON-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);
 
-      const trackingCode = (body.orderId || body.tracking_number || body.code || "").toString().trim();
-      const statusCode   = (body.orderStatus || body.status || "").toString().trim();
+      // Separate the order identifier (orderId = TG-XXXXX order number) from
+      // the tracking barcode and the status
+      const trackingCode = (body.tracking_number || body.code || "").toString().trim();
+      const orderRef     = (body.orderId || body.orderNumber || "").toString().trim();
+      const rawStatus    = (body.orderStatus || body.status || body.statut || "").toString().trim();
       const note         = (body.note || "").toString();
 
-      if (!trackingCode) return res.json({ success: true, matched: false });
+      console.log(`[OZON-WEBHOOK] tracking="${trackingCode}" order="${orderRef}" status="${rawStatus}"`);
+
+      if (!trackingCode && !orderRef) return res.json({ success: true, matched: false });
 
       await storage.createIntegrationLog({
         storeId, integrationId: null, provider: "ozonexpress",
         action: "webhook_received", status: "ok",
-        message: `Ozon webhook: orderId=${trackingCode} status=${statusCode}`,
+        message: `Ozon webhook: tracking=${trackingCode || "-"} order=${orderRef || "-"} status=${rawStatus}`,
       });
 
-      const order = await storage.getOrderByTrackingNumber(storeId, trackingCode);
+      // Ozon webhook uses uppercase English codes — map them first, then fall
+      // back to the carrier-service mapper (handles French names / poll codes)
+      const OZON_WEBHOOK_STATUS: Record<string, string> = {
+        "PICKED_UP":          "transit",
+        "OUT_FOR_DELIVERY":   "transit",
+        "DELIVERED":          "delivered",
+        "FAILED_DELIVERY":    "unreachable",
+        "RETURNED":           "Retour Recu",
+        "IN_WAREHOUSE":       "transit",
+        "IN_TRANSIT":         "transit",
+        "CANCELLED":          "refused",
+      };
+      const statusCode = OZON_WEBHOOK_STATUS[rawStatus.toUpperCase()] ?? mapOzonStatus(rawStatus) ?? rawStatus;
+
+      // Look up order: try tracking barcode first, then order number (TG-XXXXX)
+      let order = trackingCode ? await storage.getOrderByTrackingNumber(storeId, trackingCode) : null;
+      if (!order && orderRef) {
+        order = await storage.getOrderByTrackingNumber(storeId, orderRef)
+               ?? (await storage.getOrdersByStore(storeId)).find(
+                    (o: any) => o.orderNumber === orderRef
+                  ) ?? null;
+      }
+
       if (!order) {
         await storage.createIntegrationLog({
           storeId, integrationId: null, provider: "ozonexpress",
           action: "webhook_no_match", status: "ok",
-          message: `Ozon webhook: orderId=${trackingCode} not matched to any order`,
+          message: `Ozon webhook: tracking=${trackingCode || "-"} order=${orderRef || "-"} not matched`,
         });
         return res.json({ success: true, matched: false });
       }
 
-      const mapped = mapOzonStatus(statusCode);
+      const mapped = statusCode || null;
       if (mapped && mapped !== order.status) {
         await storage.updateOrderStatus(order.id, mapped);
         await storage.createOrderFollowUpLog({
