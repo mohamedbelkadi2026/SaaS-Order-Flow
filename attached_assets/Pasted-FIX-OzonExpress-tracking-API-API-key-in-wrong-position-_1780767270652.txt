@@ -1,0 +1,39 @@
+FIX: OzonExpress tracking API — API key in wrong position (URL vs header)
+File to change: server/routes.ts only
+Problem: The tracking call uses the Authorization token directly in the URL path:
+https://api.ozonexpress.ma/customers/88486/332e7a-.../parcels/tracking
+But OzonExpress tracking API likely expects the key as a Bearer token in the Authorization header, not in the URL. The expédition (ship order) works because it uses a different endpoint format.
+
+Step 1 — Inspect
+Find the [OZON-TRACK] tracking function. It builds a URL like:
+tsconst url = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}/parcels/tracking`;
+Check how the expédition (ship order) call sends the API key — it likely uses:
+tsheaders: { "Authorization": `Bearer ${apiKey}` }
+// or
+headers: { "Authorization": apiKey }
+
+Fix — Use the same auth method as expédition for tracking
+Find the tracking fetch call. Change it from putting the key in the URL to using it in the header, matching the expédition format:
+Before (wrong):
+tsconst url = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}/parcels/tracking`;
+const response = await fetch(url, { method: "POST", ... });
+After (correct):
+tsconst url = `https://api.ozonexpress.ma/customers/${customerId}/parcels/tracking`;
+const response = await fetch(url, {
+  method: "POST",
+  headers: {
+    "Authorization": apiKey,  // or `Bearer ${apiKey}` — match exactly how expédition sends it
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ parcels: [trackingNumber] }),
+});
+To find the correct format: Search for the expédition call to OzonExpress (ship order endpoint) and copy the exact headers format it uses. Apply the same to the tracking call.
+
+Also fix — Check the tracking request body format
+The tracking API might expect:
+json{ "parcels": ["TG-16991"] }
+or
+json{ "tracking_numbers": ["TG-16991"] }
+Check the OzonExpress API docs or the expédition response to see which format is correct, then update the tracking request body accordingly.
+
+Do not change the expédition logic — only fix the tracking call to use the same authentication method.
