@@ -8104,82 +8104,37 @@ function ensureHeaders(sheet) {
         let result: { status: string | null; rawStatus: string | null; error?: string };
 
         if (p === 'ozonexpress') {
-          // ── Inline Ozon tracking probe — tries multiple auth/body combos ───────
-          // Ozon ship-order uses key in URL path; tracking endpoint format is unknown.
-          // We try all variants and log every response so we can lock the working one.
-          const ozonApiKey    = (account.apiKey || '').toString().trim();
+          // ── Ozon tracking: API key in Authorization header, NOT in URL ──────────
+          const ozonApiKey     = (account.apiKey || '').toString().trim();
           const ozonCustomerId =
             account?.settings?.ozonExpressCustomerId ??
             account?.ozonSettings?.ozonExpressCustomerId ??
             (account as any)?.customerId ?? '';
-          const ozonTrackNum  = order.trackNumber!;
-          const axios2        = (await import('axios')).default;
-          const FormDataCtor  = (await import('form-data')).default;
+          const ozonTrackNum   = order.trackNumber!;
+          const axios2         = (await import('axios')).default;
 
-          const ozonBaseUrl   = `https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}`;
-          const ozonBaseWithKey = `${ozonBaseUrl}/${encodeURIComponent(ozonApiKey)}`;
-
-          // Probe variants: [url, headers, body]
-          type OzonProbe = { url: string; headers: Record<string,string>; body: any; isFormData: boolean; label: string };
-          const probes: OzonProbe[] = [
-            // 1. URL-key + form-data (same pattern as add-parcel / ship order)
-            {
-              label: 'URL-key+form-data+parcels/tracking',
-              url: `${ozonBaseWithKey}/parcels/tracking`,
-              headers: {}, body: null, isFormData: true,
-            },
-            // 2. URL-key + JSON body (parcels array)
-            {
-              label: 'URL-key+json-parcels+parcels/tracking',
-              url: `${ozonBaseWithKey}/parcels/tracking`,
-              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-              body: { parcels: [ozonTrackNum] }, isFormData: false,
-            },
-            // 3. Authorization Bearer + JSON body (key in header, not URL)
-            {
-              label: 'Bearer-header+json-parcels+parcels/tracking',
-              url: `${ozonBaseUrl}/parcels/tracking`,
-              headers: { 'Authorization': `Bearer ${ozonApiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-              body: { parcels: [ozonTrackNum] }, isFormData: false,
-            },
-            // 4. Authorization header (no Bearer prefix) + JSON
-            {
-              label: 'Auth-header+json-tracking_numbers',
-              url: `${ozonBaseUrl}/parcels/tracking`,
-              headers: { 'Authorization': ozonApiKey, 'Content-Type': 'application/json', Accept: 'application/json' },
-              body: { tracking_numbers: [ozonTrackNum] }, isFormData: false,
-            },
-          ];
+          const ozonUrl = `https://api.ozonexpress.ma/customers/${encodeURIComponent(ozonCustomerId)}/parcels/tracking`;
 
           let ozonRawResponse: any = null;
           let ozonRawStatus: string | null = null;
           let ozonApiKeyInvalid = false;
 
-          for (const probe of probes) {
-            try {
-              let axiosBody: any;
-              let axiosHeaders: Record<string, string> = { ...probe.headers };
-              if (probe.isFormData) {
-                const fd = new FormDataCtor();
-                fd.append('tracking-number', ozonTrackNum);
-                axiosBody = fd;
-                Object.assign(axiosHeaders, fd.getHeaders());
-              } else {
-                axiosBody = probe.body;
-              }
-              const resp = await axios2.post(probe.url, axiosBody, {
-                headers: axiosHeaders, timeout: 15000, validateStatus: () => true,
-              });
-              console.log(`[OZON-SYNC-PROBE] ${probe.label} HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 500)}`);
+          try {
+            const resp = await axios2.post(ozonUrl, { parcels: [ozonTrackNum] }, {
+              headers: {
+                'Authorization': ozonApiKey,
+                'Content-Type': 'application/json',
+              },
+              timeout: 15000,
+              validateStatus: () => true,
+            });
+            console.log(`[OZON-TRACK] ${ozonTrackNum} HTTP ${resp.status}: ${JSON.stringify(resp.data).slice(0, 500)}`);
 
-              if (resp.status < 400 && resp.data) {
-                const d = resp.data;
-                if (d?.CHECK_API?.RESULT === 'ERROR') {
-                  // Invalid API key — log and break entire sync
-                  ozonApiKeyInvalid = true;
-                  break;
-                }
-                // Successful non-error response — extract status
+            if (resp.status < 400 && resp.data) {
+              const d = resp.data;
+              if (d?.CHECK_API?.RESULT === 'ERROR') {
+                ozonApiKeyInvalid = true;
+              } else {
                 const t = d['TRACKING'] || d['PARCEL-TRACKING'] || d['PARCEL-INFO'] || d;
                 ozonRawStatus =
                   t?.['LAST-TRANSITION']?.['STATUT'] ?? t?.['LAST-TRANSITION']?.['STATUS'] ??
@@ -8187,11 +8142,10 @@ function ensureHeaders(sheet) {
                   (Array.isArray(t?.['TRACKING']) && t['TRACKING'].length ? t['TRACKING'][t['TRACKING'].length-1]?.['STATUT'] : null) ??
                   t?.['STATUT'] ?? t?.['STATUS'] ?? t?.['INFOS']?.['STATUT'] ?? null;
                 ozonRawResponse = d;
-                break; // got a real response — stop trying
               }
-            } catch (probeErr: any) {
-              console.log(`[OZON-SYNC-PROBE] ${probe.label} error: ${probeErr?.message}`);
             }
+          } catch (ozonErr: any) {
+            console.log(`[OZON-TRACK] ${ozonTrackNum} error: ${ozonErr?.message}`);
           }
 
           if (ozonApiKeyInvalid) {
@@ -8201,7 +8155,7 @@ function ensureHeaders(sheet) {
               storeId, integrationId: null, provider: 'ozonexpress',
               action: 'carrier_sync', status: 'fail', message: logMsg,
             });
-            break; // stop processing all remaining orders with this bad key
+            break;
           }
 
           const ozonMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
