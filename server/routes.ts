@@ -3693,6 +3693,35 @@ export async function registerRoutes(
           await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
             action: "status_update", status: "ok",
             message: `✅ Ozon #${ozonOrder.orderNumber}: ${ozonOrder.status} → ${mapped} (${statusCode})` });
+
+          // Fetch delivery fee from parcel-info for final states
+          if (mapped === "delivered" || mapped === "Retour Recu" || mapped === "refused") {
+            try {
+              const ozonAcct = (await storage.getCarrierAccounts(storeId, "ozonexpress"))[0];
+              const ozonCid  = ozonAcct?.settings?.ozonExpressCustomerId;
+              const ozonKey  = ozonAcct?.apiKey;
+              if (ozonCid && ozonKey) {
+                const FormDataFee = (await import("form-data")).default;
+                const fdFee = new FormDataFee();
+                fdFee.append("tracking-number", tracking);
+                const feeResp = await axios.post(
+                  `https://api.ozonexpress.ma/customers/${ozonCid}/${ozonKey}/parcel-info`,
+                  fdFee, { headers: fdFee.getHeaders(), timeout: 15000, validateStatus: () => true }
+                );
+                const infos  = feeResp.data?.["PARCEL-INFO"]?.["INFOS"];
+                const feeRaw = mapped === "delivered"   ? infos?.["DELIVERED-PRICE"]
+                             : mapped === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                             :                           infos?.["REFUSED-PRICE"];
+                const fee = Number(feeRaw);
+                if (Number.isFinite(fee) && fee > 0) {
+                  await storage.updateOrder(ozonOrder.id, { shippingCost: Math.round(fee * 100) });
+                  console.log(`[OZON-FEE] #${ozonOrder.orderNumber} fee=${fee} DH stored`);
+                }
+              }
+            } catch (feeErr: any) {
+              console.log(`[OZON-FEE] ${tracking} fee fetch failed: ${feeErr?.message}`);
+            }
+          }
         }
         return res.json({ success: true, matched: true, newStatus: mapped });
       }
@@ -8746,6 +8775,36 @@ function ensureHeaders(sheet) {
           message: `Ozon: #${order.orderNumber} ${order.status} → ${mapped}`,
         });
         console.log(`[OZON-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mapped}`);
+
+        // Fetch delivery fee from parcel-info for final states
+        if (mapped === "delivered" || mapped === "Retour Recu" || mapped === "refused") {
+          try {
+            const feeAcct = accts[0];
+            const feeCid  = feeAcct?.settings?.ozonExpressCustomerId;
+            const feeKey  = feeAcct?.apiKey;
+            const feeTracking = trackingCode || orderRef;
+            if (feeCid && feeKey && feeTracking) {
+              const FormDataFee = (await import("form-data")).default;
+              const fdFee = new FormDataFee();
+              fdFee.append("tracking-number", feeTracking);
+              const feeResp = await axios.post(
+                `https://api.ozonexpress.ma/customers/${feeCid}/${feeKey}/parcel-info`,
+                fdFee, { headers: fdFee.getHeaders(), timeout: 15000, validateStatus: () => true }
+              );
+              const infos  = feeResp.data?.["PARCEL-INFO"]?.["INFOS"];
+              const feeRaw = mapped === "delivered"   ? infos?.["DELIVERED-PRICE"]
+                           : mapped === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                           :                           infos?.["REFUSED-PRICE"];
+              const fee = Number(feeRaw);
+              if (Number.isFinite(fee) && fee > 0) {
+                await storage.updateOrder(order.id, { shippingCost: Math.round(fee * 100) });
+                console.log(`[OZON-FEE] #${order.orderNumber} fee=${fee} DH stored`);
+              }
+            }
+          } catch (feeErr: any) {
+            console.log(`[OZON-FEE] fee fetch failed: ${feeErr?.message}`);
+          }
+        }
       }
 
       res.json({ success: true, matched: true, newStatus: mapped });
