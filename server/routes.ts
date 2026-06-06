@@ -3664,6 +3664,39 @@ export async function registerRoutes(
       }
 
       const body = req.body;
+
+      // ── Ozon Express: fields differ from all other carriers ─────────────────
+      if (carrierName === "ozonexpress") {
+        const tracking   = (body.orderId || body.tracking_number || body.code || "").toString().trim();
+        const statusCode = (body.orderStatus || body.status || "").toString().trim();
+        const note       = (body.note || "").toString();
+        console.log(`[OZON-WEBHOOK] store=${storeId} orderId=${tracking} orderStatus=${statusCode}`);
+
+        await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+          action: "webhook_received", status: "ok",
+          message: `Ozon webhook: orderId=${tracking} status=${statusCode}` });
+
+        if (!tracking) return res.json({ success: true, matched: false });
+        const ozonOrder = await storage.getOrderByTrackingNumber(storeId, tracking);
+        if (!ozonOrder) {
+          await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+            action: "webhook_no_match", status: "ok",
+            message: `⚠️ Ozon: aucune commande pour orderId=${tracking} — statut: "${statusCode}"` });
+          return res.json({ success: true, matched: false });
+        }
+        const mapped = mapOzonStatus(statusCode);
+        if (mapped && mapped !== ozonOrder.status) {
+          await storage.updateOrderStatus(ozonOrder.id, mapped);
+          await storage.createOrderFollowUpLog({ orderId: ozonOrder.id, agentId: null,
+            agentName: "Ozon Express Webhook",
+            note: `Statut via webhook: ${statusCode} → ${mapped}${note ? " · " + note : ""}` });
+          await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
+            action: "status_update", status: "ok",
+            message: `✅ Ozon #${ozonOrder.orderNumber}: ${ozonOrder.status} → ${mapped} (${statusCode})` });
+        }
+        return res.json({ success: true, matched: true, newStatus: mapped });
+      }
+
       const rawStatus = (body.status || body.etat || body.statut || body.etat_libelle || "").trim();
 
       let result: { tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string };
