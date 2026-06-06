@@ -1434,6 +1434,14 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
+  async clearIntegrationLogsByProvider(storeId: number, provider: string): Promise<void> {
+    const p = (provider || "").toLowerCase().trim();
+    await db.delete(integrationLogs).where(and(
+      eq(integrationLogs.storeId, storeId),
+      sql`lower(${integrationLogs.provider}) = ${p}`
+    ));
+  }
+
   async updateOrderShipping(orderId: number, trackingNumber: string, labelLink: string | null, shippingProvider: string): Promise<Order | undefined> {
     const [updated] = await db.update(orders)
       .set({ trackNumber: trackingNumber, labelLink, shippingProvider, carrierName: shippingProvider })

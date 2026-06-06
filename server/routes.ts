@@ -2586,6 +2586,11 @@ export async function registerRoutes(
       const acct = await storage.getCarrierAccount(id);
       if (!acct || acct.storeId !== storeId) return res.status(404).json({ message: "Compte introuvable" });
       await storage.deleteCarrierAccount(id);
+      // Clear webhook activity logs so the badge resets immediately
+      const providerKey = (acct.carrierName || "").toLowerCase().trim();
+      if (providerKey) {
+        await storage.clearIntegrationLogsByProvider(storeId, providerKey);
+      }
       res.json({ message: "Supprimé" });
     } catch (error: any) {
       console.error('[DB-ERROR] DELETE /api/carrier-accounts:', error?.message || error);
@@ -8469,6 +8474,13 @@ function ensureHeaders(sheet) {
     try {
       const storeId = Number(req.params.storeId);
       if (!storeId) return res.status(400).json({ message: "Invalid storeId" });
+
+      // Guard: ignore if no active Express Coursier account for this store
+      const ecAccounts = await storage.getCarrierAccounts(storeId, "expresscoursier");
+      if (!ecAccounts || ecAccounts.length === 0) {
+        console.log(`[EC-WEBHOOK] store=${storeId} ignored — no active Express Coursier account`);
+        return res.json({ success: true, ignored: true, reason: "no_active_account" });
+      }
 
       const body = req.body || {};
       console.log(`[EC-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);

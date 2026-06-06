@@ -130,7 +130,11 @@ function getProviderLabel(provider?: string) {
   return PROVIDERS.find((p) => normalizeCarrierName(p.id) === normalized || normalizeCarrierName(p.name) === normalized)?.name || provider || "Transporteur";
 }
 
-function getWebhookIndicator(providerId: string, logs: WebhookLog[]) {
+function getWebhookIndicator(providerId: string, logs: WebhookLog[], connectedProviderIds: Set<string>) {
+  // No active account → always show "En attente", regardless of leftover logs
+  if (!connectedProviderIds.has(normalizeCarrierName(providerId))) {
+    return { label: "🟡 En attente", className: "bg-amber-50 text-amber-700 border-amber-200" };
+  }
   const providerLogs = logs.filter((log) => normalizeCarrierName(log.provider) === normalizeCarrierName(providerId));
   const lastLog = providerLogs[0];
   if (lastLog?.status === "fail") {
@@ -2528,7 +2532,12 @@ export default function ShippingIntegrations() {
           {PROVIDERS.map(provider => {
             const connected = isConnected(provider.id);
             const count     = accountCount(provider.id);
-            const webhookIndicator = getWebhookIndicator(provider.id, carrierLogs);
+            const connectedProviderIds = new Set(
+              Array.from(accountsByProvider.keys())
+                .filter(k => (accountsByProvider.get(k) || []).some((a: any) => a.isActive === 1))
+                .map(k => normalizeCarrierName(k))
+            );
+            const webhookIndicator = getWebhookIndicator(provider.id, carrierLogs, connectedProviderIds);
 
             return (
               <Card
