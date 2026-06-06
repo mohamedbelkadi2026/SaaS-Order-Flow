@@ -8072,6 +8072,28 @@ function ensureHeaders(sheet) {
       return { synced: 0, updated: 0, details: [], errors: [], message: `Aucune commande ${p} à synchroniser.` };
     }
 
+    // ── Ozon Express: skip sync if API key was previously marked invalid ────────
+    if (p === 'ozonexpress') {
+      const lastFail = await db.select().from(integrationLogs)
+        .where(and(
+          eq(integrationLogs.storeId, storeId),
+          eq(integrationLogs.provider, 'ozonexpress'),
+          eq(integrationLogs.action, 'carrier_sync'),
+          eq(integrationLogs.status, 'fail'),
+        ))
+        .orderBy(desc(integrationLogs.createdAt))
+        .limit(1);
+
+      if (lastFail[0]?.message?.includes('invalide')) {
+        const failTime = new Date((lastFail[0] as any).createdAt).getTime();
+        if (Date.now() - failTime < 60 * 60 * 1000) {
+          console.warn(`[OZON-SYNC] Skipping store ${storeId} — API key marked invalid. Fix key in carrier settings.`);
+          return { synced: 0, updated: 0, details: [], errors: [],
+            message: '❌ Clé API OzonExpress invalide — vérifiez vos paramètres carrier.' };
+        }
+      }
+    }
+
     const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
     let updated = 0;
     const errors: Array<{ orderId: number; message: string }> = [];
@@ -8079,7 +8101,30 @@ function ensureHeaders(sheet) {
 
     for (const order of candidates) {
       try {
-        const result = await trackByCarrier(p, order.trackNumber!, account);
+        let result: { status: string | null; rawStatus: string | null; error?: string };
+
+        if (p === 'ozonexpress') {
+          // Call trackOzonExpressShipment directly so we can inspect rawResponse
+          // and detect invalid-API-key responses before hammering the endpoint
+          const { trackOzonExpressShipment } = await import('./services/carrier-service');
+          const r = await trackOzonExpressShipment(order.trackNumber!, account.apiKey, account);
+
+          if (r.rawResponse?.CHECK_API?.RESULT === 'ERROR') {
+            const apiMsg = r.rawResponse.CHECK_API.MESSAGE ?? 'Please verify your API Key';
+            const logMsg = `❌ Clé API OzonExpress invalide — vérifiez vos paramètres. (${apiMsg})`;
+            console.error(`[OZON-SYNC] ❌ Invalid API Key for store ${storeId} — stopping sync. ${apiMsg}`);
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: 'ozonexpress',
+              action: 'carrier_sync', status: 'fail', message: logMsg,
+            });
+            break; // stop processing all remaining orders with this bad key
+          }
+
+          result = { status: r.status, rawStatus: r.rawStatus, error: r.error };
+        } else {
+          result = await trackByCarrier(p, order.trackNumber!, account);
+        }
+
         if (result.error) {
           errors.push({ orderId: order.id, message: result.error });
         } else if (result.status && result.status !== order.status) {

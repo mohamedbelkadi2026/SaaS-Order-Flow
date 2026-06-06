@@ -1,0 +1,71 @@
+FIX: OzonExpress — two separate issues (webhook order matching + invalid API key)
+Files to change: server/routes.ts only
+
+Fix 1 — Webhook: orderId not recognized as order identifier
+In the carrier webhook handler for ozonexpress, find where the payload fields are extracted. The current code reads something like:
+tsconst trackingNumber = body.tracking || body.trackingNumber || body.track_number || "";
+const rawStatus = body.status || body.statut || "";
+const orderRef = body.order || body.orderNumber || "";
+OzonExpress sends body.orderId as the order reference and body.orderStatus as the status. Add both:
+ts// For ozonexpress specifically:
+const trackingNumber = body.tracking || body.trackingNumber || body.track_number || body.orderId || "";
+const orderRef       = body.orderId  || body.order || body.orderNumber || body.ref || "";
+const rawStatus      = body.orderStatus || body.status || body.statut || "";
+Also add OzonExpress status mapping near the other carrier mappings:
+ts// OzonExpress status map
+const OZON_STATUS_MAP: Record<string, string> = {
+  "PICKED_UP":          "Ramassé",
+  "OUT_FOR_DELIVERY":   "En cours de livraison",
+  "DELIVERED":          "delivered",
+  "FAILED_DELIVERY":    "Tentative échouée",
+  "RETURNED":           "retourné",
+  "IN_WAREHOUSE":       "En stock",
+  "IN_TRANSIT":         "En transit",
+  "CANCELLED":          "refused",
+  "PENDING":            "Attente De Ramassage",
+};
+Apply it when carrierName === "ozonexpress":
+tsif (carrierName === "ozonexpress" && rawStatus) {
+  mappedStatus = OZON_STATUS_MAP[rawStatus] || rawStatus;
+}
+
+Fix 2 — API Tracking: stop polling with wrong API key
+The logs show:
+{"CHECK_API":{"RESULT":"ERROR","MESSAGE":"Please verify your API Key"}}
+This means the OzonExpress tracking API key stored in the carrier account is wrong. The sync is polling every few minutes and always failing.
+2a. Find the OzonExpress tracking sync function (likely in a cron or sync route). Find where it calls the OzonExpress API with the key. Add a check — if the API returns CHECK_API.RESULT === "ERROR", stop the sync for this account and log a clear error:
+tsconst data = await response.json();
+
+if (data?.CHECK_API?.RESULT === "ERROR") {
+  console.error(`[OZON-TRACK] ❌ Invalid API Key for store ${storeId} — stopping sync. Message: ${data.CHECK_API.MESSAGE}`);
+  await storage.createIntegrationLog({
+    storeId,
+    provider: "ozonexpress",
+    action: "carrier_sync",
+    status: "fail",
+    message: `❌ Clé API OzonExpress invalide — vérifiez vos paramètres. (${data.CHECK_API.MESSAGE})`,
+  });
+  break; // stop processing more orders with this bad key
+}
+2b. Also add a rate limit guard — if the last sync for this account returned an API key error, skip the next sync cycles (avoid hammering the API with bad requests):
+Find where the sync is triggered. Add:
+ts// Skip sync if last attempt failed with invalid key
+const lastLog = await db.select().from(integrationLogs)
+  .where(and(
+    eq(integrationLogs.storeId, storeId),
+    eq(integrationLogs.provider, "ozonexpress"),
+    eq(integrationLogs.action, "carrier_sync"),
+    eq(integrationLogs.status, "fail"),
+  ))
+  .orderBy(desc(integrationLogs.createdAt))
+  .limit(1);
+
+if (lastLog[0]?.message?.includes("invalide")) {
+  console.warn(`[OZON-SYNC] Skipping store ${storeId} — API key marked as invalid. Fix key in carrier settings.`);
+  continue;
+}
+
+What you need to do manually (not code):
+Go to Intégrations → OzonExpress carrier account → update the API Key with the correct one from your OzonExpress dashboard. The current key 332e7a-2327aa-8cd5c9-e1e3d3-480655 is being rejected.
+
+Do not change any other carrier logic. Only touch OzonExpress-specific code.
