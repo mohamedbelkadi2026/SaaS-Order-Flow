@@ -2246,19 +2246,27 @@ export async function trackByCarrier(
 
 // ─── Ozon Express tracking ────────────────────────────────────────────────────
 
+// NOTE: Finalize these labels once you see a real [OZON-TRACK] log line.
+// The map is case-insensitive — mapOzonStatus lowercases both key and input.
 export const OZON_STATUS_MAP: Record<string, string> = {
-  // TODO: fill real Ozon Express status labels → internal codes once API docs confirmed
-  "Livré":      "delivered",
-  "Delivered":  "delivered",
-  "Retourné":   "refused",
-  "Refusé":     "refused",
-  "En cours":   "in_progress",
-  "Expédié":    "expedie",
-  "Reçu":       "expedie",
+  "livré":                    "delivered",
+  "delivered":                "delivered",
+  "retourné":                 "refused",
+  "refusé par le client":     "refused",
+  "refusé":                   "refused",
+  "annulé":                   "cancelled",
+  "mise en distribution":     "in_progress",
+  "en cours de livraison":    "in_progress",
+  "en cours":                 "in_progress",
+  "reçu":                     "expedie",
+  "ramassé":                  "expedie",
+  "expédié":                  "expedie",
+  "pas de réponse":           "pas_reponse",
+  "reporté":                  "reporte",
 };
 
 export function mapOzonStatus(raw: string): string | null {
-  return OZON_STATUS_MAP[(raw || '').trim()] ?? null;
+  return OZON_STATUS_MAP[(raw || '').toLowerCase().trim()] ?? null;
 }
 
 export async function trackOzonExpressShipment(
@@ -2268,29 +2276,45 @@ export async function trackOzonExpressShipment(
 ): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; error?: string }> {
   const customerId =
     account?.settings?.ozonExpressCustomerId ??
-    account?.ozonSettings?.ozonExpressCustomerId;
-  // TODO: confirm real tracking endpoint URL with Ozon Express API docs
-  const url = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}/parcel-info`;
+    account?.ozonSettings?.ozonExpressCustomerId ??
+    (account as any)?.customerId;
+  const base = `https://api.ozonexpress.ma/customers/${customerId}/${apiKey}`;
+  const url  = `${base}/parcel-info`;
+
   try {
-    const r = await axios.post(
-      url,
-      { "TRACKING-NUMBER": trackingNumber },
-      { timeout: 15000, validateStatus: () => true }
-    );
-    const body = r.data;
-    // TODO: confirm where the status field lives in the Ozon Express response
+    // Ozon uses multipart/form-data for its add-parcel calls; send form-data here too
+    const { default: FormData } = await import('form-data');
+    const form = new FormData();
+    form.append('tracking-number', trackingNumber);
+
+    const r = await axios.post(url, form, {
+      headers: { ...form.getHeaders() },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+
+    // Always log the full raw response so the exact shape can be confirmed
+    console.log(`[OZON-TRACK] ${trackingNumber} HTTP ${r.status}: ${JSON.stringify(r.data)}`);
+
+    const b = r.data;
+    // Try all known Ozon response shapes — adjust once real logs confirm the field path
     const rawStatus =
-      body?.['PARCEL-INFO']?.STATUS ??
-      body?.STATUS ??
-      body?.status ??
+      b?.['PARCEL-INFOS']?.['LAST-TRACKING']?.STATUT ??
+      b?.['PARCEL-INFOS']?.STATUT ??
+      b?.['PARCEL-INFO']?.STATUS ??
+      b?.PARCEL?.STATUT ??
+      b?.STATUT ??
+      b?.status ??
       null;
+
     return {
       status: rawStatus ? mapOzonStatus(rawStatus) : null,
       rawStatus,
-      rawResponse: body,
+      rawResponse: b,
       error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
     };
   } catch (e: any) {
+    console.error(`[OZON-TRACK] ${trackingNumber} exception: ${e?.message}`);
     return { status: null, rawStatus: null, rawResponse: null, error: e?.message || 'Ozon track error' };
   }
 }

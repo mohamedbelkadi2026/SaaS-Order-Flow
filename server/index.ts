@@ -662,6 +662,66 @@ app.use((req, res, next) => {
   const autoDigylogSync = setInterval(() => runDigylogSync('interval'), 15 * 60 * 1000);
   intervals.push(autoDigylogSync);
 
+  // ── Auto Ozon Express status poll (no webhook push — must be pulled) ─────────
+  async function runOzonSync(label: string) {
+    try {
+      const { storage: st } = await import('./storage');
+      const { trackOzonExpressShipment } = await import('./services/carrier-service');
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'ozonexpress'));
+
+      for (const account of accounts) {
+        const storeId = (account as any).storeId;
+        const apiKey  = (account as any).apiKey;
+        if (!apiKey) continue;
+
+        const allOrders = await st.getOrdersByStore(storeId);
+        const toSync = allOrders.filter((o: any) =>
+          (o.shippingProvider || '').toLowerCase() === 'ozonexpress' &&
+          o.trackNumber &&
+          !['delivered', 'refused', 'cancelled', 'Retour Recu'].includes(o.status || '')
+        );
+        if (!toSync.length) continue;
+
+        console.log(`[OZON-AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
+        for (const order of toSync) {
+          const result = await trackOzonExpressShipment(order.trackNumber!, apiKey, account);
+
+          if (result.status && result.status !== order.status) {
+            await st.updateOrderStatus(order.id, result.status);
+            await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+            await st.createOrderFollowUpLog({
+              orderId:   order.id,
+              agentId:   null,
+              agentName: 'Ozon Express Auto-Sync',
+              note: `📦 Statut mis à jour automatiquement: ${result.rawStatus} → ${result.status}`,
+            });
+            console.log(`[OZON-AUTO-SYNC][${label}] Order #${(order as any).orderNumber} → ${result.rawStatus} (${result.status})`);
+            try {
+              const { broadcastToStore } = await import('./sse');
+              broadcastToStore(storeId, 'order_updated', {
+                orderId:       order.id,
+                status:        result.status,
+                commentStatus: result.rawStatus,
+              });
+            } catch {}
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[OZON-AUTO-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+
+  // First run after 3 minutes (staggered from Digylog), then every 10 minutes
+  setTimeout(() => runOzonSync('initial'), 3 * 60 * 1000);
+  const autoOzonSync = setInterval(() => runOzonSync('interval'), 10 * 60 * 1000);
+  intervals.push(autoOzonSync);
+
   setTimeout(() => {
     autoStartBaileys().catch(err =>
       console.error('[Baileys] autoStart failed (non-fatal):', err.message)
