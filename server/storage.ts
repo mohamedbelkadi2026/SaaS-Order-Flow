@@ -114,6 +114,8 @@ export interface IStorage {
   getOrderByTrackingNumberAnyStore(trackingNumber: string): Promise<Order | undefined>;
   getOrderByOrderNumberAnyStore(orderNumber: string): Promise<Order | undefined>;
   getOrdersForFeeBackfill(storeId: number, provider: string): Promise<Order[]>;
+  getOzonOrdersToReconcile(storeId: number): Promise<Order[]>;
+  getAllCarrierAccountsByProvider(provider: string): Promise<CarrierAccount[]>;
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
@@ -1497,6 +1499,38 @@ export class DatabaseStorage implements IStorage {
         ),
       ))
       .limit(200);
+  }
+
+  async getOzonOrdersToReconcile(storeId: number): Promise<Order[]> {
+    // Selects Ozon orders that need reconciliation:
+    //   • non-final orders (still in transit) — status update may be inferred from parcel-info price fields
+    //   • final orders (delivered/Retour Recu/refused) missing their shipping fee
+    // Ozon orders are identified by shippingProvider/carrierName = 'ozonexpress' OR trackNumber starting with 'TG-'
+    return db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        sql`${orders.trackNumber} IS NOT NULL AND ${orders.trackNumber} != ''`,
+        or(
+          sql`lower(${orders.shippingProvider}) = 'ozonexpress'`,
+          sql`lower(${orders.carrierName}) = 'ozonexpress'`,
+          sql`${orders.trackNumber} LIKE 'TG-%'`,
+        ),
+        or(
+          // Non-final: status update may arrive via parcel-info
+          sql`${orders.status} NOT IN ('delivered', 'Retour Recu', 'refused', 'annule')`,
+          // Final but fee still missing
+          and(
+            inArray(orders.status, ['delivered', 'Retour Recu', 'refused']),
+            or(isNull(orders.shippingCost), eq(orders.shippingCost, 0)),
+          ),
+        ),
+      ))
+      .limit(300);
+  }
+
+  async getAllCarrierAccountsByProvider(provider: string): Promise<CarrierAccount[]> {
+    return db.select().from(carrierAccounts)
+      .where(sql`lower(${carrierAccounts.carrierName}) = lower(${provider})`);
   }
 
   async updateOrder(id: number, data: Partial<InsertOrder>, actorId?: number | null): Promise<Order | undefined> {

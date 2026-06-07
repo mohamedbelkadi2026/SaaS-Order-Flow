@@ -8112,7 +8112,7 @@ function ensureHeaders(sheet) {
   }
 
   async function backfillOzonFees(storeId: number, account: any): Promise<{
-    synced: number; updated: number;
+    synced: number; updated: number; statusUpdated: number; feeUpdated: number;
     details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }>;
     errors: Array<{ orderId: number; message: string }>;
     message: string;
@@ -8120,15 +8120,15 @@ function ensureHeaders(sheet) {
     const cid = account?.settings?.ozonExpressCustomerId;
     const key = account?.apiKey;
     if (!cid || !key) {
-      return { synced: 0, updated: 0, details: [], errors: [],
+      return { synced: 0, updated: 0, statusUpdated: 0, feeUpdated: 0, details: [], errors: [],
         message: 'Customer ID ou clé API Ozon Express manquant — vérifiez les paramètres.' };
     }
 
-    const ordersToFill = await storage.getOrdersForFeeBackfill(storeId, 'ozonexpress');
-    let updated = 0;
+    const ordersToReconcile = await storage.getOzonOrdersToReconcile(storeId);
+    let statusUpdated = 0, feeUpdated = 0;
     const errors: Array<{ orderId: number; message: string }> = [];
 
-    for (const o of ordersToFill) {
+    for (const o of ordersToReconcile) {
       try {
         const axiosBf    = (await import('axios')).default;
         const FormDataBf = (await import('form-data')).default;
@@ -8138,27 +8138,54 @@ function ensureHeaders(sheet) {
           `https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
           fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true }
         );
-        const infos  = r.data?.["PARCEL-INFO"]?.["INFOS"];
-        const feeRaw = o.status === "delivered"   ? infos?.["DELIVERED-PRICE"]
-                     : o.status === "Retour Recu" ? infos?.["RETURNED-PRICE"]
-                     :                              infos?.["REFUSED-PRICE"];
-        const fee = Number(feeRaw);
-        if (Number.isFinite(fee) && fee > 0) {
-          await storage.updateOrder(o.id, { shippingCost: Math.round(fee * 100) });
-          updated++;
-          console.log(`[OZON-FEE-BACKFILL] #${(o as any).orderNumber} fee=${fee} DH`);
+        const infos = r.data?.["PARCEL-INFO"]?.["INFOS"];
+        if (!infos) { await new Promise(res => setTimeout(res, 120)); continue; }
+
+        const dp = Number(infos["DELIVERED-PRICE"] || 0);
+        const rp = Number(infos["RETURNED-PRICE"]  || 0);
+        const fp = Number(infos["REFUSED-PRICE"]   || 0);
+
+        let inferred: string | null = null;
+        let fee = 0;
+        if (dp > 0)      { inferred = "delivered";   fee = dp; }
+        else if (rp > 0) { inferred = "Retour Recu"; fee = rp; }
+        else if (fp > 0) { inferred = "refused";      fee = fp; }
+
+        // Status update: only when inferred state differs from current
+        if (inferred && inferred !== o.status) {
+          await storage.updateOrderStatus(o.id, inferred);
+          await storage.createOrderFollowUpLog({ orderId: o.id, agentId: null,
+            agentName: "Ozon Express Sync",
+            note: `Statut déduit via parcel-info → ${inferred}` });
+          await storage.createIntegrationLog({ storeId, integrationId: null,
+            provider: "ozonexpress", action: "status_update", status: "ok",
+            message: `✅ Ozon #${(o as any).orderNumber}: ${o.status} → ${inferred} (parcel-info)` });
+          statusUpdated++;
+          console.log(`[OZON-RECONCILE] #${(o as any).orderNumber} status ${o.status} → ${inferred}`);
         }
+
+        // Fee: only store when a price was found and fee is still missing
+        if (fee > 0 && (!o.shippingCost || o.shippingCost === 0)) {
+          await storage.updateOrder(o.id, { shippingCost: Math.round(fee * 100) });
+          feeUpdated++;
+          console.log(`[OZON-RECONCILE] #${(o as any).orderNumber} fee=${fee} DH stored`);
+        }
+
+        await new Promise(res => setTimeout(res, 120));
       } catch (e: any) {
         errors.push({ orderId: o.id, message: e?.message || 'Unknown error' });
-        console.log(`[OZON-FEE-BACKFILL] ${o.trackNumber} failed: ${e?.message}`);
+        console.log(`[OZON-RECONCILE] ${o.trackNumber} failed: ${e?.message}`);
       }
     }
+
     return {
-      synced: ordersToFill.length,
-      updated,
+      synced: ordersToReconcile.length,
+      updated: statusUpdated + feeUpdated,
+      statusUpdated,
+      feeUpdated,
       details: [],
       errors,
-      message: `${ordersToFill.length} commandes vérifiées — ${updated} frais de livraison mis à jour.`,
+      message: `${ordersToReconcile.length} vérifiées · ${statusUpdated} statuts · ${feeUpdated} frais`,
     };
   }
 
@@ -12438,6 +12465,28 @@ function sendToAPI(data) {
       res.status(500).json({ connected: false, message: "Erreur serveur" });
     }
   });
+
+  // Ozon Express auto-reconcile: every 10 minutes, infer statuses and backfill fees
+  // for all stores with an ozonexpress carrier account. Uses the same in-flight lock
+  // as the manual sync button so concurrent runs are safely skipped.
+  setInterval(async () => {
+    try {
+      const accts = await storage.getAllCarrierAccountsByProvider('ozonexpress');
+      const storeIds = [...new Set(accts.map((a: any) => a.storeId as number))];
+      for (const sid of storeIds) {
+        try {
+          const r = await syncCarrierOrdersInternal(sid, 'ozonexpress');
+          if ((r as any).statusUpdated || (r as any).feeUpdated) {
+            console.log(`[OZON-AUTO-POLL] storeId=${sid} — ${r.synced} checked, ${(r as any).statusUpdated} statuts, ${(r as any).feeUpdated} frais`);
+          }
+        } catch (e: any) {
+          console.log(`[OZON-AUTO-POLL] storeId=${sid} failed: ${e?.message}`);
+        }
+      }
+    } catch (e: any) {
+      console.log(`[OZON-AUTO-POLL] failed: ${e?.message}`);
+    }
+  }, 10 * 60 * 1000);
 
   return httpServer;
 }
