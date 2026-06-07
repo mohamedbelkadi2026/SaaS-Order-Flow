@@ -1,0 +1,32 @@
+HARD FACT (confirmed via full logs): Ozon's parcel-info has NO status field (only INFOS:
+receiver/city/price + DELIVERED/RETURNED/REFUSED-PRICE, which are TARIFFS, not proof of state),
+and /parcels/tracking returns "verify API key". So Ozon status CANNOT be pulled. The ONLY source
+of Ozon status is the WEBHOOK (push), which already works in real time.
+The price-based inference corrupted data (orders at "Mise en distribution" were wrongly set to
+"Livré"). Fix definitively:
+
+1) server/routes.ts — backfillOzonFees: REMOVE ALL status inference. No updateOrderStatus based on
+   any *-PRICE. The function may ONLY set shippingCost, and ONLY for orders ALREADY in a final
+   state set by the WEBHOOK (delivered / "Retour Recu" / refused). It must NEVER change a status.
+   Handle parcel-info "Invalid Tracking Number" / RESULT:"ERROR" gracefully (skip, no crash).
+
+2) The "Synchroniser Ozon Express" button = fee-fill only (no status). Update its toast to
+   "{feeUpdated} frais mis à jour" and stop reporting "statuts".
+
+3) Add a one-time revert: POST /api/admin/ozon/revert-bad-inference (requireAuth, requireAdmin).
+   For the current store, find Ozon orders currently in delivered/"Retour Recu"/refused whose
+   status was set by the INFERENCE (their latest status-change follow-up log has
+   agentName = "Ozon Express Sync" OR note contains "parcel-info" / "déduit"), AND that have NO
+   follow-up log from "Ozon Express Webhook" for that final status. Revert each such order to
+   "transit" (Ozon shows them as "Mise en distribution"). Log each revert and return the count.
+
+4) Keep the WEBHOOK handler as the single source of truth for status. These reverted orders will
+   automatically become "Livré" later when Ozon actually delivers them and fires the DELIVERED
+   webhook. Do NOT add any status polling.
+
+VERIFY:
+- Clicking "Synchroniser Ozon Express" never changes a status (fees only).
+- POST /api/admin/ozon/revert-bad-inference once → TG-16997/16995/16989/16996 (Ozon = Mise en
+  distribution) go from wrong "Livré" back to "transit", matching Ozon.
+- New real deliveries flip to "Livré" via webhook automatically.
+- App compiles.

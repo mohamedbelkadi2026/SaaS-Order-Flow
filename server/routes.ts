@@ -7865,6 +7865,83 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // One-time fix: revert Ozon orders whose status was set by price-based inference
+  // (the "Ozon Express Sync" bug). Identification rule:
+  //   • Has a follow-up log from "Ozon Express Sync" OR note contains "parcel-info"/"déduit"
+  //   • AND has NO follow-up log from "Ozon Express Webhook" (the legitimate source of truth)
+  // These orders were at "Mise en distribution" and will flip back to "Livré" automatically
+  // when Ozon fires the real DELIVERED webhook.
+  app.post('/api/admin/ozon/revert-bad-inference', requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      // Step 1 — order IDs touched by the inference bug
+      const inferenceRows = await db
+        .select({ orderId: orderFollowUpLogs.orderId })
+        .from(orderFollowUpLogs)
+        .where(sql`
+          ${orderFollowUpLogs.agentName} = 'Ozon Express Sync'
+          OR ${orderFollowUpLogs.note} LIKE '%parcel-info%'
+          OR ${orderFollowUpLogs.note} LIKE '%déduit%'
+        `);
+      const inferenceIds = new Set(inferenceRows.map(r => r.orderId));
+
+      if (inferenceIds.size === 0) {
+        return res.json({ reverted: 0, message: 'Aucune empreinte d\'inférence détectée — rien à corriger.' });
+      }
+
+      // Step 2 — order IDs that have a REAL webhook log (legitimate final status)
+      const webhookRows = await db
+        .select({ orderId: orderFollowUpLogs.orderId })
+        .from(orderFollowUpLogs)
+        .where(sql`${orderFollowUpLogs.agentName} = 'Ozon Express Webhook'`);
+      const webhookIds = new Set(webhookRows.map(r => r.orderId));
+
+      // Step 3 — candidates = inference-only (no webhook confirmation), in this store
+      const onlyInferenceIds = [...inferenceIds].filter(id => !webhookIds.has(id));
+      if (onlyInferenceIds.length === 0) {
+        return res.json({ reverted: 0, message: 'Toutes les commandes inférées ont aussi une confirmation webhook — rien à corriger.' });
+      }
+
+      // Step 4 — load those orders from this store that are currently in a final state
+      const FINAL_STATES = ['delivered', 'Retour Recu', 'refused'];
+      const candidates = await db
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            inArray(orders.status, FINAL_STATES),
+            inArray(orders.id, onlyInferenceIds),
+          )
+        );
+
+      let reverted = 0;
+      for (const o of candidates) {
+        await storage.updateOrderStatus(o.id, 'transit');
+        await storage.createOrderFollowUpLog({
+          orderId: o.id,
+          agentId: null,
+          agentName: 'Admin Fix',
+          note: `Statut corrigé: "${o.status}" → "transit" (inférence parcel-info annulée — sera mis à jour par webhook Ozon)`,
+        });
+        console.log(`[OZON-REVERT-INFERENCE] #${(o as any).orderNumber} ${o.status} → transit`);
+        reverted++;
+      }
+
+      res.json({
+        reverted,
+        checked: candidates.length,
+        message: reverted > 0
+          ? `${reverted} commande(s) repassées en "transit". Le webhook Ozon les basculera en "Livré" dès livraison réelle.`
+          : 'Aucune commande à corriger dans ce compte.',
+      });
+    } catch (err: any) {
+      console.error('[OZON-REVERT-INFERENCE]', err?.message);
+      res.status(500).json({ message: err?.message || 'Erreur serveur' });
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════
   // AMEEX — STATUS TRACKING & SYNC
   // ══════════════════════════════════════════════════════════════════
@@ -8200,15 +8277,19 @@ function ensureHeaders(sheet) {
           `https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
           fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true }
         );
-        // Log the full response so we can identify the real status field
-        console.log(`[OZON-PARCELINFO-FULL] ${o.trackNumber}: ${JSON.stringify(r.data)}`);
+        // Gracefully handle API errors / invalid tracking numbers — skip without crashing
+        const result = r.data?.["RESULT"];
+        if (result === "ERROR" || !r.data?.["PARCEL-INFO"]) {
+          console.log(`[OZON-PARCELINFO] ${o.trackNumber}: skipped (RESULT=${result ?? 'no PARCEL-INFO'})`);
+          await new Promise(res => setTimeout(res, 120));
+          continue;
+        }
 
-        const infos = r.data?.["PARCEL-INFO"]?.["INFOS"];
+        const infos = r.data["PARCEL-INFO"]?.["INFOS"];
         if (!infos) { await new Promise(res => setTimeout(res, 120)); continue; }
 
-        // Fee fill: only for orders already confirmed as final by the webhook.
-        // DO NOT infer status from *-PRICE fields — DELIVERED-PRICE is the delivery
-        // tariff (non-zero even for in-transit parcels) and would wrongly flip statuses.
+        // Fee fill ONLY — status is managed exclusively by the webhook push.
+        // *-PRICE fields are TARIFFS (non-zero even for in-transit parcels); never use them for status inference.
         const FINAL = ["delivered", "Retour Recu", "refused"];
         if (FINAL.includes(o.status) && (!o.shippingCost || o.shippingCost === 0)) {
           const feeRaw = o.status === "delivered"   ? infos["DELIVERED-PRICE"]
@@ -8231,12 +8312,12 @@ function ensureHeaders(sheet) {
 
     return {
       synced: ordersToReconcile.length,
-      updated: statusUpdated + feeUpdated,
-      statusUpdated,
+      updated: feeUpdated,
+      statusUpdated: 0,
       feeUpdated,
       details: [],
       errors,
-      message: `${ordersToReconcile.length} vérifiées · ${statusUpdated} statuts · ${feeUpdated} frais`,
+      message: `${feeUpdated} frais mis à jour`,
     };
   }
 
