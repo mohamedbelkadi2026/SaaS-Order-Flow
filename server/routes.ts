@@ -9,7 +9,7 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema } from "@shared/schema";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -7800,6 +7800,68 @@ function ensureHeaders(sheet) {
       res.json({ checked: toFix.length, fixed, message: `${fixed} commandes corrigées` });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  // One-time fix: revert Ozon orders wrongly flipped to "delivered" by the
+  // price-based status inference bug in backfillOzonFees (since fixed).
+  // Identifies victims by checking for a follow-up log written by "Ozon Express Sync"
+  // whose note contains "parcel-info" — the exact fingerprint of the bad run.
+  app.post('/api/admin/ozon/revert-wrong-delivered', requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      // Find order IDs that have a follow-up log from the bad sync run
+      const badLogs = await db
+        .select({ orderId: orderFollowUpLogs.orderId })
+        .from(orderFollowUpLogs)
+        .where(
+          and(
+            sql`${orderFollowUpLogs.agentName} = 'Ozon Express Sync'`,
+            sql`${orderFollowUpLogs.note} LIKE '%parcel-info%'`,
+          )
+        );
+
+      if (badLogs.length === 0) {
+        return res.json({ reverted: 0, message: 'Aucune commande affectée détectée.' });
+      }
+
+      const badOrderIds = [...new Set(badLogs.map(r => r.orderId))];
+
+      // Load those orders and keep only the ones still "delivered" that belong to this store
+      const candidates = await db
+        .select()
+        .from(orders)
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            eq(orders.status, 'delivered'),
+            inArray(orders.id, badOrderIds),
+          )
+        );
+
+      let reverted = 0;
+      for (const o of candidates) {
+        await storage.updateOrderStatus(o.id, 'transit');
+        await storage.createOrderFollowUpLog({
+          orderId: o.id,
+          agentId: null,
+          agentName: 'Admin Fix',
+          note: `Statut corrigé: "Livré" → "transit" (inférence parcel-info erronée annulée)`,
+        });
+        console.log(`[OZON-REVERT] #${(o as any).orderNumber} delivered → transit`);
+        reverted++;
+      }
+
+      res.json({
+        reverted,
+        message: reverted > 0
+          ? `${reverted} commande(s) revenues en "transit". Vérifiez et corrigez manuellement si nécessaire.`
+          : 'Aucune commande "Livré" à corriger dans ce compte.',
+      });
+    } catch (err: any) {
+      console.error('[OZON-REVERT]', err?.message);
+      res.status(500).json({ message: err?.message || 'Erreur serveur' });
     }
   });
 
