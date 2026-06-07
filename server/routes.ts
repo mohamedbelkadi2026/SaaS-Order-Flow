@@ -3667,6 +3667,9 @@ export async function registerRoutes(
 
       // ── Ozon Express: fields differ from all other carriers ─────────────────
       if (carrierName === "ozonexpress") {
+        // Full raw payload — used to locate driver/livreur field name in Ozon's schema
+        console.log(`[OZON-WEBHOOK-RAW] ${JSON.stringify(req.body)}`);
+
         const tracking   = (body.orderId || body.tracking_number || body.code || "").toString().trim();
         const statusCode = (body.orderStatus || body.status || "").toString().trim();
         const note       = (body.note || "").toString();
@@ -8277,6 +8280,9 @@ function ensureHeaders(sheet) {
           `https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
           fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true }
         );
+        // Full raw response — logged for ALL orders (including in-transit) to locate driver field
+        console.log(`[OZON-PARCELINFO-FULL] ${o.trackNumber}: ${JSON.stringify(r.data)}`);
+
         // Gracefully handle API errors / invalid tracking numbers — skip without crashing
         const result = r.data?.["RESULT"];
         if (result === "ERROR" || !r.data?.["PARCEL-INFO"]) {
