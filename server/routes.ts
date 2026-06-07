@@ -8138,37 +8138,26 @@ function ensureHeaders(sheet) {
           `https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
           fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true }
         );
+        // Log the full response so we can identify the real status field
+        console.log(`[OZON-PARCELINFO-FULL] ${o.trackNumber}: ${JSON.stringify(r.data)}`);
+
         const infos = r.data?.["PARCEL-INFO"]?.["INFOS"];
         if (!infos) { await new Promise(res => setTimeout(res, 120)); continue; }
 
-        const dp = Number(infos["DELIVERED-PRICE"] || 0);
-        const rp = Number(infos["RETURNED-PRICE"]  || 0);
-        const fp = Number(infos["REFUSED-PRICE"]   || 0);
-
-        let inferred: string | null = null;
-        let fee = 0;
-        if (dp > 0)      { inferred = "delivered";   fee = dp; }
-        else if (rp > 0) { inferred = "Retour Recu"; fee = rp; }
-        else if (fp > 0) { inferred = "refused";      fee = fp; }
-
-        // Status update: only when inferred state differs from current
-        if (inferred && inferred !== o.status) {
-          await storage.updateOrderStatus(o.id, inferred);
-          await storage.createOrderFollowUpLog({ orderId: o.id, agentId: null,
-            agentName: "Ozon Express Sync",
-            note: `Statut déduit via parcel-info → ${inferred}` });
-          await storage.createIntegrationLog({ storeId, integrationId: null,
-            provider: "ozonexpress", action: "status_update", status: "ok",
-            message: `✅ Ozon #${(o as any).orderNumber}: ${o.status} → ${inferred} (parcel-info)` });
-          statusUpdated++;
-          console.log(`[OZON-RECONCILE] #${(o as any).orderNumber} status ${o.status} → ${inferred}`);
-        }
-
-        // Fee: only store when a price was found and fee is still missing
-        if (fee > 0 && (!o.shippingCost || o.shippingCost === 0)) {
-          await storage.updateOrder(o.id, { shippingCost: Math.round(fee * 100) });
-          feeUpdated++;
-          console.log(`[OZON-RECONCILE] #${(o as any).orderNumber} fee=${fee} DH stored`);
+        // Fee fill: only for orders already confirmed as final by the webhook.
+        // DO NOT infer status from *-PRICE fields — DELIVERED-PRICE is the delivery
+        // tariff (non-zero even for in-transit parcels) and would wrongly flip statuses.
+        const FINAL = ["delivered", "Retour Recu", "refused"];
+        if (FINAL.includes(o.status) && (!o.shippingCost || o.shippingCost === 0)) {
+          const feeRaw = o.status === "delivered"   ? infos["DELIVERED-PRICE"]
+                       : o.status === "Retour Recu" ? infos["RETURNED-PRICE"]
+                       :                              infos["REFUSED-PRICE"];
+          const fee = Number(feeRaw || 0);
+          if (Number.isFinite(fee) && fee > 0) {
+            await storage.updateOrder(o.id, { shippingCost: Math.round(fee * 100) });
+            feeUpdated++;
+            console.log(`[OZON-RECONCILE] #${(o as any).orderNumber} fee=${fee} DH stored`);
+          }
         }
 
         await new Promise(res => setTimeout(res, 120));
