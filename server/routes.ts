@@ -3693,34 +3693,40 @@ export async function registerRoutes(
           await storage.createIntegrationLog({ storeId, integrationId: null, provider: "ozonexpress",
             action: "status_update", status: "ok",
             message: `✅ Ozon #${ozonOrder.orderNumber}: ${ozonOrder.status} → ${mapped} (${statusCode})` });
+        }
 
-          // Fetch delivery fee from parcel-info for final states
-          if (mapped === "delivered" || mapped === "Retour Recu" || mapped === "refused") {
-            try {
-              const ozonAcct = (await storage.getCarrierAccounts(storeId, "ozonexpress"))[0];
-              const ozonCid  = ozonAcct?.settings?.ozonExpressCustomerId;
-              const ozonKey  = ozonAcct?.apiKey;
-              if (ozonCid && ozonKey) {
-                const FormDataFee = (await import("form-data")).default;
-                const fdFee = new FormDataFee();
-                fdFee.append("tracking-number", tracking);
-                const feeResp = await axios.post(
-                  `https://api.ozonexpress.ma/customers/${ozonCid}/${ozonKey}/parcel-info`,
-                  fdFee, { headers: fdFee.getHeaders(), timeout: 15000, validateStatus: () => true }
-                );
-                const infos  = feeResp.data?.["PARCEL-INFO"]?.["INFOS"];
-                const feeRaw = mapped === "delivered"   ? infos?.["DELIVERED-PRICE"]
-                             : mapped === "Retour Recu" ? infos?.["RETURNED-PRICE"]
-                             :                           infos?.["REFUSED-PRICE"];
-                const fee = Number(feeRaw);
-                if (Number.isFinite(fee) && fee > 0) {
-                  await storage.updateOrder(ozonOrder.id, { shippingCost: Math.round(fee * 100) });
-                  console.log(`[OZON-FEE] #${ozonOrder.orderNumber} fee=${fee} DH stored`);
-                }
+        // Fee backfill: runs regardless of whether status changed, whenever fee is missing
+        const FINAL_STATES = ["delivered", "Retour Recu", "refused"] as const;
+        const finalState = FINAL_STATES.includes(mapped as any) ? mapped
+          : FINAL_STATES.includes(ozonOrder.status as any) ? ozonOrder.status
+          : null;
+        const needsFee = finalState && (!ozonOrder.shippingCost || ozonOrder.shippingCost === 0);
+        if (needsFee) {
+          try {
+            const ozonAcct = (await storage.getCarrierAccounts(storeId, "ozonexpress"))[0];
+            const ozonCid  = ozonAcct?.settings?.ozonExpressCustomerId;
+            const ozonKey  = ozonAcct?.apiKey;
+            if (ozonCid && ozonKey) {
+              const axiosFee   = (await import("axios")).default;
+              const FormDataFee = (await import("form-data")).default;
+              const fdFee = new FormDataFee();
+              fdFee.append("tracking-number", tracking);
+              const feeResp = await axiosFee.post(
+                `https://api.ozonexpress.ma/customers/${ozonCid}/${ozonKey}/parcel-info`,
+                fdFee, { headers: fdFee.getHeaders(), timeout: 15000, validateStatus: () => true }
+              );
+              const infos  = feeResp.data?.["PARCEL-INFO"]?.["INFOS"];
+              const feeRaw = finalState === "delivered"   ? infos?.["DELIVERED-PRICE"]
+                           : finalState === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                           :                               infos?.["REFUSED-PRICE"];
+              const fee = Number(feeRaw);
+              if (Number.isFinite(fee) && fee > 0) {
+                await storage.updateOrder(ozonOrder.id, { shippingCost: Math.round(fee * 100) });
+                console.log(`[OZON-FEE] #${ozonOrder.orderNumber} fee=${fee} DH stored`);
               }
-            } catch (feeErr: any) {
-              console.log(`[OZON-FEE] ${tracking} fee fetch failed: ${feeErr?.message}`);
             }
+          } catch (feeErr: any) {
+            console.log(`[OZON-FEE] ${tracking} fee fetch failed: ${feeErr?.message}`);
           }
         }
         return res.json({ success: true, matched: true, newStatus: mapped });
@@ -8095,10 +8101,65 @@ function ensureHeaders(sheet) {
 
     inFlightSyncs.add(lockKey);
     try {
+      // Ozon Express: pull API is dead — the sync button backfills delivery fees instead
+      if (p === 'ozonexpress') {
+        return await backfillOzonFees(storeId, account);
+      }
       return await runSyncLoop(p, storeId, account, options);
     } finally {
       inFlightSyncs.delete(lockKey);
     }
+  }
+
+  async function backfillOzonFees(storeId: number, account: any): Promise<{
+    synced: number; updated: number;
+    details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }>;
+    errors: Array<{ orderId: number; message: string }>;
+    message: string;
+  }> {
+    const cid = account?.settings?.ozonExpressCustomerId;
+    const key = account?.apiKey;
+    if (!cid || !key) {
+      return { synced: 0, updated: 0, details: [], errors: [],
+        message: 'Customer ID ou clé API Ozon Express manquant — vérifiez les paramètres.' };
+    }
+
+    const ordersToFill = await storage.getOrdersForFeeBackfill(storeId, 'ozonexpress');
+    let updated = 0;
+    const errors: Array<{ orderId: number; message: string }> = [];
+
+    for (const o of ordersToFill) {
+      try {
+        const axiosBf    = (await import('axios')).default;
+        const FormDataBf = (await import('form-data')).default;
+        const fd = new FormDataBf();
+        fd.append('tracking-number', o.trackNumber!);
+        const r = await axiosBf.post(
+          `https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
+          fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true }
+        );
+        const infos  = r.data?.["PARCEL-INFO"]?.["INFOS"];
+        const feeRaw = o.status === "delivered"   ? infos?.["DELIVERED-PRICE"]
+                     : o.status === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                     :                              infos?.["REFUSED-PRICE"];
+        const fee = Number(feeRaw);
+        if (Number.isFinite(fee) && fee > 0) {
+          await storage.updateOrder(o.id, { shippingCost: Math.round(fee * 100) });
+          updated++;
+          console.log(`[OZON-FEE-BACKFILL] #${(o as any).orderNumber} fee=${fee} DH`);
+        }
+      } catch (e: any) {
+        errors.push({ orderId: o.id, message: e?.message || 'Unknown error' });
+        console.log(`[OZON-FEE-BACKFILL] ${o.trackNumber} failed: ${e?.message}`);
+      }
+    }
+    return {
+      synced: ordersToFill.length,
+      updated,
+      details: [],
+      errors,
+      message: `${ordersToFill.length} commandes vérifiées — ${updated} frais de livraison mis à jour.`,
+    };
   }
 
   async function runSyncLoop(
@@ -8776,25 +8837,31 @@ function ensureHeaders(sheet) {
         });
         console.log(`[OZON-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mapped}`);
 
-        // Fetch delivery fee from parcel-info for final states
-        if (mapped === "delivered" || mapped === "Retour Recu" || mapped === "refused") {
+        // Fee backfill: runs for final states when fee is missing
+        const DF_FINALS = ["delivered", "Retour Recu", "refused"] as const;
+        const dfFinalState = DF_FINALS.includes(mapped as any) ? mapped
+          : DF_FINALS.includes(order.status as any) ? order.status
+          : null;
+        const dfNeedsFee = dfFinalState && (!order.shippingCost || order.shippingCost === 0);
+        if (dfNeedsFee) {
           try {
             const feeAcct = accts[0];
             const feeCid  = feeAcct?.settings?.ozonExpressCustomerId;
             const feeKey  = feeAcct?.apiKey;
             const feeTracking = trackingCode || orderRef;
             if (feeCid && feeKey && feeTracking) {
-              const FormDataFee = (await import("form-data")).default;
-              const fdFee = new FormDataFee();
-              fdFee.append("tracking-number", feeTracking);
-              const feeResp = await axios.post(
+              const axiosFee2  = (await import("axios")).default;
+              const FormDataFee2 = (await import("form-data")).default;
+              const fdFee2 = new FormDataFee2();
+              fdFee2.append("tracking-number", feeTracking);
+              const feeResp = await axiosFee2.post(
                 `https://api.ozonexpress.ma/customers/${feeCid}/${feeKey}/parcel-info`,
-                fdFee, { headers: fdFee.getHeaders(), timeout: 15000, validateStatus: () => true }
+                fdFee2, { headers: fdFee2.getHeaders(), timeout: 15000, validateStatus: () => true }
               );
               const infos  = feeResp.data?.["PARCEL-INFO"]?.["INFOS"];
-              const feeRaw = mapped === "delivered"   ? infos?.["DELIVERED-PRICE"]
-                           : mapped === "Retour Recu" ? infos?.["RETURNED-PRICE"]
-                           :                           infos?.["REFUSED-PRICE"];
+              const feeRaw = dfFinalState === "delivered"   ? infos?.["DELIVERED-PRICE"]
+                           : dfFinalState === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                           :                                  infos?.["REFUSED-PRICE"];
               const fee = Number(feeRaw);
               if (Number.isFinite(fee) && fee > 0) {
                 await storage.updateOrder(order.id, { shippingCost: Math.round(fee * 100) });

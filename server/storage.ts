@@ -113,6 +113,7 @@ export interface IStorage {
   getOrderByTrackingNumber(storeId: number, trackingNumber: string): Promise<Order | undefined>;
   getOrderByTrackingNumberAnyStore(trackingNumber: string): Promise<Order | undefined>;
   getOrderByOrderNumberAnyStore(orderNumber: string): Promise<Order | undefined>;
+  getOrdersForFeeBackfill(storeId: number, provider: string): Promise<Order[]>;
   updateOrder(id: number, data: Partial<InsertOrder>): Promise<Order | undefined>;
   updateProduct(id: number, data: Partial<InsertProduct>): Promise<Product | undefined>;
   deleteProduct(id: number): Promise<void>;
@@ -1481,6 +1482,21 @@ export class DatabaseStorage implements IStorage {
       .where(eq(orders.orderNumber, orderNumber))
       .limit(1);
     return order;
+  }
+
+  async getOrdersForFeeBackfill(storeId: number, provider: string): Promise<Order[]> {
+    return db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        inArray(orders.status, ['delivered', 'Retour Recu', 'refused']),
+        sql`${orders.trackNumber} IS NOT NULL AND ${orders.trackNumber} != ''`,
+        or(isNull(orders.shippingCost), eq(orders.shippingCost, 0)),
+        or(
+          sql`lower(${orders.shippingProvider}) = lower(${provider})`,
+          sql`lower(${orders.carrierName}) = lower(${provider})`,
+        ),
+      ))
+      .limit(200);
   }
 
   async updateOrder(id: number, data: Partial<InsertOrder>, actorId?: number | null): Promise<Order | undefined> {

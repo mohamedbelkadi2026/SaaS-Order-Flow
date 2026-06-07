@@ -1,0 +1,69 @@
+Goal: auto-fill "Frais de livraison" for Ozon Express orders from the carrier. The fee logic
+exists in the Ozon webhook branch, but (1) it only runs when the status CHANGES, so already-
+delivered orders (delivered before the feature) never got a fee, and (2) there's no backfill.
+Ozon's parcel-info endpoint DOES return the fee (DELIVERED-PRICE / RETURNED-PRICE / REFUSED-PRICE)
+even though /parcels/tracking is dead. shippingCost is stored in CENTIMES (UI divides by 100).
+
+PART A — server/routes.ts, the ozonexpress branch in app.all("/api/webhooks/carrier/:storeId/:carrierName"):
+Currently the fee fetch sits INSIDE `if (mapped && mapped !== order.status) { ... }`. Make the
+fee fetch also run when the status is already final but the fee is missing. So compute the final
+state regardless of change, and fetch the fee when shippingCost is 0/empty:
+
+   const finalState = (mapped === "delivered" || mapped === "Retour Recu" || mapped === "refused")
+                      ? mapped
+                      : ((["delivered","Retour Recu","refused"].includes(ozonOrder.status)) ? ozonOrder.status : null);
+   const needsFee = finalState && (!ozonOrder.shippingCost || ozonOrder.shippingCost === 0);
+   if (needsFee) {
+     // ... existing parcel-info fetch, but pick the price field based on `finalState`
+     //     delivered → DELIVERED-PRICE, "Retour Recu" → RETURNED-PRICE, refused → REFUSED-PRICE
+     //     then: await storage.updateOrder(ozonOrder.id, { shippingCost: Math.round(fee * 100) });
+   }
+Keep the status-update block as-is; just make the fee fetch independent (run on needsFee), in
+try/catch, never blocking the webhook response.
+
+PART B — make "Synchroniser Ozon Express" backfill fees for existing orders.
+Add a helper and call it from the Ozon sync path:
+
+   async function backfillOzonFees(storeId: number) {
+     const acct = (await storage.getCarrierAccounts(storeId, "ozonexpress"))[0];
+     const cid = acct?.settings?.ozonExpressCustomerId, key = acct?.apiKey;
+     if (!cid || !key) return { checked: 0, updated: 0 };
+     // Ozon orders in a final state, with a tracking number, and no fee yet:
+     const orders = await storage.getOrdersForFeeBackfill(storeId, "ozonexpress"); // status in (delivered,'Retour Recu',refused) AND trackingNumber present AND (shippingCost is null or 0)
+     let updated = 0;
+     for (const o of orders) {
+       try {
+         const FormDataFee = (await import("form-data")).default;
+         const fd = new FormDataFee(); fd.append("tracking-number", o.trackingNumber);
+         const r = await axios.post(`https://api.ozonexpress.ma/customers/${cid}/${key}/parcel-info`,
+           fd, { headers: fd.getHeaders(), timeout: 15000, validateStatus: () => true });
+         const infos = r.data?.["PARCEL-INFO"]?.["INFOS"];
+         const feeRaw = o.status === "delivered" ? infos?.["DELIVERED-PRICE"]
+                      : o.status === "Retour Recu" ? infos?.["RETURNED-PRICE"]
+                      : infos?.["REFUSED-PRICE"];
+         const fee = Number(feeRaw);
+         if (Number.isFinite(fee) && fee > 0) {
+           await storage.updateOrder(o.id, { shippingCost: Math.round(fee * 100) });
+           updated++;
+           console.log(`[OZON-FEE-BACKFILL] #${o.orderNumber} fee=${fee} DH`);
+         }
+       } catch (e:any) { console.log(`[OZON-FEE-BACKFILL] ${o.trackingNumber} failed: ${e?.message}`); }
+     }
+     return { checked: orders.length, updated };
+   }
+
+In syncCarrierOrdersInternal, for provider 'ozonexpress', run backfillOzonFees(storeId) and return
+its counts in the response message (e.g. "{checked} vérifiées, {updated} frais mis à jour"),
+instead of the dead /parcels/tracking status loop (which returns Invalid API Key). Keep the
+webhook as the source of STATUS; the button now fills FEES.
+
+Add the storage method getOrdersForFeeBackfill(storeId, provider): select store orders where
+status IN ('delivered','Retour Recu','refused'), trackingNumber IS NOT NULL/non-empty,
+(shippingCost IS NULL OR shippingCost = 0), and the order belongs to that carrier (by carrier
+field if present, otherwise trackingNumber LIKE 'TG-%' for Ozon). Limit ~200 per run.
+
+VERIFY:
+- Click "Synchroniser Ozon Express": existing delivered orders (e.g. TG-16991, TG-16979) get their
+  Frais de livraison filled from Ozon (e.g. 35/45 DH), toast shows "{updated} frais mis à jour".
+- A newly delivered Ozon order auto-fills the fee via webhook even if the status was already final.
+- shippingCost stays in centimes (fee × 100). App compiles.
