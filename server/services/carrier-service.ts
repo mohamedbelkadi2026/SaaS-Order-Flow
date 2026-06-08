@@ -2212,7 +2212,7 @@ export async function trackByCarrier(
   provider: string,
   trackingNumber: string,
   account: any
-): Promise<{ status: string | null; rawStatus: string | null; error?: string }> {
+): Promise<{ status: string | null; rawStatus: string | null; fee?: number | null; error?: string }> {
   const p = (provider || '').toLowerCase().trim();
   const apiKey  = (account as any)?.apiKey;
   const apiUrl  = (account as any)?.apiUrl || undefined;
@@ -2238,7 +2238,7 @@ export async function trackByCarrier(
 
   if (p === 'expresscoursier') {
     const r = await trackExpressCoursierShipment(trackingNumber, apiKey);
-    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+    return { status: r.status, rawStatus: r.rawStatus, fee: r.fee, error: r.error };
   }
 
   return { status: null, rawStatus: null, error: `Carrier "${provider}" sync not implemented yet` };
@@ -2404,24 +2404,38 @@ export function mapEcStatus(raw: string): string | null {
 export async function trackExpressCoursierShipment(
   trackingNumber: string,
   apiKey: string
-): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; error?: string }> {
-  // TODO: confirm real tracking endpoint URL with Express Coursier API docs
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; fee: number | null; error?: string }> {
   const url = `https://expresscoursier.ma/v1.0/track/${encodeURIComponent(apiKey.trim())}/${encodeURIComponent(trackingNumber)}`;
   try {
     const r = await axios.get(url, { timeout: 15000, validateStatus: () => true });
     const body = r.data;
+    // Full raw response — used to identify fee field name
+    console.log(`[EC-TRACK-FULL] ${trackingNumber}: ${JSON.stringify(body)}`);
+
     const rawStatus =
       body?.status ??
       body?.data?.status ??
       body?.tracking?.status ??
       null;
+
+    // Fee extraction — probe all common field names in all known response shapes
+    const d = body?.data ?? body;
+    const t = body?.tracking ?? d;
+    const feeRaw =
+      d?.delivery_price ?? d?.deliveryPrice ?? d?.price ?? d?.fee ??
+      d?.frais ?? d?.montant ?? d?.tarif ?? d?.shipping_price ??
+      t?.delivery_price ?? t?.price ?? null;
+    const feeNum = Number(feeRaw);
+    const fee = Number.isFinite(feeNum) && feeNum > 0 ? feeNum : null;
+
     return {
       status: rawStatus ? mapEcStatus(rawStatus) : null,
       rawStatus,
       rawResponse: body,
+      fee,
       error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
     };
   } catch (e: any) {
-    return { status: null, rawStatus: null, rawResponse: null, error: e?.message || 'EC track error' };
+    return { status: null, rawStatus: null, rawResponse: null, fee: null, error: e?.message || 'EC track error' };
   }
 }

@@ -8454,21 +8454,29 @@ function ensureHeaders(sheet) {
 
         if (result.error) {
           errors.push({ orderId: order.id, message: result.error });
-        } else if (result.status && result.status !== order.status) {
-          await storage.updateOrderStatus(order.id, result.status);
-          await storage.createOrderFollowUpLog({
-            orderId:   order.id,
-            agentId:   null,
-            agentName: `${p} Sync`,
-            note:      `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
-          });
-          details.push({
-            orderId: order.id,
-            trackingNumber: order.trackNumber!,
-            oldStatus: order.status || '',
-            newStatus: result.status,
-          });
-          updated++;
+        } else {
+          if (result.status && result.status !== order.status) {
+            await storage.updateOrderStatus(order.id, result.status);
+            await storage.createOrderFollowUpLog({
+              orderId:   order.id,
+              agentId:   null,
+              agentName: `${p} Sync`,
+              note:      `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
+            });
+            details.push({
+              orderId: order.id,
+              trackingNumber: order.trackNumber!,
+              oldStatus: order.status || '',
+              newStatus: result.status,
+            });
+            updated++;
+          }
+          // Fee fill: carrier returned a fee and this order is missing one
+          if ((result as any).fee && (!order.shippingCost || order.shippingCost === 0)) {
+            const fee = (result as any).fee as number;
+            await storage.updateOrder(order.id, { shippingCost: Math.round(fee * 100) });
+            console.log(`[EC-FEE] #${(order as any).orderNumber} fee=${fee} → ${Math.round(fee * 100)} centimes`);
+          }
         }
       } catch (e: any) {
         errors.push({ orderId: order.id, message: e?.message || 'Unknown error' });
