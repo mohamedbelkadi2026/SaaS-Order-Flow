@@ -9330,6 +9330,41 @@ function ensureHeaders(sheet) {
     }
   });
 
+  /* ── Feature flag overrides (per-store) ─────────────────────────── */
+  app.get("/api/admin/stores/:storeId/features", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      const sub = await storage.getSubscription(storeId);
+      if (!sub) return res.status(404).json({ message: "Boutique introuvable" });
+      res.json({
+        automationEnabled:  sub.automationEnabled  ?? null,
+        mediaBuyersEnabled: sub.mediaBuyersEnabled ?? null,
+        plan: sub.plan,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  app.put("/api/admin/stores/:storeId/features", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.storeId);
+      const flagVal = z.union([z.literal(0), z.literal(1), z.null()]);
+      const body = z.object({
+        automationEnabled:  flagVal.optional(),
+        mediaBuyersEnabled: flagVal.optional(),
+      }).parse(req.body);
+
+      const sub = await storage.getSubscription(storeId);
+      if (!sub) return res.status(404).json({ message: "Boutique introuvable" });
+
+      await storage.updateSubscription(sub.id, body as any);
+      res.json({ message: "Fonctionnalités mises à jour" });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message || "Erreur" });
+    }
+  });
+
   app.post("/api/admin/stores/:id/reset-orders", requireSuperAdmin, async (req, res) => {
     try {
       const storeId = Number(req.params.id);

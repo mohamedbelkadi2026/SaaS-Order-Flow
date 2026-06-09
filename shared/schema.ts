@@ -322,6 +322,9 @@ export const subscriptions = pgTable("subscriptions", {
   planExpiryDate: timestamp("plan_expiry_date"),
   isActive: integer("is_active").default(1),
   isBlocked: integer("is_blocked").default(0),
+  // Per-store feature overrides — null = follow plan default, 1 = force on, 0 = force off
+  automationEnabled: integer("automation_enabled"),
+  mediaBuyersEnabled: integer("media_buyers_enabled"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

@@ -26,6 +26,8 @@ type SubscriptionInfo = {
   billingCycleStart: string | null;
   planStartDate: string | null;
   planExpiryDate: string | null;
+  automationEnabled: number | null;
+  mediaBuyersEnabled: number | null;
 };
 
 type StoreRow = {
@@ -437,6 +439,16 @@ export default function SuperAdminPage() {
     onError: () => toast({ title: "Erreur", variant: "destructive" }),
   });
 
+  const featuresMutation = useMutation({
+    mutationFn: ({ storeId, ...flags }: { storeId: number; automationEnabled?: 0 | 1 | null; mediaBuyersEnabled?: 0 | 1 | null }) =>
+      apiRequest("PUT", `/api/admin/stores/${storeId}/features`, flags),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
+      toast({ title: "✓ Fonctionnalité mise à jour" });
+    },
+    onError: () => toast({ title: "Erreur", variant: "destructive" }),
+  });
+
   const impersonateMutation = useMutation({
     mutationFn: (userId: number) => apiRequest("POST", `/api/admin/impersonate/${userId}`, {}),
     onSuccess: async (res: any) => {
@@ -805,28 +817,70 @@ export default function SuperAdminPage() {
 
                       {/* ── Expanded details ──────────────────────── */}
                       {isExpanded && sub && (
-                        <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                          <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)" }}>
-                            <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Prix mensuel</p>
-                            <p className="text-white font-semibold text-sm">{(sub.pricePerMonth / 100).toFixed(0)} DH</p>
+                        <>
+                          <div className="mt-4 pt-4 border-t border-white/5 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)" }}>
+                              <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Prix mensuel</p>
+                              <p className="text-white font-semibold text-sm">{(sub.pricePerMonth / 100).toFixed(0)} DH</p>
+                            </div>
+                            <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)" }}>
+                              <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Début abonnement</p>
+                              <p className="text-white font-semibold text-sm">
+                                {sub.planStartDate ? new Date(sub.planStartDate).toLocaleDateString("fr-MA") : "—"}
+                              </p>
+                            </div>
+                            <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)", borderLeft: `2px solid ${isExpired ? "#ef4444" : isExpiringSoon ? "#f97316" : "#22c55e"}` }}>
+                              <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Expiration</p>
+                              <p className={cn("font-semibold text-sm", isExpired ? "text-red-400" : isExpiringSoon ? "text-orange-400" : "text-green-400")}>
+                                {sub.planExpiryDate ? new Date(sub.planExpiryDate).toLocaleDateString("fr-MA") : "—"}
+                              </p>
+                            </div>
+                            <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)" }}>
+                              <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Cmds ce mois</p>
+                              <p className="text-white font-semibold text-sm">{sub.currentMonthOrders.toLocaleString()}</p>
+                            </div>
                           </div>
-                          <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)" }}>
-                            <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Début abonnement</p>
-                            <p className="text-white font-semibold text-sm">
-                              {sub.planStartDate ? new Date(sub.planStartDate).toLocaleDateString("fr-MA") : "—"}
-                            </p>
+
+                          {/* ── Feature flag overrides ─────────────── */}
+                          <div className="mt-3 pt-3 border-t border-white/5 flex flex-wrap gap-6">
+                            {([
+                              { key: 'automationEnabled' as const,  label: 'Automation & AI' },
+                              { key: 'mediaBuyersEnabled' as const, label: 'Media Buyers' },
+                            ] as const).map(({ key, label }) => {
+                              const current = sub[key] ?? null;
+                              return (
+                                <div key={key}>
+                                  <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1.5">{label}</p>
+                                  <div className="flex gap-1">
+                                    {([null, 1, 0] as Array<null | 0 | 1>).map(val => {
+                                      const isSelected = current === val;
+                                      const label3 = val === null ? "Auto" : val === 1 ? "Activé" : "Désactivé";
+                                      const activeStyle = val === null
+                                        ? { background: "rgba(197,160,89,0.25)", borderColor: "rgba(197,160,89,0.6)", color: "#C5A059" }
+                                        : val === 1
+                                        ? { background: "rgba(34,197,94,0.2)", borderColor: "rgba(34,197,94,0.5)", color: "#4ade80" }
+                                        : { background: "rgba(239,68,68,0.2)", borderColor: "rgba(239,68,68,0.4)", color: "#f87171" };
+                                      return (
+                                        <button
+                                          key={String(val)}
+                                          disabled={featuresMutation.isPending}
+                                          onClick={() => featuresMutation.mutate({ storeId: store.id, [key]: val })}
+                                          className={cn("px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition-all disabled:opacity-50",
+                                            isSelected ? "" : "border-white/10 text-white/30 hover:text-white/60 hover:border-white/25"
+                                          )}
+                                          style={isSelected ? activeStyle : {}}
+                                          data-testid={`button-feature-${key}-${val}-${store.id}`}
+                                        >
+                                          {label3}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                          <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)", borderLeft: `2px solid ${isExpired ? "#ef4444" : isExpiringSoon ? "#f97316" : "#22c55e"}` }}>
-                            <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Expiration</p>
-                            <p className={cn("font-semibold text-sm", isExpired ? "text-red-400" : isExpiringSoon ? "text-orange-400" : "text-green-400")}>
-                              {sub.planExpiryDate ? new Date(sub.planExpiryDate).toLocaleDateString("fr-MA") : "—"}
-                            </p>
-                          </div>
-                          <div className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)" }}>
-                            <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1">Cmds ce mois</p>
-                            <p className="text-white font-semibold text-sm">{sub.currentMonthOrders.toLocaleString()}</p>
-                          </div>
-                        </div>
+                        </>
                       )}
                     </div>
                   </div>
