@@ -719,7 +719,7 @@ export default function Team() {
             Réinitialiser la distribution
           </Button>
 
-          <Dialog open={open} onOpenChange={setOpen}>
+          <Dialog open={open} onOpenChange={(v) => { if (v) setFormData(d => ({ ...d, memberType: 'agent' })); setOpen(v); }}>
           <DialogTrigger asChild>
             <Button data-testid="button-add-member" className="bg-primary hover:bg-primary/90 text-white rounded-md px-4 py-2 flex items-center gap-2">
               <UserPlus className="w-4 h-4" /> Ajouter un membre
@@ -734,20 +734,6 @@ export default function Team() {
             </div>
 
             <div className="px-7 py-5 space-y-6 max-h-[72vh] overflow-y-auto">
-              {/* Member type selector */}
-              <div className="space-y-2">
-                <Label className="text-sm font-semibold text-foreground">Type de membre</Label>
-                <div className="grid grid-cols-2 gap-2 border rounded-lg p-1 bg-muted/20">
-                  <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'agent' }))}
-                    className={cn("h-9 rounded-md text-sm font-medium transition-all", formData.memberType === 'agent' ? "bg-white dark:bg-card shadow-sm text-primary border border-border" : "text-muted-foreground hover:text-foreground")}>
-                    Agent
-                  </button>
-                  <button type="button" onClick={() => setFormData(d => ({ ...d, memberType: 'media_buyer' }))}
-                    className={cn("h-9 rounded-md text-sm font-medium transition-all", formData.memberType === 'media_buyer' ? "bg-white dark:bg-card shadow-sm text-violet-600 border border-border" : "text-muted-foreground hover:text-foreground")}>
-                    Media Buyer
-                  </button>
-                </div>
-              </div>
 
               <div className="grid grid-cols-2 gap-5">
                 <div className="space-y-1.5">
