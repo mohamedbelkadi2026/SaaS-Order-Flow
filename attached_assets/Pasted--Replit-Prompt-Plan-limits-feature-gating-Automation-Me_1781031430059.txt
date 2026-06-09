@@ -1,0 +1,131 @@
+# Replit Prompt — Plan limits, feature gating (Automation & Media Buyers), trial paywall, super-admin toggles
+
+Paste everything below into the Replit AI Agent. It is written specifically for THIS repo (React + Express + Drizzle, `shared/schema.ts`, `server/routes.ts`, `server/storage.ts`, `client/src/...`). Keep all existing behavior intact; only add what is described. Do **not** rename existing fields. Use French for all user-facing strings. After finishing, run the testing checklist at the bottom and confirm every item passes.
+
+---
+
+You are working on the TajerGrow SaaS (Express + React + Drizzle ORM, Postgres). Implement the following plan rules and gating. Be surgical, do not break existing features, and run `npm run db:push` after the schema change.
+
+## 0. Plan model (single source of truth)
+
+Treat the **only restricted tier as `starter`**. All other plans (`trial`, `pro`, `elite`, `custom`, or any future tier) get full feature access by default. Define a small helper in `server/storage.ts` (or a new `server/utils/plan.ts`) and reuse it everywhere:
+
+```ts
+// Plan capability defaults. Only "starter" is restricted.
+export function planDefaults(plan: string) {
+  const restricted = plan === 'starter';
+  return {
+    maxConfirmationAgents: restricted ? 2 : Infinity,  // trial/pro/etc = unlimited
+    maxLinkedCarriers:     restricted ? 1 : Infinity,
+    automation:            !restricted,                 // starter = false
+    mediaBuyers:           !restricted,                 // starter = false
+  };
+}
+```
+
+> Order limits stay as they already are: trial = 60, starter = 1500, pro = unlimited. Do NOT change those numbers.
+
+## 1. Schema — super-admin override columns
+
+In `shared/schema.ts`, in the `subscriptions` table, add two **nullable** override columns:
+
+```ts
+automationOverride:  integer("automation_override"),   // null = follow plan, 1 = force ON, 0 = force OFF
+mediaBuyersOverride: integer("media_buyers_override"),  // null = follow plan, 1 = force ON, 0 = force OFF
+```
+
+Effective access rule (use in both server and the value sent to the client):
+
+```ts
+// override wins over the plan default; null means "follow plan"
+const hasAutomation  = sub.automationOverride  != null ? sub.automationOverride  === 1 : planDefaults(sub.plan).automation;
+const hasMediaBuyers = sub.mediaBuyersOverride != null ? sub.mediaBuyersOverride === 1 : planDefaults(sub.plan).mediaBuyers;
+```
+
+Run `npm run db:push`.
+
+## 2. Expose feature flags to the client
+
+In `server/routes.ts`, the `GET /api/subscription` handler already returns `{ ...sub, ...limitCheck, daysUntilExpiry, isExpired, reason }`. Add `hasAutomation` and `hasMediaBuyers` (booleans, computed with the rule above) to that JSON response so the client can read them via the existing `useSubscription()` hook.
+
+## 3. Enforce Starter limit: max 2 confirmation agents
+
+In the agent-creation endpoint `app.post(api.agents.create.path, requireAdmin, ...)` (around line 1873 in `server/routes.ts`), BEFORE `storage.createUser(...)`:
+
+- Load the store subscription, compute `planDefaults(sub.plan).maxConfirmationAgents`.
+- If the new user is `role === 'agent'` and its `roleInStore` is `'confirmation'` or `'both'`, count existing agents in this store whose `storeAgentSettings.roleInStore` is `'confirmation'` or `'both'`.
+- If count `>=` the max, return HTTP 403 with:
+  `{ message: "Le plan Starter est limité à 2 agents de confirmation. Passez au plan Pro pour ajouter plus d'agents." }`
+- For non-starter plans the max is `Infinity`, so this never blocks them.
+
+## 4. Enforce Starter limit: max 1 linked delivery company
+
+In `app.post("/api/carrier-accounts", requireAuth, ...)` (around line 2424 in `server/routes.ts`), BEFORE inserting:
+
+- Load the store subscription, compute `planDefaults(sub.plan).maxLinkedCarriers`.
+- Count the number of **distinct `carrierName`** values already in `carrier_accounts` for this store.
+- If the carrier being added is a **new** distinct `carrierName` AND the distinct count `>=` the max, return HTTP 403 with:
+  `{ message: "Le plan Starter permet de lier 1 seule société de livraison. Passez au plan Pro pour en lier plusieurs." }`
+- Adding another account for an already-linked carrier is allowed. Non-starter plans are unlimited.
+
+## 5. Gate Automation & AI + Gestion Media Buyers (server)
+
+Add a guard helper:
+
+```ts
+async function requireFeature(storeId: number, feature: 'automation' | 'mediaBuyers') { /* return boolean using rule in §1 */ }
+```
+
+Apply 403 guards (message: `"Cette fonctionnalité est réservée au plan Pro."`) to the **owner/admin management endpoints** for these features:
+- Automation/AI endpoints (the AI agent + WhatsApp automation toggles/config used by the `/automation` page).
+- The Media-Buyers **management** endpoints used by the `/media-buyers` page (e.g. `GET /api/media-buyers/summary`).
+
+**Important — do NOT break media-buyer logins:** users whose `role === 'media_buyer'` must keep full access to their own dashboard endpoints (`/api/media-buyer/*`). The gate is only for the store **owner/admin** managing the feature, never for a media buyer using their own account. Also never block super admins.
+
+## 6. Lock the nav items with a crown + upgrade modal (client)
+
+In `client/src/components/layout/app-layout.tsx`:
+- Import `Crown` from `lucide-react`.
+- Read `hasAutomation` and `hasMediaBuyers` from `useSubscription()`.
+- For the nav items **"Automation & AI"** (`/automation`) and **"Gestion Media Buyers"** (`/media-buyers`): when the corresponding flag is `false`, render a small gold (`#C5A059`) `Crown` icon on the right of the item, and on click **do not navigate** — instead open an upgrade dialog:
+  - Title: `Fonctionnalité Pro`
+  - Body: `Cette fonctionnalité est réservée au plan Pro. Passez au plan Pro pour l'activer et automatiser votre business.`
+  - Primary button: `Passer au plan Pro` → navigate to `/billing`.
+  - Secondary: `Fermer`.
+- Super admins and full-access plans see the items normally (no crown).
+
+Guard the pages directly too, in case of a direct URL: in `client/src/pages/automation.tsx` and `client/src/pages/media-buyers.tsx`, if the flag is `false` and the user is not super admin, render the same upgrade screen instead of the page content.
+
+## 7. Trial = everything works, then hard paywall + support number
+
+- Trial users (`plan === 'trial'`) must have `hasAutomation = true` and `hasMediaBuyers = true` (everything works during the trial). This already follows from §1 because only `starter` is restricted — just verify it.
+- The full-app paywall overlay in `app-layout.tsx` already shows when the account is blocked/expired and is hidden for super admin. Verify it triggers for a trial that reached 60 orders OR is expired, blocking the whole platform with the upgrade CTA.
+- Fix the **support number**: in `app-layout.tsx` the paywall WhatsApp link currently points to the placeholder `wa.me/212600000000`. Change it to the real support number `wa.me/212688959768` (same one used in `client/src/pages/billing.tsx`), keeping the prefilled message. Make sure the support button stays visible at the bottom of the paywall.
+
+## 8. Super-admin toggles (per store)
+
+Backend — add to `server/storage.ts` a method `setStoreFeatureOverrides(storeId, { automationOverride, mediaBuyersOverride })` that updates those two columns on the store's subscription (values may be `null`, `0`, or `1`). Add the route in `server/routes.ts`:
+
+```
+PATCH /api/admin/stores/:id/features   (requireSuperAdmin)
+body: { automationOverride: 0|1|null, mediaBuyersOverride: 0|1|null }
+```
+
+Frontend — in `client/src/pages/super-admin.tsx`, for each store (in the store row or the ChangePlanModal), add two controls labeled **"Automation & AI"** and **"Gestion Media Buyers"**, each a 3-state segmented control: **Auto** (override = `null`, follows plan) / **Activé** (`1`) / **Désactivé** (`0`). Persist via the new endpoint and invalidate the `/api/admin/stores` query on success. This lets the super admin force a feature ON for any user (even Starter) or OFF for anyone.
+
+## 9. Billing page copy (client/src/pages/billing.tsx)
+
+Update the `PLANS` array feature lists to match the real limits (keep the existing layout/styling):
+- **Starter** features: `Gestion des commandes`, `Tableau de bord analytique`, `1 500 commandes par mois`, `2 agents de confirmation`, `1 société de livraison`, `Support par email`, `Gestion des produits & stock`.
+- **Pro** features: `Toutes les fonctionnalités Starter`, `Commandes illimitées`, `Agents & sociétés de livraison illimités`, `Automation & AI`, `Gestion Media Buyers`, `Rapports de rentabilité avancés`, `Support prioritaire 24h/7j`.
+
+## Testing checklist (must all pass)
+
+1. New **Starter** store: creating a 3rd confirmation agent returns 403 with the French message; 1st and 2nd succeed.
+2. **Starter** store: linking a 2nd distinct carrier returns 403; adding a 2nd account of the SAME carrier still works; Pro store can link many.
+3. **Starter** store: `Automation & AI` and `Gestion Media Buyers` show a gold crown; clicking opens the upgrade dialog (no navigation); direct URLs show the upgrade screen; the server endpoints return 403.
+4. **Trial** store: all features work (automation, media buyers, agents); reaching 60 orders OR expiry shows the full paywall blocking the app with a working WhatsApp support button to `212688959768`.
+5. **Pro / custom** store: everything unlimited and unlocked.
+6. **Super admin** → toggle a Starter store's Automation to **Activé**: that store immediately gets access (crown disappears, endpoints return 200). Set to **Désactivé** on a Pro store: it loses access. **Auto** reverts to plan default.
+7. A `media_buyer` role user can still log in and use their own dashboard regardless of the store's gating.
+8. Super admin is never blocked by the paywall or feature gates.

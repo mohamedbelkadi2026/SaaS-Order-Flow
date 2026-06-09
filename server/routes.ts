@@ -9,6 +9,8 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
+import { hasFeature } from "./feature-flags";
+import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema } from "@shared/schema";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
 import multer from "multer";
@@ -1880,6 +1882,23 @@ export async function registerRoutes(
         if (existingUser) return res.status(400).json({ message: "Cet email est déjà utilisé" });
       }
       const userRole = data.role || "agent";
+
+      // Plan limit: Starter allows max 2 confirmation agents
+      if (userRole === 'agent') {
+        const sub = await storage.getSubscription(storeId);
+        const limits = planDefaults(sub?.plan ?? 'trial');
+        if (limits.maxConfirmationAgents < Infinity) {
+          const newRoleInStore = (req.body.roleInStore as string) || "confirmation";
+          if (['confirmation', 'both'].includes(newRoleInStore)) {
+            const allSettings = await storage.getStoreAgentSettings(storeId);
+            const confCount = allSettings.filter((s: any) => ['confirmation', 'both'].includes(s.roleInStore)).length;
+            if (confCount >= limits.maxConfirmationAgents) {
+              return res.status(403).json({ message: `Le plan Starter est limité à ${limits.maxConfirmationAgents} agents de confirmation. Passez au plan Pro pour en ajouter davantage.` });
+            }
+          }
+        }
+      }
+
       const hashedPassword = await hashPassword(data.password);
       const user = await storage.createUser({
         username: data.username, email: emailVal, phone: data.phone || null,
@@ -2446,6 +2465,20 @@ export async function registerRoutes(
       // the carrier+store prefix, the full token is ~40+ chars and unguessable.
       const { randomBytes: _rb } = await import("crypto");
       const webhookToken = `${carrierName}-${storeId}-${_rb(16).toString("hex")}`;
+
+      // Plan limit: Starter allows max 1 distinct carrier
+      {
+        const sub = await storage.getSubscription(storeId);
+        const limits = planDefaults(sub?.plan ?? 'trial');
+        if (limits.maxLinkedCarriers < Infinity) {
+          const allAccounts = await storage.getCarrierAccounts(storeId);
+          const distinctCarriers = new Set(allAccounts.map((a: any) => a.carrierName.toLowerCase()));
+          const isNewCarrier = !distinctCarriers.has((carrierName as string).toLowerCase());
+          if (isNewCarrier && distinctCarriers.size >= limits.maxLinkedCarriers) {
+            return res.status(403).json({ message: `Le plan Starter permet de lier ${limits.maxLinkedCarriers} société de livraison. Passez au plan Pro pour en lier plusieurs.` });
+          }
+        }
+      }
 
       // Auto-number the connection if no name given
       const existing = await storage.getCarrierAccounts(storeId, carrierName);
@@ -6831,7 +6864,9 @@ function ensureHeaders(sheet) {
     const daysUntilExpiry = sub.planExpiryDate
       ? Math.ceil((new Date(sub.planExpiryDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
       : null;
-    res.json({ ...sub, ...limitCheck, daysUntilExpiry, isExpired: paywallCheck.isExpired, reason: paywallCheck.reason });
+    const hasAutomation  = hasFeature(sub, req.user, 'automation');
+    const hasMediaBuyers = hasFeature(sub, req.user, 'mediaBuyers');
+    res.json({ ...sub, ...limitCheck, daysUntilExpiry, isExpired: paywallCheck.isExpired, reason: paywallCheck.reason, hasAutomation, hasMediaBuyers });
   });
 
   app.post("/api/subscription", requireAuth, async (req, res) => {
@@ -6914,6 +6949,12 @@ function ensureHeaders(sheet) {
     const user = req.user!;
     if (!['owner', 'admin'].includes(user.role) && !user.isSuperAdmin) return res.status(403).json({ message: "Accès admin requis" });
     const storeId = user.storeId!;
+    if (!user.isSuperAdmin) {
+      const sub = await storage.getSubscription(storeId);
+      if (!hasFeature(sub, user, 'mediaBuyers')) {
+        return res.status(403).json({ message: "La gestion des media buyers est réservée au plan Pro." });
+      }
+    }
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
     res.json(await storage.getMediaBuyersSummary(storeId, dateFrom, dateTo));
@@ -10265,6 +10306,19 @@ function ensureHeaders(sheet) {
   // ══════════════════════════════════════════════════════════════════
   // AUTOMATION & AI MODULE
   // ══════════════════════════════════════════════════════════════════
+
+  // Feature-gate: block non-super-admin users without automation access
+  app.use("/api/automation", async (req: any, res: any, next: any) => {
+    if (!req.isAuthenticated()) return next();
+    if (req.user?.isSuperAdmin) return next();
+    const storeId = req.user?.storeId;
+    if (!storeId) return next();
+    const sub = await storage.getSubscription(storeId);
+    if (!hasFeature(sub, req.user, 'automation')) {
+      return res.status(403).json({ message: "L'Automation & AI est réservée au plan Pro." });
+    }
+    next();
+  });
 
   /* ── Clients for retargeting (with last product name) ─────────── */
   app.get("/api/automation/clients", requireAuth, async (req: any, res: any) => {

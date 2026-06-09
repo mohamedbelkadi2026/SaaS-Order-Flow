@@ -2,13 +2,15 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useSubscription } from "@/hooks/use-store-data";
+import { Link } from "wouter";
 import {
   Bot, Megaphone, Wifi, Check, X, Copy, Send, Loader2, RefreshCw, Phone,
   MessageCircle, Zap, Users, Clock, CheckCircle2, AlertCircle, Eye, EyeOff,
   Radio, UserCheck, UserX, Play, TrendingUp, ShoppingCart, DollarSign, Timer,
   Lock, ChevronDown, Pause, Square, Package, Target, BarChart3, CheckSquare,
   Upload, FileSpreadsheet, Smartphone, RotateCw, Plus, Trash2, Cpu, Download,
-  TableIcon, ArrowRight,
+  TableIcon, ArrowRight, Crown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +45,41 @@ function TabPill({ active, onClick, icon, label }: { active: boolean; onClick: (
 
 /* ════════════════════════════════════════════════════════════════ */
 export default function AutomationPage() {
+  const { data: subscription } = useSubscription();
+  const hasAutomation = (subscription as any)?.hasAutomation ?? true;
   const [tab, setTab] = useState<Tab>("retargeting");
+
+  if (subscription && !hasAutomation) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" style={{ background: "#f4f4f5" }}>
+        <div className="bg-white rounded-3xl shadow-xl w-full max-w-md overflow-hidden">
+          <div className="px-6 pt-8 pb-6 text-center" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #2d2a7a 100%)` }}>
+            <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
+              <Crown className="w-7 h-7" style={{ color: '#C5A059' }} />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-1">Automation & AI</h2>
+            <p className="text-white/60 text-sm">Fonctionnalité réservée au plan Pro</p>
+          </div>
+          <div className="px-6 py-6 space-y-4">
+            <ul className="space-y-2 text-sm text-gray-600">
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Retargeting WhatsApp en masse</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />IA Confirmation automatique (Darija)</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Multi-devices WhatsApp</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Live Monitoring en temps réel</li>
+            </ul>
+            <Link
+              href="/billing"
+              className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm hover:opacity-90 transition-opacity"
+              style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
+            >
+              <Zap className="w-4 h-4" />
+              Passer au plan Pro
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen" style={{ background: "#f4f4f5" }}>

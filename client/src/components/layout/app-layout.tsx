@@ -45,6 +45,7 @@ import {
   CalendarClock,
   Bot,
   BarChart3,
+  Crown,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { setLanguage } from "@/i18n";
@@ -219,6 +220,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const [nouvelleOpen, setNouvelleOpen] = useState(() =>
     location === "/orders/add" || location === "/orders/import"
   );
+  const [upgradeModal, setUpgradeModal] = useState<'automation' | 'mediaBuyers' | null>(null);
   const langMenuRef = useRef<HTMLDivElement>(null);
   const storeSwitcherRef = useRef<HTMLDivElement>(null);
   const { t, i18n } = useTranslation();
@@ -283,6 +285,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const isExpired = (subscription as any)?.isExpired === true;
   const paywallReason = ((subscription as any)?.reason ?? (isExpired ? 'expired' : isBlocked ? 'limit' : null)) as 'expired' | 'limit' | null;
   const showPaywall = (isBlocked || isExpired) && !user?.isSuperAdmin;
+  const hasAutomation  = (subscription as any)?.hasAutomation  ?? true;
+  const hasMediaBuyers = (subscription as any)?.hasMediaBuyers ?? true;
   const trialCurrent = subscription?.current ?? subscription?.currentMonthOrders ?? 0;
   const trialLimit = isTrial ? 60 : (subscription?.limit ?? subscription?.monthlyLimit ?? 1500);
   const trialPercent = Math.min(100, Math.round((trialCurrent / trialLimit) * 100));
@@ -605,6 +609,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             (!isOrdersMenu && !isIntegrationMenu && !isNouvelleMenu && item.name !== "Dashboard" && location === item.href);
 
           const hasSubmenu = !!(item as any).hasSubmenu;
+          const isLocked = ((item.href === '/automation' && !hasAutomation) || (item.href === '/media-buyers' && !hasMediaBuyers)) && !user?.isSuperAdmin;
 
           return (
             <div key={item.name}>
@@ -668,6 +673,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                     ? <ChevronUp className="w-3.5 h-3.5 opacity-70 shrink-0" />
                     : <ChevronDown className="w-3.5 h-3.5 opacity-50 shrink-0" />}
                 </Link>
+              ) : isLocked ? (
+                <button
+                  onClick={() => setUpgradeModal(item.href === '/automation' ? 'automation' : 'mediaBuyers')}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 text-white/40 hover:text-white/60"
+                  data-testid={`button-locked-${item.href.replace('/', '')}`}
+                >
+                  <item.icon className="w-[18px] h-[18px] shrink-0 opacity-50" />
+                  <span className="flex-1 leading-tight text-left">{t(NAV_KEYS[item.name] || item.name)}</span>
+                  <Crown className="w-3.5 h-3.5 shrink-0" style={{ color: '#C5A059' }} />
+                </button>
               ) : (
                 <Link
                   href={item.href}
@@ -1309,7 +1324,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                   {paywallReason === 'expired' ? 'Renouveler l\'abonnement' : 'Passer au plan supérieur (Upgrade)'}
                 </Link>
                 <a
-                  href="https://wa.me/212600000000?text=Bonjour%2C%20j%27ai%20besoin%20d%27aide%20pour%20mon%20abonnement%20TajerGrow."
+                  href="https://wa.me/212688959768?text=Bonjour%2C%20j%27ai%20besoin%20d%27aide%20pour%20mon%20abonnement%20TajerGrow."
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center justify-center gap-2 w-full py-3 rounded-xl font-semibold text-sm transition-all hover:opacity-90"
@@ -1321,6 +1336,70 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 </a>
               </div>
 
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Feature Upgrade Modal (Plan lock) ───────────────────── */}
+      {upgradeModal && (
+        <div
+          className="fixed inset-0 z-[85] flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)' }}
+          onClick={() => setUpgradeModal(null)}
+          data-testid="upgrade-modal-overlay"
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 pt-8 pb-6 text-center" style={{ background: 'linear-gradient(135deg, #0f1e38 0%, #1a3a8f 100%)' }}>
+              <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
+                <Crown className="w-7 h-7" style={{ color: '#C5A059' }} />
+              </div>
+              <h2 className="text-lg font-bold text-white mb-1">
+                {upgradeModal === 'automation' ? 'Automation & AI' : 'Gestion Media Buyers'}
+              </h2>
+              <p className="text-white/60 text-sm">Fonctionnalité réservée au plan Pro</p>
+            </div>
+            <div className="px-6 py-6 space-y-4">
+              <div className="rounded-xl p-4 space-y-2" style={{ background: '#f8f9fa', border: '1px solid #e9ecef' }}>
+                <p className="text-sm font-semibold text-gray-700 mb-2">Inclus dans le plan Pro :</p>
+                {upgradeModal === 'automation' ? (
+                  <ul className="space-y-1.5 text-sm text-gray-600">
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Retargeting WhatsApp en masse</li>
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />IA Confirmation automatique (Darija)</li>
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Multi-devices WhatsApp</li>
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Live Monitoring en temps réel</li>
+                  </ul>
+                ) : (
+                  <ul className="space-y-1.5 text-sm text-gray-600">
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Tableau de bord Media Buyers</li>
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Suivi ROI & ROAS par buyer</li>
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Gestion des dépenses publicitaires</li>
+                    <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Rapports consolidés multi-sources</li>
+                  </ul>
+                )}
+              </div>
+              <div className="space-y-2.5">
+                <Link
+                  href="/billing"
+                  onClick={() => setUpgradeModal(null)}
+                  className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm transition-all hover:opacity-90"
+                  style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
+                  data-testid="upgrade-modal-cta"
+                >
+                  <Zap className="w-4 h-4" />
+                  Passer au plan Pro
+                </Link>
+                <button
+                  onClick={() => setUpgradeModal(null)}
+                  className="w-full py-2.5 rounded-xl text-sm font-medium text-gray-500 hover:text-gray-700 transition-colors"
+                  data-testid="upgrade-modal-close"
+                >
+                  Fermer
+                </button>
+              </div>
             </div>
           </div>
         </div>
