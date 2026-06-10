@@ -1,0 +1,53 @@
+# Replit Prompt — FIX: product dropdown in the import mapping table doesn't select
+
+In the ad-spend import dialog (Publicités → Importer les dépenses), the **"Produit" dropdown** in the campaign→product mapping table (ÉTAPE 2) does nothing — when the user picks a product, the selection is not applied/displayed. The amounts are correct now; this is purely the per-row product selection state. Fix only this. Do not change the parsing, the currency conversion, or anything else.
+
+This is almost certainly a shadcn `Select` state-wiring bug. Apply ALL of the following corrections to the mapping table in `client/src/pages/publicites.tsx`:
+
+## 1. Per-row state keyed by a stable unique key
+Hold the mapping in a single object keyed by a stable per-row key (use the row index `i`, or the normalized campaign name if rows are deduped by campaign). Never key by something that repeats across rows.
+```ts
+const [mapping, setMapping] = useState<Record<string, number | null>>({});
+// rowKey for campaign row i:
+const rowKey = String(i); // or normalize(campaignName)
+```
+
+## 2. String values everywhere (the usual culprit)
+shadcn `Select` works only with **string** values. Product IDs are numbers, so convert on both sides. The "ignore" option must use a non-empty sentinel (shadcn forbids `value=""`):
+```tsx
+<Select
+  value={mapping[rowKey] != null ? String(mapping[rowKey]) : "none"}
+  onValueChange={(v) =>
+    setMapping(prev => ({ ...prev, [rowKey]: v === "none" ? null : Number(v) }))
+  }
+>
+  <SelectTrigger><SelectValue /></SelectTrigger>
+  <SelectContent>
+    <SelectItem value="none">— Aucun produit (ignorer) —</SelectItem>
+    {products.map(p => (
+      <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+    ))}
+  </SelectContent>
+</Select>
+```
+Key points to verify: `value` is a string; every `SelectItem value` is a string; the ignore option is `value="none"` (not `""`); `onValueChange` updates state **immutably** (spread `prev`), never mutates.
+
+## 3. Make sure products are actually loaded
+Confirm the table reads `const { data: products = [] } = useProducts();` and that the auto-suggest pre-fill writes valid numeric product IDs into `mapping`. If `products` is empty, render a hint instead of empty dropdowns: `Aucun produit dans votre stock — ajoutez des produits d'abord.`
+
+## 4. No duplicate React keys on rows
+Ensure each mapping row has a unique `key` (e.g. `key={rowKey}`). Duplicate keys make React reuse one Select instance for several rows, which looks like "selection doesn't stick".
+
+## 5. Build the import payload from this state
+When posting to `/api/publicites/import`, read `productId` from `mapping[rowKey]` for each row (null = ignore). The "Importer (N)" button label should reflect rows that will actually be imported.
+
+## 6. Small leftover cleanup (while here)
+The subtitle under each campaign still shows a stray constant like `· 46143.0414` next to the USD amount (identical on every row — it's a bug). Remove that token so the subtitle shows only the USD spend, e.g. `$110.35`.
+
+## Testing checklist
+1. Open the import dialog, pick a product for `sbat zomaz` → the dropdown now shows that product and keeps it.
+2. Pick different products for several rows → each row keeps its own independent selection.
+3. Choose "— Aucun produit (ignorer) —" → that row resets to ignore.
+4. Auto-suggested matches appear pre-selected and are editable.
+5. Import → only rows with a chosen product are sent with the right `productId`; ignored rows are skipped.
+6. The subtitle shows only `$110.35` (no `· 46143.0414`).

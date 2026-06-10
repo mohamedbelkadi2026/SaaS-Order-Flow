@@ -624,7 +624,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [fileHeaders, setFileHeaders] = useState<string[]>([]);
   const [colOverrides, setColOverrides] = useState<{ campaign: string | null; spend: string | null; date: string | null }>({ campaign: null, spend: null, date: null });
-  const [mapping, setMapping] = useState<Record<string, number | "none">>({});
+  const [mapping, setMapping] = useState<Record<string, number | null>>({});
   const [importing, setImporting] = useState(false);
   const [fileName, setFileName] = useState("");
 
@@ -642,21 +642,21 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
       .catch(() => {});
   }, [open]);
 
-  // Pre-fill mapping when rows + savedMap are ready
+  // Pre-fill mapping when rows change (index-keyed).
+  // Intentionally omits savedMap/products from deps — we read them via closure
+  // at the moment rows arrive; we do NOT want later query re-fetches to wipe
+  // selections the user has already made.
   useEffect(() => {
     if (parsedRows.length === 0) return;
-    const newMapping: Record<string, number | "none"> = {};
-    for (const r of parsedRows) {
+    const newMapping: Record<string, number | null> = {};
+    parsedRows.forEach((r, i) => {
       const norm = normCampaign(r.campaign);
-      if (savedMap[norm] !== undefined) {
-        newMapping[r.campaign] = savedMap[norm];
-      } else {
-        const fuzz = fuzzyProduct(norm, products);
-        newMapping[r.campaign] = fuzz ?? "none";
-      }
-    }
+      const saved = (savedMap as Record<string, number>)[norm];
+      newMapping[String(i)] = saved !== undefined ? saved : (fuzzyProduct(norm, products) ?? null);
+    });
     setMapping(newMapping);
-  }, [parsedRows, savedMap, products]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedRows]);
 
   function aggregateRows(rows: any[], campaignCol: string, spendCol: string, dateCol: string | null) {
     const agg: Record<string, ParsedRow> = {};
@@ -710,10 +710,10 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
 
     setImporting(true);
     try {
-      const rows = parsedRows.map(r => ({
+      const rows = parsedRows.map((r, i) => ({
         date: r.date || fallbackDate,
         amount: parseFloat((r.amountUsd * taux).toFixed(2)),
-        productId: mapping[r.campaign] !== "none" ? Number(mapping[r.campaign]) : null,
+        productId: mapping[String(i)] != null ? Number(mapping[String(i)]) : null,
         campaignName: r.campaign,
       }));
 
@@ -926,14 +926,19 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                     </tr>
                   </thead>
                   <tbody>
-                    {parsedRows.map((r, i) => {
+                    {products.length === 0 ? (
+                      <tr><td colSpan={3} className="px-3 py-4 text-center text-sm text-muted-foreground">Aucun produit dans votre stock — ajoutez des produits d'abord.</td></tr>
+                    ) : parsedRows.map((r, i) => {
+                      const rowKey = String(i);
                       const dh = (r.amountUsd * taux).toFixed(2);
                       const isMapped = savedMap[normCampaign(r.campaign)] !== undefined;
+                      // Validate date: only show if it looks like YYYY-MM-DD
+                      const displayDate = r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? r.date : null;
                       return (
-                        <tr key={i} className={cn("border-t border-border/40", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
+                        <tr key={rowKey} className={cn("border-t border-border/40", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
                           <td className="px-3 py-2 max-w-[200px]">
                             <p className="font-medium truncate" title={r.campaign}>{r.campaign}</p>
-                            <p className="text-xs text-muted-foreground">${r.amountUsd.toFixed(2)}{r.date ? ` · ${r.date}` : ""}</p>
+                            <p className="text-xs text-muted-foreground">${r.amountUsd.toFixed(2)}{displayDate ? ` · ${displayDate}` : ""}</p>
                             {isMapped && (
                               <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-600 font-semibold mt-0.5">
                                 <CheckCircle2 className="w-3 h-3" /> Mémorisée
@@ -943,16 +948,16 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                           <td className="px-3 py-2 text-right font-bold whitespace-nowrap" style={{ color: GOLD }}>{dh} DH</td>
                           <td className="px-3 py-2 min-w-[180px]">
                             <Select
-                              value={mapping[r.campaign] !== undefined ? String(mapping[r.campaign]) : "none"}
-                              onValueChange={v => setMapping(m => ({ ...m, [r.campaign]: v === "none" ? "none" : Number(v) }))}
+                              value={mapping[rowKey] != null ? String(mapping[rowKey]) : "none"}
+                              onValueChange={v => setMapping(prev => ({ ...prev, [rowKey]: v === "none" ? null : Number(v) }))}
                             >
-                              <SelectTrigger className="h-8 text-xs" data-testid={`map-product-${i}`}>
+                              <SelectTrigger className="h-8 text-xs" data-testid={`map-product-${rowKey}`}>
                                 <SelectValue placeholder="Aucun produit" />
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="none">— Aucun produit (ignorer) —</SelectItem>
                                 {products.map((p: any) => (
-                                  <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+                                  <SelectItem key={String(p.id)} value={String(p.id)}>{p.name}</SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>
@@ -966,7 +971,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                       <td className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">{parsedRows.length} campagne(s)</td>
                       <td className="px-3 py-2 text-right font-bold text-base" style={{ color: GOLD }}>{totalDH.toFixed(2)} DH</td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">
-                        {Object.values(mapping).filter(v => v !== "none").length} liée(s)
+                        {Object.values(mapping).filter(v => v != null).length} liée(s)
                       </td>
                     </tr>
                   </tfoot>
