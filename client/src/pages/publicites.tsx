@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useProducts, useAgents, useMagasins } from "@/hooks/use-store-data";
 import { useAuth } from "@/hooks/use-auth";
@@ -15,10 +15,39 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Megaphone, Plus, Trash2, X, Wallet, BarChart3, Calendar, Users } from "lucide-react";
+import { Megaphone, Plus, Trash2, X, Wallet, BarChart3, Calendar, Users, Upload, FileSpreadsheet, ArrowRight, CheckCircle2 } from "lucide-react";
+import * as XLSX from "xlsx";
 
 const AD_SOURCES = ["Facebook Ads", "Google Ads", "TikTok Ads", "Snapchat Ads"];
 const GOLD = "#C5A059";
+
+// ── Import helpers ────────────────────────────────────────────────────────
+function normCampaign(s: string): string {
+  return s.toLowerCase().trim()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function detectCol(headers: string[], keywords: string[]): string | null {
+  for (const h of headers) {
+    const hl = h.toLowerCase();
+    if (keywords.some(k => hl.includes(k))) return h;
+  }
+  return null;
+}
+
+function fuzzyProduct(campaignNorm: string, products: any[]): number | null {
+  let best: { id: number; score: number } | null = null;
+  for (const p of products) {
+    const pNorm = normCampaign(p.name);
+    const tokens = pNorm.split(" ").filter(t => t.length > 2);
+    const score = tokens.filter(t => campaignNorm.includes(t)).length;
+    if (score > 0 && (!best || score > best.score)) best = { id: p.id, score };
+  }
+  return best ? best.id : null;
+}
+
+interface ParsedRow { campaign: string; amountUsd: number; date: string; }
 
 const SOURCE_STYLES: Record<string, string> = {
   "Facebook Ads": "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300",
@@ -44,6 +73,7 @@ export default function Publicites() {
   const [filters, setFilters] = useState(defaultFilters);
   const [applied, setApplied] = useState(defaultFilters);
   const [modalOpen, setModalOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [form, setForm] = useState({
     date: new Date().toISOString().split("T")[0],
     source: AD_SOURCES[0],
@@ -163,6 +193,7 @@ export default function Publicites() {
   // +1 for the new Magasin column (shown to all users)
   const colCount = tab === "produit" ? (isAdmin ? 8 : 7) : (isAdmin ? 6 : 5);
 
+  // Pass products + magasins down via closure so ImportAdSpendModal can use them
   return (
     <div className="space-y-5 animate-in fade-in duration-300">
       {/* Header */}
@@ -175,10 +206,18 @@ export default function Publicites() {
             {isAdmin ? "Suivi global des dépenses publicitaires" : "Vos dépenses publicitaires personnelles"}
           </p>
         </div>
-        <Button onClick={openModal} className="gap-2 rounded-lg font-semibold" style={{ background: GOLD, color: "#fff" }} data-testid="btn-nouvelle">
-          <Plus className="w-4 h-4" />
-          {isMediaBuyer ? "Ajouter ma dépense" : "Nouvelle dépense"}
-        </Button>
+        <div className="flex gap-2">
+          {tab === "produit" && (
+            <Button onClick={() => setImportOpen(true)} variant="outline" className="gap-2 rounded-lg font-semibold border-border/60" data-testid="btn-importer">
+              <Upload className="w-4 h-4" />
+              Importer
+            </Button>
+          )}
+          <Button onClick={openModal} className="gap-2 rounded-lg font-semibold" style={{ background: GOLD, color: "#fff" }} data-testid="btn-nouvelle">
+            <Plus className="w-4 h-4" />
+            {isMediaBuyer ? "Ajouter ma dépense" : "Nouvelle dépense"}
+          </Button>
+        </div>
       </div>
 
       {/* Media Buyer privacy notice */}
@@ -442,6 +481,14 @@ export default function Publicites() {
         )}
       </div>
 
+      {/* Import Modal */}
+      <ImportAdSpendModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        products={products as any[]}
+        magasins={magasins as any[]}
+      />
+
       {/* Add Modal */}
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="sm:max-w-md p-0 overflow-hidden border-none shadow-2xl rounded-2xl bg-white dark:bg-card" data-testid="modal-add">
@@ -532,5 +579,381 @@ export default function Publicites() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ── Import Ad Spend Modal ─────────────────────────────────────────────────
+
+interface ImportAdSpendModalProps {
+  open: boolean;
+  onClose: () => void;
+  products: any[];
+  magasins: any[];
+}
+
+function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpendModalProps) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const today = new Date().toISOString().split("T")[0];
+
+  const [source, setSource] = useState(AD_SOURCES[0]);
+  const [magasinId, setMagasinId] = useState("");
+  const [taux, setTaux] = useState(10.0);
+  const [fallbackDate, setFallbackDate] = useState(today);
+  const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
+  const [fileHeaders, setFileHeaders] = useState<string[]>([]);
+  const [colOverrides, setColOverrides] = useState<{ campaign: string | null; spend: string | null; date: string | null }>({ campaign: null, spend: null, date: null });
+  const [mapping, setMapping] = useState<Record<string, number | "none">>({});
+  const [importing, setImporting] = useState(false);
+  const [fileName, setFileName] = useState("");
+
+  const { data: savedMap = {} } = useQuery<Record<string, number>>({
+    queryKey: ["/api/publicites/campaign-map"],
+    enabled: open,
+  });
+
+  // Fetch live USD→MAD rate when modal opens
+  useEffect(() => {
+    if (!open) return;
+    fetch("https://open.er-api.com/v6/latest/USD")
+      .then(r => r.json())
+      .then(d => { if (d.rates?.MAD) setTaux(parseFloat(d.rates.MAD.toFixed(4))); })
+      .catch(() => {});
+  }, [open]);
+
+  // Pre-fill mapping when rows + savedMap are ready
+  useEffect(() => {
+    if (parsedRows.length === 0) return;
+    const newMapping: Record<string, number | "none"> = {};
+    for (const r of parsedRows) {
+      const norm = normCampaign(r.campaign);
+      if (savedMap[norm] !== undefined) {
+        newMapping[r.campaign] = savedMap[norm];
+      } else {
+        const fuzz = fuzzyProduct(norm, products);
+        newMapping[r.campaign] = fuzz ?? "none";
+      }
+    }
+    setMapping(newMapping);
+  }, [parsedRows, savedMap, products]);
+
+  function aggregateRows(rows: any[], campaignCol: string, spendCol: string, dateCol: string | null) {
+    const agg: Record<string, ParsedRow> = {};
+    for (const row of rows) {
+      const campaign = String(row[campaignCol] || "").trim();
+      if (!campaign) continue;
+      const rawSpend = String(row[spendCol] || "0").replace(/[^0-9.-]/g, "");
+      const spend = parseFloat(rawSpend) || 0;
+      const date = dateCol ? String(row[dateCol] || "").trim().slice(0, 10) : "";
+      const key = campaign + "||" + date;
+      if (!agg[key]) agg[key] = { campaign, amountUsd: 0, date };
+      agg[key].amountUsd += spend;
+    }
+    setParsedRows(Object.values(agg).filter(r => r.amountUsd > 0));
+  }
+
+  async function handleFile(file: File) {
+    setFileName(file.name);
+    const ab = await file.arrayBuffer();
+    const wb = XLSX.read(ab, { type: "array" });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: "" }) as Record<string, any>[];
+    if (rows.length === 0) { toast({ title: "Fichier vide ou illisible", variant: "destructive" }); return; }
+
+    const headers = Object.keys(rows[0]);
+    setFileHeaders(headers);
+
+    const campaignCol = detectCol(headers, ["campaign name", "nom de la campagne", "campagne", "campaign"]);
+    const spendCol = detectCol(headers, ["amount spent", "montant dépensé", "total cost", "spend", "dépenses", "cost", "coût"]);
+    const dateCol = detectCol(headers, ["reporting starts", "day", "date", "jour"]);
+
+    setColOverrides({ campaign: campaignCol, spend: spendCol, date: dateCol });
+    if (campaignCol && spendCol) {
+      aggregateRows(rows, campaignCol, spendCol, dateCol);
+    }
+  }
+
+  function reparse() {
+    if (!fileRef.current?.files?.[0]) return;
+    const file = fileRef.current.files[0];
+    file.arrayBuffer().then(ab => {
+      const wb = XLSX.read(ab, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" }) as Record<string, any>[];
+      if (colOverrides.campaign && colOverrides.spend) {
+        aggregateRows(rows, colOverrides.campaign, colOverrides.spend, colOverrides.date);
+      }
+    });
+  }
+
+  async function handleImport() {
+    if (!magasinId) { toast({ title: "Sélectionnez un magasin", variant: "destructive" }); return; }
+    if (taux <= 0) { toast({ title: "Le taux de change doit être supérieur à 0", variant: "destructive" }); return; }
+    if (parsedRows.length === 0) { toast({ title: "Aucune ligne à importer", variant: "destructive" }); return; }
+
+    setImporting(true);
+    try {
+      const rows = parsedRows.map(r => ({
+        date: r.date || fallbackDate,
+        amount: parseFloat((r.amountUsd * taux).toFixed(2)),
+        productId: mapping[r.campaign] !== "none" ? Number(mapping[r.campaign]) : null,
+        campaignName: r.campaign,
+      }));
+
+      const res = await fetch("/api/publicites/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ magasinId: Number(magasinId), source, rows }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ message: "Erreur serveur" }));
+        throw new Error(err.message || "Erreur serveur");
+      }
+      const data = await res.json();
+      toast({ title: `${data.inserted} dépenses importées · ${data.mapped} campagnes liées` });
+      qc.invalidateQueries({ queryKey: ["/api/publicites"] });
+      qc.invalidateQueries({ queryKey: ["/api/publicites/campaign-map"] });
+      handleClose();
+    } catch (e: any) {
+      toast({ title: "Erreur import", description: e.message, variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function handleClose() {
+    setParsedRows([]);
+    setFileHeaders([]);
+    setColOverrides({ campaign: null, spend: null, date: null });
+    setMapping({});
+    setFileName("");
+    if (fileRef.current) fileRef.current.value = "";
+    onClose();
+  }
+
+  const totalDH = parsedRows.reduce((s, r) => s + r.amountUsd * taux, 0);
+  const hasParsed = parsedRows.length > 0;
+  const needsColPicker = hasParsed === false && fileHeaders.length > 0;
+  const columnsOk = !!(colOverrides.campaign && colOverrides.spend);
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && handleClose()}>
+      <DialogContent className="sm:max-w-2xl max-h-[88vh] overflow-y-auto p-0 border-none shadow-2xl rounded-2xl bg-white dark:bg-card" data-testid="modal-import">
+        {/* Header */}
+        <div className="flex justify-between items-center px-6 pt-5 pb-4 border-b border-border/60 sticky top-0 bg-white dark:bg-card z-10">
+          <DialogTitle className="text-lg font-bold flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5" style={{ color: GOLD }} />
+            Importer les dépenses publicitaires
+          </DialogTitle>
+          <Button variant="ghost" size="icon" onClick={handleClose} className="rounded-full h-8 w-8">
+            <X className="w-4 h-4 text-muted-foreground" />
+          </Button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          {/* ── Step A: Settings ─────────────────────────── */}
+          <div className="space-y-4">
+            <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Étape 1 — Paramètres</p>
+
+            {/* File input */}
+            <div className="space-y-1.5">
+              <Label className="text-sm font-semibold">Fichier CSV / Excel</Label>
+              <div
+                className="border-2 border-dashed border-border/60 rounded-xl p-4 text-center cursor-pointer hover:border-primary/40 transition-colors"
+                onClick={() => fileRef.current?.click()}
+                data-testid="import-dropzone"
+              >
+                <Upload className="w-6 h-6 mx-auto text-muted-foreground mb-1" />
+                {fileName
+                  ? <p className="text-sm font-medium text-foreground">{fileName}</p>
+                  : <p className="text-sm text-muted-foreground">Cliquez pour choisir un fichier <span className="font-medium">.csv, .xlsx, .xls</span></p>
+                }
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                className="hidden"
+                data-testid="import-file-input"
+                onChange={e => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              {/* Source */}
+              <div className="space-y-1.5">
+                <Label className="text-sm font-semibold">Source</Label>
+                <Select value={source} onValueChange={setSource}>
+                  <SelectTrigger className="h-9 text-sm" data-testid="import-source">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AD_SOURCES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Magasin */}
+              <div className="space-y-1.5">
+                <Label className="text-sm font-semibold">Magasin <span className="text-red-500">*</span></Label>
+                <Select value={magasinId} onValueChange={setMagasinId}>
+                  <SelectTrigger className="h-9 text-sm" data-testid="import-magasin">
+                    <SelectValue placeholder="Sélectionner" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {magasins.map((m: any) => <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* USD rate */}
+              <div className="space-y-1.5">
+                <Label className="text-sm font-semibold">Taux USD → MAD</Label>
+                <Input
+                  type="number" min="0.01" step="0.01"
+                  value={taux}
+                  onChange={e => setTaux(parseFloat(e.target.value) || 10)}
+                  className="h-9 text-sm"
+                  data-testid="import-taux"
+                />
+                <p className="text-xs text-muted-foreground">Montants en USD convertis en DH avec ce taux.</p>
+              </div>
+
+              {/* Fallback date */}
+              <div className="space-y-1.5">
+                <Label className="text-sm font-semibold">Date (si absente du fichier)</Label>
+                <Input
+                  type="date" value={fallbackDate}
+                  onChange={e => setFallbackDate(e.target.value)}
+                  className="h-9 text-sm"
+                  data-testid="import-date"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* ── Column picker (shown when auto-detect fails) ── */}
+          {fileHeaders.length > 0 && !columnsOk && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-4 space-y-3">
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Colonnes non détectées automatiquement — sélectionnez-les :</p>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold">Campagne</Label>
+                  <Select value={colOverrides.campaign || ""} onValueChange={v => setColOverrides(c => ({ ...c, campaign: v }))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Choisir" /></SelectTrigger>
+                    <SelectContent>{fileHeaders.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold">Dépense (USD)</Label>
+                  <Select value={colOverrides.spend || ""} onValueChange={v => setColOverrides(c => ({ ...c, spend: v }))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Choisir" /></SelectTrigger>
+                    <SelectContent>{fileHeaders.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold">Date (optionnel)</Label>
+                  <Select value={colOverrides.date || "__none__"} onValueChange={v => setColOverrides(c => ({ ...c, date: v === "__none__" ? null : v }))}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Aucune" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">— Aucune —</SelectItem>
+                      {fileHeaders.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {colOverrides.campaign && colOverrides.spend && (
+                <Button size="sm" onClick={reparse} className="gap-1.5" style={{ background: GOLD, color: "#fff" }}>
+                  <ArrowRight className="w-3.5 h-3.5" /> Analyser le fichier
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* ── Step B: Mapping table ────────────────────── */}
+          {hasParsed && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Étape 2 — Correspondances campagne → produit</p>
+                <span className="text-xs font-bold" style={{ color: GOLD }}>Total : {totalDH.toFixed(2)} DH</span>
+              </div>
+
+              <div className="rounded-xl border border-border/50 overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/30">
+                    <tr>
+                      <th className="text-left px-3 py-2 text-xs font-bold uppercase tracking-wide">Campagne</th>
+                      <th className="text-right px-3 py-2 text-xs font-bold uppercase tracking-wide">Montant (DH)</th>
+                      <th className="text-left px-3 py-2 text-xs font-bold uppercase tracking-wide">Produit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parsedRows.map((r, i) => {
+                      const dh = (r.amountUsd * taux).toFixed(2);
+                      const isMapped = savedMap[normCampaign(r.campaign)] !== undefined;
+                      return (
+                        <tr key={i} className={cn("border-t border-border/40", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
+                          <td className="px-3 py-2 max-w-[200px]">
+                            <p className="font-medium truncate" title={r.campaign}>{r.campaign}</p>
+                            {r.date && <p className="text-xs text-muted-foreground">{r.date}</p>}
+                            {isMapped && (
+                              <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-600 font-semibold mt-0.5">
+                                <CheckCircle2 className="w-3 h-3" /> Mémorisée
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold whitespace-nowrap" style={{ color: GOLD }}>{dh} DH</td>
+                          <td className="px-3 py-2 min-w-[180px]">
+                            <Select
+                              value={mapping[r.campaign] !== undefined ? String(mapping[r.campaign]) : "none"}
+                              onValueChange={v => setMapping(m => ({ ...m, [r.campaign]: v === "none" ? "none" : Number(v) }))}
+                            >
+                              <SelectTrigger className="h-8 text-xs" data-testid={`map-product-${i}`}>
+                                <SelectValue placeholder="Aucun produit" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">— Aucun produit (ignorer) —</SelectItem>
+                                {products.map((p: any) => (
+                                  <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="bg-muted/20 border-t-2 border-border/60">
+                    <tr>
+                      <td className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">{parsedRows.length} campagne(s)</td>
+                      <td className="px-3 py-2 text-right font-bold text-base" style={{ color: GOLD }}>{totalDH.toFixed(2)} DH</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {Object.values(mapping).filter(v => v !== "none").length} liée(s)
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 pb-5 flex justify-end gap-2 border-t border-border/40 pt-4 sticky bottom-0 bg-white dark:bg-card">
+          <Button variant="outline" onClick={handleClose} className="rounded-lg" data-testid="import-cancel">Annuler</Button>
+          <Button
+            onClick={handleImport}
+            disabled={importing || !hasParsed || !magasinId || taux <= 0}
+            className="rounded-lg gap-2 font-semibold"
+            style={{ background: GOLD, color: "#fff" }}
+            data-testid="import-confirm"
+          >
+            {importing ? "Importation..." : `Importer${hasParsed ? ` (${parsedRows.length})` : ""}`}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

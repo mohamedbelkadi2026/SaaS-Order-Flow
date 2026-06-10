@@ -827,6 +827,21 @@ export const passwordSchema = z.string()
   .regex(/[a-z]/, "Au moins une minuscule requise")
   .regex(/[0-9]/, "Au moins un chiffre requis");
 
+// ── Ad Campaign → Product Mapping ────────────────────────────────────────
+// Persists normalized campaign names to product IDs per store so that
+// re-importing the same campaigns skips the manual mapping step.
+export const adCampaignProductMap = pgTable("ad_campaign_product_map", {
+  id:           serial("id").primaryKey(),
+  storeId:      integer("store_id").notNull().references(() => stores.id, { onDelete: "cascade" }),
+  campaignName: text("campaign_name").notNull(),
+  productId:    integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  createdAt:    timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertAdCampaignProductMapSchema = createInsertSchema(adCampaignProductMap).omit({ id: true, createdAt: true });
+export type InsertAdCampaignProductMap = z.infer<typeof insertAdCampaignProductMapSchema>;
+export type AdCampaignProductMap = typeof adCampaignProductMap.$inferSelect;
+
 // Email schema — RFC-bounded length, lowercase + trim normalisation.
 export const emailSchema = z.string()
   .email("Email invalide")

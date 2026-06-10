@@ -11,7 +11,7 @@ import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -2088,6 +2088,69 @@ export async function registerRoutes(
     const userIdForDelete = isAdmin ? undefined : user.id;
     await storage.deleteAdSpendNew(Number(req.params.id), storeId, userIdForDelete);
     res.json({ ok: true });
+  });
+
+  // ─── Campaign-product mapping (for ad-spend importer) ───────────────────
+
+  // Normalize campaign name: lowercase, trim, strip accents, collapse spaces
+  function normalizeCampaign(s: string): string {
+    return s.toLowerCase().trim()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ");
+  }
+
+  app.get("/api/publicites/campaign-map", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const map = await storage.getCampaignMap(storeId);
+    res.json(map);
+  });
+
+  app.post("/api/publicites/import", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const storeId = user.storeId!;
+    const { magasinId, source, rows } = req.body;
+
+    if (!magasinId) return res.status(400).json({ message: "Magasin requis" });
+    if (!source) return res.status(400).json({ message: "Source requise" });
+    if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ message: "Aucune ligne à importer" });
+
+    // Validate magasin ownership exactly like POST /api/publicites
+    const owned = await storage.getStoresByOwner(user.id);
+    if (!owned.some((m: any) => m.id === Number(magasinId))) {
+      return res.status(403).json({ message: "Magasin non autorisé" });
+    }
+
+    let inserted = 0;
+    let mapped = 0;
+
+    for (const row of rows) {
+      const { date, amount, productId, campaignName } = row;
+      if (!date || amount === undefined || amount === null) continue;
+
+      const amountCents = Math.round(Number(amount) * 100);
+      await storage.createAdSpendEntry({
+        storeId,
+        magasinId: Number(magasinId),
+        userId: user.id,
+        source,
+        date,
+        amount: amountCents,
+        productId: productId ? Number(productId) : null,
+        productSellingPrice: null,
+      });
+      inserted++;
+
+      // Persist campaign→product mapping
+      if (productId && campaignName) {
+        const norm = normalizeCampaign(String(campaignName));
+        if (norm) {
+          await storage.upsertCampaignMap(storeId, norm, Number(productId));
+          mapped++;
+        }
+      }
+    }
+
+    res.json({ inserted, mapped });
   });
 
   // ============================================================

@@ -1,6 +1,6 @@
 import { db } from "./db";
 import { 
-  users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs,
+  users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
   carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
@@ -186,6 +186,8 @@ export interface IStorage {
   createAdSpendEntry(data: InsertAdSpendNew & { userId?: number | null }): Promise<AdSpendNewEntry>;
   getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean; magasinId?: number | null }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string; magasinName?: string | null })[]>;
   deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void>;
+  getCampaignMap(storeId: number): Promise<Record<string, number>>;
+  upsertCampaignMap(storeId: number, campaignName: string, productId: number): Promise<void>;
   getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number>;
 
   getMediaBuyerAdSpend(storeId: number, mediaBuyerId: number, dateFrom?: string, dateTo?: string): Promise<AdSpendEntry[]>;
@@ -3354,6 +3356,26 @@ export class DatabaseStorage implements IStorage {
       await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId), eq((adSpend as any).userId, userId)));
     } else {
       await db.delete(adSpend).where(and(eq(adSpend.id, id), eq(adSpend.storeId, storeId)));
+    }
+  }
+
+  async getCampaignMap(storeId: number): Promise<Record<string, number>> {
+    const rows = await db.select().from(adCampaignProductMap)
+      .where(eq(adCampaignProductMap.storeId, storeId));
+    const map: Record<string, number> = {};
+    for (const r of rows) map[r.campaignName] = r.productId;
+    return map;
+  }
+
+  async upsertCampaignMap(storeId: number, campaignName: string, productId: number): Promise<void> {
+    const existing = await db.select().from(adCampaignProductMap)
+      .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.campaignName, campaignName)));
+    if (existing.length > 0) {
+      await db.update(adCampaignProductMap)
+        .set({ productId })
+        .where(and(eq(adCampaignProductMap.storeId, storeId), eq(adCampaignProductMap.campaignName, campaignName)));
+    } else {
+      await db.insert(adCampaignProductMap).values({ storeId, campaignName, productId });
     }
   }
 

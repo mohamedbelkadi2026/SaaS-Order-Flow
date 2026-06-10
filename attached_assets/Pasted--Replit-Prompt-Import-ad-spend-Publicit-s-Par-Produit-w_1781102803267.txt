@@ -1,0 +1,73 @@
+# Replit Prompt — Import ad spend (Publicités → Par Produit) with campaign→product mapping + USD→MAD conversion
+
+Add an **ad-spend importer** to the existing Publicités page, on the **"Par Produit"** tab. It lets the user upload a Facebook / Google / TikTok ads export (CSV or Excel), maps each campaign to one of their stock products, converts the spend from USD to MAD, and creates one ad-spend entry per row. Do NOT change the existing manual "Nouvelle dépense" flow, the "Par Source" tab, or any unrelated logic. Use French for all user-facing strings.
+
+## Repo facts (already verified — rely on these)
+- Page: `client/src/pages/publicites.tsx`. Tabs: `"source" | "produit"`. `AD_SOURCES = ["Facebook Ads","Google Ads","TikTok Ads","Snapchat Ads"]`.
+- Products come from `useProducts()` (each has `id`, `name`). Magasins from `useMagasins()`.
+- Existing create route: `POST /api/publicites` (`server/routes.ts`, ~line 2031). Body: `{ source, date, amount, productId?, productSellingPrice?, magasinId }`. **`amount` is in DH** and the backend multiplies by 100 to store centimes. **`magasinId` is required** and ownership is validated.
+- `xlsx` (SheetJS) is already a dependency — use it to parse BOTH `.csv` and `.xlsx`/`.xls`. Do NOT add new parsing libraries.
+
+## 1. Database — persistent campaign→product mapping
+In `shared/schema.ts` add a table so future imports auto-link known campaigns:
+```ts
+export const adCampaignProductMap = pgTable("ad_campaign_product_map", {
+  id:           serial("id").primaryKey(),
+  storeId:      integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+  campaignName: text("campaign_name").notNull(),   // store normalized lowercase
+  productId:    integer("product_id").notNull().references(() => products.id, { onDelete: 'cascade' }),
+  createdAt:    timestamp("created_at").defaultNow().notNull(),
+});
+```
+Add the insert schema + types like the other tables, then run `npm run db:push`.
+
+## 2. Backend endpoints (`server/routes.ts`)
+- `GET /api/publicites/campaign-map` (requireAuth) → returns this store's saved `{ campaignName -> productId }` mappings.
+- `POST /api/publicites/import` (requireAuth) → accepts:
+  ```ts
+  { magasinId: number, source: string, rows: Array<{ date: string, amount: number /* MAD, already converted */, productId: number|null, campaignName: string }> }
+  ```
+  Behavior: validate `magasinId` ownership exactly like the existing `POST /api/publicites` route (use `storage.getStoresByOwner`). For each row, insert an ad-spend entry via the same path as the manual route (reuse `storage.createAdSpendEntry`, converting `amount` DH→centimes with `Math.round(amount*100)`), with `productId` and `source`. For every row that has a `productId`, upsert its `(storeId, normalize(campaignName), productId)` into `adCampaignProductMap` (skip duplicates). Return `{ inserted: number, mapped: number }`.
+- Normalization helper (server + client must match): lowercase, trim, strip accents, collapse whitespace.
+
+## 3. Client — "Importer les dépenses" button + modal (`client/src/pages/publicites.tsx`)
+Show an **"Importer les dépenses"** button on the **Par Produit** tab only (next to / near the "Nouvelle dépense" button). Clicking opens an import dialog with these steps:
+
+**Step A — File + settings**
+- File input accepting `.csv,.xlsx,.xls`.
+- A **Source** select defaulting to the current platform (`AD_SOURCES`).
+- A **Magasin** select (required — backend needs it).
+- A **Taux de change USD → MAD** number field, pre-filled. Try to fetch a live rate from a no-key API (`https://open.er-api.com/v6/latest/USD`, read `rates.MAD`); if the fetch fails, fall back to `10.0`. Always let the user edit it. Show a hint: "Les montants du fichier sont en USD et seront convertis en DH avec ce taux."
+- Optional **Date** field used when the file has no per-row date.
+
+**Step B — Parse the file (use `xlsx`)**
+```ts
+const wb = XLSX.read(arrayBuffer, { type: "array" });
+const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+```
+Auto-detect the two needed columns by header keywords (case-insensitive), tolerant across platforms:
+- **Campaign column**: header matching any of `campaign name`, `campaign`, `nom de la campagne`, `campagne`.
+- **Spend column (USD)**: header matching any of `amount spent`, `montant dépensé`, `cost`, `coût`, `total cost`, `spend`, `dépenses`. (Facebook = "Amount spent (USD)", Google = "Cost", TikTok = "Cost"/"Total Cost".)
+- **Date column (optional)**: `day`, `date`, `reporting starts`, `jour`.
+If a column can't be auto-detected, show small dropdowns letting the user pick which column is the campaign / spend / date. Aggregate the file by **campaign name** (sum spend per campaign; if a date column exists, keep per (campaign, date)).
+
+**Step C — Mapping table (campaign → produit)**
+Render a table: each unique campaign on the left; on the right a **product `Select`** populated from `useProducts()`, plus an "Aucun produit (ignorer)" option. Pre-select using:
+1. saved mapping from `GET /api/publicites/campaign-map` (exact normalized match), else
+2. a fuzzy auto-suggest: normalize both sides, pick the product whose name shares the most tokens with / is a substring of the campaign name; leave empty if no decent match.
+Show the converted amount per row: `montant_DH = montant_USD * taux` (display 2 decimals). Show a running total in DH.
+
+**Step D — Confirm & import**
+On confirm, build `rows` (each: `{ date: rowDate || settingsDate, amount: montant_DH, productId: selected|null, campaignName }`) and POST to `/api/publicites/import` with `{ magasinId, source, rows }`. On success: toast `"{inserted} dépenses importées · {mapped} campagnes liées"`, close the dialog, and `invalidateQueries(["/api/publicites"])` so the Par Produit table + totals refresh. Skip rows mapped to "Aucun produit" (or import them with `productId: null` — your choice, but be consistent and tell the user).
+
+## 4. Niceties (keep simple)
+- In the Par Produit table, since each product now accumulates spend, that's already shown via existing rows — no change needed. Optionally add a tiny per-product total badge if trivial; skip if it risks breaking the table.
+- Validate: block import if no magasin selected, no file parsed, or taux ≤ 0, with clear French toasts.
+
+## Testing checklist
+1. Upload a Facebook CSV with "Campaign name" + "Amount spent (USD)" → columns auto-detected; mapping table appears.
+2. A campaign whose name contains a product name auto-suggests that product; user can override; "Aucun produit" works.
+3. Taux pre-fills from the live API (or 10.0 fallback); editing it updates the DH totals live; USD 100 at taux 10 → 1000.00 DH stored (= 100000 centimes).
+4. Confirm import → entries appear in Par Produit for the right products/magasin/source; totals update.
+5. Re-importing the same campaigns later auto-selects the saved product mapping (no re-mapping needed).
+6. Import is blocked with a clear message if magasin is missing or taux ≤ 0. Existing manual "Nouvelle dépense" and "Par Source" tab are unchanged.
