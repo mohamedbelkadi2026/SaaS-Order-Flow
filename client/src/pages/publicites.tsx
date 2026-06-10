@@ -55,6 +55,25 @@ function findDateCol(headers: string[]): string | null {
   return headers.find(x => !isMetric(x) && (n(x).includes("reporting starts") || n(x) === "day" || n(x) === "date" || n(x) === "jour")) ?? null;
 }
 
+function findReportingEndsCol(headers: string[]): string | null {
+  const n = (h: string) => h.toLowerCase().trim();
+  return headers.find(x => n(x).includes("reporting ends") || n(x).includes("reporting end")) ?? null;
+}
+
+function spreadDailyEntries(totalAmount: number, startDate: string, endDate: string): Array<{ date: string; amount: number }> {
+  const start = new Date(startDate + "T12:00:00");
+  const end = new Date(endDate + "T12:00:00");
+  const nbDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+  const perDay = totalAmount / nbDays;
+  const entries: Array<{ date: string; amount: number }> = [];
+  const cur = new Date(start);
+  for (let i = 0; i < nbDays; i++) {
+    entries.push({ date: cur.toISOString().slice(0, 10), amount: perDay });
+    cur.setDate(cur.getDate() + 1);
+  }
+  return entries;
+}
+
 function fuzzyProduct(campaignNorm: string, products: any[]): number | null {
   let best: { id: number; score: number } | null = null;
   for (const p of products) {
@@ -79,7 +98,7 @@ function toISODate(v: any, fallback: string): string {
   return isNaN(d.getTime()) ? fallback : d.toISOString().slice(0, 10);
 }
 
-interface ParsedRow { campaign: string; amountUsd: number; date: string; }
+interface ParsedRow { campaign: string; amountUsd: number; date: string; dateEnd?: string; }
 
 const SOURCE_STYLES: Record<string, string> = {
   "Facebook Ads": "bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-300",
@@ -784,7 +803,8 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
   const [fallbackDate, setFallbackDate] = useState(today);
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [fileHeaders, setFileHeaders] = useState<string[]>([]);
-  const [colOverrides, setColOverrides] = useState<{ campaign: string | null; spend: string | null; date: string | null }>({ campaign: null, spend: null, date: null });
+  const [colOverrides, setColOverrides] = useState<{ campaign: string | null; spend: string | null; date: string | null; dateEnd: string | null }>({ campaign: null, spend: null, date: null, dateEnd: null });
+  const [spreadByPeriod, setSpreadByPeriod] = useState(false);
   const [mapping, setMapping] = useState<Record<string, number | null>>({});
   const [importing, setImporting] = useState(false);
   const [fileName, setFileName] = useState("");
@@ -819,7 +839,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parsedRows]);
 
-  function aggregateRows(rows: any[], campaignCol: string, spendCol: string, dateCol: string | null) {
+  function aggregateRows(rows: any[], campaignCol: string, spendCol: string, dateCol: string | null, dateEndCol: string | null = null) {
     const agg: Record<string, ParsedRow> = {};
     for (const row of rows) {
       const campaign = String(row[campaignCol] || "").trim();
@@ -827,9 +847,11 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
       const rawSpend = String(row[spendCol] || "0").replace(/[^0-9.-]/g, "");
       const spend = parseFloat(rawSpend) || 0;
       const date = dateCol ? toISODate(row[dateCol], "") : "";
+      const dateEnd = dateEndCol ? toISODate(row[dateEndCol], "") : "";
       const key = campaign + "||" + date;
-      if (!agg[key]) agg[key] = { campaign, amountUsd: 0, date };
+      if (!agg[key]) agg[key] = { campaign, amountUsd: 0, date, dateEnd };
       agg[key].amountUsd += spend;
+      if (dateEnd && (!agg[key].dateEnd || dateEnd > (agg[key].dateEnd ?? ""))) agg[key].dateEnd = dateEnd;
     }
     setParsedRows(Object.values(agg).filter(r => r.amountUsd > 0));
   }
@@ -849,10 +871,11 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
     const campaignCol = findCampaignCol(headers);
     const spendCol = findSpendCol(headers);
     const dateCol = findDateCol(headers);
+    const dateEndCol = findReportingEndsCol(headers);
 
-    setColOverrides({ campaign: campaignCol, spend: spendCol, date: dateCol });
+    setColOverrides({ campaign: campaignCol, spend: spendCol, date: dateCol, dateEnd: dateEndCol });
     if (campaignCol && spendCol) {
-      aggregateRows(rows, campaignCol, spendCol, dateCol);
+      aggregateRows(rows, campaignCol, spendCol, dateCol, dateEndCol);
     }
   }
 
@@ -860,7 +883,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
     const cols = { ...colOverrides, ...overrides };
     const rows = fileRowsRef.current;
     if (rows.length > 0 && cols.campaign && cols.spend) {
-      aggregateRows(rows, cols.campaign, cols.spend, cols.date);
+      aggregateRows(rows, cols.campaign, cols.spend, cols.date, cols.dateEnd);
     }
   }
 
@@ -872,29 +895,45 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
     setImporting(true);
     try {
       if (tab === "source") {
-        // Source mode: sum all rows into one entry (no product mapping needed)
+        // Source mode: sum all rows → one entry (or spread over reporting period)
         const totalDh = parseFloat(parsedRows.reduce((s, r) => s + r.amountUsd * taux, 0).toFixed(2));
-        const res = await fetch("/api/publicites", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ date: fallbackDate, source, amount: totalDh, magasinId: Number(magasinId) }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ message: "Erreur serveur" }));
-          throw new Error(err.message || "Erreur serveur");
+        const importDateStart = parsedRows[0]?.date || fallbackDate;
+        const importDateEnd = parsedRows[0]?.dateEnd || "";
+        const entriesToPost = (spreadByPeriod && importDateStart && importDateEnd && importDateEnd > importDateStart)
+          ? spreadDailyEntries(totalDh, importDateStart, importDateEnd)
+          : [{ date: importDateStart, amount: totalDh }];
+        for (const entry of entriesToPost) {
+          const res = await fetch("/api/publicites", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ date: entry.date, source, amount: parseFloat(entry.amount.toFixed(2)), magasinId: Number(magasinId) }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ message: "Erreur serveur" }));
+            throw new Error(err.message || "Erreur serveur");
+          }
         }
-        toast({ title: `Dépense ${source} importée`, description: `${totalDh.toFixed(2)} DH` });
+        toast({ title: `Dépense ${source} importée`, description: `${totalDh.toFixed(2)} DH${entriesToPost.length > 1 ? ` · réparti sur ${entriesToPost.length} jours` : ""}` });
       } else {
-        // Produit mode: map campaigns to products and import per product
-        const rows = parsedRows
-          .map((r, i) => ({
-            date: toISODate(r.date, fallbackDate),
-            amount: parseFloat((r.amountUsd * taux).toFixed(2)),
-            productId: mapping[String(i)] != null ? Number(mapping[String(i)]) : null,
-            campaignName: r.campaign,
-          }))
-          .filter(r => r.productId != null);
+        // Produit mode: map campaigns to products, with optional daily spread
+        const rows = parsedRows.flatMap((r, i) => {
+          const productId = mapping[String(i)] != null ? Number(mapping[String(i)]) : null;
+          if (productId == null) return [];
+          const campaignName = r.campaign;
+          const startDate = toISODate(r.date, fallbackDate);
+          const endDate = r.dateEnd ? toISODate(r.dateEnd, startDate) : "";
+          const amountDh = r.amountUsd * taux;
+          if (spreadByPeriod && startDate && endDate && endDate > startDate) {
+            return spreadDailyEntries(amountDh, startDate, endDate).map(e => ({
+              date: e.date,
+              amount: parseFloat(e.amount.toFixed(2)),
+              productId,
+              campaignName,
+            }));
+          }
+          return [{ date: startDate, amount: parseFloat(amountDh.toFixed(2)), productId, campaignName }];
+        });
 
         const res = await fetch("/api/publicites/import", {
           method: "POST",
@@ -923,7 +962,8 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
   function handleClose() {
     setParsedRows([]);
     setFileHeaders([]);
-    setColOverrides({ campaign: null, spend: null, date: null });
+    setColOverrides({ campaign: null, spend: null, date: null, dateEnd: null });
+    setSpreadByPeriod(false);
     setMapping({});
     setFileName("");
     fileRowsRef.current = [];
@@ -1059,7 +1099,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
               {!columnsOk && (
                 <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Colonnes non détectées automatiquement — sélectionnez-les :</p>
               )}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs font-semibold">Colonne Campagne</Label>
                   <Select value={colOverrides.campaign || ""} onValueChange={v => {
@@ -1083,7 +1123,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Colonne Date (optionnel)</Label>
+                  <Label className="text-xs font-semibold">Reporting starts (date)</Label>
                   <Select value={colOverrides.date || "__none__"} onValueChange={v => {
                     const next = { ...colOverrides, date: v === "__none__" ? null : v };
                     setColOverrides(next);
@@ -1096,7 +1136,34 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold">Reporting ends (optionnel)</Label>
+                  <Select value={colOverrides.dateEnd || "__none__"} onValueChange={v => {
+                    const next = { ...colOverrides, dateEnd: v === "__none__" ? null : v };
+                    setColOverrides(next);
+                    reparse(next);
+                  }}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Aucune" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">— Aucune —</SelectItem>
+                      {fileHeaders.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
+              {/* Spread checkbox — shown when a Reporting ends column is detected */}
+              {(colOverrides.dateEnd) && (
+                <label className="flex items-center gap-2 cursor-pointer select-none mt-1">
+                  <input
+                    type="checkbox"
+                    checked={spreadByPeriod}
+                    onChange={e => setSpreadByPeriod(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-amber-500"
+                    data-testid="checkbox-spread-period"
+                  />
+                  <span className="text-xs text-foreground font-medium">Répartir la dépense sur la période (1 ligne/jour)</span>
+                </label>
+              )}
               {!columnsOk && colOverrides.campaign && colOverrides.spend && (
                 <Button size="sm" onClick={() => reparse()} className="gap-1.5" style={{ background: GOLD, color: "#fff" }}>
                   <ArrowRight className="w-3.5 h-3.5" /> Analyser le fichier
@@ -1118,9 +1185,24 @@ function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAd
                 {parsedRows.reduce((s, r) => s + r.amountUsd, 0).toFixed(2)} USD × {taux} = {totalDH.toFixed(2)} DH
                 {" · "}{parsedRows.length} ligne(s) agrégée(s)
               </p>
-              <p className="text-xs text-muted-foreground">
-                Une seule entrée sera créée pour <span className="font-semibold text-foreground">{source}</span> à la date du <span className="font-semibold text-foreground">{fallbackDate}</span>.
-              </p>
+              {(() => {
+                const importStart = parsedRows[0]?.date || fallbackDate;
+                const importEnd = parsedRows[0]?.dateEnd || "";
+                const willSpread = spreadByPeriod && importStart && importEnd && importEnd > importStart;
+                if (willSpread) {
+                  const days = Math.max(1, Math.round((new Date(importEnd + "T12:00:00").getTime() - new Date(importStart + "T12:00:00").getTime()) / 86400000) + 1);
+                  return (
+                    <p className="text-xs text-muted-foreground">
+                      Réparti sur <span className="font-semibold text-foreground">{days} jours</span> ({importStart} → {importEnd}) — {(totalDH / days).toFixed(2)} DH/jour.
+                    </p>
+                  );
+                }
+                return (
+                  <p className="text-xs text-muted-foreground">
+                    Une seule entrée pour <span className="font-semibold text-foreground">{source}</span> à la date du <span className="font-semibold text-foreground">{importStart}</span>.
+                  </p>
+                );
+              })()}
             </div>
           )}
 

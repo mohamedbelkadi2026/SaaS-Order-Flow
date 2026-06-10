@@ -247,7 +247,30 @@ export default function ProfitAnalyzer() {
     return p.toString();
   };
 
-  const { data: liveData, isLoading: liveLoading, refetch: liveRefetch } = useQuery<{ products: any[]; platforms: any[] }>({
+  const liveDateRangeLabel = useMemo(() => {
+    const d = new Date();
+    const fmt = (dt: Date) => dt.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+    if (liveShowCustom && liveDateFrom) {
+      return `${liveDateFrom} → ${liveDateTo || "aujourd'hui"}`;
+    }
+    if (liveDateRange === 'today') return `Aujourd'hui — ${fmt(d)}`;
+    if (liveDateRange === '7days') {
+      const from = new Date(d); from.setDate(from.getDate() - 6);
+      return `7 jours — ${fmt(from)} → ${fmt(d)}`;
+    }
+    if (liveDateRange === 'month') {
+      const from = new Date(d.getFullYear(), d.getMonth(), 1);
+      return `Ce mois — ${fmt(from)} → ${fmt(d)}`;
+    }
+    if (liveDateRange === 'lastmonth') {
+      const from = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+      const to = new Date(d.getFullYear(), d.getMonth(), 0);
+      return `Mois dernier — ${fmt(from)} → ${fmt(to)}`;
+    }
+    return 'Toutes les périodes';
+  }, [liveDateRange, liveDateFrom, liveDateTo, liveShowCustom]);
+
+  const { data: liveData, isLoading: liveLoading, refetch: liveRefetch } = useQuery<{ products: any[]; platforms: any[]; globalAdSpend?: number }>({
     queryKey: ['/api/products/profitability', liveDateRange, liveDateFrom, liveDateTo, liveShowCustom],
     queryFn: async () => {
       const r = await fetch(`/api/products/profitability?${buildLiveParams()}`, { credentials: 'include' });
@@ -263,7 +286,8 @@ export default function ProfitAnalyzer() {
   const liveTotalOrders    = liveProducts.reduce((s: number, p: any) => s + p.totalOrders,    0);
   const liveTotalDelivered = liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
   const liveTotalRevenue   = liveProducts.reduce((s: number, p: any) => s + p.revenue,         0);
-  const liveTotalProfit    = liveProducts.reduce((s: number, p: any) => s + p.netProfit,        0);
+  // Subtract global/untagged ad spend from the grand total so it matches the Dashboard formula
+  const liveTotalProfit    = liveProducts.reduce((s: number, p: any) => s + p.netProfit, 0) - (liveData?.globalAdSpend ?? 0);
   const liveDeliveryRate   = liveTotalOrders > 0 ? ((liveTotalDelivered / liveTotalOrders) * 100).toFixed(1) : "0";
 
   function fmtDH(v: number) {
@@ -683,6 +707,10 @@ export default function ProfitAnalyzer() {
                 <RefreshCw className="w-3 h-3" /> Actualiser
               </button>
             </div>
+            {/* Active range label */}
+            <p className="text-[11px] text-slate-500 -mt-1" data-testid="live-range-label">
+              {liveDateRangeLabel}
+            </p>
 
             {/* View toggle */}
             <div className="flex items-center gap-2">

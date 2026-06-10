@@ -659,7 +659,7 @@ export async function registerRoutes(
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let pasReponse = 0, rappel = 0;
-    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalAgentCommissions = 0;
+    let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0, totalAgentCommissions = 0;
 
     // Fetch agent commission rates for accurate profit calc
     const agentSettingsList = await storage.getStoreAgentSettings(storeId);
@@ -681,6 +681,12 @@ export async function registerRoutes(
     for (const p of storeProducts as any[]) {
       const val = Number(p.settings?.profitDefaults?.coutEmballage ?? 0);
       if (val > 0) emballageByPid.set(p.id, val);
+    }
+    // Per-product confirmation cost map (DH/commande)
+    const confByPid = new Map<number, number>();
+    for (const p of storeProducts as any[]) {
+      const val = Number(p.settings?.profitDefaults?.coutConfirmation ?? 0);
+      if (val > 0) confByPid.set(p.id, val);
     }
     // Order items map for delivered orders (needed for per-order packaging)
     const deliveredFilterIds = deliveredInFilter.map((o: any) => o.id);
@@ -737,6 +743,10 @@ export async function registerRoutes(
         const orderPkgDH = (statsItemsByOrder.get(o.id) ?? [])
           .reduce((sum: number, item: any) => sum + (emballageByPid.get(item.productId ?? 0) ?? 0), 0);
         totalPackaging += Math.round(orderPkgDH * 100);
+        // Confirmation cost: per order (DH) → centimes, from product settings
+        const orderConfDH = (statsItemsByOrder.get(o.id) ?? [])
+          .reduce((sum: number, item: any) => sum + (confByPid.get(item.productId ?? 0) ?? 0), 0);
+        totalConfirmationCost += Math.round(orderConfDH * 100);
         // Agent commission: stored in DH, convert to cents
         if (o.assignedToId) {
           const rate = agentCommissionMap.get(o.assignedToId) ?? 0;
@@ -900,8 +910,8 @@ export async function registerRoutes(
     // Build a name→productId map from store products
     const productNameToId = new Map(storeProducts.map((p: any) => [p.name.toLowerCase().trim(), p.id]));
 
-    // Full net profit formula: Revenue(delivered) - ProductCost - Shipping - Packaging - AgentCommissions - AdSpend
-    const netProfit = revenue - totalProductCost - totalShipping - totalPackaging - totalAgentCommissions - adSpendTotal;
+    // Full net profit formula: Revenue(delivered) - ProductCost - Shipping - Packaging - ConfirmationCost - AgentCommissions - AdSpend
+    const netProfit = revenue - totalProductCost - totalShipping - totalPackaging - totalConfirmationCost - totalAgentCommissions - adSpendTotal;
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
@@ -938,6 +948,7 @@ export async function registerRoutes(
       totalProductCost: canProfit ? totalProductCost : undefined,
       totalShipping: canProfit ? totalShipping : undefined,
       totalPackaging: canProfit ? totalPackaging : undefined,
+      totalConfirmationCost: canProfit ? totalConfirmationCost : undefined,
       totalAgentCommissions: canProfit ? totalAgentCommissions : undefined,
       daily: canCharts ? daily : [],
       topProducts: canProducts ? topProducts.map(p => ({ ...p, share: 100 })) : [],
