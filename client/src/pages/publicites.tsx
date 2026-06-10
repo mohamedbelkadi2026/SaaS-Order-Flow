@@ -66,6 +66,19 @@ function fuzzyProduct(campaignNorm: string, products: any[]): number | null {
   return best ? best.id : null;
 }
 
+// Convert Excel serial number OR any date string to YYYY-MM-DD; return fallback on failure.
+function toISODate(v: any, fallback: string): string {
+  if (v == null || v === "") return fallback;
+  if (typeof v === "number") {
+    const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+    return isNaN(d.getTime()) ? fallback : d.toISOString().slice(0, 10);
+  }
+  const s = String(v).trim().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? fallback : d.toISOString().slice(0, 10);
+}
+
 interface ParsedRow { campaign: string; amountUsd: number; date: string; }
 
 const SOURCE_STYLES: Record<string, string> = {
@@ -665,7 +678,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
       if (!campaign) continue;
       const rawSpend = String(row[spendCol] || "0").replace(/[^0-9.-]/g, "");
       const spend = parseFloat(rawSpend) || 0;
-      const date = dateCol ? String(row[dateCol] || "").trim().slice(0, 10) : "";
+      const date = dateCol ? toISODate(row[dateCol], "") : "";
       const key = campaign + "||" + date;
       if (!agg[key]) agg[key] = { campaign, amountUsd: 0, date };
       agg[key].amountUsd += spend;
@@ -676,9 +689,9 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
   async function handleFile(file: File) {
     setFileName(file.name);
     const ab = await file.arrayBuffer();
-    const wb = XLSX.read(ab, { type: "array" });
+    const wb = XLSX.read(ab, { type: "array", cellDates: true });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: "" }) as Record<string, any>[];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: "", raw: false, dateNF: "yyyy-mm-dd" }) as Record<string, any>[];
     if (rows.length === 0) { toast({ title: "Fichier vide ou illisible", variant: "destructive" }); return; }
 
     const headers = Object.keys(rows[0]);
@@ -710,12 +723,15 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
 
     setImporting(true);
     try {
-      const rows = parsedRows.map((r, i) => ({
-        date: r.date || fallbackDate,
-        amount: parseFloat((r.amountUsd * taux).toFixed(2)),
-        productId: mapping[String(i)] != null ? Number(mapping[String(i)]) : null,
-        campaignName: r.campaign,
-      }));
+      // Only import rows where the user has chosen a product
+      const rows = parsedRows
+        .map((r, i) => ({
+          date: toISODate(r.date, fallbackDate),
+          amount: parseFloat((r.amountUsd * taux).toFixed(2)),
+          productId: mapping[String(i)] != null ? Number(mapping[String(i)]) : null,
+          campaignName: r.campaign,
+        }))
+        .filter(r => r.productId != null);
 
       const res = await fetch("/api/publicites/import", {
         method: "POST",
@@ -991,7 +1007,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
             style={{ background: GOLD, color: "#fff" }}
             data-testid="import-confirm"
           >
-            {importing ? "Importation..." : `Importer${hasParsed ? ` (${parsedRows.length})` : ""}`}
+            {importing ? "Importation..." : `Importer (${Object.values(mapping).filter(v => v != null).length})`}
           </Button>
         </div>
       </DialogContent>

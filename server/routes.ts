@@ -2106,51 +2106,66 @@ export async function registerRoutes(
   });
 
   app.post("/api/publicites/import", requireAuth, async (req, res) => {
-    const user = req.user!;
-    const storeId = user.storeId!;
-    const { magasinId, source, rows } = req.body;
+    try {
+      const user = req.user!;
+      const storeId = user.storeId!;
+      const { magasinId, source, rows } = req.body;
 
-    if (!magasinId) return res.status(400).json({ message: "Magasin requis" });
-    if (!source) return res.status(400).json({ message: "Source requise" });
-    if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ message: "Aucune ligne à importer" });
+      if (!magasinId) return res.status(400).json({ message: "Magasin requis" });
+      if (!source) return res.status(400).json({ message: "Source requise" });
+      if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ message: "Aucune ligne à importer" });
 
-    // Validate magasin ownership exactly like POST /api/publicites
-    const owned = await storage.getStoresByOwner(user.id);
-    if (!owned.some((m: any) => m.id === Number(magasinId))) {
-      return res.status(403).json({ message: "Magasin non autorisé" });
-    }
+      // Validate magasin ownership exactly like POST /api/publicites
+      const owned = await storage.getStoresByOwner(user.id);
+      if (!owned.some((m: any) => m.id === Number(magasinId))) {
+        return res.status(403).json({ message: "Magasin non autorisé" });
+      }
 
-    let inserted = 0;
-    let mapped = 0;
-
-    for (const row of rows) {
-      const { date, amount, productId, campaignName } = row;
-      if (!date || amount === undefined || amount === null) continue;
-
-      const amountCents = Math.round(Number(amount) * 100);
-      await storage.createAdSpendEntry({
-        storeId,
-        magasinId: Number(magasinId),
-        userId: user.id,
-        source,
-        date,
-        amount: amountCents,
-        productId: productId ? Number(productId) : null,
-        productSellingPrice: null,
-      });
-      inserted++;
-
-      // Persist campaign→product mapping
-      if (productId && campaignName) {
-        const norm = normalizeCampaign(String(campaignName));
-        if (norm) {
-          await storage.upsertCampaignMap(storeId, norm, Number(productId));
-          mapped++;
+      // Per-row validation
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const label = `Ligne ${i + 1} (${row.campaignName || "?"})`;
+        if (!row.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(row.date))) {
+          return res.status(400).json({ message: `${label} : date invalide "${row.date}" — format attendu YYYY-MM-DD` });
+        }
+        if (row.amount == null || !isFinite(Number(row.amount)) || Number(row.amount) <= 0) {
+          return res.status(400).json({ message: `${label} : montant invalide "${row.amount}"` });
         }
       }
-    }
 
-    res.json({ inserted, mapped });
+      let inserted = 0;
+      let mapped = 0;
+
+      for (const row of rows) {
+        const { date, amount, productId, campaignName } = row;
+        const amountCents = Math.round(Number(amount) * 100);
+        await storage.createAdSpendEntry({
+          storeId,
+          magasinId: Number(magasinId),
+          userId: user.id,
+          source,
+          date: String(date),
+          amount: amountCents,
+          productId: productId ? Number(productId) : null,
+          productSellingPrice: null,
+        });
+        inserted++;
+
+        // Persist campaign→product mapping
+        if (productId && campaignName) {
+          const norm = normalizeCampaign(String(campaignName));
+          if (norm) {
+            await storage.upsertCampaignMap(storeId, norm, Number(productId));
+            mapped++;
+          }
+        }
+      }
+
+      res.json({ inserted, mapped });
+    } catch (err: any) {
+      console.error("[POST /api/publicites/import] error:", err);
+      res.status(500).json({ message: err?.message || "Erreur serveur lors de l'import" });
+    }
   });
 
   // ============================================================
