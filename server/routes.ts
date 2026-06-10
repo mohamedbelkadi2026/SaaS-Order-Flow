@@ -2084,10 +2084,31 @@ export async function registerRoutes(
     const user = req.user!;
     const storeId = user.storeId!;
     const isAdmin = user.role === 'owner' || user.role === 'admin';
-    // Admin can delete any; others can only delete their own
     const userIdForDelete = isAdmin ? undefined : user.id;
     await storage.deleteAdSpendNew(Number(req.params.id), storeId, userIdForDelete);
     res.json({ ok: true });
+  });
+
+  app.patch("/api/publicites/:id", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const storeId = user.storeId!;
+      const isAdmin = user.role === 'owner' || user.role === 'admin';
+      const { date, source, amount, productId } = req.body;
+      const fields: any = {};
+      if (date !== undefined) fields.date = String(date);
+      if (source !== undefined) fields.source = String(source);
+      if (amount !== undefined) fields.amount = Math.round(Number(amount) * 100);
+      if (productId !== undefined) fields.productId = productId !== null ? Number(productId) : null;
+      if (Object.keys(fields).length === 0) return res.status(400).json({ message: "Aucun champ à mettre à jour" });
+      const userIdForUpdate = isAdmin ? undefined : user.id;
+      const updated = await storage.updateAdSpendEntry(Number(req.params.id), storeId, userIdForUpdate, fields);
+      if (!updated) return res.status(404).json({ message: "Entrée non trouvée ou non autorisée" });
+      res.json(updated);
+    } catch (err: any) {
+      console.error("[PATCH /api/publicites/:id] error:", err);
+      res.status(500).json({ message: err?.message || "Erreur serveur" });
+    }
   });
 
   // ─── Campaign-product mapping (for ad-spend importer) ───────────────────

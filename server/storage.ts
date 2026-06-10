@@ -186,6 +186,7 @@ export interface IStorage {
   createAdSpendEntry(data: InsertAdSpendNew & { userId?: number | null }): Promise<AdSpendNewEntry>;
   getAdSpendEntries(storeId: number, opts?: { productId?: number | null; source?: string; dateFrom?: string; dateTo?: string; userId?: number | null; allUsers?: boolean; magasinId?: number | null }): Promise<(AdSpendNewEntry & { productName?: string; userName?: string; magasinName?: string | null })[]>;
   deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void>;
+  updateAdSpendEntry(id: number, storeId: number, userId: number | undefined, fields: { date?: string; source?: string; amount?: number; productId?: number | null }): Promise<AdSpendNewEntry | undefined>;
   getCampaignMap(storeId: number): Promise<Record<string, number>>;
   upsertCampaignMap(storeId: number, campaignName: string, productId: number): Promise<void>;
   getAdSpendNewTotal(storeId: number, dateFrom?: string, dateTo?: string): Promise<number>;
@@ -3348,6 +3349,13 @@ export class DatabaseStorage implements IStorage {
       .where(and(...conditions))
       .orderBy(desc(adSpend.date));
     return rows as any[];
+  }
+
+  async updateAdSpendEntry(id: number, storeId: number, userId: number | undefined, fields: { date?: string; source?: string; amount?: number; productId?: number | null }): Promise<AdSpendNewEntry | undefined> {
+    const conditions: any[] = [eq(adSpend.id, id), eq(adSpend.storeId, storeId)];
+    if (userId !== undefined) conditions.push(eq((adSpend as any).userId, userId));
+    const [updated] = await db.update(adSpend).set(fields as any).where(and(...conditions)).returning();
+    return updated;
   }
 
   async deleteAdSpendNew(id: number, storeId: number, userId?: number): Promise<void> {

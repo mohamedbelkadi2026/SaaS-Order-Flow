@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Megaphone, Plus, Trash2, X, Wallet, BarChart3, Calendar, Users, Upload, FileSpreadsheet, ArrowRight, CheckCircle2 } from "lucide-react";
+import { Megaphone, Plus, Trash2, Pencil, X, Wallet, BarChart3, Calendar, Users, Upload, FileSpreadsheet, ArrowRight, CheckCircle2 } from "lucide-react";
 import * as XLSX from "xlsx";
 
 const AD_SOURCES = ["Facebook Ads", "Google Ads", "TikTok Ads", "Snapchat Ads"];
@@ -115,6 +115,60 @@ export default function Publicites() {
     magasinId: "",
   });
   const [saving, setSaving] = useState(false);
+
+  const [editEntry, setEditEntry] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState({ date: "", source: AD_SOURCES[0], amount: "", productId: "none", magasinId: "" });
+
+  const editMut = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: any }) => apiRequest("PATCH", `/api/publicites/${id}`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/publicites"] });
+      qc.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
+      qc.invalidateQueries({ queryKey: ["/api/media-buyer/profit"] });
+      setEditEntry(null);
+      toast({ title: "Dépense mise à jour" });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const [periode, setPeriode] = useState("custom");
+
+  function applyPreset(p: string) {
+    const d = new Date();
+    const iso = (dt: Date) => dt.toISOString().split("T")[0];
+    const today = iso(d);
+    let from = "", to = "";
+    if (p === "today") { from = today; to = today; }
+    else if (p === "7d") { const f = new Date(d); f.setDate(d.getDate() - 6); from = iso(f); to = today; }
+    else if (p === "month") { from = iso(new Date(d.getFullYear(), d.getMonth(), 1)); to = today; }
+    else if (p === "lastmonth") {
+      from = iso(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+      to = iso(new Date(d.getFullYear(), d.getMonth(), 0));
+    }
+    setPeriode(p);
+    setFilters(f => ({ ...f, dateFrom: from, dateTo: to }));
+    setApplied(prev => ({ ...prev, dateFrom: from, dateTo: to }));
+  }
+
+  function openEdit(e: any) {
+    setEditEntry(e);
+    setEditForm({
+      date: e.date ?? "",
+      source: e.source ?? AD_SOURCES[0],
+      amount: e.amount != null ? String(e.amount / 100) : "",
+      productId: e.productId ? String(e.productId) : "none",
+      magasinId: e.magasinId ? String(e.magasinId) : "",
+    });
+  }
+
+  async function handleEditSave() {
+    if (!editEntry || !editForm.date || !editForm.amount) {
+      toast({ title: "Veuillez remplir la date et le montant", variant: "destructive" }); return;
+    }
+    const body: any = { date: editForm.date, source: editForm.source, amount: Number(editForm.amount) };
+    if (tab === "produit") body.productId = editForm.productId !== "none" ? Number(editForm.productId) : null;
+    editMut.mutate({ id: editEntry.id, body });
+  }
 
   const { data: storeData } = useQuery<any>({ queryKey: ["/api/store"] });
   const storeName = storeData?.name || "Mon Site";
@@ -239,12 +293,10 @@ export default function Publicites() {
           </p>
         </div>
         <div className="flex gap-2">
-          {tab === "produit" && (
-            <Button onClick={() => setImportOpen(true)} variant="outline" className="gap-2 rounded-lg font-semibold border-border/60" data-testid="btn-importer">
-              <Upload className="w-4 h-4" />
-              Importer
-            </Button>
-          )}
+          <Button onClick={() => setImportOpen(true)} variant="outline" className="gap-2 rounded-lg font-semibold border-border/60" data-testid="btn-importer">
+            <Upload className="w-4 h-4" />
+            Importer
+          </Button>
           <Button onClick={openModal} className="gap-2 rounded-lg font-semibold" style={{ background: GOLD, color: "#fff" }} data-testid="btn-nouvelle">
             <Plus className="w-4 h-4" />
             {isMediaBuyer ? "Ajouter ma dépense" : "Nouvelle dépense"}
@@ -348,13 +400,32 @@ export default function Publicites() {
             </SelectContent>
           </Select>
 
+          <div className="flex items-center gap-1 flex-wrap">
+            {([
+              { key: "today", label: "Aujourd'hui" },
+              { key: "7d", label: "7 jours" },
+              { key: "month", label: "Ce mois" },
+              { key: "lastmonth", label: "Mois dernier" },
+              { key: "all", label: "Tout" },
+            ] as const).map(({ key, label }) => (
+              <button key={key} onClick={() => applyPreset(key)} data-testid={`preset-${key}`}
+                className={cn("px-2.5 py-1 rounded-md text-xs font-semibold transition-colors border",
+                  periode === key
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-white dark:bg-card border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
+                )}>
+                {label}
+              </button>
+            ))}
+          </div>
+
           <div className="flex items-center gap-1.5 border border-border/60 rounded-md px-2.5 bg-white dark:bg-card h-8">
             <Calendar className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
             <input type="date" className="bg-transparent outline-none text-xs text-foreground w-[108px]"
-              value={filters.dateFrom} onChange={e => setFilters(f => ({ ...f, dateFrom: e.target.value }))} data-testid="filter-date-from" />
+              value={filters.dateFrom} onChange={e => { setFilters(f => ({ ...f, dateFrom: e.target.value })); setPeriode("custom"); }} data-testid="filter-date-from" />
             <span className="text-muted-foreground text-xs">–</span>
             <input type="date" className="bg-transparent outline-none text-xs text-foreground w-[108px]"
-              value={filters.dateTo} onChange={e => setFilters(f => ({ ...f, dateTo: e.target.value }))} data-testid="filter-date-to" />
+              value={filters.dateTo} onChange={e => { setFilters(f => ({ ...f, dateTo: e.target.value })); setPeriode("custom"); }} data-testid="filter-date-to" />
           </div>
 
           <Button size="sm" onClick={applyFilters} className="h-8 px-4 text-xs" data-testid="btn-filtrer">Filtrer</Button>
@@ -430,13 +501,21 @@ export default function Publicites() {
                   </TableCell>
                   <TableCell className="text-right">
                     {(isAdmin || e.userId === user?.id) && (
-                      <Button variant="ghost" size="icon"
-                        className="h-7 w-7 text-destructive/70 hover:text-destructive hover:bg-destructive/10"
-                        onClick={() => deleteMut.mutate(e.id)}
-                        disabled={deleteMut.isPending}
-                        data-testid={`btn-delete-${e.id}`}>
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button variant="ghost" size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                          onClick={() => openEdit(e)}
+                          data-testid={`btn-edit-${e.id}`}>
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon"
+                          className="h-7 w-7 text-destructive/70 hover:text-destructive hover:bg-destructive/10"
+                          onClick={() => deleteMut.mutate(e.id)}
+                          disabled={deleteMut.isPending}
+                          data-testid={`btn-delete-${e.id}`}>
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
                     )}
                   </TableCell>
                 </TableRow>
@@ -493,12 +572,20 @@ export default function Publicites() {
                 <div className="flex flex-col items-end gap-2 shrink-0">
                   <span className="text-base font-bold" style={{ color: GOLD }}>{formatCurrency(e.amount)}</span>
                   {(isAdmin || e.userId === user?.id) && (
-                    <Button variant="ghost" size="icon"
-                      className="h-7 w-7 text-destructive/60 hover:text-destructive hover:bg-destructive/10"
-                      onClick={() => deleteMut.mutate(e.id)} disabled={deleteMut.isPending}
-                      data-testid={`btn-delete-mobile-${e.id}`}>
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button variant="ghost" size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                        onClick={() => openEdit(e)}
+                        data-testid={`btn-edit-mobile-${e.id}`}>
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon"
+                        className="h-7 w-7 text-destructive/60 hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => deleteMut.mutate(e.id)} disabled={deleteMut.isPending}
+                        data-testid={`btn-delete-mobile-${e.id}`}>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -519,7 +606,67 @@ export default function Publicites() {
         onClose={() => setImportOpen(false)}
         products={products as any[]}
         magasins={magasins as any[]}
+        tab={tab}
       />
+
+      {/* Edit Modal */}
+      <Dialog open={!!editEntry} onOpenChange={open => { if (!open) setEditEntry(null); }}>
+        <DialogContent className="sm:max-w-md p-0 overflow-hidden border-none shadow-2xl rounded-2xl bg-white dark:bg-card" data-testid="modal-edit">
+          <div className="flex justify-between items-center px-6 pt-5 pb-4 border-b border-border/60">
+            <DialogTitle className="text-lg font-bold flex items-center gap-2">
+              <Pencil className="w-5 h-5" style={{ color: GOLD }} />
+              Modifier la dépense
+            </DialogTitle>
+            <Button variant="ghost" size="icon" onClick={() => setEditEntry(null)} className="rounded-full h-8 w-8">
+              <X className="w-4 h-4 text-muted-foreground" />
+            </Button>
+          </div>
+          <div className="px-6 py-5 space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-sm font-semibold">Date <span className="text-red-500">*</span></Label>
+              <Input type="date" value={editForm.date} onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))} className="h-9 text-sm" data-testid="edit-date" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-sm font-semibold">Source de traffic</Label>
+              <Select value={editForm.source} onValueChange={v => setEditForm(f => ({ ...f, source: v }))}>
+                <SelectTrigger className="h-9 text-sm" data-testid="edit-source"><SelectValue /></SelectTrigger>
+                <SelectContent>{AD_SOURCES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            {tab === "produit" && (
+              <div className="space-y-1.5">
+                <Label className="text-sm font-semibold">Produit</Label>
+                <Select value={editForm.productId} onValueChange={v => setEditForm(f => ({ ...f, productId: v }))}>
+                  <SelectTrigger className="h-9 text-sm" data-testid="edit-product"><SelectValue placeholder="Sélectionner un produit" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— Aucun produit —</SelectItem>
+                    {(products as any[]).map((p: any) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label className="text-sm font-semibold">Montant dépensé (DH) <span className="text-red-500">*</span></Label>
+              <Input type="number" min="0" step="0.01" placeholder="Ex: 150"
+                value={editForm.amount} onChange={e => setEditForm(f => ({ ...f, amount: e.target.value }))}
+                className="h-9 text-sm" data-testid="edit-amount" />
+            </div>
+            {editForm.amount && Number(editForm.amount) >= 0 && (
+              <div className="rounded-xl border border-border/50 bg-muted/20 px-4 py-3 flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Nouveau montant</span>
+                <span className="font-bold text-sm" style={{ color: GOLD }}>{Number(editForm.amount).toLocaleString("fr-MA")} DH</span>
+              </div>
+            )}
+          </div>
+          <div className="px-6 pb-5 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setEditEntry(null)} className="rounded-lg" data-testid="edit-cancel">Annuler</Button>
+            <Button onClick={handleEditSave} disabled={editMut.isPending} className="rounded-lg gap-2 font-semibold"
+              style={{ background: GOLD, color: "#fff" }} data-testid="edit-valider">
+              {editMut.isPending ? "Enregistrement..." : "Enregistrer"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Add Modal */}
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
@@ -621,9 +768,10 @@ interface ImportAdSpendModalProps {
   onClose: () => void;
   products: any[];
   magasins: any[];
+  tab: Tab;
 }
 
-function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpendModalProps) {
+function ImportAdSpendModal({ open, onClose, products, magasins, tab }: ImportAdSpendModalProps) {
   const { toast } = useToast();
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -723,30 +871,47 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
 
     setImporting(true);
     try {
-      // Only import rows where the user has chosen a product
-      const rows = parsedRows
-        .map((r, i) => ({
-          date: toISODate(r.date, fallbackDate),
-          amount: parseFloat((r.amountUsd * taux).toFixed(2)),
-          productId: mapping[String(i)] != null ? Number(mapping[String(i)]) : null,
-          campaignName: r.campaign,
-        }))
-        .filter(r => r.productId != null);
+      if (tab === "source") {
+        // Source mode: sum all rows into one entry (no product mapping needed)
+        const totalDh = parseFloat(parsedRows.reduce((s, r) => s + r.amountUsd * taux, 0).toFixed(2));
+        const res = await fetch("/api/publicites", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ date: fallbackDate, source, amount: totalDh, magasinId: Number(magasinId) }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ message: "Erreur serveur" }));
+          throw new Error(err.message || "Erreur serveur");
+        }
+        toast({ title: `Dépense ${source} importée`, description: `${totalDh.toFixed(2)} DH` });
+      } else {
+        // Produit mode: map campaigns to products and import per product
+        const rows = parsedRows
+          .map((r, i) => ({
+            date: toISODate(r.date, fallbackDate),
+            amount: parseFloat((r.amountUsd * taux).toFixed(2)),
+            productId: mapping[String(i)] != null ? Number(mapping[String(i)]) : null,
+            campaignName: r.campaign,
+          }))
+          .filter(r => r.productId != null);
 
-      const res = await fetch("/api/publicites/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ magasinId: Number(magasinId), source, rows }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ message: "Erreur serveur" }));
-        throw new Error(err.message || "Erreur serveur");
+        const res = await fetch("/api/publicites/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ magasinId: Number(magasinId), source, rows }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ message: "Erreur serveur" }));
+          throw new Error(err.message || "Erreur serveur");
+        }
+        const data = await res.json();
+        toast({ title: `${data.inserted} dépenses importées · ${data.mapped} campagnes liées` });
+        qc.invalidateQueries({ queryKey: ["/api/publicites/campaign-map"] });
       }
-      const data = await res.json();
-      toast({ title: `${data.inserted} dépenses importées · ${data.mapped} campagnes liées` });
       qc.invalidateQueries({ queryKey: ["/api/publicites"] });
-      qc.invalidateQueries({ queryKey: ["/api/publicites/campaign-map"] });
+      qc.invalidateQueries({ queryKey: ["/api/stats/filtered"] });
       handleClose();
     } catch (e: any) {
       toast({ title: "Erreur import", description: e.message, variant: "destructive" });
@@ -940,8 +1105,26 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
             </div>
           )}
 
-          {/* ── Step B: Mapping table ────────────────────── */}
-          {hasParsed && (
+          {/* ── Step B: Source mode summary OR Produit mode mapping table ── */}
+          {hasParsed && tab === "source" && (
+            <div className="rounded-xl border border-border/50 bg-muted/10 px-5 py-4 space-y-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Résumé — dépense totale</p>
+              <div className="flex items-end gap-2">
+                <span className="text-2xl font-bold" style={{ color: GOLD }}>
+                  Total {source} : {totalDH.toFixed(2)} DH
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {parsedRows.reduce((s, r) => s + r.amountUsd, 0).toFixed(2)} USD × {taux} = {totalDH.toFixed(2)} DH
+                {" · "}{parsedRows.length} ligne(s) agrégée(s)
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Une seule entrée sera créée pour <span className="font-semibold text-foreground">{source}</span> à la date du <span className="font-semibold text-foreground">{fallbackDate}</span>.
+              </p>
+            </div>
+          )}
+
+          {hasParsed && tab === "produit" && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Étape 2 — Correspondances campagne → produit</p>
@@ -964,7 +1147,6 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                       const rowKey = String(i);
                       const dh = (r.amountUsd * taux).toFixed(2);
                       const isMapped = savedMap[normCampaign(r.campaign)] !== undefined;
-                      // Validate date: only show if it looks like YYYY-MM-DD
                       const displayDate = r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? r.date : null;
                       return (
                         <tr key={rowKey} className={cn("border-t border-border/40", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
@@ -1010,34 +1192,34 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                 </table>
               </div>
 
-            {/* Résumé par produit */}
-            {productSummary.length > 0 && (
-              <div className="rounded-xl border border-border/50 overflow-hidden">
-                <div className="px-3 py-2 bg-muted/30 flex items-center justify-between">
-                  <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Résumé par produit (ce qui sera importé)</p>
-                  <span className="text-xs font-bold" style={{ color: GOLD }}>{productSummary.length} entrée(s)</span>
-                </div>
-                <table className="w-full text-sm">
-                  <tbody>
-                    {productSummary.map(({ productId, name, totalDh }) => (
-                      <tr key={productId} className="border-t border-border/40 even:bg-muted/10">
-                        <td className="px-3 py-2 font-medium">{name}</td>
-                        <td className="px-3 py-2 text-right font-bold tabular-nums" style={{ color: GOLD }}>{totalDh.toFixed(2)} DH</td>
+              {/* Résumé par produit */}
+              {productSummary.length > 0 && (
+                <div className="rounded-xl border border-border/50 overflow-hidden">
+                  <div className="px-3 py-2 bg-muted/30 flex items-center justify-between">
+                    <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Résumé par produit (ce qui sera importé)</p>
+                    <span className="text-xs font-bold" style={{ color: GOLD }}>{productSummary.length} entrée(s)</span>
+                  </div>
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {productSummary.map(({ productId, name, totalDh }) => (
+                        <tr key={productId} className="border-t border-border/40 even:bg-muted/10">
+                          <td className="px-3 py-2 font-medium">{name}</td>
+                          <td className="px-3 py-2 text-right font-bold tabular-nums" style={{ color: GOLD }}>{totalDh.toFixed(2)} DH</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="bg-muted/20 border-t-2 border-border/60">
+                      <tr>
+                        <td className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Total</td>
+                        <td className="px-3 py-2 text-right font-bold text-base tabular-nums" style={{ color: GOLD }}>
+                          {productSummary.reduce((s, r) => s + r.totalDh, 0).toFixed(2)} DH
+                        </td>
                       </tr>
-                    ))}
-                  </tbody>
-                  <tfoot className="bg-muted/20 border-t-2 border-border/60">
-                    <tr>
-                      <td className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Total</td>
-                      <td className="px-3 py-2 text-right font-bold text-base tabular-nums" style={{ color: GOLD }}>
-                        {productSummary.reduce((s, r) => s + r.totalDh, 0).toFixed(2)} DH
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            )}
-          </div>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -1051,7 +1233,12 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
             style={{ background: GOLD, color: "#fff" }}
             data-testid="import-confirm"
           >
-            {importing ? "Importation..." : `Importer (${productSummary.length} produit${productSummary.length !== 1 ? "s" : ""})`}
+            {importing
+              ? "Importation..."
+              : tab === "source"
+                ? "Importer (1 entrée)"
+                : `Importer (${productSummary.length} produit${productSummary.length !== 1 ? "s" : ""})`
+            }
           </Button>
         </div>
       </DialogContent>
