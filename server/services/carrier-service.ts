@@ -89,6 +89,13 @@ export const AMEEX_STATUS_MAP: Record<string, string> = {
   "injoignable":   "unreachable",
   "non répondu":   "unreachable",
   "absent":        "unreachable",
+
+  // Deleted / cancelled by carrier system
+  "supprimée":          "Supprimée",
+  "supprimé":           "Supprimée",
+  "supprime":           "Supprimée",
+  "annulé par système": "Supprimée",
+  "annule par systeme": "Supprimée",
 };
 
 /**
@@ -1845,6 +1852,7 @@ export async function trackDigylogShipment(
           rawLow === 'delivered' || rawLow.includes('distribu')
         ) { mappedStatus = 'delivered'; }
         else if (rawLow.includes('livr') || rawLow.includes('cours de livr')) { mappedStatus = 'in_progress'; }
+        else if (rawLow.includes('supprim')) { mappedStatus = 'Supprimée'; }
         else if (rawLow.includes('retour') && !rawLow.includes('en cours')) { mappedStatus = 'retourné'; }
         else if (rawLow.includes('refus') || rawLow.includes('annul')) { mappedStatus = 'refused'; }
         else if (rawLow.includes('injoignable') || rawLow.includes('absent')) { mappedStatus = 'Injoignable'; }
@@ -1905,6 +1913,7 @@ export async function trackDigylogShipment(
           rawLow === 'delivered' || rawLow.includes('distribu')
         ) { mappedStatus = 'delivered'; }
         else if (rawLow.includes('livr') || rawLow.includes('cours de livr')) { mappedStatus = 'in_progress'; }
+        else if (rawLow.includes('supprim')) { mappedStatus = 'Supprimée'; }
         else if (rawLow.includes('retour') && !rawLow.includes('en cours')) { mappedStatus = 'retourné'; }
         else if (rawLow.includes('refus')) { mappedStatus = 'refused'; }
         else if (rawLow.includes('ramass') || rawLow.includes('attente')) { mappedStatus = 'Attente De Ramassage'; }

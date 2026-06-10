@@ -1,0 +1,54 @@
+# Replit Prompt — Carrier "Supprimée" orders must leave "En cours" / "Suivi des Colis"
+
+Problem: orders whose **carrier tracking status is "Supprimée"** (the parcel was deleted/cancelled at the carrier) still appear under **Mes Commandes → En cours** (and Suivi des Colis). They should not. Their internal `orders.status` is still `in_progress` while the carrier status `orders.comment_status` is "Supprimée".
+
+Root cause (verified): in `server/services/carrier-service.ts`, the DIGYLOG tracking mapping has no branch for a raw status containing "supprim", so it falls through to the default `mappedStatus = 'in_progress'`. So a deleted parcel is mis-recorded as in-progress.
+
+Apply all parts. Use French for any user-facing label.
+
+## Part 1 — Filters (guaranteed fix, also covers existing rows) — `server/storage.ts`, `getOrders` status block
+The carrier status lives in `orders.comment_status`. Exclude "Supprimée" from the in-transit views and route it to Annulés.
+
+1. **En cours** (`filters.status === 'in_progress'`, currently the generic `else` → `eq(orders.status, filters.status)`): add a dedicated branch so a deleted parcel is excluded even if its status is still `in_progress`:
+   ```ts
+   } else if (filters.status === 'in_progress') {
+     conditions.push(eq(orders.status, 'in_progress'));
+     conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
+   }
+   ```
+2. **Suivi des Colis** (`filters.status === 'suivi_group'`): add to that `and(...)` / overall condition:
+   ```ts
+   sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`
+   ```
+   and add `'Supprimée'` to the `NOT IN (...)` list in the primary clause so it can never be caught there.
+3. **Annulés** (`filters.status === 'annule_group'`, currently `sql\`${orders.status} LIKE 'Annulé%'\``): widen it so deleted parcels show up here instead of vanishing:
+   ```ts
+   conditions.push(sql`(${orders.status} LIKE 'Annulé%' OR ${orders.commentStatus} ILIKE '%supprim%')`);
+   ```
+
+## Part 2 — Carrier mapping fix (root cause, going forward) — `server/services/carrier-service.ts`
+In every place a raw carrier status is mapped to an internal status and defaults to `'in_progress'` (the two DIGYLOG tracking blocks around the `let mappedStatus = 'in_progress'` lines, and `AMEEX_STATUS_MAP`), add a branch BEFORE the default:
+```ts
+else if (rawLow.includes('supprim')) { mappedStatus = 'Supprimée'; }
+```
+Keep storing the original carrier text in `comment_status` (so the badge still reads "Supprimée"). For `AMEEX_STATUS_MAP`, add entries mapping any "supprimé"/"supprimée"/"annulé par système" raw keys to `'Supprimée'`.
+
+## Part 3 — Backfill existing mis-recorded rows (one-time)
+Run a one-time update so the orders already stuck in En cours move out:
+```sql
+UPDATE orders
+SET status = 'Supprimée'
+WHERE status = 'in_progress'
+  AND comment_status ILIKE '%supprim%';
+```
+(Run via a small script or the DB shell. With Part 1 in place the list is already correct even before this, but this also fixes counts.)
+
+## Part 4 — Don't break counters
+`'Supprimée'` is a new internal status. Make sure it is treated as a **non-in-progress, non-delivered, non-confirmed-shipped** state: do NOT add it to any `in_progress` / confirmed / delivered status arrays used for stats or stock. Leave stock untouched (a deleted parcel does not auto-restock unless you decide otherwise — ask me first).
+
+## Testing checklist
+1. The orders shown as "Supprimée" no longer appear under **En cours** or **Suivi des Colis**.
+2. They now appear under **Annulés** (badge still shows "Supprimée").
+3. A newly tracked parcel that the carrier reports as "Supprimée" is recorded with internal status `'Supprimée'` (not `in_progress`).
+4. En cours still shows genuinely in-transit orders; Livrées / Refusées unchanged.
+5. Order counts in the sidebar reflect the move (En cours count drops, Annulés includes them).

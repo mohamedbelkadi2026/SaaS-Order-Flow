@@ -588,7 +588,7 @@ export class DatabaseStorage implements IStorage {
 
     if (filters.status) {
       if (filters.status === 'annule_group') {
-        conditions.push(sql`${orders.status} LIKE 'Annulé%'`);
+        conditions.push(sql`(${orders.status} LIKE 'Annulé%' OR ${orders.commentStatus} ILIKE '%supprim%')`);
       } else if (filters.status === 'pas_reponse_group') {
         // Matches "Pas de réponse 1" through "Pas de réponse 4"
         // and any future numbered variants without code changes.
@@ -597,13 +597,15 @@ export class DatabaseStorage implements IStorage {
         // Primary: any order that has been shipped (has a tracking number) and isn't in a terminal state.
         // This catches orders whose carrier sent a custom status not in our internal status list.
         // Secondary fallback: explicit list that also covers Moroccan carrier in-transit statuses.
+        // Supprimée orders are excluded from Suivi (they go to Annulés).
         conditions.push(
           or(
             and(
               sql`${orders.trackNumber} IS NOT NULL`,
               sql`${orders.trackNumber} != ''`,
-              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused')`,
-              sql`${orders.status} NOT LIKE 'Annulé%'`
+              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused', 'Supprimée')`,
+              sql`${orders.status} NOT LIKE 'Annulé%'`,
+              sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`
             ),
             inArray(orders.status, [
               'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
@@ -615,6 +617,8 @@ export class DatabaseStorage implements IStorage {
             ])
           )
         );
+        // Also exclude deleted parcels caught via commentStatus on any status path
+        conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
         conditions.push(inArray(orders.status, [
@@ -624,6 +628,9 @@ export class DatabaseStorage implements IStorage {
           'Pas de réponse + SMS', 'Boîte vocale', 'Pas réponse 1 (Suivi)',
           'Pas réponse 2 (Suivi)', 'Pas réponse 3 (Suivi)', 'Demande retour',
         ]));
+      } else if (filters.status === 'in_progress') {
+        conditions.push(eq(orders.status, 'in_progress'));
+        conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
       } else {
         conditions.push(eq(orders.status, filters.status));
       }

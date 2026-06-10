@@ -3553,6 +3553,8 @@ export async function registerRoutes(
       newStatus = "delivered";
     } else if (rawStatus.includes("livr") || rawStatus.includes("cours de livr")) {
       newStatus = "in_progress"; // "en cours de livraison", "sorti en livraison" etc = still in transit
+    } else if (rawStatus.includes("supprim")) {
+      newStatus = "Supprimée";
     } else if (
       rawStatus.includes("refus") || rawStatus.includes("retour") ||
       rawStatus.includes("annul") || rawStatus === "refused"
