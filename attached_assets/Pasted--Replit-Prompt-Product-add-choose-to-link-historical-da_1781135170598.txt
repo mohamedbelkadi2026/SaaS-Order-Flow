@@ -1,0 +1,49 @@
+# Replit Prompt — Product add: choose to link historical data + make cost (SOURCING) compute
+
+Two linked issues when adding a product that already has matching historical orders (e.g. "مونينكس الفرنسية"):
+1. The "Données historiques trouvées" toast only **notifies after** creation. The user wants to **see the data and choose Oui/Non** before linking it.
+2. In Profit Analyzer the **SOURCING (cost price)** shows "—" for that product even though it has delivered orders and a cost price (410 DH) is set in stock. Cause: the historical `order_items.product_id` is NULL (orders existed before the product), so COGS (which joins cost via `order_items.product_id → products.cost_price`) is null.
+
+Relevant code: `client/src/pages/inventory.tsx` (create flow ~lines 460–505 calls `GET /api/products/name-check`); `GET /api/products/name-check` (`server/routes.ts` ~6012); `GET /api/products/profitability` COGS at ~6236.
+
+## Part 1 — Choice dialog when adding a product with historical orders
+In `inventory.tsx`, change the add flow:
+1. When the user submits the product form, FIRST call `GET /api/products/name-check?name=...`.
+2. If `found` and `total > 0`, open a confirmation dialog (don't just toast) showing the preview:
+   - Title: `Données historiques trouvées pour « {name} »`
+   - Body: `{total} commande(s) — {delivered} livrées ({deliveryRate}%) — {confirmed} confirmées. Voulez-vous rattacher ces commandes à ce produit (coût, stock et profit seront calculés) ?`
+   - Buttons: `Oui, rattacher les données` / `Non, créer sans rattacher`.
+3. Create the product. If the user chose **Oui**, then call the new endpoint below to link the historical orders. If **Non**, create without linking.
+4. If `name-check` returns `found: false`, create directly with no dialog.
+
+## Part 2 — New endpoint to link historical orders to the product
+Add `POST /api/products/:id/link-historical` (`requireAuth`):
+- Body: `{ name }` (the product name to match).
+- Backfill: set `order_items.product_id = :id` for all order_items where `LOWER(raw_product_name) LIKE '%name%'` AND `product_id IS NULL`, scoped to this store (join `orders.store_id = storeId`).
+- Return `{ linked: <count> }`.
+After linking, COGS, stock and profit all compute through the normal `product_id` path.
+
+Provide the same action for **already-created** products (e.g. مونينكس): add a small "Rattacher les commandes historiques" button on the product row (or in its edit modal) that calls this endpoint, so the user can fix products added before this change.
+
+## Part 3 — Cost fallback by name in Profit Analyzer (immediate fix, even without linking)
+In `GET /api/products/profitability`, make SOURCING compute for name-matched orders whose `order_items.product_id` is NULL:
+1. Before the items loop, build a cost map from store products:
+   ```ts
+   const norm = (s:string)=>s.toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g,'').replace(/\s+/g,' ').trim();
+   const costByName = new Map<string, number>(); // name → costPrice (centimes)
+   for (const p of storeProductsList) costByName.set(norm(p.name), Number(p.costPrice||0));
+   ```
+   (Fetch the store products list near the top of the handler if not already available there.)
+2. Change the COGS line so it falls back to the name-based cost when the joined product cost is missing:
+   ```ts
+   const unitCostCents = (item.productCostPrice ?? costByName.get(norm(item.rawProductName || item.productName || '')) ?? (order as any).productCost ?? 0);
+   s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
+   ```
+This makes the cost (410) apply to مونينكس's delivered orders right away, so SOURCING shows `-820,00 DH` (410 × 2 delivered units) instead of "—", and BÉNÉFICE drops to the correct value.
+
+## Testing checklist
+1. Adding a product whose name matches historical orders opens a Oui/Non dialog showing the counts BEFORE linking.
+2. Choosing "Oui" links the historical orders (`order_items.product_id` set); choosing "Non" leaves them unlinked.
+3. مونينكس الفرنسية now shows SOURCING ≈ −820,00 DH (cost 410 × delivered units), not "—", and its BÉNÉFICE/MARGE update accordingly.
+4. The "Rattacher les commandes historiques" action works on already-created products.
+5. Products with no historical match still create directly with no dialog.

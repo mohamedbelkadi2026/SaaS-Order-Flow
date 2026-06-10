@@ -6280,6 +6280,38 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // Backfill order_items.product_id for orders whose rawProductName matches the given product
+  app.post("/api/products/:id/link-historical", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const productId = Number(req.params.id);
+      const { name } = req.body as { name?: string };
+      if (!name || isNaN(productId)) return res.status(400).json({ message: "Paramètres invalides" });
+
+      // Verify product belongs to this store
+      const [product] = await db.select({ id: products.id }).from(products)
+        .where(and(eq(products.id, productId), eq(products.storeId, storeId)));
+      if (!product) return res.status(404).json({ message: "Produit introuvable" });
+
+      const nameLower = name.trim().toLowerCase();
+
+      const result = await db.execute(sql`
+        UPDATE order_items
+        SET product_id = ${productId}
+        WHERE product_id IS NULL
+          AND LOWER(raw_product_name) LIKE ${'%' + nameLower + '%'}
+          AND order_id IN (
+            SELECT id FROM orders WHERE store_id = ${storeId}
+          )
+      `);
+
+      const linked = (result as any).rowCount ?? 0;
+      res.json({ linked });
+    } catch (err) {
+      throw err;
+    }
+  });
+
   app.get("/api/products/inventory", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     const stats = await storage.getInventoryStats(storeId);
@@ -6425,6 +6457,13 @@ function ensureHeaders(sheet) {
       const REFUSED_SET   = new Set(["refused","refusé"]);
       const RETURN_SET    = new Set(["retourné","retour en cours","retourné à l'expéditeur","tentative échouée","article retourné"]);
 
+      // Build name → costPrice (centimes) map for COGS fallback on unlinked order_items
+      const storeProductsCost = await db.select({ name: products.name, costPrice: products.costPrice })
+        .from(products).where(eq(products.storeId, storeId));
+      const normCostKey = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g, '').replace(/\s+/g, ' ').trim();
+      const costByNameMap = new Map<string, number>();
+      for (const p of storeProductsCost) costByNameMap.set(normCostKey(p.name), Number(p.costPrice || 0));
+
       for (const item of itemRows) {
         const order = orderMap.get(item.orderId);
         if (!order) continue;
@@ -6468,7 +6507,11 @@ function ensureHeaders(sheet) {
         if (isDelivered) {
           s.deliveredUnits += Number(item.quantity || 1);
           // COGS: per item × quantity (varies per item row)
-          s.productCost += (Number(item.productCostPrice ?? (order as any).productCost ?? 0) / 100) * Number(item.quantity || 1);
+          const unitCostCents = item.productCostPrice
+            ?? costByNameMap.get(normCostKey(item.rawProductName || ''))
+            ?? (order as any).productCost
+            ?? 0;
+          s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
         }
 
         if (isDelivered) {

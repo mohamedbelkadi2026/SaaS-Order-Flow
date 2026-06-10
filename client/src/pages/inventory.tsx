@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -297,6 +297,11 @@ export default function Inventory() {
   // Nuclear delete modal
   const [nuclearOpen, setNuclearOpen] = useState(false);
 
+  // Historical linking dialog (shown when adding a product that has existing orders)
+  const [historicalCheck, setHistoricalCheck] = useState<{ total: number; confirmed: number; delivered: number; confirmRate: number; deliveryRate: number } | null>(null);
+  const [pendingPayload, setPendingPayload] = useState<any>(null);
+  const [rattachingId, setRattachingId] = useState<number | null>(null);
+
   // Safe-delete confirmation dialog (single product)
   const [deleteDialog, setDeleteDialog] = useState<{ product: any; usage: any } | null>(null);
   const [deleteDialogLoading, setDeleteDialogLoading] = useState(false);
@@ -460,58 +465,88 @@ export default function Inventory() {
       toast({ title: "Erreur", description: "Ajoutez au moins une variante", variant: "destructive" });
       return;
     }
+    const payload: any = {
+      name: form.name,
+      sku: form.sku,
+      stock: form.stock ? parseInt(form.stock) : 0,
+      costPrice: form.costPrice ? Math.round(parseFloat(form.costPrice) * 100) : 0,
+      sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : 0,
+      description: form.description || null,
+      reference: form.reference || null,
+      imageUrl: form.imageUrl || null,
+      coutAchat: parseFloat(form.coutAchat) || 0,
+      prixVente: parseFloat(form.prixVente) || 0,
+      coutEmballage: parseFloat(form.coutEmballage) || 0,
+      coutLivraison: parseFloat(form.coutLivraison) || 0,
+      coutConfirmation: parseFloat(form.coutConfirmation) || 0,
+    };
+    if (hasVariants && variants.length > 0) {
+      payload.hasVariants = 1;
+      payload.variants = variants.map(v => ({
+        name: v.name,
+        sku: v.sku,
+        costPrice: v.costPrice ? Math.round(parseFloat(v.costPrice) * 100) : 0,
+        sellingPrice: v.sellingPrice ? Math.round(parseFloat(v.sellingPrice) * 100) : 0,
+        stock: v.stock ? parseInt(v.stock) : 0,
+      }));
+    }
+    // Check BEFORE creating — if historical orders exist, ask the user
     try {
-      const payload: any = {
-        name: form.name,
-        sku: form.sku,
-        stock: form.stock ? parseInt(form.stock) : 0,
-        costPrice: form.costPrice ? Math.round(parseFloat(form.costPrice) * 100) : 0,
-        sellingPrice: form.sellingPrice ? Math.round(parseFloat(form.sellingPrice) * 100) : 0,
-        description: form.description || null,
-        reference: form.reference || null,
-        imageUrl: form.imageUrl || null,
-        coutAchat: parseFloat(form.coutAchat) || 0,
-        prixVente: parseFloat(form.prixVente) || 0,
-        coutEmballage: parseFloat(form.coutEmballage) || 0,
-        coutLivraison: parseFloat(form.coutLivraison) || 0,
-        coutConfirmation: parseFloat(form.coutConfirmation) || 0,
-      };
-      if (hasVariants && variants.length > 0) {
-        payload.hasVariants = 1;
-        payload.variants = variants.map(v => ({
-          name: v.name,
-          sku: v.sku,
-          costPrice: v.costPrice ? Math.round(parseFloat(v.costPrice) * 100) : 0,
-          sellingPrice: v.sellingPrice ? Math.round(parseFloat(v.sellingPrice) * 100) : 0,
-          stock: v.stock ? parseInt(v.stock) : 0,
-        }));
+      const check = await fetch(
+        `/api/products/name-check?name=${encodeURIComponent(form.name)}`,
+        { credentials: 'include' }
+      ).then(r => r.json());
+      if (check.found && check.total > 0) {
+        setPendingPayload(payload);
+        setHistoricalCheck(check);
+        return;
       }
-      await createProduct.mutateAsync(payload);
+    } catch {}
+    // No historical match → create directly without dialog
+    await doCreateProduct(payload, false);
+  };
 
-      // Check if orders already exist for this product name
-      try {
-        const check = await fetch(
-          `/api/products/name-check?name=${encodeURIComponent(form.name)}`,
-          { credentials: 'include' }
-        ).then(r => r.json());
-
-        if (check.found && check.total > 0) {
-          toast({
-            title: `⚠️ ${form.name} — Données historiques trouvées`,
-            description: `${check.total} commande(s) existantes — ${check.confirmed} confirmées (${check.confirmRate}%) — ${check.delivered} livrées (${check.deliveryRate}%). Ces stats s'affichent maintenant dans Profit Analyzer.`,
-            duration: 8000,
+  const doCreateProduct = async (payload: any, shouldLink: boolean) => {
+    try {
+      const created = await createProduct.mutateAsync(payload);
+      if (shouldLink && created?.id) {
+        try {
+          await fetch(`/api/products/${created.id}/link-historical`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ name: payload.name }),
           });
-        } else {
-          toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
-        }
-      } catch {
-        toast({ title: "Produit ajouté", description: `${form.name} a été ajouté au stock` });
+        } catch {}
       }
-
+      toast({ title: "Produit ajouté", description: `${payload.name} a été ajouté au stock` });
       setAddOpen(false);
       resetForm();
+      setHistoricalCheck(null);
+      setPendingPayload(null);
     } catch (err: any) {
       toast({ title: "Erreur", description: err.message?.replace(/^\d+:\s*/, '') || "Erreur", variant: "destructive" });
+    }
+  };
+
+  const handleLinkHistorical = async (product: any) => {
+    setRattachingId(product.id);
+    try {
+      const r = await fetch(`/api/products/${product.id}/link-historical`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ name: product.name }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || 'Erreur');
+      toast({ title: 'Rattachement effectué', description: `${data.linked} ligne(s) rattachée(s) à « ${product.name} »` });
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+    } catch (err: any) {
+      toast({ title: 'Erreur', description: err.message, variant: 'destructive' });
+    } finally {
+      setRattachingId(null);
     }
   };
 
@@ -986,6 +1021,16 @@ export default function Inventory() {
                         onClick={() => setInsightsProductId(product.id)}
                       >
                         <BarChart3 className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost" size="icon"
+                        className="w-8 h-8 text-violet-500 hover:text-violet-700"
+                        title="Rattacher les commandes historiques"
+                        data-testid={`button-link-historical-${product.id}`}
+                        disabled={rattachingId === product.id}
+                        onClick={() => handleLinkHistorical(product)}
+                      >
+                        <Link2 className="w-4 h-4" />
                       </Button>
                       <Button variant="ghost" size="icon" className="w-8 h-8" data-testid={`button-edit-product-${product.id}`} onClick={() => openEdit(product)}>
                         <Pencil className="w-4 h-4" />
@@ -1719,6 +1764,45 @@ export default function Inventory() {
               data-testid="button-confirm-restock"
             >
               {restockSaving ? "Sauvegarde..." : "Ajouter au stock"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Historical link choice dialog ── */}
+      <Dialog open={!!historicalCheck} onOpenChange={(v) => { if (!v) { setHistoricalCheck(null); setPendingPayload(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Données historiques trouvées</DialogTitle>
+            <DialogDescription>
+              Des commandes existent déjà pour « <strong>{pendingPayload?.name}</strong> »
+            </DialogDescription>
+          </DialogHeader>
+          {historicalCheck && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-4 space-y-1 text-sm">
+              <div className="flex justify-between"><span className="text-muted-foreground">Total commandes</span><span className="font-semibold">{historicalCheck.total}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Confirmées</span><span className="font-semibold text-blue-600">{historicalCheck.confirmed} ({historicalCheck.confirmRate}%)</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Livrées</span><span className="font-semibold text-emerald-600">{historicalCheck.delivered} ({historicalCheck.deliveryRate}%)</span></div>
+            </div>
+          )}
+          <p className="text-sm text-muted-foreground">
+            Voulez-vous rattacher ces commandes à ce produit ? Le coût, le stock et le profit seront calculés automatiquement.
+          </p>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              variant="outline"
+              data-testid="button-link-historical-no"
+              onClick={() => pendingPayload && doCreateProduct(pendingPayload, false)}
+            >
+              Non, créer sans rattacher
+            </Button>
+            <Button
+              style={{ background: "#C5A059", color: "#fff" }}
+              data-testid="button-link-historical-yes"
+              onClick={() => pendingPayload && doCreateProduct(pendingPayload, true)}
+            >
+              <Link2 className="w-4 h-4 mr-2" />
+              Oui, rattacher les données
             </Button>
           </DialogFooter>
         </DialogContent>
