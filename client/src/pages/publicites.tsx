@@ -28,12 +28,31 @@ function normCampaign(s: string): string {
     .replace(/\s+/g, " ");
 }
 
-function detectCol(headers: string[], keywords: string[]): string | null {
-  for (const h of headers) {
-    const hl = h.toLowerCase();
-    if (keywords.some(k => hl.includes(k))) return h;
-  }
-  return null;
+// Platform-aware column finders with hard exclusions for metric columns
+function findCampaignCol(headers: string[]): string | null {
+  const n = (h: string) => h.toLowerCase().trim();
+  const isMetric = (h: string) => { const hn = n(h); return hn.includes(" per ") || hn.includes("cpm") || hn.includes("cpc") || hn.startsWith("cost"); };
+  return headers.find(x => !isMetric(x) && (n(x).includes("campaign name") || n(x).includes("nom de la campagne") || n(x) === "campagne" || n(x) === "campaign")) ?? null;
+}
+
+function findSpendCol(headers: string[]): string | null {
+  const n = (h: string) => h.toLowerCase().trim();
+  // 1) Facebook exact: "Amount spent (USD)" / "Amount spent (MAD)" etc.
+  let h = headers.find(x => n(x).includes("amount spent")); if (h) return h;
+  // 2) French Facebook
+  h = headers.find(x => n(x).includes("montant dépensé") || n(x).includes("montant depense")); if (h) return h;
+  // 3) Google / TikTok totals
+  h = headers.find(x => /total\s*(cost|spent|spend)/.test(n(x))); if (h) return h;
+  // 4) Bare spend keyword (exact)
+  h = headers.find(x => ["spend", "dépenses", "depenses"].includes(n(x))); if (h) return h;
+  // 5) "cost" alone — but NEVER "cost per …", cpm, cpc
+  h = headers.find(x => { const hn = n(x); return hn.includes("cost") && !hn.includes("per") && !hn.includes("cpm") && !hn.includes("cpc"); }); return h ?? null;
+}
+
+function findDateCol(headers: string[]): string | null {
+  const n = (h: string) => h.toLowerCase().trim();
+  const isMetric = (h: string) => { const hn = n(h); return hn.includes("per") || hn.includes("cpm") || hn.includes("cpc") || hn.includes("cost") || hn.includes("spend"); };
+  return headers.find(x => !isMetric(x) && (n(x).includes("reporting starts") || n(x) === "day" || n(x) === "date" || n(x) === "jour")) ?? null;
 }
 
 function fuzzyProduct(campaignNorm: string, products: any[]): number | null {
@@ -595,6 +614,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
   const { toast } = useToast();
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
+  const fileRowsRef = useRef<any[]>([]);
   const today = new Date().toISOString().split("T")[0];
 
   const [source, setSource] = useState(AD_SOURCES[0]);
@@ -662,11 +682,12 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
     if (rows.length === 0) { toast({ title: "Fichier vide ou illisible", variant: "destructive" }); return; }
 
     const headers = Object.keys(rows[0]);
+    fileRowsRef.current = rows;
     setFileHeaders(headers);
 
-    const campaignCol = detectCol(headers, ["campaign name", "nom de la campagne", "campagne", "campaign"]);
-    const spendCol = detectCol(headers, ["amount spent", "montant dépensé", "total cost", "spend", "dépenses", "cost", "coût"]);
-    const dateCol = detectCol(headers, ["reporting starts", "day", "date", "jour"]);
+    const campaignCol = findCampaignCol(headers);
+    const spendCol = findSpendCol(headers);
+    const dateCol = findDateCol(headers);
 
     setColOverrides({ campaign: campaignCol, spend: spendCol, date: dateCol });
     if (campaignCol && spendCol) {
@@ -674,17 +695,12 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
     }
   }
 
-  function reparse() {
-    if (!fileRef.current?.files?.[0]) return;
-    const file = fileRef.current.files[0];
-    file.arrayBuffer().then(ab => {
-      const wb = XLSX.read(ab, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" }) as Record<string, any>[];
-      if (colOverrides.campaign && colOverrides.spend) {
-        aggregateRows(rows, colOverrides.campaign, colOverrides.spend, colOverrides.date);
-      }
-    });
+  function reparse(overrides?: Partial<typeof colOverrides>) {
+    const cols = { ...colOverrides, ...overrides };
+    const rows = fileRowsRef.current;
+    if (rows.length > 0 && cols.campaign && cols.spend) {
+      aggregateRows(rows, cols.campaign, cols.spend, cols.date);
+    }
   }
 
   async function handleImport() {
@@ -729,6 +745,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
     setColOverrides({ campaign: null, spend: null, date: null });
     setMapping({});
     setFileName("");
+    fileRowsRef.current = [];
     if (fileRef.current) fileRef.current.value = "";
     onClose();
   }
@@ -834,28 +851,47 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
             </div>
           </div>
 
-          {/* ── Column picker (shown when auto-detect fails) ── */}
-          {fileHeaders.length > 0 && !columnsOk && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-4 space-y-3">
-              <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Colonnes non détectées automatiquement — sélectionnez-les :</p>
+          {/* ── Spend column override (always shown after file is loaded) ── */}
+          {fileHeaders.length > 0 && (
+            <div className={cn(
+              "rounded-xl border p-4 space-y-3",
+              columnsOk
+                ? "border-border/50 bg-muted/10"
+                : "border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800"
+            )}>
+              {!columnsOk && (
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Colonnes non détectées automatiquement — sélectionnez-les :</p>
+              )}
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Campagne</Label>
-                  <Select value={colOverrides.campaign || ""} onValueChange={v => setColOverrides(c => ({ ...c, campaign: v }))}>
+                  <Label className="text-xs font-semibold">Colonne Campagne</Label>
+                  <Select value={colOverrides.campaign || ""} onValueChange={v => {
+                    const next = { ...colOverrides, campaign: v };
+                    setColOverrides(next);
+                    reparse(next);
+                  }}>
                     <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Choisir" /></SelectTrigger>
                     <SelectContent>{fileHeaders.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Dépense (USD)</Label>
-                  <Select value={colOverrides.spend || ""} onValueChange={v => setColOverrides(c => ({ ...c, spend: v }))}>
+                  <Label className="text-xs font-semibold">Colonne du montant (USD)</Label>
+                  <Select value={colOverrides.spend || ""} onValueChange={v => {
+                    const next = { ...colOverrides, spend: v };
+                    setColOverrides(next);
+                    reparse(next);
+                  }}>
                     <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Choisir" /></SelectTrigger>
                     <SelectContent>{fileHeaders.map(h => <SelectItem key={h} value={h}>{h}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-xs font-semibold">Date (optionnel)</Label>
-                  <Select value={colOverrides.date || "__none__"} onValueChange={v => setColOverrides(c => ({ ...c, date: v === "__none__" ? null : v }))}>
+                  <Label className="text-xs font-semibold">Colonne Date (optionnel)</Label>
+                  <Select value={colOverrides.date || "__none__"} onValueChange={v => {
+                    const next = { ...colOverrides, date: v === "__none__" ? null : v };
+                    setColOverrides(next);
+                    reparse(next);
+                  }}>
                     <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Aucune" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none__">— Aucune —</SelectItem>
@@ -864,8 +900,8 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                   </Select>
                 </div>
               </div>
-              {colOverrides.campaign && colOverrides.spend && (
-                <Button size="sm" onClick={reparse} className="gap-1.5" style={{ background: GOLD, color: "#fff" }}>
+              {!columnsOk && colOverrides.campaign && colOverrides.spend && (
+                <Button size="sm" onClick={() => reparse()} className="gap-1.5" style={{ background: GOLD, color: "#fff" }}>
                   <ArrowRight className="w-3.5 h-3.5" /> Analyser le fichier
                 </Button>
               )}
@@ -897,7 +933,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                         <tr key={i} className={cn("border-t border-border/40", i % 2 === 0 ? "bg-background" : "bg-muted/10")}>
                           <td className="px-3 py-2 max-w-[200px]">
                             <p className="font-medium truncate" title={r.campaign}>{r.campaign}</p>
-                            {r.date && <p className="text-xs text-muted-foreground">{r.date}</p>}
+                            <p className="text-xs text-muted-foreground">${r.amountUsd.toFixed(2)}{r.date ? ` · ${r.date}` : ""}</p>
                             {isMapped && (
                               <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-600 font-semibold mt-0.5">
                                 <CheckCircle2 className="w-3 h-3" /> Mémorisée

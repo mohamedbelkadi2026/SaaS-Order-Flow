@@ -1,0 +1,53 @@
+# Replit Prompt — FIX: ad-spend importer reads the wrong column
+
+There is a bug in the ad-spend importer (Publicités → Par Produit → Importer les dépenses). It is reading the **"Cost per results"** column instead of **"Amount spent (USD)"**, so the converted DH amount is completely wrong.
+
+Proof: campaign `sdor2` has `Amount spent (USD) = 29.32` but `Cost per results = 4.18857143`. The app showed `41.89 DH` (= 4.18857143 × 10), instead of the correct `293.20 DH` (= 29.32 × 10). Same for `sdor 3`: it showed 68.07 DH (cost-per-result) instead of 204.20 DH (amount spent 20.42).
+
+Fix only the import column detection + preview. Do not change anything else.
+
+## 1. Fix the spend-column detection
+Replace the spend-column auto-detection with this **priority order, with hard exclusions**. The Facebook export header is literally `Amount spent (USD)`. Never select a header that contains `per`, `cpm`, `cpc`, `per result`, or `cost per`.
+
+```ts
+function findSpendColumn(headers: string[]): string | null {
+  const norm = (h: string) => h.toLowerCase().trim();
+  // 1) Facebook: "Amount spent (USD)" / "Amount spent (MAD)" etc.
+  let h = headers.find(x => norm(x).includes("amount spent"));
+  if (h) return h;
+  // 2) French Facebook
+  h = headers.find(x => norm(x).includes("montant dépensé") || norm(x).includes("montant depense"));
+  if (h) return h;
+  // 3) Google / TikTok totals
+  h = headers.find(x => /total\s*(cost|spent|spend)/.test(norm(x)));
+  if (h) return h;
+  // 4) Bare spend
+  h = headers.find(x => ["spend", "dépenses", "depenses"].includes(norm(x)));
+  if (h) return h;
+  // 5) Bare cost — but NEVER "cost per ...", cpm, cpc, "per result(s)"
+  h = headers.find(x => {
+    const n = norm(x);
+    return n.includes("cost") && !n.includes("per") && !n.includes("cpm") && !n.includes("cpc");
+  });
+  return h ?? null;
+}
+```
+
+Apply the same `per` / `cpm` / `cpc` exclusion to the campaign-name and date detection so they never grab a metric column either.
+
+## 2. Always let the user verify/override the spend column
+In Step A/B of the import dialog, after parsing, **always** display the detected spend column header and a dropdown to override it with any column from the file (default = detected). Label it: `Colonne du montant (USD)`. This way a wrong auto-detection is visible and fixable before importing. Re-compute all DH amounts when the user changes this dropdown.
+
+## 3. Fix the per-campaign subtitle
+In the mapping list, the small line under each campaign name currently shows a wrong number (e.g. `46143.0414`, identical for every row). It must show the **original USD spend for that campaign**, formatted as `$29.32`. So each row reads:
+`sdor2` / `$29.32`  ····  `293.20 DH`  ····  [product select]
+Where `293.20 DH = 29.32 × taux`.
+
+## 4. Re-verify the math
+`montant_DH = montant_USD_from_AmountSpentColumn × taux`, then stored as centimes (`× 100`) by the existing backend. With taux = 10: `sdor2` → 293.20 DH, `sdor 3` → 204.20 DH.
+
+## Testing checklist
+1. Import the same Facebook CSV (`ABDLMAJID-Campaigns-...csv`). `sdor2` now shows `$29.32 → 293.20 DH`, not 41.89 DH. `sdor 3` shows `$20.42 → 204.20 DH`.
+2. The detected spend column shows `Amount spent (USD)`; the override dropdown lists all columns and recomputes totals when changed.
+3. No row's amount equals a "Cost per results" / CPM / CPC value anymore.
+4. Campaigns with `Amount spent = 0` import as 0 DH (or are skipped) — not pulled from another column.
