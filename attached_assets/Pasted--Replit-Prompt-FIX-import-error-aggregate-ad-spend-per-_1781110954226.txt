@@ -1,0 +1,40 @@
+# Replit Prompt — FIX import error + aggregate ad spend per product
+
+Two things to fix in the ad-spend importer (Publicités → Importer les dépenses).
+
+## A. Fix "Erreur import" (most likely cause: non-integer centimes)
+USD × taux produces a DH amount with fractions (e.g. `$279.35 × 9.30 = 2597.955 DH`). When converting to centimes the code must **round to an integer**, otherwise the DB integer column rejects `259795.5` and the whole request 500s.
+
+In the `POST /api/publicites/import` handler (and anywhere the imported amount is stored), store centimes as:
+```ts
+const cents = Math.round(amountDh * 100); // NEVER amountDh * 100 without Math.round
+```
+Also:
+- Wrap the handler in try/catch, `console.error(err)` the real error, and return its message to the client (replace the generic "Une erreur s'est produite" with the server message).
+- Validate each row before insert: `amountDh` finite ≥ 0, `date` is `YYYY-MM-DD`, `productId` number|null, `magasinId` owned by user. If a row is invalid, return a clear message identifying it instead of crashing.
+- Confirm `date` is a clean `YYYY-MM-DD` string (use the chosen "Date" field; never an Excel serial like `46143.0414`).
+
+## B. Aggregate spend per product (sum campaigns that map to the same product)
+The ad-spend table has no campaign column, so multiple campaigns mapped to the same product must be **summed into one total per product**, not inserted as separate confusing rows.
+
+Example the user gave:
+- `mini 9tara` → قطرات العسل والزيت : 2000 DH
+- `mini 9tara news` → قطرات العسل والزيت : 1000 DH
+- Result stored for قطرات العسل والزيت : **3000 DH** (one entry), not two.
+
+Implement at import time (client builds payload, OR server groups — do it server-side to be safe):
+1. Take only rows with a product selected (skip "Aucun produit").
+2. Group by `productId` (within the same `source` + `date`). Sum their DH amounts.
+3. Insert **one** ad-spend entry per product with the summed amount: `{ source, date, amount: summedDh, productId, magasinId }`, storing `Math.round(summedDh * 100)` centimes.
+
+So if 5 campaigns point to the same product, you insert 1 row = the sum.
+
+## C. Show a "Résumé par produit" before importing (so the total is visible)
+Under the campaign→product mapping list, add a small read-only summary table: each **product** that has ≥1 campaign mapped, with its **summed DH total**. This is what will actually be imported. Example row: `قطرات العسل والزيت — 3000.00 DH`. Update the "Importer (N)" button so N = number of **products** that will receive an entry (not number of campaigns).
+
+## Testing checklist
+1. Map `mini 9tara` (2000) and `mini 9tara news` (1000) both to قطرات العسل والزيت → the "Résumé par produit" shows قطرات العسل والزيت = 3000.00 DH, and after import the Par Produit table shows a single 3000 DH entry for that product (or the product total = 3000).
+2. Importing succeeds with no "Erreur import"; a campaign like `mini 9tara` ($279.35 × 9.30 = 2597.96 DH) stores correctly (centimes rounded, no DB error).
+3. If an error still occurs, the toast shows the real server message and the cause is printed in the Replit logs.
+4. Each product's stored spend equals the SUM of all campaigns mapped to it; products with no mapped campaign get nothing.
+5. Dates are real dates, never `46143.0414`.

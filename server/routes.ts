@@ -2128,30 +2128,16 @@ export async function registerRoutes(
         if (!row.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(row.date))) {
           return res.status(400).json({ message: `${label} : date invalide "${row.date}" — format attendu YYYY-MM-DD` });
         }
-        if (row.amount == null || !isFinite(Number(row.amount)) || Number(row.amount) <= 0) {
+        if (row.amount == null || !isFinite(Number(row.amount)) || Number(row.amount) < 0) {
           return res.status(400).json({ message: `${label} : montant invalide "${row.amount}"` });
         }
       }
 
-      let inserted = 0;
       let mapped = 0;
 
+      // 1. Persist campaign→product mappings for all campaigns (before grouping)
       for (const row of rows) {
-        const { date, amount, productId, campaignName } = row;
-        const amountCents = Math.round(Number(amount) * 100);
-        await storage.createAdSpendEntry({
-          storeId,
-          magasinId: Number(magasinId),
-          userId: user.id,
-          source,
-          date: String(date),
-          amount: amountCents,
-          productId: productId ? Number(productId) : null,
-          productSellingPrice: null,
-        });
-        inserted++;
-
-        // Persist campaign→product mapping
+        const { productId, campaignName } = row;
         if (productId && campaignName) {
           const norm = normalizeCampaign(String(campaignName));
           if (norm) {
@@ -2159,6 +2145,33 @@ export async function registerRoutes(
             mapped++;
           }
         }
+      }
+
+      // 2. Group rows by productId+date — sum their DH amounts into one entry per product per date
+      type Group = { productId: number; date: string; totalDh: number };
+      const groups: Record<string, Group> = {};
+      for (const row of rows) {
+        if (!row.productId) continue; // skip unmapped rows
+        const key = `${row.productId}||${row.date}`;
+        if (!groups[key]) groups[key] = { productId: Number(row.productId), date: String(row.date), totalDh: 0 };
+        groups[key].totalDh += Number(row.amount);
+      }
+
+      // 3. Insert one entry per product per date with summed amount (properly rounded centimes)
+      let inserted = 0;
+      for (const g of Object.values(groups)) {
+        const amountCents = Math.round(g.totalDh * 100);
+        await storage.createAdSpendEntry({
+          storeId,
+          magasinId: Number(magasinId),
+          userId: user.id,
+          source,
+          date: g.date,
+          amount: amountCents,
+          productId: g.productId,
+          productSellingPrice: null,
+        });
+        inserted++;
       }
 
       res.json({ inserted, mapped });

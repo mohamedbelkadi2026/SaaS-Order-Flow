@@ -771,6 +771,22 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
   const needsColPicker = hasParsed === false && fileHeaders.length > 0;
   const columnsOk = !!(colOverrides.campaign && colOverrides.spend);
 
+  // Résumé par produit — group mapped rows by productId and sum DH amounts
+  const productSummary: { productId: number; name: string; totalDh: number }[] = [];
+  {
+    const acc: Record<number, { name: string; totalDh: number }> = {};
+    parsedRows.forEach((r, i) => {
+      const pid = mapping[String(i)];
+      if (pid == null) return;
+      const dh = r.amountUsd * taux;
+      const pname = products.find((p: any) => p.id === pid)?.name ?? `Produit #${pid}`;
+      if (!acc[pid]) acc[pid] = { name: pname, totalDh: 0 };
+      acc[pid].totalDh += dh;
+    });
+    for (const [pid, v] of Object.entries(acc)) productSummary.push({ productId: Number(pid), ...v });
+    productSummary.sort((a, b) => b.totalDh - a.totalDh);
+  }
+
   return (
     <Dialog open={open} onOpenChange={v => !v && handleClose()}>
       <DialogContent className="sm:max-w-2xl max-h-[88vh] overflow-y-auto p-0 border-none shadow-2xl rounded-2xl bg-white dark:bg-card" data-testid="modal-import">
@@ -993,7 +1009,35 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
                   </tfoot>
                 </table>
               </div>
-            </div>
+
+            {/* Résumé par produit */}
+            {productSummary.length > 0 && (
+              <div className="rounded-xl border border-border/50 overflow-hidden">
+                <div className="px-3 py-2 bg-muted/30 flex items-center justify-between">
+                  <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Résumé par produit (ce qui sera importé)</p>
+                  <span className="text-xs font-bold" style={{ color: GOLD }}>{productSummary.length} entrée(s)</span>
+                </div>
+                <table className="w-full text-sm">
+                  <tbody>
+                    {productSummary.map(({ productId, name, totalDh }) => (
+                      <tr key={productId} className="border-t border-border/40 even:bg-muted/10">
+                        <td className="px-3 py-2 font-medium">{name}</td>
+                        <td className="px-3 py-2 text-right font-bold tabular-nums" style={{ color: GOLD }}>{totalDh.toFixed(2)} DH</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="bg-muted/20 border-t-2 border-border/60">
+                    <tr>
+                      <td className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Total</td>
+                      <td className="px-3 py-2 text-right font-bold text-base tabular-nums" style={{ color: GOLD }}>
+                        {productSummary.reduce((s, r) => s + r.totalDh, 0).toFixed(2)} DH
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </div>
           )}
         </div>
 
@@ -1007,7 +1051,7 @@ function ImportAdSpendModal({ open, onClose, products, magasins }: ImportAdSpend
             style={{ background: GOLD, color: "#fff" }}
             data-testid="import-confirm"
           >
-            {importing ? "Importation..." : `Importer (${Object.values(mapping).filter(v => v != null).length})`}
+            {importing ? "Importation..." : `Importer (${productSummary.length} produit${productSummary.length !== 1 ? "s" : ""})`}
           </Button>
         </div>
       </DialogContent>
