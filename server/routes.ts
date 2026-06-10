@@ -6429,9 +6429,13 @@ function ensureHeaders(sheet) {
         const order = orderMap.get(item.orderId);
         if (!order) continue;
 
-        const name = (item.rawProductName || item.productName || 'Produit inconnu').trim();
-        const pid  = item.productId || 0;
-        const key  = `${pid}_${name}`;
+        const pid = item.productId || 0;
+        // Use canonical product name when the item is linked; raw name only for unlinked items
+        const displayName = (pid > 0 ? (item.productName || item.rawProductName) : item.rawProductName) || 'Produit inconnu';
+        const name = displayName.trim();
+        // Group strictly by productId when known — name variations (typos, sizes…) never split a product
+        const normKey = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g, '').replace(/\s+/g, ' ').trim();
+        const key = pid > 0 ? `pid_${pid}` : `raw_${normKey(item.rawProductName || name)}`;
 
         if (!statsMap[key]) {
           statsMap[key] = {
@@ -6515,14 +6519,17 @@ function ensureHeaders(sheet) {
       const existingProductIds = new Set(productResult.map((p: any) => p.id));
       for (const sp of allStoreProducts) {
         if (!existingProductIds.has(sp.id)) {
+          const tagged = productAdSpendMap[sp.id] || 0;
           productResult.push({
             id: sp.id, name: sp.name,
             totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
             refusedOrders: 0, returnedOrders: 0,
-            revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0, adSpend: 0,
+            revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0,
             totalUnits: 0, deliveredUnits: 0,
-            netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
-            noData: true,
+            adSpend: tagged,
+            netProfit: -tagged,
+            margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
+            noData: tagged === 0,
           } as any);
         }
       }

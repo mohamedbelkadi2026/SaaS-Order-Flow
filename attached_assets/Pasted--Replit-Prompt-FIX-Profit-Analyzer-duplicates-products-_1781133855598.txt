@@ -1,0 +1,59 @@
+# Replit Prompt — FIX: Profit Analyzer duplicates products & double-counts ad spend
+
+In `GET /api/products/profitability` (`server/routes.ts`), the same product appears as several rows and its ad spend (PUB) is counted multiple times. Root cause: rows are grouped by `${productId}_${rawProductName}`, so one product splits whenever the order's free-text `rawProductName` varies (typos, "زجاجية", "43", "44"…). Because `productAdSpendMap` is keyed by `productId`, every split row with the same `productId` receives the FULL ad spend → duplicated rows + double/triple-counted PUB + phantom "0 cmd, big negative PUB" rows.
+
+Fix the grouping so one product = one row, and ad spend is applied once.
+
+## 1. Group by productId (fall back to rawProductName only when unlinked)
+Where the code currently does:
+```ts
+const name = (item.rawProductName || item.productName || 'Produit inconnu').trim();
+const pid  = item.productId || 0;
+const key  = `${pid}_${name}`;
+```
+Replace with:
+```ts
+const pid = item.productId || 0;
+// Display the CANONICAL product name when the item is linked to a product;
+// only use rawProductName for items with no productId.
+const displayName = (pid > 0 ? (item.productName || item.rawProductName) : item.rawProductName) || 'Produit inconnu';
+const name = displayName.trim();
+// Group strictly by productId when known so name variations don't split a product.
+const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g,'').replace(/\s+/g,' ').trim();
+const key = pid > 0 ? `pid_${pid}` : `raw_${norm(item.rawProductName || name)}`;
+```
+Keep `statsMap[key].id = pid` and `.name = name` (canonical). Now all orders of the same product land in one bucket regardless of rawProductName.
+
+## 2. Apply ad spend once per product (no duplication)
+Since each `productId` now maps to exactly one row, `productResult`’s `productAdSpendMap[s.id]` is applied once. Verify nothing else re-adds ad spend per row. Double-counting disappears automatically once keys are unique per product.
+
+## 3. Merge "no-order" products without creating phantom duplicates
+In the "merge stock products that have no orders yet" branch, a product that has **ad spend but zero orders** must appear as ONE row with its real tagged ad spend (not 0, and not duplicated next to an orders row). Update that branch:
+```ts
+const existingProductIds = new Set(productResult.map((p:any) => p.id));
+for (const sp of allStoreProducts) {
+  if (!existingProductIds.has(sp.id)) {
+    const tagged = productAdSpendMap[sp.id] || 0;     // real ad spend even with 0 orders
+    productResult.push({
+      id: sp.id, name: sp.name,
+      totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0, refusedOrders: 0, returnedOrders: 0,
+      revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0,
+      totalUnits: 0, deliveredUnits: 0,
+      adSpend: tagged,
+      netProfit: -tagged, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
+      noData: tagged === 0,
+    } as any);
+  }
+}
+```
+This guarantees each product (with or without orders) shows up exactly once.
+
+## 4. Don't let one ad-spend pid land on two names
+If after the fix a product still appears twice, it means the same physical product exists under **two different `products.id`** in the catalog (e.g. an order linked to product A, ad spend tagged to product B that is a near-duplicate like "… 43" / "… 44"). That is a catalog duplication, not a code bug — surface it: in the table, if two rows share a normalized name, keep them separate but it's expected. (Optional: add a small note/merge tool later.) The code fix above resolves all same-`productId` splits.
+
+## Testing checklist
+1. "قطرات العسل والزيت زجاجية" now appears as ONE row (its orders merged), not 65-cmd and 7-cmd duplicates.
+2. The PUB value for a product appears on a single row; total ad spend subtracted equals the real imported total (no 2×/3× counting). PROFIT NET TOTAL rises accordingly and is closer to the Dashboard.
+3. No more "0 cmd" rows carrying another product's PUB.
+4. A product with ad spend but zero delivered orders shows once with its real PUB and a negative profit equal to that spend.
+5. Products genuinely distinct in the catalog (different `products.id`) may still be two rows — that's a catalog duplicate to clean up, not this bug.
