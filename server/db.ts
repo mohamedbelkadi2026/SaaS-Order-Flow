@@ -653,6 +653,20 @@ export async function initializeDatabase(): Promise<void> {
       console.log('[Migration] orders.last_action_at one-shot backfill already applied (skipped)');
     }
 
+    // ── ad_campaign_product_map — persistent campaign→product mapping for importer
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.ad_campaign_product_map (
+        id           SERIAL PRIMARY KEY,
+        store_id     INTEGER NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+        campaign_name TEXT NOT NULL,
+        product_id   INTEGER NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+        created_at   TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS ad_campaign_product_map_store_campaign_unique
+        ON public.ad_campaign_product_map(store_id, campaign_name);
+    `);
+    console.log('[Migration] ad_campaign_product_map table ensured ✅');
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);
