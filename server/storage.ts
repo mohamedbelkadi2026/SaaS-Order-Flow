@@ -14,6 +14,7 @@ import {
   type OrderFollowUpLog, type InsertOrderFollowUpLog,
   type StockLog,
   type Payment, type InsertPayment,
+  csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
 } from "@shared/schema";
 import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
@@ -126,6 +127,11 @@ export interface IStorage {
   getDuplicateProducts(storeId: number): Promise<any[]>;
   getArchivedProducts(storeId: number): Promise<any[]>;
   getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]>;
+  getCsvProfitReports(storeId: number): Promise<CsvProfitReport[]>;
+  getCsvProfitReport(id: number, storeId: number): Promise<CsvProfitReport | undefined>;
+  createCsvProfitReport(data: InsertCsvProfitReport): Promise<CsvProfitReport>;
+  updateCsvProfitReport(id: number, storeId: number, data: Partial<InsertCsvProfitReport>): Promise<CsvProfitReport | undefined>;
+  deleteCsvProfitReport(id: number, storeId: number): Promise<void>;
   createProductWithVariants(product: InsertProduct, variants: InsertProductVariant[]): Promise<ProductWithVariants>;
   getVariantsByProduct(productId: number): Promise<ProductVariant[]>;
   getInventoryStats(storeId: number): Promise<any>;
@@ -1652,6 +1658,36 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(products)
       .where(and(eq(products.storeId, storeId), sql`${products.archivedAt} IS NOT NULL`))
       .orderBy(desc(products.archivedAt));
+  }
+
+  async getCsvProfitReports(storeId: number): Promise<CsvProfitReport[]> {
+    return await db.select().from(csvProfitReports)
+      .where(eq(csvProfitReports.storeId, storeId))
+      .orderBy(desc(csvProfitReports.createdAt));
+  }
+
+  async getCsvProfitReport(id: number, storeId: number): Promise<CsvProfitReport | undefined> {
+    const [r] = await db.select().from(csvProfitReports)
+      .where(and(eq(csvProfitReports.id, id), eq(csvProfitReports.storeId, storeId)));
+    return r;
+  }
+
+  async createCsvProfitReport(data: InsertCsvProfitReport): Promise<CsvProfitReport> {
+    const [r] = await db.insert(csvProfitReports).values(data).returning();
+    return r;
+  }
+
+  async updateCsvProfitReport(id: number, storeId: number, data: Partial<InsertCsvProfitReport>): Promise<CsvProfitReport | undefined> {
+    const [r] = await db.update(csvProfitReports)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(csvProfitReports.id, id), eq(csvProfitReports.storeId, storeId)))
+      .returning();
+    return r;
+  }
+
+  async deleteCsvProfitReport(id: number, storeId: number): Promise<void> {
+    await db.delete(csvProfitReports)
+      .where(and(eq(csvProfitReports.id, id), eq(csvProfitReports.storeId, storeId)));
   }
 
   async getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]> {

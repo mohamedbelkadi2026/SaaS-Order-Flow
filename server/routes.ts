@@ -7030,7 +7030,83 @@ function ensureHeaders(sheet) {
       : null;
     const hasAutomation  = hasFeature(sub, req.user, 'automation');
     const hasMediaBuyers = hasFeature(sub, req.user, 'mediaBuyers');
-    res.json({ ...sub, ...limitCheck, daysUntilExpiry, isExpired: paywallCheck.isExpired, reason: paywallCheck.reason, hasAutomation, hasMediaBuyers });
+    const hasImportCsv   = hasFeature(sub, req.user, 'importCsv');
+    res.json({ ...sub, ...limitCheck, daysUntilExpiry, isExpired: paywallCheck.isExpired, reason: paywallCheck.reason, hasAutomation, hasMediaBuyers, hasImportCsv });
+  });
+
+  // ── CSV Profit Reports CRUD ─────────────────────────────────────────────
+  const requireImportCsv = async (req: any, res: any, next: any) => {
+    const storeId = req.user?.storeId;
+    if (!storeId) return res.status(401).json({ message: "Non authentifié" });
+    const sub = await storage.getSubscription(storeId);
+    if (!hasFeature(sub, req.user, 'importCsv')) {
+      return res.status(403).json({ message: "Fonctionnalité réservée aux plans Pro et supérieurs." });
+    }
+    next();
+  };
+
+  app.get("/api/profit-reports", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const reports = await storage.getCsvProfitReports(storeId);
+      res.json(reports.map(r => ({
+        id: r.id, month: r.month, title: r.title, createdAt: r.createdAt, updatedAt: r.updatedAt,
+        totals: (r.payload as any)?.totals ?? null,
+        fileName: (r.payload as any)?.fileName ?? null,
+      })));
+    } catch (err) { throw err; }
+  });
+
+  app.post("/api/profit-reports", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const schema = z.object({
+        month: z.string().regex(/^\d{4}-\d{2}$/),
+        title: z.string().optional(),
+        payload: z.record(z.any()),
+      });
+      const { month, title, payload } = schema.parse(req.body);
+      const report = await storage.createCsvProfitReport({ storeId, userId: req.user!.id, month, title: title ?? null, payload });
+      res.json(report);
+    } catch (err) { throw err; }
+  });
+
+  app.get("/api/profit-reports/:id", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
+      const report = await storage.getCsvProfitReport(id, storeId);
+      if (!report) return res.status(404).json({ message: "Rapport introuvable" });
+      res.json(report);
+    } catch (err) { throw err; }
+  });
+
+  app.patch("/api/profit-reports/:id", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
+      const schema = z.object({
+        month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+        title: z.string().optional().nullable(),
+        payload: z.record(z.any()).optional(),
+      });
+      const data = schema.parse(req.body);
+      const updated = await storage.updateCsvProfitReport(id, storeId, data as any);
+      if (!updated) return res.status(404).json({ message: "Rapport introuvable" });
+      res.json(updated);
+    } catch (err) { throw err; }
+  });
+
+  app.delete("/api/profit-reports/:id", requireAuth, requireImportCsv, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
+      await storage.deleteCsvProfitReport(id, storeId);
+      res.json({ message: "Rapport supprimé" });
+    } catch (err) { throw err; }
   });
 
   app.post("/api/subscription", requireAuth, async (req, res) => {
@@ -9544,6 +9620,7 @@ function ensureHeaders(sheet) {
       res.json({
         automationEnabled:  sub.automationEnabled  ?? null,
         mediaBuyersEnabled: sub.mediaBuyersEnabled ?? null,
+        importCsvEnabled:   sub.importCsvEnabled   ?? null,
         plan: sub.plan,
       });
     } catch (err: any) {
@@ -9558,6 +9635,7 @@ function ensureHeaders(sheet) {
       const body = z.object({
         automationEnabled:  flagVal.optional(),
         mediaBuyersEnabled: flagVal.optional(),
+        importCsvEnabled:   flagVal.optional(),
       }).parse(req.body);
 
       const sub = await storage.getSubscription(storeId);

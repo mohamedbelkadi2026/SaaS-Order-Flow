@@ -28,6 +28,7 @@ type SubscriptionInfo = {
   planExpiryDate: string | null;
   automationEnabled: number | null;
   mediaBuyersEnabled: number | null;
+  importCsvEnabled: number | null;
 };
 
 type StoreRow = {
@@ -440,7 +441,7 @@ export default function SuperAdminPage() {
   });
 
   const featuresMutation = useMutation({
-    mutationFn: ({ storeId, ...flags }: { storeId: number; automationEnabled?: 0 | 1 | null; mediaBuyersEnabled?: 0 | 1 | null }) =>
+    mutationFn: ({ storeId, ...flags }: { storeId: number; automationEnabled?: 0 | 1 | null; mediaBuyersEnabled?: 0 | 1 | null; importCsvEnabled?: 0 | 1 | null }) =>
       apiRequest("PUT", `/api/admin/stores/${storeId}/features`, flags),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
@@ -846,6 +847,7 @@ export default function SuperAdminPage() {
                             {([
                               { key: 'automationEnabled' as const,  label: 'Automation & AI' },
                               { key: 'mediaBuyersEnabled' as const, label: 'Media Buyers' },
+                              { key: 'importCsvEnabled' as const,   label: 'Import CSV' },
                             ] as const).map(({ key, label }) => {
                               const current = sub[key] ?? null;
                               return (

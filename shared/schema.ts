@@ -325,6 +325,7 @@ export const subscriptions = pgTable("subscriptions", {
   // Per-store feature overrides — null = follow plan default, 1 = force on, 0 = force off
   automationEnabled: integer("automation_enabled"),
   mediaBuyersEnabled: integer("media_buyers_enabled"),
+  importCsvEnabled: integer("import_csv_enabled"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -596,6 +597,21 @@ export type InsertOrderFollowUpLog = z.infer<typeof insertOrderFollowUpLogSchema
 export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true, createdAt: true });
 export type Payment = typeof payments.$inferSelect;
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
+
+export const csvProfitReports = pgTable("csv_profit_reports", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+  userId: integer("user_id").references(() => users.id),
+  month: text("month").notNull(),
+  title: text("title"),
+  payload: jsonb("payload").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCsvProfitReportSchema = createInsertSchema(csvProfitReports).omit({ id: true, createdAt: true, updatedAt: true });
+export type CsvProfitReport = typeof csvProfitReports.$inferSelect;
+export type InsertCsvProfitReport = z.infer<typeof insertCsvProfitReportSchema>;
 
 // ─── Stock Logs (Audit Trail) ──────────────────────────────────────────────
 export const stockLogs = pgTable("stock_logs", {

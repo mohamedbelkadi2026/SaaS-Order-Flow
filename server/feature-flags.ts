@@ -12,10 +12,10 @@
 
 import { planDefaults } from './utils/plan';
 
-export type FeatureFlag = 'automation' | 'mediaBuyers';
+export type FeatureFlag = 'automation' | 'mediaBuyers' | 'importCsv';
 
 export function hasFeature(
-  sub: { plan: string; automationEnabled?: number | null; mediaBuyersEnabled?: number | null } | null | undefined,
+  sub: { plan: string; automationEnabled?: number | null; mediaBuyersEnabled?: number | null; importCsvEnabled?: number | null } | null | undefined,
   user: { isSuperAdmin?: number | null } | null | undefined,
   feature: FeatureFlag
 ): boolean {
@@ -33,6 +33,12 @@ export function hasFeature(
     if (sub.mediaBuyersEnabled === 1) return true;
     if (sub.mediaBuyersEnabled === 0) return false;
     return defaults.mediaBuyers;
+  }
+
+  if (feature === 'importCsv') {
+    if (sub.importCsvEnabled === 1) return true;
+    if (sub.importCsvEnabled === 0) return false;
+    return defaults.importCsv;
   }
 
   return false;

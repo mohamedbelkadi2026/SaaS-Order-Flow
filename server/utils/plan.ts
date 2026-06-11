@@ -9,5 +9,6 @@ export function planDefaults(plan: string) {
     maxLinkedCarriers:     restricted ? 1 : Infinity,
     automation:            !restricted,
     mediaBuyers:           !restricted,
+    importCsv:             !restricted,
   };
 }

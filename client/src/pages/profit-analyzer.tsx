@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,9 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
+import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   ResponsiveContainer, PieChart, Pie, Cell, Legend,
 } from "recharts";
@@ -18,8 +21,10 @@ import {
   Upload, CheckCircle2, RotateCcw, TrendingUp, Package, Truck,
   Megaphone, DollarSign, Target, Sparkles, ArrowRight, BarChart3,
   Globe, Settings2, AlertTriangle, Info, RefreshCw,
+  Crown, Save, FolderOpen, Trash2, Zap, CalendarDays,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
 
 const GOLD = "#C5A059";
 const NAVY = "#0F1F3D";
@@ -225,6 +230,15 @@ const LIVE_PRESETS = [
 export default function ProfitAnalyzer() {
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
+  const qc = useQueryClient();
+
+  /* ── Subscription / plan gating ── */
+  const { data: subscription } = useQuery<any>({
+    queryKey: ['/api/subscription'],
+    staleTime: 60_000,
+  });
+  const hasImportCsv: boolean = subscription?.hasImportCsv ?? true;
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   /* ── Tab state ── */
   const [activeTab, setActiveTab] = useState<'live' | 'csv'>('live');
@@ -316,6 +330,24 @@ export default function ProfitAnalyzer() {
   const [adMode, setAdMode] = useState<"global" | "specific">("global");
   const [globalAdSpend, setGlobalAdSpend] = useState("0");
   const [results, setResults] = useState<ProfitResult[]>([]);
+
+  /* ── Saved reports state ── */
+  const [currentReportId, setCurrentReportId] = useState<number | null>(null);
+  const [reportMonth, setReportMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [reportTitle, setReportTitle] = useState("");
+  const [savingReport, setSavingReport] = useState(false);
+
+  const { data: savedReports = [], refetch: refetchReports } = useQuery<any[]>({
+    queryKey: ['/api/profit-reports'],
+    enabled: hasImportCsv,
+    staleTime: 30_000,
+  });
+
+  const deleteReportMutation = useMutation({
+    mutationFn: (id: number) => fetch(`/api/profit-reports/${id}`, { method: 'DELETE', credentials: 'include' }).then(r => r.json()),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['/api/profit-reports'] }); toast({ title: 'Rapport supprimé' }); },
+    onError: () => toast({ title: 'Erreur', variant: 'destructive' }),
+  });
 
   /* ── Product selector state (Step 1) ── */
   const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
@@ -539,7 +571,50 @@ export default function ProfitAnalyzer() {
     setPreviewProducts([]); setProducts([]); setResults([]);
     setGlobalAdSpend("0"); setAdMode("global");
     setSelectedProductKeys(new Set()); setProductSearchQuery("");
+    setCurrentReportId(null);
+    setReportMonth(new Date().toISOString().slice(0, 7));
+    setReportTitle("");
     if (fileRef.current) fileRef.current.value = "";
+  }
+
+  function openReport(report: any) {
+    const p = report.payload ?? report;
+    setFileName(p.fileName ?? "");
+    setProducts(p.products ?? []);
+    setResults(p.results ?? []);
+    setAdMode(p.adMode ?? "global");
+    setGlobalAdSpend(String(p.globalAdSpend ?? "0"));
+    setCurrentReportId(report.id);
+    setReportMonth(report.month ?? new Date().toISOString().slice(0, 7));
+    setReportTitle(report.title ?? "");
+    setHasParsed(true);
+    setStep(3);
+  }
+
+  async function saveReport() {
+    if (results.length === 0) return;
+    setSavingReport(true);
+    try {
+      const totals = { caBrut: totalCaBrut, caNet: totalCaNet, netProfit: totalNet, roi: globalROI };
+      const payload = { fileName, products, results, adMode, globalAdSpend, totals };
+      const isUpdate = currentReportId != null;
+      const url = isUpdate ? `/api/profit-reports/${currentReportId}` : '/api/profit-reports';
+      const method = isUpdate ? 'PATCH' : 'POST';
+      const r = await fetch(url, {
+        method, credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ month: reportMonth, title: reportTitle || null, payload }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || 'Erreur');
+      if (!isUpdate) setCurrentReportId(data.id);
+      qc.invalidateQueries({ queryKey: ['/api/profit-reports'] });
+      toast({ title: isUpdate ? 'Rapport mis à jour' : 'Rapport enregistré', description: `Mois : ${reportMonth}` });
+    } catch (err: any) {
+      toast({ title: 'Erreur', description: err.message, variant: 'destructive' });
+    } finally {
+      setSavingReport(false);
+    }
   }
 
   // Auto-load product profit defaults from Stock when user reaches Step 2
@@ -630,12 +705,13 @@ export default function ProfitAnalyzer() {
               📊 Par Produit (Live)
             </button>
             <button
-              onClick={() => setActiveTab('csv')}
+              onClick={() => { if (!hasImportCsv) { setUpgradeOpen(true); } else { setActiveTab('csv'); } }}
               data-testid="tab-csv"
-              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'csv' ? 'text-white' : 'text-slate-400 hover:text-white'}`}
+              className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${activeTab === 'csv' ? 'text-white' : 'text-slate-400 hover:text-white'}`}
               style={activeTab === 'csv' ? { background: `${GOLD}30`, color: GOLD } : {}}
             >
               📁 Import CSV
+              {!hasImportCsv && <Crown className="w-3.5 h-3.5" style={{ color: GOLD }} />}
             </button>
           </div>
 
@@ -944,6 +1020,58 @@ export default function ProfitAnalyzer() {
         ═══════════════════════════════════════════ */}
         {activeTab === 'csv' && (
           <div className="space-y-5">
+
+            {/* ── Saved Reports Panel ── */}
+            {savedReports.length > 0 && step === 1 && (
+              <Card className="border-white/10 bg-white/5 text-white">
+                <CardHeader className="pb-2 pt-4">
+                  <CardTitle className="text-xs font-bold uppercase tracking-widest flex items-center gap-2" style={{ color: GOLD }}>
+                    <FolderOpen className="w-3.5 h-3.5" /> Rapports enregistrés
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-0 pb-2">
+                  <div className="divide-y divide-white/8">
+                    {savedReports.map((rep: any) => (
+                      <div key={rep.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-white/5 transition-colors">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <CalendarDays className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-white truncate">
+                              {rep.title || rep.fileName || `Rapport ${rep.month}`}
+                              <span className="ml-2 text-xs text-slate-400 font-normal">{rep.month}</span>
+                            </p>
+                            {rep.totals && (
+                              <p className="text-[11px]" style={{ color: rep.totals.netProfit >= 0 ? '#4ade80' : '#f87171' }}>
+                                {rep.totals.netProfit >= 0 ? '+' : ''}{(rep.totals.netProfit / 1).toLocaleString('fr-MA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DH bénéfice net
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex gap-1.5 shrink-0 ml-3">
+                          <Button size="sm" variant="outline"
+                            className="h-7 px-2.5 text-[11px] border-amber-500/30 text-amber-300 hover:bg-amber-500/15"
+                            data-testid={`button-open-report-${rep.id}`}
+                            onClick={async () => {
+                              const r = await fetch(`/api/profit-reports/${rep.id}`, { credentials: 'include' });
+                              const full = await r.json();
+                              openReport(full);
+                            }}>
+                            <FolderOpen className="w-3 h-3 mr-1" /> Ouvrir
+                          </Button>
+                          <Button size="sm" variant="ghost"
+                            className="h-7 w-7 p-0 text-red-400 hover:text-red-300 hover:bg-red-500/15"
+                            data-testid={`button-delete-report-${rep.id}`}
+                            disabled={deleteReportMutation.isPending}
+                            onClick={() => deleteReportMutation.mutate(rep.id)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* STEP 1 — Upload + Preview */}
             {step === 1 && (
@@ -1516,6 +1644,48 @@ export default function ProfitAnalyzer() {
                   })}
                 </div>
 
+                {/* ── Save Report Panel ── */}
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
+                  <p className="text-xs font-bold uppercase tracking-widest" style={{ color: GOLD }}>
+                    <Save className="w-3.5 h-3.5 inline mr-1.5" />
+                    {currentReportId ? 'Modifier le rapport' : 'Enregistrer le rapport'}
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wide">Mois</label>
+                      <input
+                        type="month"
+                        value={reportMonth}
+                        onChange={e => setReportMonth(e.target.value)}
+                        data-testid="input-report-month"
+                        className="rounded-lg border border-white/15 bg-white/8 text-white text-sm px-3 py-1.5 focus:outline-none focus:border-amber-500/50"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1 flex-1">
+                      <label className="text-[10px] text-slate-400 uppercase tracking-wide">Titre (optionnel)</label>
+                      <Input
+                        value={reportTitle}
+                        onChange={e => setReportTitle(e.target.value)}
+                        placeholder={`Rapport ${reportMonth}…`}
+                        data-testid="input-report-title"
+                        className="bg-white/8 border-white/15 text-white placeholder:text-white/30 focus:border-amber-500/50"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        onClick={saveReport}
+                        disabled={savingReport}
+                        data-testid="button-save-report"
+                        style={{ background: GOLD, color: '#0F1F3D' }}
+                        className="font-bold hover:opacity-90 whitespace-nowrap"
+                      >
+                        <Save className="w-4 h-4 mr-1.5" />
+                        {savingReport ? 'Enregistrement…' : currentReportId ? 'Mettre à jour' : 'Enregistrer'}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex items-center justify-between">
                   <Button variant="outline" onClick={() => setStep(2)}
                     className="border-white/20 text-slate-300 hover:bg-white/8 hover:text-white"
@@ -1533,6 +1703,35 @@ export default function ProfitAnalyzer() {
           </div>
         )}
       </div>
+
+      {/* ── Upgrade Dialog ── */}
+      <Dialog open={upgradeOpen} onOpenChange={setUpgradeOpen}>
+        <DialogContent className="max-w-sm bg-white p-0 overflow-hidden rounded-3xl border-0">
+          <div className="px-6 pt-8 pb-6 text-center" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #1e3a6e 100%)` }}>
+            <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
+              <Crown className="w-7 h-7" style={{ color: '#C5A059' }} />
+            </div>
+            <DialogTitle className="text-xl font-bold text-white mb-1">Fonctionnalité Pro</DialogTitle>
+            <DialogDescription className="text-white/60 text-sm">Passez au plan Pro pour analyser vos exports transporteur.</DialogDescription>
+          </div>
+          <div className="px-6 py-5 space-y-4">
+            <ul className="space-y-2 text-sm text-gray-600">
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Import CSV transporteurs (Digylog, Cathedis…)</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Analyse détaillée CA, coûts, bénéfice</li>
+              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Sauvegarde et historique des rapports</li>
+            </ul>
+            <Link
+              href="/billing"
+              onClick={() => setUpgradeOpen(false)}
+              className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm hover:opacity-90 transition-opacity"
+              style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
+            >
+              <Zap className="w-4 h-4" />
+              Passer au plan Pro
+            </Link>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

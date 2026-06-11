@@ -1,0 +1,51 @@
+# Replit Prompt — Import CSV (Profit Analyzer): save reports by month + Pro-only gating + super-admin toggle
+
+Three things for the **Import CSV** tab of Profit Analyzer Pro (`client/src/pages/profit-analyzer.tsx`, `activeTab === 'csv'`, 3-step wizard: Import → Saisie des coûts → Rapport final).
+
+## Part 1 — Save reports (with a month) + reopen + edit
+Persist a finished CSV analysis so the user can come back to it and edit it.
+
+### Schema (`shared/schema.ts`) — then `npm run db:push`
+```ts
+export const csvProfitReports = pgTable("csv_profit_reports", {
+  id:        serial("id").primaryKey(),
+  storeId:   integer("store_id").notNull().references(() => stores.id, { onDelete: 'cascade' }),
+  userId:    integer("user_id").references(() => users.id),
+  month:     text("month").notNull(),          // "YYYY-MM"
+  title:     text("title"),
+  payload:   jsonb("payload").notNull(),        // { fileName, rows, costs, results, totals }
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+```
+
+### Endpoints (`server/routes.ts`, requireAuth, scoped to store; gate with Part 2)
+- `POST /api/profit-reports` — body `{ month, title?, payload }` → create, return row.
+- `GET /api/profit-reports` — list this store's reports (id, month, title, createdAt, and `payload.totals` for a preview), newest first.
+- `GET /api/profit-reports/:id` — full row (for reopen/edit).
+- `PATCH /api/profit-reports/:id` — `{ month?, title?, payload? }`, set `updatedAt = now()`.
+- `DELETE /api/profit-reports/:id`.
+
+### UI (CSV tab)
+- On **Rapport final (step 3)**: add a **month picker** (`<input type="month">`, default = current month) + optional title + an **"Enregistrer le rapport"** button that POSTs `{ month, title, payload }` where `payload` captures everything needed to rebuild the report (`fileName`, parsed rows, entered costs, computed `results`/`totals`). Toast `Rapport enregistré`.
+- Add a **"Rapports enregistrés"** panel at the top of the CSV tab (or a step-0 list): list saved reports grouped/labelled by month with their total profit. Each row: **Ouvrir** / **Supprimer**.
+- **Ouvrir** loads the payload back into the wizard (jump to step 3, with the parsed rows + costs restored) so the user can review, go back to step 2 to change a cost, and **re-save** via `PATCH` (update the same report, not a new one). Show "Modifier" vs "Enregistrer" depending on whether a report id is loaded.
+
+## Part 2 — Import CSV is a Pro feature (crown + upgrade)
+Reuse the existing plan-gate system (the one that gates Automation & Media Buyers with a super-admin override). Add a third feature `importCsv`:
+- `planDefaults(plan)`: `importCsv = plan !== 'starter'` (trial/pro/elite/custom = true, starter = false).
+- Add a nullable override column `import_csv_override` to `subscriptions` (null=plan default, 1=on, 0=off) — `npm run db:push`.
+- Expose `hasImportCsv` in `GET /api/subscription` using the same override rule as `hasAutomation`/`hasMediaBuyers`.
+- **UI**: in the Profit Analyzer tab switcher, when `!hasImportCsv`, show a gold `Crown` on the **"Import CSV"** tab; clicking it opens the upgrade dialog (`Fonctionnalité Pro — Passez au plan Pro pour analyser vos exports transporteur.` → `/billing`) instead of switching tabs. The **"Par Produit (Live)"** tab stays available. Super admins are never gated.
+- **Server**: guard the `/api/profit-reports*` endpoints (and the CSV parse/compute endpoint if any) with a 403 when the store lacks `importCsv` access (skip for super admin).
+
+## Part 3 — Super-admin toggle for Import CSV
+In `client/src/pages/super-admin.tsx`, add a third per-store feature control **"Import CSV"** next to "Automation & AI" and "Gestion Media Buyers" (same 3-state Auto / Activé / Désactivé). Extend `PATCH /api/admin/stores/:id/features` to also accept `importCsvOverride` (0|1|null) and persist it. This lets the super admin force Import CSV on or off for any store.
+
+## Testing checklist
+1. Finish a CSV analysis → pick a month → "Enregistrer" → it appears in "Rapports enregistrés"; leaving and returning shows it.
+2. "Ouvrir" a saved report restores the wizard; changing a cost and saving updates the same report (PATCH), not a duplicate.
+3. On a **Starter** store, the "Import CSV" tab shows a crown and opens the upgrade dialog; "Par Produit (Live)" still works; the report endpoints return 403.
+4. On **Pro/trial**, Import CSV works fully.
+5. Super admin → set a Starter store's "Import CSV" to **Activé** → that store can use Import CSV; **Désactivé** removes it; **Auto** follows the plan.
+6. `npm run db:push` applied for the new table + `import_csv_override` column.
