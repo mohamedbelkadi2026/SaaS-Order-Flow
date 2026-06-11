@@ -911,18 +911,20 @@ export async function registerRoutes(
     // Build a name→productId map from store products
     const productNameToId = new Map(storeProducts.map((p: any) => [p.name.toLowerCase().trim(), p.id]));
 
-    // ── PROFIT NET: delegate to shared computeProfitability for identical results
-    // to Profit Analyzer Pro (same formula, same cost components, no divergence).
-    // We pass only the date bounds — product/agent/source filters are intentionally
-    // excluded because the Analyzer is always store-wide, and the Dashboard profit
-    // card should match the Analyzer's total for the same period.
+    // ── PROFIT NET: shared computation — identical formula to Profit Analyzer Pro ─
+    // Pass the SAME resolved date bounds that filtered allOrders above, so COMMANDES,
+    // LIVRÉES and PROFIT NET always refer to exactly the same period.
+    // When no date is set the dashboard shows ALL orders → use dateRange:'all'.
+    const profDateFrom = dateFrom || undefined;   // undefined when dashboard preset = 'all'
+    const profDateTo   = dateTo   || undefined;
+    console.log('[stats/filtered] profit range', profDateFrom ?? 'all-time', profDateTo ?? 'all-time');
     const profResult = await computeProfitability(storeId, {
-      dateFrom: dateFrom || undefined,
-      dateTo:   dateTo   || undefined,
-      // No dateFrom/dateTo → "all time" (matches dashboard showing all orders)
-      dateRange: (!dateFrom && !dateTo) ? 'all' : undefined,
+      dateFrom:  profDateFrom,
+      dateTo:    profDateTo,
+      dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
     });
-    const netProfit = profResult.totals.netProfit;
+    // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
+    const netProfit = Math.round(profResult.totals.netProfit * 100);
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 

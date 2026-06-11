@@ -1,0 +1,37 @@
+# Replit Prompt — FIX: Dashboard PROFIT NET collapsed to a tiny number (wrong period)
+
+After unifying the profit calculation, the Dashboard PROFIT NET dropped from ~20 827 DH to **361,28 DH** and its "Livraison" subtitle changed from 57% to 75%. The other dashboard cards (COMMANDES 1154, LIVRÉES 334) still correctly reflect "Mois dernier" (May), so the date range exists — it just isn't being passed into the shared `computeProfitability` function. The function is computing over its default range (current month = June, nearly empty), producing the tiny profit.
+
+Fix so the Dashboard PROFIT NET uses the SAME period and filters as the rest of the dashboard.
+
+## 1. Pass the dashboard's resolved range + filters into computeProfitability
+In `GET /api/stats/filtered`, use the exact same `dateFrom`/`dateTo` (and product/magasin/source/city/agent filters) that the handler already computes for the other cards, and pass them through:
+```ts
+// reuse the SAME resolved bounds used for commandes/livrées above
+const prof = await computeProfitability(storeId, {
+  dateFrom,            // same variable feeding the other dashboard cards (May)
+  dateTo,
+  productId: filters.productId,
+  magasinId: filters.magasinId,
+  source: filters.source,
+  city: filters.city,
+  agentId: filters.agentId,
+});
+stats.profit = prof.totals.netProfit;
+```
+Make sure these are the resolved values (not undefined). Log them once (`console.log('[stats/filtered] profit range', dateFrom, dateTo)`) to confirm they equal the dashboard period.
+
+## 2. computeProfitability must NOT fall back to a default when bounds are provided
+Inside `computeProfitability`, only apply a default date range when `dateFrom`/`dateTo` are truly absent. When they are passed, use them verbatim. Verify it doesn't override them with "current month"/"today".
+
+## 3. Check the unit (centimes vs DH) is consistent
+Confirm `prof.totals.netProfit` is in the SAME unit the PROFIT NET card formats. The Profit Analyzer total for "Mois dernier" is ≈ 17 329,53 DH, so after the fix the Dashboard card must show ≈ 17 329,53 DH (not /100 of it, not ×100). If the card uses a centimes formatter, return centimes; if it formats DH directly, return DH. Match the Analyzer exactly.
+
+## 4. Keep the "Livraison %" subtitle on the same set
+The subtitle under PROFIT NET should use the delivered/total of the SAME filtered period (May), so it returns to the correct rate, not 75%.
+
+## Testing checklist
+1. Dashboard on "Mois dernier": PROFIT NET shows ≈ 17 329,53 DH (equal to Profit Analyzer "Mois dernier"), not 361,28 DH.
+2. The "Livraison %" subtitle matches the May delivery rate again.
+3. Switching the dashboard period (Ce mois / Tout / custom) changes PROFIT NET to match the Profit Analyzer for that same period.
+4. COMMANDES/LIVRÉES/commissions/ROI cards are unchanged.
