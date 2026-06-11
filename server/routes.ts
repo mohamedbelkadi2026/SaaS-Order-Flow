@@ -6403,6 +6403,42 @@ function ensureHeaders(sheet) {
   });
 
   // Backfill order_items.product_id for orders whose rawProductName matches the given product
+  // POST /api/products/link-all-historical — admin: link ALL unlinked order items to catalog
+  app.post("/api/products/link-all-historical", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const unlinkedItems = await db
+        .select({ id: orderItems.id, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`${orderItems.productId} IS NULL`,
+          sql`${orderItems.rawProductName} IS NOT NULL`,
+        ));
+
+      const storeProds = await storage.getProductsByStore(storeId);
+      let linked = 0;
+      let unmatched = 0;
+
+      for (const item of unlinkedItems) {
+        const { productId: resolvedPid, variantName } = resolveProductId(item.rawProductName || '', storeProds);
+        if (resolvedPid) {
+          await db.update(orderItems)
+            .set({ productId: resolvedPid, variantInfo: variantName || item.variantInfo || '' } as any)
+            .where(eq(orderItems.id, item.id));
+          linked++;
+        } else {
+          unmatched++;
+        }
+      }
+
+      res.json({ linked, unmatched, total: unlinkedItems.length });
+    } catch (err) {
+      throw err;
+    }
+  });
+
   app.post("/api/products/:id/link-historical", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;
@@ -6411,23 +6447,33 @@ function ensureHeaders(sheet) {
       if (!name || isNaN(productId)) return res.status(400).json({ message: "Paramètres invalides" });
 
       // Verify product belongs to this store
-      const [product] = await db.select({ id: products.id }).from(products)
+      const [product] = await db.select({ id: products.id, name: products.name }).from(products)
         .where(and(eq(products.id, productId), eq(products.storeId, storeId)));
       if (!product) return res.status(404).json({ message: "Produit introuvable" });
 
-      const nameLower = name.trim().toLowerCase();
+      // Fetch all unlinked items for this store and match against this product
+      const unlinkedItems = await db
+        .select({ id: orderItems.id, rawProductName: orderItems.rawProductName, variantInfo: orderItems.variantInfo })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`${orderItems.productId} IS NULL`,
+          sql`${orderItems.rawProductName} IS NOT NULL`,
+        ));
 
-      const result = await db.execute(sql`
-        UPDATE order_items
-        SET product_id = ${productId}
-        WHERE product_id IS NULL
-          AND LOWER(raw_product_name) LIKE ${'%' + nameLower + '%'}
-          AND order_id IN (
-            SELECT id FROM orders WHERE store_id = ${storeId}
-          )
-      `);
+      let linked = 0;
+      for (const item of unlinkedItems) {
+        // Only match against THIS product (exact name + base-name variant)
+        const { productId: resolvedPid, variantName } = resolveProductId(item.rawProductName || '', [{ id: productId, name: product.name }]);
+        if (resolvedPid === productId) {
+          await db.update(orderItems)
+            .set({ productId, variantInfo: variantName || item.variantInfo || '' } as any)
+            .where(eq(orderItems.id, item.id));
+          linked++;
+        }
+      }
 
-      const linked = (result as any).rowCount ?? 0;
       res.json({ linked });
     } catch (err) {
       throw err;

@@ -1,0 +1,38 @@
+# Replit Prompt — Fix Stock search (whitespace) + add "Lier l'historique" buttons
+
+Two things on the Inventaire (Stock) page.
+
+## Part 1 — FIX the search (exact/long names return nothing)
+In `client/src/pages/inventory.tsx` (~line 706) the search is a literal substring match:
+```ts
+const matchesSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku?.toLowerCase().includes(search.toLowerCase());
+```
+Imported names contain **double spaces** (e.g. "Sandale En Cuir  Rf 1012 Noir"), which render as one space but break `.includes("... cuir rf 1012 noir")`. Make the search whitespace-tolerant and token-based, and also search the reference:
+```ts
+const norm = (s: string) => (s || "").toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g,'').replace(/\s+/g, " ").trim();
+const q = norm(search);
+const hay = `${norm(p.name)} ${norm(p.sku)} ${norm(p.reference)}`;
+const matchesSearch = !q || q.split(" ").every(tok => hay.includes(tok));
+```
+Now order/extra spaces don't matter and every typed word must appear. (Also trim the stored name on display if you want.)
+
+## Part 2 — "Lier l'historique" buttons (pull a product's past data)
+Goal: a product added now should pull in its **historical orders** so its stats (commandes, livrées, conf %, taux livraison, profit) populate. Provide two entry points.
+
+### 2a. Per-product button
+Add a small action (a history/link icon in the row ACTIONS, or a button in the edit modal) → calls `POST /api/products/:id/link-historical` with `{ name }`. Backend (requireAuth): set `order_items.product_id = :id` for items in this store where `product_id IS NULL` and the name matches the product — matching by:
+- exact normalized name (`norm(raw_product_name) === norm(product.name)`), OR
+- **base name** when the order is a variant: strip a trailing size/variant suffix (` - 40`, ` / 40`, `–40`) and match the base to the product name (so "…BLANC - 40" links to "…BLANC"). Store the suffix in `variant_info`.
+Return `{ linked }`, toast `"{linked} commande(s) historiques liées"`, invalidate `["/api/products"]`, `["/api/products/inventory"]`, `["/api/products/profitability"]`.
+
+### 2b. Global button "Lier tout l'historique" (recommended — 240 products)
+Add a button in the Inventaire header next to "Importer des produits". It calls `POST /api/products/link-all-historical` (requireAuth, admin) which, for the store, goes through ALL `order_items` with `product_id IS NULL` and links each to a catalog product using the same matching (exact name, else base-name for "Parent - Size"). Process in batches; return `{ linked, unmatched }`. Show a confirm first ("Lier toutes les commandes historiques aux produits correspondants ?") and a result toast (`"{linked} liées · {unmatched} sans correspondance"`). Invalidate the product/inventory/profitability queries on success.
+
+Use the same `norm` + suffix-stripping helper on the server as in Part 1 so matching is consistent. Reuse the `resolveProduct` helper if it already exists from the variants work.
+
+## Testing checklist
+1. Searching "Sandale En Cuir Rf 1012 Noir" now returns the product (double-space tolerant); partial searches still work; reference is searchable.
+2. Per-product "Lier l'historique" links its past orders; the row's REÇU/SORTIE/CONF %/TAUX and Profit Analyzer stats populate.
+3. "Lier tout l'historique" backfills all unlinked orders across products and reports linked vs unmatched counts.
+4. Variant orders ("…BLANC - 40") link to the parent product, not as separate products.
+5. Unmatched names (no catalog product) are reported, not linked to the wrong product.

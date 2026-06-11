@@ -861,10 +861,40 @@ export default function Inventory() {
       toast({ title: 'Rattachement effectué', description: `${data.linked} ligne(s) rattachée(s) à « ${product.name} »` });
       queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
       queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/inventory'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/profitability'] });
     } catch (err: any) {
       toast({ title: 'Erreur', description: err.message, variant: 'destructive' });
     } finally {
       setRattachingId(null);
+    }
+  };
+
+  const [linkAllOpen, setLinkAllOpen] = useState(false);
+  const [linkAllLoading, setLinkAllLoading] = useState(false);
+  const [linkAllResult, setLinkAllResult] = useState<{ linked: number; unmatched: number; total: number } | null>(null);
+
+  const handleLinkAll = async () => {
+    setLinkAllLoading(true);
+    setLinkAllResult(null);
+    try {
+      const r = await fetch('/api/products/link-all-historical', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || 'Erreur');
+      setLinkAllResult(data);
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/inventory'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/products/profitability'] });
+    } catch (err: any) {
+      toast({ title: 'Erreur', description: err.message, variant: 'destructive' });
+      setLinkAllOpen(false);
+    } finally {
+      setLinkAllLoading(false);
     }
   };
 
@@ -1088,8 +1118,15 @@ export default function Inventory() {
   const stats = inventoryData || { totalProducts: 0, totalQuantity: 0, lowStock: 0, outOfStock: 0, newProducts: 0, productStats: [] };
   const productStats: any[] = stats.productStats || [];
 
+  const normSearch = (s: string) =>
+    (s || "").toLowerCase().normalize('NFKD')
+      .replace(/[\u064B-\u065F\u0670]/g, '')
+      .replace(/\s+/g, " ").trim();
+
   const filtered = productStats.filter((p: any) => {
-    const matchesSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku?.toLowerCase().includes(search.toLowerCase());
+    const q = normSearch(search);
+    const hay = `${normSearch(p.name)} ${normSearch(p.sku)} ${normSearch(p.reference)}`;
+    const matchesSearch = !q || q.split(" ").every((tok: string) => hay.includes(tok));
     const matchesStatus = statusFilter === "all" ||
       (statusFilter === "in_stock" && p.stock > 10) ||
       (statusFilter === "low_stock" && p.stock > 0 && p.stock <= 10) ||
@@ -1112,7 +1149,10 @@ export default function Inventory() {
           <h1 className="text-3xl font-display font-bold" data-testid="text-inventory-title">Inventaire</h1>
           <p className="text-muted-foreground mt-1">Gestion complète des produits et niveaux de stock.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" data-testid="button-link-all-historical" onClick={() => { setLinkAllResult(null); setLinkAllOpen(true); }}>
+            <Link2 className="w-4 h-4 mr-2" /> Lier tout l'historique
+          </Button>
           <Button variant="outline" data-testid="button-import-products" onClick={() => setImportOpen(true)}>
             <PackagePlus className="w-4 h-4 mr-2" /> Importer des produits
           </Button>
@@ -1805,6 +1845,42 @@ export default function Inventory() {
                 {aiSaving ? "Sauvegarde..." : "💾 Sauvegarder pour l'IA"}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Link All Historical Dialog */}
+      <Dialog open={linkAllOpen} onOpenChange={(v) => { if (!linkAllLoading) { setLinkAllOpen(v); if (!v) setLinkAllResult(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Link2 className="w-5 h-5 text-violet-500" />
+              Lier tout l'historique
+            </DialogTitle>
+            <DialogDescription>
+              Rattache toutes les commandes non liées aux produits correspondants en utilisant le nom exact ou la variante (ex : "Produit - 40").
+            </DialogDescription>
+          </DialogHeader>
+          {linkAllResult ? (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-800 p-4 space-y-2 text-sm">
+              <div className="flex justify-between"><span className="text-muted-foreground">Commandes liées</span><span className="font-bold text-emerald-600">{linkAllResult.linked}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Non trouvées</span><span className="font-semibold text-amber-600">{linkAllResult.unmatched}</span></div>
+              <div className="flex justify-between border-t pt-2 mt-1"><span className="text-muted-foreground">Total traité</span><span className="font-semibold">{linkAllResult.total}</span></div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Cette opération va parcourir toutes vos commandes sans produit lié et les rattacher automatiquement. Les données de profit et de stock seront mises à jour.
+            </p>
+          )}
+          <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => { setLinkAllOpen(false); setLinkAllResult(null); }} disabled={linkAllLoading}>
+              {linkAllResult ? 'Fermer' : 'Annuler'}
+            </Button>
+            {!linkAllResult && (
+              <Button data-testid="button-confirm-link-all" onClick={handleLinkAll} disabled={linkAllLoading} style={{ background: "#7c3aed", color: "#fff" }}>
+                {linkAllLoading ? 'Traitement…' : <><Link2 className="w-4 h-4 mr-2" />Lier maintenant</>}
+              </Button>
+            )}
           </div>
         </DialogContent>
       </Dialog>
