@@ -9549,11 +9549,21 @@ function ensureHeaders(sheet) {
   };
 
   app.get("/api/admin/stores", requireSuperAdmin, async (_req, res) => {
-    res.json(await storage.getAllStores());
+    try {
+      res.json(await storage.getAllStores());
+    } catch (err: any) {
+      console.error("[admin/stores] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
   });
 
   app.get("/api/admin/stats", requireSuperAdmin, async (_req, res) => {
-    res.json(await storage.getGlobalStats());
+    try {
+      res.json(await storage.getGlobalStats());
+    } catch (err: any) {
+      console.error("[admin/stats] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
   });
 
   app.patch("/api/admin/stores/:id/toggle", requireSuperAdmin, async (req, res) => {

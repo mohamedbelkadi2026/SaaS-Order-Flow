@@ -2638,6 +2638,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAllStores(): Promise<any[]> {
+    try {
     // Optimized: 5 bulk queries instead of N×4 (safe at 1000+ stores)
     const allStores = await db.select().from(stores).orderBy(desc(stores.createdAt));
     if (allStores.length === 0) return [];
@@ -2754,24 +2755,38 @@ export class DatabaseStorage implements IStorage {
     }));
 
     return allStores.map(store => {
-      const owner = ownerMap.get(store.id);
-      const sub = subMap.get(store.id) ?? null;
-      return {
-        ...store,
-        ownerEmail: owner?.email ?? null,
-        ownerName: owner?.username ?? null,
-        ownerPhone: owner?.phone ?? null,
-        ownerCreatedAt: owner?.createdAt ?? null,
-        ownerIsActive: owner?.isActive ?? 1,
-        isEmailVerified: owner?.isEmailVerified ?? 0,
-        ownerId: owner?.id ?? null,
-        teamCount: teamCountMap.get(store.id) ?? 0,
-        totalOrders: orderCountMap.get(store.id) ?? 0,
-        monthlyOrders: monthOrderMap.get(store.id) ?? 0,
-        totalNetProfit: profitMap.get(store.id) ?? 0,
-        subscription: sub,
-      };
-    });
+      try {
+        const owner = ownerMap.get(store.id);
+        const sub   = subMap.get(store.id) ?? null;
+        return {
+          ...store,
+          ownerEmail:      owner?.email      ?? null,
+          ownerName:       owner?.username   ?? null,
+          ownerPhone:      owner?.phone      ?? null,
+          ownerCreatedAt:  owner?.createdAt  ?? null,
+          ownerIsActive:   owner?.isActive   ?? 1,
+          isEmailVerified: owner?.isEmailVerified ?? 0,
+          ownerId:         owner?.id         ?? null,
+          teamCount:    teamCountMap.get(store.id)  ?? 0,
+          totalOrders:  orderCountMap.get(store.id) ?? 0,
+          monthlyOrders: monthOrderMap.get(store.id) ?? 0,
+          totalNetProfit: profitMap.get(store.id)   ?? 0,
+          subscription: sub ? {
+            ...sub,
+            automationEnabled:  sub.automationEnabled  ?? null,
+            mediaBuyersEnabled: sub.mediaBuyersEnabled ?? null,
+            importCsvEnabled:   sub.importCsvEnabled   ?? null,
+          } : null,
+        };
+      } catch (mapErr: any) {
+        console.error(`[getAllStores] Error mapping store ${store.id}:`, mapErr?.message ?? mapErr);
+        return null;
+      }
+    }).filter(Boolean);
+    } catch (err: any) {
+      console.error("[getAllStores] Fatal error:", err?.message ?? err);
+      throw err;
+    }
   }
 
   async getGlobalStats(): Promise<{ totalStores: number; activeStores: number; totalRevenue: number; mrr: number; totalOrders: number; expiringCount: number }> {
