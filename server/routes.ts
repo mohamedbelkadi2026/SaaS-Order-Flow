@@ -6251,6 +6251,90 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // POST /api/products/import — bulk-create products from Shopify CSV/Excel parse result
+  app.post("/api/products/import", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const { products: importProducts, overwrite = false } = req.body as {
+      products: Array<{
+        name: string; sku?: string; reference?: string; description?: string; imageUrl?: string;
+        hasVariants: number; stock: number; costPrice: number; sellingPrice: number;
+        variants?: Array<{ name: string; sku: string; costPrice: number; sellingPrice: number; stock: number; imageUrl?: string | null }>;
+      }>;
+      overwrite?: boolean;
+    };
+
+    if (!Array.isArray(importProducts) || importProducts.length === 0)
+      return res.status(400).json({ message: "Aucun produit à importer" });
+
+    // Load existing non-archived products for dedup check
+    const existingProds = await storage.getProductsByStore(storeId);
+    const activeProds = existingProds.filter((p: any) => !p.archivedAt);
+    const existingSkus  = new Set(activeProds.filter((p: any) => p.sku).map((p: any) => (p.sku as string).toLowerCase()));
+    const existingNames = new Set(activeProds.map((p: any) => (p.name as string).toLowerCase()));
+
+    let created = 0;
+    let skipped = 0;
+    const errors: { name: string; error: string }[] = [];
+    const BATCH = 50;
+
+    for (let i = 0; i < importProducts.length; i += BATCH) {
+      const batch = importProducts.slice(i, i + BATCH);
+      for (const p of batch) {
+        try {
+          const nameLower = (p.name || '').trim().toLowerCase();
+          const skuLower  = (p.sku  || '').trim().toLowerCase();
+          if (!nameLower) { errors.push({ name: '(sans nom)', error: 'Nom manquant' }); continue; }
+
+          if (!overwrite) {
+            const dup = (skuLower && existingSkus.has(skuLower)) || existingNames.has(nameLower);
+            if (dup) { skipped++; continue; }
+          }
+
+          const productSettings = {
+            profitDefaults: {
+              coutAchat: p.costPrice ?? 0,
+              prixVente: p.sellingPrice ?? 0,
+              coutEmballage: 0,
+              coutLivraison: 0,
+              coutConfirmation: 0,
+            },
+          };
+
+          const base = {
+            name: p.name.trim(),
+            sku: p.sku?.trim() || null,
+            stock: p.stock ?? 0,
+            costPrice: p.costPrice ?? 0,
+            sellingPrice: p.sellingPrice ?? 0,
+            description: p.description || null,
+            imageUrl: p.imageUrl || null,
+            reference: p.reference || null,
+            storeId,
+            settings: productSettings,
+          } as any;
+
+          if (p.variants && p.variants.length > 0) {
+            await storage.createProductWithVariants(
+              { ...base, hasVariants: 1 },
+              p.variants.map((v) => ({ ...v, productId: 0, storeId, imageUrl: v.imageUrl || null })),
+            );
+          } else {
+            await storage.createProduct({ ...base, hasVariants: 0 });
+          }
+
+          // Track to avoid in-batch duplicates
+          if (skuLower)  existingSkus.add(skuLower);
+          existingNames.add(nameLower);
+          created++;
+        } catch (err: any) {
+          errors.push({ name: p.name || '(inconnu)', error: err.message });
+        }
+      }
+    }
+
+    res.json({ created, skipped, errors });
+  });
+
   app.get("/api/products/name-check", requireAuth, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;

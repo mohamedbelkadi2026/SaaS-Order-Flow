@@ -281,6 +281,323 @@ function NuclearDeleteModal({
   );
 }
 
+/* ── ImportDialog ─────────────────────────────────────────────────────────── */
+interface ImportedProduct {
+  name: string; sku: string; reference: string; description: string | null;
+  imageUrl: string | null; hasVariants: number; stock: number;
+  costPrice: number; sellingPrice: number;
+  variants: { name: string; sku: string; costPrice: number; sellingPrice: number; stock: number; imageUrl: string | null }[];
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+}
+
+function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { toast } = useToast();
+  const [step, setStep] = useState<'upload' | 'preview'>('upload');
+  const [file, setFile] = useState<File | null>(null);
+  const [priceSource, setPriceSource] = useState<'morocco' | 'variant'>('morocco');
+  const [skipExisting, setSkipExisting] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [parsedProducts, setParsedProducts] = useState<ImportedProduct[]>([]);
+  const [selectedIdx, setSelectedIdx] = useState<Set<number>>(new Set());
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const reset = () => {
+    setStep('upload');
+    setFile(null);
+    setParsedProducts([]);
+    setSelectedIdx(new Set());
+    setParsing(false);
+    setImporting(false);
+  };
+
+  const handleClose = () => { reset(); onClose(); };
+
+  const parseFile = async () => {
+    if (!file) return;
+    setParsing(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+      const rows: Record<string, string>[] = XLSX.utils.sheet_to_json(
+        wb.Sheets[wb.SheetNames[0]], { defval: '' }
+      ) as Record<string, string>[];
+
+      const groups = new Map<string, Record<string, string>[]>();
+      for (const row of rows) {
+        const handle = String(row['Handle'] || '').trim();
+        if (!handle) continue;
+        if (!groups.has(handle)) groups.set(handle, []);
+        groups.get(handle)!.push(row);
+      }
+
+      const priceCol = priceSource === 'morocco' ? 'Price / Morocco' : 'Variant Price';
+      const products: ImportedProduct[] = [];
+
+      for (const [handle, groupRows] of groups) {
+        const titleRow = groupRows.find(r => r['Title']?.trim()) ?? groupRows[0];
+        const name = (titleRow['Title'] || handle).trim();
+        const description = stripHtml(String(titleRow['Body (HTML)'] || '')) || null;
+        const imageUrl = (groupRows.find(r => r['Image Src']?.trim())?.['Image Src'] || '').trim() || null;
+
+        const variantRows = groupRows.filter(r => {
+          const opt1 = String(r['Option1 Value'] || '').trim();
+          return opt1 && opt1 !== 'Default Title';
+        });
+
+        if (variantRows.length > 0) {
+          const seenSkus = new Set<string>();
+          const variants = variantRows.map((r, idx) => {
+            const parts = ['Option1 Value', 'Option2 Value', 'Option3 Value']
+              .map(k => String(r[k] || '').trim()).filter(Boolean);
+            const vName = parts.join(' / ') || `Variante ${idx + 1}`;
+            let sku = String(r['Variant SKU'] || '').trim() || `${handle}-v${idx}`;
+            if (seenSkus.has(sku)) sku = `${sku}-${idx}`;
+            seenSkus.add(sku);
+            const rawPrice = Number(r[priceCol] || r['Variant Price'] || 0);
+            return {
+              name: vName,
+              sku,
+              sellingPrice: Math.round(rawPrice * 100),
+              costPrice: Math.round(Number(r['Cost per item'] || 0) * 100),
+              stock: parseInt(String(r['Variant Inventory Qty'] || '0'), 10) || 0,
+              imageUrl: String(r['Variant Image'] || r['Image Src'] || '').trim() || imageUrl,
+            };
+          });
+          const totalStock = variants.reduce((s, v) => s + v.stock, 0);
+          const avgSell = variants.length ? Math.round(variants.reduce((s, v) => s + v.sellingPrice, 0) / variants.length) : 0;
+          const avgCost = variants.length ? Math.round(variants.reduce((s, v) => s + v.costPrice, 0) / variants.length) : 0;
+          products.push({
+            name, sku: String(titleRow['Variant SKU'] || '').trim() || handle,
+            reference: handle, description, imageUrl, hasVariants: 1,
+            stock: totalStock, costPrice: avgCost, sellingPrice: avgSell, variants,
+          });
+        } else {
+          const row = groupRows.find(r => r['Variant SKU'] || r[priceCol]) ?? groupRows[0];
+          const rawPrice = Number(row[priceCol] || row['Variant Price'] || 0);
+          products.push({
+            name, sku: String(row['Variant SKU'] || '').trim() || handle,
+            reference: handle, description, imageUrl, hasVariants: 0,
+            stock: parseInt(String(row['Variant Inventory Qty'] || '0'), 10) || 0,
+            costPrice: Math.round(Number(row['Cost per item'] || 0) * 100),
+            sellingPrice: Math.round(rawPrice * 100),
+            variants: [],
+          });
+        }
+      }
+
+      setParsedProducts(products);
+      setSelectedIdx(new Set(products.map((_, i) => i)));
+      setStep('preview');
+    } catch (err: any) {
+      toast({ title: "Erreur de parsing", description: err.message, variant: "destructive" });
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const toggleAll = () => {
+    setSelectedIdx(selectedIdx.size === parsedProducts.length
+      ? new Set()
+      : new Set(parsedProducts.map((_, i) => i))
+    );
+  };
+
+  const toggleOne = (i: number) => {
+    setSelectedIdx(prev => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+  };
+
+  const doImport = async () => {
+    setImporting(true);
+    try {
+      const toImport = parsedProducts.filter((_, i) => selectedIdx.has(i));
+      const result: { created: number; skipped: number; errors: { name: string; error: string }[] } =
+        await apiRequest("POST", "/api/products/import", { products: toImport, overwrite: !skipExisting });
+      toast({
+        title: "Import terminé",
+        description: `${result.created} produits importés · ${result.skipped} ignorés${result.errors.length > 0 ? ` · ${result.errors.length} erreur(s)` : ''}`,
+        variant: result.errors.length > 0 ? "destructive" : "default",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/products'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
+      handleClose();
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const totalVariants = parsedProducts.filter((_, i) => selectedIdx.has(i)).reduce((s, p) => s + p.variants.length, 0);
+  const totalStock    = parsedProducts.filter((_, i) => selectedIdx.has(i)).reduce((s, p) => s + p.stock, 0);
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <PackagePlus className="w-5 h-5" style={{ color: '#C5A059' }} />
+            Importer des produits
+          </DialogTitle>
+          <DialogDescription>
+            {step === 'upload'
+              ? 'Importez un export Shopify (.csv ou .xlsx) pour créer vos produits avec leurs variantes, stocks et prix.'
+              : `${selectedIdx.size} produit(s) sélectionné(s) · ${totalVariants} variante(s) · stock total ${totalStock}`}
+          </DialogDescription>
+        </DialogHeader>
+
+        {step === 'upload' && (
+          <div className="space-y-5 py-2">
+            <div className="space-y-2">
+              <Label>Fichier (CSV ou Excel Shopify)</Label>
+              <div
+                className="border-2 border-dashed border-border rounded-xl p-8 text-center cursor-pointer hover:border-primary/50 transition-colors"
+                onClick={() => fileRef.current?.click()}
+                data-testid="import-file-dropzone"
+              >
+                {file ? (
+                  <div className="space-y-1">
+                    <Package className="w-8 h-8 mx-auto text-primary" />
+                    <p className="font-medium text-sm">{file.name}</p>
+                    <p className="text-xs text-muted-foreground">{(file.size / 1024).toFixed(0)} Ko</p>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <ImageUp className="w-8 h-8 mx-auto text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">Cliquez pour sélectionner un fichier</p>
+                    <p className="text-xs text-muted-foreground">.csv, .xlsx, .xls</p>
+                  </div>
+                )}
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv,.xlsx,.xls"
+                className="hidden"
+                data-testid="input-import-file"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) setFile(f); }}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Source des prix</Label>
+              <Select value={priceSource} onValueChange={(v) => setPriceSource(v as 'morocco' | 'variant')} data-testid="select-price-source">
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="morocco">Prix Maroc (Price / Morocco)</SelectItem>
+                  <SelectItem value="variant">Prix Variante (Variant Price)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30">
+              <Switch
+                id="skip-existing"
+                checked={skipExisting}
+                onCheckedChange={setSkipExisting}
+                data-testid="switch-skip-existing"
+              />
+              <Label htmlFor="skip-existing" className="cursor-pointer text-sm">
+                Ignorer les produits déjà existants (même SKU ou nom)
+              </Label>
+            </div>
+          </div>
+        )}
+
+        {step === 'preview' && (
+          <div className="space-y-3">
+            <div className="max-h-[45vh] overflow-y-auto rounded-lg border border-border">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="w-8">
+                      <input
+                        type="checkbox"
+                        checked={selectedIdx.size === parsedProducts.length && parsedProducts.length > 0}
+                        onChange={toggleAll}
+                        className="cursor-pointer"
+                        data-testid="import-select-all"
+                      />
+                    </TableHead>
+                    <TableHead>Nom</TableHead>
+                    <TableHead className="text-right">Variantes</TableHead>
+                    <TableHead className="text-right">Stock</TableHead>
+                    <TableHead className="text-right">Prix vente</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {parsedProducts.map((p, i) => (
+                    <TableRow key={i} className={!selectedIdx.has(i) ? 'opacity-40' : ''} data-testid={`import-row-${i}`}>
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          checked={selectedIdx.has(i)}
+                          onChange={() => toggleOne(i)}
+                          className="cursor-pointer"
+                        />
+                      </TableCell>
+                      <TableCell className="font-medium text-sm max-w-[180px] truncate" title={p.name}>
+                        {p.name}
+                        {p.hasVariants ? <Badge variant="outline" className="ml-1.5 text-xs">variantes</Badge> : null}
+                      </TableCell>
+                      <TableCell className="text-right text-sm">{p.variants.length || '—'}</TableCell>
+                      <TableCell className="text-right text-sm">{p.stock}</TableCell>
+                      <TableCell className="text-right text-sm">{p.sellingPrice > 0 ? (p.sellingPrice / 100).toFixed(2) + ' DH' : '—'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        )}
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={step === 'preview' ? () => setStep('upload') : handleClose} disabled={importing}>
+            {step === 'preview' ? 'Retour' : 'Annuler'}
+          </Button>
+          {step === 'upload' ? (
+            <Button
+              onClick={parseFile}
+              disabled={!file || parsing}
+              style={{ background: '#C5A059', color: '#fff' }}
+              data-testid="button-parse-import"
+            >
+              {parsing ? (
+                <span className="flex items-center gap-2"><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />Analyse…</span>
+              ) : (
+                <><Search className="w-4 h-4 mr-2" />Analyser le fichier</>
+              )}
+            </Button>
+          ) : (
+            <Button
+              onClick={doImport}
+              disabled={importing || selectedIdx.size === 0}
+              style={{ background: '#C5A059', color: '#fff' }}
+              data-testid="button-confirm-import"
+            >
+              {importing ? (
+                <span className="flex items-center gap-2"><span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />Import…</span>
+              ) : (
+                <><PackagePlus className="w-4 h-4 mr-2" />Importer {selectedIdx.size} produit{selectedIdx.size !== 1 ? 's' : ''}</>
+              )}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Inventory() {
   const { data: inventoryData, isLoading: statsLoading, refetch: refetchStats } = useInventoryStats();
   const createProduct = useCreateProduct();
@@ -386,6 +703,7 @@ export default function Inventory() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
   const [hasVariants, setHasVariants] = useState(false);
@@ -761,9 +1079,14 @@ export default function Inventory() {
           <h1 className="text-3xl font-display font-bold" data-testid="text-inventory-title">Inventaire</h1>
           <p className="text-muted-foreground mt-1">Gestion complète des produits et niveaux de stock.</p>
         </div>
-        <Button className="shadow-lg shadow-primary/20" data-testid="button-add-product" onClick={() => setAddOpen(true)}>
-          <Plus className="w-4 h-4 mr-2" /> Nouveau Produit
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" data-testid="button-import-products" onClick={() => setImportOpen(true)}>
+            <PackagePlus className="w-4 h-4 mr-2" /> Importer des produits
+          </Button>
+          <Button className="shadow-lg shadow-primary/20" data-testid="button-add-product" onClick={() => setAddOpen(true)}>
+            <Plus className="w-4 h-4 mr-2" /> Nouveau Produit
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -1768,6 +2091,8 @@ export default function Inventory() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
 
       {/* ── Historical link choice dialog ── */}
       <Dialog open={!!historicalCheck} onOpenChange={(v) => { if (!v) { setHistoricalCheck(null); setPendingPayload(null); } }}>

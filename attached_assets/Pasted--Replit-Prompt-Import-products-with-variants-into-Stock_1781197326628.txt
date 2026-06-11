@@ -1,0 +1,67 @@
+# Replit Prompt — Import products (with variants) into Stock from a Shopify CSV/Excel export
+
+Add a "Importer des produits" feature to the Stock page (`client/src/pages/inventory.tsx`) that imports a Shopify product export (CSV or Excel) — creating products with their variants, stock, cost price and selling price — instead of entering them manually. French UI. `xlsx` is already installed (it reads CSV too). Reuse the existing `POST /api/products` logic (`storage.createProductWithVariants` / `storage.createProduct`).
+
+## File format (verified — standard Shopify export)
+Columns include: `Handle`, `Title`, `Body (HTML)`, `Option1 Name`, `Option1 Value`, `Option2 Name`, `Option2 Value`, `Option3 Name`, `Option3 Value`, `Variant SKU`, `Variant Inventory Qty`, `Variant Price`, `Compare At Price`, `Cost per item`, `Variant Barcode`, `Image Src`, `Variant Image`, `Price / Morocco`, `Compare At Price / Morocco`, `Status`.
+- One product spans several rows sharing the same **`Handle`**. `Title` appears on the first row only. Extra rows are variants (or extra image rows).
+- Prices in the file are in DH (decimals). The DB stores **centimes (integers)**, so multiply by 100 and `Math.round`.
+
+## Schema reminder (target)
+`products`: `name, sku, stock, costPrice (centimes), sellingPrice (centimes), description, imageUrl, reference, hasVariants (0|1), settings`.
+`productVariants`: `name, sku, costPrice, sellingPrice, stock, imageUrl`.
+
+## 1. Backend — `POST /api/products/import` (requireAuth)
+Body: `{ products: ImportProduct[], overwrite?: boolean }` where
+```ts
+ImportProduct = {
+  name, sku, reference, description, imageUrl, hasVariants: 0|1,
+  stock, costPrice, sellingPrice,                  // centimes; used when hasVariants=0
+  variants?: { name, sku, costPrice, sellingPrice, stock, imageUrl }[]  // centimes
+}
+```
+Logic per product (scoped to `req.user.storeId`):
+- If a **non-archived** product with the same `sku` (or same `name`) already exists: skip and count `skipped`, unless `overwrite` is true (then update its stock/prices — optional, keep simple: default skip).
+- Else create: if `variants?.length` → `storage.createProductWithVariants({...product, storeId, hasVariants:1, settings:{profitDefaults:{coutAchat:costPrice,prixVente:sellingPrice,coutEmballage:0,coutLivraison:0,coutConfirmation:0}}}, variants.map(v=>({...v, productId:0, storeId})))`; else `storage.createProduct({...product, storeId})`.
+- Wrap each product in try/catch; collect `{ name, error }`. Process in batches (e.g. 50) to handle large files.
+- Return `{ created, skipped, errors }`.
+
+## 2. Frontend — "Importer des produits" button + dialog (inventory.tsx)
+Add an **"Importer des produits"** button near "Ajouter". Dialog steps:
+
+**A. Upload + options**
+- File input `.csv,.xlsx,.xls`.
+- Price source select: `Prix Maroc (Price / Morocco)` (default if that column has values) or `Variant Price`.
+- Checkbox `Ignorer les produits déjà existants (même SKU)` (default on).
+
+**B. Parse with xlsx and build products**
+```ts
+const wb = XLSX.read(buf, { type:"array" });
+const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval:"" });
+```
+Group by `Handle`. For each group:
+- `name` = first non-empty `Title` in the group.
+- `reference` = `Handle`.
+- `description` = strip HTML tags from `Body (HTML)` → plain text, collapse whitespace, truncate ~1000 chars (the Body can contain large/garbage HTML — strip it).
+- `imageUrl` = first non-empty `Image Src` (or `Variant Image`).
+- Build a variant from each row that has a real option (`Option1 Value` non-empty AND not `"Default Title"`):
+  - `name` = `[Option1 Value, Option2 Value, Option3 Value].filter(Boolean).join(" / ")`.
+  - `sku` = `Variant SKU` || `${Handle}-${index}`.
+  - `sellingPrice` = `Math.round(Number(priceColumn || 0) * 100)` (priceColumn = chosen source).
+  - `costPrice` = `Math.round(Number(Cost per item || 0) * 100)`.
+  - `stock` = `parseInt(Variant Inventory Qty || 0)`.
+  - `imageUrl` = `Variant Image` || product image.
+- If the group has no real options (single "Default Title" / empty option) → simple product (`hasVariants:0`) with stock/cost/selling taken from that single row.
+- Skip pure image-only rows (no SKU, no price) — they are extra gallery images, not variants (optionally keep the first as the product image).
+- Ensure variant SKUs are unique within a product (append index if duplicated); ensure product SKU is non-empty (fallback to Handle).
+
+**C. Preview + confirm**
+Show a summary: `{X} produits · {Y} variantes · stock total {Z}` and a small table (nom, nb variantes, stock, prix). Let the user deselect products. On confirm, POST the selected products to `/api/products/import`. Toast `"{created} produits importés · {skipped} ignorés"`; show errors if any; invalidate `["/api/products"]` and `["/api/inventory/stats"]`.
+
+## Testing checklist
+1. Import the Shopify CSV: products are created grouped by `Handle`; a product with color/size options gets its variants (e.g. "Tabac / 42") with correct stock, cost and selling price.
+2. Prices show correctly in DH (e.g. a 199 DH variant stores 19900 centimes); `Cost per item` maps to cost.
+3. A single-variant ("Default Title") product is created as a simple product (no variants).
+4. Re-importing the same file skips existing SKUs (no duplicates) when the option is on.
+5. The huge HTML in `Body (HTML)` is stripped to clean text (or empty), not stored raw.
+6. Large file (thousands of rows) imports without timing out (batched), and the result toast reports created/skipped/errors.
