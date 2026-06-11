@@ -21,6 +21,7 @@ import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
 import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
+import { computeProfitability, resolveDateRange } from "./services/profit";
 
 import fs from "fs";
 
@@ -910,8 +911,18 @@ export async function registerRoutes(
     // Build a name→productId map from store products
     const productNameToId = new Map(storeProducts.map((p: any) => [p.name.toLowerCase().trim(), p.id]));
 
-    // Full net profit formula: Revenue(delivered) - ProductCost - Shipping - Packaging - ConfirmationCost - AgentCommissions - AdSpend
-    const netProfit = revenue - totalProductCost - totalShipping - totalPackaging - totalConfirmationCost - totalAgentCommissions - adSpendTotal;
+    // ── PROFIT NET: delegate to shared computeProfitability for identical results
+    // to Profit Analyzer Pro (same formula, same cost components, no divergence).
+    // We pass only the date bounds — product/agent/source filters are intentionally
+    // excluded because the Analyzer is always store-wide, and the Dashboard profit
+    // card should match the Analyzer's total for the same period.
+    const profResult = await computeProfitability(storeId, {
+      dateFrom: dateFrom || undefined,
+      dateTo:   dateTo   || undefined,
+      // No dateFrom/dateTo → "all time" (matches dashboard showing all orders)
+      dateRange: (!dateFrom && !dateTo) ? 'all' : undefined,
+    });
+    const netProfit = profResult.totals.netProfit;
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
@@ -6337,328 +6348,10 @@ function ensureHeaders(sheet) {
   // ─────────────────────────────────────────────────────────────────────────
   app.get("/api/products/profitability", requireAuth, async (req, res) => {
     try {
-      const user = req.user!;
-      const storeId = user.storeId!;
+      const storeId = req.user!.storeId!;
       const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
-
-      const now = new Date();
-      let cutoff: Date;
-      let endDate: Date = new Date();
-
-      if (dateFrom) {
-        cutoff  = new Date(dateFrom + 'T00:00:00');
-        endDate = dateTo ? new Date(dateTo + 'T23:59:59') : new Date();
-      } else if (dateRange === 'today') {
-        cutoff = new Date(); cutoff.setHours(0, 0, 0, 0);
-      } else if (dateRange === 'yesterday') {
-        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 1); cutoff.setHours(0, 0, 0, 0);
-        endDate = new Date(); endDate.setDate(endDate.getDate() - 1); endDate.setHours(23, 59, 59, 999);
-      } else if (dateRange === '7days') {
-        cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6); cutoff.setHours(0, 0, 0, 0);
-      } else if (dateRange === 'lastmonth') {
-        cutoff  = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
-      } else if (dateRange === 'all') {
-        cutoff = new Date('2020-01-01');
-      } else {
-        cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
-      }
-
-      const storeOrders = await db
-        .select()
-        .from(orders)
-        .where(and(
-          eq(orders.storeId, storeId),
-          gte(orders.createdAt, cutoff),
-          lte(orders.createdAt, endDate),
-        ));
-
-      const orderIds = storeOrders.map(o => o.id);
-
-      // ── Fetch ad spend from BOTH tables ──────────────────────────────────
-      const cutoffDateStr  = cutoff.toISOString().slice(0, 10);
-      const endDateStr     = endDate.toISOString().slice(0, 10);
-
-      // 1. adSpendTracking (legacy) — amount in DH
-      const legacyAdRows = await db.select({
-        productId: adSpendTracking.productId,
-        amount:    adSpendTracking.amount,
-      }).from(adSpendTracking).where(and(
-        eq(adSpendTracking.storeId, storeId),
-        sql`${adSpendTracking.date} >= ${cutoffDateStr}`,
-        sql`${adSpendTracking.date} <= ${endDateStr}`,
-      ));
-
-      // 2. adSpend (Publicités module) — amount in centimes → divide by 100
-      const newAdEntries = await storage.getAdSpendEntries(storeId, {
-        dateFrom: cutoffDateStr,
-        dateTo:   endDateStr,
-        allUsers: true,
-      });
-
-      // Combined for platform totals (all normalized to DH)
-      const adSpendRows = [
-        ...legacyAdRows.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) })),
-        ...newAdEntries.map((r: any) => ({ productId: r.productId, amountDH: Number(r.amount || 0) / 100 })),
-      ];
-
-      // Build map: productId → total adSpend (DH)
-      const productAdSpendMap: Record<number, number> = {};
-      let globalAdSpend = 0;
-      for (const row of adSpendRows) {
-        if (row.productId) {
-          productAdSpendMap[row.productId] = (productAdSpendMap[row.productId] || 0) + row.amountDH;
-        } else {
-          globalAdSpend += row.amountDH;
-        }
-      }
-
-      // Fetch orderItems with product info (skip if no orders in range)
-      const itemRows = orderIds.length > 0 ? await db
-        .select({
-          orderId:          orderItems.orderId,
-          productId:        orderItems.productId,
-          rawProductName:   orderItems.rawProductName,
-          quantity:         orderItems.quantity,
-          price:            orderItems.price,
-          productName:      products.name,
-          productCostPrice: products.costPrice,
-          productSettings:  products.settings,
-        })
-        .from(orderItems)
-        .leftJoin(products, eq(orderItems.productId, products.id))
-        .where(inArray(orderItems.orderId, orderIds)) : [];
-
-      const orderMap = new Map(storeOrders.map(o => [o.id, o]));
-
-      // Fetch agent commission rates (DH per delivered order)
-      const agentSettings = await storage.getStoreAgentSettings(storeId);
-      const agentRateMap = new Map<number, number>(
-        agentSettings.map((s: any) => [s.agentId, Number(s.commissionRate ?? 0)])
-      );
-
-      type ProductStats = {
-        id: number; name: string;
-        totalOrders: number; confirmedOrders: number; deliveredOrders: number;
-        refusedOrders: number; returnedOrders: number;
-        totalUnits: number; deliveredUnits: number;
-        revenue: number; productCost: number; shippingCost: number; packagingCost: number; confirmationCost: number; adSpend: number;
-        netProfit: number; margin: number; roi: number;
-        confirmRate: number; deliveryRate: number;
-      };
-
-      const CONFIRMED_SET = new Set(["confirme","confirmé","expédié","attente de ramassage","in_progress","delivered","livré","livrée"]);
-      const REFUSED_SET   = new Set(["refused","refusé"]);
-      const RETURN_SET    = new Set(["retourné","retour en cours","retourné à l'expéditeur","tentative échouée","article retourné"]);
-
-      // ── Normalisation helper (strips Arabic diacritics, punctuation, extra spaces) ──
-      const norm = (s: string) =>
-        (s || '').toLowerCase().normalize('NFKD')
-          .replace(/[\u064B-\u065F\u0670]/g, '')
-          .replace(/[^\p{L}\p{N}]+/gu, ' ')
-          .replace(/\s+/g, ' ').trim();
-
-      // ── Build catalog maps from store products (once) ──────────────────────
-      const storeProductsList = await db.select({
-        id: products.id, name: products.name,
-        costPrice: products.costPrice, stock: products.stock,
-        settings: products.settings,
-      }).from(products).where(eq(products.storeId, storeId));
-
-      const displayById = new Map<number, string>();   // productId → canonical display name
-      const costByName  = new Map<string, number>();   // normName  → costPrice (centimes)
-      const idByName    = new Map<string, number>();   // normName  → productId (first match)
-      const settingsById = new Map<number, any>();     // productId → settings
-      for (const p of storeProductsList) {
-        displayById.set(p.id, p.name);
-        settingsById.set(p.id, p.settings);
-        const nk = norm(p.name);
-        costByName.set(nk, Number(p.costPrice || 0));
-        if (!idByName.has(nk)) idByName.set(nk, p.id);
-      }
-
-      // ── statsMap keyed by normalised product NAME ───────────────────────────
-      const statsMap: Record<string, ProductStats> = {};
-      const countedOrderForProduct    = new Set<string>();
-      const countedOrderStatForProduct = new Set<string>();
-
-      const makeEmptyRow = (display: string, pid: number): ProductStats => ({
-        id: pid, name: display,
-        totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
-        refusedOrders: 0, returnedOrders: 0,
-        totalUnits: 0, deliveredUnits: 0,
-        revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0, adSpend: 0,
-        netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
-      });
-
-      for (const item of itemRows) {
-        const order = orderMap.get(item.orderId);
-        if (!order) continue;
-
-        const pid = item.productId || 0;
-        // Resolve display name: prefer catalog name for linked items
-        const display = (pid > 0 ? displayById.get(pid) : undefined)
-          || item.rawProductName
-          || item.productName
-          || 'Produit inconnu';
-        const key = norm(display);
-
-        if (!statsMap[key]) {
-          // Canonical ID: linked productId first, then catalog lookup by name
-          const canonicalId = pid > 0 ? pid : (idByName.get(key) || 0);
-          statsMap[key] = makeEmptyRow(display, canonicalId);
-        } else if (pid > 0 && statsMap[key].id === 0) {
-          // Upgrade bucket ID once we find a linked item
-          statsMap[key].id = pid;
-        }
-
-        const s = statsMap[key];
-        const status = ((order as any).status || '').toLowerCase().trim();
-        const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
-
-        // Order-level status counters: once per order per name-key
-        const statGuardKey = `stat_${key}_${item.orderId}`;
-        if (!countedOrderStatForProduct.has(statGuardKey)) {
-          countedOrderStatForProduct.add(statGuardKey);
-          s.totalOrders++;
-          if (CONFIRMED_SET.has(status)) s.confirmedOrders++;
-          if (isDelivered)               s.deliveredOrders++;
-          if (REFUSED_SET.has(status))   s.refusedOrders++;
-          if (RETURN_SET.has(status))    s.returnedOrders++;
-        }
-
-        // Unit counts are per item row (quantity matters)
-        s.totalUnits += Number(item.quantity || 1);
-        if (isDelivered) {
-          s.deliveredUnits += Number(item.quantity || 1);
-          // COGS: item cost → catalog cost by name → order.productCost fallback
-          const unitCostCents = item.productCostPrice
-            ?? costByName.get(key)
-            ?? costByName.get(norm(item.rawProductName || ''))
-            ?? (order as any).productCost
-            ?? 0;
-          s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
-        }
-
-        if (isDelivered) {
-          // Revenue, shipping, packaging, commissions: charged ONCE per order per name-key
-          const guardKey = `${key}_${item.orderId}`;
-          if (!countedOrderForProduct.has(guardKey)) {
-            countedOrderForProduct.add(guardKey);
-            s.revenue      += Number((order as any).totalPrice   || 0) / 100;
-            s.shippingCost += Number((order as any).shippingCost || 0) / 100;
-            // Packaging / confirmation from product settings (prefer linked product, then catalog)
-            const prodSettings = (pid > 0 ? settingsById.get(pid) : undefined)
-              || (item.productSettings as any);
-            const emballageDH = Number(prodSettings?.profitDefaults?.coutEmballage || 0);
-            s.packagingCost   += emballageDH;
-            const confDH   = Number(prodSettings?.profitDefaults?.coutConfirmation || 0);
-            const agentDH  = agentRateMap.get((order as any).assignedToId) ?? 0;
-            s.confirmationCost += confDH + agentDH;
-          }
-        }
-      }
-
-      // ── Attach ad spend by name bucket (not by productId directly) ─────────
-      for (const [pidStr, amountDH] of Object.entries(productAdSpendMap)) {
-        const pid = Number(pidStr);
-        const display = displayById.get(pid) || '';
-        const key = norm(display);
-        if (!key) continue;
-        if (!statsMap[key]) statsMap[key] = makeEmptyRow(display, pid);
-        statsMap[key].adSpend = (statsMap[key].adSpend || 0) + Number(amountDH);
-      }
-
-      // ── Build productResult (ad spend already embedded above) ──────────────
-      const productResult = Object.values(statsMap).map(s => {
-        const netProfit    = s.revenue - s.productCost - s.shippingCost - s.packagingCost - s.confirmationCost - s.adSpend;
-        const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
-        const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
-        const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
-        const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
-        return { ...s, netProfit, margin, roi, confirmRate, deliveryRate };
-      }).sort((a, b) => b.netProfit - a.netProfit);
-
-      // Global ad spend (not tagged to any product) shown separately in summary
-      const globalAdSpendTotal = globalAdSpend;
-
-      // ── Merge catalog products that have no orders yet ──────────────────────
-      // Keyed by norm(name) so we never add a "no-orders" duplicate of a product
-      // already captured in the orders loop above.
-      const existingNormNames = new Set(Object.values(statsMap).map(s => norm(s.name)));
-      for (const sp of storeProductsList) {
-        if (existingNormNames.has(norm(sp.name))) continue;
-        const tagged = productAdSpendMap[sp.id] || 0;
-        productResult.push({
-          id: sp.id, name: sp.name,
-          totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
-          refusedOrders: 0, returnedOrders: 0,
-          revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0,
-          totalUnits: 0, deliveredUnits: 0,
-          adSpend: tagged,
-          netProfit: -tagged,
-          margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
-          noData: tagged === 0,
-        } as any);
-      }
-
-      // ── Final safety: collapse any remaining same-name rows ─────────────────
-      const finalMap = new Map<string, any>();
-      for (const row of productResult) {
-        const k = norm(row.name);
-        if (!finalMap.has(k)) {
-          finalMap.set(k, { ...row });
-        } else {
-          const existing = finalMap.get(k)!;
-          for (const field of ['totalOrders','confirmedOrders','deliveredOrders','refusedOrders','returnedOrders',
-                               'totalUnits','deliveredUnits','revenue','productCost','shippingCost',
-                               'packagingCost','confirmationCost','adSpend'] as const) {
-            existing[field] = (existing[field] || 0) + (row[field] || 0);
-          }
-          // Recompute derived fields after merge
-          existing.netProfit    = existing.revenue - existing.productCost - existing.shippingCost - existing.packagingCost - existing.confirmationCost - existing.adSpend;
-          existing.margin       = existing.revenue > 0 ? (existing.netProfit / existing.revenue) * 100 : 0;
-          existing.roi          = existing.productCost > 0 ? (existing.netProfit / existing.productCost) * 100 : 0;
-          existing.confirmRate  = existing.totalOrders > 0 ? (existing.confirmedOrders / existing.totalOrders) * 100 : 0;
-          existing.deliveryRate = existing.confirmedOrders > 0 ? (existing.deliveredOrders / existing.confirmedOrders) * 100 : 0;
-          if (existing.id === 0 && row.id > 0) existing.id = row.id;
-        }
-      }
-      const dedupedResult = Array.from(finalMap.values()).sort((a: any, b: any) => b.netProfit - a.netProfit);
-
-      // ── Per-platform aggregation ──────────────────────────────────
-      type PlatStat = { platform: string; orders: number; delivered: number; revenue: number; adSpend: number; netProfit: number; roas: number; cpo: number };
-      const platMap: Record<string, PlatStat> = {};
-      for (const o of storeOrders) {
-        const raw   = (o as any).trafficPlatform || (o as any).utmSource || "";
-        const low   = raw.toLowerCase();
-        const label = low.includes("facebook") || low.includes("fb") || low.includes("meta") ? "Facebook / Meta"
-                    : low.includes("tiktok") || low.includes("tik") ? "TikTok"
-                    : low.includes("google") ? "Google"
-                    : low.includes("organic") || low.includes("organique") ? "Organique"
-                    : raw || "Non défini";
-        if (!platMap[label]) platMap[label] = { platform: label, orders: 0, delivered: 0, revenue: 0, adSpend: 0, netProfit: 0, roas: 0, cpo: 0 };
-        const p = platMap[label];
-        const isDel = ["delivered","livré","livrée"].includes(((o as any).status || "").toLowerCase());
-        p.orders++;
-        if (isDel) {
-          p.delivered++;
-          p.revenue += Number((o as any).totalPrice || 0) / 100;
-        }
-      }
-      // Distribute total adSpend from adSpendTracking proportionally by revenue
-      const totalAdSpendDH = adSpendRows.reduce((s: number, r: any) => s + r.amountDH, 0);
-      const platformResult = Object.values(platMap).map(p => {
-        // Platform view: distribute total spend proportionally (acceptable at platform level)
-        const totalPlatRev = Object.values(platMap).reduce((s, x) => s + x.revenue, 0);
-        const platAdSpend  = totalPlatRev > 0 ? totalAdSpendDH * (p.revenue / totalPlatRev) : 0;
-        const netProfit    = p.revenue - platAdSpend;
-        const roas         = platAdSpend > 0 ? p.revenue / platAdSpend : 0;
-        const cpo          = p.orders   > 0 ? platAdSpend / p.orders  : 0;
-        return { ...p, adSpend: platAdSpend, netProfit, roas, cpo };
-      }).sort((a, b) => b.revenue - a.revenue);
-
-      res.json({ products: dedupedResult, platforms: platformResult, globalAdSpend: globalAdSpendTotal });
+      const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange });
+      res.json({ products: result.products, platforms: result.platforms, globalAdSpend: result.globalAdSpend });
     } catch (err) {
       throw err;
     }
