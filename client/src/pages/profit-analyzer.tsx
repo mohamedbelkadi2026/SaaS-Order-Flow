@@ -873,7 +873,7 @@ export default function ProfitAnalyzer() {
                         const marginColor = p.margin >= 30 ? '#10b981' : p.margin >= 10 ? '#f59e0b' : '#f43f5e';
                         return (
                           <tr key={i} className={`border-b border-white/5 hover:bg-white/5 transition-colors ${p.noData ? "opacity-50" : ""}`} data-testid={`row-live-product-${i}`}>
-                            <td className="px-4 py-3 text-white font-semibold min-w-[200px] max-w-[260px]" title={p.name} style={{ wordBreak: 'break-word', whiteSpace: 'normal', lineHeight: '1.3' }}>
+                            <td className="px-4 py-3 text-white font-semibold w-1/3" title={p.name} style={{ wordBreak: 'break-word', whiteSpace: 'normal', lineHeight: '1.3' }}>
                               {p.name}
                               {p.noData && (
                                 <span className="ml-2 text-[9px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 border border-slate-600 font-normal">
@@ -1036,7 +1036,7 @@ export default function ProfitAnalyzer() {
                         <div className="flex items-center gap-3 min-w-0">
                           <CalendarDays className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                           <div className="min-w-0">
-                            <p className="text-sm font-semibold text-white truncate">
+                            <p className="text-sm font-semibold text-white whitespace-normal break-words">
                               {rep.title || rep.fileName || `Rapport ${rep.month}`}
                               <span className="ml-2 text-xs text-slate-400 font-normal">{rep.month}</span>
                             </p>
@@ -1228,7 +1228,7 @@ export default function ProfitAnalyzer() {
                                 className="w-4 h-4 accent-amber-500 shrink-0"
                               />
                               <div className="flex-1 min-w-0">
-                                <div className="text-sm text-white truncate font-medium">{p.name}</div>
+                                <div className="text-sm text-white whitespace-normal break-words font-medium" title={p.name}>{p.name}</div>
                                 <div className="text-[11px] text-slate-400">
                                   {p.rowCount} livraisons
                                   {p.totalQty !== p.rowCount && (
@@ -1267,7 +1267,7 @@ export default function ProfitAnalyzer() {
                             <TableBody>
                               {previewProducts.map((p, i) => (
                                 <TableRow key={i} className={`border-white/8 hover:bg-white/4 ${!selectedProductKeys.has(p.name) ? "opacity-40" : ""}`}>
-                                  <TableCell className="text-white text-xs py-2 font-medium max-w-[200px] truncate">{p.name}</TableCell>
+                                  <TableCell className="text-white text-xs py-2 font-medium whitespace-normal break-words" title={p.name}>{p.name}</TableCell>
                                   <TableCell className="text-center text-xs py-2 text-amber-300">{p.totalQty}</TableCell>
                                   <TableCell className="text-right text-xs py-2 text-emerald-300">{fmtDH(p.totalRevenue)}</TableCell>
                                   <TableCell className="text-right text-xs py-2 text-slate-400">{fmtDH(p.totalShipping)}</TableCell>
@@ -1372,8 +1372,8 @@ export default function ProfitAnalyzer() {
                         <TableBody>
                           {products.map((p, i) => (
                             <TableRow key={i} className="border-white/8 hover:bg-white/4" data-testid={`row-cost-${i}`}>
-                              <TableCell className="text-white text-xs py-2 font-medium max-w-[180px]">
-                                <div className="truncate">{p.name}</div>
+                              <TableCell className="text-white text-xs py-2 font-medium">
+                                <div className="whitespace-normal break-words" title={p.name}>{p.name}</div>
                                 {p.suggestedPrice && (
                                   <button
                                     className="text-[10px] text-amber-400 hover:text-amber-300 flex items-center gap-1 mt-0.5"
@@ -1535,7 +1535,7 @@ export default function ProfitAnalyzer() {
                             const profCls = r.netProfit >= 0 ? "text-emerald-400 font-extrabold" : "text-red-400 font-extrabold";
                             return (
                               <TableRow key={i} className="border-white/8 hover:bg-white/4" data-testid={`row-result-${i}`}>
-                                <TableCell className="text-white font-semibold text-sm py-3 max-w-[180px]">{r.name}</TableCell>
+                                <TableCell className="text-white font-semibold text-sm py-3 whitespace-normal break-words" title={r.name}>{r.name}</TableCell>
                                 <TableCell className="text-center py-3">
                                   <Badge variant="outline" className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">{r.qty}</Badge>
                                 </TableCell>
@@ -1658,7 +1658,7 @@ export default function ProfitAnalyzer() {
                         value={reportMonth}
                         onChange={e => setReportMonth(e.target.value)}
                         data-testid="input-report-month"
-                        className="rounded-lg border border-white/15 bg-white/8 text-white text-sm px-3 py-1.5 focus:outline-none focus:border-amber-500/50"
+                        className="rounded-lg border border-gray-300 bg-white text-gray-900 text-sm px-3 py-1.5 focus:outline-none focus:border-amber-500 [color-scheme:light]"
                       />
                     </div>
                     <div className="flex flex-col gap-1 flex-1">
@@ -1668,7 +1668,7 @@ export default function ProfitAnalyzer() {
                         onChange={e => setReportTitle(e.target.value)}
                         placeholder={`Rapport ${reportMonth}…`}
                         data-testid="input-report-title"
-                        className="bg-white/8 border-white/15 text-white placeholder:text-white/30 focus:border-amber-500/50"
+                        className="bg-white border-gray-300 text-gray-900 placeholder:text-gray-400 focus:border-amber-500"
                       />
                     </div>
                     <div className="flex items-end">
