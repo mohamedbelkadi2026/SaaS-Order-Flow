@@ -899,6 +899,18 @@ export default function Inventory() {
         coutConfirmation: parseFloat(form.coutConfirmation) || 0,
       };
       if (imageChanged) updatePayload.imageUrl = form.imageUrl || null;
+      if (hasVariants) {
+        updatePayload.hasVariants = 1;
+        updatePayload.variants = variants.map(v => ({
+          name: v.name,
+          sku: v.sku || '',
+          costPrice: v.costPrice ? Math.round(parseFloat(v.costPrice) * 100) : 0,
+          sellingPrice: v.sellingPrice ? Math.round(parseFloat(v.sellingPrice) * 100) : 0,
+          stock: v.stock ? parseInt(v.stock) : 0,
+        }));
+      } else {
+        updatePayload.variants = [];
+      }
       await updateProduct.mutateAsync(updatePayload);
       toast({ title: "Produit mis à jour", description: `${form.name} a été modifié` });
       setEditOpen(false);
@@ -1019,7 +1031,7 @@ export default function Inventory() {
     }
   };
 
-  const openEdit = (product: any) => {
+  const openEdit = async (product: any) => {
     setEditingProduct(product);
     // Parse AI features from JSON array back to comma-separated string for display
     let aiFeaturesDisplay = "";
@@ -1049,6 +1061,27 @@ export default function Inventory() {
       coutLivraison: pd.coutLivraison ? String(pd.coutLivraison) : "",
       coutConfirmation: pd.coutConfirmation ? String(pd.coutConfirmation) : "",
     });
+
+    // Load existing variants
+    setHasVariants(false);
+    setVariants([]);
+    if (product.hasVariants) {
+      try {
+        const data = await apiRequest("GET", `/api/products/${product.id}`);
+        const fetched = await data.json();
+        if (fetched.variants && fetched.variants.length > 0) {
+          setHasVariants(true);
+          setVariants(fetched.variants.map((v: any) => ({
+            name: v.name || "",
+            sku: v.sku || "",
+            costPrice: v.costPrice ? (v.costPrice / 100).toFixed(2) : "",
+            sellingPrice: v.sellingPrice ? (v.sellingPrice / 100).toFixed(2) : "",
+            stock: String(v.stock ?? 0),
+          })));
+        }
+      } catch {}
+    }
+
     setEditOpen(true);
   };
 
@@ -1672,6 +1705,54 @@ export default function Inventory() {
                 />
               </div>
             </div>
+
+            <div className="flex items-center gap-3 pt-2 border-t">
+              <Switch id="edit-has-variants" checked={hasVariants} onCheckedChange={setHasVariants} data-testid="switch-edit-has-variants" />
+              <Label htmlFor="edit-has-variants" className="font-medium">Ce produit a des variantes</Label>
+            </div>
+
+            {hasVariants && (
+              <div className="space-y-3 p-4 rounded-xl bg-muted/30 border">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-semibold text-sm">Variantes</h4>
+                  <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-edit-add-variant">
+                    <Plus className="w-3 h-3 mr-1" /> Ajouter
+                  </Button>
+                </div>
+                {variants.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">Aucune variante. Cliquez sur "Ajouter" pour commencer.</p>
+                )}
+                {variants.map((v, idx) => (
+                  <div key={idx} className="grid grid-cols-6 gap-2 items-end p-3 bg-background rounded-lg border" data-testid={`edit-variant-row-${idx}`}>
+                    <div className="col-span-2 space-y-1">
+                      <Label className="text-xs">Nom</Label>
+                      <Input size={1} value={v.name} onChange={e => updateVariant(idx, 'name', e.target.value)} placeholder="ex: Rouge / L" data-testid={`input-edit-variant-name-${idx}`} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">SKU</Label>
+                      <Input size={1} value={v.sku} onChange={e => updateVariant(idx, 'sku', e.target.value)} placeholder="SKU" data-testid={`input-edit-variant-sku-${idx}`} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Coûtant</Label>
+                      <Input size={1} type="number" step="0.01" value={v.costPrice} onChange={e => updateVariant(idx, 'costPrice', e.target.value)} placeholder="0" data-testid={`input-edit-variant-cost-${idx}`} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Vente</Label>
+                      <Input size={1} type="number" step="0.01" value={v.sellingPrice} onChange={e => updateVariant(idx, 'sellingPrice', e.target.value)} placeholder="0" data-testid={`input-edit-variant-selling-${idx}`} />
+                    </div>
+                    <div className="flex items-end gap-1">
+                      <div className="flex-1 space-y-1">
+                        <Label className="text-xs">Stock</Label>
+                        <Input size={1} type="number" value={v.stock} onChange={e => updateVariant(idx, 'stock', e.target.value)} placeholder="0" data-testid={`input-edit-variant-stock-${idx}`} />
+                      </div>
+                      <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 shrink-0" onClick={() => removeVariant(idx)} data-testid={`button-edit-remove-variant-${idx}`}>
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => { setEditOpen(false); setEditingProduct(null); resetForm(); }}>Annuler</Button>

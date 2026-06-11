@@ -10,6 +10,7 @@ import {
   orders, orderItems, products, adSpendTracking,
 } from "@shared/schema";
 import { eq, and, gte, lte, inArray, sql } from "drizzle-orm";
+import { splitVariant } from "./variants";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -230,17 +231,31 @@ export async function computeProfitability(
     if (!order) continue;
 
     const pid = item.productId || 0;
-    const display = (pid > 0 ? displayById.get(pid) : undefined)
+    let display = (pid > 0 ? displayById.get(pid) : undefined)
       || item.rawProductName
       || item.productName
       || 'Produit inconnu';
+
+    // Roll unlinked "Parent - Size" items up to the parent product bucket
+    let resolvedPid = pid;
+    if (pid === 0 && display !== 'Produit inconnu') {
+      const { base } = splitVariant(display);
+      if (base !== display) {
+        const parentId = idByName.get(norm(base));
+        if (parentId) {
+          resolvedPid = parentId;
+          display = displayById.get(parentId) || base;
+        }
+      }
+    }
+
     const key = norm(display);
 
     if (!statsMap[key]) {
-      const canonicalId = pid > 0 ? pid : (idByName.get(key) || 0);
+      const canonicalId = resolvedPid > 0 ? resolvedPid : (idByName.get(key) || 0);
       statsMap[key] = makeEmptyRow(display, canonicalId);
-    } else if (pid > 0 && statsMap[key].id === 0) {
-      statsMap[key].id = pid;
+    } else if (resolvedPid > 0 && statsMap[key].id === 0) {
+      statsMap[key].id = resolvedPid;
     }
 
     const s = statsMap[key];
@@ -272,7 +287,8 @@ export async function computeProfitability(
         countedOrderForProduct.add(guardKey);
         s.revenue      += Number((order as any).totalPrice   || 0) / 100;
         s.shippingCost += Number((order as any).shippingCost || 0) / 100;
-        const prodSettings = (pid > 0 ? settingsById.get(pid) : undefined)
+        const prodSettings = (resolvedPid > 0 ? settingsById.get(resolvedPid) : undefined)
+          || (pid > 0 ? settingsById.get(pid) : undefined)
           || (item.productSettings as any);
         const emballageDH = Number(prodSettings?.profitDefaults?.coutEmballage || 0);
         s.packagingCost   += emballageDH;

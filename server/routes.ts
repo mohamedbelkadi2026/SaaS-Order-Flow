@@ -22,6 +22,7 @@ import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliv
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
+import { resolveProductId, splitVariant } from "./services/variants";
 
 import fs from "fs";
 
@@ -4091,16 +4092,29 @@ export async function registerRoutes(
       const orderItemsToCreate: { productId: number | null; quantity: number; price: number; rawProductName: string; sku: string; variantInfo: string }[] = [];
 
       for (const item of parsed.lineItems) {
-        const matchedProduct = storeProducts.find(
-          p => (item.sku && p.sku === item.sku) || p.name === item.title
+        // 1) Try SKU match (most reliable)
+        let matchedProduct: typeof storeProducts[0] | undefined = storeProducts.find(
+          p => item.sku && p.sku === item.sku
         );
+        let resolvedVariantName: string | null = null;
+
+        if (!matchedProduct) {
+          // 2) Resolve by name — handles "Parent - Size" patterns
+          const resolved = resolveProductId(item.title, storeProducts);
+          if (resolved.productId) {
+            matchedProduct = storeProducts.find(p => p.id === resolved.productId);
+            resolvedVariantName = resolved.variantName;
+          }
+        }
+
+        const variantInfo = resolvedVariantName || (item as any).variantInfo || '';
         orderItemsToCreate.push({
           productId: matchedProduct?.id ?? null,
           quantity: item.quantity,
           price: item.price,
           rawProductName: item.title,
           sku: item.sku || '',
-          variantInfo: (item as any).variantInfo || '',
+          variantInfo,
         });
         if (matchedProduct) productCost += matchedProduct.costPrice * item.quantity;
       }
@@ -5850,6 +5864,8 @@ function ensureHeaders(sheet) {
       }
 
       const results = { created: 0, skipped: 0, errors: [] as { row: number; message: string }[] };
+      // Pre-load store products once for resolveProductId lookups
+      const importStoreProducts = await storage.getProductsByStore(storeId);
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i] || {};
@@ -5875,13 +5891,21 @@ function ensureHeaders(sheet) {
 
           const productName = String(row.productName ?? "").trim();
           let productId: number | null = null;
+          let importVariantInfo: string | null = null;
           if (productName) {
-            const product = await storage.getOrCreateProductByName(storeId, {
-              name: productName,
-              sku: row.productSku ? String(row.productSku).trim() : null,
-              sellingPrice: Math.round(unitPriceDh * 100),
-            });
-            productId = product?.id ?? null;
+            // First try to resolve via parent-name matching (handles "Parent - Size" imports)
+            const resolved = resolveProductId(productName, importStoreProducts);
+            if (resolved.productId) {
+              productId = resolved.productId;
+              importVariantInfo = resolved.variantName;
+            } else {
+              const product = await storage.getOrCreateProductByName(storeId, {
+                name: productName,
+                sku: row.productSku ? String(row.productSku).trim() : null,
+                sellingPrice: Math.round(unitPriceDh * 100),
+              });
+              productId = product?.id ?? null;
+            }
           }
 
           const carrierName = String(row.carrierProvider ?? "").trim();
@@ -5915,6 +5939,7 @@ function ensureHeaders(sheet) {
             sku: row.productSku ? String(row.productSku).trim() : null,
             quantity,
             price: Math.round(unitPriceDh * 100),
+            variantInfo: importVariantInfo || '',
           }] as any : []);
 
           // Track within this batch so later rows dedupe against earlier ones
@@ -6443,6 +6468,47 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // POST /api/products/backfill-variants — one-time backfill: links existing unlinked order items
+  // to their parent product when rawProductName matches "Parent - Size" pattern.
+  app.post("/api/products/backfill-variants", requireAuth, requireAdmin, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    try {
+      const unlinkedItems = await db
+        .select({
+          id: orderItems.id,
+          rawProductName: orderItems.rawProductName,
+          variantInfo: orderItems.variantInfo,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`${orderItems.productId} IS NULL`,
+          sql`${orderItems.rawProductName} IS NOT NULL`,
+        ));
+
+      const storeProducts = await storage.getProductsByStore(storeId);
+      let linked = 0;
+
+      for (const item of unlinkedItems) {
+        const { productId, variantName } = resolveProductId(item.rawProductName || '', storeProducts);
+        if (productId) {
+          await db.update(orderItems)
+            .set({
+              productId,
+              variantInfo: variantName || item.variantInfo || '',
+            } as any)
+            .where(eq(orderItems.id, item.id));
+          linked++;
+        }
+      }
+
+      res.json({ linked, total: unlinkedItems.length });
+    } catch (err) {
+      throw err;
+    }
+  });
+
   app.patch("/api/products/:id", requireAuth, async (req, res) => {
     try {
       const productId = Number(req.params.id);
@@ -6465,9 +6531,17 @@ function ensureHeaders(sheet) {
         coutEmballage: z.number().min(0).optional(),
         coutLivraison: z.number().min(0).optional(),
         coutConfirmation: z.number().min(0).optional(),
+        hasVariants: z.number().optional(),
+        variants: z.array(z.object({
+          name: z.string().min(1),
+          sku: z.string().optional().default(''),
+          costPrice: z.number().min(0).default(0),
+          sellingPrice: z.number().min(0).default(0),
+          stock: z.number().min(0).default(0),
+        })).optional(),
       });
       const data = schema.parse(req.body);
-      const { coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, ...updateData } = data;
+      const { coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, variants: variantsPayload, ...updateData } = data;
       const hasCostFields = [coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation].some(v => v !== undefined);
       if (hasCostFields) {
         const existingSettings = (product.settings as any) || {};
@@ -6497,7 +6571,33 @@ function ensureHeaders(sheet) {
       }
 
       const updated = await storage.updateProduct(productId, updateData as any);
-      res.json(updated);
+
+      // Replace variants if provided
+      if (variantsPayload !== undefined) {
+        await db.delete(productVariants).where(eq(productVariants.productId, productId));
+        if (variantsPayload.length > 0) {
+          for (const v of variantsPayload) {
+            await db.insert(productVariants).values({
+              productId,
+              storeId: product.storeId!,
+              name: v.name,
+              sku: v.sku || null,
+              costPrice: v.costPrice,
+              sellingPrice: v.sellingPrice,
+              stock: v.stock,
+              imageUrl: null,
+            } as any);
+          }
+        }
+        // Sync hasVariants flag on the product
+        await db.update(products)
+          .set({ hasVariants: variantsPayload.length > 0 ? 1 : 0 } as any)
+          .where(eq(products.id, productId));
+      }
+
+      // Return the updated product (re-fetch to include any variant flag changes)
+      const final = await storage.getProduct(productId);
+      res.json(final || updated);
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
@@ -6517,6 +6617,21 @@ function ensureHeaders(sheet) {
       res.json({ type, count: prods.length, products: prods });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  // GET /api/products/:id — fetch a single product with its variants
+  app.get("/api/products/:id", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const productId = parseInt(req.params.id);
+    if (isNaN(productId)) return res.status(400).json({ message: "ID invalide" });
+    try {
+      const product = await storage.getProduct(productId);
+      if (!product || product.storeId !== storeId) return res.status(404).json({ message: "Produit introuvable" });
+      const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
+      res.json({ ...product, variants });
+    } catch (err) {
+      throw err;
     }
   });
 

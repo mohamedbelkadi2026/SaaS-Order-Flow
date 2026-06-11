@@ -1,0 +1,70 @@
+# Replit Prompt — Variants: edit them in the modal + roll "Parent - Size" orders under the parent product
+
+Two linked problems with product variants:
+1. A product shows e.g. "6 variantes" in the Stock list, but the **Modifier le produit** dialog has no variant editor — variants aren't loaded or saved on edit.
+2. When an order arrives as **"Grand Seigneur S Mocassin En Cuir BLANC - 40"** (where 40 is the size), the platform treats it as a **new separate product** instead of a **variant of** "Grand Seigneur S Mocassin En Cuir BLANC". The size order must be **counted on the parent product** and shown as one of its variants.
+
+Make variants work consistently for **import** AND **manual add/edit**.
+
+Verified facts: `order_items` has `product_id` (nullable), `raw_product_name`, `variant_info`, `sku` (NO `variant_id`). `products` has `has_variants`. `product_variants` has `name, sku, costPrice, sellingPrice, stock`. `GET /api/products/:id` already returns the product's variants. Profitability/inventory currently group by the full name, so "Parent - Size" splits off.
+
+## Part 1 — Edit modal loads, edits, and saves variants
+In `client/src/pages/inventory.tsx`:
+- When opening **Modifier** for a product, fetch its variants (`GET /api/products/:id` — use the `variants` it returns) and populate the existing `hasVariants` + `variants` state (map cents→DH for the inputs). Render the SAME variant editor used in the Add dialog (name, SKU, prix coûtant, prix de vente, stock, add/remove).
+- In `handleEdit`, include variants in the update payload when `hasVariants`:
+  ```ts
+  if (hasVariants) {
+    updatePayload.hasVariants = 1;
+    updatePayload.variants = variants.map(v => ({
+      name: v.name, sku: v.sku,
+      costPrice: v.costPrice ? Math.round(parseFloat(v.costPrice)*100) : 0,
+      sellingPrice: v.sellingPrice ? Math.round(parseFloat(v.sellingPrice)*100) : 0,
+      stock: v.stock ? parseInt(v.stock) : 0,
+    }));
+  }
+  ```
+- Backend `PATCH /api/products/:id`: when `variants` is present, **replace** the product's variants (delete existing `product_variants` for the product, insert the new list) and set `has_variants` accordingly, in a transaction. Keep other field updates working.
+
+## Part 2 — Resolve "Parent - Size" to the parent product + variant
+Add a server helper used by order creation, order import, AND a one-time backfill:
+```ts
+const SEP = /\s*[-–\/|]\s*/; // separators between base name and size/variant
+function splitVariant(raw: string): { base: string; suffix: string | null } {
+  const m = raw.match(/^(.*?)(?:\s*[-–\/|]\s*)([^-–\/|]{1,20})$/);
+  return m ? { base: m[1].trim(), suffix: m[2].trim() } : { base: raw.trim(), suffix: null };
+}
+async function resolveProduct(storeId, rawName): Promise<{ productId: number|null; variantName: string|null }> {
+  const norm = s => (s||'').toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g,'').replace(/[^\p{L}\p{N}]+/gu,' ').replace(/\s+/g,' ').trim();
+  // 1) exact product-name match
+  let p = products.find(x => norm(x.name) === norm(rawName));
+  if (p) return { productId: p.id, variantName: null };
+  // 2) strip the size/variant suffix and match the BASE to a parent product
+  const { base, suffix } = splitVariant(rawName);
+  if (suffix) {
+    p = products.find(x => norm(x.name) === norm(base));
+    if (p) return { productId: p.id, variantName: suffix }; // counts on the PARENT
+  }
+  return { productId: null, variantName: null };
+}
+```
+Apply it so that when an order item's `raw_product_name` is "Parent - 40":
+- set `order_items.product_id = parent.id` (so it counts on the parent product),
+- store the size in `order_items.variant_info` (e.g. "40"),
+- optionally match/attach the matching `product_variants` row by `norm(variant.name) === norm(suffix)` (for stock).
+Run this in: the order-create path, the order-import path, and a **one-time backfill** over existing orders:
+```sql
+-- pseudocode: for each order_item with product_id IS NULL and a "base - suffix" name
+-- whose base matches a product name, set product_id = that product's id.
+```
+(Implement the backfill in a script using `resolveProduct` so the existing "...- 39 / - 40" orders attach to the parent.)
+
+## Part 3 — Grouping rolls up to the parent everywhere
+In the profitability and inventory aggregations, when an item is unlinked (`product_id` NULL), strip the variant suffix with `splitVariant` and match the BASE name to a parent product, then group under that parent. Items linked via Part 2 already group under the parent by `product_id`. Show the sizes as variant sub-rows under the parent (like the "… - 39" row), but their orders/units/revenue count toward the parent product's totals — not as separate products.
+
+## Testing checklist
+1. Editing "Grand Seigneur S Mocassin En Cuir BLANC" shows its 6 variantes; changing a variant's stock/price and saving persists (replaces variants).
+2. An order "…BLANC - 40" links to the parent "…BLANC" (`product_id` = parent), with "40" in `variant_info`; it no longer appears as a separate product.
+3. After backfill, existing "…BLANC - 39 / - 40" orders count on the parent; the parent's CMD/stock/profit include them.
+4. Profit Analyzer & Stock show ONE "…BLANC" row with its sizes nested; totals roll up to the parent.
+5. Works the same whether the product/variants were added via import or manually.
+6. Run `npm run db:push` if you add any column.
