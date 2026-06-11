@@ -425,8 +425,9 @@ export function useUpdateProduct() {
 export function useDeleteProduct() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: number) => {
-      const res = await apiRequest("DELETE", `/api/products/${id}`);
+    mutationFn: async ({ id, force = false }: { id: number; force?: boolean }) => {
+      const qs = force ? "?force=true" : "";
+      const res = await apiRequest("DELETE", `/api/products/${id}${qs}`);
       return res.json();
     },
     onSuccess: () => {

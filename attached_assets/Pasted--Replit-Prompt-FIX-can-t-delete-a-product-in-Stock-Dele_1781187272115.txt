@@ -1,0 +1,41 @@
+# Replit Prompt — FIX: can't delete a product in Stock
+
+Deleting a product from Stock fails. Two causes (both verified in code):
+1. `storage.deleteProduct` only deletes `product_variants` + `products`. But products are also referenced by `ad_spend`, `ad_spend_tracking`, `agent_products`, `stock_logs` (and `ad_campaign_product_map`). After importing ad spend / adding stock, those child rows exist, so the hard DELETE throws a foreign-key violation → 500 → the product stays.
+2. When a product has orders, `DELETE /api/products/:id` returns 409 ("lié à des commandes") unless `?force=true` (which archives it). The `useDeleteProduct` hook calls DELETE **without** `force`, so it just fails and nothing happens.
+
+Fix both. Keep the "products with orders are archived, not hard-deleted" rule (it preserves order history).
+
+## Part 1 — `storage.deleteProduct`: remove child rows first (in a transaction)
+In `server/storage.ts`, replace the body of `deleteProduct(id)` so it deletes all child references that are NOT order history, then the product, atomically:
+```ts
+async deleteProduct(id: number): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.delete(adCampaignProductMap).where(eq(adCampaignProductMap.productId, id));
+    await tx.delete(adSpend).where(eq(adSpend.productId, id));
+    await tx.delete(adSpendTracking).where(eq(adSpendTracking.productId, id));
+    await tx.delete(agentProducts).where(eq(agentProducts.productId, id));
+    await tx.delete(stockLogs).where(eq(stockLogs.productId, id));
+    await tx.delete(productVariants).where(eq(productVariants.productId, id));
+    await tx.delete(products).where(eq(products.id, id));
+  });
+}
+```
+Import any of these table symbols if not already imported. Do NOT delete `order_items` here — products linked to orders go through `archiveProduct` (the route already routes them there). If your schema has other tables referencing `products.id`, delete those rows too inside the same transaction (search the schema for `references(() => products.id)`).
+
+## Part 2 — Frontend: archive when the product has orders (handle 409)
+In `useDeleteProduct` (`client/src/hooks/use-store-data.ts`) and the inventory single-row delete:
+- First call `DELETE /api/products/:id`. If it returns **409** (`{ message, usage }`), do NOT fail silently. Surface a confirm dialog: `Ce produit est lié à {usage.ordersCount} commande(s). L'archiver (l'historique sera conservé) ?` with `Archiver` / `Annuler`.
+- On `Archiver`, call `DELETE /api/products/:id?force=true` (the route archives it). On success, toast `Produit archivé` and invalidate `["/api/products"]`.
+- For products with no orders, deletion now succeeds (Part 1); toast `Produit supprimé`.
+
+Make the hook accept the force flag, e.g. `mutationFn: ({ id, force }) => apiRequest("DELETE", \`/api/products/${id}${force ? "?force=true" : ""}\`)`, and update the caller.
+
+## Part 3 — Hide archived products from the active Stock list
+Ensure the main products query excludes archived ones (`archived_at IS NULL`) so an archived product disappears from Stock immediately (the "Archivés" cleanup tab already lists them separately). If `getProducts` doesn't already filter `archivedAt`, add that condition for the normal list.
+
+## Testing checklist
+1. Delete a product that has imported ad spend and stock movements but **no orders** → it deletes successfully (no FK 500); its ad_spend/stock_logs rows are removed too.
+2. Delete a product that **has orders** → a dialog offers to archive; confirming archives it and it disappears from the active Stock list; its order history is preserved.
+3. The Profit Analyzer / Publicités no longer reference the deleted product (its ad_spend rows are gone).
+4. Archived products show only under the "Archivés" tab, not in the main Stock list.

@@ -1562,8 +1562,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteProduct(id: number): Promise<void> {
-    await db.delete(productVariants).where(eq(productVariants.productId, id));
-    await db.delete(products).where(eq(products.id, id));
+    await db.transaction(async (tx) => {
+      await tx.delete(adCampaignProductMap).where(eq(adCampaignProductMap.productId, id));
+      await tx.delete(adSpend).where(eq(adSpend.productId, id));
+      await tx.delete(adSpendTracking).where(eq(adSpendTracking.productId, id));
+      await tx.delete(agentProducts).where(eq(agentProducts.productId, id));
+      await tx.delete(stockLogs).where(eq(stockLogs.productId, id));
+      await tx.delete(stockMovements).where(eq(stockMovements.productId, id));
+      await tx.delete(productVariants).where(eq(productVariants.productId, id));
+      await tx.delete(products).where(eq(products.id, id));
+    });
   }
 
   async archiveProduct(id: number): Promise<void> {
@@ -1674,7 +1682,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getInventoryStats(storeId: number): Promise<any> {
-    const allProducts = await db.select().from(products).where(eq(products.storeId, storeId));
+    const allProducts = await db.select().from(products).where(and(eq(products.storeId, storeId), isNull(products.archivedAt)));
     const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
 
     const totalProducts = allProducts.length;
