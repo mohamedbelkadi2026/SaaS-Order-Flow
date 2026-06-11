@@ -49,7 +49,6 @@
     "@types/canvas-confetti": "^1.9.0",
     "@types/cors": "^2.8.19",
     "@types/multer": "^2.1.0",
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "archiver": "^7.0.1",
     "axios": "^1.14.0",
     "canvas-confetti": "^1.9.4",
@@ -132,7 +131,8 @@
   "overrides": {
     "drizzle-kit": {
       "@esbuild-kit/esm-loader": "npm:tsx@^4.20.4"
-    }
+    },
+    "protobufjs": "^7.4.0"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8"
