@@ -6447,51 +6447,76 @@ function ensureHeaders(sheet) {
         confirmRate: number; deliveryRate: number;
       };
 
-      const statsMap: Record<string, ProductStats> = {};
-      // Guard: per-order costs (revenue, shipping, packaging, commission) counted once per product per order
-      const countedOrderForProduct = new Set<string>();
-      // Guard: order-level counts (totalOrders, status counters) counted once per order per product
-      const countedOrderStatForProduct = new Set<string>();
-
       const CONFIRMED_SET = new Set(["confirme","confirmé","expédié","attente de ramassage","in_progress","delivered","livré","livrée"]);
       const REFUSED_SET   = new Set(["refused","refusé"]);
       const RETURN_SET    = new Set(["retourné","retour en cours","retourné à l'expéditeur","tentative échouée","article retourné"]);
 
-      // Build name → costPrice (centimes) map for COGS fallback on unlinked order_items
-      const storeProductsCost = await db.select({ name: products.name, costPrice: products.costPrice })
-        .from(products).where(eq(products.storeId, storeId));
-      const normCostKey = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g, '').replace(/\s+/g, ' ').trim();
-      const costByNameMap = new Map<string, number>();
-      for (const p of storeProductsCost) costByNameMap.set(normCostKey(p.name), Number(p.costPrice || 0));
+      // ── Normalisation helper (strips Arabic diacritics, punctuation, extra spaces) ──
+      const norm = (s: string) =>
+        (s || '').toLowerCase().normalize('NFKD')
+          .replace(/[\u064B-\u065F\u0670]/g, '')
+          .replace(/[^\p{L}\p{N}]+/gu, ' ')
+          .replace(/\s+/g, ' ').trim();
+
+      // ── Build catalog maps from store products (once) ──────────────────────
+      const storeProductsList = await db.select({
+        id: products.id, name: products.name,
+        costPrice: products.costPrice, stock: products.stock,
+        settings: products.settings,
+      }).from(products).where(eq(products.storeId, storeId));
+
+      const displayById = new Map<number, string>();   // productId → canonical display name
+      const costByName  = new Map<string, number>();   // normName  → costPrice (centimes)
+      const idByName    = new Map<string, number>();   // normName  → productId (first match)
+      const settingsById = new Map<number, any>();     // productId → settings
+      for (const p of storeProductsList) {
+        displayById.set(p.id, p.name);
+        settingsById.set(p.id, p.settings);
+        const nk = norm(p.name);
+        costByName.set(nk, Number(p.costPrice || 0));
+        if (!idByName.has(nk)) idByName.set(nk, p.id);
+      }
+
+      // ── statsMap keyed by normalised product NAME ───────────────────────────
+      const statsMap: Record<string, ProductStats> = {};
+      const countedOrderForProduct    = new Set<string>();
+      const countedOrderStatForProduct = new Set<string>();
+
+      const makeEmptyRow = (display: string, pid: number): ProductStats => ({
+        id: pid, name: display,
+        totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
+        refusedOrders: 0, returnedOrders: 0,
+        totalUnits: 0, deliveredUnits: 0,
+        revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0, adSpend: 0,
+        netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
+      });
 
       for (const item of itemRows) {
         const order = orderMap.get(item.orderId);
         if (!order) continue;
 
         const pid = item.productId || 0;
-        // Use canonical product name when the item is linked; raw name only for unlinked items
-        const displayName = (pid > 0 ? (item.productName || item.rawProductName) : item.rawProductName) || 'Produit inconnu';
-        const name = displayName.trim();
-        // Group strictly by productId when known — name variations (typos, sizes…) never split a product
-        const normKey = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u064B-\u065F\u0670]/g, '').replace(/\s+/g, ' ').trim();
-        const key = pid > 0 ? `pid_${pid}` : `raw_${normKey(item.rawProductName || name)}`;
+        // Resolve display name: prefer catalog name for linked items
+        const display = (pid > 0 ? displayById.get(pid) : undefined)
+          || item.rawProductName
+          || item.productName
+          || 'Produit inconnu';
+        const key = norm(display);
 
         if (!statsMap[key]) {
-          statsMap[key] = {
-            id: pid, name,
-            totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
-            refusedOrders: 0, returnedOrders: 0,
-            totalUnits: 0, deliveredUnits: 0,
-            revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0, adSpend: 0,
-            netProfit: 0, margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
-          };
+          // Canonical ID: linked productId first, then catalog lookup by name
+          const canonicalId = pid > 0 ? pid : (idByName.get(key) || 0);
+          statsMap[key] = makeEmptyRow(display, canonicalId);
+        } else if (pid > 0 && statsMap[key].id === 0) {
+          // Upgrade bucket ID once we find a linked item
+          statsMap[key].id = pid;
         }
 
         const s = statsMap[key];
         const status = ((order as any).status || '').toLowerCase().trim();
         const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
 
-        // Order-level status counters: count once per order per product key
+        // Order-level status counters: once per order per name-key
         const statGuardKey = `stat_${key}_${item.orderId}`;
         if (!countedOrderStatForProduct.has(statGuardKey)) {
           countedOrderStatForProduct.add(statGuardKey);
@@ -6506,76 +6531,100 @@ function ensureHeaders(sheet) {
         s.totalUnits += Number(item.quantity || 1);
         if (isDelivered) {
           s.deliveredUnits += Number(item.quantity || 1);
-          // COGS: per item × quantity (varies per item row)
+          // COGS: item cost → catalog cost by name → order.productCost fallback
           const unitCostCents = item.productCostPrice
-            ?? costByNameMap.get(normCostKey(item.rawProductName || ''))
+            ?? costByName.get(key)
+            ?? costByName.get(norm(item.rawProductName || ''))
             ?? (order as any).productCost
             ?? 0;
           s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
         }
 
         if (isDelivered) {
-          // Revenue, shipping, packaging, commissions: charged ONCE per order per product key
+          // Revenue, shipping, packaging, commissions: charged ONCE per order per name-key
           const guardKey = `${key}_${item.orderId}`;
           if (!countedOrderForProduct.has(guardKey)) {
             countedOrderForProduct.add(guardKey);
-            // All monetary values in DB are in centimes — divide by 100 to get DH
             s.revenue      += Number((order as any).totalPrice   || 0) / 100;
             s.shippingCost += Number((order as any).shippingCost || 0) / 100;
-            // Packaging cost (DH/order, from per-product settings)
-            const emballageDH = Number((item.productSettings as any)?.profitDefaults?.coutEmballage || 0);
+            // Packaging / confirmation from product settings (prefer linked product, then catalog)
+            const prodSettings = (pid > 0 ? settingsById.get(pid) : undefined)
+              || (item.productSettings as any);
+            const emballageDH = Number(prodSettings?.profitDefaults?.coutEmballage || 0);
             s.packagingCost   += emballageDH;
-            // Confirmation fee (DH/order) + agent commission (DH/order)
-            const confDH   = Number((item.productSettings as any)?.profitDefaults?.coutConfirmation || 0);
+            const confDH   = Number(prodSettings?.profitDefaults?.coutConfirmation || 0);
             const agentDH  = agentRateMap.get((order as any).assignedToId) ?? 0;
             s.confirmationCost += confDH + agentDH;
           }
         }
       }
 
-      const productResult = Object.values(statsMap).map(s => {
-        // ONLY use spend explicitly tagged to this product — never split global spend
-        const totalAdSpend = productAdSpendMap[s.id] || 0;
+      // ── Attach ad spend by name bucket (not by productId directly) ─────────
+      for (const [pidStr, amountDH] of Object.entries(productAdSpendMap)) {
+        const pid = Number(pidStr);
+        const display = displayById.get(pid) || '';
+        const key = norm(display);
+        if (!key) continue;
+        if (!statsMap[key]) statsMap[key] = makeEmptyRow(display, pid);
+        statsMap[key].adSpend = (statsMap[key].adSpend || 0) + Number(amountDH);
+      }
 
-        const netProfit    = s.revenue - s.productCost - s.shippingCost - s.packagingCost - s.confirmationCost - totalAdSpend;
+      // ── Build productResult (ad spend already embedded above) ──────────────
+      const productResult = Object.values(statsMap).map(s => {
+        const netProfit    = s.revenue - s.productCost - s.shippingCost - s.packagingCost - s.confirmationCost - s.adSpend;
         const margin       = s.revenue > 0 ? (netProfit / s.revenue) * 100 : 0;
         const roi          = s.productCost > 0 ? (netProfit / s.productCost) * 100 : 0;
         const confirmRate  = s.totalOrders > 0 ? (s.confirmedOrders  / s.totalOrders)   * 100 : 0;
         const deliveryRate = s.confirmedOrders > 0 ? (s.deliveredOrders / s.confirmedOrders) * 100 : 0;
-        return { ...s, adSpend: totalAdSpend, packagingCost: s.packagingCost,
-          confirmationCost: s.confirmationCost, totalUnits: s.totalUnits, deliveredUnits: s.deliveredUnits,
-          netProfit, margin, roi, confirmRate, deliveryRate };
+        return { ...s, netProfit, margin, roi, confirmRate, deliveryRate };
       }).sort((a, b) => b.netProfit - a.netProfit);
 
       // Global ad spend (not tagged to any product) shown separately in summary
       const globalAdSpendTotal = globalAdSpend;
 
-      // ── Merge stock products that have no orders yet ─────────────────────
-      // Fetch ALL products in the store so new/untested products appear with zeros
-      const allStoreProducts = await db.select({
-        id: products.id,
-        name: products.name,
-        costPrice: products.costPrice,
-        stock: products.stock,
-      }).from(products).where(eq(products.storeId, storeId));
+      // ── Merge catalog products that have no orders yet ──────────────────────
+      // Keyed by norm(name) so we never add a "no-orders" duplicate of a product
+      // already captured in the orders loop above.
+      const existingNormNames = new Set(Object.values(statsMap).map(s => norm(s.name)));
+      for (const sp of storeProductsList) {
+        if (existingNormNames.has(norm(sp.name))) continue;
+        const tagged = productAdSpendMap[sp.id] || 0;
+        productResult.push({
+          id: sp.id, name: sp.name,
+          totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
+          refusedOrders: 0, returnedOrders: 0,
+          revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0,
+          totalUnits: 0, deliveredUnits: 0,
+          adSpend: tagged,
+          netProfit: -tagged,
+          margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
+          noData: tagged === 0,
+        } as any);
+      }
 
-      const existingProductIds = new Set(productResult.map((p: any) => p.id));
-      for (const sp of allStoreProducts) {
-        if (!existingProductIds.has(sp.id)) {
-          const tagged = productAdSpendMap[sp.id] || 0;
-          productResult.push({
-            id: sp.id, name: sp.name,
-            totalOrders: 0, confirmedOrders: 0, deliveredOrders: 0,
-            refusedOrders: 0, returnedOrders: 0,
-            revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0,
-            totalUnits: 0, deliveredUnits: 0,
-            adSpend: tagged,
-            netProfit: -tagged,
-            margin: 0, roi: 0, confirmRate: 0, deliveryRate: 0,
-            noData: tagged === 0,
-          } as any);
+      // ── Final safety: collapse any remaining same-name rows ─────────────────
+      const finalMap = new Map<string, any>();
+      for (const row of productResult) {
+        const k = norm(row.name);
+        if (!finalMap.has(k)) {
+          finalMap.set(k, { ...row });
+        } else {
+          const existing = finalMap.get(k)!;
+          for (const field of ['totalOrders','confirmedOrders','deliveredOrders','refusedOrders','returnedOrders',
+                               'totalUnits','deliveredUnits','revenue','productCost','shippingCost',
+                               'packagingCost','confirmationCost','adSpend'] as const) {
+            existing[field] = (existing[field] || 0) + (row[field] || 0);
+          }
+          // Recompute derived fields after merge
+          existing.netProfit    = existing.revenue - existing.productCost - existing.shippingCost - existing.packagingCost - existing.confirmationCost - existing.adSpend;
+          existing.margin       = existing.revenue > 0 ? (existing.netProfit / existing.revenue) * 100 : 0;
+          existing.roi          = existing.productCost > 0 ? (existing.netProfit / existing.productCost) * 100 : 0;
+          existing.confirmRate  = existing.totalOrders > 0 ? (existing.confirmedOrders / existing.totalOrders) * 100 : 0;
+          existing.deliveryRate = existing.confirmedOrders > 0 ? (existing.deliveredOrders / existing.confirmedOrders) * 100 : 0;
+          if (existing.id === 0 && row.id > 0) existing.id = row.id;
         }
       }
+      const dedupedResult = Array.from(finalMap.values()).sort((a: any, b: any) => b.netProfit - a.netProfit);
 
       // ── Per-platform aggregation ──────────────────────────────────
       type PlatStat = { platform: string; orders: number; delivered: number; revenue: number; adSpend: number; netProfit: number; roas: number; cpo: number };
@@ -6609,7 +6658,7 @@ function ensureHeaders(sheet) {
         return { ...p, adSpend: platAdSpend, netProfit, roas, cpo };
       }).sort((a, b) => b.revenue - a.revenue);
 
-      res.json({ products: productResult, platforms: platformResult, globalAdSpend: globalAdSpendTotal });
+      res.json({ products: dedupedResult, platforms: platformResult, globalAdSpend: globalAdSpendTotal });
     } catch (err) {
       throw err;
     }
