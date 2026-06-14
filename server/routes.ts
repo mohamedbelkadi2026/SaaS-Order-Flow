@@ -2240,6 +2240,33 @@ export async function registerRoutes(
     res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter));
   });
 
+  // ── Shopify junk-order cleanup ────────────────────────────────────────────
+  // Deletes empty Shopify orders created by cart/checkout webhook events.
+  // Conservative criteria (all must match): source=shopify, status=nouveau,
+  // phone null/empty, totalPrice=0, customer is one of the generic fallbacks.
+  // Orders with a real phone or non-zero price are NEVER touched.
+  app.post("/api/admin/shopify/cleanup-empty", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const result = await db.execute(sql`
+        DELETE FROM orders
+        WHERE store_id = ${storeId}
+          AND source = 'shopify'
+          AND status = 'nouveau'
+          AND total_price = 0
+          AND (customer_phone IS NULL OR TRIM(customer_phone) = '')
+          AND customer_name IN ('Client Shopify', 'Client Anonyme')
+        RETURNING id
+      `);
+      const deletedCount = (result as any).rowCount ?? (result as any).rows?.length ?? 0;
+      console.log(`[SHOPIFY CLEANUP] Deleted ${deletedCount} empty Shopify order(s) for store ${storeId}`);
+      res.json({ deleted: deletedCount });
+    } catch (err: any) {
+      console.error("[SHOPIFY CLEANUP] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
+  });
+
   app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {
     const storeId = req.user!.storeId!;
     const dateFrom = req.query.dateFrom as string | undefined;
@@ -4239,6 +4266,25 @@ export async function registerRoutes(
       const storeId = store.id;
 
       const payload = req.body;
+
+      // ── Shopify topic guard (universal route) ─────────────────────────────
+      // Ignore cart/checkout events that arrive with a token id but no real
+      // order data (empty customer, 0 total). Only process orders/* topics.
+      if (provider === "shopify") {
+        const _uTopic = ((req.headers["x-shopify-topic"] as string) || "").toLowerCase();
+        const _uIsOrderTopic =
+          _uTopic.startsWith("orders/") ||
+          (_uTopic === "" && (payload?.order_number != null ||
+                              (Array.isArray(payload?.line_items) && payload.line_items.length > 0 &&
+                               payload?.total_price != null)));
+        const _uIsCartOrCheckout = _uTopic.startsWith("carts/") || _uTopic.startsWith("checkouts/");
+        const _uIsTestPing = !payload?.id || _uTopic === "hmac-verification";
+        if (!_uIsTestPing && (_uIsCartOrCheckout || !_uIsOrderTopic)) {
+          console.log(`[TOKEN-WEBHOOK shopify] Ignored non-order topic "${_uTopic}" (no order created)`);
+          return res.status(200).json({ received: true, ignored: true, topic: _uTopic });
+        }
+      }
+
       const parsed = parseWebhookOrder(provider, payload);
       if (!parsed.orderNumber) {
         await storage.createIntegrationLog({ storeId, integrationId: null, provider, action: 'webhook_received', status: 'fail', message: 'Payload invalide — numéro de commande manquant', payload: JSON.stringify(payload).slice(0, 2000) });
@@ -5212,6 +5258,30 @@ function ensureHeaders(sheet) {
       const payload = req.body;
       const topic = (req.headers["x-shopify-topic"] as string) || "";
       const isTestPing = !payload?.id || topic === "hmac-verification";
+
+      // ── Topic guard: only process real order topics ───────────────────────
+      // Cart/checkout events (carts/create, checkouts/create, etc.) arrive
+      // with a token id + empty customer + 0 total and must be ignored.
+      const _t = topic.toLowerCase();
+      const isOrderTopic =
+        _t.startsWith("orders/") ||
+        // No topic header (some setups): accept only if it looks like an order
+        (_t === "" && (payload?.order_number != null ||
+                       (Array.isArray(payload?.line_items) && payload.line_items.length > 0 &&
+                        payload?.total_price != null)));
+      const isCartOrCheckout = _t.startsWith("carts/") || _t.startsWith("checkouts/");
+
+      if (!isTestPing && (isCartOrCheckout || !isOrderTopic)) {
+        console.log(`[SHOPIFY WEBHOOK] Ignored non-order topic "${topic}" (no order created)`);
+        try {
+          await storage.createIntegrationLog({
+            storeId, integrationId: integration.id, provider: "shopify",
+            action: "webhook_ignored", status: "success",
+            message: `Topic ignoré (non-commande): ${topic || "n/a"}`,
+          });
+        } catch (_) {}
+        return res.status(200).json({ received: true, ignored: true, topic });
+      }
 
       // ── DIAGNOSTIC: log every line item Shopify sends ────────────────────
       // Critical for upsell apps (EasySell, ReConvert, OneClickUpsell) that
