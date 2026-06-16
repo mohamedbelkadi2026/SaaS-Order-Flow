@@ -1245,8 +1245,13 @@ export async function registerRoutes(
     const agentOnly = user.role === 'agent' ? user.id : undefined;
     // Media buyers only see their own attributed orders (by ID or UTM pattern CODE*%)
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
-    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
-    res.json(result);
+    try {
+      const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[ORDERS-FILTERED-ERROR]", { storeId: user.storeId, filters, msg: err?.message, stack: err?.stack });
+      res.status(500).json({ message: err?.message || "Erreur chargement commandes" });
+    }
   });
 
   app.get("/api/orders/all", requireAuth, async (req, res) => {
@@ -1270,8 +1275,13 @@ export async function registerRoutes(
     };
     const agentOnly = user.role === 'agent' ? user.id : undefined;
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
-    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
-    res.json(result);
+    try {
+      const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[ORDERS-ALL-ERROR]", { storeId: user.storeId, filters, msg: err?.message, stack: err?.stack });
+      res.status(500).json({ message: err?.message || "Erreur chargement commandes" });
+    }
   });
 
   app.post("/api/orders/bulk-assign", requireAuth, async (req, res) => {

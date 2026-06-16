@@ -433,7 +433,7 @@ export default function Orders() {
     // Do NOT override utmSource here — it breaks deep tracking (CODE*PLATFORM) matching
   }), [filters, urlStatus, dateRange, selectedMagasin]);
 
-  const { data, isLoading } = useFilteredOrders(actualFilters);
+  const { data, isLoading, isError, error, refetch } = useFilteredOrders(actualFilters);
   const { data: agents } = useAgents();
   const { data: filterOptions } = useFilterOptions();
   const { data: shippingIntegrations } = useIntegrations("shipping");
@@ -1095,6 +1095,24 @@ export default function Orders() {
         {[...Array(8)].map((_, i) => (
           <div key={i} className="h-14 bg-muted rounded-xl w-full" />
         ))}
+      </div>
+    );
+  }
+
+  if (isError && !data) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-20 text-center" data-testid="orders-error-panel">
+        <AlertCircle className="h-10 w-10 text-destructive" />
+        <div>
+          <p className="font-semibold text-destructive">Impossible de charger les commandes</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {(error as any)?.message || "Une erreur est survenue. Veuillez réessayer."}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()} data-testid="button-retry-orders">
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Réessayer
+        </Button>
       </div>
     );
   }
