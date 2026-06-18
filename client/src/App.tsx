@@ -9,7 +9,7 @@ import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ActiveStoreProvider } from "@/hooks/use-active-store";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { useEffect, Suspense } from "react";
+import { useEffect, Suspense, lazy } from "react";
 
 function FullPageSpinner() {
   return (
@@ -29,13 +29,13 @@ import TermsPage from "@/pages/terms";
 import PrivacyPage from "@/pages/privacy";
 import BlogPage from "@/pages/blog";
 import TemoignagesPage from "@/pages/temoignages";
-import Dashboard from "@/pages/dashboard";
+const Dashboard = lazy(() => import("@/pages/dashboard"));
 import Orders from "@/pages/orders";
 import NewOrder from "@/pages/new-order";
 import NewOrderAdd from "@/pages/new-order-add";
 import NewOrderImport from "@/pages/new-order-import";
 import Profitability from "@/pages/profitability";
-import Inventory from "@/pages/inventory";
+const Inventory = lazy(() => import("@/pages/inventory"));
 import Team from "@/pages/team";
 import Clients from "@/pages/clients";
 import Billing from "@/pages/billing";
@@ -52,7 +52,7 @@ import MesDepenses from "@/pages/mes-depenses";
 import Publicites from "@/pages/publicites";
 import Profile from "@/pages/profile";
 import Calculator from "@/pages/calculator";
-import ProfitAnalyzer from "@/pages/profit-analyzer";
+const ProfitAnalyzer = lazy(() => import("@/pages/profit-analyzer"));
 import CheckoutPage from "@/pages/checkout";
 import AutomationPage from "@/pages/automation";
 import VerifyEmailPage from "@/pages/verify-email";

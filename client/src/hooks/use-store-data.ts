@@ -738,6 +738,8 @@ export function useFilteredOrders(filters: Record<string, any>) {
       if (!res.ok) throw new Error("Failed to fetch filtered orders");
       return res.json();
     },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -754,6 +756,8 @@ export function useAllOrders(filters: Record<string, any>) {
       if (!res.ok) throw new Error("Failed to fetch all orders");
       return res.json();
     },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 }
 

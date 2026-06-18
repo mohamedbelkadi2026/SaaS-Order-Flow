@@ -658,6 +658,18 @@ export async function registerRoutes(
     // CONFIRMED = all statuses an order passes through after agent confirmation
     // (cumulative: once confirmed, always counted as confirmed regardless of shipping stage)
     const ADMIN_CONFIRMED = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
+    // ── Single source of truth for delivery counts ──────────────────────────
+    // A delivered order = any "livré" status. Carriers normalize variants to
+    // 'delivered', but raw imports/webhooks may store French variants, so we
+    // accept them all. Both the LIVRÉES card and Statistiques Livraison use this.
+    const DELIVERED_STATUSES = new Set(['delivered', 'livré', 'livre', 'livrée', 'Livré', 'Livrée']);
+    // Shipped = order left the warehouse (any carrier stage) OR has a tracking number.
+    const SHIPPED_STATUSES = new Set([
+      'expédié', 'Attente De Ramassage', 'Ramassé', 'in_progress',
+      'En cours de livraison', 'En transit', 'delivered', 'livré', 'livre',
+      'livrée', 'Livré', 'Livrée', 'Tentative échouée', 'retourné',
+      'Retour Recu', 'refused', 'En cours de réception',
+    ]);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let pasReponse = 0, rappel = 0;
@@ -722,18 +734,18 @@ export async function registerRoutes(
 
       // confirme = ALL confirmed statuses: 'confirme' + 'expédié' + 'delivered'
       if (ADMIN_CONFIRMED.has(o.status)) confirme++;
-      // delivered = only truly delivered
-      if (o.status === 'delivered') delivered++;
+      // delivered = all "livré" statuses (single source of truth)
+      if (DELIVERED_STATUSES.has(o.status)) delivered++;
 
-      // Delivery shipping tracking
+      // Per-carrier breakdown — a carrier shipment always has a tracking number,
+      // so this stays track-number gated (the scalar KPIs are recomputed below).
       if ((o as any).trackNumber) {
-        totalShipped++;
         const carrier = (o as any).shippingProvider || 'Inconnu';
         if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
         byCarrier[carrier].total++;
-        if (o.status === 'delivered') { deliveredShipped++; byCarrier[carrier].delivered++; }
-        else if (['refused', 'retourné', 'Retour Recu'].includes(o.status)) { refusedShipped++; byCarrier[carrier].refused++; }
-        else { pendingShipped++; byCarrier[carrier].pending++; }
+        if (DELIVERED_STATUSES.has(o.status)) byCarrier[carrier].delivered++;
+        else if (['refused', 'retourné', 'Retour Recu'].includes(o.status)) byCarrier[carrier].refused++;
+        else byCarrier[carrier].pending++;
       }
 
       // Revenue & costs: only from delivered orders
@@ -757,6 +769,18 @@ export async function registerRoutes(
       }
     });
 
+    // ── LIVRÉES single source of truth — card and Statistiques must match ────
+    // deliveredShipped previously counted only delivered orders WITH a tracking
+    // number, so the Statistiques panel (e.g. 169) disagreed with the LIVRÉES
+    // card (e.g. 204). Use ONE shipped cohort (shipping status OR tracking number)
+    // for all four KPIs so delivered + refused + pending === totalShipped exactly.
+    const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
+    const shippedOrders = allOrders.filter(o => SHIPPED_STATUSES.has(o.status) || (o as any).trackNumber);
+    totalShipped = shippedOrders.length;
+    deliveredShipped = delivered; // every delivered order is in the shipped cohort
+    refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
+    pendingShipped = shippedOrders.filter(o => !DELIVERED_STATUSES.has(o.status) && !RETURNED_STATUSES.has(o.status)).length;
+
     // City stats
     const cityMap: Record<string, { name: string; total: number; confirmed: number; delivered: number }> = {};
     allOrders.forEach(o => {
@@ -773,6 +797,16 @@ export async function registerRoutes(
     const confirmationRate = totalOrders > 0 ? Math.round(confirme / totalOrders * 100) : 0;
     // deliveryRate = delivered / confirmed (not divided by total)
     const deliveryRate = confirme > 0 ? Math.round(delivered / confirme * 100) : 0;
+    // ── Confirmation breakdown — each rate over total leads, for a 100% view ─
+    // Returned as floats so the client can render one decimal (e.g. 76.3%).
+    const confirmRate    = totalOrders > 0 ? (confirme / totalOrders) * 100 : 0;
+    const cancelRate     = totalOrders > 0 ? (cancelled / totalOrders) * 100 : 0;
+    const injoignRate    = totalOrders > 0 ? (injoignable / totalOrders) * 100 : 0;
+    const pasReponseRate = totalOrders > 0 ? (pasReponse / totalOrders) * 100 : 0;
+    const nouveauRate    = totalOrders > 0 ? (nouveau / totalOrders) * 100 : 0;
+    // Remaining bucket (rappel, boite vocale, any uncategorized) so chips sum to 100%.
+    const autres         = Math.max(0, totalOrders - (confirme + cancelled + injoignable + pasReponse + nouveau));
+    const autresRate     = totalOrders > 0 ? (autres / totalOrders) * 100 : 0;
 
     const dailyMap: Record<string, { total: number; confirmed: number; delivered: number }> = {};
     const now = new Date();
@@ -944,6 +978,7 @@ export async function registerRoutes(
       confirmeReporteDueSoon: reporteCounts.dueSoon,
       confirmeReporteTotal:   reporteCounts.total,
       confirmationRate, deliveryRate,
+      confirmRate, cancelRate, injoignRate, pasReponseRate, nouveauRate, autresRate,
       totalShipped,
       deliveredShipped,
       refusedShipped,
@@ -1247,6 +1282,7 @@ export async function registerRoutes(
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
       const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      res.setHeader("Cache-Control", "private, max-age=5, stale-while-revalidate=10");
       res.json(result);
     } catch (err: any) {
       console.error("[ORDERS-FILTERED-ERROR]", { storeId: user.storeId, filters, msg: err?.message, stack: err?.stack });
@@ -1277,6 +1313,7 @@ export async function registerRoutes(
     const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
     try {
       const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      res.setHeader("Cache-Control", "private, max-age=5, stale-while-revalidate=10");
       res.json(result);
     } catch (err: any) {
       console.error("[ORDERS-ALL-ERROR]", { storeId: user.storeId, filters, msg: err?.message, stack: err?.stack });

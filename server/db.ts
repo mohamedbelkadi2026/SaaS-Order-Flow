@@ -414,6 +414,27 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] idx_orders_assigned_magasin_created ensured ✅');
 
+    // ── 6e-quater. perf indexes for the orders list & profit queries ─────────
+    // These back the most frequent lookups: status filtering, date sorting,
+    // magasin scoping, and joining order_items by order_id.
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_status
+        ON public.orders (store_id, status);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_created
+        ON public.orders (store_id, created_at DESC);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_orders_store_magasin
+        ON public.orders (store_id, magasin_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_order_items_order_id
+        ON public.order_items (order_id);
+    `);
+    console.log('[Migration] orders/order_items perf indexes ensured ✅');
+
     // ── 6. email_verification_codes ───────────────────────────────────────────
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.email_verification_codes (

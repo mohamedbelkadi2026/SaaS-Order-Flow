@@ -44,7 +44,7 @@ export interface IStorage {
   getOrCreateProductByName(storeId: number, opts: { name: string; sku?: string | null; sellingPrice?: number }): Promise<Product>;
   updateProductStock(id: number, stockDelta: number): Promise<Product | undefined>;
   
-  getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]>;
+  getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]>;
   getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
   getOrdersByPhone(storeId: number, phone: string): Promise<OrderWithDetails[]>;
@@ -440,8 +440,8 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
-  async getOrdersByStore(storeId: number, status?: string): Promise<OrderWithDetails[]> {
-    let query;
+  async getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]> {
+    let query: any;
     if (status) {
       query = db.select().from(orders)
         .where(and(eq(orders.storeId, storeId), eq(orders.status, status)))
@@ -451,7 +451,11 @@ export class DatabaseStorage implements IStorage {
         .where(eq(orders.storeId, storeId))
         .orderBy(desc(orders.createdAt));
     }
-    
+    // Pagination is opt-in: callers that need the full set (stats, exports,
+    // profit engine) call without limit and are unaffected.
+    if (typeof limit === "number") query = query.limit(limit);
+    if (typeof offset === "number") query = query.offset(offset);
+
     const allOrders = await query;
     const hydrated = await this.hydrateOrders(allOrders);
 

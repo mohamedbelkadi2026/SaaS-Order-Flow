@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cors from "cors";
+import compression from "compression";
 import { registerRoutes } from "./routes";
 import { setupAuth, ensureSessionTable } from "./auth";
 import { serveStatic } from "./static";
@@ -136,6 +137,17 @@ const ALLOWED_ORIGINS = [
   /https:\/\/.*\.railway\.app$/,
   /https:\/\/.*\.up\.railway\.app$/,
 ];
+// ── Gzip compression — shrinks JSON/HTML/JS responses over the wire ──────────
+// Skip Server-Sent Events: compressing/buffering text/event-stream breaks the
+// real-time monitoring streams (WhatsApp, shipping progress, new orders).
+app.use(compression({
+  filter: (req, res) => {
+    const ct = String(res.getHeader("Content-Type") || "");
+    if (ct.includes("text/event-stream")) return false;
+    return compression.filter(req, res);
+  },
+}));
+
 app.use(cors({
   origin: (origin, callback) => {
     // allow requests with no origin (server-to-server, mobile, curl)

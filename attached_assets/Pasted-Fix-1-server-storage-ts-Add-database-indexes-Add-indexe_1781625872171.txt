@@ -1,0 +1,54 @@
+Fix 1 — server/storage.ts — Add database indexes
+Add indexes on the most queried columns if they don't exist already:
+sqlCREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_store_status ON orders(store_id, status);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_store_created ON orders(store_id, created_at DESC);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_orders_store_magasin ON orders(store_id, magasin_id);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
+Run these via db.execute(sql...) in a startup migration or add them to the existing schema.
+
+Fix 2 — server/storage.ts — Limit getOrdersByStore default fetch
+Find getOrdersByStore. It likely fetches ALL orders with no limit. Add a default limit:
+tsasync getOrdersByStore(storeId: number, status?: string, limit = 200, offset = 0) {
+  // add .limit(limit).offset(offset) to the query
+}
+
+Fix 3 — server/routes.ts — Add HTTP caching headers for static responses
+For endpoints that don't change often, add cache headers:
+ts// For orders list — cache for 5 seconds (revalidate)
+res.setHeader("Cache-Control", "private, max-age=5, stale-while-revalidate=10");
+
+Fix 4 — client/src/pages/orders.tsx — Show skeleton loader immediately
+Find where the orders table renders. When isLoading is true, show a skeleton instead of blank white:
+tsxif (isLoading) {
+  return (
+    <div className="space-y-2 p-4">
+      {Array.from({ length: 10 }).map((_, i) => (
+        <div key={i} className="h-14 rounded-lg bg-gray-100 animate-pulse" />
+      ))}
+    </div>
+  );
+}
+
+Fix 5 — client/src/pages/orders.tsx — Use staleTime in React Query
+Find all useQuery calls that fetch orders. Add staleTime so data is reused instead of refetched on every navigation:
+tsuseQuery({
+  queryKey: [...],
+  queryFn: ...,
+  staleTime: 30_000,        // reuse cached data for 30 seconds
+  refetchOnWindowFocus: false,
+})
+
+Fix 6 — server/routes.ts — Compress responses
+At the top of the server setup, make sure compression middleware is enabled:
+tsimport compression from "compression";
+app.use(compression());
+If compression is not installed: npm install compression @types/compression
+
+Fix 7 — client/src/App.tsx or router — Lazy load heavy pages
+tsconst ProfitAnalyzer = lazy(() => import("./pages/profit-analyzer"));
+const Dashboard      = lazy(() => import("./pages/dashboard"));
+const Inventory      = lazy(() => import("./pages/inventory"));
+Wrap with <Suspense fallback={<div className="p-8 text-center text-gray-400">Chargement...</div>}>.
+
+Priority order: Fix 4 first (instant visual feedback), then Fix 5 (avoid refetches), then Fix 1 (DB indexes), then Fix 2 (limit query size).
+Do not change any business logic — only performance optimizations.

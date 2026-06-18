@@ -1463,6 +1463,31 @@ export default function Dashboard() {
               ))}
             </div>
 
+            {/* Répartition — breakdown of all lead statuses over the total */}
+            <div className="pt-3 border-t">
+              <p className="text-xs font-semibold text-muted-foreground uppercase mb-2">Répartition (total = 100%)</p>
+              <div className="flex flex-wrap gap-2 text-xs" data-testid="confirmation-breakdown">
+                <span className="px-2 py-1 rounded-full font-semibold bg-green-50 text-green-700 dark:bg-green-950/40 dark:text-green-400" data-testid="rate-confirmes">
+                  ✅ Confirmés: {(stats?.confirmRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400" data-testid="rate-annules">
+                  ❌ Annulés: {(stats?.cancelRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" data-testid="rate-injoignables">
+                  📵 Injoignables: {(stats?.injoignRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-gray-50 text-gray-600 dark:bg-gray-800/60 dark:text-gray-300" data-testid="rate-pas-reponse">
+                  🔕 Pas de réponse: {(stats?.pasReponseRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-yellow-50 text-yellow-700 dark:bg-yellow-950/40 dark:text-yellow-400" data-testid="rate-nouveaux">
+                  🆕 Nouveaux: {(stats?.nouveauRate ?? 0).toFixed(1)}%
+                </span>
+                <span className="px-2 py-1 rounded-full font-semibold bg-slate-50 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300" data-testid="rate-autres">
+                  📦 Autres: {(stats?.autresRate ?? 0).toFixed(1)}%
+                </span>
+              </div>
+            </div>
+
             {/* Confirmation rate */}
             <div className="flex items-center gap-4 rounded-xl border p-4 bg-muted/10">
               <div className="relative w-20 h-20 shrink-0">
