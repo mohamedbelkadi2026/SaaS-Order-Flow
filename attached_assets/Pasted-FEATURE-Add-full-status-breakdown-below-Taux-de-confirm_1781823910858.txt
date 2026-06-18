@@ -1,0 +1,127 @@
+FEATURE: Add full status breakdown below "Taux de confirmation"
+Files to change: server/routes.ts and client/src/pages/dashboard.tsx
+Goal: Below the existing "Taux de confirmation" donut + "2 nouveaux / 0 boite vocale / 0 en cours", add a full breakdown showing ALL statuses with their count and percentage out of total leads.
+
+Change 1 — server/routes.ts — Return all status counts in /api/stats/filtered
+Find the stats filtered endpoint. It already counts some statuses. Add the missing ones and return them all:
+ts// Count all statuses needed for the breakdown
+const confirmeReporte = allOrders.filter(o => 
+  o.status === 'Confirmé Reporté' || o.status === 'Confirme Reporte'
+).length;
+
+const rappel = allOrders.filter(o => 
+  o.status === 'Rappel' || o.status === 'rappel'
+).length;
+
+const pasReponse = allOrders.filter(o => 
+  o.status === 'Pas de réponse' || o.status === 'pas_reponse' || o.status === 'Pas de Réponse'
+).length;
+
+// Make sure these are already counted (they should be):
+// - nouveau, confirme, injoignable, cancelled, boiteVocale, rappel
+Add to the res.json() response:
+tsres.json({
+  // ... existing fields ...
+  confirmeReporte,
+  rappel,
+  pasReponse,
+  // make sure these already exist:
+  nouveau,        // nouveauCount
+  boiteVocale,    // boiteVocaleCount  
+  injoignable,
+  cancelled,
+  confirme,
+  totalOrders,
+});
+
+Change 2 — client/src/pages/dashboard.tsx — Add breakdown rows
+Find the "Taux de confirmation" section. It currently shows:
+tsx<p>246 confirmés / 321 leads</p>
+<span>🆕 2 nouveaux</span>
+<span>🔕 0 boite vocale</span>
+<span>📦 0 en cours</span>
+Right after this section (after the donut/circle), add a breakdown list:
+tsx{/* ── Full status breakdown ── */}
+<div className="mt-4 pt-4 border-t border-gray-100 space-y-2">
+  {[
+    {
+      label: "✅ Confirmés",
+      value: stats?.confirme || 0,
+      color: "text-green-600",
+      bg: "bg-green-50",
+    },
+    {
+      label: "📅 Confirmé Reporté",
+      value: stats?.confirmeReporte || 0,
+      color: "text-blue-600",
+      bg: "bg-blue-50",
+    },
+    {
+      label: "🔁 Rappel",
+      value: stats?.rappel || 0,
+      color: "text-amber-600",
+      bg: "bg-amber-50",
+    },
+    {
+      label: "📵 Injoignables",
+      value: stats?.injoignable || 0,
+      color: "text-purple-600",
+      bg: "bg-purple-50",
+    },
+    {
+      label: "🔕 Pas de réponse",
+      value: stats?.pasReponse || 0,
+      color: "text-slate-600",
+      bg: "bg-slate-50",
+    },
+    {
+      label: "❌ Annulés",
+      value: stats?.cancelled || 0,
+      color: "text-red-600",
+      bg: "bg-red-50",
+    },
+    {
+      label: "🆕 Nouveaux",
+      value: stats?.nouveau || 0,
+      color: "text-gray-600",
+      bg: "bg-gray-50",
+    },
+  ].map(({ label, value, color, bg }) => {
+    const pct = stats?.totalOrders > 0
+      ? ((value / stats.totalOrders) * 100).toFixed(1)
+      : "0.0";
+    return (
+      <div key={label} className="flex items-center justify-between text-sm">
+        <span className="text-gray-600">{label}</span>
+        <div className="flex items-center gap-2">
+          {/* progress bar */}
+          <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${pct}%`,
+                background: "currentColor",
+              }}
+            />
+          </div>
+          <span className={`font-bold w-8 text-right ${color}`}>{value}</span>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-semibold ${bg} ${color} w-14 text-center`}>
+            {pct}%
+          </span>
+        </div>
+      </div>
+    );
+  })}
+  {/* Total check */}
+  <div className="pt-2 border-t border-gray-100 flex justify-between text-xs text-gray-400">
+    <span>Total</span>
+    <span className="font-bold">{stats?.totalOrders || 0} leads = 100%</span>
+  </div>
+</div>
+
+Important:
+
+Keep the existing "2 nouveaux / 0 boite vocale / 0 en cours" badges — just add the breakdown below them
+The breakdown must always sum to 100% (use totalOrders as denominator)
+Apply the same breakdown for agent view if isAgent is true (use agentMyStats instead of stats)
+Do not change any other section of the dashboard

@@ -672,7 +672,7 @@ export async function registerRoutes(
     ]);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
-    let pasReponse = 0, rappel = 0;
+    let pasReponse = 0, rappel = 0, confirmeReporte = 0;
     let revenue = 0, totalProductCost = 0, totalShipping = 0, totalPackaging = 0, totalConfirmationCost = 0, totalAgentCommissions = 0;
 
     // Fetch agent commission rates for accurate profit calc
@@ -731,6 +731,8 @@ export async function registerRoutes(
       else if (o.status === 'boite vocale') boiteVocale++;
       // Pas de réponse 1/2/3/4 grouped count for sidebar badge
       if (typeof o.status === 'string' && o.status.startsWith('Pas de réponse')) pasReponse++;
+      // Confirmé Reporté — counted separately for the dashboard breakdown
+      if (o.status === 'confirme_reporte' || o.status === 'Confirmé Reporté' || o.status === 'Confirme Reporte') confirmeReporte++;
 
       // confirme = ALL confirmed statuses: 'confirme' + 'expédié' + 'delivered'
       if (ADMIN_CONFIRMED.has(o.status)) confirme++;
@@ -974,7 +976,7 @@ export async function registerRoutes(
     res.json({
       totalOrders, nouveau, rappel, confirme, inProgress, cancelled, delivered, refused,
       injoignable, annuleFake, annuleFauxNumero, annuleDouble, boiteVocale,
-      pasReponse,
+      pasReponse, confirmeReporte,
       confirmeReporteDueSoon: reporteCounts.dueSoon,
       confirmeReporteTotal:   reporteCounts.total,
       confirmationRate, deliveryRate,

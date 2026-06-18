@@ -452,6 +452,44 @@ export default function Dashboard() {
   const refused     = isAgent ? (agentMyStats?.refused     || 0) : (stats?.refused     || 0);
   const totalOrders = isAgent ? (agentMyStats?.totalOrders || 0) : (stats?.totalOrders || 0);
 
+  // ── Full status breakdown (shared by owner & agent confirmation cards) ──
+  const statusBreakdown = (() => {
+    const bd = isAgent ? agentMyStats : stats;
+    const bdTotal = bd?.totalOrders || 0;
+    const rows = [
+      { label: "✅ Confirmés",        value: bd?.confirme || 0,        color: "text-green-600 dark:text-green-400",   bg: "bg-green-50 dark:bg-green-950/40" },
+      { label: "📅 Confirmé Reporté", value: bd?.confirmeReporte || 0, color: "text-blue-600 dark:text-blue-400",     bg: "bg-blue-50 dark:bg-blue-950/40" },
+      { label: "🔁 Rappel",           value: bd?.rappel || 0,          color: "text-amber-600 dark:text-amber-400",   bg: "bg-amber-50 dark:bg-amber-950/40" },
+      { label: "📵 Injoignables",     value: bd?.injoignable || 0,     color: "text-purple-600 dark:text-purple-400", bg: "bg-purple-50 dark:bg-purple-950/40" },
+      { label: "🔕 Pas de réponse",   value: bd?.pasReponse || 0,      color: "text-slate-600 dark:text-slate-300",   bg: "bg-slate-50 dark:bg-slate-800/60" },
+      { label: "❌ Annulés",          value: bd?.cancelled || 0,       color: "text-red-600 dark:text-red-400",       bg: "bg-red-50 dark:bg-red-950/40" },
+      { label: "🆕 Nouveaux",         value: bd?.nouveau || 0,         color: "text-gray-600 dark:text-gray-300",     bg: "bg-gray-50 dark:bg-gray-800/60" },
+    ];
+    return (
+      <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800 space-y-2" data-testid="status-breakdown">
+        {rows.map(({ label, value, color, bg }) => {
+          const pct = bdTotal > 0 ? ((value / bdTotal) * 100).toFixed(1) : "0.0";
+          return (
+            <div key={label} className="flex items-center justify-between text-sm" data-testid={`row-breakdown-${label}`}>
+              <span className="text-gray-600 dark:text-gray-400">{label}</span>
+              <div className="flex items-center gap-2">
+                <div className="w-24 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%`, background: "currentColor" }} />
+                </div>
+                <span className={`font-bold w-8 text-right ${color}`}>{value}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded-full font-semibold ${bg} ${color} w-14 text-center`}>{pct}%</span>
+              </div>
+            </div>
+          );
+        })}
+        <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex justify-between text-xs text-gray-400">
+          <span>Total</span>
+          <span className="font-bold">{bdTotal} leads = 100%</span>
+        </div>
+      </div>
+    );
+  })();
+
   const confirmPct = totalOrders > 0 ? ((confirme / totalOrders) * 100).toFixed(2) : '0';
   const cancelPct = totalOrders > 0 ? ((cancelled / totalOrders) * 100).toFixed(2) : '0';
   const inProgressPct = totalOrders > 0 ? ((inProgress / totalOrders) * 100).toFixed(2) : '0';
@@ -1436,6 +1474,17 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* ══ Agent-only: status breakdown card ══ */}
+      {isAgent && (
+        <div className="rounded-2xl border bg-white dark:bg-card shadow-sm p-5">
+          <div className="flex items-center gap-2 pb-2 border-b">
+            <PhoneCall className="w-4 h-4 text-sky-500" />
+            <h2 className="text-sm font-bold uppercase tracking-wide">Taux de confirmation</h2>
+          </div>
+          {statusBreakdown}
+        </div>
+      )}
+
       {/* ══ STATS SECTION: Confirmation + Livraison ══ */}
       {!isAgent && !isMediaBuyer && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -1512,6 +1561,9 @@ export default function Dashboard() {
                 </div>
               </div>
             </div>
+
+            {/* ── Full status breakdown ── */}
+            {statusBreakdown}
 
             {/* Mini evolution chart */}
             <div>
