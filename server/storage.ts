@@ -613,12 +613,12 @@ export class DatabaseStorage implements IStorage {
             and(
               sql`${orders.trackNumber} IS NOT NULL`,
               sql`${orders.trackNumber} != ''`,
-              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused', 'Supprimée')`,
+              sql`${orders.status} NOT IN ('nouveau', 'confirme', 'confirme_reporte', 'delivered', 'refused', 'Supprimée', 'retourné', 'Retour Recu', 'En Cours De Retour')`,
               sql`${orders.status} NOT LIKE 'Annulé%'`,
               sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`
             ),
             inArray(orders.status, [
-              'in_progress', 'expédié', 'retourné', 'Attente De Ramassage',
+              'in_progress', 'expédié', 'Attente De Ramassage',
               // Moroccan carrier in-transit statuses
               'En Voyage', 'À préparer', 'Ramassé', 'En transit', 'Reçu',
               'En cours de distribution', 'Programmé', 'En stock', 'Changer destinataire',
@@ -630,11 +630,7 @@ export class DatabaseStorage implements IStorage {
         // Also exclude deleted parcels caught via commentStatus on any status path
         conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
       } else if (filters.status === 'retour_group') {
-        conditions.push(
-          sql`(${orders.status} IN ('retourné','Retour Recu','En Cours De Retour')
-               OR ${orders.status} ILIKE 'retour%'
-               OR ${orders.status} ILIKE '%retourné%')`
-        );
+        conditions.push(inArray(orders.status, ['retourné', 'Retour Recu', 'En Cours De Retour']));
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
         conditions.push(inArray(orders.status, [
