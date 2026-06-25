@@ -1,0 +1,38 @@
+The Railway build fails at `RUN npm ci` with:
+  npm error code ENOTFOUND
+  npm error network request to http://package-firewall.replit.local/npm/... failed
+  getaddrinfo ENOTFOUND package-firewall.replit.local
+Cause: a Replit-internal npm registry (package-firewall.replit.local) is configured in the repo,
+which does not exist outside Replit, so npm can't fetch packages on Railway. Remove all references
+to the Replit firewall registry and use the official npm registry.
+
+Do ALL of these:
+
+1) Delete or fix any .npmrc that points to replit.local. Search the repo root (and any nested ones)
+   for a file named .npmrc and remove lines like:
+       registry=http://package-firewall.replit.local/npm/
+       //package-firewall.replit.local/npm/:_authToken=...
+   If after removing those the .npmrc is empty, delete the file. If you want to be explicit, set:
+       registry=https://registry.npmjs.org/
+
+2) Check package.json for a "publishConfig" or any "registry" field pointing to replit.local and
+   remove it. Also check for "overrides"/"resolutions" URLs pointing to package-firewall.replit.local
+   and remove those URL pins (keep normal semver versions).
+
+3) Check package-lock.json: if any "resolved" URLs point to package-firewall.replit.local, regenerate
+   the lockfile cleanly:
+       rm -f package-lock.json
+       npm install --registry=https://registry.npmjs.org/
+   so the new lockfile resolves from the official registry. Commit the regenerated package-lock.json.
+
+4) Search the whole repo for any remaining "replit.local" occurrences (Dockerfile, nixpacks config,
+   .replit, railway config, env files) and remove/replace them with the official registry. The build
+   must not reference package-firewall.replit.local anywhere.
+
+5) Do NOT change application code or dependencies/versions — only remove the Replit registry config
+   and regenerate the lockfile against registry.npmjs.org.
+
+VERIFY:
+- `grep -ri "replit.local" .` returns nothing.
+- `npm ci` succeeds locally against the official registry.
+- Push to GitHub → Railway build passes `npm ci` and deploys.
