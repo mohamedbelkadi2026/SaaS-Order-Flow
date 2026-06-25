@@ -685,10 +685,10 @@ export class DatabaseStorage implements IStorage {
           ? orders.pickupDate
           : orders.createdAt;
       if (filters.dateFrom) {
-        conditions.push(gte(dateCol, new Date(filters.dateFrom + 'T00:00:00')));
+        conditions.push(gte(dateCol, new Date(filters.dateFrom + 'T00:00:00.000+01:00')));
       }
       if (filters.dateTo) {
-        conditions.push(lte(dateCol, new Date(filters.dateTo + 'T23:59:59')));
+        conditions.push(lte(dateCol, new Date(filters.dateTo + 'T23:59:59.999+01:00')));
       }
     }
     if (filters.search) {

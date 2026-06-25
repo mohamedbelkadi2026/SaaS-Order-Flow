@@ -643,14 +643,12 @@ export async function registerRoutes(
       allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
     if (dateFrom) {
-      // Parse as local calendar date (not UTC midnight) to avoid TZ shift
-      const [fy, fm, fd] = dateFrom.split('-').map(Number);
-      const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
+      // Day boundary in Morocco time (UTC+1, Africa/Casablanca, no DST), not server-local TZ
+      const from = new Date(`${dateFrom}T00:00:00.000+01:00`);
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
     }
     if (dateTo) {
-      const [ty, tm, td] = dateTo.split('-').map(Number);
-      const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+      const to = new Date(`${dateTo}T23:59:59.999+01:00`);
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
     }
 
