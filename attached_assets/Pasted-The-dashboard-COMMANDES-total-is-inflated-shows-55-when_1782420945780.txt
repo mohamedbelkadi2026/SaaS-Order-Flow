@@ -1,0 +1,35 @@
+The dashboard "COMMANDES" total is inflated (shows 55 when the real number of orders that entered
+today is 38). Cause: GET /api/stats/filtered counts ALL orders via totalOrders = allOrders.length,
+WITHOUT excluding soft-deleted orders (status "Supprimée" or commentStatus containing "supprim")
+or empty junk imports. The orders list already excludes these, so the dashboard disagrees with it.
+
+In server/routes.ts, GET /api/stats/filtered: right AFTER the date filtering (the dateFrom/dateTo
+filters) and BEFORE `let totalOrders = allOrders.length;`, add a filter that drops deleted/junk
+orders so all dashboard metrics are based on real orders:
+
+    // Exclude soft-deleted orders and empty junk imports from all dashboard metrics
+    allOrders = allOrders.filter(o => {
+      const status = (o.status || '').toString();
+      const comment = ((o as any).commentStatus || '').toString().toLowerCase();
+      if (status === 'Supprimée') return false;
+      if (comment.includes('supprim')) return false;
+      // empty Shopify/junk: no phone AND zero total AND a placeholder name
+      const phone = (o.customerPhone || '').toString().trim();
+      const name  = (o.customerName  || '').toString().trim();
+      const total = Number((o as any).totalPrice ?? (o as any).price ?? 0);
+      const isEmptyJunk = !phone && total === 0 &&
+        (name === 'Client Shopify' || name === 'Client Anonyme' || name === '');
+      if (isEmptyJunk) return false;
+      return true;
+    });
+
+This must run once, after all the other filters (city/product/agent/source/date/magasin) and before
+any counting, so totalOrders and every derived metric (confirmées, en cours, livrées, refusées,
+profit, products table, etc.) all use the same cleaned list.
+
+Do NOT change the date logic (it's already correct, +01:00). Only exclude deleted/junk orders.
+
+VERIFY:
+- For "Aujourd'hui", dashboard COMMANDES now equals the real number of orders entered today (≈38),
+  matching Shopify and the orders list.
+- Deleted orders (Supprimée) and

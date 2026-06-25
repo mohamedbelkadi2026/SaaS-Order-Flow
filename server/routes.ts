@@ -652,6 +652,22 @@ export async function registerRoutes(
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
     }
 
+    // Exclude soft-deleted orders and empty junk imports from all dashboard metrics
+    allOrders = allOrders.filter(o => {
+      const status = (o.status || '').toString();
+      const comment = ((o as any).commentStatus || '').toString().toLowerCase();
+      if (status === 'Supprimée') return false;
+      if (comment.includes('supprim')) return false;
+      // empty Shopify/junk: no phone AND zero total AND a placeholder name
+      const phone = (o.customerPhone || '').toString().trim();
+      const name  = (o.customerName  || '').toString().trim();
+      const total = Number((o as any).totalPrice ?? (o as any).price ?? 0);
+      const isEmptyJunk = !phone && total === 0 &&
+        (name === 'Client Shopify' || name === 'Client Anonyme' || name === '');
+      if (isEmptyJunk) return false;
+      return true;
+    });
+
     let totalOrders = allOrders.length;
     // CONFIRMED = all statuses an order passes through after agent confirmation
     // (cumulative: once confirmed, always counted as confirmed regardless of shipping stage)
