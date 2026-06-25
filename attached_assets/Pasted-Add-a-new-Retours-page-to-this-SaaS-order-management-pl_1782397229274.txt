@@ -1,0 +1,61 @@
+Add a new "Retours" page to this SaaS order management platform. Place it in the sidebar right after "Refusées".
+
+## What to build:
+
+### 1. Sidebar
+- Add "Retours" menu item right after "Refusées" in the sidebar navigation
+- Add an orange badge showing the count of return orders
+- Use the same styling as existing sidebar items (active state, hover, etc.)
+
+### 2. Route & Page
+- Create a new route: /retours (or follow existing routing pattern in this project)
+- Create a new page component: RetoursPage (or Retours.jsx / retours.js — match existing file naming)
+
+### 3. Page Layout — match existing UI style exactly
+
+**Header:**
+- Title "Retours" with a return icon
+- Orange badge with total count
+- Search bar (filter by order ID, client name, phone)
+- Export button
+
+**Stats bar (4 cards):**
+- Total Retours
+- Reçus (green)
+- En attente (orange)  
+- Montant total en DA (purple)
+
+**Filter bar:**
+- Filter by Société (shipping company): Toutes, Amana, Aramex, Maystro, Yalidine, ZR Express, Éco Track, DHL
+- Filter by Statut: Tous, En attente, En transit, Reçu
+
+**Table columns:**
+☐ | N° Commande | Client (name + phone) | Wilaya | Société | N° Suivi | Motif | Montant | Date | Statut | Action
+
+**Statut badges colors:**
+- "En attente" → yellow background
+- "En transit" → blue background
+- "Reçu" → green background
+
+**Motif values:** Refusée, Erreur produit, Endommagé
+
+**Action buttons per row:**
+- 👁 Voir (view order details)
+- ✓ (mark as Reçu)
+
+**Bulk actions (when rows selected):**
+- "Marquer Reçu" button
+- "Annuler" button
+
+### 4. Data
+- Connect to the existing orders data source / API (same as other pages)
+- Filter to show only orders where status = "retour" or equivalent field in your data model
+- If no such field exists, add a "retour" status to the order model
+
+### 5. Style
+- Match the existing blue sidebar (#2d4bbd or whatever color is used)
+- Match existing table, card, button, and badge styles exactly
+- Do NOT introduce new libraries or design systems — reuse existing components/styles from the project
+
+### 6. Deploy
+- After implementing, push to Railway as usual
