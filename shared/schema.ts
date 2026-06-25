@@ -1,5 +1,5 @@
-import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { pgTable, text, serial, integer, timestamp, date, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { relations, sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -151,7 +151,17 @@ export const orders = pgTable("orders", {
   driverPhone: text("driver_phone").default(""),
   offerName:       text("offer_name"),        // enrichment from Google Sheets / forms
   ameexProductId:  text("ameex_product_id"),  // Ameex catalog product UUID for catalog-based shipping
-});
+}, (table) => ({
+  // Race-safe dedupe for Shopify webhook orders: two concurrent webhook
+  // retries (orders/create + orders/paid, etc.) can both pass the app-level
+  // getOrderByNumber guard before either inserts. A partial UNIQUE index on
+  // (storeId, orderNumber) scoped to source='shopify' makes the second insert
+  // fail with a unique-violation (23505), which the webhook handler catches
+  // and treats as a duplicate. Other sources are unaffected.
+  shopifyOrderNumberUnique: uniqueIndex("orders_shopify_order_number_unique")
+    .on(table.storeId, table.orderNumber)
+    .where(sql`${table.source} = 'shopify'`),
+}));
 
 export const orderItems = pgTable("order_items", {
   id: serial("id").primaryKey(),

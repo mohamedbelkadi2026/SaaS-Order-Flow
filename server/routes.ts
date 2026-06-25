@@ -2330,6 +2330,47 @@ export async function registerRoutes(
     }
   });
 
+  // Removes duplicate Shopify orders created before the dedupe guard / unique
+  // index were in place. For each (store_id, order_number) group of
+  // source='shopify' orders, keeps the EARLIEST (lowest id) and deletes the
+  // rest. Scoped to the caller's store and source='shopify' only — never
+  // touches manual orders or other integrations. Child rows that lack
+  // ON DELETE CASCADE are cleared inside the same transaction first.
+  app.post("/api/admin/shopify/dedupe", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const removed = await db.transaction(async (tx) => {
+        const dupRows = await tx.execute(sql`
+          SELECT o.id FROM orders o
+          WHERE o.store_id = ${storeId}
+            AND o.source = 'shopify'
+            AND o.id > (
+              SELECT MIN(o2.id) FROM orders o2
+              WHERE o2.store_id = o.store_id
+                AND o2.source = 'shopify'
+                AND o2.order_number = o.order_number
+            )
+        `);
+        const ids = ((dupRows as any).rows ?? []).map((r: any) => Number(r.id));
+        if (ids.length === 0) return 0;
+        const idList = sql.join(ids.map((i: number) => sql`${i}`), sql`, `);
+        // Clear child references that would otherwise block the delete.
+        await tx.execute(sql`DELETE FROM order_items WHERE order_id IN (${idList})`);
+        await tx.execute(sql`DELETE FROM order_follow_up_logs WHERE order_id IN (${idList})`);
+        await tx.execute(sql`UPDATE stock_logs SET order_id = NULL WHERE order_id IN (${idList})`);
+        await tx.execute(sql`UPDATE ai_conversations SET order_id = NULL WHERE order_id IN (${idList})`);
+        await tx.execute(sql`UPDATE ai_logs SET order_id = NULL WHERE order_id IN (${idList})`);
+        const del = await tx.execute(sql`DELETE FROM orders WHERE id IN (${idList}) RETURNING id`);
+        return (del as any).rowCount ?? (del as any).rows?.length ?? ids.length;
+      });
+      console.log(`[SHOPIFY DEDUPE] Removed ${removed} duplicate Shopify order(s) for store ${storeId}`);
+      res.json({ removed });
+    } catch (err: any) {
+      console.error("[SHOPIFY DEDUPE] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
+  });
+
   app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {
     const storeId = req.user!.storeId!;
     const dateFrom = req.query.dateFrom as string | undefined;
@@ -5489,6 +5530,22 @@ function ensureHeaders(sheet) {
           mediaBuyerId: mediaBuyer?.id || null,
         } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
       } catch (dbErr: any) {
+        // Race-safe dedupe: the app-level guard above (getOrderByNumber) can be
+        // bypassed when two concurrent Shopify webhook retries both pass the
+        // check before either insert lands. The partial UNIQUE index on
+        // (storeId, orderNumber) WHERE source='shopify' then makes the losing
+        // insert fail with Postgres unique-violation (23505). Treat that as a
+        // duplicate (200) instead of a 500, so Shopify stops retrying.
+        const isShopifyDupViolation =
+          dbErr?.code === "23505" &&
+          (dbErr?.constraint === "orders_shopify_order_number_unique" ||
+            /orders_shopify_order_number_unique/.test(String(dbErr?.message ?? "")));
+        if (isShopifyDupViolation) {
+          console.log(`[SHOPIFY WEBHOOK] Duplicate (unique-violation) — order #${parsed.orderNumber} already exists`);
+          try { await storage.incrementIntegrationOrdersCount(integration.id); } catch (_) {}
+          const dup = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+          return res.json({ success: true, orderId: dup?.id ?? null, duplicate: true });
+        }
         console.error(`[DATABASE ERROR]: Failed to save webhook order: ${dbErr?.message || dbErr}`);
         return res.status(500).json({ message: "Failed to save order", detail: dbErr?.message });
       }

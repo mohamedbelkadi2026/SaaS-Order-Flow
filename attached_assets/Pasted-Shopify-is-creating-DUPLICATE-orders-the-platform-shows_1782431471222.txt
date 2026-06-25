@@ -1,0 +1,38 @@
+Shopify is creating DUPLICATE orders: the platform shows 63 orders today but Shopify really sent
+46. Cause: the Shopify webhook handler (app.post for the shopify order webhook in server/routes.ts,
+around line 5470 where it does storage.createOrder with source:"shopify") creates an order every
+time WITHOUT checking if that Shopify order already exists. Shopify retries webhooks and also fires
+multiple topics (orders/create, orders/updated, orders/paid) for the SAME order, so the same
+orderNumber gets inserted multiple times.
+
+Fix: dedupe by orderNumber within the store BEFORE creating.
+
+1) In the Shopify webhook handler, right BEFORE the `await storage.createOrder({... source:"shopify" ...})`
+   call, add a guard:
+       const existing = await storage.getOrderByNumber(storeId, parsed.orderNumber);
+       if (existing) {
+         console.log(`[SHOPIFY-WEBHOOK] Duplicate ignored: order ${parsed.orderNumber} already exists (id=${existing.id})`);
+         await storage.createIntegrationLog({
+           storeId, integrationId: integration.id, provider: "shopify",
+           action: "webhook_duplicate", status: "success",
+           message: `Commande déjà existante: ${parsed.orderNumber} (ignorée)`,
+         });
+         return res.status(200).json({ received: true, duplicate: true, orderNumber: parsed.orderNumber });
+       }
+   If storage.getOrderByNumber(storeId, orderNumber) does not exist yet, add it: SELECT the first
+   order WHERE storeId = ? AND orderNumber = ? LIMIT 1.
+
+2) Make it robust against race conditions (two retries arriving together): also add a UNIQUE
+   constraint on (storeId, orderNumber) for shopify-sourced orders if feasible; if a unique-violation
+   error is thrown by createOrder, catch it and return 200 duplicate instead of 500.
+
+3) CLEANUP existing duplicates (one-time, scoped): add POST /api/admin/shopify/dedupe
+   (requireAuth, requireAdmin). For the current store, find shopify orders sharing the same
+   orderNumber and keep only the EARLIEST (min id / createdAt), delete the rest. Only touch
+   source='shopify' orders. Return how many duplicates were removed. Do NOT merge or delete
+   non-shopify orders.
+
+VERIFY:
+- Re-sending the same Shopify webhook does NOT create a second order (logged as duplicate).
+- After POST /api/admin/shopify/dedupe, today's COMMANDES drops from 63 to the real 46.
+- New distinct Shopify orders still create normally. App compiles.
