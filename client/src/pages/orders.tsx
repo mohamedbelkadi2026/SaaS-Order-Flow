@@ -99,6 +99,7 @@ const STATUS_MAP: Record<string, string> = {
   suivi: "suivi_group",
   livrees: "delivered",
   refuses: "refused",
+  retours: "retour_group",
 };
 
 const TITLE_MAP: Record<string, string> = {
@@ -114,6 +115,7 @@ const TITLE_MAP: Record<string, string> = {
   suivi: "SUIVI DES COLIS",
   livrees: "LIVRÉES",
   refuses: "REFUSÉES",
+  retours: "RETOURS",
 };
 
 // ── Status dropdown options (grouped: agent-set first, carrier-set below) ──

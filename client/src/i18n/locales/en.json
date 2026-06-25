@@ -31,7 +31,8 @@
     "inProgress": "In Transit",
     "tracking": "Package Tracking",
     "delivered": "Delivered",
-    "refused": "Refused"
+    "refused": "Refused",
+    "returns": "Returns"
   },
   "integrationSub": {
     "stores": "Stores",

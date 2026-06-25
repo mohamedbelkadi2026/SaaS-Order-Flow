@@ -31,7 +31,8 @@
     "inProgress": "قيد التوصيل",
     "tracking": "تتبع الطرود",
     "delivered": "تم التسليم",
-    "refused": "مرفوضة"
+    "refused": "مرفوضة",
+    "returns": "المرتجعات"
   },
   "integrationSub": {
     "stores": "المتاجر",

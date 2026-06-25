@@ -629,6 +629,12 @@ export class DatabaseStorage implements IStorage {
         );
         // Also exclude deleted parcels caught via commentStatus on any status path
         conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
+      } else if (filters.status === 'retour_group') {
+        conditions.push(
+          sql`(${orders.status} IN ('retourné','Retour Recu','En Cours De Retour')
+               OR ${orders.status} ILIKE 'retour%'
+               OR ${orders.status} ILIKE '%retourné%')`
+        );
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
         conditions.push(inArray(orders.status, [
