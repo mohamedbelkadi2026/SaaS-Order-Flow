@@ -1,0 +1,35 @@
+On the "Retours" page, add a small segmented filter to distinguish returns IN TRANSIT from returns
+RECEIVED, plus distinct badge colors. Returns in transit = status "En Cours De Retour". Returns
+received/done = "Retour Recu" or "retourné".
+
+1) BACKEND — server/storage.ts, getFilteredOrders: next to the existing 'retour_group' branch, add
+   two sub-group branches:
+       } else if (filters.status === 'retour_en_route') {
+         conditions.push(inArray(orders.status, ['En Cours De Retour']));
+       } else if (filters.status === 'retour_recu') {
+         conditions.push(inArray(orders.status, ['Retour Recu', 'retourné']));
+   Keep 'retour_group' (all three) as the default "Tous".
+
+2) FRONTEND — client/src/pages/orders.tsx: only when the current view is Retours
+   (filterKey === 'retours'), render a segmented control ABOVE the table with 3 options:
+       • "Tous"        → sets filters.statusFilter = ''            (falls back to urlStatus = retour_group)
+       • "🚚 En route" → sets filters.statusFilter = 'retour_en_route'
+       • "✅ Reçus"     → sets filters.statusFilter = 'retour_recu'
+   The query already uses `status: filters.statusFilter || urlStatus`, so setting statusFilter is
+   enough; switching also resets page to 1. Style it like the existing pill/tab toggles in the app
+   (active = primary bg). Do NOT show this control on any other view.
+
+3) FRONTEND — client/src/components/ui/status-badge.tsx: ensure these entries exist with distinct
+   colors (add them if missing, keep existing ones):
+       { value: 'En Cours De Retour', label: 'Retour en route', color: C.orange  },  // in motion
+       { value: 'Retour Recu',        label: 'Retour reçu',     color: C.violet  },  // received
+       { value: 'retourné',           label: 'Retourné',        color: C.violet  },  // received
+   So in-transit returns (orange) are visually different from received returns (violet) everywhere.
+
+VERIFY:
+- Retours page shows a "Tous / 🚚 En route / ✅ Reçus" toggle; each filters correctly via the
+  server (works with pagination).
+- "En route" shows only En Cours De Retour; "Reçus" shows only Retour Recu / retourné; "Tous" shows
+  all three.
+- Badges: En Cours De Retour is orange, Retour Recu/retourné are violet. Other views unaffected.
+- App compiles.

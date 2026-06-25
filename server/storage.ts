@@ -631,6 +631,10 @@ export class DatabaseStorage implements IStorage {
         conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
       } else if (filters.status === 'retour_group') {
         conditions.push(inArray(orders.status, ['retourné', 'Retour Recu', 'En Cours De Retour']));
+      } else if (filters.status === 'retour_en_route') {
+        conditions.push(inArray(orders.status, ['En Cours De Retour']));
+      } else if (filters.status === 'retour_recu') {
+        conditions.push(inArray(orders.status, ['Retour Recu', 'retourné']));
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
         conditions.push(inArray(orders.status, [

@@ -1467,6 +1467,32 @@ export default function Orders() {
         </div>
       </Card>
 
+      {filterKey === 'retours' && (
+        <div className="flex items-center gap-1.5 flex-wrap" data-testid="segmented-retours-filter">
+          {[
+            { key: '', label: 'Tous' },
+            { key: 'retour_en_route', label: '🚚 En route' },
+            { key: 'retour_recu', label: '✅ Reçus' },
+          ].map(opt => {
+            const active = filters.statusFilter === opt.key;
+            return (
+              <button
+                key={opt.key || 'all'}
+                onClick={() => setFilters(f => ({ ...f, statusFilter: opt.key, page: 1 }))}
+                data-testid={`button-retours-${opt.key || 'all'}`}
+                className={`h-9 px-4 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                  active
+                    ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                    : "bg-background border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/40"
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {selectAllPages && (
         <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-lg px-4 py-2.5 mb-3" data-testid="banner-select-all-pages">
           <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">
