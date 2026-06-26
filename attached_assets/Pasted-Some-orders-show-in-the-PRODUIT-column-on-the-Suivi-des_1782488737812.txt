@@ -1,0 +1,51 @@
+Some orders show "-" in the PRODUIT column on the "Suivi des Colis" (suivi_group) 
+view, while products DO show on the CONFIRMÉES view. I confirmed the shipping flow 
+does NOT delete product data (bulk-ship/updateOrder/webhooks never touch order_items 
+or rawProductName, and Shopify orders are fine everywhere). So the affected orders 
+simply never had a product saved at CREATION time. Fix all creation paths that fail 
+to persist the product name.
+
+STEP 0 — DIAGNOSE FIRST (read-only, paste the result back):
+Run a query on the affected orders to see where they come from:
+  SELECT o.source, COUNT(*) AS n,
+         SUM(CASE WHEN o.raw_product_name IS NOT NULL AND o.raw_product_name <> '' THEN 1 ELSE 0 END) AS has_order_name,
+         SUM(CASE WHEN oi.id IS NOT NULL THEN 1 ELSE 0 END) AS has_items
+  FROM orders o
+  LEFT JOIN order_items oi ON oi.order_id = o.id
+  WHERE o.track_number IS NOT NULL AND o.track_number <> ''
+  GROUP BY o.source
+  ORDER BY n DESC;
+This tells us which source(s) lack a product name.
+
+STEP 1 — FIX server/cron/sync-gsheets.ts (Google Sheets import bug):
+The order_items array is built with WRONG keys: productName, unitPrice, totalPrice. 
+The real order_items columns are: productId, quantity, price, rawProductName, 
+variantInfo, sku. So rawProductName stays NULL and price stays 0. Also the 
+createOrder() order payload never sets orders.rawProductName.
+Mirror the CORRECT pattern already in server/cron/sync-gsheets-public.ts:
+  - Build items as: { productId: matched ? matched.id : null, rawProductName: product,
+    quantity: qty, price: matched ? (matched.price ?? totalPrice) : totalPrice }
+  - Add `rawProductName: product` to the createOrder() order (first argument).
+
+STEP 2 — FIX server/storage.ts → createOrderFromCarrier():
+This path (source = '<provider>_webhook', orderNumber = 'EXT-...') inserts an order 
+with NO order_items and NO rawProductName, so those parcels always show "-". 
+Add an optional `productName?: string` param, set `rawProductName: params.productName ?? null` 
+on the inserted order, and if productName is provided also insert one order_items row 
+({ orderId, productId: null, rawProductName: productName, quantity: 1, price: 0 }). 
+Update every caller (search routes.ts for createOrderFromCarrier) to pass any product 
+name the carrier payload provides (e.g. product/produit/article/designation fields). 
+If the carrier gives nothing, leave it null — do not invent a name.
+
+STEP 3 — DEFENSE IN DEPTH:
+Audit every storage.createOrder(...) call site. Any path that has a product/title 
+string available MUST also set `rawProductName` on the order payload (order-level), 
+not only on order_items — the UI reads order.rawProductName first. Do not change 
+Shopify (already correct) or sync-gsheets-public (already correct).
+
+VERIFY:
+- New Google-Sheets imports show the product in both Confirmés and Suivi.
+- New carrier-imported parcels show a product when the carrier sends one.
+- Existing Shopify / manual flows are unchanged.
+
+Then commit and push to the main branch so Railway auto-redeploys.

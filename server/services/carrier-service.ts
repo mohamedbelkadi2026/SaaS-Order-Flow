@@ -2082,6 +2082,7 @@ export async function fetchOrderDetails(
   customerCity?: string;
   totalPrice?: number;
   shippingCost?: number;
+  productName?: string;
   driverName?: string;
   driverPhone?: string;
   rawPayload?: any;
@@ -2126,6 +2127,7 @@ export async function fetchOrderDetails(
       customerCity:    b.city        || b.ville        || '',
       totalPrice:      priceCentimes(b.price ?? b.amount ?? b.cod),
       shippingCost:    priceCentimes(b.deliveryCost ?? b.frais_livraison ?? b.port),
+      productName:     (b.product || b.produit || b.article || b.designation || b.product_name || '').toString().trim() || undefined,
       driverName:      tracked.driverName,
       driverPhone:     tracked.driverPhone,
       rawPayload:      b,
@@ -2155,6 +2157,7 @@ export async function listOrdersFromCarrier(
   customerCity: string;
   totalPrice: number;
   shippingCost: number;
+  productName?: string;
   rawStatus: string;
   status: string;
 }>> {
@@ -2202,6 +2205,7 @@ export async function listOrdersFromCarrier(
           customerCity:    String(o.city    || o.ville       || ''),
           totalPrice:      priceCentimes(o.price ?? o.amount ?? o.cod),
           shippingCost:    priceCentimes(o.deliveryCost ?? o.frais_livraison ?? o.port),
+          productName:     (o.product || o.produit || o.article || o.designation || o.product_name || '').toString().trim() || undefined,
           rawStatus:       String(o.status || o.etat || ''),
           status:          mapDigylogStatus(String(o.status || o.etat || '')),
         };

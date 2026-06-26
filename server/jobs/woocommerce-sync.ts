@@ -71,7 +71,7 @@ async function syncWooCommerceStore(integration: any) {
       const totalPrice = Math.round(parseFloat(wcOrder.total || '0') * 100);
 
       let productCost = 0;
-      const orderItemsToCreate: { productId: number; quantity: number; price: number }[] = [];
+      const orderItemsToCreate: { productId: number; quantity: number; price: number; rawProductName: string }[] = [];
 
       for (const item of (wcOrder.line_items || [])) {
         const matchedProduct = storeProducts.find(
@@ -83,10 +83,16 @@ async function syncWooCommerceStore(integration: any) {
             productId: matchedProduct.id,
             quantity: qty,
             price: Math.round(parseFloat(item.price || '0') * 100),
+            rawProductName: item.name || matchedProduct.name,
           });
           productCost += matchedProduct.costPrice * qty;
         }
       }
+
+      // Order-level product name (the UI reads order.rawProductName first), built
+      // from the WooCommerce line item titles even when no local product matched.
+      const wooProductName = (wcOrder.line_items || [])
+        .map((li: any) => li.name).filter(Boolean).join(', ') || null;
 
       await storage.createOrder({
         storeId,
@@ -95,6 +101,7 @@ async function syncWooCommerceStore(integration: any) {
         customerPhone,
         customerAddress,
         customerCity,
+        rawProductName: wooProductName,
         status: 'nouveau',
         totalPrice,
         productCost,
@@ -102,7 +109,7 @@ async function syncWooCommerceStore(integration: any) {
         adSpend: 0,
         source: 'woocommerce',
         comment: wcOrder.customer_note || null,
-      }, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
+      } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })));
 
       imported++;
     }

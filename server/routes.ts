@@ -3684,6 +3684,7 @@ export async function registerRoutes(
           shippingCost:    details.shippingCost,
           status:          details.status || 'Attente De Ramassage',
           rawStatus:       details.rawStatus || rawText,
+          productName:     details.productName,
         });
         matchedBy = `auto_created_from_${carrierName}_api`;
 
@@ -4625,7 +4626,7 @@ export async function registerRoutes(
       if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
       const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
-      const orderItems = matched ? [{ productId: matched.id, quantity: 1, price: totalPrice, orderId: 0 }] : [];
+      const orderItems = matched ? [{ productId: matched.id, rawProductName: productName || matched.name, quantity: 1, price: totalPrice, orderId: 0 }] : [];
       console.log("━━━ NEW WEBHOOK ARRIVED (GSheets) ━━━");
       console.log(`[Webhook] Customer: ${customerName} | Phone: ${customerPhone} | Product: ${productName}`);
       const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
@@ -4633,6 +4634,7 @@ export async function registerRoutes(
       const order = await storage.createOrder({
         storeId, magasinId: gsheetsMagasinId,
         orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        rawProductName: productName || null,
         status: 'nouveau', totalPrice, productCost: matched ? matched.costPrice : 0,
         shippingCost: 0, adSpend: 0, source: 'gsheets', comment: null,
       } as any, orderItems);
@@ -4727,7 +4729,7 @@ export async function registerRoutes(
       if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
       const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
-      const orderItems = matched ? [{ productId: matched.id, quantity, price: matched.sellingPrice || totalPrice, orderId: 0 }] : [];
+      const orderItems = matched ? [{ productId: matched.id, rawProductName: productName || matched.name, quantity, price: matched.sellingPrice || totalPrice, orderId: 0 }] : [];
       const integration = await storage.getIntegrationByProvider(storeId, "gsheets");
       const gsheetsApiMagasinId = integration?.magasinId ?? null;
       // Build comment: note + offer prefix
@@ -4738,6 +4740,7 @@ export async function registerRoutes(
       const order = await storage.createOrder({
         storeId, magasinId: gsheetsApiMagasinId,
         orderNumber, customerName, customerPhone, customerAddress, customerCity,
+        rawProductName: productName || null,
         status: "nouveau", totalPrice, productCost: matched ? matched.costPrice : 0,
         shippingCost: 0, adSpend: 0, source: "gsheets",
         comment: orderComment,
@@ -9119,6 +9122,7 @@ function ensureHeaders(sheet) {
       const PRICE = colIdx('price','prix','total','amount','cod');
       const STAT  = colIdx('status','statut','etat','état');
       const FRAIS = colIdx('deliverycost','delivery_cost','frais_livraison','frais','port','shipping_cost');
+      const PROD  = colIdx('product','produit','article','designation','product_name','nom_produit','produit_name');
 
       if (TRACK < 0) {
         return res.status(400).json({
@@ -9166,6 +9170,7 @@ function ensureHeaders(sheet) {
             shippingCost:    FRAIS >= 0 ? parseMoney(cells[FRAIS]) : 0,
             status:          mapDigylogStatus(rawStatus),
             rawStatus,
+            productName:     PROD >= 0 ? ((cells[PROD] || '').trim() || undefined) : undefined,
           });
           created++;
         } catch (e: any) {
@@ -9252,6 +9257,7 @@ function ensureHeaders(sheet) {
               shippingCost:    co.shippingCost,
               status:          co.status,
               rawStatus:       co.rawStatus,
+              productName:     co.productName,
             });
             created++;
           } catch (e: any) {
@@ -12824,7 +12830,7 @@ function submitOrder(e){
 
           // Always attach orderItems if we resolved a product
           const orderItems = matched
-            ? [{ productId: matched.id, quantity: parsed.quantity, price: lineUnitPrice, orderId: 0 }]
+            ? [{ productId: matched.id, rawProductName: parsed.productName || matched.name, quantity: parsed.quantity, price: lineUnitPrice, orderId: 0 }]
             : [];
 
           console.log(`[SheetsScript] 📦 orderItems prepared: ${orderItems.length} line(s)`, orderItems.length > 0 ? JSON.stringify(orderItems[0]) : "(empty — no product)");
@@ -12838,6 +12844,7 @@ function submitOrder(e){
             customerPhone: parsed.customerPhone,
             customerAddress: parsed.customerAddress,
             customerCity: parsed.customerCity,
+            rawProductName: parsed.productName || null,
             status: "nouveau",
             totalPrice: parsed.totalPrice,
             productCost: matched ? (matched.costPrice || 0) * parsed.quantity : 0,

@@ -252,7 +252,7 @@ export interface IStorage {
   phoneHasOrdersInStore(storeId: number, phone: string): Promise<boolean>;
   updateLeadFields(convId: number, data: { leadStage?: string; leadName?: string; leadCity?: string; leadAddress?: string; leadProductId?: number | null; leadProductName?: string; leadPrice?: number; leadQuantity?: number; createdOrderId?: number }): Promise<void>;
   createOrderFromLead(data: { storeId: number; customerName: string; customerPhone: string; customerCity: string; customerAddress: string; productId: number | null; productName: string; price: number; quantity?: number }): Promise<import("@shared/schema").Order>;
-  createOrderFromCarrier(params: { storeId: number; magasinId?: number | null; provider: string; trackingNumber: string; customerName: string; customerPhone: string; customerAddress?: string; customerCity?: string; totalPrice?: number; shippingCost?: number; status?: string; rawStatus?: string; }): Promise<import("@shared/schema").Order>;
+  createOrderFromCarrier(params: { storeId: number; magasinId?: number | null; provider: string; trackingNumber: string; customerName: string; customerPhone: string; customerAddress?: string; customerCity?: string; totalPrice?: number; shippingCost?: number; status?: string; rawStatus?: string; productName?: string; }): Promise<import("@shared/schema").Order>;
   getWhatsappSession(storeId: number): Promise<import("@shared/schema").WhatsappSession | undefined>;
   upsertWhatsappSession(storeId: number, data: { status?: string; phone?: string | null; qrCode?: string | null }): Promise<import("@shared/schema").WhatsappSession>;
   getAiSettings(storeId: number): Promise<import("@shared/schema").AiSetting | undefined>;
@@ -4164,6 +4164,7 @@ export class DatabaseStorage implements IStorage {
     shippingCost?: number;
     status?: string;
     rawStatus?: string;
+    productName?: string;
   }): Promise<import("@shared/schema").Order> {
     // Idempotency guard — if an order with this tracking already exists for the
     // store, return it instead of creating a duplicate. Defends against
@@ -4176,6 +4177,7 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    const productName = params.productName?.trim() || null;
     const orderNumber = `EXT-${params.trackingNumber}`;
     let assignedToId: number | null = null;
     try {
@@ -4204,8 +4206,22 @@ export class DatabaseStorage implements IStorage {
       status:           params.status || 'Attente De Ramassage',
       commentStatus:    params.rawStatus || '',
       source:           `${params.provider}_webhook`,
+      rawProductName:   productName,
       assignedToId:     assignedToId ?? undefined,
     } as any).returning();
+
+    // If the carrier payload carried a product name, persist one order_items row
+    // so the parcel shows the product in both the Confirmés and Suivi views.
+    if (productName) {
+      await db.insert(orderItems).values({
+        orderId:        created.id,
+        productId:      null,
+        rawProductName: productName,
+        quantity:       1,
+        price:          0,
+      });
+    }
+
     return created;
   }
 
