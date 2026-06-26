@@ -2357,6 +2357,87 @@ export async function registerRoutes(
     }
   });
 
+  // Read-only diagnostic for the Shopify duplicate investigation. Reveals this
+  // store's Shopify integration setup, any OTHER stores whose Shopify connection
+  // name matches this one (a single Shopify shop wired to two accounts duplicates
+  // every order), and today's duplicate order groups. NOTE: Shopify integrations
+  // store no shop domain — credentials are only { verified, canOpen, ramassage,
+  // stock } — so cross-account matching is by connectionName (case-insensitive).
+  // NO DATA IS MODIFIED.
+  app.get("/api/admin/diag/shopify-setup", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const thisStoreId = req.user!.storeId!;
+
+      // 1) This store's Shopify integrations
+      const mine = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, thisStoreId), eq(storeIntegrations.provider, "shopify")));
+      const myIntegrations = mine.map(i => ({
+        id: i.id,
+        storeId: i.storeId,
+        magasinId: i.magasinId,
+        isActive: i.isActive,
+        webhookKeyLast6: i.webhookKey ? i.webhookKey.slice(-6) : null,
+        createdAt: i.createdAt,
+      }));
+
+      // 2) Same Shopify shop (matched by connectionName) across ALL stores
+      const myNames = new Set(
+        mine.map(i => (i.connectionName || "").trim().toLowerCase()).filter(Boolean)
+      );
+      const allShopify = await db.select().from(storeIntegrations)
+        .where(eq(storeIntegrations.provider, "shopify"));
+      const sameShopAcrossStores = allShopify
+        .filter(i => myNames.has((i.connectionName || "").trim().toLowerCase()))
+        .map(i => ({
+          id: i.id,
+          storeId: i.storeId,
+          isActive: i.isActive,
+          createdAt: i.createdAt,
+          connectionName: i.connectionName,
+        }));
+
+      // 3) Today's (Africa/Casablanca) duplicate order groups for this store
+      const ymd = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Africa/Casablanca",
+        year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(new Date());
+      const from = new Date(`${ymd}T00:00:00.000+01:00`);
+      const to = new Date(`${ymd}T23:59:59.999+01:00`);
+
+      const allStoreOrders = await storage.getOrdersByStore(thisStoreId);
+      const todays = allStoreOrders.filter(o => {
+        if (!o.createdAt) return false;
+        const c = new Date(o.createdAt as any);
+        return c >= from && c <= to;
+      });
+      const groups = new Map<string, { orderNumber: string; count: number; ids: number[]; createdAts: string[]; sources: (string | null)[] }>();
+      for (const o of todays) {
+        const key = String((o as any).orderNumber ?? "");
+        if (!groups.has(key)) groups.set(key, { orderNumber: key, count: 0, ids: [], createdAts: [], sources: [] });
+        const g = groups.get(key)!;
+        g.count++;
+        g.ids.push(o.id);
+        g.createdAts.push(o.createdAt instanceof Date ? o.createdAt.toISOString() : String(o.createdAt));
+        g.sources.push((o as any).source ?? null);
+      }
+      const todayDuplicates = Array.from(groups.values()).filter(g => g.count > 1);
+      const duplicateExtraCount = todayDuplicates.reduce((s, g) => s + (g.count - 1), 0);
+
+      res.json({
+        thisStoreId,
+        matchedBy: "connectionName (Shopify integrations store no shop domain)",
+        casablancaDate: ymd,
+        myIntegrations,
+        sameShopAcrossStores,
+        todayDuplicates,
+        duplicateExtraCount,
+      });
+    } catch (err: any) {
+      console.error("[DIAG shopify-setup] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
+  });
+
   app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {
     const storeId = req.user!.storeId!;
     const dateFrom = req.query.dateFrom as string | undefined;
