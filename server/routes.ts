@@ -643,30 +643,16 @@ export async function registerRoutes(
       allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
     if (dateFrom) {
-      // Day boundary in Morocco time (UTC+1, Africa/Casablanca, no DST), not server-local TZ
-      const from = new Date(`${dateFrom}T00:00:00.000+01:00`);
+      // Parse as local calendar date (not UTC midnight) to avoid TZ shift
+      const [fy, fm, fd] = dateFrom.split('-').map(Number);
+      const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) >= from);
     }
     if (dateTo) {
-      const to = new Date(`${dateTo}T23:59:59.999+01:00`);
+      const [ty, tm, td] = dateTo.split('-').map(Number);
+      const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
     }
-
-    // Exclude soft-deleted orders and empty junk imports from all dashboard metrics
-    allOrders = allOrders.filter(o => {
-      const status = (o.status || '').toString();
-      const comment = ((o as any).commentStatus || '').toString().toLowerCase();
-      if (status === 'Supprimée') return false;
-      if (comment.includes('supprim')) return false;
-      // empty Shopify/junk: no phone AND zero total AND a placeholder name
-      const phone = (o.customerPhone || '').toString().trim();
-      const name  = (o.customerName  || '').toString().trim();
-      const total = Number((o as any).totalPrice ?? (o as any).price ?? 0);
-      const isEmptyJunk = !phone && total === 0 &&
-        (name === 'Client Shopify' || name === 'Client Anonyme' || name === '');
-      if (isEmptyJunk) return false;
-      return true;
-    });
 
     let totalOrders = allOrders.length;
     // CONFIRMED = all statuses an order passes through after agent confirmation
