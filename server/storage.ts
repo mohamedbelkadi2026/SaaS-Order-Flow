@@ -48,6 +48,7 @@ export interface IStorage {
   getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
   getOrdersByAgent(agentId: number): Promise<OrderWithDetails[]>;
   getOrdersByPhone(storeId: number, phone: string): Promise<OrderWithDetails[]>;
+  getActiveOrdersByPhone(storeId: number, phone: string): Promise<Order[]>;
   getOrder(id: number): Promise<OrderWithDetails | undefined>;
   getFilteredOrders(storeId: number, filters: {
     status?: string; agentId?: number; city?: string; source?: string;
@@ -497,6 +498,42 @@ export class DatabaseStorage implements IStorage {
       ))
       .orderBy(desc(orders.createdAt));
     return this.hydrateOrders(allOrders);
+  }
+
+  /**
+   * Active orders for a phone in a store, most recent first.
+   * Used by the carrier-webhook phone fallback to link a status update onto the
+   * original order (e.g. a Shopify order that still carries the product name)
+   * instead of auto-creating a product-less duplicate. Excludes finished orders
+   * (delivered/refused/returned) so we only touch orders still in flight.
+   */
+  async getActiveOrdersByPhone(storeId: number, phone: string): Promise<Order[]> {
+    const digits = phone.replace(/\D/g, "");
+    if (!digits) return [];
+    const local = digits.startsWith("212")
+      ? `0${digits.slice(3)}`
+      : (digits.startsWith("0") ? digits : `0${digits}`);
+    const intl = digits.startsWith("212") ? digits : `212${local.slice(1)}`;
+    const variants = Array.from(new Set([digits, phone, local, intl, `+${intl}`]));
+    const rows = await db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        or(
+          inArray(orders.customerPhone, variants),
+          like(orders.customerPhone, `%${local.slice(-9)}`),
+        ),
+      ))
+      .orderBy(desc(orders.createdAt));
+    // Exclude finished orders. Filter in JS (case-insensitive) so French status
+    // variants stored by raw imports/webhooks (livré, livrée, retourné, …) are
+    // all treated as finished, not just the canonical English values.
+    const FINISHED_STATUSES = new Set([
+      "delivered", "livré", "livre", "livrée", "livree",
+      "refused", "refusé", "refuse",
+      "retourné", "retourne", "returned",
+      "retour recu", "retour reçu",
+    ]);
+    return rows.filter(r => !FINISHED_STATUSES.has((r.status || "").toLowerCase().trim()));
   }
 
   private async hydrateOrders(allOrders: Order[]): Promise<OrderWithDetails[]> {

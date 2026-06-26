@@ -3645,22 +3645,88 @@ export async function registerRoutes(
       console.warn(`[WEBHOOK-SEC] ${carrierName} store=${storeId}: order not found, cross-store fallback DISABLED for tokened carrier (tenant isolation)`);
     }
 
+    // ── Phone-number match fallback ───────────────────────────────────────
+    // Digylog status webhooks carry name/phone/address but NO product name. If
+    // we don't recognise the tracking/order number, auto-creating an order would
+    // produce a product-less "<carrier>_webhook" duplicate (PRODUIT = "-").
+    // Instead, try to link the status onto the ORIGINAL order (e.g. the Shopify
+    // order that already has the product) by matching the customer's phone.
     if (!order) {
-      console.warn(`[WEBHOOK-RESULT]: Not Found — tracking="${trackingNumber}" order="${orderNumber}" — attempting auto-create from carrier API`);
+      let webhookPhone = (
+        body.phone || body.telephone || body.tel || body.gsm ||
+        body.customer_phone || body.client_phone || body.destinataire_phone ||
+        body.phone_number || body.numero || body.num_tel ||
+        body.data?.phone || body.data?.telephone || ""
+      ).toString().trim();
 
-      // ── Auto-create fallback ──────────────────────────────────────────────
+      // Payload had no phone — ask the carrier API for the order's phone.
+      if (!webhookPhone && trackingNumber) {
+        try {
+          const accounts = await storage.getCarrierAccounts(storeId, carrierName);
+          const acct = accounts[0];
+          if (acct) {
+            const { fetchOrderDetails } = await import("./services/carrier-service");
+            const det = await fetchOrderDetails(carrierName, trackingNumber, acct);
+            if (det?.customerPhone) webhookPhone = det.customerPhone;
+          }
+        } catch (e: any) {
+          console.warn(`[WEBHOOK-PHONE-FALLBACK] Failed to fetch phone from carrier: ${e?.message}`);
+        }
+      }
+
+      if (webhookPhone) {
+        const candidates = await storage.getActiveOrdersByPhone(storeId, webhookPhone);
+        // Safe-match ONLY: attach to a candidate whose trackNumber is empty or
+        // already equals this tracking number. Never attach to an order already
+        // on a DIFFERENT tracking number — that would clobber another shipment.
+        const safe = candidates.find(
+          c => !(c as any).trackNumber || (c as any).trackNumber === trackingNumber,
+        );
+        if (safe) {
+          order = safe as any;
+          matchedBy = `phone_fallback="${webhookPhone}"`;
+          console.log(`[WEBHOOK-PHONE-FALLBACK]: Linked tracking="${trackingNumber}" onto existing order #${order!.id} via phone="${webhookPhone}" — no duplicate created`);
+        } else if (candidates.length > 0) {
+          console.warn(`[WEBHOOK-PHONE-FALLBACK]: phone="${webhookPhone}" matched ${candidates.length} active order(s) but all carry a different tracking number — not attaching (avoids clobbering)`);
+        }
+      }
+    }
+
+    if (!order) {
+      // ── Auto-create fallback (opt-in per carrier account) ─────────────────
       // Pull full order details from the carrier so historical orders (shipped
       // before the webhook was wired up) materialize in the platform.
-      let details: Awaited<ReturnType<typeof import("./services/carrier-service").fetchOrderDetails>> = null;
+      // GATED: only runs when the carrier account explicitly enables it
+      // (settings.autoCreateFromWebhook === true). Default OFF so unmatched
+      // Digylog webhooks never create product-less duplicates.
       let carrierAccount: any = null;
       try {
-        if (trackingNumber) {
-          const accounts = await storage.getCarrierAccounts(storeId, carrierName);
-          carrierAccount = accounts[0];
-          if (carrierAccount) {
-            const { fetchOrderDetails } = await import("./services/carrier-service");
-            details = await fetchOrderDetails(carrierName, trackingNumber, carrierAccount);
-          }
+        const accounts = await storage.getCarrierAccounts(storeId, carrierName);
+        carrierAccount = accounts[0] || null;
+      } catch (e: any) {
+        console.warn(`[WEBHOOK-AUTO-CREATE] Failed to load carrier account: ${e?.message}`);
+      }
+
+      const autoCreateEnabled = (carrierAccount?.settings as any)?.autoCreateFromWebhook === true;
+
+      if (!autoCreateEnabled) {
+        console.warn(`[WEBHOOK-RESULT]: Not Found and auto-create disabled — tracking="${trackingNumber}" order="${orderNumber}" — skipping (no duplicate created)`);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: carrierName,
+          action: 'webhook_no_match', status: 'fail',
+          message: `⚠️ Commande introuvable (création automatique désactivée) — tracking: "${trackingNumber}" | ref: "${orderNumber}" | statut: "${rawText}"`,
+          payload: rawPayload.slice(0, 1000),
+        });
+        return { tracked: false };
+      }
+
+      console.warn(`[WEBHOOK-RESULT]: Not Found — auto-create ENABLED — tracking="${trackingNumber}" order="${orderNumber}" — attempting auto-create from carrier API`);
+
+      let details: Awaited<ReturnType<typeof import("./services/carrier-service").fetchOrderDetails>> = null;
+      try {
+        if (trackingNumber && carrierAccount) {
+          const { fetchOrderDetails } = await import("./services/carrier-service");
+          details = await fetchOrderDetails(carrierName, trackingNumber, carrierAccount);
         }
       } catch (e: any) {
         console.warn(`[WEBHOOK-AUTO-CREATE] Failed to fetch details: ${e?.message}`);
