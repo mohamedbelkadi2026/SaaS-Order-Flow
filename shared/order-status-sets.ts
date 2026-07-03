@@ -31,3 +31,35 @@ export const SHIPPED_STATUSES = [
 export const CONFIRMED_STATUS_SET = new Set<string>(CONFIRMED_STATUSES);
 export const DELIVERED_STATUS_SET = new Set<string>(DELIVERED_STATUSES);
 export const SHIPPED_STATUS_SET = new Set<string>(SHIPPED_STATUSES);
+
+// ── Subtractive "confirmed (cumulative)" definition ────────────────────────
+// The old approach (CONFIRMED_STATUSES above) enumerated every status that
+// counts as confirmed. But carrier/transit statuses are numerous and keep
+// growing (e.g. 'En transit', 'Ramassé', 'Sorti pour livraison', 'Arrivé au
+// hub', 'Confirmé par livreur', ...), so any status missing from that list
+// silently fell OUT of "confirmed" once the order shipped — producing the
+// impossible result CONFIRMÉES < EXPÉDIÉS.
+//
+// Instead, define the (small, stable) set of statuses that mean "never
+// reached confirmation" and treat everything else as confirmed. This
+// guarantees confirmed >= shipped >= delivered by construction.
+export const NOT_CONFIRMED_STATUSES = new Set<string>([
+  'nouveau', 'rappel', 'Injoignable', 'boite vocale',
+  'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)',
+]);
+
+// SQL-friendly array form for use in `NOT IN (...)` filters.
+export const NOT_CONFIRMED_STATUSES_ARRAY = Array.from(NOT_CONFIRMED_STATUSES);
+
+/**
+ * A lead is "confirmed (cumulative)" once an agent confirms it; it STAYS
+ * confirmed through every downstream carrier/transit/delivered/returned
+ * status. Only statuses that mean the order never reached confirmation
+ * (new/uncontacted, cancelled, "no answer") are excluded.
+ */
+export function isConfirmedCumulative(status: string | null | undefined): boolean {
+  if (!status) return false;
+  if (status.startsWith('Pas de réponse')) return false;
+  if (NOT_CONFIRMED_STATUSES.has(status)) return false;
+  return true;
+}

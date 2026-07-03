@@ -16,8 +16,8 @@ import {
   type Payment, type InsertPayment,
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
 } from "@shared/schema";
-import { DELIVERED_STATUSES } from "@shared/order-status-sets";
-import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or, isNull } from "drizzle-orm";
+import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY } from "@shared/order-status-sets";
+import { eq, desc, and, sql, count, ne, like, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 
 export interface IStorage {
@@ -1805,15 +1805,18 @@ export class DatabaseStorage implements IStorage {
       const variants = allVariants.filter(v => v.productId === p.id);
       const totalStock = p.stock + variants.reduce((s, v) => s + v.stock, 0);
       
-      // Cumulative: count all statuses reached after agent confirmation
-      const INVENTORY_CONFIRMED = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
+      // Cumulative: count all statuses reached after agent confirmation.
+      // Subtractive definition (see @shared/order-status-sets) — every status
+      // EXCEPT new/uncontacted/cancelled/no-answer counts as confirmed, so
+      // carrier/transit statuses are never silently dropped from this count.
       const confirmedItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          inArray(orders.status, INVENTORY_CONFIRMED)
+          notInArray(orders.status, NOT_CONFIRMED_STATUSES_ARRAY),
+          notLike(orders.status, 'Pas de réponse%'),
         ));
       
       const deliveredItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
@@ -1955,8 +1958,8 @@ export class DatabaseStorage implements IStorage {
     }
     // Collect all unique campaigns before product filter (for dropdown population)
     const campaigns = [...new Set(allOrders.map(o => o.utmCampaign).filter(Boolean))].sort() as string[];
-    // Cumulative confirmed statuses: once confirmed by agent, always counted as confirmed
-    const CONFIRMED_STATUSES = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
+    // Cumulative confirmed statuses: once confirmed by agent, always counted as confirmed.
+    // Subtractive definition — see isConfirmedCumulative in @shared/order-status-sets.
     const DELIVERED_STATUS = 'delivered';
     const CANCELLED_STATUSES = ['refused', 'Injoignable', 'boite vocale'];
     const platforms = [...new Set(allOrders.map(o => (o as any).trafficPlatform).filter(Boolean))].sort();
@@ -2010,7 +2013,7 @@ export class DatabaseStorage implements IStorage {
 
     // Compute stats over the fully-filtered order set
     const total = allOrders.length;
-    const confirmed = allOrders.filter(o => CONFIRMED_STATUSES.includes(o.status)).length;
+    const confirmed = allOrders.filter(o => isConfirmedCumulative(o.status)).length;
     const inProgress = allOrders.filter(o => o.status === 'in_progress').length;
     const delivered = allOrders.filter(o => o.status === DELIVERED_STATUS).length;
     const cancelled = allOrders.filter(o => CANCELLED_STATUSES.includes(o.status) || o.status.startsWith('Annulé')).length;
@@ -2026,7 +2029,7 @@ export class DatabaseStorage implements IStorage {
       const day = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
       if (!dailyMap[day]) dailyMap[day] = { total: 0, confirmed: 0, delivered: 0 };
       dailyMap[day].total++;
-      if (CONFIRMED_STATUSES.includes(o.status)) dailyMap[day].confirmed++;
+      if (isConfirmedCumulative(o.status)) dailyMap[day].confirmed++;
       if (o.status === DELIVERED_STATUS) dailyMap[day].delivered++;
     }
     const daily = Object.entries(dailyMap)
@@ -2042,7 +2045,7 @@ export class DatabaseStorage implements IStorage {
       const c = o.customerCity || 'Inconnue';
       if (!cityMap[c]) cityMap[c] = { total: 0, confirmed: 0, delivered: 0 };
       cityMap[c].total++;
-      if (CONFIRMED_STATUSES.includes(o.status)) cityMap[c].confirmed++;
+      if (isConfirmedCumulative(o.status)) cityMap[c].confirmed++;
       if (o.status === DELIVERED_STATUS) cityMap[c].delivered++;
     }
     const cities = Object.entries(cityMap)
@@ -2067,7 +2070,7 @@ export class DatabaseStorage implements IStorage {
       const displayKey = (variantNotInName && v !== 'Default Title' && v !== 'null' && v !== '-') ? `${name} - ${v}` : name;
       if (!productMap[displayKey]) productMap[displayKey] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
       productMap[displayKey].total++;
-      if (CONFIRMED_STATUSES.includes(item.orderStatus)) productMap[displayKey].confirmed++;
+      if (isConfirmedCumulative(item.orderStatus)) productMap[displayKey].confirmed++;
       if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(item.orderStatus)) productMap[displayKey].inProgress++;
       if (item.orderStatus === DELIVERED_STATUS) productMap[displayKey].delivered++;
     }
@@ -2101,13 +2104,12 @@ export class DatabaseStorage implements IStorage {
             : eq(orders.mediaBuyerId, buyer.id),
           ...dateConditions,
         ));
-      const CONF_STATUSES = ['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'];
       const platformMap: Record<string, { total: number; confirmed: number; delivered: number; revenue: number }> = {};
       for (const o of buyerOrders) {
         const plt = (o as any).trafficPlatform || 'Organique';
         if (!platformMap[plt]) platformMap[plt] = { total: 0, confirmed: 0, delivered: 0, revenue: 0 };
         platformMap[plt].total++;
-        if (CONF_STATUSES.includes(o.status)) platformMap[plt].confirmed++;
+        if (isConfirmedCumulative(o.status)) platformMap[plt].confirmed++;
         if (o.status === 'delivered') { platformMap[plt].delivered++; platformMap[plt].revenue += o.totalPrice; }
       }
       const platformBreakdown = Object.entries(platformMap).map(([platform, s]) => ({
@@ -2629,7 +2631,7 @@ export class DatabaseStorage implements IStorage {
     const result = await db.select({
       agentId: orders.lastActionBy,
       total: count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
     }).from(orders)
@@ -2662,13 +2664,13 @@ export class DatabaseStorage implements IStorage {
     if (options?.dateFrom)          conditions.push(gte(orders.createdAt, new Date(`${options.dateFrom}T00:00:00.000Z`)));
     if (options?.dateTo)            conditions.push(lte(orders.createdAt, new Date(`${options.dateTo}T23:59:59.999Z`)));
 
-    // 'confirmed' counts every order that progressed past confirmation:
-    // confirme + every downstream carrier state that proves the agent's call
-    // led to a real shipment (in_progress, expédié, Attente De Ramassage, delivered, refused/retourné).
+    // 'confirmed' counts every order that progressed past confirmation, using
+    // the subtractive definition: everything except new/uncontacted/cancelled/
+    // no-answer statuses (see @shared/order-status-sets).
     const rows = await db.select({
       agentId:   orders.assignedToId,
       total:     count(),
-      confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirme','confirme_reporte','confirmé','expédié','in_progress','Attente De Ramassage','delivered','refused','retourné'))`,
+      confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)','Annulé (faux numéro)','Annulé (double)'))`,
     })

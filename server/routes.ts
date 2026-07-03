@@ -9,7 +9,7 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { CONFIRMED_STATUSES, DELIVERED_STATUSES, SHIPPED_STATUSES } from "@shared/order-status-sets";
+import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
@@ -468,8 +468,9 @@ export async function registerRoutes(
 
     // Cumulative confirmed statuses: once an order is confirmed it stays "confirmed"
     // regardless of shipping progress (expédié, in_progress, delivered, refused, retourné)
-    // ── Single source of truth — imported from @shared/order-status-sets ────
-    const CONFIRMED_STATUSES_SET = new Set<string>(CONFIRMED_STATUSES);
+    // ── Single source of truth — subtractive definition from @shared/order-status-sets ──
+    // (see isConfirmedCumulative: everything except new/uncontacted/cancelled/no-answer
+    // counts as confirmed, so confirmed can never drop below shipped)
     const DELIVERED_STATUSES_SET_LEGACY = new Set<string>(DELIVERED_STATUSES);
 
     let totalOrders = ordersList.length;
@@ -487,7 +488,7 @@ export async function registerRoutes(
       else if (o.status === 'boite vocale') boiteVocale++;
 
       // Cumulative: count as confirmed if order ever reached confirmation stage
-      if (CONFIRMED_STATUSES_SET.has(o.status)) cumConfirmed++;
+      if (isConfirmedCumulative(o.status)) cumConfirmed++;
       if (o.status === 'in_progress') inProgress++;
       if (DELIVERED_STATUSES_SET_LEGACY.has(o.status)) delivered++;
       if (o.status === 'refused') refused++;
@@ -659,10 +660,12 @@ export async function registerRoutes(
 
     let totalOrders = allOrders.length;
     // ── Single source of truth for status groupings ──────────────────────────
-    // CONFIRMED/DELIVERED/SHIPPED are imported from @shared/order-status-sets
-    // and reused for EVERY metric below (cards, Statistiques, products table,
+    // CONFIRMED uses the subtractive isConfirmedCumulative() helper (everything
+    // except new/uncontacted/cancelled/no-answer counts as confirmed), so
+    // confirmed can never fall below shipped/delivered as new carrier statuses
+    // appear. DELIVERED/SHIPPED are imported from @shared/order-status-sets.
+    // Reused for EVERY metric below (cards, Statistiques, products table,
     // commissions) so no metric can drift from another (see order-status-sets.ts).
-    const ADMIN_CONFIRMED = new Set<string>(CONFIRMED_STATUSES);
     const DELIVERED_STATUSES_SET = new Set<string>(DELIVERED_STATUSES);
     const SHIPPED_STATUSES_SET = new Set<string>(SHIPPED_STATUSES);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
@@ -729,8 +732,8 @@ export async function registerRoutes(
       // Confirmé Reporté — counted separately for the dashboard breakdown
       if (o.status === 'confirme_reporte' || o.status === 'Confirmé Reporté' || o.status === 'Confirme Reporte') confirmeReporte++;
 
-      // confirme = ALL confirmed statuses: 'confirme' + 'expédié' + 'delivered'
-      if (ADMIN_CONFIRMED.has(o.status)) confirme++;
+      // confirme = subtractive cumulative definition (see isConfirmedCumulative)
+      if (isConfirmedCumulative(o.status)) confirme++;
       // delivered = all "livré" statuses (single source of truth)
       if (DELIVERED_STATUSES_SET.has(o.status)) delivered++;
 
@@ -778,13 +781,22 @@ export async function registerRoutes(
     refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
     pendingShipped = shippedOrders.filter(o => !DELIVERED_STATUSES_SET.has(o.status) && !RETURNED_STATUSES.has(o.status)).length;
 
+    // ── EN COURS single source of truth ──────────────────────────────────────
+    // Previously inProgress only counted status === 'in_progress', so orders
+    // sitting in other carrier/transit statuses (e.g. 'En transit', 'Ramassé')
+    // were invisible here and the "Autres" bucket absorbed them instead.
+    // The in-transit cohort IS pendingShipped (shipped, not delivered, not
+    // returned), so reuse it to keep "EN COURS" and "En attente / En transit"
+    // in Statistiques Livraison numerically identical.
+    inProgress = pendingShipped;
+
     // City stats
     const cityMap: Record<string, { name: string; total: number; confirmed: number; delivered: number }> = {};
     allOrders.forEach(o => {
       const city = (o as any).customerCity || 'Inconnue';
       if (!cityMap[city]) cityMap[city] = { name: city, total: 0, confirmed: 0, delivered: 0 };
       cityMap[city].total++;
-      if (ADMIN_CONFIRMED.has(o.status)) cityMap[city].confirmed++;
+      if (isConfirmedCumulative(o.status)) cityMap[city].confirmed++;
       if (DELIVERED_STATUSES_SET.has(o.status)) cityMap[city].delivered++;
     });
     const cityStats = Object.values(cityMap).sort((a, b) => b.delivered - a.delivered).slice(0, 10);
@@ -819,7 +831,7 @@ export async function registerRoutes(
         const day = new Date(o.createdAt).toISOString().slice(0, 10);
         if (dailyMap[day] !== undefined) {
           dailyMap[day].total++;
-          if (ADMIN_CONFIRMED.has(o.status)) dailyMap[day].confirmed++;
+          if (isConfirmedCumulative(o.status)) dailyMap[day].confirmed++;
           if (DELIVERED_STATUSES_SET.has(o.status)) dailyMap[day].delivered++;
         }
       }
@@ -854,7 +866,7 @@ export async function registerRoutes(
       }
       rawProductMap[key].total++;
       // confirme column = ALL confirmed: 'confirme' + 'expédié' + 'delivered'
-      if (ADMIN_CONFIRMED.has(o.status)) rawProductMap[key].confirme++;
+      if (isConfirmedCumulative(o.status)) rawProductMap[key].confirme++;
       // inProgress = all orders currently with the carrier
       if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(o.status)) rawProductMap[key].inProgress++;
       if (DELIVERED_STATUSES_SET.has(o.status)) rawProductMap[key].delivered++;
@@ -2471,13 +2483,15 @@ export async function registerRoutes(
       const duplicateExtra = duplicates.reduce((s, g) => s + (g.count - 1), 0);
 
       // ── Single-source-of-truth sets (identical to /api/stats/filtered) ──
-      const CONFIRMED_SET = new Set<string>(CONFIRMED_STATUSES);
+      // confirmed uses the subtractive definition (isConfirmedCumulative) so
+      // this diagnostic reports the same truth as the dashboard, not the
+      // stale enumerated CONFIRMED_STATUSES list.
       const DELIVERED_SET = new Set<string>(DELIVERED_STATUSES);
       const SHIPPED_SET = new Set<string>(SHIPPED_STATUSES);
 
       let confirmedCount = 0, deliveredCount = 0, shippedCount = 0;
       for (const o of allOrders) {
-        if (CONFIRMED_SET.has(o.status)) confirmedCount++;
+        if (isConfirmedCumulative(o.status)) confirmedCount++;
         if (DELIVERED_SET.has(o.status)) deliveredCount++;
         if (SHIPPED_SET.has(o.status) || (o as any).trackNumber) shippedCount++;
       }
@@ -2504,7 +2518,7 @@ export async function registerRoutes(
         shippedCount,
         commissionLivrees,
         setsUsed: {
-          confirmed: Array.from(CONFIRMED_SET),
+          confirmed: "subtractive: all statuses except NOT_CONFIRMED_STATUSES and 'Pas de réponse*' (see @shared/order-status-sets)",
           delivered: Array.from(DELIVERED_SET),
           shipped: Array.from(SHIPPED_SET),
         },
@@ -7987,7 +8001,7 @@ function ensureHeaders(sheet) {
 
       // ── Status distribution ───────────────────────────────────────
       // confirme is CUMULATIVE: once confirmed, always counted regardless of
-      // shipping stage. Mirrors the admin /api/stats/filtered (ADMIN_CONFIRMED set).
+      // shipping stage. Mirrors the admin /api/stats/filtered subtractive definition.
       // Sub-buckets (delivered, en_cours, refused) are disjoint SUBSETS of confirme.
       const AGENT_CONFIRMED = new Set([
         'confirme', 'confirme_reporte', 'confirmé', 'confirmed',
