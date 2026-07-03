@@ -9,6 +9,7 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
+import { CONFIRMED_STATUSES, DELIVERED_STATUSES, SHIPPED_STATUSES } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
@@ -467,7 +468,9 @@ export async function registerRoutes(
 
     // Cumulative confirmed statuses: once an order is confirmed it stays "confirmed"
     // regardless of shipping progress (expédié, in_progress, delivered, refused, retourné)
-    const CONFIRMED_STATUSES = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
+    // ── Single source of truth — imported from @shared/order-status-sets ────
+    const CONFIRMED_STATUSES_SET = new Set<string>(CONFIRMED_STATUSES);
+    const DELIVERED_STATUSES_SET_LEGACY = new Set<string>(DELIVERED_STATUSES);
 
     let totalOrders = ordersList.length;
     let cumConfirmed = 0, inProgress = 0, delivered = 0, refused = 0;
@@ -484,9 +487,9 @@ export async function registerRoutes(
       else if (o.status === 'boite vocale') boiteVocale++;
 
       // Cumulative: count as confirmed if order ever reached confirmation stage
-      if (CONFIRMED_STATUSES.has(o.status)) cumConfirmed++;
+      if (CONFIRMED_STATUSES_SET.has(o.status)) cumConfirmed++;
       if (o.status === 'in_progress') inProgress++;
-      if (o.status === 'delivered') delivered++;
+      if (DELIVERED_STATUSES_SET_LEGACY.has(o.status)) delivered++;
       if (o.status === 'refused') refused++;
 
       if (['confirme', 'delivered'].includes(o.status)) {
@@ -655,21 +658,13 @@ export async function registerRoutes(
     }
 
     let totalOrders = allOrders.length;
-    // CONFIRMED = all statuses an order passes through after agent confirmation
-    // (cumulative: once confirmed, always counted as confirmed regardless of shipping stage)
-    const ADMIN_CONFIRMED = new Set(['confirme', 'confirme_reporte', 'expédié', 'delivered', 'refused', 'Attente De Ramassage', 'in_progress', 'retourné']);
-    // ── Single source of truth for delivery counts ──────────────────────────
-    // A delivered order = any "livré" status. Carriers normalize variants to
-    // 'delivered', but raw imports/webhooks may store French variants, so we
-    // accept them all. Both the LIVRÉES card and Statistiques Livraison use this.
-    const DELIVERED_STATUSES = new Set(['delivered', 'livré', 'livre', 'livrée', 'Livré', 'Livrée']);
-    // Shipped = order left the warehouse (any carrier stage) OR has a tracking number.
-    const SHIPPED_STATUSES = new Set([
-      'expédié', 'Attente De Ramassage', 'Ramassé', 'in_progress',
-      'En cours de livraison', 'En transit', 'delivered', 'livré', 'livre',
-      'livrée', 'Livré', 'Livrée', 'Tentative échouée', 'retourné',
-      'Retour Recu', 'refused', 'En cours de réception',
-    ]);
+    // ── Single source of truth for status groupings ──────────────────────────
+    // CONFIRMED/DELIVERED/SHIPPED are imported from @shared/order-status-sets
+    // and reused for EVERY metric below (cards, Statistiques, products table,
+    // commissions) so no metric can drift from another (see order-status-sets.ts).
+    const ADMIN_CONFIRMED = new Set<string>(CONFIRMED_STATUSES);
+    const DELIVERED_STATUSES_SET = new Set<string>(DELIVERED_STATUSES);
+    const SHIPPED_STATUSES_SET = new Set<string>(SHIPPED_STATUSES);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
     let pasReponse = 0, rappel = 0, confirmeReporte = 0;
@@ -682,7 +677,7 @@ export async function registerRoutes(
     );
 
     // Real COGS: use order_items × products.cost_price, fallback to orders.product_cost
-    const deliveredInFilter = allOrders.filter(o => o.status === 'delivered');
+    const deliveredInFilter = allOrders.filter(o => DELIVERED_STATUSES_SET.has(o.status));
     const statsCogsMap = await storage.computeOrdersCOGS(
       deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
     );
@@ -737,7 +732,7 @@ export async function registerRoutes(
       // confirme = ALL confirmed statuses: 'confirme' + 'expédié' + 'delivered'
       if (ADMIN_CONFIRMED.has(o.status)) confirme++;
       // delivered = all "livré" statuses (single source of truth)
-      if (DELIVERED_STATUSES.has(o.status)) delivered++;
+      if (DELIVERED_STATUSES_SET.has(o.status)) delivered++;
 
       // Per-carrier breakdown — a carrier shipment always has a tracking number,
       // so this stays track-number gated (the scalar KPIs are recomputed below).
@@ -745,13 +740,13 @@ export async function registerRoutes(
         const carrier = (o as any).shippingProvider || 'Inconnu';
         if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
         byCarrier[carrier].total++;
-        if (DELIVERED_STATUSES.has(o.status)) byCarrier[carrier].delivered++;
+        if (DELIVERED_STATUSES_SET.has(o.status)) byCarrier[carrier].delivered++;
         else if (['refused', 'retourné', 'Retour Recu'].includes(o.status)) byCarrier[carrier].refused++;
         else byCarrier[carrier].pending++;
       }
 
       // Revenue & costs: only from delivered orders
-      if (o.status === 'delivered') {
+      if (DELIVERED_STATUSES_SET.has(o.status)) {
         revenue += (o.totalPrice ?? 0);
         totalProductCost += statsCogsMap.get(o.id) ?? 0;
         totalShipping += (o.shippingCost ?? 0);
@@ -777,11 +772,11 @@ export async function registerRoutes(
     // card (e.g. 204). Use ONE shipped cohort (shipping status OR tracking number)
     // for all four KPIs so delivered + refused + pending === totalShipped exactly.
     const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
-    const shippedOrders = allOrders.filter(o => SHIPPED_STATUSES.has(o.status) || (o as any).trackNumber);
+    const shippedOrders = allOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
     totalShipped = shippedOrders.length;
     deliveredShipped = delivered; // every delivered order is in the shipped cohort
     refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
-    pendingShipped = shippedOrders.filter(o => !DELIVERED_STATUSES.has(o.status) && !RETURNED_STATUSES.has(o.status)).length;
+    pendingShipped = shippedOrders.filter(o => !DELIVERED_STATUSES_SET.has(o.status) && !RETURNED_STATUSES.has(o.status)).length;
 
     // City stats
     const cityMap: Record<string, { name: string; total: number; confirmed: number; delivered: number }> = {};
@@ -790,7 +785,7 @@ export async function registerRoutes(
       if (!cityMap[city]) cityMap[city] = { name: city, total: 0, confirmed: 0, delivered: 0 };
       cityMap[city].total++;
       if (ADMIN_CONFIRMED.has(o.status)) cityMap[city].confirmed++;
-      if (o.status === 'delivered') cityMap[city].delivered++;
+      if (DELIVERED_STATUSES_SET.has(o.status)) cityMap[city].delivered++;
     });
     const cityStats = Object.values(cityMap).sort((a, b) => b.delivered - a.delivered).slice(0, 10);
 
@@ -825,7 +820,7 @@ export async function registerRoutes(
         if (dailyMap[day] !== undefined) {
           dailyMap[day].total++;
           if (ADMIN_CONFIRMED.has(o.status)) dailyMap[day].confirmed++;
-          if (o.status === 'delivered') dailyMap[day].delivered++;
+          if (DELIVERED_STATUSES_SET.has(o.status)) dailyMap[day].delivered++;
         }
       }
     });
@@ -862,7 +857,7 @@ export async function registerRoutes(
       if (ADMIN_CONFIRMED.has(o.status)) rawProductMap[key].confirme++;
       // inProgress = all orders currently with the carrier
       if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(o.status)) rawProductMap[key].inProgress++;
-      if (o.status === 'delivered') rawProductMap[key].delivered++;
+      if (DELIVERED_STATUSES_SET.has(o.status)) rawProductMap[key].delivered++;
     });
     const productPerformance = Object.values(rawProductMap).sort((a, b) => b.total - a.total);
     const topProducts = productPerformance.slice(0, 10);
@@ -2434,6 +2429,88 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       console.error("[DIAG shopify-setup] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message ?? "Erreur serveur" });
+    }
+  });
+
+  // ── PART A diagnostic — exposes the truth behind CONFIRMÉES/LIVRÉES numbers ──
+  // Read-only. Computes every candidate definition for the CURRENTLY SELECTED
+  // range (dateFrom/dateTo query params, Africa/Casablanca +01:00 boundary)
+  // plus duplicate Shopify orders, so support/admins can see exactly why two
+  // cards might disagree. Does not modify any data.
+  app.get("/api/admin/diag/stats-truth", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { dateFrom, dateTo } = req.query as Record<string, string>;
+
+      let allOrders = await storage.getOrdersByStore(storeId);
+
+      // Apply the SAME +01:00 Africa/Casablanca date-boundary semantics used
+      // by the rest of the diag/stats endpoints.
+      if (dateFrom) {
+        const from = new Date(`${dateFrom.substring(0, 10)}T00:00:00.000+01:00`);
+        allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) >= from);
+      }
+      if (dateTo) {
+        const to = new Date(`${dateTo.substring(0, 10)}T23:59:59.999+01:00`);
+        allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt as any) <= to);
+      }
+
+      const total = allOrders.length;
+
+      // ── Duplicate Shopify orders — group by orderNumber ─────────────────
+      const groups = new Map<string, { orderNumber: string; count: number; ids: number[] }>();
+      for (const o of allOrders) {
+        const key = String((o as any).orderNumber ?? "");
+        if (!groups.has(key)) groups.set(key, { orderNumber: key, count: 0, ids: [] });
+        const g = groups.get(key)!;
+        g.count++;
+        g.ids.push(o.id);
+      }
+      const duplicates = Array.from(groups.values()).filter(g => g.count > 1);
+      const duplicateExtra = duplicates.reduce((s, g) => s + (g.count - 1), 0);
+
+      // ── Single-source-of-truth sets (identical to /api/stats/filtered) ──
+      const CONFIRMED_SET = new Set<string>(CONFIRMED_STATUSES);
+      const DELIVERED_SET = new Set<string>(DELIVERED_STATUSES);
+      const SHIPPED_SET = new Set<string>(SHIPPED_STATUSES);
+
+      let confirmedCount = 0, deliveredCount = 0, shippedCount = 0;
+      for (const o of allOrders) {
+        if (CONFIRMED_SET.has(o.status)) confirmedCount++;
+        if (DELIVERED_SET.has(o.status)) deliveredCount++;
+        if (SHIPPED_SET.has(o.status) || (o as any).trackNumber) shippedCount++;
+      }
+
+      // ── Commission-livrées — count of delivered orders that have an
+      // assigned agent with a commission rate configured (> 0). ──────────
+      const agentSettingsList = await storage.getStoreAgentSettings(storeId);
+      const agentCommissionMap = new Map<number, number>(
+        agentSettingsList.map((s: any) => [s.agentId, s.commissionRate ?? 0])
+      );
+      let commissionLivrees = 0;
+      for (const o of allOrders) {
+        if (!DELIVERED_SET.has(o.status)) continue;
+        const rate = o.assignedToId ? (agentCommissionMap.get(o.assignedToId) ?? 0) : 0;
+        if (o.assignedToId && rate > 0) commissionLivrees++;
+      }
+
+      res.json({
+        range: { dateFrom: dateFrom ?? null, dateTo: dateTo ?? null, timezone: "Africa/Casablanca (+01:00)" },
+        total,
+        duplicates: { groups: duplicates, duplicateExtra },
+        confirmedCount,
+        deliveredCount,
+        shippedCount,
+        commissionLivrees,
+        setsUsed: {
+          confirmed: Array.from(CONFIRMED_SET),
+          delivered: Array.from(DELIVERED_SET),
+          shipped: Array.from(SHIPPED_SET),
+        },
+      });
+    } catch (err: any) {
+      console.error("[DIAG stats-truth] Error:", err?.message ?? err);
       res.status(500).json({ message: err?.message ?? "Erreur serveur" });
     }
   });

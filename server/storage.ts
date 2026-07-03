@@ -16,6 +16,7 @@ import {
   type Payment, type InsertPayment,
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
 } from "@shared/schema";
+import { DELIVERED_STATUSES } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, gte, lte, lt, inArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 
@@ -3352,12 +3353,15 @@ export class DatabaseStorage implements IStorage {
       // Count deliveries in date range — using createdAt (order creation date)
       // Must match the agent's own my-stats and wallet endpoints which also
       // filter by createdAt so admin and agent see identical numbers.
+      // Uses the SAME DELIVERED_STATUSES set as /api/stats/filtered (LIVRÉES
+      // card) — previously this only matched the exact 'delivered' status,
+      // undercounting French status variants and disagreeing with the card.
       const allDelivered = await db.select()
         .from(orders)
         .where(and(
           eq(orders.assignedToId, agent.id),
           eq(orders.storeId, storeId),
-          eq(orders.status, 'delivered'),
+          inArray(orders.status, DELIVERED_STATUSES as unknown as string[]),
           gte(orders.createdAt, cutoff),
           lte(orders.createdAt, endDate),
         ));
