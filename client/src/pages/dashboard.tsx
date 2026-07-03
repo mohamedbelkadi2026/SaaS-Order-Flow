@@ -116,6 +116,11 @@ export default function Dashboard() {
     datePreset: 'all',
     dateFrom: '',
     dateTo: '',
+    // 'creation' (default) filters everything by order-creation date.
+    // 'shipping' filters the shipping/delivery KPIs (EXPÉDIÉS, LIVRÉES,
+    // EN COURS, REFUSÉES, carrier performance) by ship (pickup) date instead,
+    // so they can reconcile with a carrier's own ship-date-based count.
+    dateType: 'creation',
   });
 
   const activeFilters = useMemo(() => {
@@ -130,6 +135,7 @@ export default function Dashboard() {
     if (filters.magasinId !== 'all') f.magasinId = filters.magasinId;
     if (filters.dateFrom) f.dateFrom = filters.dateFrom;
     if (filters.dateTo) f.dateTo = filters.dateTo;
+    if (filters.dateType !== 'creation') f.dateType = filters.dateType;
     return f;
   }, [filters]);
 
@@ -401,6 +407,7 @@ export default function Dashboard() {
       source: 'all',
       shippingProvider: 'all', utmSource: 'all', utmCampaign: 'all',
       magasinId: 'all', datePreset: 'all', dateFrom: '', dateTo: '',
+      dateType: 'creation',
     });
     if (isAgent) {
       setAgentDateRange('month');
@@ -1331,6 +1338,16 @@ export default function Dashboard() {
                 />
               </div>
             )}
+
+            <Select value={filters.dateType} onValueChange={(v) => updateFilter('dateType', v)}>
+              <SelectTrigger className="w-full md:w-auto md:min-w-[155px] h-8 md:h-9 text-[11px] md:text-xs bg-white dark:bg-card border-border/60" data-testid="filter-date-type">
+                <SelectValue placeholder="Type de date" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="creation">Date de création</SelectItem>
+                <SelectItem value="shipping">Date d'expédition</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>

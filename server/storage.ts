@@ -16,7 +16,7 @@ import {
   type Payment, type InsertPayment,
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
 } from "@shared/schema";
-import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY } from "@shared/order-status-sets";
+import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 
@@ -985,6 +985,15 @@ export class DatabaseStorage implements IStorage {
         setPayload.scheduledFor = null;
       }
 
+      // ── Auto-populate pickupDate on ship transition ────────────────────
+      // Whenever a status update moves an order into a "shipped" status,
+      // stamp pickupDate = now() UNLESS one is already set. COALESCE keeps
+      // this update-only-if-null so a later status change never overwrites
+      // the original ship timestamp.
+      if (SHIPPED_STATUS_SET.has(status)) {
+        setPayload.pickupDate = sql`COALESCE(${orders.pickupDate}, ${new Date()})`;
+      }
+
       const [updated] = await tx.update(orders)
         .set(setPayload)
         .where(eq(orders.id, id))
@@ -1605,6 +1614,17 @@ export class DatabaseStorage implements IStorage {
     if (actorId != null) {
       setPayload.lastActionAt = new Date();
       setPayload.lastActionBy = actorId;
+    }
+    // ── Auto-populate pickupDate on ship transition ─────────────────────
+    // Same rule as updateOrderStatus: whenever this generic update moves an
+    // order into a shipped status (or writes a tracking number — the other
+    // reliable "just shipped" signal), stamp pickupDate = now() UNLESS one
+    // is already set. COALESCE guarantees we never overwrite an existing
+    // value, so later unrelated updates on an already-shipped order are safe.
+    const nextStatus = (data as any).status as string | undefined;
+    const isShipTransition = (nextStatus && SHIPPED_STATUS_SET.has(nextStatus)) || !!(data as any).trackNumber;
+    if (isShipTransition) {
+      setPayload.pickupDate = sql`COALESCE(${orders.pickupDate}, ${new Date()})`;
     }
     const [updated] = await db.update(orders).set(setPayload).where(eq(orders.id, id)).returning();
     return updated;
@@ -4247,6 +4267,10 @@ export class DatabaseStorage implements IStorage {
       trackNumber:      params.trackingNumber,
       shippingProvider: params.provider,
       status:           params.status || 'Attente De Ramassage',
+      // Brand-new order created directly from a carrier record — it is
+      // shipped by definition, so stamp pickupDate at creation time (no
+      // prior value to preserve, unlike updateOrder/updateOrderStatus).
+      pickupDate:       SHIPPED_STATUS_SET.has(params.status || 'Attente De Ramassage') ? new Date() : null,
       commentStatus:    params.rawStatus || '',
       source:           `${params.provider}_webhook`,
       rawProductName:   productName,

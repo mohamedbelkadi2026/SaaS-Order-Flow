@@ -596,8 +596,16 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     const currentUser = req.user!;
     const isAgent = currentUser.role === 'agent';
-    const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign, magasinId } = req.query as Record<string, string>;
+    const { city, productId, source, dateFrom, dateTo, shippingProvider, utmSource, utmCampaign, magasinId, dateType } = req.query as Record<string, string>;
     let { agentId } = req.query as Record<string, string>;
+    // dateType: 'creation' (default) filters everything by createdAt, exactly
+    // as before. 'shipping' additionally filters the shipping/delivery cohort
+    // (totalShipped, delivered, pending, refused, carrier performance,
+    // deliveryRate) by pickupDate instead, so "EXPÉDIÉS" can reconcile with a
+    // carrier's own ship-date-based count. The lead cohort (nouveau, confirme,
+    // revenue, city stats, daily chart, product performance) always stays on
+    // createdAt — only the shipping/delivery KPIs switch.
+    const isShippingDateMode = dateType === 'shipping';
     console.log(`[STATS] storeId=${storeId} magasinId=${magasinId ?? 'all'} city=${city ?? 'all'} agent=${agentId ?? 'all'}`);
 
     let agentPermissions: Record<string, boolean> = {};
@@ -646,6 +654,14 @@ export async function registerRoutes(
       const mid = Number(magasinId);
       allOrders = allOrders.filter(o => (o as any).magasinId === mid);
     }
+
+    // Snapshot after every non-date filter, before the createdAt date filter
+    // below — used to build the pickupDate-based shipping cohort when
+    // dateType === 'shipping', since that cohort must NOT be pre-filtered by
+    // createdAt (an order created last month but shipped this month must
+    // still be included).
+    const nonDateFilteredOrders = allOrders;
+
     if (dateFrom) {
       // Parse as local calendar date (not UTC midnight) to avoid TZ shift
       const [fy, fm, fd] = dateFrom.split('-').map(Number);
@@ -656,6 +672,26 @@ export async function registerRoutes(
       const [ty, tm, td] = dateTo.split('-').map(Number);
       const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
       allOrders = allOrders.filter(o => o.createdAt && new Date(o.createdAt) <= to);
+    }
+
+    // ── Shipping/delivery cohort source ───────────────────────────────────
+    // 'creation' (default): reuse the createdAt-filtered `allOrders` — exact
+    // pre-existing behavior.
+    // 'shipping': filter the non-date-filtered set by pickupDate instead,
+    // requiring pickupDate to be set and within [dateFrom, dateTo].
+    let shippedCohortOrders = allOrders;
+    if (isShippingDateMode) {
+      shippedCohortOrders = nonDateFilteredOrders.filter(o => (o as any).pickupDate);
+      if (dateFrom) {
+        const [fy, fm, fd] = dateFrom.split('-').map(Number);
+        const from = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
+        shippedCohortOrders = shippedCohortOrders.filter(o => new Date((o as any).pickupDate) >= from);
+      }
+      if (dateTo) {
+        const [ty, tm, td] = dateTo.split('-').map(Number);
+        const to = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+        shippedCohortOrders = shippedCohortOrders.filter(o => new Date((o as any).pickupDate) <= to);
+      }
     }
 
     let totalOrders = allOrders.length;
@@ -734,19 +770,11 @@ export async function registerRoutes(
 
       // confirme = subtractive cumulative definition (see isConfirmedCumulative)
       if (isConfirmedCumulative(o.status)) confirme++;
-      // delivered = all "livré" statuses (single source of truth)
+      // delivered = all "livré" statuses (single source of truth) — lead
+      // cohort (createdAt-based), always computed the same regardless of
+      // dateType. When dateType==='shipping' the shipping/delivery KPIs
+      // below are recomputed from shippedCohortOrders instead of this value.
       if (DELIVERED_STATUSES_SET.has(o.status)) delivered++;
-
-      // Per-carrier breakdown — a carrier shipment always has a tracking number,
-      // so this stays track-number gated (the scalar KPIs are recomputed below).
-      if ((o as any).trackNumber) {
-        const carrier = (o as any).shippingProvider || 'Inconnu';
-        if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
-        byCarrier[carrier].total++;
-        if (DELIVERED_STATUSES_SET.has(o.status)) byCarrier[carrier].delivered++;
-        else if (['refused', 'retourné', 'Retour Recu'].includes(o.status)) byCarrier[carrier].refused++;
-        else byCarrier[carrier].pending++;
-      }
 
       // Revenue & costs: only from delivered orders
       if (DELIVERED_STATUSES_SET.has(o.status)) {
@@ -774,12 +802,30 @@ export async function registerRoutes(
     // number, so the Statistiques panel (e.g. 169) disagreed with the LIVRÉES
     // card (e.g. 204). Use ONE shipped cohort (shipping status OR tracking number)
     // for all four KPIs so delivered + refused + pending === totalShipped exactly.
+    //
+    // This cohort is `shippedCohortOrders` — same as `allOrders` (createdAt
+    // filtered) when dateType==='creation', or the pickupDate-filtered set
+    // when dateType==='shipping'. This is what lets EXPÉDIÉS reconcile with
+    // a carrier's own ship-date-based count.
     const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
-    const shippedOrders = allOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
+    const shippedOrders = shippedCohortOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
     totalShipped = shippedOrders.length;
-    deliveredShipped = delivered; // every delivered order is in the shipped cohort
+    deliveredShipped = shippedOrders.filter(o => DELIVERED_STATUSES_SET.has(o.status)).length;
     refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
     pendingShipped = shippedOrders.filter(o => !DELIVERED_STATUSES_SET.has(o.status) && !RETURNED_STATUSES.has(o.status)).length;
+
+    // Per-carrier breakdown — recomputed from the same shipping/delivery
+    // cohort (a carrier shipment always has a tracking number).
+    shippedCohortOrders.forEach(o => {
+      if ((o as any).trackNumber) {
+        const carrier = (o as any).shippingProvider || 'Inconnu';
+        if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
+        byCarrier[carrier].total++;
+        if (DELIVERED_STATUSES_SET.has(o.status)) byCarrier[carrier].delivered++;
+        else if (RETURNED_STATUSES.has(o.status)) byCarrier[carrier].refused++;
+        else byCarrier[carrier].pending++;
+      }
+    });
 
     // ── EN COURS single source of truth ──────────────────────────────────────
     // Previously inProgress only counted status === 'in_progress', so orders
@@ -802,10 +848,12 @@ export async function registerRoutes(
     const cityStats = Object.values(cityMap).sort((a, b) => b.delivered - a.delivered).slice(0, 10);
 
     const cancelled = annuleFake + annuleFauxNumero + annuleDouble;
-    // confirmationRate = (confirme + expédié + delivered) / total
+    // confirmationRate = (confirme + expédié + delivered) / total — always lead-cohort (createdAt).
     const confirmationRate = totalOrders > 0 ? Math.round(confirme / totalOrders * 100) : 0;
-    // deliveryRate = delivered / confirmed (not divided by total)
-    const deliveryRate = confirme > 0 ? Math.round(delivered / confirme * 100) : 0;
+    // deliveryRate = delivered / confirmed (not divided by total). Numerator
+    // switches to the shipping-cohort deliveredShipped when dateType==='shipping'
+    // (per the shipping/delivery KPI group); denominator (confirme) stays lead-cohort.
+    const deliveryRate = confirme > 0 ? Math.round(deliveredShipped / confirme * 100) : 0;
     // ── Confirmation breakdown — each rate over total leads, for a 100% view ─
     // Returned as floats so the client can render one decimal (e.g. 76.3%).
     const confirmRate    = totalOrders > 0 ? (confirme / totalOrders) * 100 : 0;
