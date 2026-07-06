@@ -19,7 +19,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, probeExpressCoursierEndpoints } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -9172,6 +9172,11 @@ function ensureHeaders(sheet) {
     let updated = 0;
     const errors: Array<{ orderId: number; message: string }> = [];
     const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
+    // Express Coursier doesn't appear to expose a public tracking-by-API
+    // endpoint (every candidate URL 404s). EC statuses already arrive via
+    // webhook, so a 404 here isn't a real per-order failure — count it
+    // separately instead of spamming the UI with N "404" error toasts.
+    let ecNoTrackApiCount = 0;
 
     for (const order of candidates) {
       try {
@@ -9239,9 +9244,15 @@ function ensureHeaders(sheet) {
         }
 
         if (result.error) {
-          errors.push({ orderId: order.id, message: `tracking=${order.trackNumber}: ${result.error}` });
-          if (p === 'expresscoursier') {
-            console.error(`[EC-SYNC-ERROR] order=${order.id} tracking=${order.trackNumber}: ${result.error}`);
+          const isEcNoTrackApi = p === 'expresscoursier' && /HTTP 404/.test(result.error);
+          if (isEcNoTrackApi) {
+            ecNoTrackApiCount++;
+            console.warn(`[EC-SYNC-NO-TRACK-API] order=${order.id} tracking=${order.trackNumber}: ${result.error}`);
+          } else {
+            errors.push({ orderId: order.id, message: `tracking=${order.trackNumber}: ${result.error}` });
+            if (p === 'expresscoursier') {
+              console.error(`[EC-SYNC-ERROR] order=${order.id} tracking=${order.trackNumber}: ${result.error}`);
+            }
           }
         } else {
           if (result.status && result.status !== order.status) {
@@ -9273,9 +9284,62 @@ function ensureHeaders(sheet) {
       await sleep(200);
     }
 
-    console.log(`[CARRIER-SYNC] provider=${p} storeId=${storeId} checked=${candidates.length} updated=${updated} errors=${errors.length}`);
+    console.log(`[CARRIER-SYNC] provider=${p} storeId=${storeId} checked=${candidates.length} updated=${updated} errors=${errors.length} ecNoTrackApi=${ecNoTrackApiCount}`);
+
+    // Express Coursier: if every single candidate hit the "no track API" 404
+    // (and there were no other real errors), don't report this as a failed
+    // sync — EC statuses already flow in automatically via webhook. Surface
+    // one calm informational message instead of N per-order error toasts.
+    if (p === 'expresscoursier' && ecNoTrackApiCount > 0 && errors.length === 0 && updated === 0) {
+      return {
+        synced: candidates.length,
+        updated,
+        details,
+        errors: [],
+        message: "Express Coursier ne fournit pas de suivi par API — les statuts sont mis à jour automatiquement via le webhook.",
+      };
+    }
+
     return { synced: candidates.length, updated, details, errors };
   }
+
+  /**
+   * GET /api/expresscoursier/track-probe?tracking=...
+   * ── TEMPORARY diagnostic route ──────────────────────────────────────────
+   * We don't have Express Coursier's tracking API docs and the assumed
+   * endpoint (v1.0/track/{key}/{tracking}) 404s on real package_ids. This
+   * tries a curated list of plausible endpoint shapes for ONE tracking
+   * number using this store's EC api key, and returns exactly what each
+   * attempt returned (masked URL, HTTP status, content-type, body preview)
+   * so the real endpoint can be identified from the response. No orders are
+   * looped over and nothing is written to the DB — read-only diagnostics.
+   * TODO: remove this route once the real EC tracking endpoint is confirmed
+   * and wired into ecTrackUrlTemplate.
+   */
+  app.get("/api/expresscoursier/track-probe", requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const tracking = String(req.query.tracking || "").trim();
+      if (!tracking) {
+        return res.status(400).json({ message: "?tracking=<trackingNumber> requis" });
+      }
+      const storeId = req.user!.storeId!;
+      const [account] = await db
+        .select()
+        .from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "expresscoursier")));
+      if (!account) {
+        return res.status(404).json({ message: "Aucun compte Express Coursier configuré pour cette boutique." });
+      }
+      console.log(`[EC-PROBE] Starting endpoint discovery for tracking=${tracking} store=${storeId}`);
+      const attempts = await probeExpressCoursierEndpoints(tracking, account.apiKey, storeId);
+      const winner = attempts.find(a => a.looksLikeJson) || null;
+      console.log(`[EC-PROBE] Done — ${attempts.length} attempts, winner=${winner ? winner.maskedUrl : "NONE (all 404/non-JSON)"}`);
+      return res.json({ tracking, storeId, attempts, winner });
+    } catch (e: any) {
+      console.error("[EC-PROBE] error:", e?.message || e);
+      return res.status(500).json({ message: "Erreur probe EC", error: e?.message || String(e) });
+    }
+  });
 
   /**
    * POST /api/shipping/:provider/sync

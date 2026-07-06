@@ -2434,6 +2434,115 @@ function maskApiKey(apiKey: string): string {
 const EC_TRACK_URL_TEMPLATE_DEFAULT =
   "https://expresscoursier.ma/v1.0/track/{apiKey}/{tracking}";
 
+// ─── Express Coursier endpoint discovery probe (one-off diagnostic) ──────────
+// We don't have EC's tracking API docs and the assumed endpoint 404s on real
+// package_ids. This tries a curated list of plausible endpoint shapes for a
+// SINGLE tracking number and reports exactly what each one returned, so the
+// real endpoint can be identified by inspecting the JSON summary — no order
+// loop, no side effects (GET/POST probes only, nothing is written anywhere).
+export interface EcProbeAttempt {
+  method: "GET" | "POST";
+  urlTemplate: string;
+  maskedUrl: string;
+  status: number | null;
+  contentType: string | null;
+  bodyPreview: string;
+  looksLikeJson: boolean;
+  error?: string;
+}
+
+export async function probeExpressCoursierEndpoints(
+  trackingNumber: string,
+  apiKey: string,
+  storeId: number | string
+): Promise<EcProbeAttempt[]> {
+  const key = encodeURIComponent(apiKey.trim());
+  const tracking = encodeURIComponent(trackingNumber.trim());
+  const sid = encodeURIComponent(String(storeId));
+  const base = "https://expresscoursier.ma";
+  const masked = maskApiKey(apiKey);
+
+  const getCandidates: { path: string }[] = [
+    { path: `/v1.0/track/${key}/${tracking}` },
+    { path: `/v1.0/tracking/${key}/${tracking}` },
+    { path: `/v1.0/status/${key}/${tracking}` },
+    { path: `/v1.0/track/${key}/${sid}/${tracking}` },
+    { path: `/v1.0/parcel/${key}/${tracking}` },
+    { path: `/v1.0/parcels/${key}/${tracking}` },
+  ];
+  const postCandidates: { path: string; body: any }[] = [
+    { path: `/v1.0/track/${key}`, body: { tracking: trackingNumber } },
+    { path: `/v1.0/track/${key}`, body: { codes: [trackingNumber] } },
+    { path: `/v1.0/status/${key}`, body: { package_id: trackingNumber } },
+  ];
+
+  const attempts: EcProbeAttempt[] = [];
+
+  for (const { path } of getCandidates) {
+    const url = `${base}${path}`;
+    const maskedUrl = url.replace(key, masked);
+    try {
+      const r = await axios.get(url, { timeout: 8000, validateStatus: () => true });
+      const contentType = String(r.headers?.["content-type"] || "") || null;
+      const bodyStr = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
+      attempts.push({
+        method: "GET",
+        urlTemplate: path.replace(key, "{apiKey}").replace(tracking, "{tracking}").replace(sid, "{storeId}"),
+        maskedUrl,
+        status: r.status,
+        contentType,
+        bodyPreview: bodyStr.slice(0, 200),
+        looksLikeJson: !!contentType?.includes("application/json") && r.status < 400,
+      });
+    } catch (e: any) {
+      attempts.push({
+        method: "GET",
+        urlTemplate: path.replace(key, "{apiKey}").replace(tracking, "{tracking}").replace(sid, "{storeId}"),
+        maskedUrl,
+        status: null,
+        contentType: null,
+        bodyPreview: "",
+        looksLikeJson: false,
+        error: e?.message || String(e),
+      });
+    }
+    console.log(`[EC-PROBE] GET ${maskedUrl} → ${attempts[attempts.length - 1].status ?? "ERR"} (${attempts[attempts.length - 1].contentType || "no content-type"})`);
+  }
+
+  for (const { path, body } of postCandidates) {
+    const url = `${base}${path}`;
+    const maskedUrl = url.replace(key, masked);
+    try {
+      const r = await axios.post(url, body, { timeout: 8000, validateStatus: () => true });
+      const contentType = String(r.headers?.["content-type"] || "") || null;
+      const bodyStr = typeof r.data === "string" ? r.data : JSON.stringify(r.data);
+      attempts.push({
+        method: "POST",
+        urlTemplate: `${path.replace(key, "{apiKey}")} body=${JSON.stringify(body).replace(trackingNumber, "{tracking}")}`,
+        maskedUrl,
+        status: r.status,
+        contentType,
+        bodyPreview: bodyStr.slice(0, 200),
+        looksLikeJson: !!contentType?.includes("application/json") && r.status < 400,
+      });
+    } catch (e: any) {
+      attempts.push({
+        method: "POST",
+        urlTemplate: `${path.replace(key, "{apiKey}")} body=${JSON.stringify(body).replace(trackingNumber, "{tracking}")}`,
+        maskedUrl,
+        status: null,
+        contentType: null,
+        bodyPreview: "",
+        looksLikeJson: false,
+        error: e?.message || String(e),
+      });
+    }
+    console.log(`[EC-PROBE] POST ${maskedUrl} → ${attempts[attempts.length - 1].status ?? "ERR"} (${attempts[attempts.length - 1].contentType || "no content-type"})`);
+  }
+
+  return attempts;
+}
+
 export async function trackExpressCoursierShipment(
   trackingNumber: string,
   apiKey: string,

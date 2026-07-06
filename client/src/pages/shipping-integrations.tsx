@@ -1886,7 +1886,7 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
   // Generic single-button sync — works for any carrier the dispatcher supports.
   // Refreshes order lists & dashboard stats so KPIs reflect the new statuses without a manual reload.
   const [syncingProvider, setSyncingProvider] = useState<string | null>(null);
-  const syncCarrier = async (provider: string, opts?: { endpoint?: string; successTitle?: string; errorTitle?: string }) => {
+  const syncCarrier = async (provider: string, opts?: { endpoint?: string; successTitle?: string; errorTitle?: string; suppressErrorSpamIfMessage?: boolean }) => {
     const endpoint = opts?.endpoint || `/api/shipping/${provider}/sync`;
     setSyncingProvider(provider);
     try {
@@ -1907,7 +1907,12 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
         title: opts?.successTitle || `✅ ${provider} synchronisé`,
         description: data.message || `${data.synced ?? 0} commande(s) vérifiées, ${data.updated ?? 0} mise(s) à jour.`,
       });
-      if (Array.isArray(data.errors) && data.errors.length > 0) {
+      // Some carriers (e.g. Express Coursier, which has no public tracking API —
+      // statuses arrive via webhook only) return a calm informational `message`
+      // instead of a per-order errors[] array. Don't also spam N error toasts
+      // on top of that single calm message.
+      const suppressErrorSpam = !!opts?.suppressErrorSpamIfMessage && !!data.message;
+      if (!suppressErrorSpam && Array.isArray(data.errors) && data.errors.length > 0) {
         toast({
           title: `⚠️ ${data.errors.length} erreur(s) lors de la synchro`,
           description: data.errors.slice(0, 3).map((e: any) => `#${e.orderId}: ${e.message}`).join('\n'),
@@ -1953,6 +1958,10 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
   const handleEcSync = () => syncCarrier("expresscoursier", {
     successTitle: "✅ Statuts Express Coursier synchronisés",
     errorTitle: "Erreur de synchronisation Express Coursier",
+    // EC has no public tracking-by-API endpoint — statuses arrive via webhook
+    // only. The backend already returns one calm message instead of per-order
+    // errors in that case; don't pile a second "N erreurs" toast on top of it.
+    suppressErrorSpamIfMessage: true,
   });
 
   const safeTab = Math.min(activeTab, Math.max(0, accounts.length - 1));

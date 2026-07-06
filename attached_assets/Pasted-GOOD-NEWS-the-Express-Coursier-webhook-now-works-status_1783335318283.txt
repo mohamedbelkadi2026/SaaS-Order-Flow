@@ -1,0 +1,40 @@
+GOOD NEWS: the Express Coursier webhook now works — statuses update automatically 
+(DELIVERED, POSTPONED, expédié all applying). The ONLY remaining issue is the manual 
+"Synchroniser Express Coursier" (pull) button, which still returns HTTP 404 because the 
+EC tracking endpoint URL is wrong:
+  GET https://expresscoursier.ma/v1.0/track/{apiKey}/{trackingNumber}
+returns an HTML 404 for valid package_ids like CL-EXP-2607041205-164X55103261.
+
+We don't have EC's tracking API docs, so AUTO-DISCOVER the correct endpoint.
+
+TASK 1 — endpoint discovery diagnostic (one-off, safe):
+Add a temporary admin-only route (e.g. GET /api/expresscoursier/track-probe?tracking=...) 
+that, for ONE given tracking number + the store's EC api key + store_id (164), tries this 
+curated list of candidate endpoints and logs, for each: the full URL (api key masked), 
+HTTP status, response content-type, and the first 200 chars of the body:
+  GET  /v1.0/track/{key}/{tracking}
+  GET  /v1.0/tracking/{key}/{tracking}
+  GET  /v1.0/status/{key}/{tracking}
+  GET  /v1.0/track/{key}/{storeId}/{tracking}
+  GET  /v1.0/parcel/{key}/{tracking}
+  GET  /v1.0/parcels/{key}/{tracking}
+  POST /v1.0/track/{key}        body {"tracking": "{tracking}"}
+  POST /v1.0/track/{key}        body {"codes": ["{tracking}"]}
+  POST /v1.0/status/{key}       body {"package_id": "{tracking}"}
+Call each with validateStatus:()=>true and a short timeout. Do NOT loop over many 
+orders — just this one tracking number. Return a JSON summary of all attempts so I can 
+see which one returns real JSON (HTTP 200 + application/json) instead of a 404 HTML page.
+
+TASK 2 — once a working shape is identified:
+Wire trackExpressCoursierShipment (and the "Synchroniser" handler) to use the winning 
+endpoint/shape (prefer the configurable settings.ecTrackUrlTemplate added earlier; set 
+its default to the discovered URL). Keep the clear non-JSON/404 error handling.
+
+TASK 3 — make the button non-alarming meanwhile:
+If all probes still 404 (EC has no public track API), change the "Synchroniser" button 
+so it does NOT spam per-order 404 error toasts. Instead show one calm message like 
+"Express Coursier ne fournit pas de suivi par API — les statuts sont mis à jour 
+automatiquement via le webhook." Do NOT mark orders as failed on a 404 track response.
+
+Deploy to main (Railway auto-redeploys), then run the track-probe for tracking 
+CL-EXP-2607041205-164X55103261 and paste me the JSON summary of all attempts.
