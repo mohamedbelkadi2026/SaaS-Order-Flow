@@ -1647,7 +1647,7 @@ export async function registerRoutes(
                   if (!resolved) {
                     return {
                       success:        false,
-                      error:          `Express Coursier: Ville "${resolvedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
+                      error:          `Ville « ${resolvedCity} » non synchronisée pour Express Coursier. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
                       carrierMessage: 'City not found in express_coursier_cities',
                       httpStatus:     0,
                       rawResponse:    null,
@@ -1670,7 +1670,7 @@ export async function registerRoutes(
                   if (!resolved) {
                     return {
                       success:        false,
-                      error:          `Ozon Express: Ville "${resolvedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
+                      error:          `Ville « ${resolvedCity} » non synchronisée pour Ozon Express. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
                       carrierMessage: 'City not found in ozon_express_cities',
                       httpStatus:     0,
                       rawResponse:    null,
@@ -10395,7 +10395,7 @@ function ensureHeaders(sheet) {
         const resolved = await storage.resolveExpressCoursierCityId(storeId, matchedCity);
         if (!resolved) {
           return res.status(422).json({
-            message: `Express Coursier: Ville "${matchedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
+            message: `Ville « ${matchedCity} » non synchronisée pour Express Coursier. Cliquez "Synchroniser les villes" sur le compte Express Coursier dans Intégrations, puis réessayez.`,
           });
         }
         singleEcCityId = resolved;
@@ -10412,7 +10412,7 @@ function ensureHeaders(sheet) {
         const resolved = await storage.resolveOzonExpressCityId(storeId, matchedCity);
         if (!resolved) {
           return res.status(422).json({
-            message: `Ozon Express: Ville "${matchedCity}" non synchronisée. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
+            message: `Ville « ${matchedCity} » non synchronisée pour Ozon Express. Cliquez "Synchroniser les villes" sur le compte Ozon Express dans Intégrations, puis réessayez.`,
           });
         }
         singleOzonCityId = resolved;

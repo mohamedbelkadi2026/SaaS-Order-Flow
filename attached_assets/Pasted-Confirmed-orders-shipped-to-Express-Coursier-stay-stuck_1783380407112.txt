@@ -1,0 +1,40 @@
+Confirmed orders shipped to Express Coursier stay stuck in "Confirmé" instead of moving 
+to a shipped status. Diagnosed cause (do NOT re-investigate): in the bulk-ship flow 
+(server/routes.ts), Express Coursier requires a numeric city ID resolved via 
+storage.resolveExpressCoursierCityId() from the express_coursier_cities table. When the 
+order's city does not resolve, shipOrderToCarrier returns { success:false, 
+permanent:true, carrierMessage:'City not found in express_coursier_cities' } and the 
+order is left in Confirmé. The failure is effectively silent to the user.
+
+TASK 1 — DIAGNOSE (read-only, paste results):
+ - Count rows in express_coursier_cities for this store. If 0, the cities were never 
+   synced — report that clearly.
+ - For all orders currently in status 'confirme' whose intended carrier is Express 
+   Coursier, run resolveExpressCoursierCityId on each order's city and report: how many 
+   resolve vs fail, plus a sample of 10 failing (order code + city string as stored). 
+   This confirms whether Arabic/spelling mismatches are the issue.
+ - Also query integration_logs for action='shipping_sent', status='fail', provider 
+   'expresscoursier' and summarize the distinct error messages + counts.
+
+TASK 2 — IMPROVE CITY MATCHING (storage.resolveExpressCoursierCityId, and mirror the 
+same improvement in resolveOzonExpressCityId):
+ - Keep exact + contains fuzzy, then ADD: token-based match (all significant tokens of 
+   the key appear in a city's nameNorm, or vice-versa) and a startsWith match.
+ - Add Arabic→Latin city handling: build/extend a small alias map of common Moroccan 
+   city names (Arabic script and common Latin variants) → the canonical Latin name used 
+   by EC, and normalize the order city through it before matching. Cover at least the 
+   major cities (Casablanca/الدار البيضاء/دار البيضاء, Rabat/الرباط, Fès/فاس, 
+   Marrakech/مراكش, Tanger/طنجة, Agadir/أكادير/اكادير, Meknès/مكناس, Oujda/وجدة, 
+   Kénitra/القنيطرة, Tétouan/تطوان, Salé/سلا, Safi/آسفي, Mohammedia/المحمدية, etc.). 
+   Reuse this map for both EC and Ozon.
+ - Never send a city NAME to the carrier — still return null if truly unresolvable.
+
+TASK 3 — MAKE THE FAILURE VISIBLE (never silent):
+ - In the bulk-ship result summary returned to the client, include, for each order that 
+   stayed in Confirmé, the human-readable reason (e.g. "Ville « X » non synchronisée 
+   pour Express Coursier"). 
+ - Ensure the frontend ship result toast/modal lists these per-order failure reasons 
+   instead of a generic message, so the user immediately sees WHY orders didn't ship.
+
+Do NOT change carriers other than EC/Ozon. Run TASK 1, paste the diagnostic output, 
+then implement TASK 2 + 3. Commit and push to main so Railway auto-redeploys.

@@ -19,6 +19,7 @@ import {
 import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
+import { matchCityId } from "./services/city-aliases";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -1286,29 +1287,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async resolveExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null> {
-    const norm = (s: string) => (s || "")
-      .toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const key = norm(cityName);
-    if (!key) return null;
-
-    // 1. Exact normalized match against synced EC cities
-    const [exact] = await db.select().from(expressCoursierCities)
-      .where(and(eq(expressCoursierCities.storeId, storeId), eq(expressCoursierCities.nameNorm, key)))
-      .limit(1);
-    if (exact && /^\d+$/.test(exact.externalId)) return exact.externalId;
-
-    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
-    const fuzzy = await db.select().from(expressCoursierCities)
-      .where(and(eq(expressCoursierCities.storeId, storeId), like(expressCoursierCities.nameNorm, `%${key}%`)))
-      .limit(1);
-    if (fuzzy[0] && /^\d+$/.test(fuzzy[0].externalId)) return fuzzy[0].externalId;
-
-    // 3. Not found → return null. The caller MUST fail fast — never send the
-    //    city name, which EC rejects ("Ville invalide").
-    return null;
+    if (!(cityName || "").trim()) return null;
+    // Fetch the full synced city list once and match in-memory — this lets us
+    // apply alias resolution (Arabic ↔ Latin), token-based matching, and
+    // startsWith matching, none of which are practical as SQL LIKE queries.
+    const cities = await db.select().from(expressCoursierCities)
+      .where(eq(expressCoursierCities.storeId, storeId));
+    // Not found → matchCityId returns null. The caller MUST fail fast — never
+    // send the city name, which EC rejects ("Ville invalide").
+    return matchCityId(cities, cityName);
   }
 
   // ── Ozon Express city ID mapping (name → numeric ID) ─────────────────────
@@ -1329,29 +1316,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async resolveOzonExpressCityId(storeId: number, cityName: string): Promise<string | null> {
-    const norm = (s: string) => (s || "")
-      .toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const key = norm(cityName);
-    if (!key) return null;
-
-    // 1. Exact normalized match against synced Ozon cities
-    const [exact] = await db.select().from(ozonExpressCities)
-      .where(and(eq(ozonExpressCities.storeId, storeId), eq(ozonExpressCities.nameNorm, key)))
-      .limit(1);
-    if (exact && /^\d+$/.test(exact.externalId)) return exact.externalId;
-
-    // 2. Fuzzy: normalized name contains the key (handles trailing/leading words)
-    const fuzzy = await db.select().from(ozonExpressCities)
-      .where(and(eq(ozonExpressCities.storeId, storeId), like(ozonExpressCities.nameNorm, `%${key}%`)))
-      .limit(1);
-    if (fuzzy[0] && /^\d+$/.test(fuzzy[0].externalId)) return fuzzy[0].externalId;
-
-    // 3. Not found → return null. The caller MUST fail fast — never send the
-    //    city name, which Ozon Express rejects.
-    return null;
+    if (!(cityName || "").trim()) return null;
+    // Fetch the full synced city list once and match in-memory — mirrors
+    // resolveExpressCoursierCityId's alias/token/startsWith matching so both
+    // carriers benefit from the same Arabic↔Latin + fuzzy handling.
+    const cities = await db.select().from(ozonExpressCities)
+      .where(eq(ozonExpressCities.storeId, storeId));
+    // Not found → matchCityId returns null. The caller MUST fail fast — never
+    // send the city name, which Ozon Express rejects.
+    return matchCityId(cities, cityName);
   }
 
   /**
