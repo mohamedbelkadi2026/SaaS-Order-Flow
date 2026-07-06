@@ -19,7 +19,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -3674,12 +3674,24 @@ export async function registerRoutes(
   // Maps Digylog/carrier raw status strings to internal system statuses,
   // captures driver info into the follow-up journal, updates commentStatus,
   // and broadcasts real-time events to the store's connected clients.
+  // Some carriers report themselves under a different name than the one
+  // configured on the carrier account (e.g. Express Coursier's webhook
+  // payload/sender identifies as "olivraison"). Normalize known aliases so
+  // the correct status map (mapEcStatus etc.) is applied.
+  const CARRIER_NAME_ALIASES: Record<string, string> = {
+    olivraison: "expresscoursier",
+  };
+
   async function processCarrierWebhook(
     storeId: number,
-    carrierName: string,
+    carrierNameRaw: string,
     body: Record<string, any>,
   ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string }> {
     const rawPayload = JSON.stringify(body);
+    const carrierName = CARRIER_NAME_ALIASES[(carrierNameRaw || '').toLowerCase().trim()] || carrierNameRaw;
+    if (carrierName !== carrierNameRaw) {
+      console.log(`[WEBHOOK-ALIAS]: carrierName "${carrierNameRaw}" normalized to "${carrierName}"`);
+    }
 
     console.log(`[WEBHOOK-INCOMING]: Received from ${carrierName} (store ${storeId}) — keys: ${Object.keys(body).join(', ')}`);
     console.log(`[WEBHOOK-INCOMING]: Full payload: ${rawPayload}`);
@@ -3692,13 +3704,23 @@ export async function registerRoutes(
       body.traking        ||  // Digylog field (typo in their API)
       body.tracking_number || body.barcode   || body.code_suivi ||
       body.track_number   || body.colis_id  || body.tracking   ||
-      body.colis          || body.id        || ""
+      body.colis          || body.id        ||
+      // Express Coursier (aliased "olivraison") and other nested-payload carriers
+      body.package_id      || body.data?.tracking_number || body.data?.package_id ||
+      body.colis?.code     || ""
     ).toString().trim();
 
+    // internal_id is what we send to Express Coursier as OUR order reference
+    // when shipping — treat it as an order-number fallback for matching.
     const orderNumber = (
       body.order_number || body.reference || body.num       ||
-      body.ref          || body.order_id  || body.numero_commande || ""
+      body.ref          || body.order_id  || body.numero_commande ||
+      body.internal_id  || body.data?.internal_id           || ""
     ).toString().trim();
+
+    if (!trackingNumber && !orderNumber) {
+      console.warn(`[WEBHOOK-NO-ID]: No identifier field recognised in payload from ${carrierName} — top-level keys: ${Object.keys(body).join(', ')}`);
+    }
 
     // ── Extract raw status — cover every field name carriers use ──────────
     // Digylog and other Moroccan carriers vary widely: status, etat, libelle,
@@ -4023,6 +4045,19 @@ export async function registerRoutes(
       newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexCode];
     }
 
+    // ── Express Coursier (aliased "olivraison") status override ───────────
+    // Route through the dedicated EC status map instead of the generic
+    // Digylog-oriented fuzzy matcher above, so EC's own status vocabulary is
+    // mapped correctly regardless of which words Digylog's fuzzy rules use.
+    if (carrierName === "expresscoursier") {
+      const ecMapped = mapEcStatus(rawStatus);
+      if (ecMapped) {
+        newStatus = ecMapped;
+      } else {
+        console.warn(`[EC-WEBHOOK-STATUS] Unmapped EC status "${rawText}" for order #${order.id} — falling back to fuzzy match result "${newStatus}". Add it to EC_STATUS_MAP once confirmed.`);
+      }
+    }
+
     await storage.updateOrderStatus(order.id, newStatus);
 
     // Auto-set shippingCost when order is delivered
@@ -4224,7 +4259,12 @@ export async function registerRoutes(
       const rows = await db.select().from(tbl).where(
         and(eq(tbl.storeId, storeId), eq(tbl.isActive, 1))
       );
-      const account = rows.find(r => r.carrierName.toLowerCase() === carrierName)
+      // Normalize known aliases (e.g. Express Coursier's webhook identifies
+      // itself as "olivraison") so the URL param still matches the right
+      // carrier_account row instead of silently falling through to the
+      // default account.
+      const normalizedCarrierName = CARRIER_NAME_ALIASES[carrierName] || carrierName;
+      const account = rows.find(r => r.carrierName.toLowerCase() === normalizedCarrierName)
         || rows.find(r => r.isDefault === 1)
         || rows[0];
 
@@ -9199,7 +9239,10 @@ function ensureHeaders(sheet) {
         }
 
         if (result.error) {
-          errors.push({ orderId: order.id, message: result.error });
+          errors.push({ orderId: order.id, message: `tracking=${order.trackNumber}: ${result.error}` });
+          if (p === 'expresscoursier') {
+            console.error(`[EC-SYNC-ERROR] order=${order.id} tracking=${order.trackNumber}: ${result.error}`);
+          }
         } else {
           if (result.status && result.status !== order.status) {
             await storage.updateOrderStatus(order.id, result.status);

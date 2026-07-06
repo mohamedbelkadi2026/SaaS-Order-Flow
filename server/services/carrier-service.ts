@@ -2250,7 +2250,7 @@ export async function trackByCarrier(
   }
 
   if (p === 'expresscoursier') {
-    const r = await trackExpressCoursierShipment(trackingNumber, apiKey);
+    const r = await trackExpressCoursierShipment(trackingNumber, apiKey, account);
     return { status: r.status, rawStatus: r.rawStatus, fee: r.fee, error: r.error };
   }
 
@@ -2402,11 +2402,15 @@ export async function trackOzonExpressShipment(
 // ─── Express Coursier tracking ────────────────────────────────────────────────
 
 export const EC_STATUS_MAP: Record<string, string> = {
-  // TODO: fill real Express Coursier status labels → internal codes once API docs confirmed
+  // TODO: fill remaining real Express Coursier status labels → internal codes
+  // once API docs are confirmed. Confirmed so far from real webhook traffic:
+  //   "Livré" (2026-07-06, live "olivraison" webhook test) → delivered
   "delivered":  "delivered",
   "livre":      "delivered",
+  "livré":      "delivered",
   "retour":     "refused",
   "refuse":     "refused",
+  "refusé":     "refused",
   "in_transit": "in_progress",
 };
 
@@ -2414,14 +2418,63 @@ export function mapEcStatus(raw: string): string | null {
   return EC_STATUS_MAP[(raw || '').toLowerCase().trim()] ?? null;
 }
 
+// Masks an API key for logging — keeps only the last 4 characters visible.
+function maskApiKey(apiKey: string): string {
+  const trimmed = (apiKey || '').trim();
+  if (trimmed.length <= 4) return '****';
+  return `****${trimmed.slice(-4)}`;
+}
+
+// Default EC track endpoint — UNVERIFIED. Confirmed to 404 on real package_ids
+// (e.g. "CL-EXP-2607041205-164X55103261"). Do NOT trust this URL as correct.
+// TODO(EC-DOCS): replace with the real Express Coursier tracking endpoint once
+// their API docs are provided. Once confirmed, either update this default or
+// set `settings.ecTrackUrlTemplate` on the carrier account (see below) so no
+// code change is needed for existing stores.
+const EC_TRACK_URL_TEMPLATE_DEFAULT =
+  "https://expresscoursier.ma/v1.0/track/{apiKey}/{tracking}";
+
 export async function trackExpressCoursierShipment(
   trackingNumber: string,
-  apiKey: string
+  apiKey: string,
+  account?: any
 ): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; fee: number | null; error?: string }> {
-  const url = `https://expresscoursier.ma/v1.0/track/${encodeURIComponent(apiKey.trim())}/${encodeURIComponent(trackingNumber)}`;
+  // Endpoint is configurable per carrier account via settings.ecTrackUrlTemplate
+  // (placeholders: {apiKey}, {tracking}, {storeId}). Falls back to the current
+  // (unverified) default when not set.
+  const template: string =
+    (account?.settings as any)?.ecTrackUrlTemplate || EC_TRACK_URL_TEMPLATE_DEFAULT;
+  const url = template
+    .replace("{apiKey}", encodeURIComponent(apiKey.trim()))
+    .replace("{tracking}", encodeURIComponent(trackingNumber))
+    .replace("{storeId}", encodeURIComponent(String(account?.storeId ?? "")));
+
+  // Always log the exact request URL (API key masked) so the correct endpoint
+  // can be verified by hand against Express Coursier's real docs.
+  const maskedUrl = url.replace(encodeURIComponent(apiKey.trim()), maskApiKey(apiKey));
+  console.log(`[EC-TRACK-REQUEST] tracking=${trackingNumber} url=${maskedUrl}`);
+
   try {
     const r = await axios.get(url, { timeout: 15000, validateStatus: () => true });
     const body = r.data;
+    const contentType = String(r.headers?.["content-type"] || "");
+    const isJson = contentType.includes("application/json") || (typeof body === "object" && body !== null);
+
+    // Non-JSON response (HTML error page, etc.) or HTTP 4xx/5xx — the endpoint
+    // is very likely wrong. Surface a clear, structured error instead of
+    // silently returning a null status.
+    if (!isJson || r.status >= 400) {
+      const rawSnippet = (typeof body === "string" ? body : JSON.stringify(body)).slice(0, 300);
+      console.log(`[EC-TRACK-FULL] ${trackingNumber}: HTTP ${r.status} non-JSON/error response — raw="${rawSnippet}"`);
+      return {
+        status: null,
+        rawStatus: null,
+        rawResponse: rawSnippet,
+        fee: null,
+        error: `EC track endpoint returned HTTP ${r.status} / non-JSON — endpoint likely wrong`,
+      };
+    }
+
     // Full raw response — used to identify fee field name
     console.log(`[EC-TRACK-FULL] ${trackingNumber}: ${JSON.stringify(body)}`);
 
@@ -2449,6 +2502,7 @@ export async function trackExpressCoursierShipment(
       error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
     };
   } catch (e: any) {
+    console.log(`[EC-TRACK-FULL] ${trackingNumber}: request failed — ${e?.message || e}`);
     return { status: null, rawStatus: null, rawResponse: null, fee: null, error: e?.message || 'EC track error' };
   }
 }
