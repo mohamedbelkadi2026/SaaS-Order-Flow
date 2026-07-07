@@ -277,6 +277,8 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
 
   // ── Carrier city list — filtered by the order's assigned carrier ──
   const orderCarrier = (order as any)?.carrierName || order?.shippingProvider || null;
+  // True when the order's carrier is Express Coursier (normalise across all known variants)
+  const isEC = /express[\s-]?coursier/i.test(orderCarrier ?? '') || orderCarrier === 'expresscoursier';
   const { data: carrierData, isLoading: citiesLoading } = useQuery<{
     provider: string | null; cities: string[]; isCarrierSpecific: boolean; source?: string;
   }>({
@@ -853,41 +855,6 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
               </Field>
             </div>
 
-            {/* ── EC tracking attach — visible when order has no trackNumber ─── */}
-            {!(order as any)?.trackNumber && (
-              <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 space-y-3">
-                <p className="text-[10px] uppercase tracking-widest font-bold text-orange-700 flex items-center gap-1.5">
-                  <PackageCheck className="w-3.5 h-3.5" />
-                  Tracking Express Coursier (package_id)
-                </p>
-                <p className="text-[11px] text-orange-600">
-                  Pour les colis créés directement chez EC (non expédiés via la plateforme). Une fois attaché, la commande entre en Suivi et les prochains webhooks EC se lieront automatiquement.
-                </p>
-                <div className="flex gap-2">
-                  <Input
-                    value={ecTrackInput}
-                    onChange={e => setEcTrackInput(e.target.value.trim())}
-                    placeholder="ex: CL-EXP-2607061340-164X51032181"
-                    className="flex-1 h-9 text-sm font-mono border-orange-200 bg-white"
-                    data-testid="input-ec-track-number"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && ecTrackInput) attachTracking.mutate(ecTrackInput);
-                    }}
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => { if (ecTrackInput) attachTracking.mutate(ecTrackInput); }}
-                    disabled={!ecTrackInput || attachTracking.isPending}
-                    className="h-9 px-4 bg-orange-500 hover:bg-orange-600 text-white font-semibold shrink-0"
-                    data-testid="button-attach-ec-tracking"
-                  >
-                    {attachTracking.isPending
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <><PackageCheck className="w-3.5 h-3.5 mr-1.5" />Attacher</>}
-                  </Button>
-                </div>
-              </div>
-            )}
 
             {/* Date picker — only when status = confirme_reporte */}
             {fields.status === 'confirme_reporte' && (
@@ -1053,6 +1020,42 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
               )}
             </div>
           </div>
+
+          {/* ── EC tracking attach — Express Coursier only, no trackNumber yet ── */}
+          {isEC && !(order as any)?.trackNumber && (
+            <div className="mx-4 mb-3 rounded-xl border border-orange-200 bg-orange-50 p-4 space-y-3">
+              <p className="text-[10px] uppercase tracking-widest font-bold text-orange-700 flex items-center gap-1.5">
+                <PackageCheck className="w-3.5 h-3.5" />
+                Tracking Express Coursier (package_id)
+              </p>
+              <p className="text-[11px] text-orange-600">
+                Pour les colis créés directement chez EC (non expédiés via la plateforme). Une fois attaché, la commande entre en Suivi et les prochains webhooks EC se lieront automatiquement.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  value={ecTrackInput}
+                  onChange={e => setEcTrackInput(e.target.value.trim())}
+                  placeholder="ex: CL-EXP-2607061340-164X51032181"
+                  className="w-full h-11 sm:h-9 text-sm font-mono border-orange-200 bg-white"
+                  data-testid="input-ec-track-number"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && ecTrackInput) attachTracking.mutate(ecTrackInput);
+                  }}
+                />
+                <Button
+                  size="sm"
+                  onClick={() => { if (ecTrackInput) attachTracking.mutate(ecTrackInput); }}
+                  disabled={!ecTrackInput || attachTracking.isPending}
+                  className="h-11 sm:h-9 w-full sm:w-auto px-4 bg-orange-500 hover:bg-orange-600 text-white font-semibold"
+                  data-testid="button-attach-ec-tracking"
+                >
+                  {attachTracking.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <><PackageCheck className="w-3.5 h-3.5 mr-1.5" />Attacher</>}
+                </Button>
+              </div>
+            </div>
+          )}
 
           {/* ── COMMENTS — stacked on mobile, side-by-side on desktop ── */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mx-4 mb-4">
