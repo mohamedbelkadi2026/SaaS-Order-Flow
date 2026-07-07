@@ -582,8 +582,8 @@ export default function Orders() {
     mutationFn: (rows: { ref: string; trackingNumber: string }[]) =>
       apiRequest("POST", "/api/orders/bulk-attach-tracking-csv", { rows }),
     onSuccess: (data: any) => {
-      qc.invalidateQueries({ queryKey: ['/api/orders'] });
-      qc.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
       setCsvResults({ visible: true, attached: data.attached ?? 0, skipped: data.skipped ?? 0, rows: data.results ?? [] });
     },
     onError: (err: any) => toast({ title: "Erreur import CSV", description: err.message || "Erreur serveur", variant: "destructive" }),
@@ -1269,7 +1269,7 @@ export default function Orders() {
             </>
           )}
           {/* CSV tracking import — always visible for admins/owners */}
-          {(currentUser?.role === 'owner' || currentUser?.role === 'superadmin') && (
+          {(user?.role === 'owner' || user?.role === 'superadmin') && (
             <>
               <input
                 ref={csvFileInputRef}
