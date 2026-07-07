@@ -536,6 +536,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders", order?.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
       setEcTrackInput("");
       const retroMsg = data?.retroMatched
         ? ` Statut retro-appliqué: ${data.status}.`

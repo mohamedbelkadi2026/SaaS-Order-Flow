@@ -1892,13 +1892,12 @@ export async function registerRoutes(
       }
 
       // Attach: set trackNumber + carrier fields + status → Attente De Ramassage
+      // Use updateOrderShipping (strongly-typed Drizzle set) to guarantee
+      // track_number is written, then updateOrderStatus for the status transition.
       const carrierName = (provider || 'expresscoursier').toLowerCase();
-      await storage.updateOrder(orderId, {
-        trackNumber:      trackingNumber,
-        shippingProvider: carrierName,
-        carrierName:      carrierName,
-        status:           'Attente De Ramassage',
-      } as any);
+      await storage.updateOrderShipping(orderId, trackingNumber, null, carrierName);
+      await storage.updateOrderStatus(orderId, 'Attente De Ramassage');
+      console.log(`[ATTACH-TRACKING] Order #${(order as any).orderNumber} (id=${orderId}) — track_number="${trackingNumber}" carrier="${carrierName}" status→"Attente De Ramassage"`);
 
       await storage.createIntegrationLog({
         storeId,
