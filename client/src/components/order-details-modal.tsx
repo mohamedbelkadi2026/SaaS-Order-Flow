@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle, PackageCheck } from "lucide-react";
+import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -265,7 +265,6 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
   const [manualPriceOverride, setManualPriceOverride] = useState(false);
-  const [ecTrackInput, setEcTrackInput] = useState("");
   // Track the last order ID so we only reset the manual override when a
   // different order is opened — NOT when the same order's data refreshes
   // after save (which would immediately re-run the auto-calc and undo the
@@ -524,30 +523,6 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       if (typeof itemId === "string" && itemId.startsWith("new-")) return;
       await apiRequest("DELETE", `/api/order-items/${itemId}`, undefined);
     },
-  });
-
-  const attachTracking = useMutation({
-    mutationFn: (trackingNumber: string) =>
-      apiRequest("PATCH", `/api/orders/${order!.id}/attach-tracking`, {
-        trackingNumber,
-        provider: 'expresscoursier',
-      }),
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/orders", order?.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
-      setEcTrackInput("");
-      const retroMsg = data?.retroMatched
-        ? ` Statut retro-appliqué: ${data.status}.`
-        : " Suivi démarré — le statut sera mis à jour au prochain webhook EC.";
-      toast({
-        title: `✅ Tracking EC attaché — ${data?.trackingNumber}`,
-        description: `La commande entre en Suivi.${retroMsg}`,
-      });
-      if (onUpdated) onUpdated({ ...order!, trackNumber: data?.trackingNumber, status: data?.status ?? 'Attente De Ramassage' });
-    },
-    onError: (e: any) => toast({ title: "Erreur", description: e.message || "Impossible d'attacher le tracking", variant: "destructive" }),
   });
 
   /* ── Open Retour ─────────────────────────────────────────────── */
@@ -853,42 +828,6 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                 </Select>
               </Field>
             </div>
-
-            {/* ── EC tracking attach — visible when order has no trackNumber ─── */}
-            {!(order as any)?.trackNumber && (
-              <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 space-y-3">
-                <p className="text-[10px] uppercase tracking-widest font-bold text-orange-700 flex items-center gap-1.5">
-                  <PackageCheck className="w-3.5 h-3.5" />
-                  Tracking Express Coursier (package_id)
-                </p>
-                <p className="text-[11px] text-orange-600">
-                  Pour les colis créés directement chez EC (non expédiés via la plateforme). Une fois attaché, la commande entre en Suivi et les prochains webhooks EC se lieront automatiquement.
-                </p>
-                <div className="flex gap-2">
-                  <Input
-                    value={ecTrackInput}
-                    onChange={e => setEcTrackInput(e.target.value.trim())}
-                    placeholder="ex: CL-EXP-2607061340-164X51032181"
-                    className="flex-1 h-9 text-sm font-mono border-orange-200 bg-white"
-                    data-testid="input-ec-track-number"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && ecTrackInput) attachTracking.mutate(ecTrackInput);
-                    }}
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => { if (ecTrackInput) attachTracking.mutate(ecTrackInput); }}
-                    disabled={!ecTrackInput || attachTracking.isPending}
-                    className="h-9 px-4 bg-orange-500 hover:bg-orange-600 text-white font-semibold shrink-0"
-                    data-testid="button-attach-ec-tracking"
-                  >
-                    {attachTracking.isPending
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <><PackageCheck className="w-3.5 h-3.5 mr-1.5" />Attacher</>}
-                  </Button>
-                </div>
-              </div>
-            )}
 
             {/* Date picker — only when status = confirme_reporte */}
             {fields.status === 'confirme_reporte' && (
