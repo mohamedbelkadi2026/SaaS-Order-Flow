@@ -1,0 +1,36 @@
+I have Express Coursier "Bon de Ramassage" data for orders stuck in "Confirmé" (parcels 
+shipped directly at EC). I've uploaded a CSV named ec-bons-backfill.csv with columns: 
+tracking, phone, status (French EC status text), city, price. The stuck orders' phones 
+match the CSV phones exactly. Build a backfill that attaches tracking + real status to 
+each stuck order by matching on phone.
+
+USE THE UPLOADED FILE ec-bons-backfill.csv (do NOT parse any PDF).
+
+SCRIPT: scripts/backfill-ec-from-bons.ts — DRY-RUN by default, --apply to write.
+ - Read ec-bons-backfill.csv.
+ - Normalize phone (strip +212 / leading 0 / spaces / non-digits) using the app's 
+   existing phone helper.
+ - For each row, find the most RECENT order in the store with the same normalized phone 
+   that is in 'confirme' (prefer empty trackNumber). Skip if none, or if that tracking is 
+   already used by another order.
+ - Map the French EC status text → internal status:
+     "livré"/"livree"/"delivered"                        → delivered
+     "refusé"/"refuse"/"retour"/"annul"                  → refused
+     "reporté"/"reporte"                                 → in_progress
+     "en cours de livraison"/"en transport"/
+       "recu sur agence"/"reçu sur agence"/
+       "en attente de ramassage"/"ramassé"               → in_progress
+     anything else                                       → in_progress   (safe default)
+ - Update the matched order: trackNumber = tracking, shippingProvider='expresscoursier', 
+   carrierName='expresscoursier', status = mapped status, commentStatus = raw French text 
+   (so Suivi shows the real label).
+ - NOTE: some phones appear twice (a reshipped parcel) — matching the most recent order 
+   is fine; flag these duplicate-phone rows in the output so I can eyeball them.
+ - DRY-RUN prints: total rows, matched & would-update, skipped (no match / tracking 
+   already used), duplicate-phone rows, and a sample of 10 
+   (phone → order code → tracking → mapped status). Only --apply writes. Print final counts.
+ - Document the dry-run and --apply commands in the file header.
+
+ALSO fix the manual attach-tracking endpoint: it must persist track_number in the SAME 
+updateOrder call as status (currently it changes status but leaves track_number null, so 
+the CODE
