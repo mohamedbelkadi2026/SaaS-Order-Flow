@@ -575,6 +575,41 @@ export default function Orders() {
     onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
   });
 
+  const csvFileInputRef = useRef<HTMLInputElement>(null);
+  const [csvResults, setCsvResults] = useState<{ visible: boolean; attached: number; skipped: number; rows: any[] }>({ visible: false, attached: 0, skipped: 0, rows: [] });
+
+  const csvAttachMutation = useMutation({
+    mutationFn: (rows: { ref: string; trackingNumber: string }[]) =>
+      apiRequest("POST", "/api/orders/bulk-attach-tracking-csv", { rows }),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ['/api/orders'] });
+      qc.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
+      setCsvResults({ visible: true, attached: data.attached ?? 0, skipped: data.skipped ?? 0, rows: data.results ?? [] });
+    },
+    onError: (err: any) => toast({ title: "Erreur import CSV", description: err.message || "Erreur serveur", variant: "destructive" }),
+  });
+
+  function handleCsvFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = (ev.target?.result as string) || "";
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const rows: { ref: string; trackingNumber: string }[] = [];
+      for (const line of lines) {
+        const parts = line.split(/[,;\t]/);
+        const ref = (parts[0] || '').trim().replace(/^["']|["']$/g, '');
+        const trackingNumber = (parts[1] || '').trim().replace(/^["']|["']$/g, '');
+        if (ref && trackingNumber) rows.push({ ref, trackingNumber });
+      }
+      if (rows.length === 0) { toast({ title: "CSV vide ou format incorrect", description: "Format attendu: ref_commande_ou_telephone,package_id" }); return; }
+      csvAttachMutation.mutate(rows);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
   const bulkMarkEcShippedMutation = useMutation({
     mutationFn: (ids: number[]) => apiRequest("POST", "/api/orders/bulk-mark-ec-shipped", { orderIds: ids }),
     onSuccess: (data: any, ids) => {
@@ -1230,6 +1265,30 @@ export default function Orders() {
               </Button>
               <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
                 <FileSpreadsheet className="w-4 h-4" />
+              </Button>
+            </>
+          )}
+          {/* CSV tracking import — always visible for admins/owners */}
+          {(currentUser?.role === 'owner' || currentUser?.role === 'superadmin') && (
+            <>
+              <input
+                ref={csvFileInputRef}
+                type="file"
+                accept=".csv,.txt"
+                className="hidden"
+                onChange={handleCsvFileChange}
+                data-testid="input-csv-tracking"
+              />
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 border-blue-200 text-blue-600 hover:bg-blue-50"
+                title="Importer tracking EC (CSV) — colonnes: ref_ou_telephone, package_id"
+                onClick={() => csvFileInputRef.current?.click()}
+                disabled={csvAttachMutation.isPending}
+                data-testid="button-import-ec-csv"
+              >
+                {csvAttachMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
               </Button>
             </>
           )}
@@ -3052,6 +3111,36 @@ export default function Orders() {
               {createReturnMutation.isPending
                 ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Création...</>
                 : <><RotateCcw className="w-4 h-4 mr-2" /> Oui, créer un retour</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── CSV tracking import results dialog ── */}
+      <Dialog open={csvResults.visible} onOpenChange={(open) => { if (!open) setCsvResults(r => ({ ...r, visible: false })); }}>
+        <DialogContent className="sm:max-w-lg rounded-xl" data-testid="dialog-csv-results">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="w-5 h-5 text-blue-500" />
+              Résultats import tracking EC
+            </DialogTitle>
+            <DialogDescription>
+              <span className="text-green-600 font-semibold">{csvResults.attached} attaché(s)</span>
+              {csvResults.skipped > 0 && <span className="text-amber-600 font-semibold ml-3">{csvResults.skipped} ignoré(s)</span>}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-72 overflow-y-auto space-y-1 py-1">
+            {csvResults.rows.map((r, i) => (
+              <div key={i} className={`flex items-start gap-2 text-xs px-3 py-2 rounded-lg ${r.status === 'attached' ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'}`}>
+                <span className="font-mono font-bold min-w-[80px] truncate">{r.orderNumber || r.ref}</span>
+                <span className="font-mono text-gray-500 truncate flex-1">{r.trackingNumber}</span>
+                <span className="shrink-0">{r.status === 'attached' ? '✅' : `⚠️ ${r.reason || 'ignoré'}`}</span>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setCsvResults(r => ({ ...r, visible: false }))} data-testid="button-csv-results-close">
+              Fermer
             </Button>
           </DialogFooter>
         </DialogContent>

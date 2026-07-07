@@ -2414,8 +2414,44 @@ export const EC_STATUS_MAP: Record<string, string> = {
   "in_transit": "in_progress",
 };
 
+// ── EC numeric status codes ────────────────────────────────────────────────────
+// Express Coursier sends numeric codes (e.g. 34, 35, 36) in some webhook payloads
+// via the ChangeStatus event. Fill in the real meanings once API docs / live traffic
+// confirms which code means which state.
+//
+// TODO: obtain the full EC numeric status table and fill this map.
+// Example template (unconfirmed):
+//   "1":  "Attente De Ramassage"
+//   "5":  "in_progress"
+//   "34": "delivered"
+//   "35": "refused"
+//   "36": "retourné"
+//
+// Safe default for unknown codes: 'in_progress' (returned by mapEcNumericStatus).
+export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
+  // fill in confirmed codes here, e.g.:
+  // "34": "delivered",
+  // "35": "refused",
+};
+
+/** Maps an EC numeric status code to an internal status string.
+ *  Returns 'in_progress' for any unknown code (safe, non-terminal default). */
+export function mapEcNumericStatus(code: string | number): string {
+  const key = String(code ?? '').trim();
+  if (!key) return 'in_progress';
+  return EC_NUMERIC_STATUS_MAP[key] ?? 'in_progress';
+}
+
 export function mapEcStatus(raw: string): string | null {
-  return EC_STATUS_MAP[(raw || '').toLowerCase().trim()] ?? null;
+  const normalized = (raw || '').toLowerCase().trim();
+  if (!normalized) return null;
+  // Text label lookup first (Livré, delivered, retour, etc.)
+  if (EC_STATUS_MAP[normalized] !== undefined) return EC_STATUS_MAP[normalized];
+  // Numeric code lookup — EC ChangeStatus events carry codes like "34", "35"
+  if (/^\d+$/.test(normalized)) {
+    return mapEcNumericStatus(normalized);
+  }
+  return null;
 }
 
 // Masks an API key for logging — keeps only the last 4 characters visible.

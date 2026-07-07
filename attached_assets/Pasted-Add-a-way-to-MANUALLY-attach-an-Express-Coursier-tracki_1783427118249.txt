@@ -1,0 +1,46 @@
+Add a way to MANUALLY attach an Express Coursier tracking number (package_id) to an 
+order that is stuck in "Confirmé" (parcels that were created directly in EC, so the 
+platform never stored their tracking number). Once attached, the order must leave 
+Confirmé, enter Suivi, and every subsequent EC webhook (ChangeStatus by package_id) must 
+match it automatically and update its live status.
+
+CONTEXT (already established — do NOT re-investigate): EC webhooks arrive as 
+ChangeStatus events carrying only package_id (e.g. CL-EXP-2607061340-164X51032181) and a 
+numeric status, with NO customer phone, so phone-matching can't help these. The reliable 
+link is the package_id itself. processCarrierWebhook already matches by trackNumber via 
+storage.getOrderByTrackingNumber — so if we store the package_id in the order's 
+track_number, future webhooks will match automatically.
+
+TASK 1 — Order-details modal (client/src/components/order-details-modal.tsx):
+ - Add an editable field "Tracking Express Coursier (package_id)" visible when the order 
+   is in 'confirme' (or has no trackNumber). Pre-fill from order.trackNumber if present.
+ - On Save, if the field is non-empty and the order has no trackNumber yet, call a new/
+   existing endpoint to attach it.
+
+TASK 2 — Backend endpoint (server/routes.ts), requireAuth + tenant check:
+ - PATCH /api/orders/:id/attach-tracking  body { trackingNumber, provider='expresscoursier' }
+ - Validate the order belongs to the caller's store. Reject if that trackingNumber is 
+   already used by ANOTHER order in the store (avoid duplicates).
+ - Set trackNumber = trackingNumber, shippingProvider='expresscoursier', 
+   carrierName='expresscoursier', and status='Attente De Ramassage' (via updateOrder), 
+   so it moves into Suivi. Write an integration_log entry ('tracking_attached','success').
+
+TASK 3 — Retro-match existing orphan webhooks for THIS order:
+ - Right after attaching, look up the most recent integration_logs webhook event 
+   (action in 'webhook_no_match'/'webhook_received', provider expresscoursier/olivraison) 
+   whose payload contains this package_id, extract its numeric status, map it through the 
+   EC numeric-status map (see note), and apply it so the order immediately reflects the 
+   latest known status instead of just 'Attente De Ramassage'.
+ - EC NUMERIC STATUS MAP: I will provide the real meanings of the numeric codes 
+   (e.g. 34/35/36). For now, add a clearly-marked EC_NUMERIC_STATUS_MAP constant with a 
+   TODO and a safe default of 'in_progress' for unknown codes; wire it into both this 
+   retro-match and the live webhook handler so numeric statuses map correctly once the 
+   codes are filled in.
+
+TASK 4 — Bulk variant (optional but useful):
+ - Add "Importer tracking EC (CSV)" that accepts a file with columns 
+   [order_ref_or_phone, package_id], and for each row finds the matching confirmé order 
+   and attaches the tracking the same way (reuse TASK 2 logic). Dry-run summary first.
+
+Do NOT auto-create orders and do NOT change other carriers. Deploy to main (Railway 
+auto-redeploys).

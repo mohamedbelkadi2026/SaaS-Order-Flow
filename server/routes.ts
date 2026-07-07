@@ -13,13 +13,13 @@ import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative } from "@sh
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
-import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum } from "drizzle-orm";
+import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, probeExpressCoursierEndpoints } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, probeExpressCoursierEndpoints } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -1846,6 +1846,210 @@ export async function registerRoutes(
       res.json({ ok: true, deleted: orderId });
     } catch (err: any) {
       res.status(err.message?.includes('not found') ? 404 : 500).json({ message: err.message || "Suppression échouée" });
+    }
+  });
+
+  // ── Attach a tracking number (package_id) manually to an EC order ────────────
+  // For parcels created directly at EC (not via the platform) — the order is stuck
+  // in "Confirmé" because there's no tracking number to match webhooks against.
+  // After attaching, the order moves to Suivi and future EC webhooks match it
+  // automatically via storage.getOrderByTrackingNumber.
+  //
+  // POST-attach: retro-match the most recent webhook_no_match log that contains
+  // this package_id, extract its status, and apply it immediately so the order
+  // reflects the latest known carrier state rather than just 'Attente De Ramassage'.
+  app.patch("/api/orders/:id/attach-tracking", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent' || user.role === 'media_buyer') {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const storeId = user.storeId!;
+      const orderId = Number(req.params.id);
+      const { trackingNumber: rawTrack, provider = 'expresscoursier' } = req.body;
+      const trackingNumber = (rawTrack || '').toString().trim();
+      if (!trackingNumber) {
+        return res.status(400).json({ message: "trackingNumber requis" });
+      }
+
+      // Tenant check
+      const order = await storage.getOrder(orderId);
+      if (!order || (order as any).storeId !== storeId) {
+        return res.status(404).json({ message: "Commande introuvable" });
+      }
+
+      // Reject if this tracking number is already used by a DIFFERENT order
+      const [existing] = await db.select({ id: orders.id }).from(orders)
+        .where(and(
+          eq(orders.storeId as any, storeId),
+          eq(orders.trackNumber as any, trackingNumber),
+        ))
+        .limit(1);
+      if (existing && existing.id !== orderId) {
+        return res.status(409).json({
+          message: `Ce numéro de suivi est déjà utilisé par la commande #${existing.id}`,
+        });
+      }
+
+      // Attach: set trackNumber + carrier fields + status → Attente De Ramassage
+      const carrierName = (provider || 'expresscoursier').toLowerCase();
+      await storage.updateOrder(orderId, {
+        trackNumber:      trackingNumber,
+        shippingProvider: carrierName,
+        carrierName:      carrierName,
+        status:           'Attente De Ramassage',
+      } as any);
+
+      await storage.createIntegrationLog({
+        storeId,
+        integrationId: null,
+        provider:      carrierName,
+        action:        'tracking_attached',
+        status:        'success',
+        message:       `✓ Commande #${(order as any).orderNumber} — tracking ${trackingNumber} attaché manuellement`,
+      });
+
+      // ── Retro-match: replay the most recent orphan webhook for this tracking ──
+      let retroStatus: string | null = null;
+      try {
+        const retroLogs = await db.select({
+          id:      integrationLogs.id,
+          payload: integrationLogs.payload,
+        }).from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId as any, storeId),
+            or(
+              eq(integrationLogs.provider, 'expresscoursier'),
+              eq(integrationLogs.provider, 'olivraison'),
+            ),
+            or(
+              eq(integrationLogs.action, 'webhook_no_match'),
+              eq(integrationLogs.action, 'webhook_received'),
+            ),
+            like(integrationLogs.payload as any, `%${trackingNumber}%`),
+          ))
+          .orderBy(desc(integrationLogs.createdAt))
+          .limit(1);
+
+        if (retroLogs.length > 0 && retroLogs[0].payload) {
+          const retroBody = JSON.parse(retroLogs[0].payload);
+          // Extract raw status from any known field
+          const retroRaw = (
+            retroBody.STATUS      || retroBody.status      ||
+            retroBody.statut      || retroBody.STATUT      ||
+            retroBody.etat        || retroBody.libelle      ||
+            retroBody.last_status || retroBody.data?.status || ''
+          ).toString().trim();
+          const mapped = mapEcStatus(retroRaw);
+          if (mapped) {
+            await storage.updateOrderStatus(orderId, mapped);
+            retroStatus = mapped;
+            console.log(`[ATTACH-TRACKING-RETRO] Order #${(order as any).orderNumber} retro-status "${retroRaw}" → "${mapped}" (from log ${retroLogs[0].id})`);
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[ATTACH-TRACKING-RETRO] retro-match failed: ${e.message}`);
+      }
+
+      res.json({
+        ok:           true,
+        trackingNumber,
+        status:       retroStatus ?? 'Attente De Ramassage',
+        retroMatched: retroStatus !== null,
+      });
+    } catch (err: any) {
+      console.error('[ATTACH-TRACKING]', err);
+      res.status(500).json({ message: err.message || "Erreur serveur" });
+    }
+  });
+
+  // ── Bulk CSV tracking attach for EC ──────────────────────────────────────────
+  // Accepts pre-parsed rows from the frontend: [{ref, trackingNumber}]
+  // ref can be the orderNumber OR the customer phone number.
+  // Returns a row-level summary: {attached, skipped, errors, results}.
+  app.post("/api/orders/bulk-attach-tracking-csv", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent' || user.role === 'media_buyer') {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const storeId = user.storeId!;
+      const { rows, dryRun = false } = req.body;
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ message: "rows (array) requis" });
+      }
+
+      const results: Array<{
+        ref: string; trackingNumber: string; orderId?: number;
+        orderNumber?: string; status: string; reason?: string;
+      }> = [];
+
+      for (const row of rows.slice(0, 500)) {
+        const ref = (row.ref || '').toString().trim();
+        const tracking = (row.trackingNumber || '').toString().trim();
+        if (!ref || !tracking) {
+          results.push({ ref, trackingNumber: tracking, status: 'skip', reason: 'ref ou tracking vide' });
+          continue;
+        }
+
+        // Find by order number first, then by phone
+        let foundOrder: any = null;
+        const [byRef] = await db.select().from(orders)
+          .where(and(
+            eq(orders.storeId as any, storeId),
+            eq(orders.orderNumber as any, ref),
+          ))
+          .limit(1);
+        if (byRef) {
+          foundOrder = byRef;
+        } else {
+          const byPhone = await storage.getActiveOrdersByPhone(storeId, ref);
+          const candidate = byPhone.find(
+            (c: any) => c.status?.toLowerCase() === 'confirme' && !c.trackNumber,
+          ) || byPhone.find((c: any) => !c.trackNumber);
+          if (candidate) foundOrder = candidate;
+        }
+
+        if (!foundOrder) {
+          results.push({ ref, trackingNumber: tracking, status: 'skip', reason: 'commande introuvable ou déjà expédiée' });
+          continue;
+        }
+
+        // Check for duplicate tracking
+        const [dup] = await db.select({ id: orders.id }).from(orders)
+          .where(and(
+            eq(orders.storeId as any, storeId),
+            eq(orders.trackNumber as any, tracking),
+          ))
+          .limit(1);
+        if (dup && dup.id !== foundOrder.id) {
+          results.push({ ref, trackingNumber: tracking, orderId: foundOrder.id, orderNumber: foundOrder.orderNumber, status: 'skip', reason: `tracking déjà sur commande #${dup.id}` });
+          continue;
+        }
+
+        if (!dryRun) {
+          await storage.updateOrder(foundOrder.id, {
+            trackNumber:      tracking,
+            shippingProvider: 'expresscoursier',
+            carrierName:      'expresscoursier',
+            status:           'Attente De Ramassage',
+          } as any);
+          await storage.createIntegrationLog({
+            storeId, integrationId: null, provider: 'expresscoursier',
+            action: 'tracking_attached_csv', status: 'success',
+            message: `✓ CSV import — commande #${foundOrder.orderNumber} → tracking ${tracking}`,
+          });
+        }
+
+        results.push({ ref, trackingNumber: tracking, orderId: foundOrder.id, orderNumber: foundOrder.orderNumber, status: 'attached' });
+      }
+
+      const attached = results.filter(r => r.status === 'attached').length;
+      const skipped  = results.filter(r => r.status === 'skip').length;
+      res.json({ ok: true, dryRun, attached, skipped, results });
+    } catch (err: any) {
+      console.error('[BULK-ATTACH-CSV]', err);
+      res.status(500).json({ message: err.message || "Erreur serveur" });
     }
   });
 
