@@ -1,0 +1,52 @@
+Context: Express Coursier shipping from the platform now works. The remaining problem is 
+a set of orders that were confirmed in the platform, then shipped DIRECTLY at Express 
+Coursier (not via the platform), so they have no tracking number here and are stuck in 
+"Confirmé". EC IS sending webhooks for them, but the webhook can't match them (their EC 
+tracking number isn't on any platform order), so they're logged as webhook_no_match and 
+never leave Confirmé. Goal: link each physically-shipped EC parcel to its existing 
+platform order so it moves into Suivi and tracks live status. Match by customer PHONE. 
+Never auto-create new orders.
+
+Reuse the app's existing phone normalization helper (strip +212 / leading 0 / spaces / 
+non-digits). Treat incoming carrierName "olivraison" as "expresscoursier".
+
+PART 1 — FORWARD: phone fallback in the EC webhook (server/routes.ts processCarrierWebhook)
+When, after the tracking-number and order-number matching, NO order is found AND the 
+carrier is expresscoursier/olivraison:
+ - Extract the customer phone from the webhook payload (try common fields: phone, 
+   receiver_phone, tel, gsm, client_phone, data.phone, etc.), normalize it.
+ - Find the most RECENT platform order in the same store with the same normalized phone 
+   that is still active (status NOT delivered/refused/retourné) — PREFER one currently 
+   in 'confirme' with an empty trackNumber.
+ - If found: attach the webhook's tracking number (order.trackNumber = tracking), set 
+   shippingProvider='expresscoursier', carrierName='expresscoursier', and move status to 
+   a shipped status (use the mapped webhook status if it's a real transit/delivered 
+   status, otherwise 'Attente De Ramassage'), then continue the normal status/
+   commentStatus update path so it appears in Suivi with the live carrier text.
+ - Do NOT create a new order. If no phone match, keep logging webhook_no_match.
+
+PART 2 — BACKFILL EXISTING STUCK ORDERS (one-time script, DRY-RUN first, --apply to write)
+Create scripts/reconcile-ec-shipped-confirmed.ts that:
+ - Reads integration_logs where action='webhook_no_match' and provider in 
+   ('expresscoursier','olivraison'), newest first, de-duplicated by tracking number.
+ - For each, parse the stored payload JSON to extract the EC tracking number and the 
+   customer phone (same field list as PART 1). Normalize the phone.
+ - Find the most recent active order in that store with the same normalized phone that 
+   is in 'confirme' with empty trackNumber. If found and that tracking number isn't 
+   already used by another order, attach trackNumber + shippingProvider='expresscoursier' 
+   + carrierName='expresscoursier' and set status='Attente De Ramassage' (so it enters 
+   Suivi). Skip if no unique match.
+ - DRY-RUN by default: print total orphan logs, how many would be reconciled, how many 
+   skipped (no phone / no match / tracking already used), and a sample of 10 
+   (order code → tracking → phone). Only --apply writes. Print final counts.
+ - Document both commands in the file header.
+
+PART 3 — MANUAL SAFETY (small UI action)
+Add a bulk action on the orders list, for orders in 'confirme', 
+"Marquer comme expédié (Express Coursier)": sets status='Attente De Ramassage', 
+shippingProvider/carrierName='expresscoursier' (no tracking), so the user can force any 
+remaining stragglers into Suivi. Once EC webhooks arrive, PART 1's phone fallback 
+attaches the real tracking + live status.
+
+Do NOT change other carriers. Deploy PART 1 + PART 3 to main (Railway auto-redeploys), 
+run PART 2 as DRY-RUN and paste me the summary before applying.

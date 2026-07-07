@@ -1849,6 +1849,46 @@ export async function registerRoutes(
     }
   });
 
+  // ── Bulk mark as "shipped via EC" (manual safety action) ────────────────────
+  // Sets status='Attente De Ramassage' + shippingProvider/carrierName='expresscoursier'
+  // for confirmed orders that were shipped directly at EC (not via the platform).
+  // Once EC's webhook arrives, the phone-fallback in processCarrierWebhook will attach
+  // the real tracking number and live status automatically.
+  app.post("/api/orders/bulk-mark-ec-shipped", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      if (user.role === 'agent' || user.role === 'media_buyer') {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+      const storeId = user.storeId!;
+      const { orderIds } = req.body;
+      if (!Array.isArray(orderIds) || orderIds.length === 0) {
+        return res.status(400).json({ message: "orderIds (array) requis" });
+      }
+      const ids = orderIds.map(Number).filter(n => !isNaN(n));
+      let updated = 0;
+      let skipped = 0;
+      await Promise.all(ids.map(async (orderId) => {
+        const order = await storage.getOrder(orderId);
+        if (!order || (order as any).storeId !== storeId) { skipped++; return; }
+        await storage.updateOrder(orderId, {
+          status:           'Attente De Ramassage',
+          shippingProvider: 'expresscoursier',
+          carrierName:      'expresscoursier',
+        } as any);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'expresscoursier',
+          action: 'manual_mark_ec_shipped', status: 'success',
+          message: `✓ Commande #${(order as any).orderNumber} marquée manuellement comme expédiée via Express Coursier (sans numéro de suivi)`,
+        });
+        updated++;
+      }));
+      res.json({ ok: true, updated, skipped });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Mise à jour échouée" });
+    }
+  });
+
   // ── Bulk order delete ────────────────────────────────────────────────────────
   app.post("/api/orders/bulk-delete", requireAuth, async (req, res) => {
     try {
@@ -3814,10 +3854,11 @@ export async function registerRoutes(
     // order that already has the product) by matching the customer's phone.
     if (!order) {
       let webhookPhone = (
-        body.phone || body.telephone || body.tel || body.gsm ||
-        body.customer_phone || body.client_phone || body.destinataire_phone ||
-        body.phone_number || body.numero || body.num_tel ||
-        body.data?.phone || body.data?.telephone || ""
+        body.phone         || body.receiver_phone  || body.telephone         ||
+        body.tel           || body.gsm             || body.customer_phone    ||
+        body.client_phone  || body.destinataire_phone || body.phone_number   ||
+        body.numero        || body.num_tel         ||
+        body.data?.phone   || body.data?.telephone || body.data?.receiver_phone || ""
       ).toString().trim();
 
       // Payload had no phone — ask the carrier API for the order's phone.
@@ -3840,9 +3881,23 @@ export async function registerRoutes(
         // Safe-match ONLY: attach to a candidate whose trackNumber is empty or
         // already equals this tracking number. Never attach to an order already
         // on a DIFFERENT tracking number — that would clobber another shipment.
-        const safe = candidates.find(
-          c => !(c as any).trackNumber || (c as any).trackNumber === trackingNumber,
-        );
+        //
+        // For EC/olivraison specifically, PREFER a 'confirme' order with no
+        // trackNumber — these are orders confirmed in the platform but shipped
+        // directly at the carrier, so the webhook is the first time we see the
+        // tracking number. Only fall back to the generic "empty or matching"
+        // logic if no such confirme order exists.
+        let safe: (typeof candidates)[0] | undefined;
+        if (carrierName === 'expresscoursier') {
+          safe = candidates.find(
+            c => (c as any).status?.toLowerCase() === 'confirme' && !(c as any).trackNumber,
+          );
+        }
+        if (!safe) {
+          safe = candidates.find(
+            c => !(c as any).trackNumber || (c as any).trackNumber === trackingNumber,
+          );
+        }
         if (safe) {
           order = safe as any;
           matchedBy = `phone_fallback="${webhookPhone}"`;
@@ -3943,9 +3998,10 @@ export async function registerRoutes(
     // carrier is now reporting one, persist it so the UI can show it everywhere.
     if (!(order as any).trackNumber && trackingNumber) {
       await storage.updateOrder(order.id, {
-        trackNumber: trackingNumber,
+        trackNumber:      trackingNumber,
         shippingProvider: carrierName,
-        status: 'Attente De Ramassage',
+        carrierName:      carrierName,   // keep both columns in sync
+        status:           'Attente De Ramassage',
       } as any);
       console.log(`[WEBHOOK-TRACK] Order #${(order as any).orderNumber} → trackNumber saved: ${trackingNumber}`);
     }

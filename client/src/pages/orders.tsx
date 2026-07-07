@@ -16,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogTitle, DialogHeader, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2, CalendarClock, Package } from "lucide-react";
+import { Search, AlertCircle, ShoppingBag, XCircle, Truck, ExternalLink, Loader2, Save, Phone, Eye, Pencil, Clock, Users, ChevronLeft, ChevronRight, LayoutGrid, RotateCcw, Trash2, FileSpreadsheet, Headphones, BookOpen, Send, RefreshCw, SlidersHorizontal, AlertTriangle, CheckCircle2, CalendarClock, Package, PackageCheck } from "lucide-react";
 import { SiWhatsapp, SiShopify } from "react-icons/si";
 import { useToast } from "@/hooks/use-toast";
 import { useRoute } from "wouter";
@@ -573,6 +573,21 @@ export default function Orders() {
       toast({ title: `${count} commande${count > 1 ? 's' : ''} supprimée${count > 1 ? 's' : ''} avec succès` });
     },
     onError: (err: any) => toast({ title: "Erreur de suppression", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
+  });
+
+  const bulkMarkEcShippedMutation = useMutation({
+    mutationFn: (ids: number[]) => apiRequest("POST", "/api/orders/bulk-mark-ec-shipped", { orderIds: ids }),
+    onSuccess: (data: any, ids) => {
+      const count = data?.updated ?? ids.length;
+      setSelectedIds(new Set<number>());
+      qc.invalidateQueries({ queryKey: ['/api/orders'] });
+      qc.invalidateQueries({ queryKey: ['/api/orders/filtered'] });
+      toast({
+        title: `✅ ${count} commande${count > 1 ? 's' : ''} marquée${count > 1 ? 's' : ''} comme expédiée${count > 1 ? 's' : ''} (EC)`,
+        description: "Statut → Attente De Ramassage. Le suivi sera mis à jour automatiquement par le prochain webhook Express Coursier.",
+      });
+    },
+    onError: (err: any) => toast({ title: "Erreur", description: err.message || "Une erreur s'est produite.", variant: "destructive" }),
   });
 
   function handleDeleteSingle(id: number) {
@@ -1198,6 +1213,20 @@ export default function Orders() {
               </Button>
               <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="button-bulk-ship">
                 <Truck className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className={`h-9 w-9 border-orange-200 text-orange-500 hover:bg-orange-50 active:scale-95 transition-all ${selectedIds.size === 0 ? 'opacity-40' : 'opacity-100 hover:border-orange-400'}`}
+                title={selectedIds.size > 0 ? `Marquer ${selectedIds.size} commande(s) comme expédiée(s) via Express Coursier (sans passer par la plateforme)` : "Sélectionnez des commandes"}
+                onClick={() => {
+                  if (selectedIds.size === 0) { toast({ title: "Sélectionnez des commandes" }); return; }
+                  bulkMarkEcShippedMutation.mutate(Array.from(selectedIds));
+                }}
+                disabled={selectedIds.size === 0 || bulkMarkEcShippedMutation.isPending}
+                data-testid="button-bulk-mark-ec-shipped"
+              >
+                {bulkMarkEcShippedMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PackageCheck className="w-4 h-4" />}
               </Button>
               <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
                 <FileSpreadsheet className="w-4 h-4" />
