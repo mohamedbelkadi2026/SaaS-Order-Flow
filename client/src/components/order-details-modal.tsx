@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle } from "lucide-react";
+import { Loader2, X, Trash2, Plus, Phone, MessageCircle, RotateCcw, CheckCircle, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -265,6 +265,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [localItems, setLocalItems] = useState<any[]>([]);
   const [newItemCounter, setNewItemCounter] = useState(0);
   const [manualPriceOverride, setManualPriceOverride] = useState(false);
+  const [attachTrackNum, setAttachTrackNum] = useState("");
   // Track the last order ID so we only reset the manual override when a
   // different order is opened — NOT when the same order's data refreshes
   // after save (which would immediately re-run the auto-calc and undo the
@@ -298,6 +299,13 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const { data: stockProducts = [] } = useQuery<ProductOption[]>({
     queryKey: ["/api/products"],
     staleTime: 5 * 60 * 1000,
+  });
+
+  // Store settings — needed to check allowAttachTracking (skipped for superAdmin who always sees the box)
+  const { data: storeInfo } = useQuery<any>({
+    queryKey: ['/api/store'],
+    staleTime: 5 * 60 * 1000,
+    enabled: !!user && !user.isSuperAdmin,
   });
 
   // Always fetch the latest order from the server when the modal opens.
@@ -566,6 +574,26 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       onClose();
     },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const attachTrackingMutation = useMutation({
+    mutationFn: async (trackingNumber: string) => {
+      const res = await apiRequest("PATCH", `/api/orders/${order?.id}/attach-tracking`, { trackingNumber });
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      toast({ title: "✅ Tracking attaché", description: `${data.trackNumber} → Attente De Ramassage` });
+      setAttachTrackNum("");
+      queryClient.invalidateQueries({ queryKey: ['/api/orders', order?.id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
+      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+      onUpdated?.({ ...order, trackNumber: data.trackNumber, status: data.status });
+      onClose();
+    },
+    onError: (e: any) => {
+      const msg = e?.message || "Impossible d'attacher le tracking";
+      toast({ title: "Erreur", description: msg, variant: "destructive" });
+    },
   });
 
   const set = (key: string, value: any) => setFields((f: any) => ({ ...f, [key]: value }));
@@ -1019,6 +1047,40 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
               />
             </div>
           </div>
+
+          {/* ── ATTACH TRACKING BOX — confirmé orders only, when feature is enabled ── */}
+          {order?.status === 'confirme' && (user?.isSuperAdmin || storeInfo?.settings?.allowAttachTracking) && (
+            <div className="mx-4 mb-3 rounded-xl border border-orange-200 bg-orange-50 dark:bg-orange-950/30 dark:border-orange-800 p-4">
+              <p className="text-xs font-bold text-orange-800 dark:text-orange-200 mb-0.5">
+                📦 Attacher Tracking (package_id)
+              </p>
+              <p className="text-[10px] text-orange-700/80 dark:text-orange-300/80 mb-3">
+                Collez le numéro de suivi transporteur — la commande passera en <strong>Attente De Ramassage</strong> et le CODE affichera ce tracking.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={attachTrackNum}
+                  onChange={e => setAttachTrackNum(e.target.value)}
+                  placeholder="Ex: CL-EXP-123456789"
+                  className="flex-1 px-3 py-2 rounded-lg border border-orange-200 bg-white dark:bg-orange-900/20 dark:border-orange-700 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300 focus:ring-offset-0"
+                  data-testid="input-attach-tracking"
+                  onKeyDown={e => { if (e.key === 'Enter' && attachTrackNum.trim()) attachTrackingMutation.mutate(attachTrackNum.trim()); }}
+                />
+                <button
+                  onClick={() => { if (attachTrackNum.trim()) attachTrackingMutation.mutate(attachTrackNum.trim()); }}
+                  disabled={!attachTrackNum.trim() || attachTrackingMutation.isPending}
+                  className="px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors flex items-center gap-1.5 shrink-0"
+                  data-testid="button-attach-tracking-submit"
+                >
+                  {attachTrackingMutation.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Check className="w-4 h-4" />}
+                  Attacher
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* bottom padding so content isn't hidden behind sticky footer on mobile */}
           <div className="h-4 sm:h-0" />

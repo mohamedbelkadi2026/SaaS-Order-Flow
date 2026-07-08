@@ -1,0 +1,51 @@
+Add a Super-Admin-controlled feature: a per-store toggle that enables a manual 
+"Attach Tracking" box on orders stuck in "Confirmé" (parcels shipped directly at the 
+carrier / that failed to auto-ship). When enabled for a store, that store's users can 
+paste the carrier tracking number (package_id) into a confirmé order; on save the order 
+leaves Confirmé, enters Suivi, its CODE column shows that tracking number, and future 
+carrier webhooks match it automatically by tracking. Super Admins always see the box.
+
+EXISTING BUILDING BLOCKS (reuse, do not reinvent): users.isSuperAdmin flag; 
+stores.settings (jsonb); the super-admin page (client/src/pages/super-admin.tsx) already 
+gated by user.isSuperAdmin; routes already check req.user.isSuperAdmin and 
+req.user.storeId.
+
+1) PER-STORE FLAG:
+   - Use stores.settings.allowAttachTracking (boolean, default false).
+   - In the Super Admin page, for each store in the list, add a toggle 
+     "Attach Tracking (dépannage)" that PATCHes the store settings to set 
+     allowAttachTracking true/false. Endpoint must require req.user.isSuperAdmin (403 
+     otherwise). Persist into stores.settings without clobbering other settings keys.
+   - Expose allowAttachTracking to the frontend on the current store/user context so the 
+     modal can read it.
+
+2) ORDER-DETAILS MODAL (client/src/components/order-details-modal.tsx):
+   - Show the "Attacher Tracking (package_id)" box ONLY when: order.status === 'confirme' 
+     AND (currentStore.settings.allowAttachTracking === true OR currentUser.isSuperAdmin). 
+     Hide it entirely otherwise (so normal users of non-enabled stores never see it).
+   - Place it in the edit area of a confirmé order, at the BOTTOM, full-width, responsive 
+     for desktop and mobile.
+
+3) ATTACH ENDPOINT (server/routes.ts) — requireAuth + tenant check:
+   - PATCH /api/orders/:id/attach-tracking { trackingNumber }
+   - Allow only if req.user.isSuperAdmin OR the order's store has 
+     settings.allowAttachTracking === true. Else 403.
+   - Validate the order belongs to the caller's store (unless super admin). Reject if 
+     that trackingNumber is already used by another order in the store.
+   - CRITICAL: in ONE updateOrder call, set track_number = trackingNumber, 
+     shippingProvider = the order's carrier (default 'expresscoursier'), carrierName 
+     likewise, and status = 'Attente De Ramassage'. Confirm track_number actually 
+     persists (this was previously buggy — status changed but track_number stayed null, 
+     so the CODE column wrongly showed the order number). Log the saved value. Write an 
+     integration_log ('tracking_attached','success').
+   - After attaching, invalidate/refetch the orders list + order-details queries so the 
+     UI updates without a hard refresh.
+
+4) VERIFY end-to-end:
+   - Super Admin toggles a store ON → that store's users see the box on confirmé orders; 
+     a store with it OFF sees nothing.
+   - Attaching a package_id moves the order to Suivi, the CODE column shows the 
+     CL-EXP-... tracking (not the order number), immediately and after reload.
+   - A subsequent carrier webhook with that tracking matches the order and updates status.
+
+Do NOT change other carriers or unrelated features. Deploy to main.

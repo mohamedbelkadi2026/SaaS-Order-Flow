@@ -48,6 +48,7 @@ type StoreRow = {
   canOpen: number;
   createdAt: string | null;
   subscription: SubscriptionInfo | null;
+  settings?: { allowAttachTracking?: boolean } | null;
 };
 
 type GlobalStats = {
@@ -446,6 +447,16 @@ export default function SuperAdminPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
       toast({ title: "✓ Fonctionnalité mise à jour" });
+    },
+    onError: () => toast({ title: "Erreur", variant: "destructive" }),
+  });
+
+  const attachTrackingMutation = useMutation({
+    mutationFn: ({ storeId, allowAttachTracking }: { storeId: number; allowAttachTracking: boolean }) =>
+      apiRequest("PATCH", `/api/admin/stores/${storeId}/settings`, { allowAttachTracking }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
+      toast({ title: "✓ Paramètre mis à jour" });
     },
     onError: () => toast({ title: "Erreur", variant: "destructive" }),
   });
@@ -881,6 +892,39 @@ export default function SuperAdminPage() {
                                 </div>
                               );
                             })}
+                          </div>
+
+                          {/* ── Attach Tracking toggle (dépannage) ─── */}
+                          <div className="mt-3 pt-3 border-t border-white/5 flex flex-wrap gap-6 items-start">
+                            <div>
+                              <p className="text-white/40 text-[10px] uppercase tracking-wide mb-1.5">Attach Tracking (dépannage)</p>
+                              <div className="flex gap-1">
+                                {([true, false] as const).map(val => {
+                                  const isOn = (store as any).settings?.allowAttachTracking === true;
+                                  const isSelected = isOn === val;
+                                  return (
+                                    <button
+                                      key={String(val)}
+                                      disabled={attachTrackingMutation.isPending}
+                                      onClick={() => attachTrackingMutation.mutate({ storeId: store.id, allowAttachTracking: val })}
+                                      className={cn("px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition-all disabled:opacity-50",
+                                        isSelected
+                                          ? val
+                                            ? "bg-green-900/30 border-green-500/50 text-green-400"
+                                            : "bg-red-900/30 border-red-500/50 text-red-400"
+                                          : "border-white/10 text-white/30 hover:text-white/60 hover:border-white/25"
+                                      )}
+                                      data-testid={`button-attach-tracking-${val}-${store.id}`}
+                                    >
+                                      {val ? "Activé" : "Désactivé"}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <p className="text-white/20 text-[9px] mt-1.5">
+                                Permet aux agents de coller un package_id sur une commande Confirmée.
+                              </p>
+                            </div>
                           </div>
                         </>
                       )}

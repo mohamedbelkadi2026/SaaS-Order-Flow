@@ -10303,6 +10303,106 @@ function ensureHeaders(sheet) {
     }
   });
 
+  /* ── Per-store settings toggle (e.g. allowAttachTracking) ───────── */
+  app.patch("/api/admin/stores/:id/settings", requireSuperAdmin, async (req, res) => {
+    try {
+      const storeId = Number(req.params.id);
+      const body = z.object({ allowAttachTracking: z.boolean() }).parse(req.body);
+      const store = await storage.getStore(storeId);
+      if (!store) return res.status(404).json({ message: "Boutique introuvable" });
+      const existing = (store.settings as Record<string, any>) || {};
+      const updated = await storage.updateStore(storeId, {
+        settings: { ...existing, allowAttachTracking: body.allowAttachTracking },
+      });
+      const saved = (updated?.settings as any)?.allowAttachTracking ?? false;
+      console.log(`[ADMIN-SETTINGS] Store ${storeId} allowAttachTracking → ${saved}`);
+      res.json({ allowAttachTracking: saved });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides" });
+      res.status(500).json({ message: err.message || "Erreur serveur" });
+    }
+  });
+
+  /* ── Manually attach carrier tracking to a confirmé order ────────── */
+  app.patch("/api/orders/:id/attach-tracking", requireAuth, async (req, res) => {
+    try {
+      const orderId = Number(req.params.id);
+      const { trackingNumber } = z.object({
+        trackingNumber: z.string().min(1).max(120).trim(),
+      }).parse(req.body);
+
+      const order = await storage.getOrder(orderId);
+      if (!order) return res.status(404).json({ message: "Commande introuvable" });
+
+      const user = req.user!;
+      const storeId = order.storeId;
+
+      // Tenant isolation — superAdmin bypasses
+      if (!user.isSuperAdmin && storeId !== user.storeId) {
+        return res.status(403).json({ message: "Accès refusé" });
+      }
+
+      // Feature gate: superAdmin OR store has allowAttachTracking enabled
+      if (!user.isSuperAdmin) {
+        const store = await storage.getStore(storeId);
+        if (!(store?.settings as any)?.allowAttachTracking) {
+          return res.status(403).json({ message: "Fonctionnalité non activée pour cette boutique" });
+        }
+      }
+
+      // Only confirmé orders accept a manual tracking attachment
+      if (order.status !== 'confirme') {
+        return res.status(400).json({
+          message: `La commande doit être en statut Confirmée (statut actuel: ${order.status})`,
+        });
+      }
+
+      // Duplicate tracking check within this store (case-insensitive)
+      const dup = await db.select({ id: orders.id })
+        .from(orders)
+        .where(and(
+          eq(orders.storeId, storeId),
+          sql`lower(${orders.trackNumber}) = lower(${trackingNumber})`,
+          sql`${orders.id} != ${orderId}`,
+        ))
+        .limit(1);
+      if (dup.length > 0) {
+        return res.status(409).json({ message: "Ce numéro de suivi est déjà utilisé par une autre commande dans cette boutique." });
+      }
+
+      // Determine carrier from the existing order — fall back to expresscoursier
+      const carrier = (order as any).shippingProvider || (order as any).carrierName || 'expresscoursier';
+
+      // ONE atomic update: trackNumber + provider + carrier + status
+      const [updated] = await db.update(orders)
+        .set({
+          trackNumber:      trackingNumber,
+          shippingProvider: carrier,
+          carrierName:      carrier,
+          status:           'Attente De Ramassage',
+        })
+        .where(eq(orders.id, orderId))
+        .returning();
+
+      console.log(`[ATTACH-TRACKING] Order #${(order as any).orderNumber || orderId} → trackNumber="${updated?.trackNumber}" status="${updated?.status}" user=${user.id}${user.isSuperAdmin ? ' (superAdmin)' : ''}`);
+
+      await storage.createIntegrationLog({
+        storeId,
+        integrationId: null,
+        provider: carrier,
+        action: 'tracking_attached',
+        status: 'success',
+        message: `✅ Tracking attaché manuellement: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} → Attente De Ramassage`,
+      });
+
+      res.json({ success: true, trackNumber: updated?.trackNumber, status: updated?.status });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides", errors: err.errors });
+      console.error("[ATTACH-TRACKING] Error:", err?.message ?? err);
+      res.status(500).json({ message: err?.message || "Erreur serveur" });
+    }
+  });
+
   app.post("/api/admin/stores/:id/reset-orders", requireSuperAdmin, async (req, res) => {
     try {
       const storeId = Number(req.params.id);
