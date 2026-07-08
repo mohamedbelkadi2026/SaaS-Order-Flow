@@ -493,7 +493,7 @@ export default function Orders() {
   const [shipProgress, setShipProgress] = useState<{
     active: boolean; done: number; total: number; shipped: number; failed: number; provider: string;
     retries?: number;
-    results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string }[];
+    results?: { orderId: number; orderNumber?: string; status: 'shipped' | 'failed'; error?: string; warning?: string }[];
   } | null>(null);
 
   const [ameexShipOrderId, setAmeexShipOrderId] = useState<number | null>(null);
@@ -2599,6 +2599,29 @@ export default function Orders() {
               </p>
             </div>
           )}
+
+          {/* Shipped without tracking — EC accepted but returned no package_id */}
+          {shipProgress && !shipProgress.active && shipProgress.results && (() => {
+            const noTrack = shipProgress.results.filter(r => r.status === 'shipped' && r.warning);
+            if (!noTrack.length) return null;
+            return (
+              <div className="mx-6 mt-4 mb-1 rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-3">
+                <p className="text-xs font-bold text-blue-800 dark:text-blue-200 mb-1">
+                  📦 {noTrack.length} commande{noTrack.length > 1 ? 's' : ''} expédiée{noTrack.length > 1 ? 's' : ''} sans numéro de suivi
+                </p>
+                <p className="text-[10px] text-blue-700/80 dark:text-blue-300/80 mb-2">
+                  Le transporteur a accepté la commande mais n'a pas retourné de tracking. Elle est passée en <strong>Attente De Ramassage</strong> — le numéro de suivi sera attaché automatiquement par webhook.
+                </p>
+                <ul className="space-y-0.5 max-h-24 overflow-y-auto">
+                  {noTrack.map(r => (
+                    <li key={r.orderId} className="text-[10px] text-blue-700 dark:text-blue-300">
+                      <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.warning}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
 
           {/* Per-order error details — categorized by type */}
           {shipProgress && !shipProgress.active && shipProgress.failed > 0 && shipProgress.results && (() => {

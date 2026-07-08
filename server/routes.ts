@@ -1740,14 +1740,28 @@ export async function registerRoutes(
                   results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'shipped', warning: shipWarning });
                   shippedCount++;
                 } else if (!trackingNumber) {
-                  console.error(`[SHIPPING-LOG]: ❌ Order #${ref} — carrier returned success but no tracking number. Skipping DB save.`);
+                  // Carrier returned success=true but no tracking number AND no warning.
+                  // Never leave an accepted shipment stuck in "Confirmé" — move it to
+                  // "Attente De Ramassage" and surface a warning. EC webhooks will attach
+                  // the real tracking later via phone-fallback.
+                  const noTrackWarn = provider.toLowerCase() === 'expresscoursier'
+                    ? `Express Coursier a accepté la commande mais n'a retourné aucun numéro de suivi (package_id absent). Elle entre en Suivi — le tracking sera mis à jour par webhook EC.`
+                    : `${provider} a accepté la commande sans numéro de suivi. Elle entre en Suivi.`;
+                  console.warn(`[SHIPPING-LOG]: ⚠️ Order #${ref} — accepted by ${provider} but no tracking returned. Moving to Attente De Ramassage (not leaving in Confirmé).`);
+                  allDbUpdates.push(
+                    storage.updateOrder(order.id, {
+                      shippingProvider: provider,
+                      carrierName:      provider,
+                      status:           'Attente De Ramassage',
+                    } as any)
+                  );
                   allLogUpdates.push(storage.createIntegrationLog({
                     storeId, integrationId: null, provider,
-                    action: 'shipping_sent', status: 'fail',
-                    message: `❌ Commande #${ref}: ${provider} a confirmé mais sans numéro de suivi. Commande reste Confirmée.`,
+                    action: 'shipping_sent', status: 'success',
+                    message: `⚠️ Commande #${ref} acceptée par ${provider} sans numéro de suivi. ${noTrackWarn}`,
                   }));
-                  results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'failed', error: 'Pas de numéro de suivi retourné' });
-                  failedCount++;
+                  results.push({ orderId: order.id, orderNumber: (order as any).orderNumber, status: 'shipped', warning: noTrackWarn });
+                  shippedCount++;
                 } else {
                 console.log(`[SHIPPING-LOG]: ✅ Order #${ref} dispatched — tracking: ${trackingNumber} (saved to track_number column)`);
                 // Track retries (attempts > 1 means at least one retry was needed)

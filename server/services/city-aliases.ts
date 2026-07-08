@@ -33,11 +33,14 @@ const RAW_CITY_ALIASES: Record<string, string> = {
   "دار البيضاء": "casablanca",
   "كازابلانكا": "casablanca",
   "casa": "casablanca",
+  "dar beida": "casablanca",
+  "bida": "casablanca",
   // Rabat
   "الرباط": "rabat",
   // Fès / Fes
   "فاس": "fes",
   "fès": "fes",
+  "fez": "fes",
   // Marrakech
   "مراكش": "marrakech",
   "marrakesh": "marrakech",
@@ -45,6 +48,7 @@ const RAW_CITY_ALIASES: Record<string, string> = {
   "طنجة": "tanger",
   "tangier": "tanger",
   "tanja": "tanger",
+  "tanger ville": "tanger",
   // Agadir
   "أكادير": "agadir",
   "اكادير": "agadir",
@@ -62,16 +66,22 @@ const RAW_CITY_ALIASES: Record<string, string> = {
   // Salé / Sale
   "سلا": "sale",
   "salé": "sale",
+  "sale al jadida": "sale",
+  "salé al jadida": "sale",
+  "hay al jadida sale": "sale",
   // Safi
   "آسفي": "safi",
   "اسفي": "safi",
+  "asfi": "safi",
   // Mohammedia
   "المحمدية": "mohammedia",
   // El Jadida
   "الجديدة": "el jadida",
   "eljadida": "el jadida",
+  "el-jadida": "el jadida",
   // Béni Mellal / Beni Mellal
   "بني ملال": "beni mellal",
+  "beni mllal": "beni mellal",
   // Nador
   "الناظور": "nador",
   // Khouribga
@@ -82,26 +92,41 @@ const RAW_CITY_ALIASES: Record<string, string> = {
   "برشيد": "berrechid",
   // Khémisset / Khemisset
   "الخميسات": "khemisset",
+  // Rommani (near Khemisset)
+  "روماني": "rommani",
+  "rommani khemissat": "rommani",
+  "rommani(khemissat)": "rommani",
+  "rommanî": "rommani",
   // Taza
   "تازة": "taza",
   // Larache
   "العرائش": "larache",
   // Ksar El Kébir
   "القصر الكبير": "ksar el kebir",
+  "ksar-el-kebir": "ksar el kebir",
+  "ksar el-kebir": "ksar el kebir",
+  "alcazarquivir": "ksar el kebir",
   // Guelmim
   "كلميم": "guelmim",
+  "guelmim": "guelmim",
   // Errachidia
   "الرشيدية": "errachidia",
+  "rashidiya": "errachidia",
   // Ouarzazate
   "ورزازات": "ouarzazate",
   // Essaouira
   "الصويرة": "essaouira",
+  "mogador": "essaouira",
   // Ifrane
   "إفران": "ifrane",
   // Al Hoceima
   "الحسيمة": "al hoceima",
+  "al hoceïma": "al hoceima",
+  "alhucemas": "al hoceima",
   // Chefchaouen
   "شفشاون": "chefchaouen",
+  "chaouen": "chefchaouen",
+  "xauen": "chefchaouen",
   // Taourirt
   "تاوريرت": "taourirt",
   // Sidi Kacem
@@ -116,6 +141,85 @@ const RAW_CITY_ALIASES: Record<string, string> = {
   "تزنيت": "tiznit",
   // Fkih Ben Salah
   "الفقيه بن صالح": "fkih ben salah",
+  // Kelaa des Sraghna / Kelaat Sraghna — common real-order city
+  "الكلعة": "kelaa des sraghna",
+  "كلعة السراغنة": "kelaa des sraghna",
+  "kelaa sraghna": "kelaa des sraghna",
+  "kelaa seraghna": "kelaa des sraghna",
+  "kalaat sraghna": "kelaa des sraghna",
+  "kalaat es sraghna": "kelaa des sraghna",
+  "kel aa sraghna": "kelaa des sraghna",
+  "kelaat sraghna": "kelaa des sraghna",
+  "klaa sraghna": "kelaa des sraghna",
+  "klaa seraghna": "kelaa des sraghna",
+  // Sidi Bennour
+  "سيدي بنور": "sidi bennour",
+  "sidi benour": "sidi bennour",
+  "sidi bnou": "sidi bennour",
+  // Martil (near Tetouan)
+  "مرتيل": "martil",
+  // Driouch (Oriental)
+  "دريوش": "driouch",
+  // Biougra (near Agadir)
+  "بيوكرى": "biougra",
+  "biougra": "biougra",
+  "bioukra": "biougra",
+  // Tinghir (South)
+  "تنغير": "tinghir",
+  "tinghir": "tinghir",
+  "tinghr": "tinghir",
+  // Taroudant
+  "تارودانت": "taroudant",
+  "taroudante": "taroudant",
+  // Midelt
+  "ميدلت": "midelt",
+  // Zagora
+  "زاكورة": "zagora",
+  // Boulemane
+  "بولمان": "boulemane",
+  // El Hajeb
+  "الحاجب": "el hajeb",
+  // Sefrou
+  "صفرو": "sefrou",
+  // Jerada
+  "جرادة": "jerada",
+  // Berkane
+  "بركان": "berkane",
+  // Ouled Teima
+  "أولاد تيمة": "ouled teima",
+  "oulad teima": "ouled teima",
+  // Ait Melloul (near Agadir)
+  "أيت ملول": "ait melloul",
+  "ayt melloul": "ait melloul",
+  // Inzegane (near Agadir)
+  "إنزكان": "inzegane",
+  "inzegan": "inzegane",
+  // Bouskoura (near Casablanca)
+  "بوسكورة": "bouskoura",
+  // Ben Slimane
+  "بن سليمان": "ben slimane",
+  "benslimane": "ben slimane",
+  // Skhirat
+  "الصخيرات": "skhirat",
+  // Témara
+  "تمارة": "temara",
+  "témara": "temara",
+  // Jemaa Shaim / Jemaa Lhsan
+  "جماعة الشايم": "jemaa shaim",
+  "jemaa-shaim": "jemaa shaim",
+  "jmaa shaim": "jemaa shaim",
+  // Souk Larbaa (near Kenitra)
+  "سوق الأربعاء": "souk larbaa",
+  "souk el arbaa": "souk larbaa",
+  "souk-larbaa": "souk larbaa",
+  // Ain Harrouda
+  "عين الحروضة": "ain harrouda",
+  // Had Soualem
+  "هدالسواالم": "had soualem",
+  // Oulmes
+  "أولمس": "oulmes",
+  // Khnichet
+  "خنيشات": "khnichet",
 };
 
 const CITY_ALIAS_MAP: Record<string, string> = (() => {
