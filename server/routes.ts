@@ -9246,7 +9246,31 @@ function ensureHeaders(sheet) {
     // endpoint (every candidate URL 404s). EC statuses already arrive via
     // webhook, so a 404 here isn't a real per-order failure — count it
     // separately instead of spamming the UI with N "404" error toasts.
-    let ecNoTrackApiCount = 0;
+    let ecNoTrackApiCount = 0;  // EC: tracking number with zero matching events in logs
+    let ecEventNoChange   = 0;  // EC: event found but status already current or code unknown
+
+    // Helper: extract { packageId, code } from either JSON payload (new logs)
+    // or plain-text message (old logs: "EC webhook: package_id=X status=30 type=…").
+    // Returns null if no usable event is found.
+    function parseEcLogEntry(log: { payload: string | null; message: string | null }): { packageId: string; code: string } | null {
+      // New format: payload is the raw JSON body
+      if (log.payload) {
+        try {
+          const p = JSON.parse(log.payload);
+          const pkgId = (p.package_id || '').toString().trim();
+          const ds    = p.delivery_status != null ? String(p.delivery_status).trim() : null;
+          if (pkgId && ds) return { packageId: pkgId, code: ds };
+        } catch { /* fall through to message parse */ }
+      }
+      // Old format (pre-fix): payload = null, message = "EC webhook: package_id=X status=30 type=…"
+      const msg = log.message || '';
+      const pkgMatch = msg.match(/package_id=([^\s,]+)/);
+      const dsMatch  = msg.match(/\bstatus=(\d+)/);
+      if (pkgMatch?.[1] && dsMatch?.[1]) {
+        return { packageId: pkgMatch[1].trim(), code: dsMatch[1] };
+      }
+      return null;
+    }
 
     for (const order of candidates) {
       try {
@@ -9310,38 +9334,41 @@ function ensureHeaders(sheet) {
           const ozonMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
           result = { status: ozonMapped, rawStatus: ozonRawStatus, error: ozonRawResponse ? undefined : 'Ozon: no tracking response' };
         } else if (p === 'expresscoursier') {
-          // ── TASK 2: replay most recent stored webhook event — no broken API call ──
-          // EC's tracking API 404s on all real package_ids. ChangeStatus events
-          // arrive via webhook and are stored in integration_logs with the full
-          // payload (including package_id + delivery_status). Replay those instead.
+          // ── Replay most recent stored EC webhook event ─────────────────────────
+          // Searches BOTH payload (new format) and message (old orphan format where
+          // payload=null and package_id is embedded in the message string).
+          const tn = order.trackNumber!.trim();
           const ecReplayLogs = await db
             .select()
             .from(integrationLogs)
             .where(and(
               eq(integrationLogs.storeId, storeId),
               inArray(integrationLogs.provider, ['expresscoursier', 'olivraison']),
-              sql`${integrationLogs.payload} LIKE ${'%' + order.trackNumber! + '%'}`,
+              or(
+                sql`${integrationLogs.payload} LIKE ${'%' + tn + '%'}`,
+                sql`${integrationLogs.message} LIKE ${'%' + tn + '%'}`,
+              ),
             ))
             .orderBy(desc(integrationLogs.createdAt))
-            .limit(20);
+            .limit(50);
 
           result = { status: null, rawStatus: null };
+          let ecFoundEvent = false;
+
           for (const ecLog of ecReplayLogs) {
-            if (!ecLog.payload) continue;
-            try {
-              const parsed = JSON.parse(ecLog.payload);
-              const pId = (parsed.package_id || '').toString().trim();
-              if (pId.toLowerCase() !== order.trackNumber!.toLowerCase()) continue;
-              if (parsed.delivery_status != null) {
-                const code = String(parsed.delivery_status);
-                const mapped = mapEcNumericStatus(code);
-                result = { status: mapped !== 'in_progress' ? mapped : null, rawStatus: code };
-                console.log(`[EC-SYNC-REPLAY] order=${order.id} tracking=${order.trackNumber} delivery_status=${code} → ${mapped}`);
-                break;
-              }
-            } catch { continue; }
+            const evt = parseEcLogEntry(ecLog);
+            if (!evt) continue;
+            // Case-sensitive trim match — EC package_ids are deterministic
+            if (evt.packageId !== tn) continue;
+            ecFoundEvent = true;
+            const mapped = mapEcNumericStatus(evt.code);
+            result = { status: mapped !== 'in_progress' ? mapped : null, rawStatus: evt.code };
+            console.log(`[EC-SYNC-REPLAY] order=${order.id} tracking=${tn} delivery_status=${evt.code} → ${mapped}`);
+            break;
           }
-          if (!result.status) ecNoTrackApiCount++;
+
+          if (!ecFoundEvent)      ecNoTrackApiCount++;  // truly no logs for this tracking
+          else if (!result.status) ecEventNoChange++;    // log found but code is unconfirmed/in_progress
         } else {
           result = await trackByCarrier(p, order.trackNumber!, account);
         }
@@ -9394,15 +9421,15 @@ function ensureHeaders(sheet) {
     // sync — EC statuses already flow in automatically via webhook. Surface
     // one calm informational message instead of N per-order error toasts.
     if (p === 'expresscoursier') {
-      const noEventNote = ecNoTrackApiCount > 0
-        ? ` · ${ecNoTrackApiCount} commande(s) sans événement webhook enregistré.`
-        : '';
+      const parts: string[] = [`${updated} mis à jour`];
+      if (ecEventNoChange   > 0) parts.push(`${ecEventNoChange} événement trouvé sans changement`);
+      if (ecNoTrackApiCount > 0) parts.push(`${ecNoTrackApiCount} sans événement webhook`);
       return {
         synced: candidates.length,
         updated,
         details,
         errors,
-        message: `✅ Express Coursier (replay webhook): ${updated} commande(s) mise(s) à jour${noEventNote}`,
+        message: `✅ EC replay: ${parts.join(' · ')}`,
       };
     }
 
@@ -10418,32 +10445,45 @@ function ensureHeaders(sheet) {
       let attachCommentStatus: string | null = null;
       const isEcCarrier = ['expresscoursier', 'olivraison'].includes((carrier || '').toLowerCase());
       if (isEcCarrier) {
+        // Search both payload (new logs) and message (old orphan logs where payload=null)
         const ecPriorLogs = await db
           .select()
           .from(integrationLogs)
           .where(and(
             eq(integrationLogs.storeId, storeId),
             inArray(integrationLogs.provider, ['expresscoursier', 'olivraison']),
-            sql`${integrationLogs.payload} LIKE ${'%' + trackingNumber + '%'}`,
+            or(
+              sql`${integrationLogs.payload} LIKE ${'%' + trackingNumber + '%'}`,
+              sql`${integrationLogs.message} LIKE ${'%' + trackingNumber + '%'}`,
+            ),
           ))
           .orderBy(desc(integrationLogs.createdAt))
-          .limit(20);
+          .limit(50);
 
         for (const priorLog of ecPriorLogs) {
-          if (!priorLog.payload) continue;
-          try {
-            const parsed = JSON.parse(priorLog.payload);
-            const pId = (parsed.package_id || '').toString().trim();
-            if (pId.toLowerCase() !== trackingNumber.toLowerCase()) continue;
-            if (parsed.delivery_status != null) {
-              const code = String(parsed.delivery_status);
-              const mapped = mapEcNumericStatus(code);
-              console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} → ${mapped}`);
-              attachCommentStatus = `EC delivery_status=${code}`;
-              if (mapped !== 'in_progress') attachStatus = mapped;
-              break;
-            }
-          } catch { continue; }
+          // Parse both new (JSON payload) and old (message string) formats
+          let pId = '';
+          let code = '';
+          if (priorLog.payload) {
+            try {
+              const parsed = JSON.parse(priorLog.payload);
+              pId  = (parsed.package_id    || '').toString().trim();
+              code = parsed.delivery_status != null ? String(parsed.delivery_status).trim() : '';
+            } catch { /* fall through */ }
+          }
+          if (!pId && priorLog.message) {
+            const pkgM = priorLog.message.match(/package_id=([^\s,]+)/);
+            const dsM  = priorLog.message.match(/\bstatus=(\d+)/);
+            if (pkgM?.[1]) pId  = pkgM[1].trim();
+            if (dsM?.[1])  code = dsM[1];
+          }
+          if (!pId || !code) continue;
+          if (pId !== trackingNumber.trim()) continue;  // case-sensitive match
+          const mapped = mapEcNumericStatus(code);
+          console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} → ${mapped}`);
+          attachCommentStatus = `EC delivery_status=${code}`;
+          if (mapped !== 'in_progress') attachStatus = mapped;
+          break;
         }
       }
 
@@ -10483,20 +10523,68 @@ function ensureHeaders(sheet) {
   // GET /api/admin/ec-status-codes
   app.get("/api/admin/ec-status-codes", requireSuperAdmin, async (_req, res) => {
     try {
-      const rows = await db.execute(sql`
+      // Stat 1: total events + distinct package_ids (from both payload and message)
+      const totals = await db.execute(sql`
+        WITH extracted AS (
+          SELECT
+            COALESCE(
+              (regexp_match(payload,  '"package_id"\s*:\s*"([^"]+)"'))[1],
+              (regexp_match(message,  'package_id=([^\s,]+)'))[1]
+            ) AS pkg_id,
+            COALESCE(
+              (regexp_match(payload,  '"delivery_status"\s*:\s*"?([0-9]+)"?'))[1],
+              (regexp_match(message,  '\bstatus=(\d+)'))[1]
+            ) AS ds_code
+          FROM integration_logs
+          WHERE provider IN ('expresscoursier', 'olivraison', 'express coursier')
+        )
         SELECT
-          (regexp_match(payload, '"delivery_status"\s*:\s*"?([0-9a-zA-Z_]+)"?'))[1] AS delivery_status,
-          COUNT(*)::int                                                               AS count,
-          MAX((regexp_match(payload, '"package_id"\s*:\s*"([^"]+)"'))[1])            AS example_package_id,
-          MAX(created_at)::text                                                       AS last_seen
-        FROM integration_logs
-        WHERE payload IS NOT NULL
-          AND payload LIKE '%delivery_status%'
-          AND provider IN ('expresscoursier', 'olivraison', 'express coursier')
+          COUNT(*)::int                                              AS total_events,
+          COUNT(DISTINCT pkg_id) FILTER (WHERE pkg_id IS NOT NULL)  AS distinct_package_ids,
+          COUNT(DISTINCT pkg_id) FILTER (
+            WHERE pkg_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM orders o
+                WHERE o.track_number = pkg_id
+              )
+          )                                                          AS matched_to_order
+        FROM extracted
+      `);
+
+      // Stat 2: distinct delivery_status codes with counts + example package_id
+      const codes = await db.execute(sql`
+        WITH extracted AS (
+          SELECT
+            COALESCE(
+              (regexp_match(payload,  '"package_id"\s*:\s*"([^"]+)"'))[1],
+              (regexp_match(message,  'package_id=([^\s,]+)'))[1]
+            ) AS pkg_id,
+            COALESCE(
+              (regexp_match(payload,  '"delivery_status"\s*:\s*"?([0-9]+)"?'))[1],
+              (regexp_match(message,  '\bstatus=(\d+)'))[1]
+            ) AS ds_code
+          FROM integration_logs
+          WHERE provider IN ('expresscoursier', 'olivraison', 'express coursier')
+        )
+        SELECT
+          ds_code                   AS delivery_status,
+          COUNT(*)::int             AS count,
+          MAX(pkg_id)               AS example_package_id
+        FROM extracted
+        WHERE ds_code IS NOT NULL
         GROUP BY 1
         ORDER BY count DESC
       `);
-      res.json({ codes: rows.rows });
+
+      const t = (totals.rows?.[0] || {}) as any;
+      res.json({
+        summary: {
+          total_events:          Number(t.total_events          ?? 0),
+          distinct_package_ids:  Number(t.distinct_package_ids  ?? 0),
+          matched_to_order:      Number(t.matched_to_order       ?? 0),
+        },
+        codes: codes.rows,
+      });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Erreur" });
     }
