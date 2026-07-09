@@ -40,6 +40,7 @@ export const stores = pgTable("stores", {
   // created AFTER this timestamp — so percentage rebalances are not poisoned
   // by historical data when the user changes config mid-day or adds agents.
   distributionEpoch: timestamp("distribution_epoch").defaultNow(),
+  settings: jsonb("settings"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

@@ -456,9 +456,12 @@ export default function SuperAdminPage() {
       apiRequest("PATCH", `/api/admin/stores/${storeId}/settings`, { allowAttachTracking }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/stores"] });
-      toast({ title: "✓ Paramètre mis à jour" });
+      toast({ title: "✓ Attach Tracking mis à jour" });
     },
-    onError: () => toast({ title: "Erreur", variant: "destructive" }),
+    onError: (err: any) => {
+      const msg = err?.message?.replace(/^\d+:\s*/, "") || "Erreur inconnue";
+      toast({ title: "Erreur", description: msg, variant: "destructive" });
+    },
   });
 
   const impersonateMutation = useMutation({
