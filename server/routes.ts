@@ -19,7 +19,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, probeExpressCoursierEndpoints } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, probeExpressCoursierEndpoints } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -9387,11 +9387,15 @@ function ensureHeaders(sheet) {
         } else {
           if (result.status && result.status !== order.status) {
             await storage.updateOrderStatus(order.id, result.status);
+            // For EC replay: also store the raw code in commentStatus ("EC 35")
+            if (p === 'expresscoursier' && result.rawStatus) {
+              await storage.updateOrder(order.id, { commentStatus: `EC ${result.rawStatus}` });
+            }
             await storage.createOrderFollowUpLog({
               orderId:   order.id,
               agentId:   null,
               agentName: `${p} Sync`,
-              note:      `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
+              note:      `Statut synchronisé: EC ${result.rawStatus ?? '—'} → ${result.status}`,
             });
             details.push({
               orderId: order.id,
@@ -10481,7 +10485,7 @@ function ensureHeaders(sheet) {
           if (pId !== trackingNumber.trim()) continue;  // case-sensitive match
           const mapped = mapEcNumericStatus(code);
           console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} → ${mapped}`);
-          attachCommentStatus = `EC delivery_status=${code}`;
+          attachCommentStatus = `EC ${code}`;   // raw code only — no "delivery_status=" prefix
           if (mapped !== 'in_progress') attachStatus = mapped;
           break;
         }
@@ -10523,67 +10527,129 @@ function ensureHeaders(sheet) {
   // GET /api/admin/ec-status-codes
   app.get("/api/admin/ec-status-codes", requireSuperAdmin, async (_req, res) => {
     try {
-      // Stat 1: total events + distinct package_ids (from both payload and message)
-      const totals = await db.execute(sql`
+      // Shared CTE: extract package_id + delivery_status from BOTH log formats
+      //   new format: payload = '{"package_id":"...","delivery_status":"35",...}'
+      //   old format: payload = null, message = 'EC webhook: package_id=X status=35 type=...'
+      const baseCte = sql`
         WITH extracted AS (
           SELECT
             COALESCE(
-              (regexp_match(payload,  '"package_id"\s*:\s*"([^"]+)"'))[1],
-              (regexp_match(message,  'package_id=([^\s,]+)'))[1]
+              (regexp_match(payload, '"package_id"\s*:\s*"([^"]+)"'))[1],
+              (regexp_match(message, 'package_id=([^\s,]+)'))[1]
             ) AS pkg_id,
             COALESCE(
-              (regexp_match(payload,  '"delivery_status"\s*:\s*"?([0-9]+)"?'))[1],
-              (regexp_match(message,  '\bstatus=(\d+)'))[1]
+              (regexp_match(payload, '"delivery_status"\s*:\s*"?([0-9]+)"?'))[1],
+              (regexp_match(message, 'status=([0-9]+)'))[1]
             ) AS ds_code
           FROM integration_logs
           WHERE provider IN ('expresscoursier', 'olivraison', 'express coursier')
         )
+      `;
+
+      // Stat 1: totals — events, distinct package_ids, how many match an order
+      const totals = await db.execute(sql`
+        ${baseCte}
         SELECT
-          COUNT(*)::int                                              AS total_events,
-          COUNT(DISTINCT pkg_id) FILTER (WHERE pkg_id IS NOT NULL)  AS distinct_package_ids,
+          COUNT(*)::int                                             AS total_events,
+          COUNT(DISTINCT pkg_id) FILTER (WHERE pkg_id IS NOT NULL) AS distinct_package_ids,
           COUNT(DISTINCT pkg_id) FILTER (
             WHERE pkg_id IS NOT NULL
-              AND EXISTS (
-                SELECT 1 FROM orders o
-                WHERE o.track_number = pkg_id
-              )
-          )                                                          AS matched_to_order
+              AND EXISTS (SELECT 1 FROM orders o WHERE o.track_number = pkg_id)
+          )                                                         AS matched_to_order
         FROM extracted
       `);
 
-      // Stat 2: distinct delivery_status codes with counts + example package_id
+      // Stat 2: per-code counts, example package_id, and that order's current status
       const codes = await db.execute(sql`
-        WITH extracted AS (
-          SELECT
-            COALESCE(
-              (regexp_match(payload,  '"package_id"\s*:\s*"([^"]+)"'))[1],
-              (regexp_match(message,  'package_id=([^\s,]+)'))[1]
-            ) AS pkg_id,
-            COALESCE(
-              (regexp_match(payload,  '"delivery_status"\s*:\s*"?([0-9]+)"?'))[1],
-              (regexp_match(message,  '\bstatus=(\d+)'))[1]
-            ) AS ds_code
-          FROM integration_logs
-          WHERE provider IN ('expresscoursier', 'olivraison', 'express coursier')
-        )
+        ${baseCte}
         SELECT
-          ds_code                   AS delivery_status,
-          COUNT(*)::int             AS count,
-          MAX(pkg_id)               AS example_package_id
-        FROM extracted
-        WHERE ds_code IS NOT NULL
+          e.ds_code                                         AS delivery_status,
+          COUNT(*)::int                                     AS count,
+          MAX(e.pkg_id)                                     AS example_package_id,
+          (SELECT o.status FROM orders o WHERE o.track_number = MAX(e.pkg_id) LIMIT 1)
+                                                            AS current_order_status
+        FROM extracted e
+        WHERE e.ds_code IS NOT NULL
         GROUP BY 1
         ORDER BY count DESC
       `);
 
+      // Stat 3: dry-run — count orders whose status or comment_status contains
+      //         the old ugly format "delivery_status=" so we know what to clean up
+      const cleanup = await db.execute(sql`
+        SELECT COUNT(*)::int AS affected
+        FROM orders
+        WHERE status        LIKE '%delivery_status%'
+           OR comment_status LIKE '%delivery_status%'
+      `);
+
       const t = (totals.rows?.[0] || {}) as any;
+      const c = (cleanup.rows?.[0] || {}) as any;
       res.json({
         summary: {
-          total_events:          Number(t.total_events          ?? 0),
-          distinct_package_ids:  Number(t.distinct_package_ids  ?? 0),
-          matched_to_order:      Number(t.matched_to_order       ?? 0),
+          total_events:         Number(t.total_events         ?? 0),
+          distinct_package_ids: Number(t.distinct_package_ids ?? 0),
+          matched_to_order:     Number(t.matched_to_order     ?? 0),
+        },
+        cleanup_dry_run: {
+          orders_with_raw_delivery_status_string: Number(c.affected ?? 0),
+          note: 'Call POST /api/admin/ec-status-cleanup to fix these orders.',
         },
         codes: codes.rows,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
+    }
+  });
+
+  // ── EC status cleanup — fix orders whose commentStatus = "EC delivery_status=XX" ──
+  // Rewrites to clean "EC XX" format and re-maps status through EC_NUMERIC_STATUS_MAP.
+  // Only touches commentStatus if it contains "delivery_status="; never changes
+  // order.status to a terminal value (delivered/refused) for unconfirmed codes.
+  app.post("/api/admin/ec-status-cleanup", requireSuperAdmin, async (_req, res) => {
+    try {
+      const badRows = await db.execute(sql`
+        SELECT id, status, comment_status
+        FROM orders
+        WHERE comment_status LIKE '%delivery_status=%'
+           OR status         LIKE '%delivery_status=%'
+        LIMIT 500
+      `);
+
+      let fixed = 0;
+      for (const row of badRows.rows as any[]) {
+        const oldComment: string = row.comment_status || '';
+        const oldStatus:  string = row.status         || '';
+
+        // Extract the numeric code from "EC delivery_status=35"
+        const match = oldComment.match(/delivery_status=(\d+)/) ||
+                      oldStatus.match(/delivery_status=(\d+)/);
+        if (!match) continue;
+
+        const code   = match[1];
+        const mapped = mapEcDeliveryStatus(code);
+        const newComment = `EC ${code}`;   // clean format
+
+        // Only update order.status if the mapped value is a confirmed non-terminal status
+        const updateData: Record<string, string> = { comment_status: newComment };
+        if (mapped !== 'in_progress' && mapped !== oldStatus) {
+          updateData.status = mapped;
+        }
+
+        await db.execute(sql`
+          UPDATE orders
+          SET comment_status = ${newComment}
+            ${mapped !== 'in_progress' && mapped !== oldStatus
+              ? sql`, status = ${mapped}`
+              : sql``}
+          WHERE id = ${row.id}
+        `);
+        fixed++;
+      }
+
+      res.json({
+        fixed,
+        message: `✅ ${fixed} order(s) nettoyé(s) — commentStatus "EC delivery_status=XX" → "EC XX"`,
       });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Erreur" });

@@ -1,0 +1,42 @@
+Two bugs with Express Coursier statuses:
+(1) The STATUS column shows raw text like "EC delivery_status=35" — a raw numeric code is 
+being written into the order status/commentStatus instead of a real internal status.
+(2) EC's own dashboard shows 26 delivered for July; our platform shows 1. Because numeric 
+codes never map to 'delivered', orders stay in in_progress.
+
+CONTEXT (do NOT re-investigate): EC webhooks send 
+{"package_id":"...","delivery_status":"35","notif_type":"ChangeStatus"}. Observed codes so 
+far: 3, 5, 18, 30, 34, 35, 36, 49. server/services/carrier-service.ts has only a 
+TEXT-based EC_STATUS_MAP ("livre","retour"...) and NO numeric map, so numeric codes fall 
+through and get displayed raw.
+
+TASK 1 — Add EC_NUMERIC_STATUS_MAP (single source of truth), exported from 
+carrier-service.ts:
+   export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
+     // TODO: fill from Express Coursier's official code table. DO NOT GUESS.
+   };
+   export function mapEcDeliveryStatus(code: string | number): string {
+     const k = String(code ?? '').trim();
+     return EC_NUMERIC_STATUS_MAP[k] ?? 'in_progress';  // safe default, NEVER delivered/refused
+   }
+Wire mapEcDeliveryStatus into BOTH the live EC webhook handler and the "Synchroniser" 
+replay so numeric codes map consistently everywhere.
+
+TASK 2 — STOP writing raw codes into the visible status:
+ - order.status must ALWAYS be an internal status (in_progress / delivered / refused / 
+   'Attente De Ramassage'...), never a string containing "delivery_status".
+ - Keep the raw code only in commentStatus, formatted as a readable label (e.g. 
+   "EC 35"), NOT as the status badge value. Clean up any order whose status currently 
+   contains "delivery_status" by re-mapping it through mapEcDeliveryStatus (dry-run first, 
+   report how many).
+
+TASK 3 — DIAGNOSTIC (run and paste to me):
+ List every distinct delivery_status code found in integration_logs for provider 
+ expresscoursier/olivraison, with: count, one example package_id, and that order's current 
+ platform status. I will send this list to EC to get the official meanings.
+
+CRITICAL: Do NOT guess which code means Livré or Refusé. Until I supply EC's official code 
+table, every unknown code maps to 'in_progress'. Never auto-mark orders delivered/refused 
+from a guessed code — it would corrupt revenue, commissions and stats.
+
+Deploy to main and paste me the TASK 3 diagnostic.

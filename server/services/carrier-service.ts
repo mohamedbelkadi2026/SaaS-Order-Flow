@@ -2428,34 +2428,37 @@ export const EC_STATUS_MAP: Record<string, string> = {
 //   "36": "retourné"
 //
 // Safe default for unknown codes: 'in_progress' (returned by mapEcNumericStatus).
+// CRITICAL: DO NOT add terminal codes (delivered / refused) without EC's official table.
 export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
-  // ── Codes 1-9: from EC dedicated webhook handler documentation ─────────────
-  // Non-terminal transit stages — safe to apply without confirmation.
+  // ── Confirmed non-terminal transit codes ─────────────────────────────────
   "1": "Attente De Ramassage",   // En attente de ramassage
   "2": "Attente De Ramassage",   // En cours de ramassage
   "3": "expedition",              // Ramassé
   "4": "expedition",              // En transit
   "5": "expedition",              // En livraison
   //
-  // TODO: obtain official confirmation from EC before enabling terminal codes:
-  // "6": "delivered",            // Livré
-  // "7": "refused",              // Échoué
-  // "8": "En Cours De Retour",   // Retour en cours
-  // "9": "Retour Recu",          // Retourné
+  // TODO: confirm terminal codes with EC before enabling:
+  // "6": "delivered",            // Livré ?
+  // "7": "refused",              // Échoué ?
+  // "8": "En Cours De Retour",   // Retour en cours ?
+  // "9": "Retour Recu",          // Retourné ?
   //
-  // ── Codes observed in olivraison/EC ChangeStatus payloads — unconfirmed ───
-  // Observed codes in integration_logs: 30, 34, 35, 36
-  // TODO: send this list to EC support and fill in the real meanings.
-  // Until confirmed, all unknown codes fall through to 'in_progress' (safe, non-terminal).
+  // ── Observed in production — awaiting EC official code table ─────────────
+  // Codes seen so far: 3 ✓, 5 ✓, 18, 30, 34, 35, 36, 49
+  // DO NOT map 18/30/34/35/36/49 until EC confirms their meanings.
+  // Every unknown code defaults to 'in_progress' (safe, non-terminal).
 };
 
-/** Maps an EC numeric status code to an internal status string.
- *  Returns 'in_progress' for any unknown code (safe, non-terminal default). */
+/** Maps an EC numeric delivery_status code to an internal platform status.
+ *  Returns 'in_progress' for any unrecognised code — NEVER auto-marks delivered/refused. */
 export function mapEcNumericStatus(code: string | number): string {
   const key = String(code ?? '').trim();
   if (!key) return 'in_progress';
   return EC_NUMERIC_STATUS_MAP[key] ?? 'in_progress';
 }
+
+/** Preferred alias — identical to mapEcNumericStatus. Use in new code. */
+export const mapEcDeliveryStatus = mapEcNumericStatus;
 
 export function mapEcStatus(raw: string): string | null {
   const normalized = (raw || '').toLowerCase().trim();
