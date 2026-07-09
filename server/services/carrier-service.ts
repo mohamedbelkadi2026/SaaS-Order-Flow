@@ -2429,9 +2429,24 @@ export const EC_STATUS_MAP: Record<string, string> = {
 //
 // Safe default for unknown codes: 'in_progress' (returned by mapEcNumericStatus).
 export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
-  // fill in confirmed codes here, e.g.:
-  // "34": "delivered",
-  // "35": "refused",
+  // ── Codes 1-9: from EC dedicated webhook handler documentation ─────────────
+  // Non-terminal transit stages — safe to apply without confirmation.
+  "1": "Attente De Ramassage",   // En attente de ramassage
+  "2": "Attente De Ramassage",   // En cours de ramassage
+  "3": "expedition",              // Ramassé
+  "4": "expedition",              // En transit
+  "5": "expedition",              // En livraison
+  //
+  // TODO: obtain official confirmation from EC before enabling terminal codes:
+  // "6": "delivered",            // Livré
+  // "7": "refused",              // Échoué
+  // "8": "En Cours De Retour",   // Retour en cours
+  // "9": "Retour Recu",          // Retourné
+  //
+  // ── Codes observed in olivraison/EC ChangeStatus payloads — unconfirmed ───
+  // Observed codes in integration_logs: 30, 34, 35, 36
+  // TODO: send this list to EC support and fill in the real meanings.
+  // Until confirmed, all unknown codes fall through to 'in_progress' (safe, non-terminal).
 };
 
 /** Maps an EC numeric status code to an internal status string.

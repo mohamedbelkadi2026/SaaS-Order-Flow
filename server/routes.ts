@@ -9309,6 +9309,39 @@ function ensureHeaders(sheet) {
 
           const ozonMapped = ozonRawStatus ? mapOzonStatus(ozonRawStatus) : null;
           result = { status: ozonMapped, rawStatus: ozonRawStatus, error: ozonRawResponse ? undefined : 'Ozon: no tracking response' };
+        } else if (p === 'expresscoursier') {
+          // ── TASK 2: replay most recent stored webhook event — no broken API call ──
+          // EC's tracking API 404s on all real package_ids. ChangeStatus events
+          // arrive via webhook and are stored in integration_logs with the full
+          // payload (including package_id + delivery_status). Replay those instead.
+          const ecReplayLogs = await db
+            .select()
+            .from(integrationLogs)
+            .where(and(
+              eq(integrationLogs.storeId, storeId),
+              inArray(integrationLogs.provider, ['expresscoursier', 'olivraison']),
+              sql`${integrationLogs.payload} LIKE ${'%' + order.trackNumber! + '%'}`,
+            ))
+            .orderBy(desc(integrationLogs.createdAt))
+            .limit(20);
+
+          result = { status: null, rawStatus: null };
+          for (const ecLog of ecReplayLogs) {
+            if (!ecLog.payload) continue;
+            try {
+              const parsed = JSON.parse(ecLog.payload);
+              const pId = (parsed.package_id || '').toString().trim();
+              if (pId.toLowerCase() !== order.trackNumber!.toLowerCase()) continue;
+              if (parsed.delivery_status != null) {
+                const code = String(parsed.delivery_status);
+                const mapped = mapEcNumericStatus(code);
+                result = { status: mapped !== 'in_progress' ? mapped : null, rawStatus: code };
+                console.log(`[EC-SYNC-REPLAY] order=${order.id} tracking=${order.trackNumber} delivery_status=${code} → ${mapped}`);
+                break;
+              }
+            } catch { continue; }
+          }
+          if (!result.status) ecNoTrackApiCount++;
         } else {
           result = await trackByCarrier(p, order.trackNumber!, account);
         }
@@ -9360,13 +9393,16 @@ function ensureHeaders(sheet) {
     // (and there were no other real errors), don't report this as a failed
     // sync — EC statuses already flow in automatically via webhook. Surface
     // one calm informational message instead of N per-order error toasts.
-    if (p === 'expresscoursier' && ecNoTrackApiCount > 0 && errors.length === 0 && updated === 0) {
+    if (p === 'expresscoursier') {
+      const noEventNote = ecNoTrackApiCount > 0
+        ? ` · ${ecNoTrackApiCount} commande(s) sans événement webhook enregistré.`
+        : '';
       return {
         synced: candidates.length,
         updated,
         details,
-        errors: [],
-        message: "Express Coursier ne fournit pas de suivi par API — les statuts sont mis à jour automatiquement via le webhook.",
+        errors,
+        message: `✅ Express Coursier (replay webhook): ${updated} commande(s) mise(s) à jour${noEventNote}`,
       };
     }
 
@@ -9762,20 +9798,9 @@ function ensureHeaders(sheet) {
   // Payload: { package_id, delivery_status (int), event_time, notif_type }
   // notif_type: "ChangeStatus" | "package_paid" | "package_unpaid"
   //
-  // delivery_status codes:
-  //   1=En attente  2=En cours ramassage  3=Ramassé  4=En transit
-  //   5=En livraison  6=Livré  7=Échoué  8=Retour en cours  9=Retourné
-  const EC_STATUS_MAP: Record<number, string> = {
-    1: "confirme",
-    2: "confirme",
-    3: "expedition",
-    4: "expedition",
-    5: "expedition",
-    6: "delivered",
-    7: "refused",
-    8: "En Cours De Retour",
-    9: "Retour Recu",
-  };
+  // Uses shared mapEcNumericStatus() from carrier-service.ts so the same
+  // EC_NUMERIC_STATUS_MAP governs attach-tracking, Synchroniser, and live webhook.
+  // Terminal codes (delivered/refused) are TODO — see EC_NUMERIC_STATUS_MAP.
 
   app.post("/api/webhooks/shipping/expresscoursier/:storeId", async (req, res) => {
     try {
@@ -9804,7 +9829,13 @@ function ensureHeaders(sheet) {
         return res.json({ success: true, matched: false });
       }
 
-      // Log the event
+      // Log every distinct delivery_status code seen — grep [EC-WEBHOOK-CODE] in prod
+      // to get the full code list to send to EC support for confirmation.
+      console.log(`[EC-WEBHOOK-CODE] store=${storeId} package_id=${packageId} delivery_status=${deliveryStatus} notif_type=${notifType}`);
+
+      // Store full payload so retro-apply (attach-tracking) and Synchroniser can
+      // replay this event even for orders that didn't exist yet at webhook time.
+      const ecWebhookPayload = JSON.stringify(body).slice(0, 1000);
       await storage.createIntegrationLog({
         storeId,
         integrationId: null,
@@ -9812,6 +9843,7 @@ function ensureHeaders(sheet) {
         action: "webhook_received",
         status: "ok",
         message: `EC webhook: package_id=${packageId} status=${deliveryStatus} type=${notifType}`,
+        payload: ecWebhookPayload,
       });
 
       // Find order by tracking number
@@ -9822,14 +9854,16 @@ function ensureHeaders(sheet) {
           storeId, integrationId: null, provider: "expresscoursier",
           action: "webhook_no_match", status: "ok",
           message: `EC webhook: package_id=${packageId} not matched to any order`,
+          payload: ecWebhookPayload,
         });
         return res.json({ success: true, matched: false });
       }
 
-      // Map status and update
+      // Map status via shared EC_NUMERIC_STATUS_MAP (same map as attach-tracking + Synchroniser).
+      // 'in_progress' means the code is not yet confirmed — do not update the order status.
       if (deliveryStatus != null) {
-        const mappedStatus = EC_STATUS_MAP[deliveryStatus];
-        if (mappedStatus && mappedStatus !== order.status) {
+        const mappedStatus = mapEcNumericStatus(String(deliveryStatus));
+        if (mappedStatus && mappedStatus !== 'in_progress' && mappedStatus !== order.status) {
           await storage.updateOrderStatus(order.id, mappedStatus);
           await storage.createOrderFollowUpLog({
             orderId:   order.id,
@@ -9841,8 +9875,11 @@ function ensureHeaders(sheet) {
             storeId, integrationId: null, provider: "expresscoursier",
             action: "status_update", status: "ok",
             message: `Commande #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC status ${deliveryStatus})`,
+            payload: ecWebhookPayload,
           });
           console.log(`[EC-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mappedStatus}`);
+        } else if (mappedStatus === 'in_progress') {
+          console.log(`[EC-WEBHOOK-UNCONFIRMED] delivery_status=${deliveryStatus} not yet in EC_NUMERIC_STATUS_MAP — order #${order.orderNumber} unchanged`);
         }
       }
 
@@ -10373,13 +10410,51 @@ function ensureHeaders(sheet) {
       // Determine carrier from the existing order — fall back to expresscoursier
       const carrier = (order as any).shippingProvider || (order as any).carrierName || 'expresscoursier';
 
-      // ONE atomic update: trackNumber + provider + carrier + status
+      // ── TASK 1: retro-apply most recent EC webhook status ──────────────────────
+      // If an EC ChangeStatus event for this tracking number is already stored in
+      // integration_logs (including "no order found" ones), replay that status
+      // instead of blindly defaulting to 'Attente De Ramassage'.
+      let attachStatus = 'Attente De Ramassage';
+      let attachCommentStatus: string | null = null;
+      const isEcCarrier = ['expresscoursier', 'olivraison'].includes((carrier || '').toLowerCase());
+      if (isEcCarrier) {
+        const ecPriorLogs = await db
+          .select()
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            inArray(integrationLogs.provider, ['expresscoursier', 'olivraison']),
+            sql`${integrationLogs.payload} LIKE ${'%' + trackingNumber + '%'}`,
+          ))
+          .orderBy(desc(integrationLogs.createdAt))
+          .limit(20);
+
+        for (const priorLog of ecPriorLogs) {
+          if (!priorLog.payload) continue;
+          try {
+            const parsed = JSON.parse(priorLog.payload);
+            const pId = (parsed.package_id || '').toString().trim();
+            if (pId.toLowerCase() !== trackingNumber.toLowerCase()) continue;
+            if (parsed.delivery_status != null) {
+              const code = String(parsed.delivery_status);
+              const mapped = mapEcNumericStatus(code);
+              console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} → ${mapped}`);
+              attachCommentStatus = `EC delivery_status=${code}`;
+              if (mapped !== 'in_progress') attachStatus = mapped;
+              break;
+            }
+          } catch { continue; }
+        }
+      }
+
+      // ONE atomic update: trackNumber + provider + carrier + status (retro-applied or default)
       const [updated] = await db.update(orders)
         .set({
           trackNumber:      trackingNumber,
           shippingProvider: carrier,
           carrierName:      carrier,
-          status:           'Attente De Ramassage',
+          status:           attachStatus,
+          ...(attachCommentStatus ? { commentStatus: attachCommentStatus } : {}),
         })
         .where(eq(orders.id, orderId))
         .returning();
@@ -10392,7 +10467,7 @@ function ensureHeaders(sheet) {
         provider: carrier,
         action: 'tracking_attached',
         status: 'success',
-        message: `✅ Tracking attaché manuellement: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} → Attente De Ramassage`,
+        message: `✅ Tracking attaché: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} → ${attachStatus}${attachCommentStatus ? ` (${attachCommentStatus})` : ''}`,
       });
 
       res.json({ success: true, trackNumber: updated?.trackNumber, status: updated?.status });
@@ -10400,6 +10475,30 @@ function ensureHeaders(sheet) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides", errors: err.errors });
       console.error("[ATTACH-TRACKING] Error:", err?.message ?? err);
       res.status(500).json({ message: err?.message || "Erreur serveur" });
+    }
+  });
+
+  // ── Diagnostic: distinct EC delivery_status codes in integration_logs ────────
+  // Call this from the deployed app to get the full code list to send to EC support.
+  // GET /api/admin/ec-status-codes
+  app.get("/api/admin/ec-status-codes", requireSuperAdmin, async (_req, res) => {
+    try {
+      const rows = await db.execute(sql`
+        SELECT
+          (regexp_match(payload, '"delivery_status"\s*:\s*"?([0-9a-zA-Z_]+)"?'))[1] AS delivery_status,
+          COUNT(*)::int                                                               AS count,
+          MAX((regexp_match(payload, '"package_id"\s*:\s*"([^"]+)"'))[1])            AS example_package_id,
+          MAX(created_at)::text                                                       AS last_seen
+        FROM integration_logs
+        WHERE payload IS NOT NULL
+          AND payload LIKE '%delivery_status%'
+          AND provider IN ('expresscoursier', 'olivraison', 'express coursier')
+        GROUP BY 1
+        ORDER BY count DESC
+      `);
+      res.json({ codes: rows.rows });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Erreur" });
     }
   });
 
