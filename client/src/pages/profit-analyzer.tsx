@@ -21,7 +21,7 @@ import {
   Upload, CheckCircle2, RotateCcw, TrendingUp, Package, Truck,
   Megaphone, DollarSign, Target, Sparkles, ArrowRight, BarChart3,
   Globe, Settings2, AlertTriangle, Info, RefreshCw,
-  Crown, Save, FolderOpen, Trash2, Zap, CalendarDays,
+  Crown, Save, FolderOpen, Trash2, Zap, CalendarDays, X, FileText, Layers,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
@@ -74,17 +74,13 @@ function cleanProductName(raw: string): string {
     .trim();
 }
 
-/* Parse Cathedis/carrier composite Ref cell, e.g.:
-     "Ref : -\nDesignation : قطرات العسل\nQuantity : 2"
-   Returns designation (display name) and qty per row.
-   qtyPerRow = 0 means no embedded Quantity line was found. */
 function parseRefCell(val: any): { designation: string; qtyPerRow: number } {
   const text = String(val ?? "").trim();
   const designationMatch = text.match(/Designation\s*:\s*([^\n\r]+)/i);
   const quantityMatch    = text.match(/Quantity\s*:\s*(\d+)/i);
   const designation = designationMatch
     ? designationMatch[1].trim()
-    : cleanProductName(text.split(/[\n\r]/)[0]);  // fallback: first line, cleaned
+    : cleanProductName(text.split(/[\n\r]/)[0]);
   const qtyPerRow = quantityMatch ? Math.max(1, parseInt(quantityMatch[1], 10)) : 0;
   return { designation, qtyPerRow };
 }
@@ -104,6 +100,21 @@ function isDelivered(statusVal: string): boolean {
   return n.includes("livre") || n.includes("deliver") || n === "done" || n === "complete";
 }
 
+/** Compute a row-level dedup key. Uses tracking/order number column if detected,
+ *  otherwise falls back to a hash of the full raw row values. */
+function computeRowId(row: any[], headers: string[]): string {
+  const idKeywords = ["tracking", "n° commande", "numero commande", "reference", "bon de commande",
+    "order id", "code colis", "suivi", "barcode", "code suivi", "colis id", "id commande"];
+  const idCol = detectCol(headers, idKeywords);
+  if (idCol) {
+    const idx = headers.indexOf(idCol);
+    const val = String(row[idx] ?? "").trim();
+    if (val && val.length > 2) return `id:${val}`;
+  }
+  // Fallback: hash of entire row content
+  return `row:${row.map(v => String(v ?? "").trim()).join("|")}`;
+}
+
 /* ─── Types ─────────────────────────────────────────── */
 interface ColMap {
   product: string;
@@ -111,6 +122,29 @@ interface ColMap {
   cod: string;
   status: string;
   shipping: string;
+}
+
+/** A single delivered row after extraction, ready to be grouped by product */
+interface NormalizedRow {
+  designation: string;
+  qty: number;
+  cod: number;
+  shipping: number;
+  rowId: string;   // dedup key
+}
+
+/** One file × one sheet, with its parsed normalized rows */
+interface ParsedEntry {
+  id: string;          // stable unique id
+  fileName: string;
+  sheetName: string;
+  totalRows: number;   // all rows with non-empty designation (before status filter)
+  deliveredRows: number;
+  headers: string[];
+  rawDataRows: any[][];
+  colMap: ColMap;
+  rows: NormalizedRow[];
+  error?: string;
 }
 
 interface ProductSummary {
@@ -128,8 +162,8 @@ interface ProductSummary {
 
 interface ProfitResult {
   name: string;
-  qty: number;        // total UNITS (sum of qtyPerRow × livraisons)
-  commandes: number;  // total LIVRAISONS (row count) — used for packaging & confirmation
+  qty: number;
+  commandes: number;
   caBrut: number;
   shippingFromFile: number;
   caNet: number;
@@ -296,11 +330,9 @@ export default function ProfitAnalyzer() {
   const liveProducts  = liveData?.products  ?? [];
   const livePlatforms = liveData?.platforms ?? [];
 
-  /* Live summary aggregates */
   const liveTotalOrders    = liveProducts.reduce((s: number, p: any) => s + p.totalOrders,    0);
   const liveTotalDelivered = liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
   const liveTotalRevenue   = liveProducts.reduce((s: number, p: any) => s + p.revenue,         0);
-  // Subtract global/untagged ad spend from the grand total so it matches the Dashboard formula
   const liveTotalProfit    = liveProducts.reduce((s: number, p: any) => s + p.netProfit, 0) - (liveData?.globalAdSpend ?? 0);
   const liveDeliveryRate   = liveTotalOrders > 0 ? ((liveTotalDelivered / liveTotalOrders) * 100).toFixed(1) : "0";
 
@@ -314,15 +346,25 @@ export default function ProfitAnalyzer() {
     return "bg-rose-500/20 text-rose-400 border-rose-500/30";
   }
 
-  /* ── CSV tab state ── */
+  /* ── CSV tab: multi-file state ── */
   const [step, setStep] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [parseProgress, setParseProgress] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
-  const [fileName, setFileName] = useState("");
-  const [rawHeaders, setRawHeaders] = useState<string[]>([]);
-  const [rawDataRows, setRawDataRows] = useState<any[][]>([]);
-  const [colMap, setColMap] = useState<ColMap>({ product: "", qty: "", cod: "", status: "", shipping: "" });
+  const [fileErrors, setFileErrors] = useState<{ label: string; error: string }[]>([]);
+
+  // Multi-file: list of parsed entries (one per file×sheet)
+  const [parsedEntries, setParsedEntries] = useState<ParsedEntry[]>([]);
+  const [dupCount, setDupCount] = useState(0);
+
+  // Derived single-entry values for the column mapping UI (only active when exactly 1 entry)
+  const singleEntry = parsedEntries.length === 1 && !parsedEntries[0].error ? parsedEntries[0] : null;
+  const rawHeaders  = singleEntry?.headers   ?? [];
+  const rawDataRows = singleEntry?.rawDataRows ?? [];
+  // colMap for the column-mapping dropdowns (single-entry only)
+  const colMap: ColMap = singleEntry?.colMap ?? { product: "", qty: "", cod: "", status: "", shipping: "" };
+
   const [previewProducts, setPreviewProducts] = useState<ProductSummary[]>([]);
   const [previewMeta, setPreviewMeta] = useState({ totalRows: 0, filteredRows: 0, noStatusFilter: false });
   const [hasParsed, setHasParsed] = useState(false);
@@ -330,6 +372,13 @@ export default function ProfitAnalyzer() {
   const [adMode, setAdMode] = useState<"global" | "specific">("global");
   const [globalAdSpend, setGlobalAdSpend] = useState("0");
   const [results, setResults] = useState<ProfitResult[]>([]);
+
+  // Computed display name (for saveReport compat)
+  const fileName = parsedEntries.length === 0
+    ? ""
+    : parsedEntries.length === 1
+    ? parsedEntries[0].fileName
+    : `${parsedEntries.length} fichiers`;
 
   /* ── Saved reports state ── */
   const [currentReportId, setCurrentReportId] = useState<number | null>(null);
@@ -353,14 +402,12 @@ export default function ProfitAnalyzer() {
   const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
   const [productSearchQuery, setProductSearchQuery] = useState("");
 
-  /* Initialize: select all products by default when detection completes */
   useEffect(() => {
     if (previewProducts.length > 0 && selectedProductKeys.size === 0) {
       setSelectedProductKeys(new Set(previewProducts.map(p => p.name)));
     }
   }, [previewProducts]);
 
-  /* Filtered products for the selector search */
   const filteredPreviewProducts = useMemo(() => {
     const q = productSearchQuery.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
     if (!q) return previewProducts;
@@ -370,7 +417,6 @@ export default function ProfitAnalyzer() {
     });
   }, [previewProducts, productSearchQuery]);
 
-  /* Estimated lines for selected products */
   const totalSelectedLines = useMemo(() => {
     return previewProducts.reduce((sum, p) => {
       return selectedProductKeys.has(p.name) ? sum + p.rowCount : sum;
@@ -398,128 +444,270 @@ export default function ProfitAnalyzer() {
     queryKey: ["/api/inventory/stats"],
     retry: false,
   });
+
   function getSuggestedPrice(productName: string): number | undefined {
     const stats: any[] = inventoryStats?.productStats ?? [];
     const found = stats.find(p => norm(p.name) === norm(productName));
     return found ? found.sellingPrice / 100 : undefined;
   }
 
-  function buildProducts(dataRows: any[][], headers: string[], map: ColMap): { ok: boolean; error?: string } {
-    const pIdx  = headers.indexOf(map.product);
-    const qIdx  = headers.indexOf(map.qty);
-    const cIdx  = headers.indexOf(map.cod);
-    const sIdx  = headers.indexOf(map.status);
-    const shIdx = headers.indexOf(map.shipping);
-    if (pIdx === -1) return { ok: false, error: "⚠️ Impossible de détecter la colonne Produit. Sélectionnez-la manuellement." };
-    const hasStatus   = sIdx !== -1;
-    // A separate qty column is only trusted when it's a different column from product
-    const hasQtyCol   = qIdx !== -1 && qIdx !== pIdx;
-    const hasCod      = cIdx !== -1;
-    const hasShipping = shIdx !== -1;
+  /* ────────────────────────────────────────────────────────────
+     MULTI-FILE PARSING CORE
+  ──────────────────────────────────────────────────────────── */
 
-    // Count rows with a non-empty designation (before status filter)
+  /** Extract a NormalizedRow from a raw row using the detected colMap.
+   *  Returns null if the row is empty or filtered out (not delivered). */
+  function normalizeRow(row: any[], headers: string[], cm: ColMap): NormalizedRow | null {
+    const pIdx = cm.product ? headers.indexOf(cm.product) : -1;
+    if (pIdx === -1) return null;
+    const { designation, qtyPerRow: embeddedQty } = parseRefCell(row[pIdx]);
+    if (!designation) return null;
+
+    const sIdx    = cm.status   ? headers.indexOf(cm.status)   : -1;
+    const qIdx    = cm.qty      ? headers.indexOf(cm.qty)      : -1;
+    const cIdx    = cm.cod      ? headers.indexOf(cm.cod)      : -1;
+    const shIdx   = cm.shipping ? headers.indexOf(cm.shipping) : -1;
+
+    // Filter to delivered rows when a status column is available
+    if (sIdx !== -1 && !isDelivered(String(row[sIdx] ?? ""))) return null;
+
+    const hasQtyCol = qIdx !== -1 && qIdx !== pIdx;
+    let qty = 1;
+    if (hasQtyCol) {
+      const parsed = parseNum(row[qIdx]);
+      if (parsed > 0 && parsed <= 10000) qty = parsed;
+      else if (embeddedQty > 0) qty = embeddedQty;
+    } else if (embeddedQty > 0) {
+      qty = embeddedQty;
+    }
+
+    return {
+      designation,
+      qty,
+      cod:      cIdx  !== -1 ? parseNum(row[cIdx])  : 0,
+      shipping: shIdx !== -1 ? parseNum(row[shIdx]) : 0,
+      rowId:    computeRowId(row, headers),
+    };
+  }
+
+  /** Convert an array of NormalizedRows into product summaries.
+   *  Equivalent to the old buildProducts but works on pre-normalized data. */
+  function buildProductsFromRows(rows: NormalizedRow[]): ProductSummary[] {
+    const groupMap: Record<string, { qty: number; rev: number; ship: number; count: number; displayName: string }> = {};
+    for (const r of rows) {
+      const key = norm(r.designation);
+      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: r.designation };
+      groupMap[key].qty   += r.qty;
+      groupMap[key].rev   += r.cod;
+      groupMap[key].ship  += r.shipping;
+      groupMap[key].count++;
+    }
+    return Object.entries(groupMap).map(([, d]) => ({
+      name: d.displayName,
+      totalQty: d.qty,
+      totalRevenue: d.rev,
+      totalShipping: d.ship,
+      rowCount: d.count,
+      buyingCost: "",
+      packagingCost: "",
+      confirmationFee: "",
+      adSpend: "0",
+      suggestedPrice: getSuggestedPrice(d.displayName),
+    })).sort((a, b) => b.totalQty - a.totalQty);
+  }
+
+  /** Merge all valid parsed entries, deduplicate by rowId, and rebuild product summaries. */
+  function rebuildFromEntries(entries: ParsedEntry[]): void {
+    const validEntries = entries.filter(e => !e.error);
+    if (validEntries.length === 0) {
+      setPreviewProducts([]);
+      setHasParsed(false);
+      return;
+    }
+
+    // Merge all rows
+    const allRows: NormalizedRow[] = [];
+    for (const entry of validEntries) allRows.push(...entry.rows);
+
+    // Deduplicate by rowId
+    const seen = new Set<string>();
+    let dups = 0;
+    const deduped = allRows.filter(r => {
+      if (seen.has(r.rowId)) { dups++; return false; }
+      seen.add(r.rowId);
+      return true;
+    });
+    setDupCount(dups);
+
+    if (deduped.length === 0) {
+      const totalR = validEntries.reduce((s, e) => s + e.totalRows, 0);
+      const hasStatus = validEntries.some(e => e.colMap.status !== "");
+      setParseError(
+        totalR > 0 && hasStatus
+          ? `⚠️ Aucune ligne "Livré/Livrée/Delivered" trouvée dans ${totalR} lignes. Vérifiez la colonne Statut ou utilisez "(aucune)" pour tout inclure.`
+          : "⚠️ Aucun produit valide trouvé. Vérifiez le format des fichiers."
+      );
+      setPreviewProducts([]);
+      setHasParsed(false);
+      return;
+    }
+
+    const summaries = buildProductsFromRows(deduped);
+    const totalAll = entries.reduce((s, e) => s + e.totalRows, 0);
+    const noStatusFilter = validEntries.every(e => e.colMap.status === "");
+
+    setPreviewProducts(summaries);
+    setSelectedProductKeys(new Set(summaries.map(p => p.name)));
+    setPreviewMeta({ totalRows: totalAll, filteredRows: deduped.length, noStatusFilter });
+    setParseError(null);
+    setHasParsed(true);
+  }
+
+  /** Parse one sheet into a ParsedEntry (may return an error entry). */
+  function parseSheet(
+    entryId: string,
+    fileName: string,
+    sheetName: string,
+    data: any[][]
+  ): ParsedEntry {
+    if (data.length < 2) {
+      return { id: entryId, fileName, sheetName, totalRows: 0, deliveredRows: 0,
+        headers: [], rawDataRows: [], colMap: { product: "", qty: "", cod: "", status: "", shipping: "" },
+        rows: [], error: "Feuille vide (moins de 2 lignes)" };
+    }
+
+    const headers  = data[0].map((h: any) => String(h ?? "").trim());
+    const dataRows = data.slice(1);
+
+    const detected: ColMap = {
+      product:  detectCol(headers, ["ref", "designation", "produit", "article", "libelle", "nom produit", "product", "name", "description"]),
+      qty:      detectCol(headers, ["qte", "qty", "quantite", "quantity", "nbre", "nombre", "nbr colis"]),
+      cod:      detectCol(headers, ["price", "cod", "montant cod", "prix", "montant", "amount", "valeur", "revenue", "total", "tarif"]),
+      status:   detectCol(headers, ["status", "statut", "etat", "livraison", "situation"]),
+      shipping: detectCol(headers, ["shipping cost", "frais livr", "frais exp", "cout livr", "shipping", "frais port", "frais transport", "delivery cost"]),
+    };
+    if (!detected.product) detected.product = detectProductColFromData(headers, dataRows);
+
+    if (!detected.product) {
+      return { id: entryId, fileName, sheetName, totalRows: 0, deliveredRows: 0,
+        headers, rawDataRows: dataRows, colMap: detected, rows: [],
+        error: "Impossible de détecter la colonne Produit. Format de transporteur non reconnu." };
+    }
+
+    const pIdx = headers.indexOf(detected.product);
     const totalRows = dataRows.filter(r => {
-      const { designation } = parseRefCell(r[pIdx]);
+      const { designation } = parseRefCell(r[pIdx] ?? "");
       return designation !== "";
     }).length;
 
-    // Keep only delivered rows (or all if no status column)
-    const relevantRows = dataRows.filter(r => {
-      const { designation } = parseRefCell(r[pIdx]);
-      if (!designation) return false;
-      if (!hasStatus) return true;
-      return isDelivered(String(r[sIdx] ?? ""));
+    const rows: NormalizedRow[] = [];
+    for (const row of dataRows) {
+      const nr = normalizeRow(row, headers, detected);
+      if (nr) rows.push(nr);
+    }
+
+    return { id: entryId, fileName, sheetName, totalRows, deliveredRows: rows.length,
+      headers, rawDataRows: dataRows, colMap: detected, rows };
+  }
+
+  /** Process one or more dropped/selected File objects. Adds entries, shows progress. */
+  async function processFiles(files: File[]) {
+    if (files.length === 0) return;
+    setIsLoading(true);
+    setParseError(null);
+
+    const XLSX = await import("xlsx");
+    const newEntries: ParsedEntry[] = [];
+    const newErrors: { label: string; error: string }[] = [];
+
+    for (let fi = 0; fi < files.length; fi++) {
+      const file = files[fi];
+      setParseProgress(`Lecture ${fi + 1}/${files.length} : ${file.name}`);
+
+      // Yield to let React render the progress message
+      await new Promise(r => setTimeout(r, 0));
+
+      try {
+        const buffer = await file.arrayBuffer();
+        const wb = XLSX.read(buffer, { type: "array" });
+
+        const sheetsToProcess: string[] = file.name.toLowerCase().endsWith('.csv')
+          ? [wb.SheetNames[0]]       // CSV: first/only sheet
+          : wb.SheetNames;           // XLSX/XLS: all sheets
+
+        for (const sheetName of sheetsToProcess) {
+          const ws = wb.Sheets[sheetName];
+          if (!ws) continue;
+          const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as any[][];
+
+          const entryId = `${Date.now()}-${fi}-${sheetName}`;
+          const entry = parseSheet(entryId, file.name, sheetName, data);
+          if (entry.error) {
+            newErrors.push({ label: `${file.name} / ${sheetName}`, error: entry.error });
+          } else {
+            newEntries.push(entry);
+          }
+        }
+      } catch (e: any) {
+        newErrors.push({ label: file.name, error: `Impossible de lire : ${e?.message || "format non supporté"}` });
+      }
+    }
+
+    setParseProgress(null);
+    setFileErrors(prev => [...prev, ...newErrors]);
+
+    setParsedEntries(prev => {
+      const merged = [...prev, ...newEntries];
+      rebuildFromEntries(merged);
+      return merged;
     });
 
-    if (totalRows > 0 && relevantRows.length === 0 && hasStatus) {
-      return { ok: false, error: `⚠️ Aucune ligne avec statut "Livré/Livrée/Delivered" trouvée dans ${totalRows} lignes. Vérifiez la colonne Statut ou sélectionnez "(aucune)" pour tout inclure.` };
-    }
+    setIsLoading(false);
+  }
 
-    const groupMap: Record<string, { qty: number; rev: number; ship: number; count: number; displayName: string }> = {};
-    for (const row of relevantRows) {
-      // parseRefCell handles both simple product names AND composite Cathedis/carrier Ref cells:
-      //   "Ref : -\nDesignation : product name\nQuantity : 2"
-      const { designation, qtyPerRow: embeddedQty } = parseRefCell(row[pIdx]);
-      if (!designation) continue;
-      const key = norm(designation);
-      if (!groupMap[key]) groupMap[key] = { qty: 0, rev: 0, ship: 0, count: 0, displayName: designation };
-
-      // Qty priority (highest → lowest):
-      //   1. Explicit separate qty column — valid positive number ≤ 10 000
-      //      (guards against tracking-number columns like "CAT-21" → -21 via parseNum)
-      //   2. Embedded "Quantity : N" parsed from the Ref cell text
-      //   3. Fall back to 1 per row (one row = one delivered commande)
-      let rowQty = 1;
-      if (hasQtyCol) {
-        const parsed = parseNum(row[qIdx]);
-        if (parsed > 0 && parsed <= 10000) {
-          rowQty = parsed;
-        } else if (embeddedQty > 0) {
-          rowQty = embeddedQty;
-        }
-      } else if (embeddedQty > 0) {
-        rowQty = embeddedQty;
+  /** Remove one entry from the list and recompute products. */
+  function removeEntry(id: string) {
+    setParsedEntries(prev => {
+      const next = prev.filter(e => e.id !== id);
+      if (next.length === 0) {
+        setPreviewProducts([]);
+        setHasParsed(false);
+        setDupCount(0);
+        setParseError(null);
+      } else {
+        rebuildFromEntries(next);
       }
-
-      groupMap[key].qty   += rowQty;
-      groupMap[key].rev   += hasCod      ? parseNum(row[cIdx])  : 0;
-      groupMap[key].ship  += hasShipping ? parseNum(row[shIdx]) : 0;
-      groupMap[key].count++;
-    }
-
-    if (Object.keys(groupMap).length === 0) return { ok: false, error: "⚠️ Aucun produit valide trouvé. Vérifiez le format du fichier." };
-    const summaries: ProductSummary[] = Object.entries(groupMap).map(([, d]) => ({
-      name: d.displayName, totalQty: d.qty, totalRevenue: d.rev, totalShipping: d.ship,
-      rowCount: d.count, buyingCost: "", packagingCost: "", confirmationFee: "", adSpend: "0",
-      suggestedPrice: getSuggestedPrice(d.displayName),
-    })).sort((a, b) => b.totalQty - a.totalQty);
-    setPreviewProducts(summaries);
-    setSelectedProductKeys(new Set(summaries.map(p => p.name)));
-    setPreviewMeta({ totalRows, filteredRows: relevantRows.length, noStatusFilter: !hasStatus });
-    setParseError(null);
-    return { ok: true };
+      return next;
+    });
+    setFileErrors(prev => prev.filter(e => !e.label.startsWith(
+      parsedEntries.find(en => en.id === id)?.fileName ?? "__none__"
+    )));
   }
 
-  async function processFile(file: File) {
-    setIsLoading(true); setParseError(null); setHasParsed(false);
-    setFileName(file.name); setPreviewProducts([]);
-    setSelectedProductKeys(new Set()); setProductSearchQuery("");
-    try {
-      const buffer = await file.arrayBuffer();
-      const XLSX = await import("xlsx");
-      const wb = XLSX.read(buffer, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const raw: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" }) as any[][];
-      if (raw.length < 2) { setParseError("⚠️ Le fichier semble vide (moins de 2 lignes)."); setIsLoading(false); return; }
-      const headers = raw[0].map((h: any) => String(h ?? "").trim());
-      const dataRows = raw.slice(1);
-      const detected: ColMap = {
-        product:  detectCol(headers, ["ref", "designation", "produit", "article", "libelle", "nom produit", "product", "name", "description"]),
-        qty:      detectCol(headers, ["qte", "qty", "quantite", "quantity", "nbre", "nombre", "nbr colis"]),
-        cod:      detectCol(headers, ["price", "cod", "montant cod", "prix", "montant", "amount", "valeur", "revenue", "total", "tarif"]),
-        status:   detectCol(headers, ["status", "statut", "etat", "livraison", "situation"]),
-        shipping: detectCol(headers, ["shipping cost", "frais livr", "frais exp", "cout livr", "shipping", "frais port", "frais transport", "delivery cost"]),
-      };
-      if (!detected.product) detected.product = detectProductColFromData(headers, dataRows);
-      setRawHeaders(headers); setRawDataRows(dataRows); setColMap(detected);
-      const result = buildProducts(dataRows, headers, detected);
-      if (!result.ok) setParseError(result.error ?? "Erreur inconnue.");
-      else setHasParsed(true);
-    } catch (e: any) {
-      setParseError(`⚠️ Impossible de lire ce fichier : ${e?.message || "format non supporté"}`);
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
+  /** Update a column mapping for the single-entry case and recompute. */
   function remapCol(field: keyof ColMap, val: string) {
-    const newMap: ColMap = { ...colMap, [field]: val === "__none__" ? "" : val };
-    setColMap(newMap);
-    if (rawDataRows.length > 0) {
-      const result = buildProducts(rawDataRows, rawHeaders, newMap);
-      if (result.ok) setHasParsed(true);
-      else { setHasParsed(false); setParseError(result.error ?? null); }
+    if (!singleEntry) return;
+    const newCm: ColMap = { ...singleEntry.colMap, [field]: val === "__none__" ? "" : val };
+    const updatedRows: NormalizedRow[] = [];
+    for (const row of singleEntry.rawDataRows) {
+      const nr = normalizeRow(row, singleEntry.headers, newCm);
+      if (nr) updatedRows.push(nr);
     }
+    const pIdx = singleEntry.headers.indexOf(newCm.product);
+    const totalRows = pIdx !== -1
+      ? singleEntry.rawDataRows.filter(r => parseRefCell(r[pIdx] ?? "").designation !== "").length
+      : singleEntry.totalRows;
+
+    const updatedEntry: ParsedEntry = {
+      ...singleEntry,
+      colMap: newCm,
+      rows: updatedRows,
+      totalRows,
+      deliveredRows: updatedRows.length,
+      error: newCm.product ? undefined : "Colonne Produit requise.",
+    };
+    setParsedEntries([updatedEntry]);
+    rebuildFromEntries([updatedEntry]);
   }
 
   function goToStep2() {
@@ -546,12 +734,8 @@ export default function ProfitAnalyzer() {
       const caBrut = p.totalRevenue;
       const shippingFromFile = p.totalShipping;
       const caNet = caBrut - shippingFromFile;
-      const qty = p.totalQty;           // UNITS — physical items sold
-      const commandes = p.rowCount;     // LIVRAISONS — number of deliveries
-      // Cost multipliers:
-      //   Prix Achat  × UNITS    (each physical item has a purchase cost)
-      //   Emballage   × LIVRAISONS (one carton per delivery, not per unit inside)
-      //   Confirmation× LIVRAISONS (one call per confirmed order, not per unit)
+      const qty = p.totalQty;
+      const commandes = p.rowCount;
       const cogs         = toNum(p.buyingCost)     * qty;
       const packaging    = toNum(p.packagingCost)  * commandes;
       const confirmation = toNum(p.confirmationFee)* commandes;
@@ -565,21 +749,20 @@ export default function ProfitAnalyzer() {
   }
 
   function reset() {
-    setStep(1); setHasParsed(false); setParseError(null); setFileName("");
-    setRawHeaders([]); setRawDataRows([]);
-    setColMap({ product: "", qty: "", cod: "", status: "", shipping: "" });
+    setStep(1); setHasParsed(false); setParseError(null);
+    setParsedEntries([]); setFileErrors([]); setDupCount(0);
     setPreviewProducts([]); setProducts([]); setResults([]);
     setGlobalAdSpend("0"); setAdMode("global");
     setSelectedProductKeys(new Set()); setProductSearchQuery("");
     setCurrentReportId(null);
     setReportMonth(new Date().toISOString().slice(0, 7));
     setReportTitle("");
+    setParseProgress(null);
     if (fileRef.current) fileRef.current.value = "";
   }
 
   function openReport(report: any) {
     const p = report.payload ?? report;
-    setFileName(p.fileName ?? "");
     setProducts(p.products ?? []);
     setResults(p.results ?? []);
     setAdMode(p.adMode ?? "global");
@@ -588,6 +771,17 @@ export default function ProfitAnalyzer() {
     setReportMonth(report.month ?? new Date().toISOString().slice(0, 7));
     setReportTitle(report.title ?? "");
     setHasParsed(true);
+    // Restore a fake entry for display
+    if (p.fileName) {
+      setParsedEntries([{
+        id: `report-${report.id}`,
+        fileName: p.fileName,
+        sheetName: "",
+        totalRows: 0, deliveredRows: 0,
+        headers: [], rawDataRows: [], rows: [],
+        colMap: { product: "", qty: "", cod: "", status: "", shipping: "" },
+      }]);
+    }
     setStep(3);
   }
 
@@ -783,7 +977,6 @@ export default function ProfitAnalyzer() {
                 <RefreshCw className="w-3 h-3" /> Actualiser
               </button>
             </div>
-            {/* Active range label */}
             <p className="text-[11px] text-slate-500 -mt-1" data-testid="live-range-label">
               {liveDateRangeLabel}
             </p>
@@ -823,7 +1016,6 @@ export default function ProfitAnalyzer() {
               </div>
             )}
 
-            {/* Loading */}
             {liveLoading && (
               <div className="flex items-center justify-center py-16 text-slate-400 gap-3">
                 <RefreshCw className="w-5 h-5 animate-spin" />
@@ -893,51 +1085,40 @@ export default function ProfitAnalyzer() {
                                     <div className="text-[11px] text-slate-400">{p.deliveredUnits} u</div>
                                   )}
                                 </td>
-                                {/* CA Brut */}
                                 <td className="px-3 py-3 text-right font-bold" style={{ color: '#10b981' }}>
                                   {p.revenue > 0 ? fmt(p.revenue) : <span className="text-slate-500">—</span>}
                                 </td>
-                                {/* Frais Livr. */}
                                 <td className="px-3 py-3 text-right font-medium" style={{ color: p.shippingCost > 0 ? '#f43f5e' : '#475569' }}>
                                   {p.shippingCost > 0 ? `−${fmt(p.shippingCost)} DH` : '—'}
                                 </td>
-                                {/* CA Net */}
                                 <td className="px-3 py-3 text-right font-bold" style={{ color: '#06b6d4' }}>
                                   {fmt(caNet)} DH
                                 </td>
-                                {/* Sourcing Total */}
                                 <td className="px-3 py-3 text-right text-slate-300">
                                   {p.productCost > 0 ? `−${fmt(p.productCost)} DH` : '—'}
                                 </td>
-                                {/* Emballage Total */}
                                 <td className="px-3 py-3 text-right" style={{ color: '#ec4899' }}>
                                   {`−${fmt(p.packagingCost ?? 0)} DH`}
                                 </td>
-                                {/* Commissions */}
                                 <td className="px-3 py-3 text-right text-slate-300">
                                   {`−${fmt(p.confirmationCost ?? 0)} DH`}
                                 </td>
-                                {/* Pub */}
                                 <td className="px-3 py-3 text-right" style={{ color: p.adSpend > 0 ? '#8b5cf6' : '#475569' }}>
                                   {`−${fmt(p.adSpend ?? 0)} DH`}
                                 </td>
-                                {/* Bénéfice Net */}
                                 <td className="px-4 py-3 text-right font-extrabold text-sm" style={{ color: profitColor }}>
                                   {fmt(p.netProfit)} DH
                                 </td>
-                                {/* Marge */}
                                 <td className="px-3 py-3 text-center">
                                   <span className="px-2 py-0.5 rounded-md text-[10px] font-bold" style={{ background: marginColor + '20', color: marginColor, border: `1px solid ${marginColor}40` }}>
                                     {p.margin.toFixed(1)}%
                                   </span>
                                 </td>
-                                {/* ROI */}
                                 <td className="px-3 py-3 text-center">
                                   <span className="text-[11px] font-bold" style={{ color: p.roi > 0 ? '#10b981' : '#f43f5e' }}>
                                     {p.roi.toFixed(0)}%
                                   </span>
                                 </td>
-                                {/* Par Livr. */}
                                 <td className="px-3 py-3 text-right">
                                   {p.deliveredOrders > 0 ? (
                                     <span className="text-[12px] font-bold" style={{ color: (p.netProfit / p.deliveredOrders) > 0 ? "#10b981" : "#f43f5e" }}>
@@ -1073,25 +1254,47 @@ export default function ProfitAnalyzer() {
               </Card>
             )}
 
-            {/* STEP 1 — Upload + Preview */}
+            {/* ══ STEP 1 — Upload + Preview ══ */}
             {step === 1 && (
               <div className="space-y-5">
+
+                {/* ── Dropzone (multi-file) ── */}
                 <div
                   data-testid="dropzone-file-upload"
                   onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
                   onDragLeave={() => setIsDragging(false)}
-                  onDrop={e => { e.preventDefault(); setIsDragging(false); const f = e.dataTransfer.files[0]; if (f) processFile(f); }}
+                  onDrop={e => {
+                    e.preventDefault(); setIsDragging(false);
+                    const files = Array.from(e.dataTransfer.files).filter(f =>
+                      /\.(xlsx|xls|csv)$/i.test(f.name)
+                    );
+                    if (files.length > 0) processFiles(files);
+                  }}
                   onClick={() => !isLoading && fileRef.current?.click()}
-                  className={`rounded-2xl border-2 border-dashed cursor-pointer transition-all flex flex-col items-center justify-center py-12 gap-4 ${
+                  className={`rounded-2xl border-2 border-dashed cursor-pointer transition-all flex flex-col items-center justify-center py-10 gap-4 ${
                     isDragging ? "border-amber-400 bg-amber-400/8" : "border-slate-600/70 hover:border-amber-500/50 bg-white/3"
                   }`}
                 >
-                  <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
-                    onChange={e => { const f = e.target.files?.[0]; if (f) processFile(f); }} />
+                  {/* Hidden multi-file input */}
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    multiple
+                    className="hidden"
+                    data-testid="input-file-upload"
+                    onChange={e => {
+                      const files = Array.from(e.target.files ?? []);
+                      if (files.length > 0) { processFiles(files); e.target.value = ""; }
+                    }}
+                  />
+
                   {isLoading ? (
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-10 h-10 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                      <p className="text-amber-300 text-sm font-medium">Analyse en cours…</p>
+                      <p className="text-amber-300 text-sm font-medium">
+                        {parseProgress ?? "Analyse en cours…"}
+                      </p>
                     </div>
                   ) : (
                     <>
@@ -1100,14 +1303,41 @@ export default function ProfitAnalyzer() {
                       </div>
                       <div className="text-center">
                         <p className="text-white font-semibold text-sm">
-                          {fileName ? `📄 ${fileName}` : "Déposez votre fichier ici"}
+                          {parsedEntries.length > 0
+                            ? "➕ Ajouter d'autres fichiers"
+                            : "Déposez vos fichiers ici"}
                         </p>
-                        <p className="text-slate-500 text-xs mt-1">Formats supportés : .xlsx · .xls · .csv — Export transporteur (Digylog, Cathedis, Onessta…)</p>
+                        <p className="text-slate-500 text-xs mt-1">
+                          Plusieurs fichiers acceptés · .xlsx · .xls · .csv — Export transporteur (Digylog, Cathedis, Onessta…)
+                        </p>
+                        <p className="text-slate-600 text-[11px] mt-0.5">
+                          Workbooks multi-feuilles : toutes les feuilles sont importées automatiquement
+                        </p>
                       </div>
                     </>
                   )}
                 </div>
 
+                {/* ── Per-file errors ── */}
+                {fileErrors.length > 0 && (
+                  <div className="space-y-2">
+                    {fileErrors.map((fe, i) => (
+                      <div key={i} className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-rose-300 text-xs font-semibold truncate">{fe.label}</p>
+                          <p className="text-rose-400/80 text-[11px] mt-0.5">{fe.error}</p>
+                        </div>
+                        <button onClick={() => setFileErrors(prev => prev.filter((_, j) => j !== i))}
+                          className="text-rose-400/60 hover:text-rose-300 shrink-0">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── Global parse error ── */}
                 {parseError && (
                   <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
@@ -1115,8 +1345,67 @@ export default function ProfitAnalyzer() {
                   </div>
                 )}
 
+                {/* ── Imported file/sheet list ── */}
+                {parsedEntries.length > 0 && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/8">
+                      <div className="flex items-center gap-2">
+                        <Layers className="w-3.5 h-3.5 text-amber-400" />
+                        <span className="text-xs font-bold text-white uppercase tracking-widest">
+                          Fichiers importés
+                        </span>
+                        <span className="text-[10px] text-slate-500 ml-1">
+                          ({parsedEntries.length} feuille{parsedEntries.length > 1 ? "s" : ""})
+                        </span>
+                      </div>
+                      {dupCount > 0 && (
+                        <span className="text-[10px] text-amber-400 font-semibold">
+                          {dupCount} doublon{dupCount > 1 ? "s" : ""} ignoré{dupCount > 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                    <div className="divide-y divide-white/5">
+                      {parsedEntries.map(entry => (
+                        <div key={entry.id}
+                          data-testid={`entry-row-${entry.id}`}
+                          className={`flex items-center gap-3 px-4 py-2.5 ${entry.error ? "bg-rose-500/5" : "hover:bg-white/3"} transition-colors`}>
+                          <FileText className={`w-3.5 h-3.5 shrink-0 ${entry.error ? "text-rose-400" : "text-slate-400"}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs text-white font-medium truncate max-w-[200px]" title={entry.fileName}>
+                                {entry.fileName}
+                              </span>
+                              {entry.sheetName && entry.sheetName !== "CSV" && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/60 text-slate-400 border border-white/10 font-mono">
+                                  {entry.sheetName}
+                                </span>
+                              )}
+                            </div>
+                            {entry.error ? (
+                              <p className="text-[11px] text-rose-400 mt-0.5">{entry.error}</p>
+                            ) : (
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                <span className="text-emerald-400 font-semibold">{entry.deliveredRows}</span> lignes livrées
+                                <span className="text-slate-600"> / {entry.totalRows} total</span>
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => removeEntry(entry.id)}
+                            data-testid={`button-remove-entry-${entry.id}`}
+                            className="w-6 h-6 flex items-center justify-center rounded-md text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Products panel (after parsing) ── */}
                 {hasParsed && previewProducts.length > 0 && (
                   <div className="space-y-4">
+                    {/* Header + continue */}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -1124,7 +1413,8 @@ export default function ProfitAnalyzer() {
                           {previewProducts.length} produits détectés
                         </span>
                         <span className="text-slate-500 text-xs">
-                          ({previewMeta.filteredRows} / {previewMeta.totalRows} lignes{previewMeta.noStatusFilter ? " — sans filtre statut" : " livrées"})
+                          ({previewMeta.filteredRows} / {previewMeta.totalRows} lignes{previewMeta.noStatusFilter ? " — sans filtre statut" : " livrées"}
+                          {dupCount > 0 && ` · ${dupCount} doublons ignorés`})
                         </span>
                       </div>
                       <Button onClick={goToStep2} size="sm"
@@ -1136,45 +1426,58 @@ export default function ProfitAnalyzer() {
                       </Button>
                     </div>
 
-                    {/* Column mapping */}
-                    <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Settings2 className="w-3.5 h-3.5 text-slate-400" />
-                        <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Correspondance des colonnes</span>
+                    {/* Column mapping — only for single-entry */}
+                    {singleEntry && (
+                      <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Settings2 className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Correspondance des colonnes</span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                          {(["product", "qty", "cod", "status", "shipping"] as (keyof ColMap)[]).map(field => {
+                            const labels: Record<keyof ColMap, string> = { product: "Produit *", qty: "Quantité", cod: "Prix / COD", status: "Statut", shipping: "Frais livr." };
+                            const isQtyConflict = field === "qty" && colMap.qty && colMap.qty === colMap.product;
+                            return (
+                              <div key={field} className="space-y-1">
+                                <label className="text-[10px] text-slate-500 uppercase tracking-wide font-semibold">{labels[field]}</label>
+                                <Select value={colMap[field] || "__none__"} onValueChange={v => remapCol(field, v)}>
+                                  <SelectTrigger className={`h-7 text-xs bg-white/5 text-white ${isQtyConflict ? "border-amber-500/60" : "border-white/15"}`} data-testid={`select-col-${field}`}>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="__none__">(aucune)</SelectItem>
+                                    {rawHeaders.filter(h => h !== "").map(h => (
+                                      <SelectItem key={h} value={h}>{h}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                                {isQtyConflict && (
+                                  <p className="text-[10px] text-amber-400 leading-tight mt-0.5">
+                                    ⚠️ Même colonne que Produit — 1 unité/livraison utilisée
+                                  </p>
+                                )}
+                                {field === "qty" && !isQtyConflict && !colMap.qty && (
+                                  <p className="text-[10px] text-slate-500 leading-tight mt-0.5">
+                                    Astuce : si la qté est dans le texte produit (ex: "Quantity: 2"), laissez "(aucune)".
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                        {(["product", "qty", "cod", "status", "shipping"] as (keyof ColMap)[]).map(field => {
-                          const labels: Record<keyof ColMap, string> = { product: "Produit *", qty: "Quantité", cod: "Prix / COD", status: "Statut", shipping: "Frais livr." };
-                          const isQtyConflict = field === "qty" && colMap.qty && colMap.qty === colMap.product;
-                          return (
-                            <div key={field} className="space-y-1">
-                              <label className="text-[10px] text-slate-500 uppercase tracking-wide font-semibold">{labels[field]}</label>
-                              <Select value={colMap[field] || "__none__"} onValueChange={v => remapCol(field, v)}>
-                                <SelectTrigger className={`h-7 text-xs bg-white/5 text-white ${isQtyConflict ? "border-amber-500/60" : "border-white/15"}`} data-testid={`select-col-${field}`}>
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="__none__">(aucune)</SelectItem>
-                                  {rawHeaders.filter(h => h !== "").map(h => (
-                                    <SelectItem key={h} value={h}>{h}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                              {isQtyConflict && (
-                                <p className="text-[10px] text-amber-400 leading-tight mt-0.5">
-                                  ⚠️ Même colonne que Produit — 1 unité/livraison utilisée
-                                </p>
-                              )}
-                              {field === "qty" && !isQtyConflict && !colMap.qty && (
-                                <p className="text-[10px] text-slate-500 leading-tight mt-0.5">
-                                  Astuce : si la qté est dans le texte produit (ex: "Quantity: 2"), laissez "(aucune)".
-                                </p>
-                              )}
-                            </div>
-                          );
-                        })}
+                    )}
+
+                    {/* Multi-file: show auto-detection note */}
+                    {parsedEntries.length > 1 && (
+                      <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 flex items-center gap-2">
+                        <Info className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <p className="text-xs text-slate-400">
+                          <span className="font-semibold text-white">{parsedEntries.length} feuilles</span> fusionnées.
+                          Les colonnes ont été détectées automatiquement par fichier. Pour ajuster la correspondance, importez un seul fichier à la fois.
+                        </p>
                       </div>
-                    </div>
+                    )}
 
                     {/* ── Product selector ── */}
                     <div className="bg-slate-900/50 border border-slate-700/50 rounded-xl p-5">
@@ -1194,7 +1497,6 @@ export default function ProfitAnalyzer() {
                         </button>
                       </div>
 
-                      {/* Search */}
                       <input
                         type="text"
                         placeholder="🔍 Rechercher un produit..."
@@ -1204,12 +1506,10 @@ export default function ProfitAnalyzer() {
                         className="w-full mb-3 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-500 focus:border-amber-500 outline-none text-sm transition-colors"
                       />
 
-                      {/* Counter */}
                       <div className="text-xs font-semibold mb-3" style={{ color: GOLD }}>
                         {selectedProductKeys.size} / {previewProducts.length} produits sélectionnés · ≈ {totalSelectedLines} lignes
                       </div>
 
-                      {/* Product list with checkboxes */}
                       <div className="max-h-80 overflow-y-auto space-y-1 pr-1">
                         {filteredPreviewProducts.map(p => {
                           const checked = selectedProductKeys.has(p.name);
@@ -1251,7 +1551,7 @@ export default function ProfitAnalyzer() {
                     {/* Preview table */}
                     <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
                       <CardHeader className="pb-2 pt-3 px-4">
-                        <CardTitle className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Aperçu produits</CardTitle>
+                        <CardTitle className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Aperçu produits (données fusionnées)</CardTitle>
                       </CardHeader>
                       <CardContent className="p-0">
                         <div className="overflow-x-auto max-h-72">
@@ -1283,7 +1583,7 @@ export default function ProfitAnalyzer() {
               </div>
             )}
 
-            {/* STEP 2 — Cost entry */}
+            {/* ══ STEP 2 — Cost entry ══ */}
             {step === 2 && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -1324,8 +1624,7 @@ export default function ProfitAnalyzer() {
                   )}
                 </div>
 
-                {/* Per-product cost table */}
-                {/* Info banner — totals summary */}
+                {/* Info banner */}
                 {(() => {
                   const totalCmd = products.reduce((s, p) => s + p.rowCount, 0);
                   const totalUnits = products.reduce((s, p) => s + p.totalQty, 0);
@@ -1436,10 +1735,9 @@ export default function ProfitAnalyzer() {
               </div>
             )}
 
-            {/* STEP 3 — Report */}
+            {/* ══ STEP 3 — Report ══ */}
             {step === 3 && results.length > 0 && (
               <div className="space-y-5">
-                {/* Units banner */}
                 {(() => {
                   const totalUnits = results.reduce((s, r) => s + r.qty, 0);
                   const uniqueProds = results.length;
@@ -1644,7 +1942,7 @@ export default function ProfitAnalyzer() {
                   })}
                 </div>
 
-                {/* ── Save Report Panel ── */}
+                {/* Save Report Panel */}
                 <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
                   <p className="text-xs font-bold uppercase tracking-widest" style={{ color: GOLD }}>
                     <Save className="w-3.5 h-3.5 inline mr-1.5" />
@@ -1676,59 +1974,42 @@ export default function ProfitAnalyzer() {
                         onClick={saveReport}
                         disabled={savingReport}
                         data-testid="button-save-report"
-                        style={{ background: GOLD, color: '#0F1F3D' }}
-                        className="font-bold hover:opacity-90 whitespace-nowrap"
-                      >
-                        <Save className="w-4 h-4 mr-1.5" />
-                        {savingReport ? 'Enregistrement…' : currentReportId ? 'Mettre à jour' : 'Enregistrer'}
+                        className="gap-2 font-bold text-sm"
+                        style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #e8b56a 100%)`, color: NAVY }}>
+                        {savingReport ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                        {currentReportId ? 'Mettre à jour' : 'Enregistrer'}
                       </Button>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <Button variant="outline" onClick={() => setStep(2)}
-                    className="border-white/20 text-slate-300 hover:bg-white/8 hover:text-white"
-                    data-testid="button-back-step-2">
-                    ← Modifier les coûts
-                  </Button>
-                  <Button variant="outline" onClick={reset}
-                    className="border-amber-500/35 text-amber-400 hover:bg-amber-500/10"
-                    data-testid="button-new-analysis">
-                    <RotateCcw className="w-3.5 h-3.5 mr-1.5" /> Nouvelle analyse
-                  </Button>
-                </div>
               </div>
             )}
+
           </div>
         )}
+
       </div>
 
-      {/* ── Upgrade Dialog ── */}
+      {/* Upgrade dialog */}
       <Dialog open={upgradeOpen} onOpenChange={setUpgradeOpen}>
-        <DialogContent className="max-w-sm bg-white p-0 overflow-hidden rounded-3xl border-0">
-          <div className="px-6 pt-8 pb-6 text-center" style={{ background: `linear-gradient(135deg, ${NAVY} 0%, #1e3a6e 100%)` }}>
-            <div className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center" style={{ background: 'rgba(197,160,89,0.2)', border: '2px solid #C5A059' }}>
-              <Crown className="w-7 h-7" style={{ color: '#C5A059' }} />
-            </div>
-            <DialogTitle className="text-xl font-bold text-white mb-1">Fonctionnalité Pro</DialogTitle>
-            <DialogDescription className="text-white/60 text-sm">Passez au plan Pro pour analyser vos exports transporteur.</DialogDescription>
-          </div>
-          <div className="px-6 py-5 space-y-4">
-            <ul className="space-y-2 text-sm text-gray-600">
-              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Import CSV transporteurs (Digylog, Cathedis…)</li>
-              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Analyse détaillée CA, coûts, bénéfice</li>
-              <li className="flex items-center gap-2"><CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />Sauvegarde et historique des rapports</li>
-            </ul>
-            <Link
-              href="/billing"
-              onClick={() => setUpgradeOpen(false)}
-              className="flex items-center justify-center gap-2 w-full py-3.5 rounded-xl text-white font-bold text-sm hover:opacity-90 transition-opacity"
-              style={{ background: 'linear-gradient(135deg, #C5A059 0%, #d4b06a 100%)' }}
-            >
-              <Zap className="w-4 h-4" />
-              Passer au plan Pro
-            </Link>
+        <DialogContent className="border-white/10 bg-slate-900 text-white max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" style={{ color: GOLD }}>
+              <Crown className="w-5 h-5" /> Fonctionnalité Premium
+            </DialogTitle>
+            <DialogDescription className="text-slate-400 text-sm mt-2">
+              L'import CSV multi-fichiers est disponible dans les plans Pro et supérieurs.
+              Passez à la version supérieure pour accéder à cette fonctionnalité.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-3 mt-2">
+            <Button variant="outline" className="flex-1 border-white/20 text-slate-300"
+              onClick={() => setUpgradeOpen(false)}>Annuler</Button>
+            <Button className="flex-1 font-bold" style={{ background: `linear-gradient(135deg, ${GOLD} 0%, #e8b56a 100%)`, color: NAVY }}
+              onClick={() => setUpgradeOpen(false)}>
+              <Zap className="w-4 h-4 mr-1" /> Voir les plans
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
