@@ -10593,6 +10593,12 @@ function ensureHeaders(sheet) {
   // ── Diagnostic: distinct EC delivery_status codes in integration_logs ────────
   // Call this from the deployed app to get the full code list to send to EC support.
   // GET /api/admin/ec-status-codes
+  // Returns: EC code frequency from integration logs + a full dry-run of corrupted orders.
+  // Corruption patterns covered:
+  //   (A) status ILIKE 'EC %'              — raw code written into status (was "EC 3")
+  //   (B) status LIKE '%delivery_status%'  — old raw format in status
+  //   (C) status = 'expedition'            — invalid value from old map
+  //   (D) comment_status LIKE '%delivery_status%' — old "EC delivery_status=35" format
   app.get("/api/admin/ec-status-codes", requireSuperAdmin, async (_req, res) => {
     try {
       // Shared CTE: extract package_id + delivery_status from BOTH log formats
@@ -10602,11 +10608,11 @@ function ensureHeaders(sheet) {
         WITH extracted AS (
           SELECT
             COALESCE(
-              (regexp_match(payload, '"package_id"\s*:\s*"([^"]+)"'))[1],
-              (regexp_match(message, 'package_id=([^\s,]+)'))[1]
+              (regexp_match(payload, '"package_id"\\s*:\\s*"([^"]+)"'))[1],
+              (regexp_match(message, 'package_id=([^\\s,]+)'))[1]
             ) AS pkg_id,
             COALESCE(
-              (regexp_match(payload, '"delivery_status"\s*:\s*"?([0-9]+)"?'))[1],
+              (regexp_match(payload, '"delivery_status"\\s*:\\s*"?([0-9]+)"?'))[1],
               (regexp_match(message, 'status=([0-9]+)'))[1]
             ) AS ds_code
           FROM integration_logs
@@ -10642,17 +10648,36 @@ function ensureHeaders(sheet) {
         ORDER BY count DESC
       `);
 
-      // Stat 3: dry-run — count orders whose status or comment_status contains
-      //         the old ugly format "delivery_status=" so we know what to clean up
-      const cleanup = await db.execute(sql`
-        SELECT COUNT(*)::int AS affected
+      // Stat 3: FULL dry-run — count ALL corrupted orders across all patterns
+      const dryrun = await db.execute(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE status ILIKE 'EC %')                  AS ec_in_status,
+          COUNT(*) FILTER (WHERE status LIKE '%delivery_status%')       AS delivery_status_in_status,
+          COUNT(*) FILTER (WHERE status = 'expedition')                 AS expedition_in_status,
+          COUNT(*) FILTER (WHERE comment_status LIKE '%delivery_status%') AS old_format_in_comment,
+          COUNT(*) FILTER (
+            WHERE status ILIKE 'EC %'
+               OR status LIKE '%delivery_status%'
+               OR status = 'expedition'
+               OR comment_status LIKE '%delivery_status%'
+          )::int AS total_corrupted
         FROM orders
-        WHERE status        LIKE '%delivery_status%'
-           OR comment_status LIKE '%delivery_status%'
       `);
 
-      const t = (totals.rows?.[0] || {}) as any;
-      const c = (cleanup.rows?.[0] || {}) as any;
+      // Stat 4: 10 example corrupted rows
+      const examples = await db.execute(sql`
+        SELECT id, order_number, status, comment_status, track_number, store_id
+        FROM orders
+        WHERE status ILIKE 'EC %'
+           OR status LIKE '%delivery_status%'
+           OR status = 'expedition'
+           OR comment_status LIKE '%delivery_status%'
+        ORDER BY id DESC
+        LIMIT 10
+      `);
+
+      const t  = (totals.rows?.[0]  || {}) as any;
+      const dr = (dryrun.rows?.[0]  || {}) as any;
       res.json({
         summary: {
           total_events:         Number(t.total_events         ?? 0),
@@ -10660,8 +10685,13 @@ function ensureHeaders(sheet) {
           matched_to_order:     Number(t.matched_to_order     ?? 0),
         },
         cleanup_dry_run: {
-          orders_with_raw_delivery_status_string: Number(c.affected ?? 0),
-          note: 'Call POST /api/admin/ec-status-cleanup to fix these orders.',
+          ec_in_status:              Number(dr.ec_in_status              ?? 0),
+          delivery_status_in_status: Number(dr.delivery_status_in_status ?? 0),
+          expedition_in_status:      Number(dr.expedition_in_status      ?? 0),
+          old_format_in_comment:     Number(dr.old_format_in_comment     ?? 0),
+          total_corrupted:           Number(dr.total_corrupted           ?? 0),
+          note: 'Call POST /api/admin/ec-status-cleanup to fix all of these.',
+          examples: examples.rows,
         },
         codes: codes.rows,
       });
@@ -10670,55 +10700,124 @@ function ensureHeaders(sheet) {
     }
   });
 
-  // ── EC status cleanup — fix orders whose commentStatus = "EC delivery_status=XX" ──
-  // Rewrites to clean "EC XX" format and re-maps status through EC_NUMERIC_STATUS_MAP.
-  // Only touches commentStatus if it contains "delivery_status="; never changes
-  // order.status to a terminal value (delivered/refused) for unconfirmed codes.
-  app.post("/api/admin/ec-status-cleanup", requireSuperAdmin, async (_req, res) => {
+  // ── EC status cleanup (POST) ────────────────────────────────────────────────
+  // Fixes ALL known corruption patterns in orders.status and orders.comment_status.
+  //
+  // Pattern A: status ILIKE 'EC %' (e.g. "EC 3") — raw code was written to status
+  //   Fix: extract code, map through EC_NUMERIC_STATUS_MAP.
+  //        If mappedStatus is a valid non-'in_progress' value → set status = mappedStatus
+  //        Otherwise → set status = 'Attente De Ramassage' (has trackNumber) or 'in_progress'
+  //        Always set comment_status = 'EC <code>'
+  //
+  // Pattern B: status LIKE '%delivery_status%' — old ugly format in status
+  //   Fix: same as A after extracting the numeric code
+  //
+  // Pattern C: status = 'expedition' — invalid status from old map
+  //   Fix: set status = 'Attente De Ramassage' if has track_number, else 'in_progress'
+  //        Preserve existing comment_status unless it's also corrupted
+  //
+  // Pattern D: comment_status LIKE '%delivery_status%' — old "EC delivery_status=35" format
+  //   Fix: rewrite to 'EC <code>' — never touches order.status for unconfirmed codes
+  //
+  // SAFE GUARDS:
+  //   • Never writes 'delivered' or 'refused' from a numeric code unless it's in EC_NUMERIC_STATUS_MAP
+  //   • If dryRun=true (query param), returns counts + examples without writing anything
+  app.post("/api/admin/ec-status-cleanup", requireSuperAdmin, async (req: any, res: any) => {
+    const dryRun = req.query.dryRun === 'true' || req.query.dry_run === 'true';
     try {
       const badRows = await db.execute(sql`
-        SELECT id, status, comment_status
+        SELECT id, order_number, status, comment_status, track_number
         FROM orders
-        WHERE comment_status LIKE '%delivery_status=%'
-           OR status         LIKE '%delivery_status=%'
+        WHERE status ILIKE 'EC %'
+           OR status LIKE '%delivery_status%'
+           OR status = 'expedition'
+           OR comment_status LIKE '%delivery_status%'
+        ORDER BY id DESC
         LIMIT 500
       `);
 
+      const preview: any[] = [];
       let fixed = 0;
+
       for (const row of badRows.rows as any[]) {
-        const oldComment: string = row.comment_status || '';
-        const oldStatus:  string = row.status         || '';
+        const oldStatus:  string = row.status          || '';
+        const oldComment: string = row.comment_status  || '';
+        const hasTrack: boolean  = !!row.track_number;
 
-        // Extract the numeric code from "EC delivery_status=35"
-        const match = oldComment.match(/delivery_status=(\d+)/) ||
-                      oldStatus.match(/delivery_status=(\d+)/);
-        if (!match) continue;
+        let newStatus:  string | null = null;
+        let newComment: string | null = null;
 
-        const code   = match[1];
-        const mapped = mapEcDeliveryStatus(code);
-        const newComment = `EC ${code}`;   // clean format
-
-        // Only update order.status if the mapped value is a confirmed non-terminal status
-        const updateData: Record<string, string> = { comment_status: newComment };
-        if (mapped !== 'in_progress' && mapped !== oldStatus) {
-          updateData.status = mapped;
+        // ── Pattern A / B: raw EC code in status ──────────────────────────────
+        if (oldStatus.toUpperCase().startsWith('EC ') || oldStatus.includes('delivery_status')) {
+          // Extract numeric code: "EC 3" → "3" or "EC delivery_status=35" → "35"
+          const codeMatch = oldStatus.match(/(?:EC\s+)?(?:delivery_status=)?(\d+)/i);
+          const code = codeMatch?.[1] ?? null;
+          if (code) {
+            const mapped = mapEcDeliveryStatus(code);
+            newStatus  = (mapped !== 'in_progress') ? mapped
+                       : hasTrack ? 'Attente De Ramassage' : 'in_progress';
+            newComment = `EC ${code}`;
+          } else {
+            // Can't parse code — safest fallback
+            newStatus  = hasTrack ? 'Attente De Ramassage' : 'in_progress';
+            newComment = oldStatus; // preserve whatever was there as comment
+          }
         }
 
-        await db.execute(sql`
-          UPDATE orders
-          SET comment_status = ${newComment}
-            ${mapped !== 'in_progress' && mapped !== oldStatus
-              ? sql`, status = ${mapped}`
-              : sql``}
-          WHERE id = ${row.id}
-        `);
-        fixed++;
+        // ── Pattern C: 'expedition' in status ─────────────────────────────────
+        else if (oldStatus === 'expedition') {
+          newStatus  = hasTrack ? 'Attente De Ramassage' : 'in_progress';
+          // Don't touch comment_status unless it's also corrupted
+        }
+
+        // ── Pattern D: old format in comment_status only ───────────────────────
+        if (oldComment.includes('delivery_status')) {
+          const codeMatch = oldComment.match(/delivery_status=(\d+)/);
+          const code = codeMatch?.[1] ?? null;
+          if (code) {
+            newComment = `EC ${code}`;
+          }
+        }
+
+        if (newStatus === null && newComment === null) continue; // nothing to fix
+
+        preview.push({
+          id:          row.id,
+          order_number: row.order_number,
+          old_status:  oldStatus,
+          new_status:  newStatus ?? oldStatus,
+          old_comment: oldComment,
+          new_comment: newComment ?? oldComment,
+          track_number: row.track_number,
+        });
+
+        if (!dryRun) {
+          // Build minimal SQL — only set columns that actually changed
+          const setParts: string[] = [];
+          if (newStatus  !== null && newStatus  !== oldStatus)  setParts.push(`status = '${newStatus.replace(/'/g, "''")}'`);
+          if (newComment !== null && newComment !== oldComment) setParts.push(`comment_status = '${newComment.replace(/'/g, "''")}'`);
+          if (setParts.length > 0) {
+            await pool.query(`UPDATE orders SET ${setParts.join(', ')}, updated_at = NOW() WHERE id = $1`, [row.id]);
+            fixed++;
+          }
+        }
       }
 
-      res.json({
-        fixed,
-        message: `✅ ${fixed} order(s) nettoyé(s) — commentStatus "EC delivery_status=XX" → "EC XX"`,
-      });
+      if (dryRun) {
+        res.json({
+          dry_run: true,
+          total_would_fix: preview.length,
+          preview: preview.slice(0, 10),
+          note: 'Add ?dryRun=true to preview. POST without it to apply.',
+        });
+      } else {
+        res.json({
+          fixed,
+          total_found: preview.length,
+          message: `✅ ${fixed} commande(s) corrigée(s).`,
+          preview: preview.slice(0, 10),
+        });
+      }
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Erreur" });
     }

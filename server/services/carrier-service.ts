@@ -2441,8 +2441,10 @@ export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
   "3": "Ramassé",                // Ramassé par le livreur
   "4": "En transit",             // En transit vers le hub
   "5": "En cours de livraison",  // Sorti pour livraison
+  // ── Terminal code — confirmed from EC Bon de Ramassage PDF ───────────────
+  "19": "refused",               // Refusé (confirmed: CL-EXP-2607071011-164X32413813)
   //
-  // TODO: add terminal codes only once EC confirms meanings officially:
+  // TODO: add more terminal codes only once EC confirms officially:
   // "6": "delivered",            // Livré ?
   // "7": "refused",              // Échoué/Refusé ?
   // "8": "En Cours De Retour",   // Retour en cours ?
