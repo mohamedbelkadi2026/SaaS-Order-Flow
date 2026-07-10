@@ -9361,7 +9361,14 @@ function ensureHeaders(sheet) {
             // Case-sensitive trim match — EC package_ids are deterministic
             if (evt.packageId !== tn) continue;
             ecFoundEvent = true;
-            const mapped = mapEcNumericStatus(evt.code);
+            const rawMappedSync = mapEcNumericStatus(evt.code);
+            // Guard: only accept statuses that exist in ORDER_STATUSES
+            const VALID_EC_SYNC = new Set([
+              'in_progress', 'Attente De Ramassage', 'Ramassé', 'En transit',
+              'En cours de livraison', 'expédié', 'delivered', 'refused',
+              'En Cours De Retour', 'Retour Recu', 'retourné', 'Injoignable',
+            ]);
+            const mapped = VALID_EC_SYNC.has(rawMappedSync) ? rawMappedSync : 'in_progress';
             result = { status: mapped !== 'in_progress' ? mapped : null, rawStatus: evt.code };
             console.log(`[EC-SYNC-REPLAY] order=${order.id} tracking=${tn} delivery_status=${evt.code} → ${mapped}`);
             break;
@@ -9893,7 +9900,20 @@ function ensureHeaders(sheet) {
       // Map status via shared EC_NUMERIC_STATUS_MAP (same map as attach-tracking + Synchroniser).
       // 'in_progress' = code not yet confirmed — do not update the order status.
       if (deliveryStatus != null) {
-        const mappedStatus = mapEcNumericStatus(String(deliveryStatus));
+        const rawMapped = mapEcNumericStatus(String(deliveryStatus));
+
+        // Guard: only write values that exist in ORDER_STATUSES. This prevents
+        // invisible-order bugs if EC_NUMERIC_STATUS_MAP ever gets an invalid value.
+        // The set is derived from shared/order-status-sets.ts + status-badge.tsx.
+        const VALID_EC_WRITE_STATUSES = new Set([
+          'in_progress', 'Attente De Ramassage', 'Ramassé', 'En transit',
+          'En cours de livraison', 'expédié', 'delivered', 'refused',
+          'En Cours De Retour', 'Retour Recu', 'retourné', 'Injoignable',
+        ]);
+        const mappedStatus = VALID_EC_WRITE_STATUSES.has(rawMapped) ? rawMapped : 'in_progress';
+        if (!VALID_EC_WRITE_STATUSES.has(rawMapped)) {
+          console.warn(`[EC-WEBHOOK] mapEcNumericStatus("${deliveryStatus}") returned invalid status "${rawMapped}" — falling back to "in_progress"`);
+        }
 
         if (mappedStatus !== 'in_progress' && mappedStatus !== order.status) {
           // Confirmed mapped status — update order
@@ -10524,7 +10544,14 @@ function ensureHeaders(sheet) {
           }
           if (!pId || !code) continue;
           if (pId !== trackingNumber.trim()) continue;  // case-sensitive match
-          const mapped = mapEcNumericStatus(code);
+          const rawMappedAttach = mapEcNumericStatus(code);
+          // Guard: only accept statuses that exist in ORDER_STATUSES
+          const VALID_EC_ATTACH = new Set([
+            'in_progress', 'Attente De Ramassage', 'Ramassé', 'En transit',
+            'En cours de livraison', 'expédié', 'delivered', 'refused',
+            'En Cours De Retour', 'Retour Recu', 'retourné', 'Injoignable',
+          ]);
+          const mapped = VALID_EC_ATTACH.has(rawMappedAttach) ? rawMappedAttach : 'in_progress';
           console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} → ${mapped}`);
           attachCommentStatus = `EC ${code}`;   // raw code only — no "delivery_status=" prefix
           if (mapped !== 'in_progress') attachStatus = mapped;

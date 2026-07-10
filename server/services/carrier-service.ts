@@ -2429,24 +2429,29 @@ export const EC_STATUS_MAP: Record<string, string> = {
 //
 // Safe default for unknown codes: 'in_progress' (returned by mapEcNumericStatus).
 // CRITICAL: DO NOT add terminal codes (delivered / refused) without EC's official table.
+// All values in this map MUST be present in ORDER_STATUSES (status-badge.tsx).
+// Using any other string causes invisible orders and broken status filters.
+// Allowed safe transit set: 'Attente De Ramassage', 'Ramassé', 'En transit',
+//   'En cours de livraison', 'in_progress', 'expédié'.
+// Terminal codes ('delivered', 'refused') require official EC confirmation.
 export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
-  // ── Confirmed non-terminal transit codes ─────────────────────────────────
+  // ── Non-terminal transit codes (safe to apply) ────────────────────────────
   "1": "Attente De Ramassage",   // En attente de ramassage
   "2": "Attente De Ramassage",   // En cours de ramassage
-  "3": "expedition",              // Ramassé
-  "4": "expedition",              // En transit
-  "5": "expedition",              // En livraison
+  "3": "Ramassé",                // Ramassé par le livreur
+  "4": "En transit",             // En transit vers le hub
+  "5": "En cours de livraison",  // Sorti pour livraison
   //
-  // TODO: confirm terminal codes with EC before enabling:
+  // TODO: add terminal codes only once EC confirms meanings officially:
   // "6": "delivered",            // Livré ?
-  // "7": "refused",              // Échoué ?
+  // "7": "refused",              // Échoué/Refusé ?
   // "8": "En Cours De Retour",   // Retour en cours ?
   // "9": "Retour Recu",          // Retourné ?
   //
-  // ── Observed in production — awaiting EC official code table ─────────────
-  // Codes seen so far: 3 ✓, 5 ✓, 18, 30, 34, 35, 36, 49
-  // DO NOT map 18/30/34/35/36/49 until EC confirms their meanings.
-  // Every unknown code defaults to 'in_progress' (safe, non-terminal).
+  // ── Observed in production — awaiting official EC code table ─────────────
+  // Codes seen: 1 ✓, 3 ✓, 5 ✓, 17, 18, 30, 34, 35, 36, 49
+  // DO NOT map 17/18/30/34/35/36/49 until EC provides the official mapping.
+  // Unknown codes default to 'in_progress' (safe, non-terminal, valid status).
 };
 
 /** Maps an EC numeric delivery_status code to an internal platform status.
