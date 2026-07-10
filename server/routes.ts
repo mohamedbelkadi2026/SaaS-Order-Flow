@@ -4120,16 +4120,19 @@ export async function registerRoutes(
     }
 
     // ── Express Coursier (aliased "olivraison") status override ───────────
-    // Route through the dedicated EC status map instead of the generic
-    // Digylog-oriented fuzzy matcher above, so EC's own status vocabulary is
-    // mapped correctly regardless of which words Digylog's fuzzy rules use.
+    // ALWAYS route EC statuses through EC_NUMERIC_STATUS_MAP — NEVER through
+    // the generic Digylog fuzzy matcher. The fuzzy matcher is calibrated for
+    // Digylog status labels and will produce wrong/raw values for EC codes.
+    // mapEcNumericStatus() guarantees a valid ORDER_STATUS for any input
+    // (unknown codes → 'in_progress'). mapEcStatus() handles both numeric
+    // codes and French text labels, falling back to mapEcNumericStatus.
     if (carrierName === "expresscoursier") {
-      const ecMapped = mapEcStatus(rawStatus);
-      if (ecMapped) {
-        newStatus = ecMapped;
-      } else {
-        console.warn(`[EC-WEBHOOK-STATUS] Unmapped EC status "${rawText}" for order #${order.id} — falling back to fuzzy match result "${newStatus}". Add it to EC_STATUS_MAP once confirmed.`);
+      const ecMapped = mapEcStatus(rawStatus) ?? 'in_progress';
+      if (ecMapped !== newStatus) {
+        console.log(`[EC-WEBHOOK-STATUS] EC status override: fuzzy="${newStatus}" → ec_map="${ecMapped}" (raw="${rawText}")`);
       }
+      // Unconditionally replace whatever the fuzzy matcher produced
+      newStatus = ecMapped;
     }
 
     await storage.updateOrderStatus(order.id, newStatus);
@@ -10542,17 +10545,12 @@ function ensureHeaders(sheet) {
           }
           if (!pId || !code) continue;
           if (pId !== trackingNumber.trim()) continue;  // case-sensitive match
-          const rawMappedAttach = mapEcNumericStatus(code);
-          // Guard: only accept statuses that exist in ORDER_STATUSES
-          const VALID_EC_ATTACH = new Set([
-            'in_progress', 'Attente De Ramassage', 'Ramassé', 'En transit',
-            'En cours de livraison', 'expédié', 'delivered', 'refused',
-            'En Cours De Retour', 'Retour Recu', 'retourné', 'Injoignable',
-          ]);
-          const mapped = VALID_EC_ATTACH.has(rawMappedAttach) ? rawMappedAttach : 'in_progress';
-          console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} → ${mapped}`);
-          attachCommentStatus = `EC ${code}`;   // raw code only — no "delivery_status=" prefix
-          if (mapped !== 'in_progress') attachStatus = mapped;
+          // mapEcNumericStatus always returns a valid ORDER_STATUS (unknown → 'in_progress')
+          const mapped = mapEcNumericStatus(code);
+          const ecLabel = getEcStatusName(code); // French label, e.g. "Livré au client"
+          console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} (${ecLabel}) → ${mapped}`);
+          attachCommentStatus = ecLabel;          // French name, never "EC 35"
+          attachStatus = mapped;                  // always valid including 'in_progress'
           break;
         }
       }
