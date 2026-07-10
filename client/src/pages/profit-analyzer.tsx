@@ -386,6 +386,11 @@ export default function ProfitAnalyzer() {
   const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
   const [productSearchQuery, setProductSearchQuery]   = useState("");
 
+  /* ── Stock auto-fill ── */
+  const [stockAutoFilled, setStockAutoFilled]   = useState<Record<string, boolean>>({});
+  const [stockProducts, setStockProducts]       = useState<any[]>([]);
+  const [resetStockConfirm, setResetStockConfirm] = useState(false);
+
   useEffect(() => {
     if (previewProducts.length > 0 && selectedProductKeys.size === 0) {
       setSelectedProductKeys(new Set(previewProducts.map(p => p.name)));
@@ -728,6 +733,7 @@ export default function ProfitAnalyzer() {
   function goToStep2() {
     const filtered = previewProducts.filter(p => selectedProductKeys.has(p.name));
     setProducts(filtered.map(p => ({ ...p })));
+    setStockAutoFilled({});
     // Re-initialize campaign mappings with the new product list
     if (campaignMappings.length > 0) {
       setCampaignMappings(prev => initOrUpdateMappings(prev, adCampaigns, filtered));
@@ -737,6 +743,11 @@ export default function ProfitAnalyzer() {
 
   function updateProduct(idx: number, field: keyof ProductSummary, val: string) {
     setProducts(prev => { const n = [...prev]; (n[idx] as any)[field] = val; return n; });
+    // Clear the "auto (stock)" badge as soon as the user edits buyingCost manually
+    if (field === 'buyingCost') {
+      const name = products[idx]?.name;
+      if (name) setStockAutoFilled(prev => { const n = { ...prev }; delete n[name]; return n; });
+    }
   }
 
   function toNum(v: string) { const x = parseFloat(v); return isNaN(x) ? 0 : x; }
@@ -803,6 +814,36 @@ export default function ProfitAnalyzer() {
     finally { setSavingReport(false); }
   }
 
+  /** Attempt confident name/SKU match between an imported product name and a stock product.
+   *  Returns costPrice in DH (not centimes), or null if no confident match. */
+  function matchStockPrice(productName: string, stockProds: any[]): number | null {
+    const active = stockProds.filter(p => !p.archivedAt && (p.costPrice ?? 0) > 0);
+    // 1. Exact name
+    const exact = active.find(p => p.name === productName);
+    if (exact) return exact.costPrice / 100;
+    // 2. Normalized name (accent-insensitive, trim, collapse whitespace, lowercase)
+    const np = norm(productName).replace(/\s+/g, " ");
+    const normalized = active.find(p => norm(p.name || "").replace(/\s+/g, " ") === np);
+    if (normalized) return normalized.costPrice / 100;
+    // 3. SKU: check if any stock product's SKU equals the imported name (exact or normalized)
+    const bySku = active.find(p => p.sku && (p.sku === productName || norm(p.sku).replace(/\s+/g, " ") === np));
+    if (bySku) return bySku.costPrice / 100;
+    return null;  // no confident match — leave empty
+  }
+
+  function applyStockPrices(prods: any[], force = false) {
+    const autoMap: Record<string, boolean> = {};
+    setProducts(prev => prev.map(p => {
+      const price = matchStockPrice(p.name, prods);
+      if (price === null) return p;
+      const alreadyFilled = p.buyingCost && p.buyingCost !== "0" && p.buyingCost !== "";
+      if (alreadyFilled && !force) return p;
+      autoMap[p.name] = true;
+      return { ...p, buyingCost: String(price) };
+    }));
+    setStockAutoFilled(prev => force ? autoMap : { ...prev, ...autoMap });
+  }
+
   useEffect(() => {
     if (step !== 2 || products.length === 0) return;
     let cancelled = false;
@@ -811,17 +852,27 @@ export default function ProfitAnalyzer() {
         const resp = await fetch("/api/products", { credentials: "include" });
         if (!resp.ok || cancelled) return;
         const apiProds: any[] = await resp.json();
+        if (cancelled) return;
+
+        // ── Save stock products for the reset button ──
+        setStockProducts(apiProds ?? []);
+
+        // ── Priority 1: stock costPrice ──
+        applyStockPrices(apiProds ?? []);
+
+        // ── Priority 2 (fallback): profitDefaults from product settings ──
         const defaultsMap = new Map<string, any>();
         for (const p of apiProds || []) { const key = norm(p.name || ""); const d = (p.settings as any)?.profitDefaults; if (key && d) defaultsMap.set(key, d); }
-        if (!defaultsMap.size || cancelled) return;
-        setProducts(prev => prev.map(p => {
-          const d = defaultsMap.get(norm(p.name)); if (!d) return p;
-          return { ...p,
-            buyingCost:      (!p.buyingCost      || p.buyingCost      === "0") ? String(d.coutAchat      || "") : p.buyingCost,
-            packagingCost:   (!p.packagingCost   || p.packagingCost   === "0") ? String(d.coutEmballage  || "") : p.packagingCost,
-            confirmationFee: (!p.confirmationFee || p.confirmationFee === "0") ? String(d.coutConfirmation || "") : p.confirmationFee,
-          };
-        }));
+        if (defaultsMap.size && !cancelled) {
+          setProducts(prev => prev.map(p => {
+            const d = defaultsMap.get(norm(p.name)); if (!d) return p;
+            return { ...p,
+              buyingCost:      (!p.buyingCost      || p.buyingCost      === "0") ? String(d.coutAchat      || "") : p.buyingCost,
+              packagingCost:   (!p.packagingCost   || p.packagingCost   === "0") ? String(d.coutEmballage  || "") : p.packagingCost,
+              confirmationFee: (!p.confirmationFee || p.confirmationFee === "0") ? String(d.coutConfirmation || "") : p.confirmationFee,
+            };
+          }));
+        }
       } catch (err) { console.warn("[ProfitAnalyzer] Could not load product defaults:", err); }
     })();
     return () => { cancelled = true; };
@@ -1508,6 +1559,34 @@ export default function ProfitAnalyzer() {
                   );
                 })()}
 
+                {/* Stock auto-fill summary */}
+                {products.length > 0 && (
+                  <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/8 px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span className="text-xs text-emerald-300 font-semibold">
+                      📦 {Object.values(stockAutoFilled).filter(Boolean).length}/{products.length} produit{products.length > 1 ? "s" : ""} pré-{Object.values(stockAutoFilled).filter(Boolean).length > 1 ? "remplis" : "rempli"} depuis le stock
+                    </span>
+                    {stockProducts.length > 0 && (
+                      resetStockConfirm ? (
+                        <span className="flex items-center gap-2 text-[11px]">
+                          <span className="text-amber-300">Écraser les saisies manuelles ?</span>
+                          <button onClick={() => { applyStockPrices(stockProducts, true); setResetStockConfirm(false); }}
+                            className="px-2 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-amber-200 font-semibold hover:bg-amber-500/30" data-testid="button-reset-stock-confirm">
+                            Oui
+                          </button>
+                          <button onClick={() => setResetStockConfirm(false)} className="px-2 py-0.5 rounded bg-white/5 border border-white/15 text-slate-400 hover:text-white" data-testid="button-reset-stock-cancel">
+                            Non
+                          </button>
+                        </span>
+                      ) : (
+                        <button onClick={() => setResetStockConfirm(true)}
+                          className="text-[11px] text-slate-400 hover:text-emerald-300 underline underline-offset-2 transition-colors flex items-center gap-1" data-testid="button-reset-stock-prices">
+                          <RotateCcw className="w-2.5 h-2.5" /> Réinitialiser depuis le stock
+                        </button>
+                      )
+                    )}
+                  </div>
+                )}
+
                 {/* Per-product cost table */}
                 <Card className="border-white/10 bg-white/5 text-white overflow-hidden">
                   <CardContent className="p-0">
@@ -1533,7 +1612,17 @@ export default function ProfitAnalyzer() {
                               </TableCell>
                               <TableCell className="text-center py-2"><div className="text-amber-300 text-xs font-semibold">{p.rowCount} cmd</div>{p.totalQty !== p.rowCount && <div className="text-[10px] text-slate-400">{p.totalQty} u</div>}</TableCell>
                               <TableCell className="text-center text-emerald-300 text-xs py-2">{fmtMAD(p.totalRevenue)}</TableCell>
-                              <TableCell className="text-center py-2"><Input value={p.buyingCost} onChange={e => updateProduct(i, "buyingCost", e.target.value)} type="number" min="0" placeholder="ex: 45" className="h-7 w-24 text-xs bg-white/5 border-white/20 text-white mx-auto" data-testid={`input-buying-cost-${i}`} /></TableCell>
+                              <TableCell className="text-center py-2">
+                                <Input value={p.buyingCost} onChange={e => updateProduct(i, "buyingCost", e.target.value)} type="number" min="0" placeholder="ex: 45"
+                                  className={`h-7 w-24 text-xs bg-white/5 text-white mx-auto ${stockAutoFilled[p.name] ? "border-emerald-500/50" : "border-white/20"}`}
+                                  data-testid={`input-buying-cost-${i}`} />
+                                {stockAutoFilled[p.name] && (
+                                  <div className="text-[9px] text-emerald-400 mt-0.5 text-center font-semibold" data-testid={`badge-auto-stock-${i}`}>auto (stock)</div>
+                                )}
+                                {!stockAutoFilled[p.name] && !p.buyingCost && stockProducts.length > 0 && (
+                                  <div className="text-[9px] text-slate-500 mt-0.5 text-center" data-testid={`hint-not-in-stock-${i}`}>non trouvé dans le stock</div>
+                                )}
+                              </TableCell>
                               <TableCell className="text-center py-2"><Input value={p.packagingCost} onChange={e => updateProduct(i, "packagingCost", e.target.value)} type="number" min="0" placeholder="ex: 5" className="h-7 w-24 text-xs bg-white/5 border-white/20 text-white mx-auto" data-testid={`input-packaging-cost-${i}`} /></TableCell>
                               <TableCell className="text-center py-2"><Input value={p.confirmationFee} onChange={e => updateProduct(i, "confirmationFee", e.target.value)} type="number" min="0" placeholder="ex: 8" className="h-7 w-24 text-xs bg-white/5 border-white/20 text-white mx-auto" data-testid={`input-confirm-fee-${i}`} /></TableCell>
                               <TableCell className="text-center py-2">

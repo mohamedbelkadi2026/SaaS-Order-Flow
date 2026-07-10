@@ -1,0 +1,48 @@
+Enhance "Profit Analyzer Pro" (client/src/pages/profit-analyzer.tsx), Import CSV mode, 
+Step 2 "Saisie des coûts". Do NOT change any other feature of the platform.
+
+FEATURE — AUTO-FILL "Prix achat / unité" FROM STOCK:
+Today the user types the purchase price for every product by hand. The platform already 
+stores it: the `products` table has `costPrice` (integer, centimes), plus `name` and `sku`. 
+Pre-fill each product row's "Prix achat / unité" from that value, while keeping it editable.
+
+1) BACKEND: expose the store's products with their cost price. Reuse the existing products 
+   endpoint/hook if one already returns id, name, sku, costPrice (search for a products query 
+   in client/src/hooks). Only add a new endpoint if none fits. Must be scoped to the caller's 
+   store (requireAuth + tenant check) and exclude archived products.
+
+2) MATCHING (imported product name → stock product):
+   - Match on exact name first, then SKU, then a normalized comparison (trim, lowercase, 
+     collapse whitespace, accent-insensitive; handle Arabic names as-is).
+   - The imported rows are product NAMES from the carrier export (e.g. 
+     "240x240x135cm خيمة التخييم الأوتوماتيكية"), so an exact/normalized name match is the 
+     primary path.
+   - NEVER fuzzy-match aggressively — if no confident match, leave the field empty rather 
+     than filling a wrong price.
+
+3) UI BEHAVIOR:
+   - On entering Step 2, pre-fill "Prix achat / unité" with the matched product's costPrice 
+     converted from centimes to DH (costPrice / 100).
+   - The field stays fully EDITABLE. If the user edits it, keep their value (do not 
+     re-overwrite on re-render).
+   - Show a subtle indicator per row: a small badge/icon "auto (stock)" when the value came 
+     from the stock, which disappears once the user edits it manually.
+   - For products with NO match, leave the input empty with its existing placeholder, and 
+     show a discreet hint (e.g. "non trouvé dans le stock").
+   - Add a header summary: "X/Y produits pré-remplis depuis le stock" and a small 
+     "Réinitialiser depuis le stock" button that re-applies the stock values (with a confirm, 
+     since it discards manual edits).
+
+4) The profit computation in Step 3 "Rapport final" must use whatever value is in the field 
+   (auto or manually edited) — do NOT change the profit formula.
+
+CONSTRAINTS:
+ - Keep the 3-step flow and the "Par Produit (Live)" mode untouched.
+ - Do not modify the products table or stock values — this is read-only.
+ - Handle costPrice = 0 as "no price recorded": leave the field empty rather than filling 0.
+
+VERIFY: importing an export whose products exist in Stock pre-fills their purchase prices; 
+editing a pre-filled value persists through Step 3; an unmatched product stays empty and is 
+flagged; the summary count is accurate.
+
+Deploy to main.
