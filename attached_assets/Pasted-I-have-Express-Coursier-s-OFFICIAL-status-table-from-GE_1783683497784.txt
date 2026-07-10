@@ -1,0 +1,54 @@
+I have Express Coursier's OFFICIAL status table from GET https://expresscoursier.ma/v1.0/statuses 
+(public endpoint, no auth). Use it to fix EC status mapping definitively.
+
+OFFICIAL TABLE (id → name):
+0 Nouveau colis | 1 En attente de ramassage | 3 Livré au client | 4 Retourné vers agence casa
+5 le client ne répond pas | 8 Reçu par erreur | 9 Non reçu | 10 Hors zone | 13 Nouvelle info
+14 Téléphone Injoignable | 15 Ramassé {{city}} | 17 Reporté | 18 Colis prêt pour le retour
+19 Retour reçu par agence {{city}} | 20 Retour livré au client | 21 Retour en cours de la livraison
+27 Retour débarrasse | 28 Refusé | 29 Annulé | 30 Interessé | 32 Retour en stock
+33 Produit endommagé | 34 Recu sur agence {{city}} | 35 en cours de livraison | 36 Demande retour
+37 reportée indéfiniment | 38 Toujours injoignable | 39 en cours de preparation
+48 Retour reçu par {{city}} | 49 En Transport | 50 Retour prét pour l'expedition
+51 Retour expidié | 52 Perdu | 53 Colis archivé
+
+IMPLEMENT:
+1) Fetch this table from GET https://expresscoursier.ma/v1.0/statuses at server start and on 
+   "Synchroniser" (public, no token). Cache it. Fall back to a hardcoded copy of the table 
+   above if the fetch fails.
+
+2) Create EC_NUMERIC_STATUS_MAP (id → internal status), exactly:
+   delivered:        3
+   refused:          28, 29
+   retourné:         4, 18, 19, 20, 21, 27, 32, 36, 48, 50, 51, 52
+   Attente De Ramassage: 1
+   in_progress:      0, 5, 8, 9, 10, 13, 14, 15, 17, 30, 33, 34, 35, 37, 38, 39, 53
+   Any unknown/new id → in_progress (safe default, never delivered/refused).
+   Use the app's EXACT internal status strings (check how 'retourné'/'Retour Recu' is spelled 
+   in the codebase and reuse it verbatim — do not invent a new value).
+
+3) orders.status must ALWAYS be a valid internal status — NEVER "EC 3", "EC delivery_status=35", 
+   or "expedition". Put the EC status NAME from the table into commentStatus so Suivi shows the 
+   real French label (e.g. "en cours de livraison"). Strip the literal "{{city}}" placeholder 
+   from names before display (EC leaves it untemplated).
+
+4) Wire this map into BOTH the live EC webhook handler AND the "Synchroniser" replay (which 
+   re-reads stored webhook events by package_id from integration_logs).
+
+5) REMOVE the dead tracking pull: GET /v1.0/track/{apiKey}/{tracking} does not exist in EC's API 
+   (that's the 404). Delete/disable it and stop emitting per-order 404 error toasts.
+
+6) Idempotency: use the tuple (package_id, notif_type, delivery_status) to skip duplicate 
+   webhook deliveries. Respond HTTP 200 immediately, process afterwards. notif_type is 
+   case-sensitive: package_paid, package_unpaid, ChangeStatus (PascalCase) — match exactly.
+
+7) CLEANUP (dry-run first, --apply after I approve): find every order whose status contains 
+   "EC ", "delivery_status", or "expedition", plus every EC order still stuck on a stale status, 
+   and re-map it from the LATEST stored webhook event for its track_number using the new map. 
+   Report: how many rows, how many become delivered / refused / retourné / in_progress, and 10 
+   examples (order code → package_id → EC id → EC name → new internal status).
+
+VERIFY after apply: the count of delivered EC orders for July should match Express Coursier's own 
+dashboard (~26), not 1.
+
+Deploy to main, run the dry-run, and paste me the summary before applying.

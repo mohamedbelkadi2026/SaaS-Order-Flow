@@ -19,7 +19,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, probeExpressCoursierEndpoints } from "./services/carrier-service";
+import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -461,6 +461,10 @@ export async function registerRoutes(
 
   /* ── Health check — used by Railway (and load balancers) ─────── */
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+
+  // Fetch the EC official status table at startup (public endpoint, no auth).
+  // Runs fire-and-forget — server starts immediately even if this is slow/fails.
+  fetchEcStatusTable().catch(e => console.warn('[EC-STATUS-TABLE] Startup fetch failed:', e?.message));
 
   app.get(api.stats.get.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
@@ -9242,12 +9246,14 @@ function ensureHeaders(sheet) {
     let updated = 0;
     const errors: Array<{ orderId: number; message: string }> = [];
     const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
-    // Express Coursier doesn't appear to expose a public tracking-by-API
-    // endpoint (every candidate URL 404s). EC statuses already arrive via
-    // webhook, so a 404 here isn't a real per-order failure — count it
-    // separately instead of spamming the UI with N "404" error toasts.
-    let ecNoTrackApiCount = 0;  // EC: tracking number with zero matching events in logs
-    let ecEventNoChange   = 0;  // EC: event found but status already current or code unknown
+    // EC has no tracking pull API — status arrives via webhook, replayed from integration_logs.
+    // Refresh the EC status name table before each sync so commentStatus uses current labels.
+    if (p === 'expresscoursier') {
+      fetchEcStatusTable().catch(e => console.warn('[EC-STATUS-TABLE] Pre-sync fetch failed:', e?.message));
+    }
+
+    let ecNoTrackApiCount = 0;  // EC: tracking number with zero matching webhook events in logs
+    let ecEventNoChange   = 0;  // EC: event found but mapped to in_progress (non-terminal)
 
     // Helper: extract { packageId, code } from either JSON payload (new logs)
     // or plain-text message (old logs: "EC webhook: package_id=X status=30 type=…").
@@ -9381,10 +9387,11 @@ function ensureHeaders(sheet) {
         }
 
         if (result.error) {
-          const isEcNoTrackApi = p === 'expresscoursier' && /HTTP 404/.test(result.error);
+          // EC has no tracking pull API — stub returns 'EC_NO_TRACKING_API', count silently
+          const isEcNoTrackApi = p === 'expresscoursier' &&
+            (result.error === 'EC_NO_TRACKING_API' || /HTTP 404/.test(result.error));
           if (isEcNoTrackApi) {
             ecNoTrackApiCount++;
-            console.warn(`[EC-SYNC-NO-TRACK-API] order=${order.id} tracking=${order.trackNumber}: ${result.error}`);
           } else {
             errors.push({ orderId: order.id, message: `tracking=${order.trackNumber}: ${result.error}` });
             if (p === 'expresscoursier') {
@@ -9392,17 +9399,23 @@ function ensureHeaders(sheet) {
             }
           }
         } else {
-          if (result.status && result.status !== order.status) {
+          // Terminal status protection: never downgrade delivered/refused/retourné
+          const SYNC_TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+          const syncWouldDowngrade = SYNC_TERMINAL.has(order.status || '') && !SYNC_TERMINAL.has(result.status || '');
+          if (result.status && result.status !== order.status && !syncWouldDowngrade) {
             await storage.updateOrderStatus(order.id, result.status);
-            // For EC replay: also store the raw code in commentStatus ("EC 35")
+            // EC replay: store the French status name in commentStatus (not raw code)
             if (p === 'expresscoursier' && result.rawStatus) {
-              await storage.updateOrder(order.id, { commentStatus: `EC ${result.rawStatus}` });
+              const ecName = getEcStatusName(result.rawStatus);
+              await storage.updateOrder(order.id, { commentStatus: ecName });
             }
             await storage.createOrderFollowUpLog({
               orderId:   order.id,
               agentId:   null,
               agentName: `${p} Sync`,
-              note:      `Statut synchronisé: EC ${result.rawStatus ?? '—'} → ${result.status}`,
+              note:      p === 'expresscoursier'
+                ? `EC ${result.rawStatus} (${getEcStatusName(result.rawStatus ?? '')}) → ${result.status}`
+                : `Statut synchronisé: ${result.rawStatus ?? '—'} → ${result.status}`,
             });
             details.push({
               orderId: order.id,
@@ -9460,29 +9473,13 @@ function ensureHeaders(sheet) {
    * TODO: remove this route once the real EC tracking endpoint is confirmed
    * and wired into ecTrackUrlTemplate.
    */
-  app.get("/api/expresscoursier/track-probe", requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const tracking = String(req.query.tracking || "").trim();
-      if (!tracking) {
-        return res.status(400).json({ message: "?tracking=<trackingNumber> requis" });
-      }
-      const storeId = req.user!.storeId!;
-      const [account] = await db
-        .select()
-        .from(carrierAccounts)
-        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "expresscoursier")));
-      if (!account) {
-        return res.status(404).json({ message: "Aucun compte Express Coursier configuré pour cette boutique." });
-      }
-      console.log(`[EC-PROBE] Starting endpoint discovery for tracking=${tracking} store=${storeId}`);
-      const attempts = await probeExpressCoursierEndpoints(tracking, account.apiKey, storeId);
-      const winner = attempts.find(a => a.looksLikeJson) || null;
-      console.log(`[EC-PROBE] Done — ${attempts.length} attempts, winner=${winner ? winner.maskedUrl : "NONE (all 404/non-JSON)"}`);
-      return res.json({ tracking, storeId, attempts, winner });
-    } catch (e: any) {
-      console.error("[EC-PROBE] error:", e?.message || e);
-      return res.status(500).json({ message: "Erreur probe EC", error: e?.message || String(e) });
-    }
+  // EC track-probe endpoint DISABLED — EC confirmed they have no tracking pull API.
+  // All status updates come via the ChangeStatus webhook. This probe served its purpose.
+  app.get("/api/expresscoursier/track-probe", requireAuth, requireAdmin, (_req, res) => {
+    res.status(410).json({
+      message: "EC tracking pull API does not exist — confirmed from official EC API docs. " +
+               "Status updates arrive exclusively via webhook (POST /api/webhooks/shipping/expresscoursier/:storeId).",
+    });
   });
 
   /**
@@ -9832,153 +9829,154 @@ function ensureHeaders(sheet) {
   });
 
   // ── Express Coursier webhook receiver ──────────────────────────────────────
-  // URL format: POST /api/webhooks/shipping/expresscoursier/:storeId
-  // Payload: { package_id, delivery_status (int), event_time, notif_type }
-  // notif_type: "ChangeStatus" | "package_paid" | "package_unpaid"
-  //
-  // Uses shared mapEcNumericStatus() from carrier-service.ts so the same
-  // EC_NUMERIC_STATUS_MAP governs attach-tracking, Synchroniser, and live webhook.
-  // Terminal codes (delivered/refused) are TODO — see EC_NUMERIC_STATUS_MAP.
-
+  // URL: POST /api/webhooks/shipping/expresscoursier/:storeId
+  // Official payload: { package_id: string, delivery_status: int, event_time: string, notif_type: string }
+  // notif_type values (case-sensitive): "ChangeStatus" | "package_paid" | "package_unpaid"
+  // EC does NOT sign webhooks. EC has NO tracking pull API — all status info via webhook.
+  // Idempotency: skip duplicate (package_id, notif_type, delivery_status) tuples within 24h.
   app.post("/api/webhooks/shipping/expresscoursier/:storeId", async (req, res) => {
-    try {
-      const storeId = Number(req.params.storeId);
-      if (!storeId) return res.status(400).json({ message: "Invalid storeId" });
+    // Respond HTTP 200 immediately — EC may retry on timeout
+    res.json({ success: true });
 
+    const storeId = Number(req.params.storeId);
+    if (!storeId) return;
+
+    const body = req.body || {};
+    const packageId: string = String(body.package_id || body.tracking_number || body.id || body.code || '').trim();
+    const deliveryStatus: number | undefined = body.delivery_status != null ? Number(body.delivery_status) : undefined;
+    const notifType: string = String(body.notif_type || '').trim();
+    const ecWebhookPayload = JSON.stringify(body).slice(0, 1000);
+
+    console.log(`[EC-WEBHOOK] store=${storeId} package_id=${packageId} delivery_status=${deliveryStatus} notif_type=${notifType}`);
+
+    // Process asynchronously after response has been sent
+    try {
       // Guard: ignore if no active Express Coursier account for this store
       const ecAccounts = await storage.getCarrierAccounts(storeId, "expresscoursier");
       if (!ecAccounts || ecAccounts.length === 0) {
-        console.log(`[EC-WEBHOOK] store=${storeId} ignored — no active Express Coursier account`);
-        return res.json({ success: true, ignored: true, reason: "no_active_account" });
+        console.log(`[EC-WEBHOOK] store=${storeId} ignored — no active EC account`);
+        return;
       }
-
-      const body = req.body || {};
-      console.log(`[EC-WEBHOOK] store=${storeId} payload=${JSON.stringify(body)}`);
-
-      // Extract tracking (package_id) and status (delivery_status)
-      const packageId: string | undefined =
-        body.package_id || body.tracking_number || body.id || body.code;
-      const deliveryStatus: number | undefined =
-        body.delivery_status != null ? Number(body.delivery_status) : undefined;
-      const notifType: string = body.notif_type || "";
 
       if (!packageId) {
-        console.warn(`[EC-WEBHOOK] Missing package_id — ignoring`);
-        return res.json({ success: true, matched: false });
+        console.warn(`[EC-WEBHOOK] store=${storeId} missing package_id — ignoring`);
+        return;
       }
 
-      // Log every distinct delivery_status code seen — grep [EC-WEBHOOK-CODE] in prod
-      // to get the full code list to send to EC support for confirmation.
-      console.log(`[EC-WEBHOOK-CODE] store=${storeId} package_id=${packageId} delivery_status=${deliveryStatus} notif_type=${notifType}`);
+      // Idempotency: check if we already processed this exact tuple within 24h
+      if (deliveryStatus != null && notifType) {
+        const dupeRows = await db
+          .select({ id: integrationLogs.id })
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            eq(integrationLogs.provider, 'expresscoursier'),
+            eq(integrationLogs.action, 'webhook_received'),
+            sql`${integrationLogs.payload} LIKE ${'%"package_id":"' + packageId + '"%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"delivery_status":' + deliveryStatus + '%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"notif_type":"' + notifType + '"%'}`,
+            sql`${integrationLogs.createdAt} > NOW() - INTERVAL '24 hours'`,
+          ))
+          .limit(1);
+        if (dupeRows.length > 0) {
+          console.log(`[EC-WEBHOOK] Duplicate ignored: package_id=${packageId} delivery_status=${deliveryStatus} notif_type=${notifType}`);
+          return;
+        }
+      }
 
-      // Store full payload so retro-apply (attach-tracking) and Synchroniser can
-      // replay this event even for orders that didn't exist yet at webhook time.
-      const ecWebhookPayload = JSON.stringify(body).slice(0, 1000);
+      // Persist the event so retro-apply (attach-tracking) and Synchroniser can replay it
       await storage.createIntegrationLog({
         storeId,
         integrationId: null,
         provider: "expresscoursier",
         action: "webhook_received",
-        status: "success",   // must be "success" — frontend renders anything else as "Échec"
+        status: "success",
         message: `EC webhook: package_id=${packageId} status=${deliveryStatus} type=${notifType}`,
         payload: ecWebhookPayload,
       });
 
-      // Find order by tracking number
-      const order = await storage.getOrderByTrackingNumber(storeId, String(packageId));
+      // Find the order by tracking number
+      const order = await storage.getOrderByTrackingNumber(storeId, packageId);
       if (!order) {
-        console.warn(`[EC-WEBHOOK] No order found for package_id=${packageId} store=${storeId}`);
+        console.warn(`[EC-WEBHOOK] No order for package_id=${packageId} store=${storeId}`);
         await storage.createIntegrationLog({
           storeId, integrationId: null, provider: "expresscoursier",
           action: "webhook_no_match", status: "success",
-          message: `⚠️ EC webhook: package_id=${packageId} — aucune commande trouvée (statut EC ${deliveryStatus})`,
+          message: `⚠️ EC webhook: package_id=${packageId} — aucune commande trouvée (EC ${deliveryStatus})`,
           payload: ecWebhookPayload,
         });
-        return res.json({ success: true, matched: false });
+        return;
       }
 
-      // Map status via shared EC_NUMERIC_STATUS_MAP (same map as attach-tracking + Synchroniser).
-      // 'in_progress' = code not yet confirmed — do not update the order status.
-      if (deliveryStatus != null) {
-        const rawMapped = mapEcNumericStatus(String(deliveryStatus));
+      // Only process delivery_status (skip package_paid / package_unpaid without a status)
+      if (deliveryStatus == null) {
+        console.log(`[EC-WEBHOOK] notif_type=${notifType} — no delivery_status, skipped for #${order.orderNumber}`);
+        return;
+      }
 
-        // Guard: only write values that exist in ORDER_STATUSES. This prevents
-        // invisible-order bugs if EC_NUMERIC_STATUS_MAP ever gets an invalid value.
-        // The set is derived from shared/order-status-sets.ts + status-badge.tsx.
-        const VALID_EC_WRITE_STATUSES = new Set([
-          'in_progress', 'Attente De Ramassage', 'Ramassé', 'En transit',
-          'En cours de livraison', 'expédié', 'delivered', 'refused',
-          'En Cours De Retour', 'Retour Recu', 'retourné', 'Injoignable',
-        ]);
-        const mappedStatus = VALID_EC_WRITE_STATUSES.has(rawMapped) ? rawMapped : 'in_progress';
-        if (!VALID_EC_WRITE_STATUSES.has(rawMapped)) {
-          console.warn(`[EC-WEBHOOK] mapEcNumericStatus("${deliveryStatus}") returned invalid status "${rawMapped}" — falling back to "in_progress"`);
-        }
+      const mappedStatus = mapEcNumericStatus(String(deliveryStatus));
+      const statusName   = getEcStatusName(deliveryStatus); // French label (e.g. "Livré au client")
 
-        if (mappedStatus !== 'in_progress' && mappedStatus !== order.status) {
-          // Confirmed mapped status — update order
-          try {
-            await storage.updateOrderStatus(order.id, mappedStatus);
-            await storage.updateOrder(order.id, { commentStatus: `EC ${deliveryStatus}` });
-            await storage.createOrderFollowUpLog({
-              orderId:   order.id,
-              agentId:   null,
-              agentName: "Express Coursier Webhook",
-              note:      `Statut mis à jour via webhook: EC ${deliveryStatus} → ${mappedStatus}`,
-            });
-            await storage.createIntegrationLog({
-              storeId, integrationId: null, provider: "expresscoursier",
-              action: "status_update", status: "success",
-              message: `✅ Commande #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC ${deliveryStatus})`,
-              payload: ecWebhookPayload,
-            });
-            console.log(`[EC-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mappedStatus}`);
-            broadcastToStore(storeId, "order_updated", { orderId: order.id, status: mappedStatus, commentStatus: `EC ${deliveryStatus}` });
-          } catch (updateErr: any) {
-            console.error(`[EC-WEBHOOK] updateOrderStatus failed for order #${order.id}:`, updateErr?.message, updateErr?.stack);
-            await storage.createIntegrationLog({
-              storeId, integrationId: null, provider: "expresscoursier",
-              action: "status_update", status: "fail",
-              message: `❌ Échec mise à jour commande #${order.orderNumber}: ${updateErr?.message}`,
-              payload: ecWebhookPayload,
-            });
-          }
-        } else if (mappedStatus === 'in_progress') {
-          // Code received but not yet in EC_NUMERIC_STATUS_MAP — log for diagnostics, don't update
+      // Terminal status protection: never downgrade delivered/refused/retourné to non-terminal
+      const TERMINAL_SET = new Set(['delivered', 'refused', 'retourné']);
+      const wouldDowngrade = TERMINAL_SET.has(order.status || '') && !TERMINAL_SET.has(mappedStatus);
+      if (wouldDowngrade) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "expresscoursier",
+          action: "webhook_no_change", status: "success",
+          message: `ℹ️ EC ${deliveryStatus} (${statusName}) — #${order.orderNumber} déjà terminée en "${order.status}", non rétrogradée`,
+          payload: ecWebhookPayload,
+        });
+        return;
+      }
+
+      if (mappedStatus !== order.status) {
+        try {
+          await storage.updateOrderStatus(order.id, mappedStatus);
+          await storage.updateOrder(order.id, { commentStatus: statusName });
+          await storage.createOrderFollowUpLog({
+            orderId:   order.id,
+            agentId:   null,
+            agentName: "Express Coursier Webhook",
+            note:      `EC ${deliveryStatus} (${statusName}) → ${mappedStatus}`,
+          });
           await storage.createIntegrationLog({
             storeId, integrationId: null, provider: "expresscoursier",
-            action: "webhook_unconfirmed", status: "success",
-            message: `ℹ️ EC ${deliveryStatus} → code non confirmé, commande #${order.orderNumber} inchangée`,
+            action: "status_update", status: "success",
+            message: `✅ #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC ${deliveryStatus}: ${statusName})`,
             payload: ecWebhookPayload,
           });
-          console.log(`[EC-WEBHOOK-UNCONFIRMED] delivery_status=${deliveryStatus} not in EC_NUMERIC_STATUS_MAP — order #${order.orderNumber} unchanged`);
-        } else {
-          // Status already matches — no update needed
+          console.log(`[EC-WEBHOOK] #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC ${deliveryStatus}: "${statusName}")`);
+          broadcastToStore(storeId, "order_updated", { orderId: order.id, status: mappedStatus, commentStatus: statusName });
+        } catch (updateErr: any) {
+          console.error(`[EC-WEBHOOK] updateOrderStatus failed #${order.id}:`, updateErr?.message, updateErr?.stack);
           await storage.createIntegrationLog({
             storeId, integrationId: null, provider: "expresscoursier",
-            action: "webhook_no_change", status: "success",
-            message: `ℹ️ Commande #${order.orderNumber} déjà en ${order.status} (EC ${deliveryStatus})`,
+            action: "status_update", status: "fail",
+            message: `❌ Échec mise à jour #${order.orderNumber}: ${updateErr?.message}`,
             payload: ecWebhookPayload,
           });
         }
+      } else {
+        // Status unchanged — still update commentStatus to the latest French label
+        await storage.updateOrder(order.id, { commentStatus: statusName });
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "expresscoursier",
+          action: "webhook_no_change", status: "success",
+          message: `ℹ️ #${order.orderNumber} déjà en ${order.status} (EC ${deliveryStatus}: ${statusName})`,
+          payload: ecWebhookPayload,
+        });
       }
-
-      res.json({ success: true, matched: true, orderId: order.id });
     } catch (err: any) {
       console.error("[EC-WEBHOOK] Error:", err?.message, err?.stack);
-      // Write a fail log so the Journal shows the real error
       try {
-        const storeId = Number(req.params.storeId);
-        if (storeId) {
-          await storage.createIntegrationLog({
-            storeId, integrationId: null, provider: "expresscoursier",
-            action: "webhook_error", status: "fail",
-            message: `❌ Exception EC webhook: ${err?.message || "Erreur inconnue"}`,
-            payload: JSON.stringify({ stack: (err?.stack || '').slice(0, 500), body: req.body }).slice(0, 1000),
-          });
-        }
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: "expresscoursier",
+          action: "webhook_error", status: "fail",
+          message: `❌ Exception EC webhook: ${err?.message || "Erreur inconnue"}`,
+          payload: JSON.stringify({ stack: (err?.stack || '').slice(0, 500), body: req.body }).slice(0, 1000),
+        });
       } catch { /* ignore secondary log failure */ }
-      res.status(500).json({ message: "Webhook processing failed", error: err?.message });
     }
   });
 
@@ -10756,11 +10754,11 @@ function ensureHeaders(sheet) {
             const mapped = mapEcDeliveryStatus(code);
             newStatus  = (mapped !== 'in_progress') ? mapped
                        : hasTrack ? 'Attente De Ramassage' : 'in_progress';
-            newComment = `EC ${code}`;
+            newComment = getEcStatusName(code); // French label e.g. "Livré au client"
           } else {
             // Can't parse code — safest fallback
             newStatus  = hasTrack ? 'Attente De Ramassage' : 'in_progress';
-            newComment = oldStatus; // preserve whatever was there as comment
+            newComment = oldStatus;
           }
         }
 
@@ -10775,7 +10773,7 @@ function ensureHeaders(sheet) {
           const codeMatch = oldComment.match(/delivery_status=(\d+)/);
           const code = codeMatch?.[1] ?? null;
           if (code) {
-            newComment = `EC ${code}`;
+            newComment = getEcStatusName(code); // French label instead of "EC delivery_status=35"
           }
         }
 

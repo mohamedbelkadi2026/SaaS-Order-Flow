@@ -2414,57 +2414,142 @@ export const EC_STATUS_MAP: Record<string, string> = {
   "in_transit": "in_progress",
 };
 
-// ── EC numeric status codes ────────────────────────────────────────────────────
-// Express Coursier sends numeric codes (e.g. 34, 35, 36) in some webhook payloads
-// via the ChangeStatus event. Fill in the real meanings once API docs / live traffic
-// confirms which code means which state.
-//
-// TODO: obtain the full EC numeric status table and fill this map.
-// Example template (unconfirmed):
-//   "1":  "Attente De Ramassage"
-//   "5":  "in_progress"
-//   "34": "delivered"
-//   "35": "refused"
-//   "36": "retourné"
-//
-// Safe default for unknown codes: 'in_progress' (returned by mapEcNumericStatus).
-// CRITICAL: DO NOT add terminal codes (delivered / refused) without EC's official table.
-// All values in this map MUST be present in ORDER_STATUSES (status-badge.tsx).
-// Using any other string causes invisible orders and broken status filters.
-// Allowed safe transit set: 'Attente De Ramassage', 'Ramassé', 'En transit',
-//   'En cours de livraison', 'in_progress', 'expédié'.
-// Terminal codes ('delivered', 'refused') require official EC confirmation.
+// ── EC official status table ──────────────────────────────────────────────────
+// Source: GET https://expresscoursier.ma/v1.0/statuses (public, no auth)
+// Verified live on 2026-07-10. {{city}} placeholders are stripped before display.
+export const EC_STATUS_NAMES: Record<string, string> = {
+  "0":  "Nouveau colis",
+  "1":  "En attente de ramassage",
+  "3":  "Livré au client",
+  "4":  "Retourné vers agence casa",
+  "5":  "le client ne répond pas",
+  "8":  "Reçu par erreur",
+  "9":  "Non reçu",
+  "10": "Hors zone",
+  "13": "Nouvelle info",
+  "14": "Téléphone Injoignable",
+  "15": "Ramassé",
+  "17": "Reporté",
+  "18": "Colis prêt pour le retour",
+  "19": "Retour reçu par agence",
+  "20": "Retour livré au client",
+  "21": "Retour en cours de la livraison",
+  "27": "Retour débarrasse",
+  "28": "Refusé",
+  "29": "Annulé",
+  "30": "Interessé",
+  "32": "Retour en stock",
+  "33": "Produit endommagé",
+  "34": "Recu sur agence",
+  "35": "en cours de livraison",
+  "36": "Demande retour",
+  "37": "reportée indéfiniment",
+  "38": "Toujours injoignable",
+  "39": "en cours de preparation",
+  "48": "Retour reçu par",
+  "49": "En Transport",
+  "50": "Retour prêt pour l'expedition",
+  "51": "Retour expidié",
+  "52": "Perdu",
+  "53": "Colis archivé",
+};
+
+// Live cache — refreshed by fetchEcStatusTable() at startup and before each Synchroniser run
+let _ecStatusNamesLive: Record<string, string> = { ...EC_STATUS_NAMES };
+
+/** Return the French label for an EC delivery_status ID.
+ *  Strips {{city}} placeholders left untemplated by EC. Falls back to hardcoded table. */
+export function getEcStatusName(id: string | number): string {
+  const key = String(id ?? '').trim();
+  const raw = _ecStatusNamesLive[key] ?? EC_STATUS_NAMES[key];
+  if (!raw) return `EC ${key}`;
+  return raw.replace(/\s*\{\{[^}]+\}\}/g, '').trim();
+}
+
+/** Fetch the official EC status table from the public /v1.0/statuses endpoint.
+ *  Updates the in-process live cache. Falls back silently on network error. */
+export async function fetchEcStatusTable(): Promise<Record<string, string>> {
+  try {
+    const r = await axios.get("https://expresscoursier.ma/v1.0/statuses", {
+      timeout: 10000,
+      validateStatus: () => true,
+    });
+    if (r.status === 200 && Array.isArray(r.data)) {
+      const fresh: Record<string, string> = {};
+      for (const item of r.data) {
+        if (item.id != null && item.name) {
+          fresh[String(item.id)] = String(item.name).replace(/\s*\{\{[^}]+\}\}/g, '').trim();
+        }
+      }
+      if (Object.keys(fresh).length > 0) {
+        _ecStatusNamesLive = fresh;
+        console.log(`[EC-STATUS-TABLE] Refreshed ${Object.keys(fresh).length} statuses from /v1.0/statuses`);
+        console.log('[EC-STATUS-TABLE]', JSON.stringify(fresh));
+        return fresh;
+      }
+    }
+    console.warn(`[EC-STATUS-TABLE] Unexpected response (HTTP ${r.status}) — using hardcoded fallback`);
+  } catch (e: any) {
+    console.warn(`[EC-STATUS-TABLE] Fetch failed: ${e?.message} — using hardcoded fallback`);
+  }
+  return { ...EC_STATUS_NAMES };
+}
+
+// ── EC numeric → internal status map ─────────────────────────────────────────
+// Official mapping from GET /v1.0/statuses + user confirmation on 2026-07-10.
+// Values must ALWAYS be valid entries in ORDER_STATUSES (status-badge.tsx).
+// Unknown/new codes → 'in_progress' (safe non-terminal fallback, never delivered/refused).
 export const EC_NUMERIC_STATUS_MAP: Record<string, string> = {
-  // ── Non-terminal transit codes (safe to apply) ────────────────────────────
-  "1": "Attente De Ramassage",   // En attente de ramassage
-  "2": "Attente De Ramassage",   // En cours de ramassage
-  "3": "Ramassé",                // Ramassé par le livreur
-  "4": "En transit",             // En transit vers le hub
-  "5": "En cours de livraison",  // Sorti pour livraison
-  // ── Terminal code — confirmed from EC Bon de Ramassage PDF ───────────────
-  "19": "refused",               // Refusé (confirmed: CL-EXP-2607071011-164X32413813)
-  //
-  // TODO: add more terminal codes only once EC confirms officially:
-  // "6": "delivered",            // Livré ?
-  // "7": "refused",              // Échoué/Refusé ?
-  // "8": "En Cours De Retour",   // Retour en cours ?
-  // "9": "Retour Recu",          // Retourné ?
-  //
-  // ── Observed in production — awaiting official EC code table ─────────────
-  // Codes seen: 1 ✓, 3 ✓, 5 ✓, 17, 18, 30, 34, 35, 36, 49
-  // DO NOT map 17/18/30/34/35/36/49 until EC provides the official mapping.
-  // Unknown codes default to 'in_progress' (safe, non-terminal, valid status).
+  // ── Delivered ─────────────────────────────────────────────────────────────
+  "3":  "delivered",            // Livré au client
+  // ── Refused ───────────────────────────────────────────────────────────────
+  "28": "refused",              // Refusé
+  "29": "refused",              // Annulé
+  // ── Retourné (all return stages) ──────────────────────────────────────────
+  "4":  "retourné",             // Retourné vers agence casa
+  "18": "retourné",             // Colis prêt pour le retour
+  "19": "retourné",             // Retour reçu par agence
+  "20": "retourné",             // Retour livré au client
+  "21": "retourné",             // Retour en cours de la livraison
+  "27": "retourné",             // Retour débarrasse
+  "32": "retourné",             // Retour en stock
+  "36": "retourné",             // Demande retour
+  "48": "retourné",             // Retour reçu par (city)
+  "50": "retourné",             // Retour prêt pour l'expedition
+  "51": "retourné",             // Retour expidié
+  "52": "retourné",             // Perdu
+  // ── Attente de ramassage ───────────────────────────────────────────────────
+  "1":  "Attente De Ramassage", // En attente de ramassage
+  // ── In progress (non-terminal transit stages) ─────────────────────────────
+  "0":  "in_progress",          // Nouveau colis
+  "5":  "in_progress",          // le client ne répond pas
+  "8":  "in_progress",          // Reçu par erreur
+  "9":  "in_progress",          // Non reçu
+  "10": "in_progress",          // Hors zone
+  "13": "in_progress",          // Nouvelle info
+  "14": "in_progress",          // Téléphone Injoignable
+  "15": "in_progress",          // Ramassé (city)
+  "17": "in_progress",          // Reporté
+  "30": "in_progress",          // Interessé
+  "33": "in_progress",          // Produit endommagé
+  "34": "in_progress",          // Recu sur agence (city)
+  "35": "in_progress",          // en cours de livraison
+  "37": "in_progress",          // reportée indéfiniment
+  "38": "in_progress",          // Toujours injoignable
+  "39": "in_progress",          // en cours de preparation
+  "49": "in_progress",          // En Transport
+  "53": "in_progress",          // Colis archivé
 };
 
 /** Maps an EC numeric delivery_status code to an internal platform status.
- *  Returns 'in_progress' for any unrecognised code — NEVER auto-marks delivered/refused. */
+ *  Returns 'in_progress' for any unrecognised code — NEVER guesses delivered/refused. */
 export function mapEcNumericStatus(code: string | number): string {
   const key = String(code ?? '').trim();
   if (!key) return 'in_progress';
   return EC_NUMERIC_STATUS_MAP[key] ?? 'in_progress';
 }
 
-/** Preferred alias — identical to mapEcNumericStatus. Use in new code. */
+/** Alias — identical to mapEcNumericStatus. */
 export const mapEcDeliveryStatus = mapEcNumericStatus;
 
 export function mapEcStatus(raw: string): string | null {
@@ -2486,14 +2571,9 @@ function maskApiKey(apiKey: string): string {
   return `****${trimmed.slice(-4)}`;
 }
 
-// Default EC track endpoint — UNVERIFIED. Confirmed to 404 on real package_ids
-// (e.g. "CL-EXP-2607041205-164X55103261"). Do NOT trust this URL as correct.
-// TODO(EC-DOCS): replace with the real Express Coursier tracking endpoint once
-// their API docs are provided. Once confirmed, either update this default or
-// set `settings.ecTrackUrlTemplate` on the carrier account (see below) so no
-// code change is needed for existing stores.
-const EC_TRACK_URL_TEMPLATE_DEFAULT =
-  "https://expresscoursier.ma/v1.0/track/{apiKey}/{tracking}";
+// Express Coursier has NO tracking pull endpoint — confirmed from official API docs.
+// All status updates come exclusively via the ChangeStatus webhook.
+// The old /v1.0/track/{apiKey}/{tracking} URL does not exist (confirmed 404).
 
 // ─── Express Coursier endpoint discovery probe (one-off diagnostic) ──────────
 // We don't have EC's tracking API docs and the assumed endpoint 404s on real
@@ -2604,75 +2684,13 @@ export async function probeExpressCoursierEndpoints(
   return attempts;
 }
 
+// EC has NO tracking pull endpoint — confirmed from official API docs (2026-07-10).
+// All status updates arrive exclusively via ChangeStatus webhook.
+// This stub prevents 404 errors and accidental network calls to the dead endpoint.
 export async function trackExpressCoursierShipment(
-  trackingNumber: string,
-  apiKey: string,
-  account?: any
+  _trackingNumber: string,
+  _apiKey: string,
+  _account?: any
 ): Promise<{ status: string | null; rawStatus: string | null; rawResponse: any; fee: number | null; error?: string }> {
-  // Endpoint is configurable per carrier account via settings.ecTrackUrlTemplate
-  // (placeholders: {apiKey}, {tracking}, {storeId}). Falls back to the current
-  // (unverified) default when not set.
-  const template: string =
-    (account?.settings as any)?.ecTrackUrlTemplate || EC_TRACK_URL_TEMPLATE_DEFAULT;
-  const url = template
-    .replace("{apiKey}", encodeURIComponent(apiKey.trim()))
-    .replace("{tracking}", encodeURIComponent(trackingNumber))
-    .replace("{storeId}", encodeURIComponent(String(account?.storeId ?? "")));
-
-  // Always log the exact request URL (API key masked) so the correct endpoint
-  // can be verified by hand against Express Coursier's real docs.
-  const maskedUrl = url.replace(encodeURIComponent(apiKey.trim()), maskApiKey(apiKey));
-  console.log(`[EC-TRACK-REQUEST] tracking=${trackingNumber} url=${maskedUrl}`);
-
-  try {
-    const r = await axios.get(url, { timeout: 15000, validateStatus: () => true });
-    const body = r.data;
-    const contentType = String(r.headers?.["content-type"] || "");
-    const isJson = contentType.includes("application/json") || (typeof body === "object" && body !== null);
-
-    // Non-JSON response (HTML error page, etc.) or HTTP 4xx/5xx — the endpoint
-    // is very likely wrong. Surface a clear, structured error instead of
-    // silently returning a null status.
-    if (!isJson || r.status >= 400) {
-      const rawSnippet = (typeof body === "string" ? body : JSON.stringify(body)).slice(0, 300);
-      console.log(`[EC-TRACK-FULL] ${trackingNumber}: HTTP ${r.status} non-JSON/error response — raw="${rawSnippet}"`);
-      return {
-        status: null,
-        rawStatus: null,
-        rawResponse: rawSnippet,
-        fee: null,
-        error: `EC track endpoint returned HTTP ${r.status} / non-JSON — endpoint likely wrong`,
-      };
-    }
-
-    // Full raw response — used to identify fee field name
-    console.log(`[EC-TRACK-FULL] ${trackingNumber}: ${JSON.stringify(body)}`);
-
-    const rawStatus =
-      body?.status ??
-      body?.data?.status ??
-      body?.tracking?.status ??
-      null;
-
-    // Fee extraction — probe all common field names in all known response shapes
-    const d = body?.data ?? body;
-    const t = body?.tracking ?? d;
-    const feeRaw =
-      d?.delivery_price ?? d?.deliveryPrice ?? d?.price ?? d?.fee ??
-      d?.frais ?? d?.montant ?? d?.tarif ?? d?.shipping_price ??
-      t?.delivery_price ?? t?.price ?? null;
-    const feeNum = Number(feeRaw);
-    const fee = Number.isFinite(feeNum) && feeNum > 0 ? feeNum : null;
-
-    return {
-      status: rawStatus ? mapEcStatus(rawStatus) : null,
-      rawStatus,
-      rawResponse: body,
-      fee,
-      error: r.status >= 400 ? `HTTP ${r.status}` : undefined,
-    };
-  } catch (e: any) {
-    console.log(`[EC-TRACK-FULL] ${trackingNumber}: request failed — ${e?.message || e}`);
-    return { status: null, rawStatus: null, rawResponse: null, fee: null, error: e?.message || 'EC track error' };
-  }
+  return { status: null, rawStatus: null, rawResponse: null, fee: null, error: 'EC_NO_TRACKING_API' };
 }
