@@ -9872,7 +9872,7 @@ function ensureHeaders(sheet) {
         integrationId: null,
         provider: "expresscoursier",
         action: "webhook_received",
-        status: "ok",
+        status: "success",   // must be "success" — frontend renders anything else as "Échec"
         message: `EC webhook: package_id=${packageId} status=${deliveryStatus} type=${notifType}`,
         payload: ecWebhookPayload,
       });
@@ -9883,41 +9883,82 @@ function ensureHeaders(sheet) {
         console.warn(`[EC-WEBHOOK] No order found for package_id=${packageId} store=${storeId}`);
         await storage.createIntegrationLog({
           storeId, integrationId: null, provider: "expresscoursier",
-          action: "webhook_no_match", status: "ok",
-          message: `EC webhook: package_id=${packageId} not matched to any order`,
+          action: "webhook_no_match", status: "success",
+          message: `⚠️ EC webhook: package_id=${packageId} — aucune commande trouvée (statut EC ${deliveryStatus})`,
           payload: ecWebhookPayload,
         });
         return res.json({ success: true, matched: false });
       }
 
       // Map status via shared EC_NUMERIC_STATUS_MAP (same map as attach-tracking + Synchroniser).
-      // 'in_progress' means the code is not yet confirmed — do not update the order status.
+      // 'in_progress' = code not yet confirmed — do not update the order status.
       if (deliveryStatus != null) {
         const mappedStatus = mapEcNumericStatus(String(deliveryStatus));
-        if (mappedStatus && mappedStatus !== 'in_progress' && mappedStatus !== order.status) {
-          await storage.updateOrderStatus(order.id, mappedStatus);
-          await storage.createOrderFollowUpLog({
-            orderId:   order.id,
-            agentId:   null,
-            agentName: "Express Coursier Webhook",
-            note:      `Statut mis à jour via webhook: EC status ${deliveryStatus} → ${mappedStatus}`,
-          });
+
+        if (mappedStatus !== 'in_progress' && mappedStatus !== order.status) {
+          // Confirmed mapped status — update order
+          try {
+            await storage.updateOrderStatus(order.id, mappedStatus);
+            await storage.updateOrder(order.id, { commentStatus: `EC ${deliveryStatus}` });
+            await storage.createOrderFollowUpLog({
+              orderId:   order.id,
+              agentId:   null,
+              agentName: "Express Coursier Webhook",
+              note:      `Statut mis à jour via webhook: EC ${deliveryStatus} → ${mappedStatus}`,
+            });
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: "expresscoursier",
+              action: "status_update", status: "success",
+              message: `✅ Commande #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC ${deliveryStatus})`,
+              payload: ecWebhookPayload,
+            });
+            console.log(`[EC-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mappedStatus}`);
+            broadcastToStore(storeId, "order_updated", { orderId: order.id, status: mappedStatus, commentStatus: `EC ${deliveryStatus}` });
+          } catch (updateErr: any) {
+            console.error(`[EC-WEBHOOK] updateOrderStatus failed for order #${order.id}:`, updateErr?.message, updateErr?.stack);
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: "expresscoursier",
+              action: "status_update", status: "fail",
+              message: `❌ Échec mise à jour commande #${order.orderNumber}: ${updateErr?.message}`,
+              payload: ecWebhookPayload,
+            });
+          }
+        } else if (mappedStatus === 'in_progress') {
+          // Code received but not yet in EC_NUMERIC_STATUS_MAP — log for diagnostics, don't update
           await storage.createIntegrationLog({
             storeId, integrationId: null, provider: "expresscoursier",
-            action: "status_update", status: "ok",
-            message: `Commande #${order.orderNumber}: ${order.status} → ${mappedStatus} (EC status ${deliveryStatus})`,
+            action: "webhook_unconfirmed", status: "success",
+            message: `ℹ️ EC ${deliveryStatus} → code non confirmé, commande #${order.orderNumber} inchangée`,
             payload: ecWebhookPayload,
           });
-          console.log(`[EC-WEBHOOK] Order #${order.orderNumber} status: ${order.status} → ${mappedStatus}`);
-        } else if (mappedStatus === 'in_progress') {
-          console.log(`[EC-WEBHOOK-UNCONFIRMED] delivery_status=${deliveryStatus} not yet in EC_NUMERIC_STATUS_MAP — order #${order.orderNumber} unchanged`);
+          console.log(`[EC-WEBHOOK-UNCONFIRMED] delivery_status=${deliveryStatus} not in EC_NUMERIC_STATUS_MAP — order #${order.orderNumber} unchanged`);
+        } else {
+          // Status already matches — no update needed
+          await storage.createIntegrationLog({
+            storeId, integrationId: null, provider: "expresscoursier",
+            action: "webhook_no_change", status: "success",
+            message: `ℹ️ Commande #${order.orderNumber} déjà en ${order.status} (EC ${deliveryStatus})`,
+            payload: ecWebhookPayload,
+          });
         }
       }
 
       res.json({ success: true, matched: true, orderId: order.id });
     } catch (err: any) {
-      console.error("[EC-WEBHOOK] Error:", err?.message);
-      res.status(500).json({ message: "Webhook processing failed" });
+      console.error("[EC-WEBHOOK] Error:", err?.message, err?.stack);
+      // Write a fail log so the Journal shows the real error
+      try {
+        const storeId = Number(req.params.storeId);
+        if (storeId) {
+          await storage.createIntegrationLog({
+            storeId, integrationId: null, provider: "expresscoursier",
+            action: "webhook_error", status: "fail",
+            message: `❌ Exception EC webhook: ${err?.message || "Erreur inconnue"}`,
+            payload: JSON.stringify({ stack: (err?.stack || '').slice(0, 500), body: req.body }).slice(0, 1000),
+          });
+        }
+      } catch { /* ignore secondary log failure */ }
+      res.status(500).json({ message: "Webhook processing failed", error: err?.message });
     }
   });
 
