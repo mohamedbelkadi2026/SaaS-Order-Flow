@@ -1,0 +1,48 @@
+The Express Coursier statuses now display with correct names (Livré au client, en cours de 
+livraison, Reporté, Recu sur agence, le client ne répond pas, Refusé, etc.), but they ALL 
+render with the same blue badge color. Give each status its own color. Do NOT change any 
+other feature or any other carrier's status colors.
+
+CONTEXT: the status badge is rendered in the orders/Suivi list (client/src/pages/orders.tsx 
+and/or the shared status-badge component client/src/components/ui/status-badge.tsx). The EC 
+status name is what's shown (from commentStatus / the internal status). EC's official 
+/v1.0/statuses table already provides a `color` hex per status id.
+
+IMPLEMENT — color by MEANING (semantic), consistent with how existing statuses are colored:
+Map each EC status to a semantic color category and reuse the app's existing badge color 
+tokens/classes (do not hardcode random hex if the app has a palette). Suggested mapping:
+  - GREEN  (delivered / success):        "Livré au client", "Retour livré au client"
+  - RED    (refused / cancelled / lost):  "Refusé", "Annulé", "Perdu", "Produit endommagé"
+  - ORANGE/AMBER (returns in progress):   any "Retour ..." (Retour reçu, Colis prêt pour le 
+                                          retour, Demande retour, Retour en cours, Retour en 
+                                          stock, Retour prét/expidié, débarrasse)
+  - BLUE   (in transit / active):         "en cours de livraison", "En Transport", 
+                                          "Recu sur agence", "Ramassé", "en cours de 
+                                          preparation"
+  - PURPLE (postponed / on hold):         "Reporté", "reportée indéfiniment"
+  - GRAY   (pending / new / neutral):     "Nouveau colis", "En attente de ramassage", 
+                                          "Interessé", "Colis archivé", "Nouvelle info", 
+                                          "Reçu par erreur", "Non reçu", "En stock"
+  - YELLOW (unreachable / attention):     "le client ne répond pas", "Téléphone 
+                                          Injoignable", "Toujours injoignable", "Hors zone"
+Match on the internal status first; for EC-specific labels shown from commentStatus, match on 
+the normalized EC status NAME (accent/case-insensitive, ignore the "{{city}}" placeholder).
+
+ALTERNATIVE (if simpler and you prefer exact fidelity): use the `color` hex that EC returns 
+in /v1.0/statuses (already fetched/cached) directly as the badge background, computing a 
+readable text color (dark/light) from the hex for contrast. Either approach is fine — pick 
+one, keep it consistent, and make unknown/unmapped statuses fall back to the current gray/
+neutral badge.
+
+CONSTRAINTS:
+ - Only affects how EC statuses are colored in the list badges. Do NOT change other carriers 
+   (Digylog, Ozon...) or non-EC statuses.
+ - Ensure text stays readable on every badge color (sufficient contrast) in both light and 
+   dark mode.
+ - No layout/spacing changes — only the color.
+
+VERIFY: in the same list, "Livré au client" is green, "Refusé" red, "en cours de livraison" 
+blue, "Reporté" purple, "le client ne répond pas" yellow, "En attente de ramassage" gray — 
+each visually distinct.
+
+Deploy to main.

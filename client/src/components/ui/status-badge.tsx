@@ -107,6 +107,53 @@ export const ORDER_STATUSES = [
 
   // Special
   { value: 'Non envoyée',                       label: 'Non envoyée',                   color: C.slate        },
+
+  // ── Express Coursier (EC) carrier statuses ──────────────────────────────────
+  // GREEN — delivered / success
+  { value: 'Livré au client',                   label: 'Livré au client',               color: C.emerald      },
+  { value: 'Retour livré au client',            label: 'Retour livré client',           color: C.emerald      },
+
+  // RED — refused / cancelled / lost / damaged
+  { value: 'Refusé',                            label: 'Refusé',                        color: C.rose         },
+  { value: 'Annulé',                            label: 'Annulé',                        color: C.rose         },
+  { value: 'Perdu',                             label: 'Perdu',                         color: C.rose         },
+  { value: 'Produit endommagé',                 label: 'Produit endommagé',             color: C.rose         },
+
+  // ORANGE/AMBER — returns in progress
+  { value: 'Retourné vers agence casa',         label: 'Retourné vers agence',          color: C.orange       },
+  { value: 'Colis prêt pour le retour',         label: 'Prêt pour retour',              color: C.orange       },
+  { value: 'Retour reçu par agence',            label: 'Retour reçu agence',            color: C.orange       },
+  { value: 'Retour en cours de la livraison',   label: 'Retour en livraison',           color: C.orange       },
+  { value: 'Retour débarrasse',                 label: 'Retour débarrasse',             color: C.orange       },
+  { value: 'Retour en stock',                   label: 'Retour en stock',               color: C.orange       },
+  { value: 'Retour reçu par',                   label: 'Retour reçu par',               color: C.orange       },
+  { value: "Retour prét pour l'expedition",     label: 'Prêt pour expédition',          color: C.orange       },
+  { value: 'Retour expidié',                    label: 'Retour expédié',                color: C.orange       },
+  { value: 'Demande retour',                    label: 'Demande retour',                color: C.orange       },
+
+  // BLUE — in transit / active / at hub
+  { value: 'en cours de livraison',             label: 'En cours de livraison',         color: C.sky          },
+  { value: 'En Transport',                      label: 'En Transport',                  color: C.blue         },
+  { value: 'Recu sur agence',                   label: 'Recu sur agence',               color: C.blue         },
+  { value: 'en cours de preparation',           label: 'En cours de préparation',       color: C.cyan         },
+
+  // PURPLE — postponed / on hold
+  { value: 'reportée indéfiniment',             label: 'Reportée indéfiniment',         color: C.violet       },
+
+  // YELLOW/AMBER — unreachable / attention needed
+  { value: 'le client ne répond pas',           label: 'Client ne répond pas',          color: C.amber        },
+  { value: 'Téléphone Injoignable',             label: 'Tél. Injoignable',              color: C.amber        },
+  { value: 'Toujours injoignable',              label: 'Toujours injoignable',          color: C.amber        },
+  { value: 'Hors zone',                         label: 'Hors zone',                     color: C.amber        },
+
+  // GRAY — pending / new / neutral
+  { value: 'Nouveau colis',                     label: 'Nouveau colis',                 color: C.slate        },
+  { value: 'En attente de ramassage',           label: 'En attente ramassage',          color: C.slate        },
+  { value: 'Interessé',                         label: 'Intéressé',                     color: C.slate        },
+  { value: 'Colis archivé',                     label: 'Colis archivé',                 color: C.slate        },
+  { value: 'Nouvelle info',                     label: 'Nouvelle info',                 color: C.slate        },
+  { value: 'Reçu par erreur',                   label: 'Reçu par erreur',               color: C.slate        },
+  { value: 'Non reçu',                          label: 'Non reçu',                      color: C.slate        },
 ] as const;
 
 export const SUIVI_STATUSES = [
