@@ -13,7 +13,7 @@ import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative } from "@sh
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
-import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate } from "./services/push-service";
+import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -1181,6 +1181,23 @@ export async function registerRoutes(
       res.json({ ok: true });
     } catch (err: any) {
       res.status(400).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/push/test", requireAuth, async (req, res) => {
+    try {
+      const result = await sendTestPushToUser(req.user!.id);
+      console.log(`[Push/test] API result for user=${req.user!.id}:`, JSON.stringify(result));
+      if (result.subsFound === 0) {
+        return res.status(400).json({
+          message: "Aucun abonnement push trouvé pour cet appareil. Cliquez d'abord sur « Activer ».",
+          ...result,
+        });
+      }
+      res.json({ ok: result.sent > 0, ...result });
+    } catch (err: any) {
+      console.error("[Push/test] error:", err);
+      res.status(500).json({ message: err.message });
     }
   });
 

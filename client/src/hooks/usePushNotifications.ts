@@ -14,6 +14,7 @@ export function usePushNotifications() {
   const [permission, setPermission] = useState<NotificationPermission>("default");
   const [subscribed, setSubscribed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [isSupported, setIsSupported] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [isPWA, setIsPWA] = useState(false);
@@ -30,7 +31,7 @@ export function usePushNotifications() {
       "Notification" in window &&
       "serviceWorker" in navigator &&
       "PushManager" in window &&
-      (!ios || pwa); // iOS push only works in installed PWA
+      (!ios || pwa);
     setIsSupported(supported);
     if ("Notification" in window) setPermission(Notification.permission);
     if (supported) {
@@ -44,32 +45,54 @@ export function usePushNotifications() {
   const subscribe = async (): Promise<boolean> => {
     if (!isSupported) return false;
     setLoading(true);
+    setError(null);
     try {
       const perm = await Notification.requestPermission();
       setPermission(perm);
-      if (perm !== "granted") return false;
+      if (perm !== "granted") {
+        setError("Permission refusée. Activez les notifications dans les paramètres du navigateur.");
+        return false;
+      }
 
       const res = await fetch("/api/push/vapid-public-key");
       const { publicKey } = await res.json();
-      if (!publicKey) return false;
+      if (!publicKey) {
+        setError("Configuration serveur manquante (VAPID). Contactez l'administrateur.");
+        return false;
+      }
 
-      const reg = await navigator.serviceWorker.ready;
-      const pushSub = await reg.pushManager.subscribe({
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Service worker timeout — rechargez la page et réessayez.")), 10_000)
+        ),
+      ]) as ServiceWorkerRegistration;
+
+      let pushSub = await reg.pushManager.getSubscription();
+      if (pushSub) {
+        // Existing browser subscription — unsubscribe first so we get a fresh one
+        // with the current VAPID key (avoids key-mismatch errors after key rotation)
+        await pushSub.unsubscribe();
+      }
+
+      pushSub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(publicKey),
       });
 
       const json = pushSub.toJSON() as any;
       await apiRequest("POST", "/api/push/subscribe", {
-        endpoint: json.endpoint,
-        p256dh: json.keys.p256dh,
-        auth: json.keys.auth,
+        endpoint:  json.endpoint,
+        p256dh:    json.keys.p256dh,
+        auth:      json.keys.auth,
         userAgent: navigator.userAgent.slice(0, 500),
       });
 
       setSubscribed(true);
       return true;
-    } catch (e) {
+    } catch (e: any) {
+      const msg = e?.message || "Erreur lors de l'inscription aux notifications.";
+      setError(msg);
       console.error("[Push] subscribe error:", e);
       return false;
     } finally {
@@ -79,6 +102,7 @@ export function usePushNotifications() {
 
   const unsubscribe = async (): Promise<void> => {
     setLoading(true);
+    setError(null);
     try {
       const reg = await navigator.serviceWorker.ready;
       const pushSub = await reg.pushManager.getSubscription();
@@ -87,12 +111,13 @@ export function usePushNotifications() {
         await pushSub.unsubscribe();
       }
       setSubscribed(false);
-    } catch (e) {
+    } catch (e: any) {
+      setError(e?.message || "Erreur lors de la désinscription.");
       console.error("[Push] unsubscribe error:", e);
     } finally {
       setLoading(false);
     }
   };
 
-  return { permission, subscribed, loading, isSupported, isIOS, isPWA, subscribe, unsubscribe };
+  return { permission, subscribed, loading, error, isSupported, isIOS, isPWA, subscribe, unsubscribe };
 }

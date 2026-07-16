@@ -311,7 +311,12 @@ export default function Profile() {
   };
 
   // ── Push notifications ────────────────────────────────────────────────────────
-  const { permission, subscribed, loading: pushLoading, isSupported, isIOS, isPWA, subscribe, unsubscribe } = usePushNotifications();
+  const { permission, subscribed, loading: pushLoading, error: pushError, isSupported, isIOS, isPWA, subscribe, unsubscribe } = usePushNotifications();
+  const sendTestPush = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/push/test", {}),
+    onSuccess: (data: any) => toast({ title: "Notification de test envoyée ✅", description: `${data.sent ?? 1} appareil(s) notifié(s)` }),
+    onError: (e: any) => toast({ title: "Erreur test push", description: e.message, variant: "destructive" }),
+  });
   const [notifSettings, setNotifSettings] = useState<{
     newOrder: boolean; statusUpdate: boolean; importantOnly: boolean;
   }>({
@@ -942,6 +947,7 @@ export default function Profile() {
                         </p>
                       )}
 
+                      {/* Subscribe / unsubscribe row */}
                       <div className="flex items-center justify-between pt-1">
                         <div>
                           <p className="text-sm font-medium">Recevoir des notifications</p>
@@ -953,13 +959,50 @@ export default function Profile() {
                           data-testid="button-toggle-push"
                           size="sm"
                           disabled={pushLoading || permission === "denied"}
-                          onClick={() => subscribed ? unsubscribe() : subscribe()}
+                          onClick={async () => {
+                            if (subscribed) {
+                              await unsubscribe();
+                            } else {
+                              const ok = await subscribe();
+                              if (!ok) {
+                                toast({
+                                  title: "Erreur d'inscription",
+                                  description: pushError || "Impossible d'activer les notifications.",
+                                  variant: "destructive",
+                                });
+                              }
+                            }
+                          }}
                           variant={subscribed ? "outline" : "default"}
                           style={!subscribed ? { backgroundColor: GOLD, color: "white" } : {}}
                         >
                           {pushLoading ? "..." : subscribed ? "Désactiver" : "Activer"}
                         </Button>
                       </div>
+
+                      {/* Inline error display */}
+                      {pushError && (
+                        <p className="text-xs text-destructive bg-destructive/10 rounded-md px-3 py-2">
+                          {pushError}
+                        </p>
+                      )}
+
+                      {/* Test notification button — only shown when subscribed */}
+                      {subscribed && (
+                        <div className="pt-1 border-t border-border">
+                          <Button
+                            data-testid="button-test-push"
+                            size="sm"
+                            variant="outline"
+                            disabled={sendTestPush.isPending}
+                            onClick={() => sendTestPush.mutate()}
+                            className="w-full"
+                          >
+                            <Bell className="w-3.5 h-3.5 mr-2" />
+                            {sendTestPush.isPending ? "Envoi..." : "Envoyer une notification de test"}
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </Card>
