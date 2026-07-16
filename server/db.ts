@@ -688,6 +688,33 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] ad_campaign_product_map table ensured ✅');
 
+    // ── users.notif_settings — web push notification preferences (JSONB) ─────────
+    // CRITICAL: must exist before any SELECT on the users table or login breaks.
+    await client.query(`
+      ALTER TABLE public.users
+        ADD COLUMN IF NOT EXISTS notif_settings JSONB;
+    `);
+    console.log('[Migration] users.notif_settings ensured ✅');
+
+    // ── push_subscriptions — per-device Web Push endpoint registry ────────────
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+        store_id   INTEGER NOT NULL REFERENCES public.stores(id) ON DELETE CASCADE,
+        endpoint   TEXT NOT NULL,
+        p256dh     TEXT NOT NULL,
+        auth       TEXT NOT NULL,
+        user_agent TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_unique
+        ON public.push_subscriptions (endpoint);
+    `);
+    console.log('[Migration] push_subscriptions table ensured ✅');
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);
