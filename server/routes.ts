@@ -1187,18 +1187,16 @@ export async function registerRoutes(
   app.post("/api/push/test", requireAuth, async (req, res) => {
     try {
       const result = await sendTestPushToUser(req.user!.id);
-      console.log(`[Push/test] API result for user=${req.user!.id}:`, JSON.stringify(result));
       const sent = result.results.filter((r) => r.error === null).length;
-      res.status(result.subsFound === 0 ? 400 : 200).json({
+      console.log(`[Push/test] user=${req.user!.id} subsFound=${result.subsFound} sent=${sent}`);
+      // Always 200 — client reads per-subscription results to determine success/failure
+      res.json({
         ok: sent > 0,
         subscriptions: result.subsFound,
         sent,
         vapidPublicKeyPrefix: result.vapidPublicKeyPrefix,
         vapidSubject: result.vapidSubject,
         results: result.results,
-        ...(result.subsFound === 0 && {
-          message: "Aucun abonnement push trouvé pour cet appareil. Cliquez d'abord sur « Activer ».",
-        }),
       });
     } catch (err: any) {
       console.error("[Push/test] error:", err);

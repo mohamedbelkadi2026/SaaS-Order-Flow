@@ -172,6 +172,7 @@ export interface TestSubResult {
 /**
  * Send a test push to all subscriptions of a user.
  * Returns detailed per-subscription diagnostics.
+ * Always reads VAPID values live from process.env so the diagnostic reflects the running env.
  */
 export async function sendTestPushToUser(userId: number): Promise<{
   subsFound: number;
@@ -179,23 +180,38 @@ export async function sendTestPushToUser(userId: number): Promise<{
   vapidSubject: string;
   results: TestSubResult[];
 }> {
-  const vapidPublicKeyPrefix = VAPID_PUBLIC_KEY ? VAPID_PUBLIC_KEY.slice(0, 12) + "…" : "(not set)";
-  const vapidSubject = VAPID_SUBJECT || "(not set)";
+  // Read live from process.env at call time — not the module-load-time cached constants —
+  // so Railway's actual values always show in the diagnostic even in mixed environments.
+  const livePublicKey  = process.env.VAPID_PUBLIC_KEY  || "";
+  const livePrivateKey = process.env.VAPID_PRIVATE_KEY || "";
+  const liveSubject    = process.env.VAPID_SUBJECT     || "";
+  const vapidPublicKeyPrefix = livePublicKey  ? livePublicKey.slice(0, 12) + "…" : "(not set in this env)";
+  const vapidSubject         = liveSubject    || "(not set in this env)";
+  const canSend = !!(livePublicKey && livePrivateKey && liveSubject);
 
-  if (!VAPID_VALID) {
-    return {
-      subsFound: 0,
-      vapidPublicKeyPrefix,
-      vapidSubject,
-      results: [{ host: "n/a", endpointTail: "", statusCode: null, body: null, error: "VAPID keys not configured on server" }],
-    };
-  }
-
+  // Always query subscriptions first — report the real count regardless of VAPID state.
   const subs = await storage.getPushSubscriptionsByUser(userId);
-  console.log(`[Push/test] user=${userId} subsFound=${subs.length} VAPID_PUBLIC_KEY=${vapidPublicKeyPrefix}`);
+  console.log(`[Push/test] user=${userId} subsFound=${subs.length} canSend=${canSend} VAPID_PUBLIC_KEY=${vapidPublicKeyPrefix}`);
 
   const results: TestSubResult[] = [];
   const dead: string[] = [];
+
+  if (!canSend) {
+    // Report subs but mark each as unsent due to missing config
+    for (const sub of subs) {
+      results.push({
+        host: hostOf(sub.endpoint),
+        endpointTail: sub.endpoint.slice(-20),
+        statusCode: null,
+        body: null,
+        error: "VAPID keys not configured in this environment — notification will NOT be sent here",
+      });
+    }
+    if (subs.length === 0) {
+      results.push({ host: "n/a", endpointTail: "", statusCode: null, body: null, error: "No subscriptions found + VAPID not configured" });
+    }
+    return { subsFound: subs.length, vapidPublicKeyPrefix, vapidSubject, results };
+  }
 
   const payload: PushPayload = {
     title: "TajerGrow — Test 🔔",
@@ -209,13 +225,16 @@ export async function sendTestPushToUser(userId: number): Promise<{
     const endpointTail = sub.endpoint.slice(-20);
     console.log(`[Push/test] sending to ${host} …${endpointTail}`);
     try {
-      const result = await webPush.sendNotification(
+      const sendResult = await webPush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         JSON.stringify(payload),
-        buildSendOptions(300),
+        {
+          TTL: 300,
+          vapidDetails: { subject: liveSubject, publicKey: livePublicKey, privateKey: livePrivateKey },
+        },
       );
-      const code = (result as any).statusCode ?? 201;
-      const responseBody = ((result as any).body ?? "").toString().slice(0, 200);
+      const code = (sendResult as any).statusCode ?? 201;
+      const responseBody = ((sendResult as any).body ?? "").toString().slice(0, 200);
       console.log(`[Push/test] ✅ ${host} statusCode=${code} body="${responseBody}"`);
       results.push({ host, endpointTail, statusCode: code, body: responseBody || null, error: null });
     } catch (err: any) {

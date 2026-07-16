@@ -317,9 +317,13 @@ export default function Profile() {
     mutationFn: () => apiRequest("POST", "/api/push/test", {}),
     onSuccess: (data: any) => {
       setTestResult(data);
-      if (data.sent > 0) {
-        toast({ title: "Notification de test envoyée ✅", description: `${data.sent} appareil(s) notifié(s)` });
-      } else {
+      const hasErrors = (data.results ?? []).some((r: any) => r.error !== null);
+      const sent = data.sent ?? 0;
+      if (sent > 0) {
+        toast({ title: "Notification de test envoyée ✅", description: `${sent} appareil(s) notifié(s)` });
+      } else if (data.subscriptions === 0) {
+        toast({ title: "Aucun abonnement", description: "Cliquez d'abord sur « Activer ».", variant: "destructive" });
+      } else if (hasErrors) {
         toast({ title: "Envoi échoué", description: "Vérifiez les détails ci-dessous.", variant: "destructive" });
       }
     },
