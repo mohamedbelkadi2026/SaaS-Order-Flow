@@ -1,0 +1,41 @@
+Railway build STILL fails with `sh: 1: tsx: not found` (exit 127). Previous attempts to move 
+tsx to dependencies clearly did NOT take effect on Railway. Stop guessing — do a definitive 
+fix and PROVE it.
+
+STEP 1 — INSPECT & CONFIRM:
+Open package.json and paste me the EXACT current "dependencies", "devDependencies", and 
+"scripts" sections. Confirm whether tsx is actually under "dependencies" right now. If it's 
+still under devDependencies, that's the bug.
+
+STEP 2 — PICK ONE OF THESE DEFINITIVE FIXES (prefer A):
+
+OPTION A (recommended — remove the build-time dependency on tsx entirely):
+ - The build script runs a TypeScript file (script/build.ts) with tsx. Instead, compile the 
+   frontend with the tools already required, and for the server bundling call esbuild/vite 
+   directly via their JS API or CLI (which are dependencies), NOT through a .ts entry that 
+   needs tsx.
+ - Simplest: rewrite "build" so it does not need tsx at all. If script/build.ts just runs 
+   `vite build` for the client and `esbuild`/`vite build` for the server, replace it with a 
+   plain package.json script chaining those CLIs, e.g.:
+     "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.js"
+   (adjust to match what script/build.ts currently does — read it first and preserve the 
+   exact same output paths/options). Then tsx is no longer needed for the build.
+
+OPTION B (keep tsx, force it to be installed on Railway):
+ - Move tsx (and typescript, vite, esbuild, and any plugin script/build.ts imports) into 
+   "dependencies".
+ - AND make Railway install dev deps for the build. In the Railway service settings / 
+   nixpacks or Dockerfile, ensure the install step is `npm ci` (NOT `--omit=dev`) and 
+   NODE_ENV is not "production" during install. If Railway uses Nixpacks, add a 
+   nixpacks.toml or a railway build command that runs `npm ci && npm run build`.
+
+STEP 3 — PROVE IT LOCALLY THE RAILWAY WAY, then report:
+   rm -rf node_modules
+   npm ci --omit=dev
+   npm run build            # must exit 0 with ONLY production deps
+If Option A is done right, this passes without tsx. Paste the successful output.
+
+STEP 4: commit and push to main. 
+
+Do NOT change what the build outputs (same dist files/paths). Report which option you chose 
+and the final scripts + dependency changes.
