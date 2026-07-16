@@ -312,10 +312,21 @@ export default function Profile() {
 
   // ── Push notifications ────────────────────────────────────────────────────────
   const { permission, subscribed, loading: pushLoading, error: pushError, isSupported, isIOS, isPWA, subscribe, unsubscribe } = usePushNotifications();
+  const [testResult, setTestResult] = useState<any>(null);
   const sendTestPush = useMutation({
     mutationFn: () => apiRequest("POST", "/api/push/test", {}),
-    onSuccess: (data: any) => toast({ title: "Notification de test envoyée ✅", description: `${data.sent ?? 1} appareil(s) notifié(s)` }),
-    onError: (e: any) => toast({ title: "Erreur test push", description: e.message, variant: "destructive" }),
+    onSuccess: (data: any) => {
+      setTestResult(data);
+      if (data.sent > 0) {
+        toast({ title: "Notification de test envoyée ✅", description: `${data.sent} appareil(s) notifié(s)` });
+      } else {
+        toast({ title: "Envoi échoué", description: "Vérifiez les détails ci-dessous.", variant: "destructive" });
+      }
+    },
+    onError: (e: any) => {
+      setTestResult(null);
+      toast({ title: "Erreur test push", description: e.message, variant: "destructive" });
+    },
   });
   const [notifSettings, setNotifSettings] = useState<{
     newOrder: boolean; statusUpdate: boolean; importantOnly: boolean;
@@ -989,18 +1000,55 @@ export default function Profile() {
 
                       {/* Test notification button — only shown when subscribed */}
                       {subscribed && (
-                        <div className="pt-1 border-t border-border">
+                        <div className="pt-1 border-t border-border space-y-3">
                           <Button
                             data-testid="button-test-push"
                             size="sm"
                             variant="outline"
                             disabled={sendTestPush.isPending}
-                            onClick={() => sendTestPush.mutate()}
+                            onClick={() => { setTestResult(null); sendTestPush.mutate(); }}
                             className="w-full"
                           >
                             <Bell className="w-3.5 h-3.5 mr-2" />
-                            {sendTestPush.isPending ? "Envoi..." : "Envoyer une notification de test"}
+                            {sendTestPush.isPending ? "Envoi en cours..." : "Envoyer une notification de test"}
                           </Button>
+
+                          {/* Per-subscription diagnostic result */}
+                          {testResult && (
+                            <div className="rounded-lg border border-border bg-muted/40 p-3 space-y-2 text-xs font-mono">
+                              <div className="flex gap-2 flex-wrap">
+                                <span className="text-muted-foreground">abonnements:</span>
+                                <span className="font-semibold">{testResult.subscriptions ?? 0}</span>
+                                <span className="text-muted-foreground ml-2">envoyés:</span>
+                                <span className={cn("font-semibold", testResult.sent > 0 ? "text-green-600 dark:text-green-400" : "text-destructive")}>
+                                  {testResult.sent ?? 0}
+                                </span>
+                              </div>
+                              <div className="text-muted-foreground">
+                                VAPID key: <span className="text-foreground">{testResult.vapidPublicKeyPrefix ?? "—"}</span>
+                              </div>
+                              <div className="text-muted-foreground break-all">
+                                subject: <span className="text-foreground">{testResult.vapidSubject ?? "—"}</span>
+                              </div>
+                              {(testResult.results ?? []).map((r: any, i: number) => (
+                                <div key={i} className={cn(
+                                  "rounded p-2 space-y-0.5",
+                                  r.error ? "bg-destructive/10 border border-destructive/30" : "bg-green-500/10 border border-green-500/30"
+                                )}>
+                                  <div className="flex gap-2 items-center">
+                                    <span className={r.error ? "text-destructive" : "text-green-600 dark:text-green-400"}>
+                                      {r.error ? "❌" : "✅"}
+                                    </span>
+                                    <span className="font-semibold">{r.host}</span>
+                                    <span className="text-muted-foreground">…{r.endpointTail}</span>
+                                    {r.statusCode && <span className="ml-auto text-muted-foreground">HTTP {r.statusCode}</span>}
+                                  </div>
+                                  {r.error && <div className="text-destructive break-all">{r.error}</div>}
+                                  {r.body   && <div className="text-muted-foreground break-all">{r.body}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

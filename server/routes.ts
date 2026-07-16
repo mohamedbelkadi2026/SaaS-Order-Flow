@@ -1188,13 +1188,18 @@ export async function registerRoutes(
     try {
       const result = await sendTestPushToUser(req.user!.id);
       console.log(`[Push/test] API result for user=${req.user!.id}:`, JSON.stringify(result));
-      if (result.subsFound === 0) {
-        return res.status(400).json({
+      const sent = result.results.filter((r) => r.error === null).length;
+      res.status(result.subsFound === 0 ? 400 : 200).json({
+        ok: sent > 0,
+        subscriptions: result.subsFound,
+        sent,
+        vapidPublicKeyPrefix: result.vapidPublicKeyPrefix,
+        vapidSubject: result.vapidSubject,
+        results: result.results,
+        ...(result.subsFound === 0 && {
           message: "Aucun abonnement push trouvé pour cet appareil. Cliquez d'abord sur « Activer ».",
-          ...result,
-        });
-      }
-      res.json({ ok: result.sent > 0, ...result });
+        }),
+      });
     } catch (err: any) {
       console.error("[Push/test] error:", err);
       res.status(500).json({ message: err.message });

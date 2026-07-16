@@ -3,17 +3,44 @@ import { storage } from "../storage";
 
 const VAPID_PUBLIC_KEY  = process.env.VAPID_PUBLIC_KEY  || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
-const VAPID_SUBJECT     = process.env.VAPID_SUBJECT     || "mailto:admin@tajergrow.com";
+const VAPID_SUBJECT     = process.env.VAPID_SUBJECT     || "";
 
-if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+// ── VAPID validation at startup ───────────────────────────────────────────────
+function validateVapid() {
+  const missing: string[] = [];
+  if (!VAPID_PUBLIC_KEY)  missing.push("VAPID_PUBLIC_KEY");
+  if (!VAPID_PRIVATE_KEY) missing.push("VAPID_PRIVATE_KEY");
+  if (!VAPID_SUBJECT)     missing.push("VAPID_SUBJECT");
+  if (missing.length) {
+    console.error(`[Push] ⚠️  VAPID env vars NOT set: ${missing.join(", ")} — web push disabled`);
+    return false;
+  }
+
+  // subject must be mailto: or https://
+  if (!/^mailto:.+@.+\..+$/.test(VAPID_SUBJECT) && !/^https:\/\/.+/.test(VAPID_SUBJECT)) {
+    console.error(`[Push] ⚠️  VAPID_SUBJECT is malformed: "${VAPID_SUBJECT}" — must be "mailto:user@domain.com" or "https://…"`);
+    return false;
+  }
+
+  const subjectDisplay = VAPID_SUBJECT.startsWith("mailto:")
+    ? VAPID_SUBJECT.replace(/(?<=@).+/, "***")
+    : VAPID_SUBJECT.replace(/(?<=https:\/\/).{4}.+/, "***");
+  console.log(`[Push] VAPID keys loaded ✅`);
+  console.log(`[Push]   PUBLIC_KEY : ${VAPID_PUBLIC_KEY.slice(0, 12)}… (${VAPID_PUBLIC_KEY.length} chars)`);
+  console.log(`[Push]   SUBJECT    : ${subjectDisplay}`);
+  return true;
+}
+
+const VAPID_VALID = validateVapid();
+
+// Set global VAPID details (belt-and-suspenders; we also pass per-call below)
+if (VAPID_VALID) {
   webPush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
-  console.log("[Push] VAPID keys loaded ✅ — public key starts:", VAPID_PUBLIC_KEY.slice(0, 12) + "…");
-} else {
-  console.error("[Push] ⚠️  VAPID keys NOT configured — set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT in env. Web push disabled.");
 }
 
 export const PUSH_VAPID_PUBLIC_KEY = VAPID_PUBLIC_KEY;
 
+// ── Types ─────────────────────────────────────────────────────────────────────
 type EventType = "new_order" | "status_update";
 
 interface PushPayload {
@@ -57,7 +84,6 @@ export async function recipientsForOrder(
     if (eventType === "new_order" && p.newOrder === false) continue;
     if (eventType === "status_update") {
       if (p.statusUpdate === false) continue;
-      // importantOnly defaults to true (undefined = important only)
       const important = p.importantOnly !== false;
       if (important && newStatus && !IMPORTANT_STATUSES.has(newStatus)) continue;
     }
@@ -73,13 +99,25 @@ export async function recipientsForOrder(
   return Array.from(recipients);
 }
 
-/** Send a push to all devices of a single user; prune stale subscriptions. Returns send results. */
+/** Build the common webPush options including explicit per-call vapidDetails. */
+function buildSendOptions(ttl = 86400) {
+  return {
+    TTL: ttl,
+    vapidDetails: {
+      subject:    VAPID_SUBJECT,
+      publicKey:  VAPID_PUBLIC_KEY,
+      privateKey: VAPID_PRIVATE_KEY,
+    },
+  };
+}
+
+/** Send a push to all devices of a single user; prune stale subscriptions. */
 export async function sendPushToUser(
   userId: number,
   _storeId: number,
   payload: PushPayload,
 ): Promise<{ ok: number; failed: number }> {
-  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+  if (!VAPID_VALID) {
     console.warn(`[Push] VAPID not configured — skipping push to user ${userId}`);
     return { ok: 0, failed: 0 };
   }
@@ -92,17 +130,19 @@ export async function sendPushToUser(
   let failed = 0;
 
   for (const sub of subs) {
-    const shortEndpoint = "…" + sub.endpoint.slice(-30);
+    const shortEndpoint = hostOf(sub.endpoint) + " …" + sub.endpoint.slice(-12);
     try {
       const result = await webPush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         JSON.stringify(payload),
-        { TTL: 86400 },
+        buildSendOptions(),
       );
-      console.log(`[Push] ✅ sent to ${shortEndpoint} status=${(result as any).statusCode ?? 201}`);
+      const code = (result as any).statusCode ?? 201;
+      console.log(`[Push] ✅ sent to ${shortEndpoint} status=${code}`);
       ok++;
     } catch (err: any) {
-      console.error(`[Push] ❌ error for ${shortEndpoint}: statusCode=${err.statusCode} body=${err.body?.slice?.(0, 120) ?? err.message}`);
+      const body = (err.body ?? "").toString().slice(0, 200);
+      console.error(`[Push] ❌ error for ${shortEndpoint}: statusCode=${err.statusCode} body=${body}`);
       if (err.statusCode === 404 || err.statusCode === 410) dead.push(sub.endpoint);
       else failed++;
     }
@@ -116,61 +156,86 @@ export async function sendPushToUser(
   return { ok, failed };
 }
 
-/** Send a test push to all subscriptions of a user. Returns detailed results for the API response. */
+/** Extract the hostname from a push endpoint URL. */
+function hostOf(endpoint: string): string {
+  try { return new URL(endpoint).hostname; } catch { return "unknown"; }
+}
+
+export interface TestSubResult {
+  host: string;
+  endpointTail: string;
+  statusCode: number | null;
+  body: string | null;
+  error: string | null;
+}
+
+/**
+ * Send a test push to all subscriptions of a user.
+ * Returns detailed per-subscription diagnostics.
+ */
 export async function sendTestPushToUser(userId: number): Promise<{
   subsFound: number;
-  sent: number;
-  failed: number;
-  errors: string[];
+  vapidPublicKeyPrefix: string;
+  vapidSubject: string;
+  results: TestSubResult[];
 }> {
-  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
-    return { subsFound: 0, sent: 0, failed: 0, errors: ["VAPID keys not configured on server"] };
+  const vapidPublicKeyPrefix = VAPID_PUBLIC_KEY ? VAPID_PUBLIC_KEY.slice(0, 12) + "…" : "(not set)";
+  const vapidSubject = VAPID_SUBJECT || "(not set)";
+
+  if (!VAPID_VALID) {
+    return {
+      subsFound: 0,
+      vapidPublicKeyPrefix,
+      vapidSubject,
+      results: [{ host: "n/a", endpointTail: "", statusCode: null, body: null, error: "VAPID keys not configured on server" }],
+    };
   }
 
   const subs = await storage.getPushSubscriptionsByUser(userId);
-  console.log(`[Push/test] user=${userId} subs=${subs.length}`);
+  console.log(`[Push/test] user=${userId} subsFound=${subs.length} VAPID_PUBLIC_KEY=${vapidPublicKeyPrefix}`);
 
+  const results: TestSubResult[] = [];
   const dead: string[] = [];
-  let sent = 0;
-  let failed = 0;
-  const errors: string[] = [];
 
   const payload: PushPayload = {
     title: "TajerGrow — Test 🔔",
-    body: "Vos notifications push fonctionnent correctement !",
-    icon: "/android-chrome-192.png",
-    type: "test",
+    body:  "Vos notifications push fonctionnent correctement !",
+    icon:  "/android-chrome-192.png",
+    type:  "test",
   };
 
   for (const sub of subs) {
-    const shortEndpoint = "…" + sub.endpoint.slice(-30);
+    const host = hostOf(sub.endpoint);
+    const endpointTail = sub.endpoint.slice(-20);
+    console.log(`[Push/test] sending to ${host} …${endpointTail}`);
     try {
       const result = await webPush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         JSON.stringify(payload),
-        { TTL: 300 },
+        buildSendOptions(300),
       );
       const code = (result as any).statusCode ?? 201;
-      console.log(`[Push/test] ✅ ${shortEndpoint} status=${code}`);
-      sent++;
+      const responseBody = ((result as any).body ?? "").toString().slice(0, 200);
+      console.log(`[Push/test] ✅ ${host} statusCode=${code} body="${responseBody}"`);
+      results.push({ host, endpointTail, statusCode: code, body: responseBody || null, error: null });
     } catch (err: any) {
-      const msg = `${shortEndpoint}: statusCode=${err.statusCode} ${err.body?.slice?.(0, 80) ?? err.message}`;
-      console.error(`[Push/test] ❌ ${msg}`);
-      errors.push(msg);
-      if (err.statusCode === 404 || err.statusCode === 410) dead.push(sub.endpoint);
-      else failed++;
+      const code = err.statusCode ?? null;
+      const body = (err.body ?? "").toString().slice(0, 300);
+      console.error(`[Push/test] ❌ ${host} statusCode=${code} body="${body}" message="${err.message}"`);
+      if (code === 404 || code === 410) dead.push(sub.endpoint);
+      results.push({ host, endpointTail, statusCode: code, body: body || null, error: err.message ?? String(err) });
     }
   }
 
   if (dead.length) {
-    console.log(`[Push/test] pruning ${dead.length} stale subscription(s)`);
+    console.log(`[Push/test] pruning ${dead.length} stale endpoint(s)`);
     await storage.deletePushSubscriptionsByEndpoints(dead);
   }
 
-  return { subsFound: subs.length, sent, failed, errors };
+  return { subsFound: subs.length, vapidPublicKeyPrefix, vapidSubject, results };
 }
 
-const sentNewOrders = new Set<number>(); // in-process dedup for new orders
+const sentNewOrders = new Set<number>();
 
 /** Fire-and-forget: push for a newly created order. */
 export function notifyNewOrder(order: {
@@ -191,22 +256,26 @@ export function notifyNewOrder(order: {
       sendPushToUser(uid, order.storeId, {
         title: "Nouvelle commande 🛍️",
         body,
-        icon: "/android-chrome-192.png",
+        icon:    "/android-chrome-192.png",
         orderId: order.id,
-        type: "new_order",
+        type:    "new_order",
       }),
     ));
-    const totalOk = results.reduce((a, r) => a + r.ok, 0);
+    const totalOk     = results.reduce((a, r) => a + r.ok,     0);
     const totalFailed = results.reduce((a, r) => a + r.failed, 0);
     console.log(`[Push] notifyNewOrder order=${order.id} done — sent=${totalOk} failed=${totalFailed}`);
   }).catch((e) => console.error("[Push] notifyNewOrder error:", e));
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  confirme: "Confirmé ✅", delivered: "Livré 📦", livré: "Livré 📦",
-  refusé: "Refusé ❌", refused: "Refusé ❌", retourné: "Retourné 🔙",
-  returned: "Retourné 🔙", annulé: "Annulé 🚫", cancelled: "Annulé 🚫",
-  in_progress: "En transit 🚚", nouveau: "Nouveau 🆕", confirme_reporte: "Reporté 📅",
+  confirme:        "Confirmé ✅",
+  delivered:       "Livré 📦",  livré:    "Livré 📦",
+  refusé:          "Refusé ❌",  refused:  "Refusé ❌",
+  retourné:        "Retourné 🔙", returned: "Retourné 🔙",
+  annulé:          "Annulé 🚫",  cancelled:"Annulé 🚫",
+  in_progress:     "En transit 🚚",
+  nouveau:         "Nouveau 🆕",
+  confirme_reporte:"Reporté 📅",
 };
 
 /** Fire-and-forget: push for a status change. */
@@ -220,14 +289,14 @@ export function notifyStatusUpdate(
     const label = STATUS_LABELS[newStatus] || newStatus;
     const results = await Promise.all(ids.map((uid) =>
       sendPushToUser(uid, order.storeId, {
-        title: "Mise à jour commande",
-        body: `${label} · ${order.customerName}`,
-        icon: "/android-chrome-192.png",
+        title:   "Mise à jour commande",
+        body:    `${label} · ${order.customerName}`,
+        icon:    "/android-chrome-192.png",
         orderId: order.id,
-        type: "status_update",
+        type:    "status_update",
       }),
     ));
-    const totalOk = results.reduce((a, r) => a + r.ok, 0);
+    const totalOk     = results.reduce((a, r) => a + r.ok,     0);
     const totalFailed = results.reduce((a, r) => a + r.failed, 0);
     console.log(`[Push] notifyStatusUpdate order=${order.id} status=${newStatus} done — sent=${totalOk} failed=${totalFailed}`);
   }).catch((e) => console.error("[Push] notifyStatusUpdate error:", e));

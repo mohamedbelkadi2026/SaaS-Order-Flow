@@ -2,20 +2,40 @@
 // Keep this file in sync with the service worker scope (/push-handler.js).
 
 self.addEventListener("push", function (event) {
-  if (!event.data) return;
+  var rawText = event.data ? event.data.text() : "(empty)";
+  console.log("[SW push] received event. data:", rawText);
+
   var data;
-  try { data = event.data.json(); } catch (_) { data = { title: "TajerGrow", body: event.data.text() }; }
+  if (!event.data) {
+    console.warn("[SW push] event.data is null — showing fallback notification");
+    data = { title: "TajerGrow", body: "Nouvelle notification" };
+  } else {
+    try {
+      data = event.data.json();
+      console.log("[SW push] parsed JSON:", JSON.stringify(data));
+    } catch (e) {
+      console.warn("[SW push] JSON parse failed, using text:", rawText);
+      data = { title: "TajerGrow", body: rawText };
+    }
+  }
+
+  if (!data.title) data.title = "TajerGrow";
+  if (!data.body)  data.body  = "Notification";
 
   var options = {
-    body:    data.body   || "",
-    icon:    data.icon   || "/android-chrome-192.png",
+    body:    data.body,
+    icon:    data.icon  || "/android-chrome-192.png",
     badge:   "/android-chrome-192.png",
     data:    { orderId: data.orderId, type: data.type },
     vibrate: [200, 100, 200],
   };
 
+  console.log("[SW push] calling showNotification:", data.title, options);
+
   event.waitUntil(
-    self.registration.showNotification(data.title || "TajerGrow", options)
+    self.registration.showNotification(data.title, options)
+      .then(function () { console.log("[SW push] showNotification resolved"); })
+      .catch(function (err) { console.error("[SW push] showNotification error:", err); })
   );
 });
 
