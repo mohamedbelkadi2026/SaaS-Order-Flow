@@ -10,6 +10,7 @@ import { ActiveStoreProvider } from "@/hooks/use-active-store";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect, Suspense, lazy } from "react";
+import { PwaInstallPrompt } from "@/components/pwa-install-prompt";
 
 function FullPageSpinner() {
   return (
@@ -304,6 +305,7 @@ function App() {
         <TooltipProvider>
           <Toaster />
           <AppRouter />
+          <PwaInstallPrompt />
         </TooltipProvider>
       </AuthProvider>
     </QueryClientProvider>
