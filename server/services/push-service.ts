@@ -116,10 +116,10 @@ export async function sendPushToUser(
   userId: number,
   _storeId: number,
   payload: PushPayload,
-): Promise<{ ok: number; failed: number }> {
+): Promise<{ ok: number; failed: number; subs: number }> {
   if (!VAPID_VALID) {
     console.warn(`[Push] VAPID not configured — skipping push to user ${userId}`);
-    return { ok: 0, failed: 0 };
+    return { ok: 0, failed: 0, subs: 0 };
   }
 
   const subs = await storage.getPushSubscriptionsByUser(userId);
@@ -153,7 +153,7 @@ export async function sendPushToUser(
     await storage.deletePushSubscriptionsByEndpoints(dead);
   }
 
-  return { ok, failed };
+  return { ok, failed, subs: subs.length };
 }
 
 /** Extract the hostname from a push endpoint URL. */
@@ -266,8 +266,13 @@ export function notifyNewOrder(order: {
   setTimeout(() => sentNewOrders.delete(order.id), 60_000);
 
   recipientsForOrder(order, "new_order").then(async (ids) => {
-    console.log(`[Push] notifyNewOrder order=${order.id} storeId=${order.storeId} recipients=${ids.length}`);
-    if (!ids.length) return;
+    if (!ids.length) {
+      // Diagnose why no one receives this push
+      const allUsers = await storage.getUsersByStore(order.storeId);
+      const noSub    = allUsers.filter(u => u.role === "owner" || u.role === "admin").length;
+      console.log(`[push] new_order ${order.id} recipients=0 (admins_in_store=${noSub} assignedToId=${order.assignedToId ?? "none"} — check push_subscriptions rows and notif_settings.newOrder pref)`);
+      return;
+    }
     const price = ((order.totalPrice ?? 0) / 100).toFixed(0);
     const city  = order.customerCity ? ` · ${order.customerCity}` : "";
     const body  = `${order.customerName}${city} · ${price} MAD`;
@@ -280,10 +285,10 @@ export function notifyNewOrder(order: {
         type:    "new_order",
       }),
     ));
-    const totalOk     = results.reduce((a, r) => a + r.ok,     0);
-    const totalFailed = results.reduce((a, r) => a + r.failed, 0);
-    console.log(`[Push] notifyNewOrder order=${order.id} done — sent=${totalOk} failed=${totalFailed}`);
-  }).catch((e) => console.error("[Push] notifyNewOrder error:", e));
+    const totalOk   = results.reduce((a, r) => a + r.ok,   0);
+    const totalSubs = results.reduce((a, r) => a + r.subs, 0);
+    console.log(`[push] new_order ${order.id} recipients=${ids.length} subs=${totalSubs} sent=${totalOk}`);
+  }).catch((e) => console.error("[push] new_order error:", e));
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -303,8 +308,11 @@ export function notifyStatusUpdate(
   newStatus: string,
 ): void {
   recipientsForOrder(order, "status_update", newStatus).then(async (ids) => {
-    console.log(`[Push] notifyStatusUpdate order=${order.id} status=${newStatus} recipients=${ids.length}`);
-    if (!ids.length) return;
+    if (!ids.length) {
+      const isImportant = IMPORTANT_STATUSES.has(newStatus);
+      console.log(`[push] status_update ${order.id} status=${newStatus} recipients=0 (important=${isImportant} assignedToId=${order.assignedToId ?? "none"} — check push_subscriptions and notif_settings.statusUpdate/importantOnly)`);
+      return;
+    }
     const label = STATUS_LABELS[newStatus] || newStatus;
     const results = await Promise.all(ids.map((uid) =>
       sendPushToUser(uid, order.storeId, {
@@ -315,8 +323,8 @@ export function notifyStatusUpdate(
         type:    "status_update",
       }),
     ));
-    const totalOk     = results.reduce((a, r) => a + r.ok,     0);
-    const totalFailed = results.reduce((a, r) => a + r.failed, 0);
-    console.log(`[Push] notifyStatusUpdate order=${order.id} status=${newStatus} done — sent=${totalOk} failed=${totalFailed}`);
-  }).catch((e) => console.error("[Push] notifyStatusUpdate error:", e));
+    const totalOk   = results.reduce((a, r) => a + r.ok,   0);
+    const totalSubs = results.reduce((a, r) => a + r.subs, 0);
+    console.log(`[push] status_update ${order.id} status=${newStatus} recipients=${ids.length} subs=${totalSubs} sent=${totalOk}`);
+  }).catch((e) => console.error("[push] status_update error:", e));
 }

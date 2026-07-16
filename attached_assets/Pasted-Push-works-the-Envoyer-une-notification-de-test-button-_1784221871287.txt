@@ -1,0 +1,30 @@
+Push works: the "Envoyer une notification de test" button delivers a notification to the 
+installed iOS app. But creating a NEW ORDER does NOT trigger a "Nouvelle commande" notification. 
+So the send pipeline is fine — the NEW ORDER / STATUS-CHANGE triggers just aren't wired to it. 
+Connect them, using the EXACT same send code the working test uses.
+
+1) Identify the working test send function (the one the test button calls). Reuse it for real 
+   events — do not write a second, different send path.
+
+2) NEW ORDER trigger: find EVERY code path where an order is created with initial status 
+   'nouveau' (Shopify webhook, carrier import, manual add, gsheets, WooCommerce). Right after 
+   the order is saved, call the same push-send for recipientsForOrder(order,'new_order') — 
+   respecting each recipient's notif_settings (Nouvelle commande toggle). Title 
+   "Nouvelle commande", body = customer name + city + price, data.orderId. 
+   Add server logs: "[push] new_order <id> recipients=X subs=Y sent=Z" so we can see it fire.
+
+3) STATUS-CHANGE trigger: find where order status changes (agent action + carrier webhook 
+   updateOrderStatus). When it changes to Confirmé/Livré/Refusé/Retourné/Annulé, call the same 
+   push-send for 'status_update', respecting the "statuts importants" toggle. Same logging.
+
+4) Make sure recipientsForOrder resolves to real users WITH subscriptions: assignedToId + store 
+   admins, filtered by prefs and existing push_subscriptions rows. Log why it sends 0 if it 
+   does (no assignee? no subscription? pref off?).
+
+5) FIX THE LYING DIAGNOSTIC while here: the test panel shows abonnements:0, envoyés:0, 
+   VAPID key:—, subject:— even though sends succeed. Make it read the real subscription count, 
+   real 201 count, and the live process.env.VAPID_PUBLIC_KEY prefix + VAPID_SUBJECT.
+
+TEST PLAN: after deploy, create a test order → I must receive "Nouvelle commande"; change an 
+order to Livré → I must receive "Mise à jour". Paste me the "[push] new_order ..." server log 
+line showing recipients/subs/sent. Deploy to main.

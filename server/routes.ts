@@ -4215,6 +4215,7 @@ export async function registerRoutes(
     }
 
     await storage.updateOrderStatus(order.id, newStatus);
+    notifyStatusUpdate({ id: order.id, storeId: (order as any).storeId, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, newStatus);
 
     // Auto-set shippingCost when order is delivered
     if (newStatus === 'delivered') {
@@ -4462,6 +4463,7 @@ export async function registerRoutes(
         const mapped = mapOzonStatus(statusCode);
         if (mapped && mapped !== ozonOrder.status) {
           await storage.updateOrderStatus(ozonOrder.id, mapped);
+          notifyStatusUpdate({ id: ozonOrder.id, storeId, assignedToId: (ozonOrder as any).assignedToId ?? null, customerName: ozonOrder.customerName || "" }, mapped);
           await storage.createOrderFollowUpLog({ orderId: ozonOrder.id, agentId: null,
             agentName: "Ozon Express Webhook",
             note: `Statut via webhook: ${statusCode} → ${mapped}${note ? " · " + note : ""}` });
@@ -4784,6 +4786,7 @@ export async function registerRoutes(
 
       // Real-time: push new order to all connected store clients
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -4953,6 +4956,7 @@ export async function registerRoutes(
 
       // ── Real-time push — Socket.io + SSE ─────────────────────────────────────
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: provider });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -5045,6 +5049,7 @@ export async function registerRoutes(
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: 'gsheets', action: 'order_synced', status: 'success', message: `Commande Google Sheets ${orderNumber} importée` });
       // Real-time push
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName, status: 'nouveau', source: 'gsheets' });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -5154,6 +5159,7 @@ export async function registerRoutes(
       await storage.incrementMonthlyOrders(storeId);
       await storage.createIntegrationLog({ storeId, integrationId: integration?.id || null, provider: "gsheets", action: "order_synced", status: "success", message: `Commande Google Sheets ${orderNumber} importée (API key)` });
       console.log(`[GSheets-API] New order #${orderNumber} for store ${storeId} — ${customerName} / ${customerPhone}`);
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
       res.json({ success: true, orderId: order.id });
       if (getWaAutoSettings(storeId).aiConfirmation) {
         triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, matched?.id)
@@ -6044,6 +6050,7 @@ function ensureHeaders(sheet) {
           status: "nouveau",
           source: "shopify",
         });
+        notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
         broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
         pushOrderToSheet(storeId, {
           action: "order.created",
@@ -6141,6 +6148,7 @@ function ensureHeaders(sheet) {
       } as any, orderItemsToCreate.map(i => ({ ...i, orderId: 0 })) as any);
 
       emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: 'nouveau', source: 'shopify' });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: parsed.orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -6277,6 +6285,7 @@ function ensureHeaders(sheet) {
 
       // Real-time push
       emitNewOrder(storeId, { id: order.id, orderNumber, customerName: data.customerName, status: data.status, source: data.source || 'manual' });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: finalAgent ?? null, customerName: data.customerName, customerCity: data.customerCity ?? null, totalPrice: totalPriceCents });
       broadcastToStore(storeId, "new_order", { id: order.id, orderNumber });
       pushOrderToSheet(storeId, {
         action: "order.created",
@@ -6783,6 +6792,7 @@ function ensureHeaders(sheet) {
       if (data.status && data.status !== order.status) {
         console.log(`[PATCH /api/orders/${orderId}] Updating status ${order.status} → ${data.status}`);
         await storage.updateOrderStatus(orderId, data.status, req.user!.id);
+        notifyStatusUpdate({ id: orderId, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, data.status);
 
         if (data.status === 'delivered') {
           await storage.syncCustomerOnDelivery(order.storeId!, {
@@ -8458,6 +8468,7 @@ function ensureHeaders(sheet) {
         const order = ordersList.find(o => o.trackNumber === trackingNumber);
         if (order) {
           await storage.updateOrderStatus(order.id, internalStatus);
+          notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, internalStatus);
           await storage.createOrderFollowUpLog({
             orderId: order.id,
             agentId: null,
@@ -8631,6 +8642,7 @@ function ensureHeaders(sheet) {
 
             if (statusChanged) {
               await storage.updateOrderStatus(order.id, result.status);
+              notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, result.status);
               // Best-effort delivery cost lookup; never blocks the loop on its own errors.
               try {
                 const networkId = (account as any).settings?.digylogNetworkId || (account as any).digylogNetworkId || 1;
@@ -9039,6 +9051,7 @@ function ensureHeaders(sheet) {
             }
             if (statusChanged) {
               await storage.updateOrderStatus(order.id, result.status);
+              notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, result.status);
             }
             if (Object.keys(updateData).length > 0) {
               await storage.updateOrder(order.id, updateData);
@@ -9488,6 +9501,7 @@ function ensureHeaders(sheet) {
           const syncWouldDowngrade = SYNC_TERMINAL.has(order.status || '') && !SYNC_TERMINAL.has(result.status || '');
           if (result.status && result.status !== order.status && !syncWouldDowngrade) {
             await storage.updateOrderStatus(order.id, result.status);
+            notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, result.status);
             // EC replay: store the French status name in commentStatus (not raw code)
             if (p === 'expresscoursier' && result.rawStatus) {
               const ecName = getEcStatusName(result.rawStatus);
@@ -13363,6 +13377,7 @@ function submitOrder(e){
       // Broadcast the new order in real-time
       try { broadcastToStore(page.storeId, { type: "new_order", order }); } catch (_) {}
       try { emitNewOrder(page.storeId, order); } catch (_) {}
+      try { notifyNewOrder({ id: order.id, storeId: page.storeId, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "", customerCity: (order as any).customerCity ?? null, totalPrice: order.totalPrice || 0 }); } catch (_) {}
       pushOrderToSheet(page.storeId, {
         action: "order.created",
         orderNumber: orderNumber || "",
@@ -13836,6 +13851,7 @@ function submitOrder(e){
           if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
           await storage.incrementMonthlyOrders(storeId);
           emitNewOrder(storeId, { id: order.id, orderNumber: parsed.orderNumber, customerName: parsed.customerName, status: "nouveau", source: "gsheets_script" });
+          notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: parsed.customerName, customerCity: parsed.customerCity ?? null, totalPrice: order.totalPrice || 0 });
           pushOrderToSheet(storeId, {
             action: "order.created",
             orderNumber: parsed.orderNumber,
