@@ -62,6 +62,12 @@ export const users = pgTable("users", {
   preferredLanguage: text("preferred_language").default("fr"),
   dashboardPermissions: jsonb("dashboard_permissions"),
   buyerCode: text("buyer_code"),
+  notifSettings: jsonb("notif_settings").$type<{
+    sound?: boolean;
+    newOrder?: boolean;
+    statusUpdate?: boolean;
+    importantOnly?: boolean;
+  }>(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -868,6 +874,22 @@ export const adCampaignProductMap = pgTable("ad_campaign_product_map", {
 export const insertAdCampaignProductMapSchema = createInsertSchema(adCampaignProductMap).omit({ id: true, createdAt: true });
 export type InsertAdCampaignProductMap = z.infer<typeof insertAdCampaignProductMapSchema>;
 export type AdCampaignProductMap = typeof adCampaignProductMap.$inferSelect;
+
+// ── Web Push Subscriptions ────────────────────────────────────────────────────
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id:        serial("id").primaryKey(),
+  userId:    integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  storeId:   integer("store_id").notNull().references(() => stores.id, { onDelete: "cascade" }),
+  endpoint:  text("endpoint").notNull().unique(),
+  p256dh:    text("p256dh").notNull(),
+  auth:      text("auth").notNull(),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({ id: true, createdAt: true });
+export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 
 // Email schema — RFC-bounded length, lowercase + trim normalisation.
 export const emailSchema = z.string()

@@ -3,6 +3,7 @@ import {
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
   carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities,
+  pushSubscriptions,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
   type AdSpendEntry, type InsertAdSpend, type AdSpendNewEntry, type InsertAdSpendNew,
@@ -15,6 +16,7 @@ import {
   type StockLog,
   type Payment, type InsertPayment,
   csvProfitReports, type CsvProfitReport, type InsertCsvProfitReport,
+  type PushSubscription, type InsertPushSubscription,
 } from "@shared/schema";
 import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
@@ -287,6 +289,13 @@ export interface IStorage {
   }>): Promise<import("@shared/schema").LandingPage | undefined>;
   deleteLandingPage(id: number, storeId: number): Promise<void>;
   incrementLandingPageOrderCount(id: number): Promise<void>;
+
+  // ── Push Notifications ──────────────────────────────────────────────────
+  getPushSubscriptionsByUser(userId: number): Promise<PushSubscription[]>;
+  upsertPushSubscription(data: InsertPushSubscription): Promise<PushSubscription>;
+  deletePushSubscription(endpoint: string): Promise<void>;
+  deletePushSubscriptionsByEndpoints(endpoints: string[]): Promise<void>;
+  updateUserNotifSettings(userId: number, settings: { sound?: boolean; newOrder?: boolean; statusUpdate?: boolean; importantOnly?: boolean }): Promise<void>;
 }
 
 // Moroccan region to city keyword mapping for order assignment
@@ -349,6 +358,39 @@ export class DatabaseStorage implements IStorage {
 
   async getUsersByStore(storeId: number): Promise<User[]> {
     return await db.select().from(users).where(eq(users.storeId, storeId));
+  }
+
+  // ── Push Notifications ────────────────────────────────────────────────────
+  async getPushSubscriptionsByUser(userId: number): Promise<PushSubscription[]> {
+    return await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.userId, userId));
+  }
+
+  async upsertPushSubscription(data: InsertPushSubscription): Promise<PushSubscription> {
+    const [sub] = await db
+      .insert(pushSubscriptions)
+      .values(data)
+      .onConflictDoUpdate({
+        target: pushSubscriptions.endpoint,
+        set: { p256dh: data.p256dh, auth: data.auth, userAgent: data.userAgent },
+      })
+      .returning();
+    return sub;
+  }
+
+  async deletePushSubscription(endpoint: string): Promise<void> {
+    await db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, endpoint));
+  }
+
+  async deletePushSubscriptionsByEndpoints(endpoints: string[]): Promise<void> {
+    if (!endpoints.length) return;
+    await db.delete(pushSubscriptions).where(inArray(pushSubscriptions.endpoint, endpoints));
+  }
+
+  async updateUserNotifSettings(
+    userId: number,
+    settings: { sound?: boolean; newOrder?: boolean; statusUpdate?: boolean; importantOnly?: boolean },
+  ): Promise<void> {
+    await db.update(users).set({ notifSettings: settings }).where(eq(users.id, userId));
   }
 
   async createUser(user: InsertUser): Promise<User> {

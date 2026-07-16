@@ -1,0 +1,65 @@
+Add Web Push notifications to the PWA (Android + iOS 16.4+ installed PWA), routed per user by 
+order assignment/role, fully controllable from the profile. Do NOT change unrelated features.
+
+DATA MODEL (already exists — use it): orders.assignedToId → users.id (the agent handling the 
+order); users.role (text), users.storeId, users.isSuperAdmin, users.dashboardPermissions/settings 
+(jsonb). Treat store owner/admin roles as "gets everything for the store".
+
+SETUP:
+1) Generate VAPID keys; VAPID_PUBLIC_KEY client-side, VAPID_PRIVATE_KEY + VAPID_SUBJECT as 
+   Railway env vars. Use the `web-push` server library.
+2) Reuse the existing PWA service worker to handle 'push' + 'notificationclick' (show 
+   title/body/icon; on click, open the specific order / the right orders tab).
+
+SUBSCRIPTIONS:
+3) New table push_subscriptions: id, userId, storeId, endpoint (unique), p256dh, auth, 
+   userAgent, createdAt. POST /api/push/subscribe (requireAuth) upserts; DELETE 
+   /api/push/unsubscribe removes. One user = many devices. On send, delete subscriptions that 
+   return 404/410.
+
+CLIENT (enable from profile — see controls below):
+4) When the user enables notifications, request Notification permission, subscribe via 
+   pushManager with the VAPID public key, POST it to /api/push/subscribe. Handle 
+   denied/unsupported gracefully. iOS: if not installed as PWA, show "Ajoutez l'app à l'écran 
+   d'accueil pour activer les notifications."
+
+ROUTING — WHO GETS WHAT (per-user, never cross-store, never another agent's orders):
+5) Build a helper recipientsForOrder(order, eventType): returns the set of userIds to notify:
+   - the order's assignedToId (if set), PLUS
+   - all users of order.storeId whose role is owner/admin (store-wide visibility).
+   Filter each recipient by their notification preferences (below) and active subscriptions.
+
+TRIGGERS:
+6) NEW ORDER: at the exact code path where an order enters with initial status 'nouveau' 
+   (Shopify webhook, carrier, manual add), notify recipientsForOrder(order,'new_order'):
+   title "Nouvelle commande", body = customer name + city + price. data.orderId for 
+   click-through. Fire once per order (de-dupe).
+7) STATUS UPDATE: when an order's status changes, notify recipientsForOrder(order,'status_update') 
+   — but ONLY for meaningful transitions by default to avoid carrier spam: confirmé, livré/
+   delivered, refusé/refused, retourné/returned, annulé. Do NOT push for every intermediate 
+   carrier micro-status (transit, ramassé, etc.) unless the user opts into "tous les statuts". 
+   title "Mise à jour commande", body = new status label + customer name.
+
+PROFILE CONTROLS (client/src/pages/profile.tsx) — full control, persisted per user in 
+users.settings jsonb, enforced SERVER-SIDE before sending:
+8)  - Master toggle: Activer les notifications (permission + subscribe/unsubscribe this device).
+    - Son on/off (foreground plays a short sound; note OS controls background sound).
+    - Type toggles: "Nouvelle commande" and "Mise à jour de commande" (each on/off).
+    - Under status updates, a sub-option "Seulement les statuts importants (défaut)" vs "Tous 
+      les statuts".
+    - Device status line: "Activées sur cet appareil" / "Bloquées (débloquez dans les réglages 
+      du navigateur)".
+   Structure the settings so more event types can be added later. The server must check these 
+   prefs for each recipient before sending (respect master off, type off, and the 
+   important-vs-all filter).
+
+CONSTRAINTS:
+ - HTTPS only (Railway provides it). Per-store + per-user isolation is mandatory: an agent 
+   only ever receives orders where they are assignedToId; admins receive their store only.
+ - Don't block the request path: send pushes asynchronously after responding.
+
+VERIFY: an order assigned to agent A notifies A (and store admins) on new + on confirmé/livré/
+refusé; agent B (not assigned) gets nothing; toggling a type off stops that type; a second 
+device subscribes independently; iOS installed PWA receives them.
+
+Deploy to main.

@@ -49,3 +49,6 @@ stack = "FULLSTACK_JS"
 
 [userenv.shared]
 SUPER_ADMIN_EMAIL = "mehamadchalabi100@gmail.com"
+VAPID_PUBLIC_KEY = "BD2N4E_LTjrufQDOVvxedmF7RG-5Awr9epiAGJ7Sn3qeRJDHJ3nXI-65DfuuS4alPWc5vTG7ID5CcHO5qymZJzI"
+VAPID_PRIVATE_KEY = "gY0n8bJyGOczCITyt-aUe9K5kAnvF7jctvTJdGggZdU"
+VAPID_SUBJECT = "mailto:admin@tajergrow.com"

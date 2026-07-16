@@ -13,6 +13,7 @@ import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative } from "@sh
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
+import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
 import path from "path";
@@ -1144,6 +1145,62 @@ export async function registerRoutes(
     }
   });
 
+  // ── Push Notification endpoints ──────────────────────────────────────────
+  app.get("/api/push/vapid-public-key", (_req, res) => {
+    res.json({ publicKey: PUSH_VAPID_PUBLIC_KEY || null });
+  });
+
+  app.post("/api/push/subscribe", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        endpoint:  z.string().url(),
+        p256dh:    z.string().min(1),
+        auth:      z.string().min(1),
+        userAgent: z.string().optional(),
+      });
+      const data = schema.parse(req.body);
+      const sub = await storage.upsertPushSubscription({
+        userId:    req.user!.id,
+        storeId:   req.user!.storeId,
+        endpoint:  data.endpoint,
+        p256dh:    data.p256dh,
+        auth:      data.auth,
+        userAgent: data.userAgent ?? null,
+      });
+      res.json(sub);
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.delete("/api/push/unsubscribe", requireAuth, async (req, res) => {
+    try {
+      const { endpoint } = z.object({ endpoint: z.string() }).parse(req.body);
+      await storage.deletePushSubscription(endpoint);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(400).json({ message: err.message });
+    }
+  });
+
+  app.put("/api/user/notification-settings", requireAuth, async (req, res) => {
+    try {
+      const schema = z.object({
+        sound:         z.boolean().optional(),
+        newOrder:      z.boolean().optional(),
+        statusUpdate:  z.boolean().optional(),
+        importantOnly: z.boolean().optional(),
+      });
+      const settings = schema.parse(req.body);
+      await storage.updateUserNotifSettings(req.user!.id, settings);
+      res.json({ ok: true });
+    } catch (err: any) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.put("/api/store/social", requireAuth, async (req, res) => {
     try {
       const schema = z.object({
@@ -2001,6 +2058,8 @@ export async function registerRoutes(
       const cs = updated?.commentStatus ?? undefined;
       emitOrderUpdated(order.storeId, orderId, status, cs);
       broadcastToStore(order.storeId, "order_updated", { orderId, status, commentStatus: cs });
+      // Web push notification (fire-and-forget)
+      notifyStatusUpdate({ id: orderId, storeId: order.storeId, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, status);
       pushOrderToSheet(order.storeId, {
         action: "order.updated",
         orderNumber: (updated as any)?.orderNumber || String(orderId),
@@ -6628,6 +6687,8 @@ function ensureHeaders(sheet) {
       } else {
         console.log('[WA] AI confirmation disabled — skipping auto-send');
       }
+      // Fire-and-forget: web push for new order
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName: data.customerName, customerCity: data.customerCity, totalPrice });
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
