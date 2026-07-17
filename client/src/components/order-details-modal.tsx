@@ -258,6 +258,7 @@ interface OrderDetailsModalProps {
 export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: OrderDetailsModalProps) {
   const { user } = useAuth();
   const isAdmin = user?.role === 'owner' || user?.role === 'admin';
+  const canEditShippingFee = isAdmin || !!((user as any)?.dashboardPermissions?.can_edit_shipping_fee);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -410,6 +411,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
       totalPrice: isNewOrder ? (order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00") : (prev.totalPrice ?? (order.totalPrice ? (order.totalPrice / 100).toFixed(2) : "0.00")),
       variantInfo: isNewOrder ? (variantFallback !== "null" ? variantFallback : "") : (prev.variantInfo ?? (variantFallback !== "null" ? variantFallback : "")),
       commentOrder: isNewOrder ? (order.commentOrder || "") : (prev.commentOrder ?? order.commentOrder ?? ""),
+      shippingCost: isNewOrder ? ((order.shippingCost ?? 0) / 100).toFixed(2) : (prev.shippingCost ?? ((order.shippingCost ?? 0) / 100).toFixed(2)),
     }));
     const mappedItems = (order.items || []).map((item: any) => ({
       ...item,
@@ -477,6 +479,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
         rawProductName: fields.rawProductName || null,
         totalPrice: Math.round(parseFloat(fields.totalPrice || "0") * 100),
         commentOrder: fields.commentOrder || null,
+        ...(canEditShippingFee ? { shippingCost: Math.round(parseFloat(fields.shippingCost || "0") * 100) } : {}),
       };
       const res = await apiRequest("PATCH", `/api/orders/${order.id}`, payload);
       const updatedOrder = await res.json();
@@ -941,6 +944,28 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
                   );
                 })()}
               </Field>
+
+              {canEditShippingFee && (
+                <Field label="Frais de livraison">
+                  <div className="flex gap-2 items-center">
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={fields.shippingCost}
+                      onChange={e => set("shippingCost", e.target.value)}
+                      className={cn(inputCls, "flex-1 bg-gray-50 text-right font-bold")}
+                      style={{ color: NAVY }}
+                      placeholder="0.00"
+                      data-testid="input-shipping-cost"
+                    />
+                    <span
+                      className="shrink-0 text-xs font-bold px-3 py-2 rounded-lg text-white"
+                      style={{ backgroundColor: NAVY }}
+                    >DH</span>
+                  </div>
+                </Field>
+              )}
 
               <Field label="Taille / Variant">
                 <div className="relative">

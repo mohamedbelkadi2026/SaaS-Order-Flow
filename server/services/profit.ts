@@ -11,6 +11,7 @@ import {
 } from "@shared/schema";
 import { eq, and, gte, lte, inArray, sql } from "drizzle-orm";
 import { splitVariant } from "./variants";
+import { isDeliveredStatus } from "@shared/order-status-sets";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -260,7 +261,7 @@ export async function computeProfitability(
 
     const s = statsMap[key];
     const status = ((order as any).status || '').toLowerCase().trim();
-    const isDelivered = status === 'delivered' || status === 'livré' || status === 'livrée';
+    const isDelivered = isDeliveredStatus(status);
 
     const statGuardKey = `stat_${key}_${item.orderId}`;
     if (!countedOrderStatForProduct.has(statGuardKey)) {
@@ -376,7 +377,7 @@ export async function computeProfitability(
                 : raw || "Non défini";
     if (!platMap[label]) platMap[label] = { platform: label, orders: 0, delivered: 0, revenue: 0, adSpend: 0, netProfit: 0, roas: 0, cpo: 0 };
     const p = platMap[label];
-    const isDel = ["delivered","livré","livrée"].includes(((o as any).status || "").toLowerCase());
+    const isDel = isDeliveredStatus((o as any).status);
     p.orders++;
     if (isDel) {
       p.delivered++;
@@ -409,6 +410,10 @@ export async function computeProfitability(
     }),
     { totalOrders: 0, deliveredOrders: 0, revenue: 0, productCost: 0, shippingCost: 0, packagingCost: 0, confirmationCost: 0, adSpend: 0, globalAdSpend, netProfit: 0 }
   );
+  // Override order counts from storeOrders directly so totals match the
+  // dashboard (per-product rows only count orders that have orderItems rows).
+  totals.totalOrders     = storeOrders.length;
+  totals.deliveredOrders = storeOrders.filter(o => isDeliveredStatus((o as any).status)).length;
 
   return { products: dedupedProducts, platforms, totals, globalAdSpend };
 }

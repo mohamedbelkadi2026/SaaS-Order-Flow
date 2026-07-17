@@ -63,3 +63,13 @@ export function isConfirmedCumulative(status: string | null | undefined): boolea
   if (NOT_CONFIRMED_STATUSES.has(status)) return false;
   return true;
 }
+
+/**
+ * Returns true for any "livré / delivered" status, case-insensitively.
+ * Use this everywhere instead of inline === comparisons so the logic
+ * stays in sync with DELIVERED_STATUS_SET.
+ */
+export function isDeliveredStatus(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return DELIVERED_STATUS_SET.has(status) || DELIVERED_STATUS_SET.has(status.toLowerCase());
+}

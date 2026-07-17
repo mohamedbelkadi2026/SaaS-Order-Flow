@@ -6756,6 +6756,18 @@ function ensureHeaders(sheet) {
       });
       const data = schema.parse(req.body);
 
+      // ── Authorize shippingCost edits ────────────────────────────────────────
+      if (data.shippingCost !== undefined) {
+        const role = req.user!.role;
+        const isAdmin = role === 'owner' || role === 'admin' || role === 'superadmin';
+        if (!isAdmin) {
+          const perms: any = (req.user as any).dashboardPermissions || {};
+          if (!perms.can_edit_shipping_fee) {
+            return res.status(403).json({ message: "Permission insuffisante pour modifier les frais de livraison." });
+          }
+        }
+      }
+
       // ── Validate scheduledFor when transitioning to confirme_reporte ───
       // Server-side rule mirrors the client modal: must be strictly after today
       // in Casablanca local time (>= tomorrow Casablanca). We parse YYYY-MM-DD

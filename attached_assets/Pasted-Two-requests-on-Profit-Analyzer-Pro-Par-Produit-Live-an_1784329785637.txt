@@ -1,0 +1,48 @@
+Two requests on Profit Analyzer Pro (Par Produit Live) and order delivery fees. Do NOT change 
+unrelated features.
+
+REQUEST 1 — PROFIT ANALYZER MUST COUNT EVERY DELIVERED ORDER (webhook OR manual), matching the 
+Dashboard.
+Problem: for the same period (01/07→17/07) the Dashboard shows Livrées = 159 but Profit 
+Analyzer (Par Produit Live) shows Total Livrées = 129, and total orders differ (238 vs 199). 
+The two endpoints use DIFFERENT "delivered" definitions and different order sets:
+ - Dashboard /api/stats/filtered uses DELIVERED_STATUSES = ['delivered','livré','livre',
+   'livrée','Livré','Livrée'].
+ - server/services/profit.ts (used by /api/products/profitability) counts delivered only if 
+   status is exactly 'delivered' | 'livré' | 'livrée' (missing 'livre', and case/source 
+   sensitive).
+FIX:
+ a) Create ONE shared isDelivered(status) helper (accent/case-insensitive, source-agnostic) 
+    and use it in BOTH the Dashboard and profit.ts. It must treat as delivered every 
+    delivered-equivalent status regardless of whether it came from a carrier webhook or manual 
+    action (delivered, livré, livre, livrée, Livré, Livrée, and EC "Livré au client" which we 
+    map to internal 'delivered'). Reuse the same internal 'delivered' mapping we already apply 
+    for EC/Ozon webhooks.
+ b) Reconcile the ORDER SET: /api/products/profitability must consider the same orders as the 
+    dashboard for the same period (same date basis and same store scoping). Investigate why 
+    totals differ (238 vs 199) — likely a different date field or an extra filter — and align 
+    them so both pages agree on delivered count for the same date range.
+ c) VERIFY: for a fixed period, Dashboard Livrées == Profit Analyzer Total Livrées.
+
+REQUEST 2 — LET DESIGNATED USERS EDIT AN ORDER'S DELIVERY FEE, AND HAVE PROFIT COUNT IT.
+Context: some orders are delivered by the merchant's own driver, so a user needs to enter the 
+"Frais de livraison" (order.shippingCost) per order. Today only admins can edit it.
+FIX:
+ a) Add a per-user permission "can_edit_shipping_fee" (store it in users.dashboardPermissions 
+    or users.settings jsonb). A Super Admin (and store owner/admin) can grant it to specific 
+    users from the team management / super-admin UI — reuse the existing per-store 
+    "allowAttachTracking" toggle pattern, but per USER for this one.
+ b) In the order-details modal, show the editable "Frais de livraison" field when the current 
+    user is admin OR has can_edit_shipping_fee. On save, PATCH the order's shippingCost (in 
+    centimes). Server endpoint must authorize by that permission + tenant/store check.
+ c) Profit Analyzer (Par Produit Live) must use order.shippingCost as the "Frais livr." per 
+    order (sum per product), so manually-entered fees flow into CA net, bénéfice net and 
+    margin. Confirm the live mode reads the live order.shippingCost (not only imported-file 
+    values). Recompute totals live after an edit.
+
+VERIFY: granting a user the permission lets them set a delivery fee on a delivered order; that 
+fee immediately reflects in Profit Analyzer's Frais livr. + Bénéfice net for that product; 
+Dashboard and Profit Analyzer agree on the delivered count.
+
+Deploy to main. If any DB column/permission is added, apply the migration to the production 
+Railway DB in the same deploy.
