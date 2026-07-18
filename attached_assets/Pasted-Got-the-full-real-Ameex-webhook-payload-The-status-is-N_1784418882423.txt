@@ -1,0 +1,38 @@
+Got the full real Ameex webhook payload. The status is NOT at top level. Real shape:
+{
+  "event": "package_updated",
+  "payload": {
+    "order_id": "CAS466468/D0F90472672",   // <-- tracking number
+    "status": "INHOUSE",                     // <-- status code
+    "description": "...",
+    "return_status": false, "return_status_date": null,
+    "reported_date": null,
+    "current_driver": { "email": "...", "phone": "..." }
+  },
+  "code_colis": "...", "commentaire": "...", "date_reporte_colis": "...", "timestamp": "..."
+}
+
+FIX the ameex/olivraison handler in processCarrierWebhook:
+1) TRACKING id = payload.order_id (parse `payload` if it's a JSON string). Match order by 
+   order.trackNumber == payload.order_id; fallback by phone (payload.current_driver.phone is the 
+   DRIVER's phone, NOT the customer — do NOT match on that; use the ORDER's customer phone only 
+   if Ameex ever sends it, otherwise match by order_id/code_colis). Also try top-level code_colis 
+   as a secondary key. Backfill real order_id onto trackNumber when the stored one is an 
+   "AMEEX-PENDING-" placeholder.
+2) STATUS = payload.status. AMEEX_STATUS_MAP (payload.status -> internal):
+     DELIVERED                         -> delivered
+     INHOUSE                           -> in_progress   (received at hub/warehouse)
+     INDELIVERY / DISTRIBUTION / OUT   -> in_progress   (out for delivery)
+     IN_PROGRESS / PENDING / PICKED    -> in_progress
+     unknown                           -> in_progress   (never guess delivered/refused)
+   ALSO: if payload.return_status === true  -> retourné (overrides), and if payload.reported_date 
+   (or top-level date_reporte_colis) is set -> in_progress + label "Reporté".
+   Store a readable label (payload.description or a French name for the status) in commentStatus. 
+   I'll refine the full status list with Ameex, so keep the map centralized and default unknown 
+   codes to in_progress + log every distinct payload.status seen with counts.
+3) Store the FULL parsed payload (with order_id + status) in integration_logs so replay works.
+4) REPLAY "Synchroniser les statuts": iterate stored events, read payload.order_id + 
+   payload.status, match + update. Report counts. (Old events that predate this fix and lack 
+   order_id can't be recovered — new ones will.)
+
+VERIFY: a real incoming ameex

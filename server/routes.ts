@@ -3833,10 +3833,34 @@ export async function registerRoutes(
     console.log(`[WEBHOOK-INCOMING]: Received from ${carrierName} (store ${storeId}) — keys: ${Object.keys(body).join(', ')}`);
     console.log(`[WEBHOOK-INCOMING]: Full payload: ${rawPayload}`);
 
+    // ── Parse Ameex nested payload FIRST — needed for order_id below ─────────
+    // Real Ameex body shape:
+    //   { event: "package_updated",
+    //     payload: { order_id, status, description, return_status,
+    //                return_status_date, reported_date, current_driver },
+    //     code_colis, commentaire, date_reporte_colis, timestamp }
+    // NOTE: body.event is ALWAYS "package_updated" — it is NOT the status.
+    //       The real status enum is inside body.payload.status.
+    //       current_driver.phone is the DRIVER phone — never use for order matching.
+    let ameexNestedPayload: Record<string, any> = {};
+    if (body.code_colis || body.event === 'package_updated') {
+      if (body.payload) {
+        if (typeof body.payload === 'object') {
+          ameexNestedPayload = body.payload as Record<string, any>;
+        } else {
+          try { ameexNestedPayload = JSON.parse(String(body.payload)); } catch { /* ignore */ }
+        }
+      }
+      console.log(`[AMEEX-SHAPE] event="${body.event}" code_colis="${body.code_colis}" commentaire="${body.commentaire || ''}"`);
+      console.log(`[AMEEX-SHAPE] payload.order_id="${ameexNestedPayload.order_id || ''}" payload.status="${ameexNestedPayload.status || ''}" return_status=${ameexNestedPayload.return_status}`);
+      console.log(`[AMEEX-SHAPE] payload.description="${ameexNestedPayload.description || ''}" reported_date="${ameexNestedPayload.reported_date || body.date_reporte_colis || ''}"`);
+    }
+
     // ── Extract all possible identifiers from the payload ─────────────────
     // Carriers differ: some send tracking IDs, some send our order reference
     const trackingNumber = (
-      body.code_colis     ||  // Ameex REAL webhook field (actual payload shape)
+      ameexNestedPayload.order_id ||  // Ameex: real tracking id lives in nested payload.order_id
+      body.code_colis     ||          // Ameex: top-level field (secondary)
       body.CODE           ||  // Ameex urlencoded webhook field (documented API)
       body.code           ||  // lowercase variant
       body.traking        ||  // Digylog field (typo in their API)
@@ -3897,27 +3921,6 @@ export async function registerRoutes(
       ) ||
       ""
     ).trim();
-
-    // ── Ameex real payload shape: extract event code + log full shape ────────
-    // When Ameex posts via olivraison, the actual fields are:
-    //   code_colis, event, payload (nested obj), commentaire, date_reporte_colis, timestamp
-    // This block runs before any status mapping so we can see the full shape.
-    let ameexEventCode = '';
-    let ameexNestedPayload: Record<string, any> = {};
-    if (body.code_colis) {
-      // Parse nested "payload" — may be a JSON string or already an object
-      if (body.payload) {
-        if (typeof body.payload === 'object') {
-          ameexNestedPayload = body.payload;
-        } else {
-          try { ameexNestedPayload = JSON.parse(String(body.payload)); } catch { /* ignore */ }
-        }
-      }
-      ameexEventCode = (body.event || '').toString().toUpperCase().trim();
-      console.log(`[AMEEX-SHAPE] code_colis="${body.code_colis}" event="${body.event}" commentaire="${body.commentaire || ''}"`);
-      console.log(`[AMEEX-SHAPE] date_reporte_colis="${body.date_reporte_colis || ''}" timestamp="${body.timestamp || ''}"`);
-      console.log(`[AMEEX-SHAPE] nested payload: ${JSON.stringify(ameexNestedPayload).slice(0, 500)}`);
-    }
 
     // rawStatus is normalised (lowercased + trimmed) for fuzzy matching only
     const rawStatus = rawText.toLowerCase().trim();
@@ -4255,55 +4258,70 @@ export async function registerRoutes(
     // Anything else also falls through to "in_progress" (the default above).
     // The commentStatus column carries the real display text shown in the Suivi tab.
 
-    // ── Ameex status code override (takes priority over text fuzzy match) ──
-    // Ameex sends uppercase enum codes in STATUT (NOT French text labels).
-    // This map is the single source of truth for STATUT → internal status.
+    // ── Ameex status mapping — single authoritative block ────────────────────
+    // Real shape: payload.status holds the enum code; body.event is always
+    // "package_updated" (not a status). return_status=true overrides to retourné.
+    // reported_date/date_reporte_colis set → keep in_progress + "Reporté" label.
+    // Do NOT use current_driver.phone for matching — that is the driver, not customer.
     const AMEEX_WEBHOOK_STATUS_MAP: Record<string, string> = {
-      // Terminal: delivered
       'DELIVERED':    'delivered',
-      // Terminal: refused / cancelled
+      'INHOUSE':      'in_progress',      // received at hub/warehouse
+      'INDELIVERY':   'in_progress',      // out for delivery (variant 1)
+      'DISTRIBUTION': 'in_progress',      // out for delivery (variant 2)
+      'OUT':          'in_progress',      // out for delivery (variant 3)
+      'IN_PROGRESS':  'in_progress',
+      'PENDING':      'in_progress',
+      'PICKED':       'in_progress',      // picked up from merchant
+      'PICKUP':       'Attente De Ramassage',
       'REFUSED':      'refused',
       'REJECTED':     'refused',
       'CANCELED':     'refused',
       'CANCELLED':    'refused',
       'ANNULE':       'refused',
-      // Terminal: returned
       'RETURNED':     'retourné',
       'RETOUR':       'retourné',
       'RTS':          'retourné',
-      // In-progress: out for delivery
-      'DISTRIBUTION': 'in_progress',
-      // In-progress: any other IN_PROGRESS sub-status (POSTPONED, NO_ANSWER_TEAM, etc.)
-      'IN_PROGRESS':  'in_progress',
-      // Legacy aliases (kept for backward compat)
-      'PICKUP':       'Attente De Ramassage',
       'NO_ANSWER':    'Injoignable',
     };
-    // Read STATUT field — Ameex sends it UPPERCASE in urlencoded body.
-    // Also try lowercase for safety (express.urlencoded is case-sensitive).
-    const ameexCode = (body.STATUT || body.statut || '').toString().toUpperCase().trim();
-    if (ameexCode && AMEEX_WEBHOOK_STATUS_MAP[ameexCode]) {
-      newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexCode];
-      console.log(`[AMEEX-STATUS] STATUT="${ameexCode}" → internal="${newStatus}" STATUT_NAME="${body.STATUT_NAME || body.statut_name || ''}"`);
-    }
 
-    // ── Ameex real payload: status from body.event enum code ─────────────────
-    // Takes priority over both the Digylog fuzzy matcher AND the EC mapper.
-    // body.event holds the uppercase enum code (DELIVERED, DISTRIBUTION, etc.).
-    // body.commentaire holds the French label → store it in commentStatus.
-    if (body.code_colis) {
-      if (ameexEventCode && AMEEX_WEBHOOK_STATUS_MAP[ameexEventCode]) {
-        newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexEventCode];
-        console.log(`[AMEEX-STATUS] event="${ameexEventCode}" → internal="${newStatus}" commentaire="${body.commentaire || ''}"`);
-      } else if (ameexEventCode) {
-        // Unknown event code — keep in_progress, log for future mapping
-        console.warn(`[AMEEX-STATUS] Unknown event code "${ameexEventCode}" — defaulting to in_progress`);
+    if (body.code_colis || body.event === 'package_updated') {
+      const ameexPayloadStatus = (ameexNestedPayload.status || '').toString().toUpperCase().trim();
+      const ameexDescription   = ameexNestedPayload.description || body.commentaire || '';
+      const ameexReturnStatus  = ameexNestedPayload.return_status;
+      const ameexReportedDate  = ameexNestedPayload.reported_date || body.date_reporte_colis || null;
+
+      console.log(`[AMEEX-STATUS] payload.status="${ameexPayloadStatus}" return_status=${ameexReturnStatus} reported_date="${ameexReportedDate || ''}"`);
+
+      // return_status=true overrides everything — package is being returned
+      if (ameexReturnStatus === true) {
+        newStatus = 'retourné';
+        console.log(`[AMEEX-STATUS] return_status=true → retourné`);
+      } else if (ameexPayloadStatus && AMEEX_WEBHOOK_STATUS_MAP[ameexPayloadStatus]) {
+        newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexPayloadStatus];
+        console.log(`[AMEEX-STATUS] payload.status="${ameexPayloadStatus}" → internal="${newStatus}"`);
+      } else if (ameexPayloadStatus) {
+        console.warn(`[AMEEX-STATUS] Unknown payload.status="${ameexPayloadStatus}" — defaulting to in_progress (log this for future map expansion)`);
         newStatus = 'in_progress';
       }
-      // Override commentStatus with the more human-readable commentaire if present
-      if (body.commentaire) {
-        await storage.updateOrder(order.id, { commentStatus: body.commentaire });
+
+      // Postpone date set → force in_progress + readable label (unless already terminal)
+      const TERMINAL_SET = new Set(['delivered', 'refused', 'retourné']);
+      if (ameexReportedDate && !TERMINAL_SET.has(newStatus)) {
+        newStatus = 'in_progress';
+        await storage.updateOrder(order.id, { commentStatus: `Reporté — ${ameexReportedDate}` });
+        console.log(`[AMEEX-STATUS] reported_date="${ameexReportedDate}" → in_progress + "Reporté" label`);
+      } else if (ameexDescription) {
+        await storage.updateOrder(order.id, { commentStatus: ameexDescription });
       }
+    }
+
+    // ── Legacy token-based Ameex path (old STATUT field, kept for backward compat) ──
+    const ameexLegacyCode = (!body.code_colis && body.event !== 'package_updated')
+      ? (body.STATUT || body.statut || '').toString().toUpperCase().trim()
+      : '';
+    if (ameexLegacyCode && AMEEX_WEBHOOK_STATUS_MAP[ameexLegacyCode]) {
+      newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexLegacyCode];
+      console.log(`[AMEEX-STATUS-LEGACY] STATUT="${ameexLegacyCode}" → internal="${newStatus}"`);
     }
 
     // ── Express Coursier (aliased "olivraison") status override ───────────
@@ -9107,21 +9125,43 @@ function ensureHeaders(sheet) {
         .orderBy(desc(integrationLogs.createdAt))
         .limit(500);
 
-      // Parse each log entry to extract CODE + STATUT + STATUT_S + STATUT_NAME
+      // Parse each log entry — handles both payload formats:
+      //   NEW (real Ameex via olivraison): { event:"package_updated", payload:{order_id, status,
+      //     description, return_status, reported_date}, code_colis, commentaire, ... }
+      //   OLD (token-based route):        { CODE, STATUT, STATUT_S, STATUT_NAME }
       type AmeexEvent = { code: string; statut: string; statutS: string; statutName: string };
       const parseAmeexLog = (row: { payload: string | null; message: string | null }): AmeexEvent | null => {
         if (row.payload) {
           try {
             const p = JSON.parse(row.payload);
+
+            // ── New real Ameex shape (from olivraison webhook) ────────────────
+            if (p.code_colis || p.event === 'package_updated') {
+              let nested: Record<string, any> = {};
+              if (p.payload) {
+                if (typeof p.payload === 'object') nested = p.payload;
+                else try { nested = JSON.parse(String(p.payload)); } catch { /* ignore */ }
+              }
+              const code   = (nested.order_id || p.code_colis || '').toString().trim();
+              // return_status overrides status
+              const rawStatut = nested.return_status === true ? 'RETURNED' : (nested.status || '');
+              const statut = rawStatut.toString().trim();
+              const label  = nested.description || p.commentaire || statut;
+              if (code && statut) return { code, statut, statutS: '', statutName: label };
+              // code without status — still useful so we can find the order
+              if (code) return { code, statut: 'IN_PROGRESS', statutS: '', statutName: p.commentaire || 'En cours' };
+            }
+
+            // ── Old token-based Ameex format ──────────────────────────────────
             const code = (p.CODE || '').toString().trim();
             const statut = (p.STATUT || '').toString().trim();
             if (code && statut) return { code, statut, statutS: p.STATUT_S || '', statutName: p.STATUT_NAME || statut };
           } catch { /* fall through */ }
         }
-        // Old format: parse message string "Ameex webhook: CODE=X STATUT=Y"
+        // Oldest format: parse message string "Ameex webhook: CODE=X STATUT=Y"
         const msg = row.message || '';
-        const codeM  = msg.match(/CODE=([^\s]+)/);
-        const statM  = msg.match(/STATUT=([^\s/(]+)/);
+        const codeM = msg.match(/CODE=([^\s]+)/);
+        const statM = msg.match(/STATUT=([^\s/(]+)/);
         if (codeM?.[1] && statM?.[1]) {
           return { code: codeM[1], statut: statM[1], statutS: '', statutName: statM[1] };
         }

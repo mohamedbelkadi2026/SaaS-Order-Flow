@@ -59,6 +59,7 @@ export const AMEEX_STATUS_MAP: Record<string, string> = {
   'REFUSED':      'refused',
   'REJECTED':     'refused',
   'CANCELED':     'refused',
+  'CANCELLED':    'refused',
   'ANNULE':       'refused',
 
   // ── Terminal: returned ────────────────────────────────────────────────────
@@ -66,12 +67,22 @@ export const AMEEX_STATUS_MAP: Record<string, string> = {
   'RETOUR':       'retourné',
   'RTS':          'retourné',         // Return to Sender
 
-  // ── In progress (out for delivery) ───────────────────────────────────────
-  'DISTRIBUTION': 'in_progress',
+  // ── In progress: hub / warehouse ─────────────────────────────────────────
+  'INHOUSE':      'in_progress',      // received at sorting hub
 
-  // ── In progress (waiting / postponed / no-answer / generic) ──────────────
-  // STATUT_S sub-statuses: POSTPONED, NO_ANSWER_TEAM, etc. — all in_progress
+  // ── In progress: out for delivery ────────────────────────────────────────
+  'INDELIVERY':   'in_progress',      // out for delivery (variant 1)
+  'DISTRIBUTION': 'in_progress',      // out for delivery (variant 2)
+  'OUT':          'in_progress',      // out for delivery (variant 3)
+
+  // ── In progress: waiting / picked / postponed / generic ──────────────────
   'IN_PROGRESS':  'in_progress',
+  'PENDING':      'in_progress',
+  'PICKED':       'in_progress',      // picked up from merchant
+
+  // ── Named sub-statuses ────────────────────────────────────────────────────
+  'PICKUP':       'Attente De Ramassage',
+  'NO_ANSWER':    'Injoignable',
 };
 
 /**
