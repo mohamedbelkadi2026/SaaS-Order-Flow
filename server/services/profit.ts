@@ -99,13 +99,20 @@ export function resolveDateRange(opts: {
     endDate = new Date(); endDate.setDate(endDate.getDate() - 1); endDate.setHours(23, 59, 59, 999);
   } else if (opts.dateRange === '7days') {
     cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6); cutoff.setHours(0, 0, 0, 0);
+  } else if (opts.dateRange === 'month') {
+    // Safety net: if the frontend somehow still sends dateRange=month (it should
+    // now always send explicit dateFrom/dateTo), treat it identically to how
+    // the dashboard treats "Ce mois": first of month → end of today.
+    cutoff  = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
   } else if (opts.dateRange === 'lastmonth') {
     cutoff  = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     endDate = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
   } else if (opts.dateRange === 'all') {
     cutoff = new Date('2020-01-01');
   } else {
-    cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
+    // Default: current month (same as 'month' case)
+    cutoff = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
   }
 
   return { cutoff, endDate };

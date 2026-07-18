@@ -1,0 +1,39 @@
+Working from the current codebase. Two things.
+
+PART A — FIX PROFIT ANALYZER "Total Livrées" (shows 129 but Dashboard + Livrées page show 159 
+for the same period). The delivered DEFINITION is now shared (isDeliveredStatus), but the two 
+pages STILL disagree. Root causes I found:
+ 1) Different matchers: /api/stats/filtered (dashboard) counts delivered with 
+    DELIVERED_STATUSES_SET.has(o.status) (EXACT string match), while 
+    server/services/profit.ts uses isDeliveredStatus(o.status) (NORMALIZED). Unify: make the 
+    dashboard ALSO use isDeliveredStatus() from @shared/order-status-sets everywhere it counts 
+    delivered — remove the exact `.has()` path. One matcher, used by both.
+ 2) Different order sets / date range: computeProfitability's resolveDateRange() has NO case 
+    for dateRange === 'month' (the value the profit frontend sends), so it falls into the else 
+    branch with endDate = new Date() (now), while the dashboard filters by explicit 
+    dateFrom/dateTo (end of day). This makes the two consider different orders (dashboard 240 
+    vs profit 201). FIX: 
+      - Either add an explicit 'month' case to resolveDateRange (cutoff = 1st of month 00:00 
+        local, endDate = end of TODAY 23:59:59 local), AND
+      - Better: make the profit frontend (profit-analyzer.tsx buildLiveParams) send the SAME 
+        explicit dateFrom/dateTo the dashboard sends for each preset, so both backends receive 
+        identical boundaries. Map 'month'→(1st, today), 'lastmonth', '7days', 'today' 
+        consistently with the dashboard.
+ 3) DIAGNOSTIC (do this and paste results): for a fixed period, log the set of order IDs that 
+    the dashboard counts as delivered but profit does NOT (and vice-versa). This pins the exact 
+    ~30 missing orders and confirms whether it's the matcher or the date set. Report the IDs + 
+    their status + createdAt.
+ VERIFY: for the same period, Dashboard Livrées === Profit Analyzer Total Livrées === Livrées 
+ page count (expected 159 == 159 == 159).
+
+PART B — VERIFY the manual "Frais de livraison" feature is complete and live:
+ - Confirm the Super Admin per-user toggle "Modifier Frais de livraison" (can_edit_shipping_fee 
+   in users.dashboardPermissions) renders in super-admin.tsx and persists.
+ - Confirm a user WITH the permission can edit an order's Frais de livraison in the 
+   order-details modal, it saves to order.shippingCost, and a user WITHOUT it cannot.
+ - Confirm Profit Analyzer (Live) sums order.shippingCost as "Frais livr." per product, so BOTH 
+   carrier-auto fees AND manual fees are counted — do NOT change the carrier auto-fee path.
+ - Ensure any related migration (dashboardPermissions/notif columns) is applied to the 
+   PRODUCTION Railway DB in this deploy.
+
+Deploy to main. Paste the PART A diagnostic (the mismatched order IDs) and confirm 159==159.

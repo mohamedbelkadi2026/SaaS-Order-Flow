@@ -293,10 +293,37 @@ export default function ProfitAnalyzer() {
 
   const buildLiveParams = () => {
     const p = new URLSearchParams();
-    if (liveDateFrom && liveShowCustom) {
+    if (liveShowCustom && liveDateFrom) {
       p.set('dateFrom', liveDateFrom);
       p.set('dateTo', liveDateTo || new Date().toISOString().slice(0, 10));
-    } else { p.set('dateRange', liveDateRange); }
+    } else {
+      // Always send explicit dateFrom/dateTo so both the dashboard and the
+      // profit backend use identical date boundaries — same local-calendar
+      // constructor, same end-of-day 23:59:59. Only 'all' keeps dateRange=all.
+      const toStr = (d: Date) => d.toISOString().slice(0, 10);
+      const today = new Date();
+      const todayStr = toStr(today);
+      if (liveDateRange === 'today') {
+        p.set('dateFrom', todayStr);
+        p.set('dateTo',   todayStr);
+      } else if (liveDateRange === '7days') {
+        const from = new Date(today); from.setDate(from.getDate() - 6);
+        p.set('dateFrom', toStr(from));
+        p.set('dateTo',   todayStr);
+      } else if (liveDateRange === 'month') {
+        const from = new Date(today.getFullYear(), today.getMonth(), 1);
+        p.set('dateFrom', toStr(from));
+        p.set('dateTo',   todayStr);
+      } else if (liveDateRange === 'lastmonth') {
+        const from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const to   = new Date(today.getFullYear(), today.getMonth(), 0);
+        p.set('dateFrom', toStr(from));
+        p.set('dateTo',   toStr(to));
+      } else {
+        // 'all' — keep as dateRange so the backend returns all-time data
+        p.set('dateRange', 'all');
+      }
+    }
     return p.toString();
   };
 

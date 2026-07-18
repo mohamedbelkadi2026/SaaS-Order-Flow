@@ -9,7 +9,7 @@ import { db } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { getValidAccessToken } from "./cron/sync-gsheets";
 import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-time";
-import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative } from "@shared/order-status-sets";
+import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
 import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
@@ -707,7 +707,7 @@ export async function registerRoutes(
     // appear. DELIVERED/SHIPPED are imported from @shared/order-status-sets.
     // Reused for EVERY metric below (cards, Statistiques, products table,
     // commissions) so no metric can drift from another (see order-status-sets.ts).
-    const DELIVERED_STATUSES_SET = new Set<string>(DELIVERED_STATUSES);
+    // DELIVERED_STATUSES_SET replaced by isDeliveredStatus() — accent/case-insensitive
     const SHIPPED_STATUSES_SET = new Set<string>(SHIPPED_STATUSES);
     let nouveau = 0, confirme = 0, inProgress = 0, delivered = 0, refused = 0;
     let injoignable = 0, annuleFake = 0, annuleFauxNumero = 0, annuleDouble = 0, boiteVocale = 0;
@@ -721,7 +721,7 @@ export async function registerRoutes(
     );
 
     // Real COGS: use order_items × products.cost_price, fallback to orders.product_cost
-    const deliveredInFilter = allOrders.filter(o => DELIVERED_STATUSES_SET.has(o.status));
+    const deliveredInFilter = allOrders.filter(o => isDeliveredStatus(o.status));
     const statsCogsMap = await storage.computeOrdersCOGS(
       deliveredInFilter.map(o => ({ id: o.id, productCost: (o as any).productCost ?? 0 }))
     );
@@ -779,10 +779,10 @@ export async function registerRoutes(
       // cohort (createdAt-based), always computed the same regardless of
       // dateType. When dateType==='shipping' the shipping/delivery KPIs
       // below are recomputed from shippedCohortOrders instead of this value.
-      if (DELIVERED_STATUSES_SET.has(o.status)) delivered++;
+      if (isDeliveredStatus(o.status)) delivered++;
 
       // Revenue & costs: only from delivered orders
-      if (DELIVERED_STATUSES_SET.has(o.status)) {
+      if (isDeliveredStatus(o.status)) {
         revenue += (o.totalPrice ?? 0);
         totalProductCost += statsCogsMap.get(o.id) ?? 0;
         totalShipping += (o.shippingCost ?? 0);
@@ -815,9 +815,9 @@ export async function registerRoutes(
     const RETURNED_STATUSES = new Set(['refused', 'retourné', 'Retour Recu']);
     const shippedOrders = shippedCohortOrders.filter(o => SHIPPED_STATUSES_SET.has(o.status) || (o as any).trackNumber);
     totalShipped = shippedOrders.length;
-    deliveredShipped = shippedOrders.filter(o => DELIVERED_STATUSES_SET.has(o.status)).length;
+    deliveredShipped = shippedOrders.filter(o => isDeliveredStatus(o.status)).length;
     refusedShipped = shippedOrders.filter(o => RETURNED_STATUSES.has(o.status)).length;
-    pendingShipped = shippedOrders.filter(o => !DELIVERED_STATUSES_SET.has(o.status) && !RETURNED_STATUSES.has(o.status)).length;
+    pendingShipped = shippedOrders.filter(o => !isDeliveredStatus(o.status) && !RETURNED_STATUSES.has(o.status)).length;
 
     // Per-carrier breakdown — recomputed from the same shipping/delivery
     // cohort (a carrier shipment always has a tracking number).
@@ -826,7 +826,7 @@ export async function registerRoutes(
         const carrier = (o as any).shippingProvider || 'Inconnu';
         if (!byCarrier[carrier]) byCarrier[carrier] = { total: 0, delivered: 0, pending: 0, refused: 0 };
         byCarrier[carrier].total++;
-        if (DELIVERED_STATUSES_SET.has(o.status)) byCarrier[carrier].delivered++;
+        if (isDeliveredStatus(o.status)) byCarrier[carrier].delivered++;
         else if (RETURNED_STATUSES.has(o.status)) byCarrier[carrier].refused++;
         else byCarrier[carrier].pending++;
       }
@@ -848,7 +848,7 @@ export async function registerRoutes(
       if (!cityMap[city]) cityMap[city] = { name: city, total: 0, confirmed: 0, delivered: 0 };
       cityMap[city].total++;
       if (isConfirmedCumulative(o.status)) cityMap[city].confirmed++;
-      if (DELIVERED_STATUSES_SET.has(o.status)) cityMap[city].delivered++;
+      if (isDeliveredStatus(o.status)) cityMap[city].delivered++;
     });
     const cityStats = Object.values(cityMap).sort((a, b) => b.delivered - a.delivered).slice(0, 10);
 
@@ -885,7 +885,7 @@ export async function registerRoutes(
         if (dailyMap[day] !== undefined) {
           dailyMap[day].total++;
           if (isConfirmedCumulative(o.status)) dailyMap[day].confirmed++;
-          if (DELIVERED_STATUSES_SET.has(o.status)) dailyMap[day].delivered++;
+          if (isDeliveredStatus(o.status)) dailyMap[day].delivered++;
         }
       }
     });
@@ -922,7 +922,7 @@ export async function registerRoutes(
       if (isConfirmedCumulative(o.status)) rawProductMap[key].confirme++;
       // inProgress = all orders currently with the carrier
       if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(o.status)) rawProductMap[key].inProgress++;
-      if (DELIVERED_STATUSES_SET.has(o.status)) rawProductMap[key].delivered++;
+      if (isDeliveredStatus(o.status)) rawProductMap[key].delivered++;
     });
     const productPerformance = Object.values(rawProductMap).sort((a, b) => b.total - a.total);
     const topProducts = productPerformance.slice(0, 10);
@@ -11018,6 +11018,54 @@ function ensureHeaders(sheet) {
     } catch (err) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
       throw err;
+    }
+  });
+
+  /* ── Super Admin: Delivered-count mismatch diagnostic ──────────── */
+  // GET /api/admin/diagnostic/delivered-mismatch?storeId=N&dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD
+  // Returns orders in range where dashboard matcher (exact SET) and profit matcher
+  // (isDeliveredStatus, normalised) disagree — used to confirm the 159==159 fix.
+  app.get("/api/admin/diagnostic/delivered-mismatch", requireSuperAdmin, async (req: any, res: any) => {
+    try {
+      const { storeId, dateFrom, dateTo } = req.query as Record<string, string>;
+      if (!storeId || !dateFrom || !dateTo) {
+        return res.status(400).json({ message: "storeId, dateFrom, dateTo required" });
+      }
+      const sid = Number(storeId);
+      const [fy, fm, fd] = dateFrom.split('-').map(Number);
+      const [ty, tm, td] = dateTo.split('-').map(Number);
+      const cutoff  = new Date(fy, fm - 1, fd,  0,  0,  0,   0);
+      const endDate = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+
+      const allOrders = await storage.getOrdersByStore(sid);
+      const inRange   = allOrders.filter((o: any) => {
+        const d = o.createdAt ? new Date(o.createdAt) : null;
+        return d && d >= cutoff && d <= endDate;
+      });
+
+      const DELIVERED_SET_EXACT = new Set<string>(DELIVERED_STATUSES);
+      const exactDelivered  = inRange.filter((o: any) => DELIVERED_SET_EXACT.has(o.status));
+      const normedDelivered = inRange.filter((o: any) => isDeliveredStatus(o.status));
+
+      const exactIds  = new Set(exactDelivered.map((o: any)  => o.id));
+      const normedIds = new Set(normedDelivered.map((o: any) => o.id));
+
+      const inExactNotNormed = exactDelivered.filter((o: any)  => !normedIds.has(o.id))
+        .map((o: any) => ({ id: o.id, status: o.status, createdAt: o.createdAt }));
+      const inNormedNotExact = normedDelivered.filter((o: any) => !exactIds.has(o.id))
+        .map((o: any) => ({ id: o.id, status: o.status, createdAt: o.createdAt }));
+
+      res.json({
+        period: `${dateFrom} → ${dateTo}`,
+        totalInRange:     inRange.length,
+        exactDelivered:   exactDelivered.length,
+        normedDelivered:  normedDelivered.length,
+        inExactNotNormed,   // in dashboard but NOT in profit (before fix)
+        inNormedNotExact,   // in profit but NOT in dashboard (before fix)
+        note: "After fix, both use isDeliveredStatus — these arrays should both be empty.",
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
     }
   });
 
