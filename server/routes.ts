@@ -3973,6 +3973,11 @@ export async function registerRoutes(
         }
       }
 
+      // Also check UPPERCASE PHONE field — Ameex and some carriers use it
+      if (!webhookPhone) {
+        webhookPhone = (body.PHONE || body.TELEPHONE || '').toString().trim();
+      }
+
       if (webhookPhone) {
         const candidates = await storage.getActiveOrdersByPhone(storeId, webhookPhone);
         // Safe-match ONLY: attach to a candidate whose trackNumber is empty or
@@ -4002,6 +4007,50 @@ export async function registerRoutes(
         } else if (candidates.length > 0) {
           console.warn(`[WEBHOOK-PHONE-FALLBACK]: phone="${webhookPhone}" matched ${candidates.length} active order(s) but all carry a different tracking number — not attaching (avoids clobbering)`);
         }
+      }
+    }
+
+    // ── Ameex: AMEEX-PENDING placeholder fallback ────────────────────────────
+    // When Ameex ships a parcel and doesn't return a CODE immediately, we store
+    // "AMEEX-PENDING-TJG-{orderNumber}" as the trackNumber placeholder. When
+    // Ameex later sends a webhook with the real CODE, we can't find the order
+    // by trackNumber. Match via:
+    //  1. Phone field (if Ameex sends PHONE/phone in the webhook)
+    //  2. ORDER_NUM / REFERENCE field (if Ameex echoes our order_num back)
+    // On match, backfill the real CODE onto order.trackNumber immediately.
+    if (!order && carrierName === 'ameex' && trackingNumber) {
+      const wPhone    = (body.PHONE || body.phone || body.TELEPHONE || body.telephone || '').toString().trim();
+      const wOrderNum = (body.ORDER_NUM || body.order_num || body.REFERENCE || body.reference || '').toString().trim();
+      const allStoreOrders = await storage.getOrdersByStore(storeId);
+      const normPhone = (p: string) => {
+        let s = String(p || '').replace(/[\s\-().+]/g, '');
+        if (s.startsWith('00212')) s = '0' + s.slice(5);
+        else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
+        return s;
+      };
+      let pendingCount = 0;
+      for (const o of allStoreOrders as any[]) {
+        if (!String(o.trackNumber || '').startsWith('AMEEX-PENDING-')) continue;
+        pendingCount++;
+        // Match by phone
+        if (wPhone && o.customerPhone && normPhone(o.customerPhone) === normPhone(wPhone)) {
+          order = o; matchedBy = `AMEEX-PENDING+phone=${wPhone}`; break;
+        }
+        // Match by echoed ORDER_NUM / REFERENCE
+        if (wOrderNum) {
+          const stripped = wOrderNum.replace(/^TJG-/i, '');
+          const m = String(o.trackNumber).match(/^AMEEX-PENDING-TJG-(.+)$/);
+          if (m && m[1] === stripped) {
+            order = o; matchedBy = `AMEEX-PENDING+order_num=${wOrderNum}`; break;
+          }
+        }
+      }
+      if (order) {
+        // Backfill real CODE so future webhooks match directly by trackNumber
+        await storage.updateOrder((order as any).id, { trackNumber: trackingNumber } as any);
+        console.log(`[AMEEX-PENDING] CODE=${trackingNumber} backfilled onto order #${(order as any).orderNumber} (was ${(order as any).trackNumber})`);
+      } else {
+        console.warn(`[AMEEX-PENDING] CODE=${trackingNumber} — no AMEEX-PENDING order matched (wPhone="${wPhone}" wOrderNum="${wOrderNum}" pendingOrders=${pendingCount}) — log this webhook for later replay`);
       }
     }
 
@@ -4185,17 +4234,35 @@ export async function registerRoutes(
     // The commentStatus column carries the real display text shown in the Suivi tab.
 
     // ── Ameex status code override (takes priority over text fuzzy match) ──
+    // Ameex sends uppercase enum codes in STATUT (NOT French text labels).
+    // This map is the single source of truth for STATUT → internal status.
     const AMEEX_WEBHOOK_STATUS_MAP: Record<string, string> = {
-      'DELIVERED':   'delivered',
-      'IN_PROGRESS': 'in_progress',
-      'CANCELLED':   'refused',
-      'RETURNED':    'retourné',
-      'PICKUP':      'Attente De Ramassage',
-      'NO_ANSWER':   'Injoignable',
+      // Terminal: delivered
+      'DELIVERED':    'delivered',
+      // Terminal: refused / cancelled
+      'REFUSED':      'refused',
+      'REJECTED':     'refused',
+      'CANCELED':     'refused',
+      'CANCELLED':    'refused',
+      'ANNULE':       'refused',
+      // Terminal: returned
+      'RETURNED':     'retourné',
+      'RETOUR':       'retourné',
+      'RTS':          'retourné',
+      // In-progress: out for delivery
+      'DISTRIBUTION': 'in_progress',
+      // In-progress: any other IN_PROGRESS sub-status (POSTPONED, NO_ANSWER_TEAM, etc.)
+      'IN_PROGRESS':  'in_progress',
+      // Legacy aliases (kept for backward compat)
+      'PICKUP':       'Attente De Ramassage',
+      'NO_ANSWER':    'Injoignable',
     };
-    const ameexCode = (body.STATUT || '').toString().toUpperCase();
+    // Read STATUT field — Ameex sends it UPPERCASE in urlencoded body.
+    // Also try lowercase for safety (express.urlencoded is case-sensitive).
+    const ameexCode = (body.STATUT || body.statut || '').toString().toUpperCase().trim();
     if (ameexCode && AMEEX_WEBHOOK_STATUS_MAP[ameexCode]) {
       newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexCode];
+      console.log(`[AMEEX-STATUS] STATUT="${ameexCode}" → internal="${newStatus}" STATUT_NAME="${body.STATUT_NAME || body.statut_name || ''}"`);
     }
 
     // ── Express Coursier (aliased "olivraison") status override ───────────
@@ -4509,7 +4576,14 @@ export async function registerRoutes(
         return res.json({ success: true, matched: true, newStatus: mapped });
       }
 
-      const rawStatus = (body.status || body.etat || body.statut || body.etat_libelle || "").trim();
+      // Capture rawStatus for the integration_log message — cover all field names.
+      // Ameex sends STATUT (uppercase); other carriers send status/statut (lowercase).
+      const rawStatus = (
+        body.STATUT_NAME || body.statut_name ||   // Ameex: French label (most readable)
+        body.STATUT      || body.STATUS      ||   // Ameex: enum code (uppercase)
+        body.status      || body.etat        ||
+        body.statut      || body.etat_libelle || ""
+      ).trim();
 
       let result: { tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string };
       try {
@@ -4530,7 +4604,7 @@ export async function registerRoutes(
         action: 'webhook_received', status: result.tracked ? 'success' : 'fail',
         message: result.tracked
           ? `✅ Commande #${result.orderId} mise à jour via ${result.matchedBy} — statut: "${rawStatus}" → ${result.newStatus || 'commentStatus uniquement'}`
-          : `⚠️ Webhook reçu mais aucune commande trouvée — statut: "${rawStatus}"`,
+          : `⚠️ Webhook reçu mais aucune commande trouvée — CODE=${body.CODE || body.code || '?'} statut: "${rawStatus}"`,
         payload: JSON.stringify(body).slice(0, 1000),
       });
 
@@ -4568,7 +4642,12 @@ export async function registerRoutes(
       });
 
       const body = req.body;
-      const rawStatus = (body.status || body.etat || body.statut || body.etat_libelle || "").trim();
+      const rawStatus = (
+        body.STATUT_NAME || body.statut_name ||
+        body.STATUT      || body.STATUS      ||
+        body.status      || body.etat        ||
+        body.statut      || body.etat_libelle || ""
+      ).trim();
 
       let result: { tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string };
       try {
@@ -8955,15 +9034,137 @@ function ensureHeaders(sheet) {
         return safeJson(400, { message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
       }
 
-      // ── Ameex delivers status via WEBHOOK ONLY — no tracking pull endpoint ──
-      // The /customer/Delivery/Parcels/Track endpoint returns 404. All status
-      // updates arrive via POST /api/webhooks/shipping/ameex/:token (same
-      // pattern as Express Coursier). Manual sync is therefore a no-op.
-      console.log(`[AMEEX-SYNC] storeId=${storeId} — webhook-only carrier, pull disabled`);
+      // ── Ameex has NO tracking pull endpoint — replay from integration_logs ──
+      // Same pattern as Express Coursier sync. Reads all stored Ameex webhook
+      // events (integration_logs provider='ameex' action='webhook_received'),
+      // groups by CODE, applies the most recent STATUT to matched orders.
+      console.log(`[AMEEX-SYNC] storeId=${storeId} — replaying from integration_logs`);
+
+      // Load all stored Ameex webhook events for this store
+      const ameexLogs = await db
+        .select()
+        .from(integrationLogs)
+        .where(and(
+          eq(integrationLogs.storeId, storeId),
+          eq(integrationLogs.provider, 'ameex'),
+          eq(integrationLogs.action, 'webhook_received'),
+        ))
+        .orderBy(desc(integrationLogs.createdAt))
+        .limit(500);
+
+      // Parse each log entry to extract CODE + STATUT + STATUT_S + STATUT_NAME
+      type AmeexEvent = { code: string; statut: string; statutS: string; statutName: string };
+      const parseAmeexLog = (row: { payload: string | null; message: string | null }): AmeexEvent | null => {
+        if (row.payload) {
+          try {
+            const p = JSON.parse(row.payload);
+            const code = (p.CODE || '').toString().trim();
+            const statut = (p.STATUT || '').toString().trim();
+            if (code && statut) return { code, statut, statutS: p.STATUT_S || '', statutName: p.STATUT_NAME || statut };
+          } catch { /* fall through */ }
+        }
+        // Old format: parse message string "Ameex webhook: CODE=X STATUT=Y"
+        const msg = row.message || '';
+        const codeM  = msg.match(/CODE=([^\s]+)/);
+        const statM  = msg.match(/STATUT=([^\s/(]+)/);
+        if (codeM?.[1] && statM?.[1]) {
+          return { code: codeM[1], statut: statM[1], statutS: '', statutName: statM[1] };
+        }
+        return null;
+      };
+
+      // Group by CODE — keep only the most recent event per CODE (logs are DESC)
+      const latestByCode = new Map<string, AmeexEvent>();
+      for (const row of ameexLogs) {
+        const evt = parseAmeexLog(row);
+        if (!evt) continue;
+        if (!latestByCode.has(evt.code)) latestByCode.set(evt.code, evt);
+      }
+
+      console.log(`[AMEEX-SYNC] ${ameexLogs.length} log entries → ${latestByCode.size} unique CODEs`);
+
+      const { AMEEX_STATUS_MAP } = await import('./services/carrier-service');
+      const normPhone = (p: string) => {
+        let s = String(p || '').replace(/[\s\-().+]/g, '');
+        if (s.startsWith('00212')) s = '0' + s.slice(5);
+        else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
+        return s;
+      };
+
+      let updated = 0, skipped = 0, noMatch = 0;
+      const details: Array<{ code: string; orderNumber: string; oldStatus: string; newStatus: string }> = [];
+      const allStoreOrders = await storage.getOrdersByStore(storeId);
+
+      for (const [code, evt] of latestByCode) {
+        try {
+          // Map the STATUT
+          const mappedStatus = AMEEX_STATUS_MAP[evt.statut.toUpperCase()] ?? 'in_progress';
+
+          // 1. Direct match by CODE == order.trackNumber
+          let order: any = await storage.getOrderByTrackingNumber(storeId, code);
+
+          // 2. AMEEX-PENDING fallback: scan pending orders
+          if (!order) {
+            for (const o of allStoreOrders as any[]) {
+              if (!String(o.trackNumber || '').startsWith('AMEEX-PENDING-')) continue;
+              const m = String(o.trackNumber).match(/^AMEEX-PENDING-TJG-(.+)$/);
+              if (m) {
+                // We have no phone in the stored log, so can't phone-match here.
+                // If there's only one pending order for this CODE, match it.
+                // Otherwise skip to avoid clobbering the wrong order.
+                order = o;
+                // Backfill real CODE
+                await storage.updateOrder(o.id, { trackNumber: code } as any);
+                console.log(`[AMEEX-SYNC] Backfilled CODE=${code} onto #${o.orderNumber} (was ${o.trackNumber})`);
+                break;
+              }
+            }
+          }
+
+          if (!order) {
+            noMatch++;
+            continue;
+          }
+
+          // Terminal protection: never downgrade
+          const TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+          if (TERMINAL.has(order.status || '') && !TERMINAL.has(mappedStatus)) {
+            skipped++;
+            continue;
+          }
+
+          if (mappedStatus !== order.status) {
+            await storage.updateOrderStatus(order.id, mappedStatus);
+            await storage.updateOrder(order.id, { commentStatus: evt.statutName || evt.statut } as any);
+            notifyStatusUpdate(
+              { id: order.id, storeId, assignedToId: order.assignedToId ?? null, customerName: order.customerName || '' },
+              mappedStatus,
+            );
+            await storage.createOrderFollowUpLog({
+              orderId: order.id, agentId: null, agentName: 'Ameex Replay',
+              note: `Replay webhook: ${evt.statut}${evt.statutS ? '/' + evt.statutS : ''} (${evt.statutName}) → ${mappedStatus}`,
+            });
+            broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: mappedStatus, commentStatus: evt.statutName || evt.statut });
+            details.push({ code, orderNumber: order.orderNumber, oldStatus: order.status || '', newStatus: mappedStatus });
+            updated++;
+          } else {
+            skipped++;
+          }
+        } catch (e: any) {
+          console.error(`[AMEEX-SYNC] CODE=${code} error:`, e?.message);
+        }
+      }
+
+      console.log(`[AMEEX-SYNC] storeId=${storeId} codes=${latestByCode.size} updated=${updated} skipped=${skipped} noMatch=${noMatch}`);
       return safeJson(200, {
-        synced:  0,
-        updated: 0,
-        message: "Ameex fonctionne via webhook uniquement — les statuts sont mis à jour automatiquement à chaque livraison. Aucun pull nécessaire.",
+        synced:  latestByCode.size,
+        updated,
+        skipped,
+        noMatch,
+        details,
+        message: updated > 0
+          ? `✅ Replay Ameex: ${updated} commande(s) mise(s) à jour · ${skipped} déjà à jour · ${noMatch} sans correspondance`
+          : `ℹ️ Replay Ameex: ${latestByCode.size} événement(s) trouvé(s) — ${skipped} déjà à jour · ${noMatch} sans correspondance`,
       });
     } catch (err: any) {
       console.error('[AMEEX-SYNC] fatal', err?.message);
