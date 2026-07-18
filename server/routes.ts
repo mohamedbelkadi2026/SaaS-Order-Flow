@@ -3836,8 +3836,9 @@ export async function registerRoutes(
     // ── Extract all possible identifiers from the payload ─────────────────
     // Carriers differ: some send tracking IDs, some send our order reference
     const trackingNumber = (
-      body.CODE           ||  // Ameex webhook field (uppercase)
-      body.code           ||  // Ameex webhook field (lowercase)
+      body.code_colis     ||  // Ameex REAL webhook field (actual payload shape)
+      body.CODE           ||  // Ameex urlencoded webhook field (documented API)
+      body.code           ||  // lowercase variant
       body.traking        ||  // Digylog field (typo in their API)
       body.tracking_number || body.barcode   || body.code_suivi ||
       body.track_number   || body.colis_id  || body.tracking   ||
@@ -3896,6 +3897,27 @@ export async function registerRoutes(
       ) ||
       ""
     ).trim();
+
+    // ── Ameex real payload shape: extract event code + log full shape ────────
+    // When Ameex posts via olivraison, the actual fields are:
+    //   code_colis, event, payload (nested obj), commentaire, date_reporte_colis, timestamp
+    // This block runs before any status mapping so we can see the full shape.
+    let ameexEventCode = '';
+    let ameexNestedPayload: Record<string, any> = {};
+    if (body.code_colis) {
+      // Parse nested "payload" — may be a JSON string or already an object
+      if (body.payload) {
+        if (typeof body.payload === 'object') {
+          ameexNestedPayload = body.payload;
+        } else {
+          try { ameexNestedPayload = JSON.parse(String(body.payload)); } catch { /* ignore */ }
+        }
+      }
+      ameexEventCode = (body.event || '').toString().toUpperCase().trim();
+      console.log(`[AMEEX-SHAPE] code_colis="${body.code_colis}" event="${body.event}" commentaire="${body.commentaire || ''}"`);
+      console.log(`[AMEEX-SHAPE] date_reporte_colis="${body.date_reporte_colis || ''}" timestamp="${body.timestamp || ''}"`);
+      console.log(`[AMEEX-SHAPE] nested payload: ${JSON.stringify(ameexNestedPayload).slice(0, 500)}`);
+    }
 
     // rawStatus is normalised (lowercased + trimmed) for fuzzy matching only
     const rawStatus = rawText.toLowerCase().trim();
@@ -4265,6 +4287,25 @@ export async function registerRoutes(
       console.log(`[AMEEX-STATUS] STATUT="${ameexCode}" → internal="${newStatus}" STATUT_NAME="${body.STATUT_NAME || body.statut_name || ''}"`);
     }
 
+    // ── Ameex real payload: status from body.event enum code ─────────────────
+    // Takes priority over both the Digylog fuzzy matcher AND the EC mapper.
+    // body.event holds the uppercase enum code (DELIVERED, DISTRIBUTION, etc.).
+    // body.commentaire holds the French label → store it in commentStatus.
+    if (body.code_colis) {
+      if (ameexEventCode && AMEEX_WEBHOOK_STATUS_MAP[ameexEventCode]) {
+        newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexEventCode];
+        console.log(`[AMEEX-STATUS] event="${ameexEventCode}" → internal="${newStatus}" commentaire="${body.commentaire || ''}"`);
+      } else if (ameexEventCode) {
+        // Unknown event code — keep in_progress, log for future mapping
+        console.warn(`[AMEEX-STATUS] Unknown event code "${ameexEventCode}" — defaulting to in_progress`);
+        newStatus = 'in_progress';
+      }
+      // Override commentStatus with the more human-readable commentaire if present
+      if (body.commentaire) {
+        await storage.updateOrder(order.id, { commentStatus: body.commentaire });
+      }
+    }
+
     // ── Express Coursier (aliased "olivraison") status override ───────────
     // ALWAYS route EC statuses through EC_NUMERIC_STATUS_MAP — NEVER through
     // the generic Digylog fuzzy matcher. The fuzzy matcher is calibrated for
@@ -4272,7 +4313,8 @@ export async function registerRoutes(
     // mapEcNumericStatus() guarantees a valid ORDER_STATUS for any input
     // (unknown codes → 'in_progress'). mapEcStatus() handles both numeric
     // codes and French text labels, falling back to mapEcNumericStatus.
-    if (carrierName === "expresscoursier") {
+    // Guard: skip EC mapping when this is actually an Ameex payload.
+    if (carrierName === "expresscoursier" && !body.code_colis) {
       const ecMapped = mapEcStatus(rawStatus) ?? 'in_progress';
       if (ecMapped !== newStatus) {
         console.log(`[EC-WEBHOOK-STATUS] EC status override: fuzzy="${newStatus}" → ec_map="${ecMapped}" (raw="${rawText}")`);
@@ -4504,6 +4546,19 @@ export async function registerRoutes(
       }
 
       const body = req.body;
+
+      // ── Ameex/olivraison payload detection ──────────────────────────────────
+      // Ameex and Express Coursier BOTH post to .../olivraison but with totally
+      // different payload shapes. Ameex sends "code_colis" as the tracking field;
+      // EC never does. Detect Ameex by code_colis presence and switch to the
+      // ameex carrier_account so processCarrierWebhook receives the right name.
+      if (body?.code_colis) {
+        const ameexAcct = rows.find((r: any) => r.carrierName.toLowerCase() === 'ameex');
+        if (ameexAcct && account.carrierName.toLowerCase() !== 'ameex') {
+          console.log(`[WEBHOOK-AMEEX-DETECT] code_colis="${body.code_colis}" event="${body.event}" — switching from "${account.carrierName}" → ameex account #${ameexAcct.id}`);
+          account = ameexAcct;
+        }
+      }
 
       // ── Ozon Express: fields differ from all other carriers ─────────────────
       if (carrierName === "ozonexpress") {
