@@ -9935,6 +9935,14 @@ function ensureHeaders(sheet) {
       const storeId = carrierAccount.storeId;
       const body    = req.body || {};
 
+      // ── Diagnostic dump — logged on EVERY hit so we can see the raw payload ─
+      // This reveals: actual Content-Type, all parsed keys, and the raw bytes.
+      const rawBodyBuf = (req as any).webhookRawBody as Buffer | undefined;
+      const rawBodyStr = rawBodyBuf ? rawBodyBuf.toString('utf-8').slice(0, 800) : '(not captured)';
+      console.log(`[AMEEX-WEBHOOK-RAW] store=${storeId} Content-Type: "${req.headers['content-type'] || '(none)'}"`);
+      console.log(`[AMEEX-WEBHOOK-RAW] req.body keys: ${JSON.stringify(Object.keys(body))} values: ${JSON.stringify(body)}`);
+      console.log(`[AMEEX-WEBHOOK-RAW] rawBody (${rawBodyBuf?.length ?? 0} bytes): ${rawBodyStr}`);
+
       // ── Parse Ameex urlencoded fields (official names are UPPERCASE) ──────
       // Accept both UPPER and lower variants defensively.
       const code: string      = String(body.CODE      || body.code      || '').trim();

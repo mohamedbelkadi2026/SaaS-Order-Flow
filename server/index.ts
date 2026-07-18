@@ -125,6 +125,7 @@ app.get("/api/health", (_req, res) =>
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
+    webhookRawBody?: Buffer; // set by the webhook raw-body capture middleware
   }
 }
 
@@ -218,6 +219,48 @@ app.use("/api/dashboard",          heavyLimiter);
 app.use("/api/stats",              heavyLimiter);
 app.use("/api/agents/performance", heavyLimiter);
 app.use("/api/exports",            heavyLimiter);
+
+// ── Webhook raw-body capture (MUST come before express.json / express.urlencoded) ──
+// express.urlencoded() only parses when Content-Type is exactly
+// application/x-www-form-urlencoded. Some carriers (Ameex, etc.) send with a
+// missing, wrong, or charset-suffixed Content-Type, causing req.body to arrive
+// as an empty object. This middleware reads the raw stream for all /api/webhooks/
+// and /api/webhook/ paths, stores the buffer in req.webhookRawBody, and parses
+// defensively (urlencoded first, then JSON) so the handler always sees the fields.
+app.use(['/api/webhooks/', '/api/webhook/'], (req: any, _res: any, next: any) => {
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', () => {
+    try {
+      const raw = Buffer.concat(chunks);
+      req.webhookRawBody = raw;
+      const rawStr = raw.toString('utf-8').trim();
+      if (!rawStr) { next(); return; }
+
+      const ct = (req.headers['content-type'] || '').toLowerCase().trim();
+
+      // If Content-Type is explicitly JSON, try JSON first
+      if (ct.startsWith('application/json')) {
+        try { req.body = JSON.parse(rawStr); next(); return; } catch { /* fall through */ }
+      }
+
+      // Try URL-encoded (covers application/x-www-form-urlencoded, text/plain,
+      // no Content-Type, and even wrong content-type headers with form bodies)
+      try {
+        const params: Record<string, string> = {};
+        new URLSearchParams(rawStr).forEach((v: string, k: string) => { params[k] = v; });
+        if (Object.keys(params).length > 0) { req.body = params; next(); return; }
+      } catch { /* fall through */ }
+
+      // Last resort: try JSON
+      try { req.body = JSON.parse(rawStr); } catch { req.body = {}; }
+      next();
+    } catch (e) {
+      next(); // never block the webhook on a parse error
+    }
+  });
+  req.on('error', next);
+});
 
 // ── Body parsers (MUST come before any route handlers) ───────────────────────
 app.use(
