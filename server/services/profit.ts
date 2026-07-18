@@ -7,9 +7,9 @@
 import { db } from "../db";
 import { storage } from "../storage";
 import {
-  orders, orderItems, products, adSpendTracking,
+  orderItems, products, adSpendTracking,
 } from "@shared/schema";
-import { eq, and, gte, lte, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { splitVariant } from "./variants";
 import { isDeliveredStatus } from "@shared/order-status-sets";
 
@@ -82,8 +82,16 @@ export function resolveDateRange(opts: {
   let endDate: Date = new Date();
 
   if (opts.dateFrom) {
-    cutoff  = new Date(opts.dateFrom + 'T00:00:00');
-    endDate = opts.dateTo ? new Date(opts.dateTo + 'T23:59:59') : new Date();
+    // Use local-calendar constructor (same as /api/stats/filtered) so date
+    // boundaries are identical regardless of server timezone.
+    const [fy, fm, fd] = opts.dateFrom.split('-').map(Number);
+    cutoff = new Date(fy, fm - 1, fd, 0, 0, 0, 0);
+    if (opts.dateTo) {
+      const [ty, tm, td] = opts.dateTo.split('-').map(Number);
+      endDate = new Date(ty, tm - 1, td, 23, 59, 59, 999);
+    } else {
+      endDate = new Date();
+    }
   } else if (opts.dateRange === 'today') {
     cutoff = new Date(); cutoff.setHours(0, 0, 0, 0);
   } else if (opts.dateRange === 'yesterday') {
@@ -123,14 +131,18 @@ export async function computeProfitability(
   const endDateStr    = endDate.toISOString().slice(0, 10);
 
   // ── Orders in range ──────────────────────────────────────────────────────────
-  const storeOrders = await db
-    .select()
-    .from(orders)
-    .where(and(
-      eq(orders.storeId, storeId),
-      gte(orders.createdAt, cutoff),
-      lte(orders.createdAt, endDate),
-    ));
+  // Use the shared storage layer (same dataset as /api/stats/filtered) then
+  // apply the same local-calendar JS date filter so both routes always agree
+  // on total order count for the same period (fixes 240-vs-201 gap).
+  let storeOrders: any[] = await storage.getOrdersByStore(storeId);
+  if (opts.dateFrom || opts.dateRange !== 'all') {
+    storeOrders = storeOrders.filter(
+      (o: any) => o.createdAt && new Date(o.createdAt) >= cutoff
+    );
+  }
+  storeOrders = storeOrders.filter(
+    (o: any) => o.createdAt && new Date(o.createdAt) <= endDate
+  );
 
   const orderIds = storeOrders.map(o => o.id);
 

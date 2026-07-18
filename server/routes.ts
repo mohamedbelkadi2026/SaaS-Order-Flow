@@ -10973,6 +10973,15 @@ function ensureHeaders(sheet) {
   app.get("/api/admin/users", requireSuperAdmin, async (_req, res) => {
     try {
       const allStores = await storage.getAllStores();
+      const ownerIds = allStores.map((s: any) => s.ownerId).filter(Boolean) as number[];
+
+      // Fetch dashboardPermissions for all owners in one query
+      const ownerUsers = ownerIds.length > 0
+        ? await db.select({ id: users.id, dashboardPermissions: users.dashboardPermissions })
+            .from(users).where(inArray(users.id, ownerIds))
+        : [];
+      const permMap = new Map(ownerUsers.map(u => [u.id, u.dashboardPermissions]));
+
       const ownerRows = allStores.map((s: any) => ({
         id: s.ownerId,
         username: s.ownerName,
@@ -10982,10 +10991,33 @@ function ensureHeaders(sheet) {
         isEmailVerified: s.isEmailVerified ?? 0,
         isActive: s.ownerIsActive ?? 1,
         createdAt: s.ownerCreatedAt,
+        dashboardPermissions: permMap.get(s.ownerId) || {},
       })).filter((r: any) => r.id);
       res.json(ownerRows);
     } catch (err: any) {
       res.status(500).json({ message: err.message });
+    }
+  });
+
+  /* ── Super Admin: Toggle can_edit_shipping_fee permission per user ── */
+  app.patch("/api/admin/users/:id/can-edit-shipping-fee", requireSuperAdmin, async (req, res) => {
+    try {
+      const userId = Number(req.params.id);
+      const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+
+      const [user] = await db.select({ id: users.id, dashboardPermissions: users.dashboardPermissions })
+        .from(users).where(eq(users.id, userId));
+      if (!user) return res.status(404).json({ message: "Utilisateur introuvable" });
+
+      const existing = (user.dashboardPermissions as Record<string, boolean>) || {};
+      await db.update(users)
+        .set({ dashboardPermissions: { ...existing, can_edit_shipping_fee: enabled } })
+        .where(eq(users.id, userId));
+
+      res.json({ success: true, can_edit_shipping_fee: enabled });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      throw err;
     }
   });
 

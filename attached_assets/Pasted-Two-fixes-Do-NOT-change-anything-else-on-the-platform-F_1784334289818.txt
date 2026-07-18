@@ -1,0 +1,43 @@
+Two fixes. Do NOT change anything else on the platform.
+
+FIX 1 — PROFIT ANALYZER MUST COUNT ALL DELIVERED ORDERS (matches Dashboard = 159, not 129):
+For the same period (01/07→18/07): Dashboard "Livrées" = 159 and the Livrées page lists 159, 
+but Profit Analyzer (Par Produit Live) "Total Livrées" = 129. Profit Analyzer under-counts by 
+missing delivered orders whose status came from a carrier webhook (e.g. EC "Livré au client", 
+mapped to internal 'delivered') vs manual "Livré".
+ROOT CAUSE: server/services/profit.ts (used by /api/products/profitability) marks delivered 
+only if status is exactly 'delivered' | 'livré' | 'livrée', and its order-set/date basis 
+differs from the Dashboard (totals 201 vs 240).
+DO:
+ - Use the SAME delivered definition as the Dashboard: reuse (or create) one shared 
+   isDelivered(status) helper — accent/case-insensitive, source-agnostic — covering all 
+   delivered-equivalent statuses (delivered, livré, livre, livrée, Livré, Livrée, and the EC 
+   "Livré au client" that we already map to internal 'delivered'). Use it in BOTH the Dashboard 
+   AND profit.ts.
+ - Align /api/products/profitability's order set + date basis with /api/stats/filtered for the 
+   same period, so both agree. Investigate the 240-vs-201 gap and fix it.
+ - VERIFY: for a fixed period, Dashboard Livrées == Profit Analyzer Total Livrées (expected 
+   159 == 159).
+
+FIX 2 — SUPER-ADMIN-CONTROLLED PER-USER PERMISSION TO EDIT "FRAIS DE LIVRAISON":
+Only a Super Admin can grant/revoke this per user (few users need it). A user who has it can 
+manually enter an order's delivery fee (when they deliver via their own driver); Profit Analyzer 
+must count it.
+DO:
+ - Add a per-USER permission "can_edit_shipping_fee" (store in users.dashboardPermissions or 
+   users.settings jsonb, default false).
+ - In the Super Admin page (per user, like the existing per-store toggle), add an 
+   Activé/Désactivé toggle "Modifier frais de livraison". Endpoint requires req.user.isSuperAdmin.
+ - In the order-details modal, the "Frais de livraison" field is editable when the user is 
+   admin OR has can_edit_shipping_fee; otherwise read-only/hidden. On save, PATCH 
+   order.shippingCost (centimes); server authorizes by that permission + store/tenant check; 
+   write an integration_log.
+ - Profit Analyzer (Par Produit Live) must use the live order.shippingCost as "Frais livr." per 
+   order (sum per product) so manual fees flow into CA net / bénéfice net / marge. Recompute 
+   after edit.
+ - VERIFY: SA grants a user → that user sets a fee on a delivered order → it appears in Profit 
+   Analyzer's Frais livr. + reduces Bénéfice net for that product; a user without the permission 
+   cannot edit it.
+
+If any DB column/permission is added, apply the migration to the PRODUCTION Railway DB in the 
+same deploy. Deploy to main.

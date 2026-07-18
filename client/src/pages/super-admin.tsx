@@ -398,6 +398,7 @@ export default function SuperAdminPage() {
     id: number; username: string; email: string;
     storeId: number; storeName: string;
     isEmailVerified: number; isActive: number; createdAt: string | null;
+    dashboardPermissions?: Record<string, boolean>;
   };
   const { data: adminUsers = [], isLoading: usersLoading } = useQuery<AdminUser[]>({
     queryKey: ["/api/admin/users"],
@@ -508,6 +509,16 @@ export default function SuperAdminPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
       toast({ title: "✓ Email vérifié", description: "L'utilisateur peut maintenant se connecter." });
       setVerifyingUserId(null);
+    },
+    onError: () => toast({ title: "Erreur", variant: "destructive" }),
+  });
+
+  const shippingFeePermMutation = useMutation({
+    mutationFn: ({ userId, enabled }: { userId: number; enabled: boolean }) =>
+      apiRequest("PATCH", `/api/admin/users/${userId}/can-edit-shipping-fee`, { enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
+      toast({ title: "✓ Permission frais livraison mise à jour" });
     },
     onError: () => toast({ title: "Erreur", variant: "destructive" }),
   });
@@ -1131,7 +1142,29 @@ export default function SuperAdminPage() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3 sm:flex-shrink-0">
+                    <div className="flex flex-wrap items-center gap-3 sm:flex-shrink-0">
+                      {/* ── Modifier Frais de livraison permission ── */}
+                      {(() => {
+                        const hasShippingFee = !!(u.dashboardPermissions?.can_edit_shipping_fee);
+                        return (
+                          <button
+                            onClick={() => shippingFeePermMutation.mutate({ userId: u.id, enabled: !hasShippingFee })}
+                            disabled={shippingFeePermMutation.isPending}
+                            title="Autoriser à modifier les frais de livraison"
+                            className={cn(
+                              "flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all disabled:opacity-50",
+                              hasShippingFee
+                                ? "bg-green-900/30 text-green-400 border-green-700/50 hover:bg-green-900/50"
+                                : "bg-white/5 text-white/40 border-white/10 hover:text-white hover:border-white/25"
+                            )}
+                            data-testid={`btn-shipping-fee-perm-${u.id}`}
+                          >
+                            <DollarSign className="w-3.5 h-3.5" />
+                            Frais livr.&nbsp;{hasShippingFee ? "Activé" : "Désactivé"}
+                          </button>
+                        );
+                      })()}
+
                       {u.isEmailVerified ? (
                         <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg" style={{ background: "rgba(34,197,94,0.15)", color: "#4ade80" }}>
                           <Check className="w-3.5 h-3.5" /> Vérifié

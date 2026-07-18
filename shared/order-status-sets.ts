@@ -64,12 +64,28 @@ export function isConfirmedCumulative(status: string | null | undefined): boolea
   return true;
 }
 
+// ── Accent-insensitive normaliser for status matching ─────────────────────────
+function _normalizeForMatch(s: string): string {
+  return s.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// Normalised forms of every "delivered" status, including raw EC French label
+// ("Livré au client" → "livre au client") so webhook-sourced orders are caught
+// even if the DB status was not yet mapped to the internal 'delivered' token.
+const DELIVERED_NORMALIZED = new Set<string>(
+  [...DELIVERED_STATUSES, 'Livré au client', 'livre au client', 'livree au client'].map(_normalizeForMatch)
+);
+
 /**
- * Returns true for any "livré / delivered" status, case-insensitively.
+ * Returns true for any "livré / delivered" status.
+ * Accent- and case-insensitive, source-agnostic:
+ *   - covers all DELIVERED_STATUSES variants
+ *   - covers the EC raw French label "Livré au client" (already mapped to
+ *     'delivered' by the webhook handler, but matched here as a safety net)
  * Use this everywhere instead of inline === comparisons so the logic
  * stays in sync with DELIVERED_STATUS_SET.
  */
 export function isDeliveredStatus(status: string | null | undefined): boolean {
   if (!status) return false;
-  return DELIVERED_STATUS_SET.has(status) || DELIVERED_STATUS_SET.has(status.toLowerCase());
+  return DELIVERED_NORMALIZED.has(_normalizeForMatch(status));
 }
