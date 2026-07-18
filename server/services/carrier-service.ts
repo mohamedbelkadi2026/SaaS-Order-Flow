@@ -47,65 +47,42 @@ const CARRIER_ENDPOINTS: Record<string, string> = {
 const AMEEX_TRACKING_URL = "https://api.ameex.app/customer/Delivery/Parcels/Track";
 
 // ── Ameex status → platform status mapping ────────────────────────────────────
-// Maps the French status labels Ameex returns to our internal status codes.
+// Ameex delivers status via WEBHOOK ONLY (no pull/tracking endpoint).
+// Webhook fields: CODE (tracking #), STATUT (enum), STATUT_S (sub-status enum),
+// STATUT_NAME (French label), STATUT_COLOR, DATE.
+// STATUT values are uppercase English enum codes — NOT French labels.
 export const AMEEX_STATUS_MAP: Record<string, string> = {
-  // Success statuses
-  "livrée":        "delivered",
-  "livré":         "delivered",
-  "livre":         "delivered",
-  "livree":        "delivered",
-  "livrée avec succès": "delivered",
+  // ── Terminal: delivered ───────────────────────────────────────────────────
+  'DELIVERED':    'delivered',
 
-  // Refusal / cancellation
-  "refusée":       "refused",
-  "refusé":        "refused",
-  "refuse":        "refused",
-  "refusee":       "refused",
-  "non livré":     "refused",
+  // ── Terminal: refused / cancelled ─────────────────────────────────────────
+  'REFUSED':      'refused',
+  'REJECTED':     'refused',
+  'CANCELED':     'refused',
+  'ANNULE':       'refused',
 
-  // Return
-  "retournée":     "Retour Recu",
-  "retourné":      "Retour Recu",
-  "retourne":      "Retour Recu",
-  "retournee":     "Retour Recu",
-  "en cours de retour": "En Cours De Retour",
+  // ── Terminal: returned ────────────────────────────────────────────────────
+  'RETURNED':     'retourné',
+  'RETOUR':       'retourné',
+  'RTS':          'retourné',         // Return to Sender
 
-  // In transit
-  "en transit":    "transit",
-  "en livraison":  "transit",
-  "en cours":      "transit",
-  "en cours de livraison": "transit",
-  "expédié":       "transit",
-  "expedie":       "transit",
+  // ── In progress (out for delivery) ───────────────────────────────────────
+  'DISTRIBUTION': 'in_progress',
 
-  // Pickup / collected
-  "ramassé":       "Attente De Ramassage",
-  "collecté":      "Attente De Ramassage",
-  "collecte":      "Attente De Ramassage",
-  "en attente de ramassage": "Attente De Ramassage",
-  "prêt":          "Attente De Ramassage",
-
-  // Unreachable / no answer
-  "injoignable":   "unreachable",
-  "non répondu":   "unreachable",
-  "absent":        "unreachable",
-
-  // Deleted / cancelled by carrier system
-  "supprimée":          "Supprimée",
-  "supprimé":           "Supprimée",
-  "supprime":           "Supprimée",
-  "annulé par système": "Supprimée",
-  "annule par systeme": "Supprimée",
+  // ── In progress (waiting / postponed / no-answer / generic) ──────────────
+  // STATUT_S sub-statuses: POSTPONED, NO_ANSWER_TEAM, etc. — all in_progress
+  'IN_PROGRESS':  'in_progress',
 };
 
 /**
- * Map a raw Ameex status string to the platform's internal status.
- * Returns null if no mapping found (keeps current status unchanged).
+ * Map Ameex webhook STATUT (+ optional STATUT_S) to the platform's internal status.
+ * Always returns a safe string — never null. Unknown STATUT → 'in_progress'
+ * (safe default: we never guess delivered/refused from an unknown code).
+ * Pass STATUT_NAME as the commentStatus so Suivi shows the real French label.
  */
-export function mapAmeexStatus(rawStatus: string): string | null {
-  if (!rawStatus) return null;
-  const normalized = rawStatus.toLowerCase().trim();
-  return AMEEX_STATUS_MAP[normalized] || null;
+export function mapAmeexStatus(statut: string, _statutS?: string): string {
+  const s = (statut || '').toUpperCase().trim();
+  return AMEEX_STATUS_MAP[s] ?? 'in_progress';
 }
 
 /**

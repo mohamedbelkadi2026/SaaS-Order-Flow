@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, trackAmeexShipment, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable } from "./services/carrier-service";
+import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -8919,38 +8919,16 @@ function ensureHeaders(sheet) {
 
   /**
    * GET /api/shipping/ameex/track/:trackingNumber
-   * Fetch live status for a single Ameex shipment.
+   * Ameex has NO tracking pull endpoint — all status updates arrive via webhook.
+   * This endpoint is kept for UI compatibility but always returns a clear message.
    */
   app.get("/api/shipping/ameex/track/:trackingNumber", requireAuth, async (req, res) => {
-    try {
-      const storeId = req.user!.storeId!;
-      const { trackingNumber } = req.params;
-
-      const accounts = await storage.getCarrierAccounts(storeId, "ameex");
-      const account = accounts[0];
-      if (!account) {
-        return res.status(400).json({ message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
-      }
-
-      const result = await trackAmeexShipment(
-        trackingNumber,
-        (account as any).apiKey,
-        (account as any).apiUrl || undefined,
-      );
-
-      if (result.error) {
-        return res.status(502).json({ message: result.error, rawResponse: result.rawResponse });
-      }
-
-      res.json({
-        trackingNumber,
-        rawStatus: result.rawStatus,
-        mappedStatus: result.status,
-        rawResponse: result.rawResponse,
-      });
-    } catch (err) {
-      throw err;
-    }
+    res.json({
+      trackingNumber: req.params.trackingNumber,
+      rawStatus: null,
+      mappedStatus: null,
+      message: "Ameex fonctionne via webhook uniquement — aucun endpoint de suivi disponible. Le statut sera mis à jour automatiquement dès qu'Ameex envoie une notification.",
+    });
   });
 
   /**
@@ -8977,140 +8955,15 @@ function ensureHeaders(sheet) {
         return safeJson(400, { message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
       }
 
-      const apiKey    = (account as any).apiKey;
-      const customUrl = (account as any).apiUrl || undefined;
-
-      const allOrders = await storage.getOrdersByStore(storeId);
-
-      // Lenient match for Ameex too: provider tagged as 'ameex' OR provider empty.
-      // Excludes orphans whose tracking format clearly belongs to Digylog (S + 7+ chars)
-      // so we don't waste tracking calls on cross-carrier pollution.
-      const looksLikeDigylogTracking = (t: string): boolean => /^S[A-Z0-9]{6,}$/i.test(t);
-      const ameexOrders = allOrders.filter((o: any) => {
-        if (!o.trackNumber) return false;
-        if (["delivered", "refused", "Retour Recu"].includes(o.status || "")) return false;
-        const provider = (o.shippingProvider || "").toLowerCase().trim();
-        if (provider === "ameex") return true;
-        if (provider === "" && !looksLikeDigylogTracking(o.trackNumber)) return true;
-        return false;
-      });
-
-      if (ameexOrders.length === 0) {
-        return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Ameex à synchroniser." });
-      }
-
-      // Wall-clock budget. Ameex per-call timeout is 45s — much higher than Digylog —
-      // so the budget is the real safety net here. BATCH_SIZE is a soft cap.
-      const BATCH_SIZE = 10;
-      const BUDGET_MS = 20_000;
-      const startedAt = Date.now();
-      const batch = ameexOrders.slice(0, BATCH_SIZE);
-
-      let updated = 0;
-      let processed = 0;
-      let trackingErrors = 0;
-      const apiDownErrors: string[] = [];
-      const details: Array<{ orderId: number; trackingNumber: string; oldStatus: string; newStatus: string | null }> = [];
-
-      // Same outage classifier as Digylog: only HTTP-5xx / network failures count as
-      // "API down". A tracking number Ameex doesn't recognise is NOT outage.
-      const isOutageError = (msg: string | undefined | null): boolean => {
-        if (!msg) return false;
-        const m = msg.toLowerCase();
-        return (
-          m.includes('indisponible') ||
-          m.includes('http 5') ||
-          m.includes('econnrefused') ||
-          m.includes('etimedout') ||
-          m.includes('econnreset') ||
-          m.includes('enotfound') ||
-          m.includes('socket hang up')
-        );
-      };
-
-      for (const order of batch) {
-        if (Date.now() - startedAt > BUDGET_MS) {
-          console.warn(`[AMEEX-SYNC] budget exhausted after ${processed}/${batch.length} orders`);
-          break;
-        }
-        processed++;
-
-        try {
-          const result = await trackAmeexShipment(order.trackNumber!, apiKey, customUrl);
-          if (result.error) {
-            if (isOutageError(result.error)) {
-              apiDownErrors.push(`${order.trackNumber}: ${result.error}`);
-              if (apiDownErrors.length >= 3) {
-                console.warn(`[AMEEX-SYNC] aborting batch — 3+ consecutive Ameex API outages`);
-                break;
-              }
-            } else {
-              trackingErrors++;
-            }
-            continue;
-          }
-          if (result.status) {
-            const statusChanged = result.status !== order.status;
-            const providerEmpty = !(order as any).shippingProvider || String((order as any).shippingProvider).trim() === "";
-            const updateData: any = {};
-
-            if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
-              updateData.commentStatus = result.rawStatus;
-            }
-            if (providerEmpty) {
-              updateData.shippingProvider = "ameex";
-              console.log(`[AMEEX-SYNC] backfilled shippingProvider for order #${(order as any).orderNumber} (tracking=${order.trackNumber})`);
-            }
-            if (statusChanged) {
-              await storage.updateOrderStatus(order.id, result.status);
-              notifyStatusUpdate({ id: order.id, storeId: order.storeId!, assignedToId: (order as any).assignedToId ?? null, customerName: order.customerName || "" }, result.status);
-            }
-            if (Object.keys(updateData).length > 0) {
-              await storage.updateOrder(order.id, updateData);
-            }
-            if (statusChanged) {
-              await storage.createOrderFollowUpLog({
-                orderId:   order.id,
-                agentId:   null,
-                agentName: "Ameex Sync",
-                note:      `Statut synchronisé automatiquement: ${result.rawStatus} → ${result.status}`,
-              });
-              details.push({ orderId: order.id, trackingNumber: order.trackNumber!, oldStatus: order.status || "", newStatus: result.status });
-              updated++;
-            }
-          }
-        } catch (e: any) {
-          if (isOutageError(e?.message)) {
-            apiDownErrors.push(`${order.trackNumber}: ${e?.message}`);
-            if (apiDownErrors.length >= 3) {
-              console.warn(`[AMEEX-SYNC] aborting batch — 3+ thrown outage errors`);
-              break;
-            }
-          } else {
-            trackingErrors++;
-          }
-        }
-        await new Promise(r => setTimeout(r, 200));
-      }
-
-      const apiDown = apiDownErrors.length >= 3;
-      const remaining = ameexOrders.length - processed;
-      console.log(`[AMEEX-SYNC] storeId=${storeId} processed=${processed}/${batch.length} updated=${updated} apiDownErrors=${apiDownErrors.length} trackingErrors=${trackingErrors} remaining=${remaining} apiDown=${apiDown}`);
-
+      // ── Ameex delivers status via WEBHOOK ONLY — no tracking pull endpoint ──
+      // The /customer/Delivery/Parcels/Track endpoint returns 404. All status
+      // updates arrive via POST /api/webhooks/shipping/ameex/:token (same
+      // pattern as Express Coursier). Manual sync is therefore a no-op.
+      console.log(`[AMEEX-SYNC] storeId=${storeId} — webhook-only carrier, pull disabled`);
       return safeJson(200, {
-        synced: processed,
-        updated,
-        errored: apiDownErrors.length + trackingErrors,
-        apiDownErrors: apiDownErrors.length,
-        trackingErrors,
-        remaining,
-        apiDown,
-        details,
-        message: apiDown
-          ? "L'API Ameex renvoie des erreurs. Réessayez dans quelques minutes."
-          : remaining > 0
-          ? `${processed} commande(s) traitée(s), ${updated} mise(s) à jour${trackingErrors > 0 ? `, ${trackingErrors} sans statut` : ''}. Encore ${remaining} en attente — recliquez pour continuer.`
-          : `${updated} commande(s) mise(s) à jour${trackingErrors > 0 ? ` (${trackingErrors} sans statut)` : ''}. Toutes les commandes Ameex sont synchronisées.`,
+        synced:  0,
+        updated: 0,
+        message: "Ameex fonctionne via webhook uniquement — les statuts sont mis à jour automatiquement à chaque livraison. Aucun pull nécessaire.",
       });
     } catch (err: any) {
       console.error('[AMEEX-SYNC] fatal', err?.message);
@@ -9841,19 +9694,29 @@ function ensureHeaders(sheet) {
 
   /**
    * POST /api/webhooks/shipping/ameex/:token
-   * Receive push notifications from Ameex when a shipment status changes.
-   * :token is the webhookToken from the carrier_accounts row.
+   * Receives status-change push notifications from Ameex.
+   *
+   * KEY FACTS (from official Ameex API docs):
+   *  - Ameex delivers status via WEBHOOK ONLY — there is NO tracking pull endpoint.
+   *  - Content-Type: application/x-www-form-urlencoded (NOT JSON). express.urlencoded
+   *    is registered globally in index.ts so req.body is already parsed.
+   *  - Fields: CODE (tracking #), STATUT (status enum), STATUT_S (sub-status enum,
+   *    optional), STATUT_NAME (French label), STATUT_COLOR, DATE (optional).
+   *  - STATUT values: DELIVERED | DISTRIBUTION | IN_PROGRESS | RETURNED | RETOUR |
+   *    RTS | REFUSED | REJECTED | CANCELED | ANNULE  (uppercase English enum codes).
+   *  - :token is the webhookToken from carrier_accounts (same auth pattern as EC).
    */
   app.post("/api/webhooks/shipping/ameex/:token", async (req, res) => {
+    // Respond 200 immediately — Ameex may retry on timeout
+    res.json({ success: true });
+
     try {
       const { token } = req.params;
-      // ── Webhook authentication ──────────────────────────────────────────
-      // Reject obviously-short/missing tokens, then validate against the
-      // carrier_accounts.webhookToken column. Without this, anyone who
-      // can guess a tracking number can flip an order's status.
+
+      // ── Auth: validate token against carrier_accounts ─────────────────────
       if (!token || token.length < 18) {
         console.warn("[AMEEX-WEBHOOK] short/missing token — rejected");
-        return res.status(401).json({ message: "Invalid webhook token" });
+        return;
       }
       const [carrierAccount] = await db
         .select()
@@ -9861,80 +9724,198 @@ function ensureHeaders(sheet) {
         .where(and(eq(carrierAccounts.webhookToken, token), eq(carrierAccounts.carrierName, "ameex")));
       if (!carrierAccount) {
         console.warn(`[AMEEX-WEBHOOK] unknown token: ${token.slice(0, 12)}…`);
-        return res.status(401).json({ message: "Invalid webhook token" });
+        return;
       }
       if (carrierAccount.isActive === 0) {
-        console.warn(`[AMEEX-WEBHOOK] token belongs to inactive account #${carrierAccount.id}`);
-        return res.status(401).json({ message: "Carrier account inactive" });
+        console.warn(`[AMEEX-WEBHOOK] inactive account #${carrierAccount.id} — ignored`);
+        return;
       }
 
-      const body = req.body || {};
+      const storeId = carrierAccount.storeId;
+      const body    = req.body || {};
 
-      const trackingNumber: string | undefined =
-        body.tracking_number || body.tracking || body.barcode || body.code_suivi || body.colis;
-      const rawStatus: string | undefined =
-        body.statut || body.status || body.etat;
-      // TJG-{orderNumber} reference we sent to Ameex on creation — allows
-      // correlation before the real tracking number arrives.
-      const externalRef: string | undefined =
-        body.ref || body.reference || body.external_id || body.client_ref;
+      // ── Parse Ameex urlencoded fields (official names are UPPERCASE) ──────
+      // Accept both UPPER and lower variants defensively.
+      const code: string      = String(body.CODE      || body.code      || '').trim();
+      const statut: string    = String(body.STATUT     || body.statut     || '').trim();
+      const statutS: string   = String(body.STATUT_S   || body.statut_s   || '').trim();
+      const statutName: string = String(body.STATUT_NAME || body.statut_name || statut).trim();
+      // Additional fields Ameex may echo back
+      const orderNumRaw: string = String(body.ORDER_NUM || body.order_num || body.ref || body.reference || '').trim();
 
-      if (!trackingNumber && !externalRef) {
-        return res.status(400).json({ message: "tracking_number or ref required" });
+      console.log(`[AMEEX-WEBHOOK] store=${storeId} CODE=${code} STATUT=${statut} STATUT_S=${statutS} STATUT_NAME=${statutName}`);
+
+      if (!code && !orderNumRaw) {
+        console.warn(`[AMEEX-WEBHOOK] store=${storeId} missing CODE and ORDER_NUM — ignored`);
+        return;
       }
 
-      // 1. Match by tracking number (scoped to this carrier account's store)
-      let order = trackingNumber
-        ? await storage.getOrderByTrackingNumber(carrierAccount.storeId, trackingNumber)
-        : null;
-
-      // 2. Fallback: match by AMEEX-PENDING-TJG-{orderNumber} placeholder stored
-      //    when Ameex returned a success shape but no real tracking yet.
-      if (!order && trackingNumber) {
-        const m = trackingNumber.match(/^AMEEX-PENDING-TJG-(.+)$/);
-        if (m) {
-          order = await storage.getOrderByOrderNumberAnyStore(m[1]);
-          if (order) console.log(`[AMEEX-WEBHOOK] Matched by placeholder tracking=${trackingNumber} → order #${order.orderNumber}`);
+      // ── Idempotency: skip duplicate (CODE, STATUT, STATUT_S) within 24h ──
+      if (code && statut) {
+        const dupeRows = await db
+          .select({ id: integrationLogs.id })
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            eq(integrationLogs.provider, 'ameex'),
+            eq(integrationLogs.action, 'webhook_received'),
+            sql`${integrationLogs.payload} LIKE ${'%"CODE":"' + code + '"%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"STATUT":"' + statut + '"%'}`,
+            sql`${integrationLogs.payload} LIKE ${'%"STATUT_S":"' + statutS + '"%'}`,
+            sql`${integrationLogs.createdAt} > NOW() - INTERVAL '24 hours'`,
+          ))
+          .limit(1);
+        if (dupeRows.length > 0) {
+          console.log(`[AMEEX-WEBHOOK] Duplicate ignored: CODE=${code} STATUT=${statut} STATUT_S=${statutS}`);
+          return;
         }
       }
 
-      // 3. Fallback: match by TJG-{orderNumber} external ref Ameex echoes back
-      if (!order && externalRef) {
-        const m = externalRef.match(/TJG-(.+)/);
-        if (m) {
-          order = await storage.getOrderByOrderNumberAnyStore(m[1]);
-          if (order) console.log(`[AMEEX-WEBHOOK] Matched by ref=${externalRef} → order #${order.orderNumber}`);
+      // Persist event for audit trail
+      const ameexPayload = JSON.stringify({ CODE: code, STATUT: statut, STATUT_S: statutS, STATUT_NAME: statutName, orderNumRaw }).slice(0, 1000);
+      await storage.createIntegrationLog({
+        storeId,
+        integrationId: null,
+        provider: 'ameex',
+        action: 'webhook_received',
+        status: 'success',
+        message: `Ameex webhook: CODE=${code} STATUT=${statut}${statutS ? '/' + statutS : ''} (${statutName})`,
+        payload: ameexPayload,
+      });
+
+      // ── Order matching ────────────────────────────────────────────────────
+      let order: any = null;
+      let matchMethod = '';
+
+      // 1. Direct match: CODE against trackNumber (scoped to this store)
+      if (code) {
+        order = await storage.getOrderByTrackingNumber(storeId, code);
+        if (order) matchMethod = 'CODE=trackNumber';
+      }
+
+      // 2. Fallback: our stored placeholder "AMEEX-PENDING-TJG-{orderNumber}" —
+      //    find orders in this store where trackNumber starts with AMEEX-PENDING-
+      //    and match by phone (if Ameex echoes it) OR by orderNumRaw.
+      if (!order && code) {
+        // 2a. Match by ORDER_NUM field Ameex may echo back
+        if (orderNumRaw) {
+          // Strip leading "TJG-" if present
+          const num = orderNumRaw.replace(/^TJG-/i, '');
+          order = await storage.getOrderByOrderNumberAnyStore(num);
+          if (order && order.storeId !== storeId) order = null; // cross-tenant guard
+          if (order) matchMethod = `ORDER_NUM=${orderNumRaw}`;
+        }
+
+        // 2b. Scan AMEEX-PENDING orders in this store — backfill by CODE
+        if (!order) {
+          const storeOrders = await storage.getOrdersByStore(storeId);
+          const pendingPhone = String(body.PHONE || body.phone || '').trim();
+          for (const o of storeOrders as any[]) {
+            if (!o.trackNumber?.startsWith('AMEEX-PENDING-')) continue;
+            // Match by phone if Ameex includes it
+            // Normalise Moroccan phone: strip spaces/dashes, +212/00212 → 06/07
+            const normPhone = (p: string) => {
+              let s = (p || '').replace(/[\s\-().+]/g, '');
+              if (s.startsWith('00212')) s = '0' + s.slice(5);
+              else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
+              return s;
+            };
+            if (pendingPhone && o.customerPhone && normPhone(o.customerPhone) === normPhone(pendingPhone)) {
+              order = o; matchMethod = `AMEEX-PENDING+phone=${pendingPhone}`; break;
+            }
+            // Match by embedded order number in our placeholder
+            const m = o.trackNumber.match(/^AMEEX-PENDING-TJG-(.+)$/);
+            if (m && code.includes(m[1])) {
+              order = o; matchMethod = `AMEEX-PENDING+codeContains=${m[1]}`; break;
+            }
+          }
         }
       }
 
       if (!order) {
-        console.warn(`[AMEEX-WEBHOOK] Order not found — tracking=${trackingNumber} ref=${externalRef} store=${carrierAccount.storeId}`);
-        return res.json({ success: true, matched: false });
+        console.warn(`[AMEEX-WEBHOOK] No order matched — CODE=${code} store=${storeId}`);
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'webhook_no_match', status: 'success',
+          message: `⚠️ Ameex webhook CODE=${code} — aucune commande trouvée (store ${storeId})`,
+          payload: ameexPayload,
+        });
+        return;
       }
 
-      // If we stored a placeholder, patch it with the real tracking number now
-      if (trackingNumber && order.trackNumber?.startsWith('AMEEX-PENDING-')) {
-        await storage.updateOrder(order.id, { trackNumber: trackingNumber } as any);
-        console.log(`[AMEEX-WEBHOOK] Resolved placeholder → real tracking ${trackingNumber} for order #${order.orderNumber}`);
+      console.log(`[AMEEX-WEBHOOK] Matched order #${order.orderNumber} via ${matchMethod}`);
+
+      // ── Backfill real tracking number if we stored a placeholder ─────────
+      if (code && order.trackNumber?.startsWith('AMEEX-PENDING-')) {
+        await storage.updateOrder(order.id, { trackNumber: code } as any);
+        console.log(`[AMEEX-WEBHOOK] Backfilled real CODE=${code} for order #${order.orderNumber} (was ${order.trackNumber})`);
       }
 
-      if (rawStatus) {
-        const mappedStatus = mapAmeexStatus(rawStatus);
-        if (mappedStatus && mappedStatus !== order.status) {
-          await storage.updateOrderStatus(order.id, mappedStatus);
-          await storage.createOrderFollowUpLog({
-            orderId:   order.id,
-            agentId:   null,
-            agentName: "Ameex Webhook",
-            note:      `Statut mis à jour via webhook: ${rawStatus} → ${mappedStatus}`,
-          });
-          console.log(`[AMEEX-WEBHOOK] Order #${order.id} status: ${order.status} → ${mappedStatus}`);
-        }
+      // ── Map status and update ─────────────────────────────────────────────
+      if (!statut) {
+        console.log(`[AMEEX-WEBHOOK] No STATUT in payload — tracking backfill only for #${order.orderNumber}`);
+        return;
       }
 
-      res.json({ success: true, matched: true });
-    } catch (err) {
-      res.status(500).json({ message: "Webhook processing failed" });
+      const mappedStatus = mapAmeexStatus(statut, statutS);
+
+      // Terminal-status protection: never downgrade a terminal status
+      const TERMINAL_SET = new Set(['delivered', 'refused', 'retourné']);
+      if (TERMINAL_SET.has(order.status || '') && !TERMINAL_SET.has(mappedStatus)) {
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'webhook_no_change', status: 'success',
+          message: `ℹ️ #${order.orderNumber} déjà terminée en "${order.status}" — STATUT=${statut} ignoré`,
+          payload: ameexPayload,
+        });
+        return;
+      }
+
+      // Always update commentStatus with the French label Ameex provides
+      const commentUpdate: any = { commentStatus: statutName || statut };
+      await storage.updateOrder(order.id, commentUpdate);
+
+      if (mappedStatus !== order.status) {
+        await storage.updateOrderStatus(order.id, mappedStatus);
+        await storage.createOrderFollowUpLog({
+          orderId:   order.id,
+          agentId:   null,
+          agentName: "Ameex Webhook",
+          note:      `Statut mis à jour via webhook: ${statut}${statutS ? '/' + statutS : ''} (${statutName}) → ${mappedStatus}`,
+        });
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'status_update', status: 'success',
+          message: `✅ #${order.orderNumber}: ${order.status} → ${mappedStatus} (STATUT=${statut}${statutS ? '/' + statutS : ''}: ${statutName})`,
+          payload: ameexPayload,
+        });
+        console.log(`[AMEEX-WEBHOOK] #${order.orderNumber}: ${order.status} → ${mappedStatus} (${statutName})`);
+
+        // Push notification + real-time broadcast
+        notifyStatusUpdate(
+          { id: order.id, storeId, assignedToId: order.assignedToId ?? null, customerName: order.customerName || "" },
+          mappedStatus,
+        );
+        broadcastToStore(storeId, "order_updated", { orderId: order.id, status: mappedStatus, commentStatus: statutName || statut });
+      } else {
+        // Status unchanged — commentStatus already updated above
+        await storage.createIntegrationLog({
+          storeId, integrationId: null, provider: 'ameex',
+          action: 'webhook_no_change', status: 'success',
+          message: `ℹ️ #${order.orderNumber} déjà en ${order.status} (STATUT=${statut}: ${statutName})`,
+          payload: ameexPayload,
+        });
+      }
+    } catch (err: any) {
+      console.error("[AMEEX-WEBHOOK] Error:", err?.message, err?.stack);
+      try {
+        await storage.createIntegrationLog({
+          storeId: 0, integrationId: null, provider: 'ameex',
+          action: 'webhook_error', status: 'fail',
+          message: `❌ Exception Ameex webhook: ${err?.message || "Erreur inconnue"}`,
+          payload: JSON.stringify({ stack: (err?.stack || '').slice(0, 500), body: req.body }).slice(0, 1000),
+        });
+      } catch { /* ignore secondary log failure */ }
     }
   });
 

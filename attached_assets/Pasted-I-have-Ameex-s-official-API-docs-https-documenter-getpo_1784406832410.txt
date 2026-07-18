@@ -1,0 +1,46 @@
+I have Ameex's official API docs (https://documenter.getpostman.com/view/10265205/2sA3rwLZD1). 
+KEY FACT: Ameex delivers status via WEBHOOK only — there is NO tracking pull endpoint. That's 
+why [AMEEX-TRACK] returns 404. Stop pulling; rely on the webhook (same pattern as Express 
+Coursier).
+
+WEBHOOK FORMAT (critical details):
+ - Ameex sends HTTP POST with Content-Type application/x-www-form-urlencoded (NOT JSON). Parse 
+   it as form-urlencoded (req.body via express.urlencoded), not JSON.
+ - Fields: CODE (tracking number), STATUT (main status), STATUT_S (optional sub-status), 
+   STATUT_NAME (French label), STATUT_COLOR, DATE (optional). 
+ - Match the order by CODE against order.trackNumber.
+
+TASKS:
+1) ADD/verify an Ameex webhook endpoint (e.g. POST /api/webhooks/carrier/:storeId/ameex or 
+   /api/webhooks/shipping/ameex/:storeId) that accepts x-www-form-urlencoded, logs the full 
+   payload, matches the order by CODE = trackNumber (fallback: phone), and updates status. 
+   Respond 200 fast.
+2) AMEEX_STATUS_MAP (single source of truth, STATUT[/STATUT_S] → internal):
+     DELIVERED                    -> delivered
+     DISTRIBUTION                 -> in_progress   (out for delivery)
+     IN_PROGRESS + POSTPONED      -> in_progress   (reporté)   [store label in commentStatus]
+     IN_PROGRESS + NO_ANSWER_TEAM -> in_progress
+     IN_PROGRESS (no sub)         -> in_progress
+     RETURNED / RETOUR / RTS      -> retourné
+     REFUSED / REJECTED           -> refused
+     CANCELED / ANNULE            -> refused/annulé
+   Unknown STATUT -> in_progress (safe default; NEVER guess delivered/refused). Put STATUT_NAME 
+   (French label) in commentStatus so Suivi shows the real text. Use the store's status color 
+   convention (reuse the semantic coloring we set for EC).
+3) DISABLE the broken Ameex pull: remove/skip the [AMEEX-TRACK] tracking calls (the 404 
+   endpoint) and stop the [AMEEX-SYNC] trackingErrors spam. orders.status must NEVER be set to 
+   a raw value like "AMEEX-PENDING-...".
+4) FIX THE PLACEHOLDER TRACKING: orders show trackNumber "AMEEX-PENDING-TJG-1246" — a 
+   placeholder. Check the Ameex ship/create response: it must return Ameex's real CODE — store 
+   THAT as trackNumber on ship. If Ameex doesn't return it at ship time, the webhook's CODE is 
+   the real tracking; match incoming webhooks by phone when the stored trackNumber is still a 
+   "AMEEX-PENDING-" placeholder, then backfill the real CODE onto the order.
+5) Idempotency: dedupe on (CODE, STATUT, STATUT_S). Respect notif prefs; fire push on 
+   Confirmé/Livré/Refusé/Retourné.
+
+VERIFY: an Ameex webhook with STATUT=DELIVERED sets the matched order to delivered and shows 
+"Livré" in Suivi; IN_PROGRESS+POSTPONED shows "Reporté"; no more 404 spam. Ameex delivered 
+orders now count in Dashboard + Profit Analyzer (same isDeliveredStatus).
+
+Deploy to main. Paste me one full incoming Ameex webhook payload and confirm the match + status 
+update.
