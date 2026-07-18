@@ -11021,10 +11021,11 @@ function ensureHeaders(sheet) {
     }
   });
 
-  /* ── Super Admin: Delivered-count mismatch diagnostic ──────────── */
-  // GET /api/admin/diagnostic/delivered-mismatch?storeId=N&dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD
-  // Returns orders in range where dashboard matcher (exact SET) and profit matcher
-  // (isDeliveredStatus, normalised) disagree — used to confirm the 159==159 fix.
+  /* ── Super Admin: Full delivered-count consistency diagnostic ──── */
+  // GET /api/admin/diagnostic/delivered-mismatch
+  //   ?storeId=N&dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD
+  // Returns canonicalTotal, canonicalDelivered, perPlatformSum, perProductSum
+  // and the order IDs/statuses that canonical counts as delivered but Par Produit misses.
   app.get("/api/admin/diagnostic/delivered-mismatch", requireSuperAdmin, async (req: any, res: any) => {
     try {
       const { storeId, dateFrom, dateTo } = req.query as Record<string, string>;
@@ -11037,32 +11038,65 @@ function ensureHeaders(sheet) {
       const cutoff  = new Date(fy, fm - 1, fd,  0,  0,  0,   0);
       const endDate = new Date(ty, tm - 1, td, 23, 59, 59, 999);
 
+      // ── 1. Canonical order set (single source of truth) ────────────────────
       const allOrders = await storage.getOrdersByStore(sid);
       const inRange   = allOrders.filter((o: any) => {
         const d = o.createdAt ? new Date(o.createdAt) : null;
         return d && d >= cutoff && d <= endDate;
       });
+      const canonicalTotal     = inRange.length;
+      const canonicalDelivered = inRange.filter((o: any) => isDeliveredStatus(o.status));
+      const canonicalDeliveredIds = new Set(canonicalDelivered.map((o: any) => o.id));
 
-      const DELIVERED_SET_EXACT = new Set<string>(DELIVERED_STATUSES);
-      const exactDelivered  = inRange.filter((o: any) => DELIVERED_SET_EXACT.has(o.status));
-      const normedDelivered = inRange.filter((o: any) => isDeliveredStatus(o.status));
+      // ── 2. Per-platform sum (must equal canonical) ──────────────────────────
+      const platMap: Record<string, { orders: number; delivered: number }> = {};
+      for (const o of inRange as any[]) {
+        const raw   = o.trafficPlatform || o.utmSource || '';
+        const low   = raw.toLowerCase();
+        const label = low.includes('facebook') || low.includes('fb') || low.includes('meta') ? 'Facebook / Meta'
+                    : low.includes('tiktok')   || low.includes('tik') ? 'TikTok'
+                    : low.includes('google')    ? 'Google'
+                    : low.includes('organic')   || low.includes('organique') ? 'Organique'
+                    : raw || 'Non défini';
+        if (!platMap[label]) platMap[label] = { orders: 0, delivered: 0 };
+        platMap[label].orders++;
+        if (isDeliveredStatus(o.status)) platMap[label].delivered++;
+      }
+      const perPlatformTotal     = Object.values(platMap).reduce((s, p) => s + p.orders,    0);
+      const perPlatformDelivered = Object.values(platMap).reduce((s, p) => s + p.delivered, 0);
 
-      const exactIds  = new Set(exactDelivered.map((o: any)  => o.id));
-      const normedIds = new Set(normedDelivered.map((o: any) => o.id));
+      // ── 3. Per-product sum via computeProfitability ─────────────────────────
+      const profitResult = await computeProfitability(sid, { dateFrom, dateTo });
+      const perProductTotal     = profitResult.products.reduce((s: number, p: any) => s + p.totalOrders,    0);
+      const perProductDelivered = profitResult.products.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
 
-      const inExactNotNormed = exactDelivered.filter((o: any)  => !normedIds.has(o.id))
-        .map((o: any) => ({ id: o.id, status: o.status, createdAt: o.createdAt }));
-      const inNormedNotExact = normedDelivered.filter((o: any) => !exactIds.has(o.id))
+      // ── 4. Orders delivered in canonical but missing from Per Produit ───────
+      // Build a set of orderIds that appear in ANY product row's deliveredOrders
+      // (computed by running computeProfitability with debug flag)
+      // Simpler: orders missing from Per Produit = those with no orderItems rows
+      const orderIds = inRange.map((o: any) => o.id);
+      const itemRowsForDiag = orderIds.length > 0
+        ? await db.select({ orderId: orderItems.orderId })
+            .from(orderItems).where(inArray(orderItems.orderId, orderIds))
+        : [];
+      const coveredByItems  = new Set(itemRowsForDiag.map((i: any) => i.orderId));
+      const deliveredNoItem = canonicalDelivered
+        .filter((o: any) => !coveredByItems.has(o.id))
         .map((o: any) => ({ id: o.id, status: o.status, createdAt: o.createdAt }));
 
       res.json({
         period: `${dateFrom} → ${dateTo}`,
-        totalInRange:     inRange.length,
-        exactDelivered:   exactDelivered.length,
-        normedDelivered:  normedDelivered.length,
-        inExactNotNormed,   // in dashboard but NOT in profit (before fix)
-        inNormedNotExact,   // in profit but NOT in dashboard (before fix)
-        note: "After fix, both use isDeliveredStatus — these arrays should both be empty.",
+        // ── The 5 numbers that must all be equal ──
+        canonicalTotal,
+        canonicalDelivered:  canonicalDelivered.length,
+        perPlatformTotal,
+        perPlatformDelivered,
+        perProductTotal,
+        perProductDelivered,
+        // ── Mismatch details ──
+        deliveredNoItemCount: deliveredNoItem.length,
+        deliveredNoItem,   // orders counted in canonical but had no item rows → were missing from Par Produit before fix
+        note: "After fix all 6 numbers above should satisfy: canonicalDelivered == perPlatformDelivered == perProductDelivered",
       });
     } catch (err: any) {
       res.status(500).json({ message: err.message });

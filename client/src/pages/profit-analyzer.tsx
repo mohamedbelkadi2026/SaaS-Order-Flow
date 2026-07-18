@@ -300,7 +300,11 @@ export default function ProfitAnalyzer() {
       // Always send explicit dateFrom/dateTo so both the dashboard and the
       // profit backend use identical date boundaries — same local-calendar
       // constructor, same end-of-day 23:59:59. Only 'all' keeps dateRange=all.
-      const toStr = (d: Date) => d.toISOString().slice(0, 10);
+      //
+      // Use local-calendar date strings (NOT toISOString which is UTC-based
+      // and would send the previous day for UTC+ timezones after midnight).
+      const toStr = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
       const today = new Date();
       const todayStr = toStr(today);
       if (liveDateRange === 'today') {

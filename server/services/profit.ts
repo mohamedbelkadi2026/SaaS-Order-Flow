@@ -319,6 +319,37 @@ export async function computeProfitability(
     }
   }
 
+  // ── Bucket orders that have NO orderItems rows into "Sans produit" ───────────
+  // Orders without item rows are invisible to the itemRows loop above and would
+  // be excluded from every per-product row, causing:
+  //   sum(Per Produit deliveredOrders) < TOTAL LIVRÉES card
+  // Adding them to a catch-all keeps all four metrics (card, Per Produit,
+  // Per Plateforme, dashboard) consistent for the same order set.
+  const itemCoveredOrderIds = new Set(itemRows.map((i: any) => i.orderId));
+  const UNMATCHED_KEY = '___sans_produit___';
+  for (const order of storeOrders) {
+    if (itemCoveredOrderIds.has((order as any).id)) continue;
+    if (!statsMap[UNMATCHED_KEY]) {
+      statsMap[UNMATCHED_KEY] = makeEmptyRow('— Sans produit —', 0);
+    }
+    const s      = statsMap[UNMATCHED_KEY];
+    const status = ((order as any).status || '').toLowerCase().trim();
+    const isDel  = isDeliveredStatus((order as any).status);
+    s.totalOrders++;
+    if (CONFIRMED_SET.has(status)) s.confirmedOrders++;
+    if (isDel)                     s.deliveredOrders++;
+    if (REFUSED_SET.has(status))   s.refusedOrders++;
+    if (RETURN_SET.has(status))    s.returnedOrders++;
+    if (isDel) {
+      s.revenue      += Number((order as any).totalPrice   || 0) / 100;
+      s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+      // Fallback COGS from order-level productCost field (centimes)
+      s.productCost  += Number((order as any).productCost  || 0) / 100;
+      const agentDH   = agentRateMap.get((order as any).assignedToId) ?? 0;
+      s.confirmationCost += agentDH;
+    }
+  }
+
   // ── Attach ad spend by name bucket ───────────────────────────────────────────
   for (const [pidStr, amountDH] of Object.entries(productAdSpendMap)) {
     const pid = Number(pidStr);

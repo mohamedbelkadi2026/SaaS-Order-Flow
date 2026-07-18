@@ -1,0 +1,40 @@
+Profit Analyzer shows INCONSISTENT delivered counts WITHIN THE SAME PAGE, and none matches the 
+Dashboard:
+ - "TOTAL LIVRÉES" card = 132
+ - "Par Plateforme" table livrées sum = 164 (89+48+13+11+2+1)
+ - "Par Produit" table Total Livrées = 129
+ - Dashboard Livrées = 159
+Same for commandes: Par Plateforme sum = 250 but the TOTAL COMMANDES card = 210.
+So there are 4+ different "delivered" computations over 4 different order sets. Make them ONE.
+
+ROOT CAUSE: computeProfitability (server/services/profit.ts) counts delivered/orders in 
+several independent places over DIFFERENT collections:
+ - the per-PRODUCT aggregation (iterates order_items — misses orders with no/unmatched items),
+ - the per-PLATFORM aggregation (iterates storeOrders directly),
+ - the totals override (totals.deliveredOrders = storeOrders.filter(isDeliveredStatus)),
+ - and the dashboard /api/stats/filtered uses yet another (exact DELIVERED_STATUSES_SET.has).
+These disagree because of (a) different matchers (exact vs isDeliveredStatus) and (b) different 
+base sets (order_items-based vs order-based) and (c) different date ranges (resolveDateRange has 
+no 'month' case → endDate=now, vs dashboard explicit dateFrom/dateTo).
+
+FIX — ONE SOURCE OF TRUTH:
+1) Define the canonical order set ONCE per request: storeOrders filtered by the SAME date 
+   boundaries the dashboard uses (add a 'month' case to resolveDateRange: cutoff = 1st of month 
+   00:00 local, endDate = end of TODAY 23:59:59 local; and make the profit frontend send the 
+   same explicit dateFrom/dateTo as the dashboard for each preset). 
+2) Compute delivered ONCE with isDeliveredStatus over that canonical set. TOTAL COMMANDES = 
+   storeOrders.length; TOTAL LIVRÉES = storeOrders.filter(isDeliveredStatus).length. 
+3) Make the dashboard use isDeliveredStatus too (remove exact .has()). Same helper everywhere.
+4) The Par Produit and Par Plateforme tables must be SUBSETS that reconcile to the same totals: 
+   sum of per-platform livrées === TOTAL LIVRÉES; sum of per-platform commandes === TOTAL 
+   COMMANDES. Orders with no matched product go to a "Non défini"/"Autre" bucket so nothing is 
+   dropped from the per-product view either — the per-product livrées must also sum to TOTAL 
+   LIVRÉES (today Par Produit=129 because unmatched-item orders are dropped; include them).
+5) DIAGNOSTIC (paste to me): for one period, output 
+   { canonicalTotal, canonicalDelivered, dashboardDelivered, perPlatformSum, perProductSum } 
+   and the order IDs delivered in the canonical set but missing from Par Produit. 
+
+VERIFY: Dashboard Livrées == card TOTAL LIVRÉES == sum(Par Plateforme livrées) == sum(Par 
+Produit livrées) == Livrées page count. All equal for the same period.
+
+Deploy to main. Paste the diagnostic.
