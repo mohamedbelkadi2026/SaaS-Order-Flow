@@ -467,7 +467,17 @@ function buildAmeexPayload(input: CarrierShipInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     type:      "SIMPLE",
     business:  String(input.apiSecret || input.apiId || ""),
-    order_num: String(input.orderNumber),
+
+    // ── Our order reference — sent under every known field name ───────────
+    // Ameex echoes one of these back in webhooks as partner_id /
+    // partnerTrackingID so we can link payload.order_id to our order.
+    // We don't know which field Ameex reads, so we send all of them.
+    order_num:         String(input.orderNumber),
+    partner_id:        `TJG-${input.orderNumber}`,
+    partnerTrackingID: `TJG-${input.orderNumber}`,
+    ref:               `TJG-${input.orderNumber}`,
+    external_ref:      `TJG-${input.orderNumber}`,
+
     replace:   "true",
     open:      input.canOpen ? "YES" : "NO",
     try:       "YES",
@@ -615,6 +625,16 @@ function extractTracking(body: any): string | undefined {
     body.tracking               ||
     body.code_suivi             ||
     body.numero_suivi           ||
+    // Ameex ship-response fields — Ameex returns their parcel code under
+    // one of these; we try all of them since the field name varies by
+    // API version. order_id here is Ameex's OWN parcel code (e.g. CAS466…),
+    // not our internal DB id.
+    body.order_id               ||
+    body.parcel_id              ||
+    body.colis_id               ||
+    body.parcel?.order_id       ||
+    body.colis?.code            ||
+    body.data?.order_id         ||
     body.data?.tracking_number  ||
     body.data?.barcode          ||
     body.data?.tracking         ||
@@ -623,7 +643,7 @@ function extractTracking(body: any): string | undefined {
     body.result?.barcode        ||
     body.result?.tracking       ||
     // Nested data array (some carriers)
-    (Array.isArray(body.data) && (body.data[0]?.barcode || body.data[0]?.tracking)) ||
+    (Array.isArray(body.data) && (body.data[0]?.barcode || body.data[0]?.tracking || body.data[0]?.order_id)) ||
     undefined;
 
   if (t) {

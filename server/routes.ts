@@ -4046,10 +4046,19 @@ export async function registerRoutes(
     //  ✓ ONLY match by ORDER_NUM / REFERENCE if Ameex explicitly echoes our
     //    order number back in the payload (rare but possible).
     if (!order && carrierName === 'ameex' && trackingNumber) {
+      // Check every field Ameex might use to echo our order reference back.
+      // We now send partner_id / partnerTrackingID / ref / external_ref at
+      // ship time, so any of them could appear here once Ameex starts echoing.
       const wOrderNum = (
-        body.ORDER_NUM   || body.order_num  ||
-        body.REFERENCE   || body.reference  ||
-        body.internal_id || body.ORDER_ID   || ''
+        ameexNestedPayload.partner_id        ||
+        ameexNestedPayload.partnerTrackingID ||
+        ameexNestedPayload.external_ref      ||
+        ameexNestedPayload.ref               ||
+        body.partner_id    || body.partnerTrackingID ||
+        body.external_ref  || body.ref        ||
+        body.ORDER_NUM     || body.order_num  ||
+        body.REFERENCE     || body.reference  ||
+        body.internal_id   || body.ORDER_ID   || ''
       ).toString().trim();
 
       if (wOrderNum) {

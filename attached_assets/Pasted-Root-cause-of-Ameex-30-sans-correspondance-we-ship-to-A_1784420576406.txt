@@ -1,0 +1,40 @@
+Root cause of Ameex "30 sans correspondance": we ship to Ameex and store a placeholder 
+trackNumber (AMEEX-PENDING-TJG-<orderNumber>) because the ship response doesn't return Ameex's 
+code. Incoming webhooks carry Ameex's OWN code (payload.order_id, e.g. CAS4664687D0F904726727), 
+which has NO link to our placeholder → cannot match. Also payload.partner_id / 
+partnerTrackingID come back EMPTY because we never send OUR order reference to Ameex at ship 
+time. Fix the linkage properly.
+
+FIRST — confirm cleanup: verify the earlier bad backfill (32 different codes all onto #1532) 
+was fully reverted and #1532 has its single placeholder AMEEX-PENDING-TJG-1532 back. Report.
+
+FORWARD FIX (the real solution):
+1) SHIP TIME — send OUR order reference to Ameex so it echoes back in webhooks. In 
+   buildAmeexPayload (server/services/carrier-service.ts), set Ameex's partner/external 
+   reference field to our order number/internal_id. Check Ameex's create/batch API for the 
+   exact field name (likely partner_id, partnerTrackingID, external_ref, or ref) — paste me 
+   the ship request + response shapes so we use the right field.
+2) SHIP TIME — capture Ameex's real code from the ship/create RESPONSE (if it returns one per 
+   package) and store it as order.trackNumber immediately, replacing the placeholder. Paste the 
+   ship response shape so we can map response→order.
+3) WEBHOOK MATCHING (processCarrierWebhook, ameex): match in this priority:
+     a) order.trackNumber === payload.order_id  (once real codes are stored)
+     b) payload.partner_id / partnerTrackingID === our order number  (from step 1)
+   NEVER match on payload.current_driver.phone (that's the driver, identical across all orders — 
+   that caused the #1532 bug). If neither matches, log webhook_no_match and DO NOT attach.
+4) EXISTING 30 ORPHANS (shipped before this fix, no reference sent): 
+   - Check integration_logs for the Ameex shipping_sent success entries — if the ship response 
+     with the real code was logged per order, backfill trackNumber from there (dry-run first, 
+     report count). 
+   - If not logged and Ameex has a "list/track parcels" API that returns our reference, use it 
+     to reconcile. AMEEX_TRACKING_URL = https://api.ameex.app/customer/Delivery/Parcels/Track 
+     exists — check if it (or a list endpoint) returns the mapping.
+   - If neither is possible, these must be attached manually (existing attach-tracking feature). 
+     Do NOT guess-match them.
+
+VERIFY: a newly-shipped Ameex order stores a real code (or our ref is sent), and its webhook 
+matches exactly ONE correct order and updates status (DELIVERED->Livré, INHOUSE->in_progress). 
+No order ever gets multiple/foreign codes.
+
+Deploy to main. Paste me: (a) Ameex ship request+response shapes, (b) the field Ameex uses for 
+our reference, (c) the orphan-backfill dry-run count.
