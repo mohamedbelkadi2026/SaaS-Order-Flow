@@ -81,6 +81,9 @@ export const AMEEX_STATUS_MAP: Record<string, string> = {
   'PICKED':       'in_progress',      // picked up from merchant
   'RECEIVED':     'in_progress',      // alias for INHOUSE (some API versions)
   'POSTPONED':    'in_progress',      // postponed — label "Reporté" applied by handler
+  'NEW PACKAGE':  'in_progress',      // Ameex list-parcels API label for newly created parcels
+  'NEW_PACKAGE':  'in_progress',      // snake_case variant
+  'NEW':          'in_progress',      // bare variant
 
   // ── Named sub-statuses ────────────────────────────────────────────────────
   'PICKUP':       'Attente De Ramassage',

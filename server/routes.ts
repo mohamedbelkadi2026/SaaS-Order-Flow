@@ -9244,6 +9244,320 @@ function ensureHeaders(sheet) {
     }
   });
 
+  /**
+   * POST /api/shipping/ameex/reconcile[?apply=true]
+   *
+   * Fetches the store's full parcel list from the Ameex API and reconciles every
+   * order whose trackNumber is still an "AMEEX-PENDING-TJG-…" placeholder.
+   *
+   * Matching strategy (strict — never guess):
+   *   1. Normalized recipient PHONE (primary) — unique match only
+   *   2. Phone + first name-token OR city (fallback) — resolves ambiguous-phone cases
+   *   3. Ambiguous (multiple parcels same phone, narrowing failed) → skipped, reported
+   *   4. Unmatched → skipped, reported
+   *
+   * Default: dry-run (no DB writes). Pass ?apply=true to commit.
+   *
+   * Response: { dryRun, workingUrl, totalParcels, pendingOrders, resolved, ambiguous,
+   *             unmatched, applied, examples[10], ambiguousExamples[5], unmatchedExamples[10] }
+   */
+  app.post("/api/shipping/ameex/reconcile", requireAuth, requireActiveSubscription, async (req, res) => {
+    const dryRun = req.query.apply !== 'true';
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "ameex");
+      const account  = accounts[0];
+      if (!account) {
+        return safeJson(400, { message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
+      }
+
+      const stripHtml = (s: string) => (s || '').replace(/<[^>]*>/g, '').trim();
+      const apiKey    = stripHtml(account.apiKey);
+      const apiId     = stripHtml((account as any).apiSecret || (account as any).storeName || '');
+      if (!apiKey) return safeJson(400, { message: "Clé API Ameex manquante sur ce compte." });
+
+      const SSL_AGENT_r  = new (await import('https')).default.Agent({ rejectUnauthorized: false });
+      const axiosLib     = (await import('axios')).default;
+
+      const reqHeaders: Record<string, string> = {
+        'C-Api-Key': apiKey,
+        'C-Api-Id':  apiId,
+        'Accept':    'application/json',
+      };
+
+      // ── Discover the parcel-list endpoint (try GET, then POST) ────────────
+      // Ameex follows /customer/Delivery/Parcels/Action/Type/<Verb> pattern.
+      // We try every plausible variant and log each result for diagnosis.
+      // business = apiId (the numeric merchant account identifier).
+      const business = apiId || apiKey.split('-')[0] || '';
+      const CANDIDATE_URLS = [
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Get`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/GetAll`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/List`,
+        `https://api.ameex.app/customer/Delivery/Parcels`,
+        `https://api.ameex.app/customer/Delivery/Parcels/List`,
+        `https://api.ameex.app/customer/Parcels/Action/Type/Get`,
+      ];
+
+      let parcelsRaw: any = null;
+      let workingUrl  = '';
+      let lastStatus  = 0;
+
+      for (const url of CANDIDATE_URLS) {
+        for (const method of ['get', 'post'] as const) {
+          try {
+            const opts: any = {
+              headers: reqHeaders,
+              timeout: 20_000,
+              httpsAgent: SSL_AGENT_r,
+              validateStatus: () => true,
+            };
+            let r: any;
+            if (method === 'get') {
+              r = await axiosLib.get(url, { ...opts, params: business ? { business } : {} });
+            } else {
+              const FormDataLib = (await import('form-data')).default;
+              const fd = new FormDataLib();
+              if (business) fd.append('business', business);
+              r = await axiosLib.post(url, fd, { ...opts, headers: { ...reqHeaders, ...fd.getHeaders() } });
+            }
+            lastStatus = r.status;
+            console.log(`[AMEEX-RECONCILE] ${method.toUpperCase()} ${url} → HTTP ${r.status}: ${JSON.stringify(r.data).slice(0, 400)}`);
+            if (r.status === 200 && r.data && !(typeof r.data === 'object' && Object.keys(r.data).length === 0)) {
+              parcelsRaw = r.data;
+              workingUrl = `${method.toUpperCase()} ${url}`;
+              break;
+            }
+          } catch (e: any) {
+            console.log(`[AMEEX-RECONCILE] ${method.toUpperCase()} ${url} → Error: ${e.message}`);
+          }
+        }
+        if (parcelsRaw) break;
+      }
+
+      if (!parcelsRaw) {
+        return safeJson(502, {
+          message: `Ameex: aucun endpoint de liste de colis ne répond correctement (dernier HTTP=${lastStatus}). Paste les logs [AMEEX-RECONCILE] pour diagnostiquer — ils montrent la réponse brute de chaque URL tentée.`,
+          candidatesTriedCount: CANDIDATE_URLS.length * 2,
+        });
+      }
+
+      // ── Parse parcels — handle every known response shape ─────────────────
+      type AmeexParcel = { trackingCode: string; phone: string; name: string; city: string; status: string };
+
+      function extractParcels(data: any): AmeexParcel[] {
+        let arr: any[] = [];
+        if      (Array.isArray(data))              arr = data;
+        else if (Array.isArray(data?.data))        arr = data.data;
+        else if (Array.isArray(data?.parcels))     arr = data.parcels;
+        else if (Array.isArray(data?.items))       arr = data.items;
+        else if (Array.isArray(data?.result))      arr = data.result;
+        else if (Array.isArray(data?.orders))      arr = data.orders;
+        else if (typeof data === 'object' && data !== null) {
+          // Object keyed by tracking code / numeric id
+          const vals = Object.values(data);
+          if (vals.length > 0 && typeof vals[0] === 'object') arr = vals as any[];
+        }
+
+        return arr.map((item: any) => ({
+          trackingCode: String(
+            item.tracking_code || item.trackingCode || item.order_id ||
+            item.code          || item.barcode      || item.tracking  ||
+            item.CODE          || item.num           || ''
+          ).trim(),
+          phone: String(
+            item.phone         || item.telephone     || item.recipient_phone ||
+            item.Phone         || item.PHONE         || item.tel             || ''
+          ).trim(),
+          name: String(
+            item.receiver      || item.recipient     || item.recipient_name  ||
+            item.name          || item.destinataire  || item.nom             ||
+            item.customer_name || ''
+          ).trim(),
+          city: String(
+            item.city          || item.ville         || item.city_name       ||
+            item.City          || item.CITY          || ''
+          ).trim(),
+          status: String(
+            item.status        || item.statut        || item.etat            ||
+            item.STATUS        || item.STATUT        || item.state           || ''
+          ).trim().toUpperCase(),
+        })).filter(p => p.trackingCode);
+      }
+
+      const parcels = extractParcels(parcelsRaw);
+      console.log(`[AMEEX-RECONCILE] Parsed ${parcels.length} parcels from ${workingUrl}`);
+      // Log a sample so user can see which fields were extracted
+      if (parcels.length > 0) {
+        console.log(`[AMEEX-RECONCILE] Sample parcel[0]: ${JSON.stringify(parcels[0])}`);
+      }
+
+      if (parcels.length === 0) {
+        return safeJson(200, {
+          message: `Ameex a répondu (${workingUrl}) mais aucun colis n'a pu être extrait. Paste le log [AMEEX-RECONCILE] — il montre la forme brute de la réponse.`,
+          workingUrl,
+          rawShape: JSON.stringify(parcelsRaw).slice(0, 600),
+        });
+      }
+
+      // ── Load our AMEEX-PENDING orders ────────────────────────────────────
+      const { AMEEX_STATUS_MAP } = await import('./services/carrier-service');
+      const allOrders     = await storage.getOrdersByStore(storeId) as any[];
+      const pendingOrders = allOrders.filter((o: any) => String(o.trackNumber || '').startsWith('AMEEX-PENDING-'));
+      console.log(`[AMEEX-RECONCILE] ${pendingOrders.length} AMEEX-PENDING orders to resolve`);
+
+      // ── Phone & name normalization ────────────────────────────────────────
+      const normPhone = (p: string) => {
+        let s = String(p || '').replace(/[\s\-().+]/g, '');
+        if (s.startsWith('00212')) s = '0' + s.slice(5);
+        else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
+        return s;
+      };
+      const normName = (s: string) =>
+        (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+
+      // Index parcels by normalized phone
+      const byPhone = new Map<string, AmeexParcel[]>();
+      for (const parcel of parcels) {
+        const norm = normPhone(parcel.phone);
+        if (!norm) continue;
+        if (!byPhone.has(norm)) byPhone.set(norm, []);
+        byPhone.get(norm)!.push(parcel);
+      }
+
+      // ── Match ─────────────────────────────────────────────────────────────
+      type MatchResult = {
+        orderNumber:  string;
+        orderId:      number;
+        orderPhone:   string;
+        realCode:     string;
+        ameexStatus:  string;
+        mappedStatus: string;
+        matchedBy:    string;
+      };
+
+      const resolved:   MatchResult[]                                                         = [];
+      const ambiguous:  Array<{ orderNumber: string; phone: string; candidates: string[] }>   = [];
+      const unmatched:  string[]                                                              = [];
+
+      for (const order of pendingOrders) {
+        const orderPhone = normPhone(order.customerPhone || '');
+        const candidates = orderPhone ? (byPhone.get(orderPhone) || []) : [];
+
+        if (candidates.length === 1) {
+          // Unique phone match — safe to assign
+          const parcel      = candidates[0];
+          const mappedStatus = AMEEX_STATUS_MAP[parcel.status] ?? 'in_progress';
+          resolved.push({
+            orderNumber: String(order.orderNumber), orderId: order.id,
+            orderPhone: order.customerPhone || '', realCode: parcel.trackingCode,
+            ameexStatus: parcel.status, mappedStatus, matchedBy: 'phone',
+          });
+        } else if (candidates.length > 1) {
+          // Multiple parcels with same phone — try to narrow by name or city
+          const orderNameNorm = normName(order.customerName || '');
+          const orderCityNorm = normName(order.city || '');
+          const firstNameToken = orderNameNorm.split(' ')[0] || '';
+
+          const narrowed = candidates.filter(c => {
+            const cn = normName(c.name);
+            const cc = normName(c.city);
+            return (firstNameToken && cn.includes(firstNameToken)) ||
+                   (orderCityNorm  && cc === orderCityNorm);
+          });
+
+          if (narrowed.length === 1) {
+            const parcel      = narrowed[0];
+            const mappedStatus = AMEEX_STATUS_MAP[parcel.status] ?? 'in_progress';
+            resolved.push({
+              orderNumber: String(order.orderNumber), orderId: order.id,
+              orderPhone: order.customerPhone || '', realCode: parcel.trackingCode,
+              ameexStatus: parcel.status, mappedStatus, matchedBy: 'phone+name/city',
+            });
+          } else {
+            ambiguous.push({
+              orderNumber: String(order.orderNumber),
+              phone:       order.customerPhone || '',
+              candidates:  candidates.map(c => c.trackingCode),
+            });
+          }
+        } else {
+          unmatched.push(String(order.orderNumber));
+        }
+      }
+
+      console.log(`[AMEEX-RECONCILE] resolved=${resolved.length} ambiguous=${ambiguous.length} unmatched=${unmatched.length}`);
+
+      // ── Apply if not dry-run ──────────────────────────────────────────────
+      const applied: string[] = [];
+      if (!dryRun) {
+        const TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+        for (const match of resolved) {
+          try {
+            // 1. Write the real Ameex code to trackNumber
+            await storage.updateOrder(match.orderId, { trackNumber: match.realCode } as any);
+
+            // 2. Apply status (respect terminal guard)
+            const currentOrder = allOrders.find((o: any) => o.id === match.orderId);
+            if (currentOrder && !(TERMINAL.has(currentOrder.status || '') && !TERMINAL.has(match.mappedStatus))) {
+              await storage.updateOrderStatus(match.orderId, match.mappedStatus);
+              await storage.updateOrder(match.orderId, { commentStatus: match.ameexStatus } as any);
+              await storage.createOrderFollowUpLog({
+                orderId: match.orderId, agentId: null, agentName: 'Ameex Réconciliation',
+                note: `Réconciliation: placeholder → ${match.realCode} · statut Ameex ${match.ameexStatus} → ${match.mappedStatus} (via ${match.matchedBy})`,
+              });
+              notifyStatusUpdate(
+                { id: match.orderId, storeId, assignedToId: currentOrder.assignedToId ?? null, customerName: currentOrder.customerName || '' },
+                match.mappedStatus,
+              );
+              broadcastToStore(storeId, 'order_updated', { orderId: match.orderId, status: match.mappedStatus, trackNumber: match.realCode });
+            }
+
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: 'ameex',
+              action: 'reconcile_apply', status: 'success',
+              message: `✅ #${match.orderNumber}: placeholder → ${match.realCode} (${match.ameexStatus} → ${match.mappedStatus})`,
+              payload: JSON.stringify(match).slice(0, 500),
+            });
+            applied.push(match.orderNumber);
+          } catch (e: any) {
+            console.error(`[AMEEX-RECONCILE] apply error #${match.orderNumber}:`, e?.message);
+          }
+        }
+        console.log(`[AMEEX-RECONCILE] Applied ${applied.length} of ${resolved.length}`);
+      }
+
+      const message = dryRun
+        ? `DRY-RUN: ${resolved.length} placeholder(s) résolubles, ${ambiguous.length} ambiguë(s) ignorée(s), ${unmatched.length} sans correspondance. Relancez avec ?apply=true pour appliquer.`
+        : `Appliqué: ${applied.length}/${resolved.length} commande(s) mise(s) à jour · ${ambiguous.length} ambiguë(s) ignorée(s) · ${unmatched.length} sans correspondance.`;
+
+      return safeJson(200, {
+        dryRun,
+        workingUrl,
+        totalParcels:      parcels.length,
+        pendingOrders:     pendingOrders.length,
+        resolved:          resolved.length,
+        ambiguous:         ambiguous.length,
+        unmatched:         unmatched.length,
+        applied:           dryRun ? 0 : applied.length,
+        examples:          resolved.slice(0, 10),
+        ambiguousExamples: ambiguous.slice(0, 5),
+        unmatchedExamples: unmatched.slice(0, 10),
+        message,
+      });
+    } catch (err: any) {
+      console.error('[AMEEX-RECONCILE] fatal:', err?.message);
+      return safeJson(500, { message: err?.message || 'Réconciliation Ameex échouée' });
+    }
+  });
+
   // In-memory guard — prevents two carrier-sync loops for the same (store, provider)
   // from running at the same time (e.g. user clicks "Sync" while auto-sync is still working).
   const inFlightSyncs = new Set<string>();
