@@ -4035,47 +4035,42 @@ export async function registerRoutes(
       }
     }
 
-    // ── Ameex: AMEEX-PENDING placeholder fallback ────────────────────────────
-    // When Ameex ships a parcel and doesn't return a CODE immediately, we store
-    // "AMEEX-PENDING-TJG-{orderNumber}" as the trackNumber placeholder. When
-    // Ameex later sends a webhook with the real CODE, we can't find the order
-    // by trackNumber. Match via:
-    //  1. Phone field (if Ameex sends PHONE/phone in the webhook)
-    //  2. ORDER_NUM / REFERENCE field (if Ameex echoes our order_num back)
-    // On match, backfill the real CODE onto order.trackNumber immediately.
+    // ── Ameex: AMEEX-PENDING placeholder — ORDER_NUM-only fallback ──────────
+    // SAFETY RULES enforced here:
+    //  ✗ NEVER match by phone — payload.current_driver.phone is the DRIVER's
+    //    phone (shared across all deliveries). Matching on it corrupts every
+    //    other order to the same record.
+    //  ✗ NEVER match by scanning all AMEEX-PENDING orders and taking the first
+    //    hit — Ameex's payload.order_id is Ameex's own code, NOT our ref, so
+    //    there is no reliable 1-to-1 mapping without an explicit echo.
+    //  ✓ ONLY match by ORDER_NUM / REFERENCE if Ameex explicitly echoes our
+    //    order number back in the payload (rare but possible).
     if (!order && carrierName === 'ameex' && trackingNumber) {
-      const wPhone    = (body.PHONE || body.phone || body.TELEPHONE || body.telephone || '').toString().trim();
-      const wOrderNum = (body.ORDER_NUM || body.order_num || body.REFERENCE || body.reference || '').toString().trim();
-      const allStoreOrders = await storage.getOrdersByStore(storeId);
-      const normPhone = (p: string) => {
-        let s = String(p || '').replace(/[\s\-().+]/g, '');
-        if (s.startsWith('00212')) s = '0' + s.slice(5);
-        else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
-        return s;
-      };
-      let pendingCount = 0;
-      for (const o of allStoreOrders as any[]) {
-        if (!String(o.trackNumber || '').startsWith('AMEEX-PENDING-')) continue;
-        pendingCount++;
-        // Match by phone
-        if (wPhone && o.customerPhone && normPhone(o.customerPhone) === normPhone(wPhone)) {
-          order = o; matchedBy = `AMEEX-PENDING+phone=${wPhone}`; break;
-        }
-        // Match by echoed ORDER_NUM / REFERENCE
-        if (wOrderNum) {
-          const stripped = wOrderNum.replace(/^TJG-/i, '');
+      const wOrderNum = (
+        body.ORDER_NUM   || body.order_num  ||
+        body.REFERENCE   || body.reference  ||
+        body.internal_id || body.ORDER_ID   || ''
+      ).toString().trim();
+
+      if (wOrderNum) {
+        const allStoreOrders = await storage.getOrdersByStore(storeId);
+        const stripped = wOrderNum.replace(/^TJG-/i, '');
+        for (const o of allStoreOrders as any[]) {
+          if (!String(o.trackNumber || '').startsWith('AMEEX-PENDING-')) continue;
           const m = String(o.trackNumber).match(/^AMEEX-PENDING-TJG-(.+)$/);
           if (m && m[1] === stripped) {
-            order = o; matchedBy = `AMEEX-PENDING+order_num=${wOrderNum}`; break;
+            order = o;
+            matchedBy = `AMEEX-PENDING+order_num=${wOrderNum}`;
+            // Backfill real CODE so future webhooks match directly by trackNumber
+            await storage.updateOrder((order as any).id, { trackNumber: trackingNumber } as any);
+            console.log(`[AMEEX-PENDING] CODE=${trackingNumber} backfilled onto order #${(order as any).orderNumber} via ORDER_NUM echo (was ${(order as any).trackNumber})`);
+            break;
           }
         }
       }
-      if (order) {
-        // Backfill real CODE so future webhooks match directly by trackNumber
-        await storage.updateOrder((order as any).id, { trackNumber: trackingNumber } as any);
-        console.log(`[AMEEX-PENDING] CODE=${trackingNumber} backfilled onto order #${(order as any).orderNumber} (was ${(order as any).trackNumber})`);
-      } else {
-        console.warn(`[AMEEX-PENDING] CODE=${trackingNumber} — no AMEEX-PENDING order matched (wPhone="${wPhone}" wOrderNum="${wOrderNum}" pendingOrders=${pendingCount}) — log this webhook for later replay`);
+
+      if (!order) {
+        console.warn(`[AMEEX-PENDING] CODE=${trackingNumber} — no ORDER_NUM in payload, cannot safely match AMEEX-PENDING order — logging webhook_no_match for later replay`);
       }
     }
 
@@ -9198,23 +9193,14 @@ function ensureHeaders(sheet) {
           // 1. Direct match by CODE == order.trackNumber
           let order: any = await storage.getOrderByTrackingNumber(storeId, code);
 
-          // 2. AMEEX-PENDING fallback: scan pending orders
-          if (!order) {
-            for (const o of allStoreOrders as any[]) {
-              if (!String(o.trackNumber || '').startsWith('AMEEX-PENDING-')) continue;
-              const m = String(o.trackNumber).match(/^AMEEX-PENDING-TJG-(.+)$/);
-              if (m) {
-                // We have no phone in the stored log, so can't phone-match here.
-                // If there's only one pending order for this CODE, match it.
-                // Otherwise skip to avoid clobbering the wrong order.
-                order = o;
-                // Backfill real CODE
-                await storage.updateOrder(o.id, { trackNumber: code } as any);
-                console.log(`[AMEEX-SYNC] Backfilled CODE=${code} onto #${o.orderNumber} (was ${o.trackNumber})`);
-                break;
-              }
-            }
-          }
+          // NOTE: AMEEX-PENDING fallback intentionally removed.
+          // Ameex's payload.order_id is Ameex's own code — NOT our order number.
+          // We have no reliable 1-to-1 mapping from an Ameex code to our order
+          // unless the real code was stored at ship time. Guessing by scanning
+          // AMEEX-PENDING orders caused all codes to be backfilled onto the same
+          // order (the first one in the list). Safe behaviour: log no_match and
+          // wait for real codes to be stored at ship time.
+          // Real codes will be stored once Ameex's ship response includes the code.
 
           if (!order) {
             noMatch++;
