@@ -9245,6 +9245,194 @@ function ensureHeaders(sheet) {
   });
 
   /**
+   * POST /api/shipping/ameex/backfill[?apply=true]
+   *
+   * Recovers real Ameex tracking codes from already-stored integration_logs without
+   * calling any external API. Every successful Ameex shipment emits a
+   * [AMEEX-FULL-RESPONSE] log line that contains the real code (api.data.code).
+   * This route parses those logs and patches any AMEEX-PENDING-TJG-{orderNumber}
+   * placeholder that matches by order number.
+   *
+   * Matching: always by orderNumber embedded in the placeholder — never by phone or name.
+   * Default: dry-run. Pass ?apply=true to commit.
+   */
+  app.post("/api/shipping/ameex/backfill", requireAuth, requireActiveSubscription, async (req, res) => {
+    const dryRun = req.query.apply !== 'true';
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
+    try {
+      const storeId = req.user!.storeId!;
+
+      // ── 1. Load integration_logs that have [AMEEX-FULL-RESPONSE] ─────────
+      // These are written by the Ameex ship path with action='ship' or message
+      // containing the full response. We also check action='webhook_received'
+      // just in case. The message field contains the raw JSON body.
+      const shipLogs = await db
+        .select()
+        .from(integrationLogs)
+        .where(and(
+          eq(integrationLogs.storeId, storeId),
+          eq(integrationLogs.provider, 'ameex'),
+        ))
+        .orderBy(desc(integrationLogs.createdAt))
+        .limit(2000);
+
+      console.log(`[AMEEX-BACKFILL] storeId=${storeId} total ameex logs=${shipLogs.length}`);
+
+      // ── 2. Extract (orderNumber → realCode) from every log that has both ──
+      // Sources:
+      //   a. message field contains "[AMEEX-FULL-RESPONSE] order=XXXX ... body=..."
+      //   b. payload JSON has api.data.code
+      type BackfillCandidate = { orderNumber: string; realCode: string; source: string };
+      const candidateMap = new Map<string, BackfillCandidate>(); // keyed by orderNumber (latest wins)
+
+      for (const row of shipLogs) {
+        let orderNumber = '';
+        let realCode    = '';
+        let source      = '';
+
+        // --- Source A: message line with [AMEEX-FULL-RESPONSE] ---
+        const msg = row.message || '';
+        if (msg.includes('AMEEX-FULL-RESPONSE') || msg.includes('AMEEX-SHIP')) {
+          const orderM = msg.match(/order[=:](\S+)/i);
+          // Try to find json object embedded in message after "body="
+          const bodyM  = msg.match(/body=(\{.+)/);
+          if (orderM) orderNumber = orderM[1].trim().replace(/[^a-zA-Z0-9\-_]/g, '');
+          if (bodyM) {
+            try {
+              const rb = JSON.parse(bodyM[1]);
+              const code = rb?.api?.data?.code || rb?.api?.data?.tracking ||
+                           rb?.api?.data?.barcode || rb?.data?.code || rb?.code;
+              if (code) { realCode = String(code).trim(); source = 'message.body'; }
+            } catch { /* not valid json */ }
+          }
+        }
+
+        // --- Source B: payload JSON ---
+        if (row.payload) {
+          try {
+            const p = JSON.parse(row.payload);
+
+            // Sub-shape: { orderNumber, rawResponse: { api: { data: { code } } } }
+            if (!orderNumber && p.orderNumber) orderNumber = String(p.orderNumber);
+            if (!orderNumber && p.order_number) orderNumber = String(p.order_number);
+
+            const rb = p.rawResponse || p.response || p.body || p;
+            const code = rb?.api?.data?.code || rb?.api?.data?.tracking ||
+                         rb?.api?.data?.barcode || rb?.data?.code || rb?.code;
+            if (code && !realCode) { realCode = String(code).trim(); source = 'payload.api.data.code'; }
+
+            // Some logs store orderNumber at top level alongside rawResponse
+            if (!orderNumber && p.trackNumber) {
+              // "AMEEX-PENDING-TJG-9230" → "9230"
+              const pendingM = String(p.trackNumber).match(/AMEEX-PENDING-TJG-(\S+)/);
+              if (pendingM) orderNumber = pendingM[1];
+            }
+          } catch { /* not valid json */ }
+        }
+
+        // --- Source C: parse orderNumber from the placeholder stored in trackNumber field --------
+        // integration_logs sometimes store the placeholder in their message or payload
+        if (!orderNumber) {
+          const pendingM = (row.message || '').match(/AMEEX-PENDING-TJG-([^\s,"']+)/);
+          if (pendingM) orderNumber = pendingM[1];
+        }
+
+        if (orderNumber && realCode && !candidateMap.has(orderNumber)) {
+          candidateMap.set(orderNumber, { orderNumber, realCode, source });
+          console.log(`[AMEEX-BACKFILL] Found: order=${orderNumber} → ${realCode} (via ${source})`);
+        }
+      }
+
+      console.log(`[AMEEX-BACKFILL] ${candidateMap.size} (orderNumber → realCode) pairs extracted from logs`);
+
+      // ── 3. Load AMEEX-PENDING orders for this store ───────────────────────
+      const allOrders     = await storage.getOrdersByStore(storeId) as any[];
+      const pendingOrders = allOrders.filter((o: any) => String(o.trackNumber || '').startsWith('AMEEX-PENDING-'));
+      console.log(`[AMEEX-BACKFILL] ${pendingOrders.length} AMEEX-PENDING orders in store`);
+
+      // ── 4. Match strictly by order number embedded in placeholder ─────────
+      type BackfillMatch = { orderNumber: string; orderId: number; oldCode: string; realCode: string; source: string };
+      const resolved:   BackfillMatch[] = [];
+      const unresolved: string[]        = [];
+
+      for (const order of pendingOrders) {
+        // Extract order number from placeholder: AMEEX-PENDING-TJG-9230 → "9230"
+        const placeholder = String(order.trackNumber || '');
+        const numM = placeholder.match(/AMEEX-PENDING-TJG-(.+)/);
+        const orderNum = numM ? numM[1] : String(order.orderNumber || '');
+
+        const candidate = candidateMap.get(orderNum) || candidateMap.get(String(order.orderNumber));
+        if (candidate) {
+          resolved.push({
+            orderNumber: String(order.orderNumber),
+            orderId:     order.id,
+            oldCode:     placeholder,
+            realCode:    candidate.realCode,
+            source:      candidate.source,
+          });
+        } else {
+          unresolved.push(String(order.orderNumber));
+        }
+      }
+
+      console.log(`[AMEEX-BACKFILL] resolved=${resolved.length} unresolved=${unresolved.length}`);
+
+      // ── 5. Apply if not dry-run ───────────────────────────────────────────
+      const applied: string[] = [];
+      if (!dryRun) {
+        for (const match of resolved) {
+          try {
+            await storage.updateOrder(match.orderId, { trackNumber: match.realCode } as any);
+            await storage.createOrderFollowUpLog({
+              orderId:   match.orderId,
+              agentId:   null,
+              agentName: 'Ameex Backfill',
+              note:      `Backfill depuis logs ship: ${match.oldCode} → ${match.realCode} (source: ${match.source})`,
+            });
+            await storage.createIntegrationLog({
+              storeId, integrationId: null, provider: 'ameex',
+              action: 'backfill_apply', status: 'success',
+              message: `✅ #${match.orderNumber}: ${match.oldCode} → ${match.realCode}`,
+              payload: JSON.stringify(match).slice(0, 500),
+            });
+            broadcastToStore(storeId, 'order_updated', { orderId: match.orderId, trackNumber: match.realCode });
+            applied.push(match.orderNumber);
+          } catch (e: any) {
+            console.error(`[AMEEX-BACKFILL] apply error #${match.orderNumber}:`, e?.message);
+          }
+        }
+        console.log(`[AMEEX-BACKFILL] Applied ${applied.length}/${resolved.length}`);
+      }
+
+      const message = dryRun
+        ? `DRY-RUN: ${resolved.length} placeholder(s) résolubles depuis les logs de ship · ${unresolved.length} sans correspondance dans les logs. Relancez avec ?apply=true pour appliquer.`
+        : `Appliqué: ${applied.length}/${resolved.length} commande(s) mise(s) à jour · ${unresolved.length} sans correspondance dans les logs (utilisez /reconcile pour celles-là).`;
+
+      return safeJson(200, {
+        dryRun,
+        logsScanned:   shipLogs.length,
+        pairsFound:    candidateMap.size,
+        pendingOrders: pendingOrders.length,
+        resolved:      resolved.length,
+        unresolved:    unresolved.length,
+        applied:       dryRun ? 0 : applied.length,
+        examples:      resolved.slice(0, 10),
+        unresolvedExamples: unresolved.slice(0, 10),
+        message,
+      });
+    } catch (err: any) {
+      console.error('[AMEEX-BACKFILL] fatal:', err?.message);
+      return safeJson(500, { message: err?.message || 'Ameex backfill échoué' });
+    }
+  });
+
+  /**
    * POST /api/shipping/ameex/reconcile[?apply=true]
    *
    * Fetches the store's full parcel list from the Ameex API and reconciles every

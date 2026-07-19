@@ -1,0 +1,31 @@
+FOUND IT. The Ameex ship response puts the real tracking code at api.data.code. Full body:
+{"login":"success","api":{"type":"success","msg":"Colis ajouté avec succès",
+ "data":{"id":8998107,"code":"ATQ0726B23187MR7018998","c_1":"B-2","c_2":"RBT"}}}
+extractTracking doesn't look there, so it falls back to AMEEX-PENDING placeholder.
+
+FIX (server/services/carrier-service.ts):
+1) In the Ameex ship path, read the real tracking code from rb.api?.data?.code (fallback to 
+   rb.data?.code / rb.api?.data?.tracking). Store THAT as order.trackNumber immediately — remove 
+   the AMEEX-PENDING placeholder path for successful ships. Also store rb.api.data.id if useful. 
+   Success detection already works (api.type==='success', msg 'Colis ajouté'); just extract the 
+   code correctly.
+2) BACKFILL existing placeholders from logged responses: parse every [AMEEX-FULL-RESPONSE] entry 
+   in integration_logs, extract order=<orderNumber> and api.data.code, and set that order's 
+   trackNumber to the real code (replace AMEEX-PENDING-TJG-<orderNumber>). DRY-RUN first: report 
+   how many placeholders get resolved + 10 examples (order → real code). Only --apply after I 
+   approve. (This recovers the ~30 stuck orders since their ship responses were logged.)
+3) WEBHOOK MATCH: incoming Ameex/olivraison webhooks carry the real code in payload.order_id (or 
+   top-level CODE). Now that trackNumber holds the real code, match order by trackNumber === 
+   code and update status. NEVER match on current_driver.phone. Map via AMEEX_STATUS_MAP 
+   (DELIVERED->delivered, INHOUSE/NEW PACKAGE/DISTRIBUTION->in_progress, RETURNED/return_status=
+   true->retourné, REFUSED->refused, unknown->in_progress; store label in commentStatus).
+4) "Synchroniser les statuts": replay stored webhook events by real code; report updated/skipped 
+   counts.
+
+VERIFY: a newly shipped Ameex order shows the REAL code (e.g. ATQ0726B23187MR7018998) in the 
+CODE column, not AMEEX-PENDING; the backfill resolves the existing placeholders; incoming 
+webhooks match and update status (Livré/En cours/Refusé), which then count in Dashboard + 
+Profit Analyzer.
+
+Deploy to main. First run the STEP 2 backfill as DRY-RUN and paste me the resolution count + 10 
+examples before applying.

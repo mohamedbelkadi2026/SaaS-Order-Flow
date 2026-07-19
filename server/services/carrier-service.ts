@@ -630,6 +630,12 @@ function extractTracking(body: any): string | undefined {
     body.tracking               ||
     body.code_suivi             ||
     body.numero_suivi           ||
+    // ── Ameex confirmed shape: { login:"success", api:{ type:"success",
+    //    data:{ id:8998107, code:"ATQ0726B23187MR7018998", c_1, c_2 } } }
+    // `api.data.code` is the REAL Ameex parcel barcode returned at ship time.
+    body.api?.data?.code        ||
+    body.api?.data?.tracking    ||
+    body.api?.data?.barcode     ||
     // Ameex ship-response fields — Ameex returns their parcel code under
     // one of these; we try all of them since the field name varies by
     // API version. order_id here is Ameex's OWN parcel code (e.g. CAS466…),
@@ -1401,11 +1407,15 @@ export async function shipOrderToCarrier(
         permanent:      !!ameexApiMsg,
       };
     }
-    // Placeholder embeds TJG-{orderNumber} so the webhook can correlate before
-    // the real tracking number arrives.
+    // Use the real Ameex parcel code if extractTracking found it (api.data.code etc.).
+    // Only fall back to AMEEX-PENDING-... when the response genuinely didn't include a code.
     const finalTracking = trackingNumber || `AMEEX-PENDING-TJG-${input.orderNumber}`;
     const labelUrl = `/api/labels/${finalTracking}.pdf`;
-    console.log(`${tag} ✅ Ameex SUCCESS! Tracking: ${finalTracking} (webhook will resolve real number later)`);
+    if (trackingNumber) {
+      console.log(`${tag} ✅ Ameex SUCCESS! Real code captured: ${finalTracking}`);
+    } else {
+      console.log(`${tag} ✅ Ameex SUCCESS (no code in response — placeholder stored: ${finalTracking}). Use /api/shipping/ameex/backfill to resolve from logged responses, or /api/shipping/ameex/reconcile to match via parcel-list API.`);
+    }
     return {
       success: true,
       trackingNumber: finalTracking,
