@@ -4262,31 +4262,12 @@ export async function registerRoutes(
     // Anything else also falls through to "in_progress" (the default above).
     // The commentStatus column carries the real display text shown in the Suivi tab.
 
-    // ── Ameex status mapping — single authoritative block ────────────────────
-    // Real shape: payload.status holds the enum code; body.event is always
-    // "package_updated" (not a status). return_status=true overrides to retourné.
-    // reported_date/date_reporte_colis set → keep in_progress + "Reporté" label.
-    // Do NOT use current_driver.phone for matching — that is the driver, not customer.
-    const AMEEX_WEBHOOK_STATUS_MAP: Record<string, string> = {
-      'DELIVERED':    'delivered',
-      'INHOUSE':      'in_progress',      // received at hub/warehouse
-      'INDELIVERY':   'in_progress',      // out for delivery (variant 1)
-      'DISTRIBUTION': 'in_progress',      // out for delivery (variant 2)
-      'OUT':          'in_progress',      // out for delivery (variant 3)
-      'IN_PROGRESS':  'in_progress',
-      'PENDING':      'in_progress',
-      'PICKED':       'in_progress',      // picked up from merchant
-      'PICKUP':       'Attente De Ramassage',
-      'REFUSED':      'refused',
-      'REJECTED':     'refused',
-      'CANCELED':     'refused',
-      'CANCELLED':    'refused',
-      'ANNULE':       'refused',
-      'RETURNED':     'retourné',
-      'RETOUR':       'retourné',
-      'RTS':          'retourné',
-      'NO_ANSWER':    'Injoignable',
-    };
+    // ── Ameex FORMAT B status mapping ────────────────────────────────────────
+    // Single source of truth: mapAmeexStatus() from carrier-service.ts.
+    // payload.status holds the enum code; body.event is always "package_updated"
+    // (never a status). return_status=true overrides to retourné.
+    // reported_date/date_reporte_colis set → in_progress + "Reporté" label.
+    // NEVER use current_driver.phone for matching — that is the driver phone.
 
     if (body.code_colis || body.event === 'package_updated') {
       const ameexPayloadStatus = (ameexNestedPayload.status || '').toString().toUpperCase().trim();
@@ -4300,12 +4281,11 @@ export async function registerRoutes(
       if (ameexReturnStatus === true) {
         newStatus = 'retourné';
         console.log(`[AMEEX-STATUS] return_status=true → retourné`);
-      } else if (ameexPayloadStatus && AMEEX_WEBHOOK_STATUS_MAP[ameexPayloadStatus]) {
-        newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexPayloadStatus];
-        console.log(`[AMEEX-STATUS] payload.status="${ameexPayloadStatus}" → internal="${newStatus}"`);
       } else if (ameexPayloadStatus) {
-        console.warn(`[AMEEX-STATUS] Unknown payload.status="${ameexPayloadStatus}" — defaulting to in_progress (log this for future map expansion)`);
-        newStatus = 'in_progress';
+        // mapAmeexStatus() is the single source of truth (AMEEX_STATUS_MAP in carrier-service.ts).
+        // Unknown codes safely default to 'in_progress' — we never guess terminal states.
+        newStatus = mapAmeexStatus(ameexPayloadStatus);
+        console.log(`[AMEEX-STATUS] payload.status="${ameexPayloadStatus}" → internal="${newStatus}"`);
       }
 
       // Postpone date set → force in_progress + readable label (unless already terminal)
@@ -4319,12 +4299,15 @@ export async function registerRoutes(
       }
     }
 
-    // ── Legacy token-based Ameex path (old STATUT field, kept for backward compat) ──
+    // ── Ameex FORMAT A (STATUT/CODE fields) — kept for backward compat ───────
+    // Hits /api/webhooks/shipping/ameex/:token directly with urlencoded fields.
+    // Uses the same mapAmeexStatus() so both formats share one status map.
     const ameexLegacyCode = (!body.code_colis && body.event !== 'package_updated')
       ? (body.STATUT || body.statut || '').toString().toUpperCase().trim()
       : '';
-    if (ameexLegacyCode && AMEEX_WEBHOOK_STATUS_MAP[ameexLegacyCode]) {
-      newStatus = AMEEX_WEBHOOK_STATUS_MAP[ameexLegacyCode];
+    if (ameexLegacyCode) {
+      const legacyMapped = mapAmeexStatus(ameexLegacyCode);
+      newStatus = legacyMapped;
       console.log(`[AMEEX-STATUS-LEGACY] STATUT="${ameexLegacyCode}" → internal="${newStatus}"`);
     }
 
@@ -4571,10 +4554,9 @@ export async function registerRoutes(
 
       // ── Ameex/olivraison payload detection ──────────────────────────────────
       // Ameex and Express Coursier BOTH post to .../olivraison but with totally
-      // different payload shapes. Ameex sends "code_colis" as the tracking field;
-      // EC never does. Detect Ameex by code_colis presence and switch to the
-      // ameex carrier_account so processCarrierWebhook receives the right name.
-      if (body?.code_colis) {
+      // different payload shapes. Detect Ameex by code_colis OR event='package_updated'
+      // and switch to the ameex carrier_account so processCarrierWebhook gets the right name.
+      if (body?.code_colis || body?.event === 'package_updated') {
         const ameexAcct = rows.find((r: any) => r.carrierName.toLowerCase() === 'ameex');
         if (ameexAcct && account.carrierName.toLowerCase() !== 'ameex') {
           console.log(`[WEBHOOK-AMEEX-DETECT] code_colis="${body.code_colis}" event="${body.event}" — switching from "${account.carrierName}" → ameex account #${ameexAcct.id}`);
@@ -10023,15 +10005,31 @@ function ensureHeaders(sheet) {
       }
 
       const storeId = carrierAccount.storeId;
-      const body    = req.body || {};
+      let body      = req.body || {};
 
       // ── Diagnostic dump — logged on EVERY hit so we can see the raw payload ─
-      // This reveals: actual Content-Type, all parsed keys, and the raw bytes.
       const rawBodyBuf = (req as any).webhookRawBody as Buffer | undefined;
       const rawBodyStr = rawBodyBuf ? rawBodyBuf.toString('utf-8').slice(0, 800) : '(not captured)';
       console.log(`[AMEEX-WEBHOOK-RAW] store=${storeId} Content-Type: "${req.headers['content-type'] || '(none)'}"`);
       console.log(`[AMEEX-WEBHOOK-RAW] req.body keys: ${JSON.stringify(Object.keys(body))} values: ${JSON.stringify(body)}`);
       console.log(`[AMEEX-WEBHOOK-RAW] rawBody (${rawBodyBuf?.length ?? 0} bytes): ${rawBodyStr}`);
+
+      // ── Belt-and-suspenders: if req.body arrived empty but rawBody has content,
+      //    re-parse from the raw buffer (guards against body-parser race conditions).
+      if (Object.keys(body).length === 0 && rawBodyBuf && rawBodyBuf.length > 0) {
+        const rawStr2 = rawBodyBuf.toString('utf-8').trim();
+        try {
+          const params: Record<string, string> = {};
+          new URLSearchParams(rawStr2).forEach((v: string, k: string) => { params[k] = v; });
+          if (Object.keys(params).length > 0) {
+            body = params;
+            console.log(`[AMEEX-WEBHOOK-RAW] ⚠️ req.body was empty — re-parsed from rawBody: ${JSON.stringify(params)}`);
+          }
+        } catch { /* ignore */ }
+        if (Object.keys(body).length === 0) {
+          try { body = JSON.parse(rawStr2); console.log(`[AMEEX-WEBHOOK-RAW] ⚠️ re-parsed as JSON: ${rawStr2.slice(0, 200)}`); } catch { /* ignore */ }
+        }
+      }
 
       // ── Parse Ameex urlencoded fields (official names are UPPERCASE) ──────
       // Accept both UPPER and lower variants defensively.
@@ -10039,8 +10037,12 @@ function ensureHeaders(sheet) {
       const statut: string    = String(body.STATUT     || body.statut     || '').trim();
       const statutS: string   = String(body.STATUT_S   || body.statut_s   || '').trim();
       const statutName: string = String(body.STATUT_NAME || body.statut_name || statut).trim();
-      // Additional fields Ameex may echo back
-      const orderNumRaw: string = String(body.ORDER_NUM || body.order_num || body.ref || body.reference || '').trim();
+      // Additional fields Ameex may echo back (sent by us at ship time as partner_id etc.)
+      const orderNumRaw: string = String(
+        body.ORDER_NUM || body.order_num ||
+        body.partner_id || body.partnerTrackingID ||
+        body.ref || body.reference || ''
+      ).trim();
 
       console.log(`[AMEEX-WEBHOOK] store=${storeId} CODE=${code} STATUT=${statut} STATUT_S=${statutS} STATUT_NAME=${statutName}`);
 
@@ -10105,27 +10107,26 @@ function ensureHeaders(sheet) {
           if (order) matchMethod = `ORDER_NUM=${orderNumRaw}`;
         }
 
-        // 2b. Scan AMEEX-PENDING orders in this store — backfill by CODE
+        // 2b. Scan AMEEX-PENDING orders in this store — match by customer phone ONLY.
+        // SAFETY: NEVER match on current_driver.phone (the driver's shared phone).
+        //         NEVER use loose code.includes() — too many false matches.
+        //         Only use the customer's PHONE field if Ameex explicitly echoes it
+        //         at the TOP LEVEL (not inside current_driver).
         if (!order) {
           const storeOrders = await storage.getOrdersByStore(storeId);
           const pendingPhone = String(body.PHONE || body.phone || '').trim();
+          const normPhone = (p: string) => {
+            let s = (p || '').replace(/[\s\-().+]/g, '');
+            if (s.startsWith('00212')) s = '0' + s.slice(5);
+            else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
+            return s;
+          };
+          const normPending = pendingPhone ? normPhone(pendingPhone) : '';
           for (const o of storeOrders as any[]) {
             if (!o.trackNumber?.startsWith('AMEEX-PENDING-')) continue;
-            // Match by phone if Ameex includes it
-            // Normalise Moroccan phone: strip spaces/dashes, +212/00212 → 06/07
-            const normPhone = (p: string) => {
-              let s = (p || '').replace(/[\s\-().+]/g, '');
-              if (s.startsWith('00212')) s = '0' + s.slice(5);
-              else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
-              return s;
-            };
-            if (pendingPhone && o.customerPhone && normPhone(o.customerPhone) === normPhone(pendingPhone)) {
-              order = o; matchMethod = `AMEEX-PENDING+phone=${pendingPhone}`; break;
-            }
-            // Match by embedded order number in our placeholder
-            const m = o.trackNumber.match(/^AMEEX-PENDING-TJG-(.+)$/);
-            if (m && code.includes(m[1])) {
-              order = o; matchMethod = `AMEEX-PENDING+codeContains=${m[1]}`; break;
+            // Only match on CUSTOMER phone — top-level PHONE field, not current_driver.phone
+            if (normPending && o.customerPhone && normPhone(o.customerPhone) === normPending) {
+              order = o; matchMethod = `AMEEX-PENDING+customerPhone=${pendingPhone}`; break;
             }
           }
         }

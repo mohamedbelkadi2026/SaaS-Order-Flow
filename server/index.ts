@@ -241,19 +241,30 @@ app.use(['/api/webhooks/', '/api/webhook/'], (req: any, _res: any, next: any) =>
 
       // If Content-Type is explicitly JSON, try JSON first
       if (ct.startsWith('application/json')) {
-        try { req.body = JSON.parse(rawStr); next(); return; } catch { /* fall through */ }
+        try {
+          req.body = JSON.parse(rawStr);
+          (req as any)._body = true; // signal body-parser not to re-read / overwrite
+          next(); return;
+        } catch { /* fall through */ }
       }
 
       // Try URL-encoded (covers application/x-www-form-urlencoded, text/plain,
-      // no Content-Type, and even wrong content-type headers with form bodies)
+      // no Content-Type, and even wrong content-type headers with form bodies).
+      // IMPORTANT: setting _body=true prevents express.urlencoded() from re-reading
+      // the now-drained stream and overwriting req.body with {}.
       try {
         const params: Record<string, string> = {};
         new URLSearchParams(rawStr).forEach((v: string, k: string) => { params[k] = v; });
-        if (Object.keys(params).length > 0) { req.body = params; next(); return; }
+        if (Object.keys(params).length > 0) {
+          req.body = params;
+          (req as any)._body = true;
+          next(); return;
+        }
       } catch { /* fall through */ }
 
       // Last resort: try JSON
       try { req.body = JSON.parse(rawStr); } catch { req.body = {}; }
+      (req as any)._body = true;
       next();
     } catch (e) {
       next(); // never block the webhook on a parse error
