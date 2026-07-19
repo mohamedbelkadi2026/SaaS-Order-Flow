@@ -1,0 +1,31 @@
+Ameex new orders now store the real tracking code — great. Now fix the EXISTING orders still 
+stuck on AMEEX-PENDING-TJG-<orderNumber> placeholders. Their ship responses were logged, so the 
+real code is recoverable.
+
+BACKFILL SCRIPT (scripts/backfill-ameex-real-codes.ts, DRY-RUN default, --apply to write):
+1) Scan integration_logs for [AMEEX-FULL-RESPONSE] entries (Ameex ship responses). Each contains 
+   order=<orderNumber> and a body with api.data.code (the real Ameex tracking code, e.g. 
+   ATQ0726B23187MR7018998). Parse order number + real code from each.
+2) For each of our orders whose trackNumber starts with "AMEEX-PENDING-", find its logged 
+   response by matching the order number, and set order.trackNumber = the real api.data.code. 
+   If an order has multiple logged responses (retries), use the LATEST successful one. Skip if 
+   no logged response exists.
+3) After setting the real code, also apply the latest known status: look up any stored Ameex 
+   webhook event whose payload.order_id / CODE == that real code, map it via AMEEX_STATUS_MAP, 
+   and set the order status + commentStatus. If no webhook event yet, leave status as-is (the 
+   next webhook will match now that the real code is stored).
+4) DRY-RUN output: total AMEEX-PENDING orders, how many have a logged response (recoverable), 
+   how many don't, and 10 examples (orderNumber → placeholder → real code [→ status if known]). 
+   Only --apply after I approve. Never overwrite a trackNumber that's already a real (non-
+   placeholder) code.
+
+FALLBACK for orders with NO logged response: if Ameex has a list/search parcels API, fetch the 
+store's parcels and match remaining placeholders by recipient PHONE (normalized) → real code. 
+Report how many this recovers. Anything still unresolved → list them so I can attach manually.
+
+VERIFY: after --apply, the previously-stuck orders show their real Ameex codes in the CODE 
+column, and incoming/replayed webhooks update their statuses (which then count in Dashboard + 
+Profit).
+
+Deploy to main. Run the DRY-RUN and paste me: total placeholders, recoverable from logs, 
+recoverable via API, unresolved — plus 10 examples.
