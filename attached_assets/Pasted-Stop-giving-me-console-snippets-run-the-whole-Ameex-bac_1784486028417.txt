@@ -1,0 +1,62 @@
+Stop giving me console snippets — run the whole Ameex backfill YOURSELF, server-side, and 
+report the result. I don't want to touch the browser console.
+
+CONTEXT: the /api/shipping/ameex/patch-codes endpoint runs on the Railway app (which reaches the 
+prod DB). We have the exact mapping for the 30 stuck orders (order_number → real Ameex code → 
+status). Apply it end to end.
+
+DO THIS (all on the server, no console needed from me):
+1) Hardcode this mapping directly in a one-shot server routine / script that runs against 
+   production and prints the result to the logs:
+
+   {
+     "1235":{"code":"ODL0726B27347KY3194798","ameexStatus":"Attente De Ramassage"},
+     "1236":{"code":"TAT0726B27347SR4229698","ameexStatus":"Expédié"},
+     "1238":{"code":"CSA0726B27347MJ2229698","ameexStatus":"Reporté"},
+     "1241":{"code":"TMR0726B27347XF8390798","ameexStatus":"Reporté"},
+     "1242":{"code":"LTA0726B27347IT1185798","ameexStatus":"Reçu"},
+     "1246":{"code":"SAB0726B27347VL1344898","ameexStatus":"Expédié"},
+     "1249":{"code":"MRK0726B27347PO1166898","ameexStatus":"Livré"},
+     "1488":{"code":"AHC0726B27347FR5229698","ameexStatus":"Expédié"},
+     "1495":{"code":"CSA0726B27347EM3185798","ameexStatus":"Reporté"},
+     "1497":{"code":"NDR0726B27347RC7560798","ameexStatus":"Expédié"},
+     "1498":{"code":"AGA0726B27347AP6805798","ameexStatus":"Attente De Ramassage"},
+     "1499":{"code":"CSA0726B27347RW1490798","ameexStatus":"Reçu"},
+     "1503":{"code":"TRI0726B27347NL0490798","ameexStatus":"Attente De Ramassage"},
+     "1507":{"code":"TGR0726B27347BO9390798","ameexStatus":"Attente De Ramassage"},
+     "1508":{"code":"AGA0726B27347MC7117798","ameexStatus":"Reporté"},
+     "1510":{"code":"RBT0726B27347CW5705798","ameexStatus":"Pas de réponse"},
+     "1511":{"code":"OJD0726B27347NG5390798","ameexStatus":"Attente De Ramassage"},
+     "1512":{"code":"EJD0726B27347DQ9094798","ameexStatus":"Expédié"},
+     "1513":{"code":"NKB0726B27347XN8007898","ameexStatus":"Attente De Ramassage"},
+     "1514":{"code":"EKB0726B27347KV6117798","ameexStatus":"Attente De Ramassage"},
+     "1515":{"code":"ZGR0726B27347AP8749798","ameexStatus":"Attente De Ramassage"},
+     "1517":{"code":"SKOURA0726B27347YJ7749798","ameexStatus":"Reçu"},
+     "1518":{"code":"KTR0726B27347YA6549798","ameexStatus":"Attente De Ramassage"},
+     "1520":{"code":"TGR0726B27347EV8166898","ameexStatus":"Reporté"},
+     "1522":{"code":"CSA0726B27347HN2344898","ameexStatus":"Reporté"},
+     "1524":{"code":"MRK0726B27347WV4166898","ameexStatus":"Annulé"},
+     "1527":{"code":"CSA0726B27347WS9027898","ameexStatus":"Mise en distribution"},
+     "1528":{"code":"KTL0726B27347CD6838898","ameexStatus":"Reçu"},
+     "1529":{"code":"MRK0726B27347FK6907898","ameexStatus":"Refusé"},
+     "1530":{"code":"NDR0726B27347IP9738898","ameexStatus":"Expédié"}
+   }
+
+   Match each order by orderNumber (string-compare, store 64). For each: set 
+   trackNumber = code (only if current trackNumber starts with "AMEEX-PENDING"), map ameexStatus 
+   → internal (Livré->delivered, Refusé->refused, Annulé->refused/annulé, Reporté->in_progress 
+   "Reporté", Expédié/Reçu/Mise en distribution/Pas de réponse->in_progress, Attente De 
+   Ramassage stays), store the raw French label in commentStatus.
+2) First run it in DRY-RUN and print to logs: matched count, and a line per order 
+   (order -> oldTrack -> newCode -> newStatus), plus any notFound.
+3) If matched === 30 (or all found), run it for real (apply) and print "applied: N".
+4) Then run the Ameex webhook replay/sync for store 64 so any status webhooks that already 
+   arrived land on these orders now.
+5) Trigger it in a way that does NOT require me to use the console — e.g. run it once on deploy, 
+   or via a protected admin button in the UI, or just execute it in your environment against 
+   prod. 
+
+Paste me: the dry-run per-order lines, the applied count, and the replay result. If any order is 
+notFound, tell me which and why.
+
+Deploy to main.
