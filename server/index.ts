@@ -639,6 +639,19 @@ app.use((req, res, next) => {
     })
   );
 
+  // ── One-shot Ameex CSV backfill (Railway only, gated on env var) ────────
+  if (process.env.RUN_AMEEX_CSV_BACKFILL === "1") {
+    console.log("[AMEEX-CSV-BACKFILL] Env flag detected — running in 3 s…");
+    setTimeout(async () => {
+      try {
+        const { runAmeexCsvBackfill } = await import("./ameex-csv-backfill-once");
+        await runAmeexCsvBackfill();
+      } catch (err: any) {
+        console.error("[AMEEX-CSV-BACKFILL] FATAL:", err?.message ?? err);
+      }
+    }, 3000);
+  }
+
   // ── DB keepalive — ping every 4 min to prevent idle connection drops ─────
   const dbKeepalive = setInterval(async () => {
     try {
