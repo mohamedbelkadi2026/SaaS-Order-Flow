@@ -9245,6 +9245,89 @@ function ensureHeaders(sheet) {
   });
 
   /**
+   * POST /api/shipping/ameex/patch-codes
+   *
+   * Manual bulk-patch: supply a JSON body mapping orderNumber → real Ameex code.
+   * Any order whose trackNumber is still AMEEX-PENDING-TJG-{orderNumber} gets
+   * updated to the real code. Safe to call multiple times (idempotent per order).
+   *
+   * Body: { "9229": "ANCG0726B23187XY1234567", "1235": "CASABC..." }
+   *
+   * Default: dry-run. Pass ?apply=true to write.
+   */
+  app.post("/api/shipping/ameex/patch-codes", requireAuth, requireActiveSubscription, async (req, res) => {
+    const dryRun = req.query.apply !== 'true';
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+
+    try {
+      const storeId  = req.user!.storeId!;
+      const mapping  = req.body as Record<string, string>;
+
+      if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) {
+        return safeJson(400, { message: 'Body must be a JSON object mapping orderNumber → realCode, e.g. { "9229": "ANCG...", "1235": "CAS..." }' });
+      }
+
+      const entries = Object.entries(mapping)
+        .map(([k, v]) => ({ orderNum: String(k).trim(), realCode: String(v).trim() }))
+        .filter(e => e.orderNum && e.realCode && !e.realCode.startsWith('AMEEX-PENDING-'));
+
+      if (entries.length === 0) {
+        return safeJson(400, { message: 'No valid entries found. Make sure values are real Ameex codes, not AMEEX-PENDING- strings.' });
+      }
+
+      const allOrders  = await storage.getOrdersByStore(storeId) as any[];
+      const results: Array<{ orderNum: string; status: 'applied' | 'skipped_not_pending' | 'not_found'; oldCode?: string; realCode: string }> = [];
+      let applied = 0;
+
+      for (const { orderNum, realCode } of entries) {
+        // Match by orderNumber within this store only
+        const order = allOrders.find((o: any) => String(o.orderNumber) === orderNum);
+        if (!order) {
+          results.push({ orderNum, status: 'not_found', realCode });
+          continue;
+        }
+        const current = String(order.trackNumber || '');
+        if (!current.startsWith('AMEEX-PENDING-')) {
+          results.push({ orderNum, status: 'skipped_not_pending', oldCode: current, realCode });
+          continue;
+        }
+        results.push({ orderNum, status: 'applied', oldCode: current, realCode });
+        if (!dryRun) {
+          await storage.updateOrder(order.id, { trackNumber: realCode } as any);
+          await storage.createOrderFollowUpLog({
+            orderId: order.id, agentId: null, agentName: 'Ameex Patch manuel',
+            note: `Patch manuel: ${current} → ${realCode}`,
+          });
+          broadcastToStore(storeId, 'order_updated', { orderId: order.id, trackNumber: realCode });
+          applied++;
+        }
+      }
+
+      const wouldApply = results.filter(r => r.status === 'applied').length;
+      return safeJson(200, {
+        dryRun,
+        total:             entries.length,
+        wouldApply,
+        applied:           dryRun ? 0 : applied,
+        skippedNotPending: results.filter(r => r.status === 'skipped_not_pending').length,
+        notFound:          results.filter(r => r.status === 'not_found').length,
+        results,
+        message: dryRun
+          ? `DRY-RUN: ${wouldApply}/${entries.length} seraient mis à jour. Relancez avec ?apply=true pour appliquer.`
+          : `Appliqué: ${applied}/${entries.length} commande(s) mise(s) à jour.`,
+      });
+    } catch (err: any) {
+      console.error('[AMEEX-PATCH-CODES] fatal:', err?.message);
+      return safeJson(500, { message: err?.message || 'Patch échoué' });
+    }
+  });
+
+  /**
    * POST /api/shipping/ameex/backfill[?apply=true]
    *
    * Recovers real Ameex tracking codes from already-stored integration_logs without
