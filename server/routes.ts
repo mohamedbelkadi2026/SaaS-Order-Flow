@@ -9255,7 +9255,12 @@ function ensureHeaders(sheet) {
    *
    * Default: dry-run. Pass ?apply=true to write.
    */
-  app.post("/api/shipping/ameex/patch-codes", requireAuth, requireActiveSubscription, async (req, res) => {
+  app.post("/api/shipping/ameex/patch-codes", requireAuth, requireAdmin, async (req: any, res: any) => {
+    // Super-admin or store owner/admin only
+    if (!req.user!.isSuperAdmin && !['owner', 'admin'].includes(req.user!.role)) {
+      return res.status(403).json({ message: 'Accès réservé aux super-admins et admins boutique.' });
+    }
+
     const dryRun = req.query.apply !== 'true';
     let responded = false;
     const safeJson = (status: number, body: any) => {
@@ -9264,66 +9269,137 @@ function ensureHeaders(sheet) {
       res.status(status).json(body);
     };
 
-    try {
-      const storeId  = req.user!.storeId!;
-      const mapping  = req.body as Record<string, string>;
+    // French Ameex portal label -> { internalStatus, commentStatus }
+    const FRENCH_TO_INTERNAL: Record<string, { internalStatus: string; commentStatus: string }> = {
+      'LIVRÉ':                { internalStatus: 'delivered',   commentStatus: 'Livré' },
+      'LIVRE':                { internalStatus: 'delivered',   commentStatus: 'Livré' },
+      'REFUSÉ':               { internalStatus: 'refused',     commentStatus: 'Refusé' },
+      'REFUSE':               { internalStatus: 'refused',     commentStatus: 'Refusé' },
+      'ANNULÉ':               { internalStatus: 'refused',     commentStatus: 'Annulé' },
+      'ANNULE':               { internalStatus: 'refused',     commentStatus: 'Annulé' },
+      'REPORTÉ':              { internalStatus: 'in_progress', commentStatus: 'Reporté' },
+      'REPORTE':              { internalStatus: 'in_progress', commentStatus: 'Reporté' },
+      'EXPÉDIÉ':              { internalStatus: 'in_progress', commentStatus: 'Expédié' },
+      'EXPEDIE':              { internalStatus: 'in_progress', commentStatus: 'Expédié' },
+      'REÇU':                 { internalStatus: 'in_progress', commentStatus: 'Reçu' },
+      'RECU':                 { internalStatus: 'in_progress', commentStatus: 'Reçu' },
+      'MISE EN DISTRIBUTION': { internalStatus: 'in_progress', commentStatus: 'Mise en distribution' },
+      'PAS DE RÉPONSE':       { internalStatus: 'in_progress', commentStatus: 'Pas de réponse' },
+      'PAS DE REPONSE':       { internalStatus: 'in_progress', commentStatus: 'Pas de réponse' },
+      'ATTENTE DE RAMASSAGE': { internalStatus: 'in_progress', commentStatus: 'Attente De Ramassage' },
+    };
 
-      if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) {
-        return safeJson(400, { message: 'Body must be a JSON object mapping orderNumber → realCode, e.g. { "9229": "ANCG...", "1235": "CAS..." }' });
+    function resolveFrenchStatus(raw: string | undefined): { internalStatus: string; commentStatus: string } | null {
+      if (!raw) return null;
+      const key     = raw.trim().toUpperCase();
+      const keyNorm = key.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return FRENCH_TO_INTERNAL[key] ?? FRENCH_TO_INTERNAL[keyNorm] ?? null;
+    }
+
+    try {
+      const storeId = req.user!.storeId!;
+      const rawBody = req.body as Record<string, string | { code: string; ameexStatus?: string }>;
+
+      if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+        return safeJson(400, { message: 'Body must be a JSON object. Values: plain string code OR { code, ameexStatus }.' });
       }
 
-      const entries = Object.entries(mapping)
-        .map(([k, v]) => ({ orderNum: String(k).trim(), realCode: String(v).trim() }))
-        .filter(e => e.orderNum && e.realCode && !e.realCode.startsWith('AMEEX-PENDING-'));
+      // Normalise: value is either plain string or { code, ameexStatus }
+      const entries = Object.entries(rawBody).map(([k, v]) => {
+        const orderNum    = String(k).trim();
+        const realCode    = (typeof v === 'string' ? v : (v as any)?.code ?? '').trim();
+        const ameexStatus = (typeof v === 'object' && v !== null) ? (v as any).ameexStatus : undefined;
+        return { orderNum, realCode, ameexStatus: ameexStatus ? String(ameexStatus).trim() : undefined };
+      }).filter(e => e.orderNum && e.realCode && !e.realCode.startsWith('AMEEX-PENDING-'));
 
       if (entries.length === 0) {
-        return safeJson(400, { message: 'No valid entries found. Make sure values are real Ameex codes, not AMEEX-PENDING- strings.' });
+        return safeJson(400, { message: 'No valid entries. Values must be real Ameex codes (not AMEEX-PENDING- strings).' });
       }
 
-      const allOrders  = await storage.getOrdersByStore(storeId) as any[];
-      const results: Array<{ orderNum: string; status: 'applied' | 'skipped_not_pending' | 'not_found'; oldCode?: string; realCode: string }> = [];
+      const allOrders = await storage.getOrdersByStore(storeId) as any[];
+
+      type PatchResult = {
+        orderNum:        string;
+        orderId?:        number;
+        outcome:         'will_apply' | 'skipped_not_pending' | 'not_found';
+        oldCode?:        string;
+        realCode:        string;
+        internalStatus?: string;
+        commentStatus?:  string;
+        ameexStatusRaw?: string;
+      };
+
+      const results: PatchResult[] = [];
       let applied = 0;
 
-      for (const { orderNum, realCode } of entries) {
-        // Match by orderNumber within this store only
+      for (const { orderNum, realCode, ameexStatus } of entries) {
         const order = allOrders.find((o: any) => String(o.orderNumber) === orderNum);
         if (!order) {
-          results.push({ orderNum, status: 'not_found', realCode });
+          results.push({ orderNum, outcome: 'not_found', realCode });
           continue;
         }
         const current = String(order.trackNumber || '');
         if (!current.startsWith('AMEEX-PENDING-')) {
-          results.push({ orderNum, status: 'skipped_not_pending', oldCode: current, realCode });
+          results.push({ orderNum, orderId: order.id, outcome: 'skipped_not_pending', oldCode: current, realCode });
           continue;
         }
-        results.push({ orderNum, status: 'applied', oldCode: current, realCode });
+
+        const statusRes = resolveFrenchStatus(ameexStatus);
+
+        results.push({
+          orderNum,
+          orderId:        order.id,
+          outcome:        'will_apply',
+          oldCode:        current,
+          realCode,
+          ameexStatusRaw: ameexStatus,
+          internalStatus: statusRes?.internalStatus,
+          commentStatus:  statusRes?.commentStatus,
+        });
+
         if (!dryRun) {
-          await storage.updateOrder(order.id, { trackNumber: realCode } as any);
+          const update: Record<string, any> = { trackNumber: realCode };
+          if (statusRes) {
+            update.status        = statusRes.internalStatus;
+            update.commentStatus = statusRes.commentStatus;
+          }
+          await storage.updateOrder(order.id, update as any);
           await storage.createOrderFollowUpLog({
-            orderId: order.id, agentId: null, agentName: 'Ameex Patch manuel',
-            note: `Patch manuel: ${current} → ${realCode}`,
+            orderId:   order.id,
+            agentId:   null,
+            agentName: 'Ameex Patch CSV',
+            note:      `Patch CSV: ${current} => ${realCode}` +
+                       (statusRes ? ` | statut: ${ameexStatus} => ${statusRes.internalStatus} (commentStatus="${statusRes.commentStatus}")` : ''),
           });
-          broadcastToStore(storeId, 'order_updated', { orderId: order.id, trackNumber: realCode });
+          broadcastToStore(storeId, 'order_updated', {
+            orderId:     order.id,
+            trackNumber: realCode,
+            ...(statusRes ? { status: statusRes.internalStatus, commentStatus: statusRes.commentStatus } : {}),
+          });
           applied++;
         }
       }
 
-      const wouldApply = results.filter(r => r.status === 'applied').length;
+      const wouldApply = results.filter(r => r.outcome === 'will_apply').length;
+      const notPending = results.filter(r => r.outcome === 'skipped_not_pending').length;
+      const notFound   = results.filter(r => r.outcome === 'not_found').length;
+
       return safeJson(200, {
         dryRun,
         total:             entries.length,
-        wouldApply,
+        matched:           wouldApply,
         applied:           dryRun ? 0 : applied,
-        skippedNotPending: results.filter(r => r.status === 'skipped_not_pending').length,
-        notFound:          results.filter(r => r.status === 'not_found').length,
-        results,
+        skippedNotPending: notPending,
+        notFound,
+        updated_preview:   results.filter(r => r.outcome === 'will_apply'),
+        skipped:           results.filter(r => r.outcome !== 'will_apply'),
         message: dryRun
-          ? `DRY-RUN: ${wouldApply}/${entries.length} seraient mis à jour. Relancez avec ?apply=true pour appliquer.`
-          : `Appliqué: ${applied}/${entries.length} commande(s) mise(s) à jour.`,
+          ? `DRY-RUN: ${wouldApply}/${entries.length} seraient mis a jour. Relancez avec ?apply=true pour appliquer.`
+          : `Applique: ${applied}/${entries.length} commande(s) mise(s) a jour.`,
       });
     } catch (err: any) {
       console.error('[AMEEX-PATCH-CODES] fatal:', err?.message);
-      return safeJson(500, { message: err?.message || 'Patch échoué' });
+      return safeJson(500, { message: err?.message || 'Patch echoue' });
     }
   });
 
