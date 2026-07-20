@@ -89,7 +89,7 @@ export const ORDER_STATUSES = [
   { value: "Retourné à l'expéditeur",           label: 'Retourné expéditeur',           color: C.roseDeep     },
   { value: 'Retour en route',                   label: 'Retour en route',               color: C.roseDeep     },
   { value: 'En Cours De Retour',                label: 'Retour en route',               color: C.orange       },
-  { value: 'Retour Recu',                       label: 'Retour reçu',                   color: C.violet       },
+  { value: 'Retour Recu',                       label: 'Retour reçu',                   color: C.orange       },
   { value: 'Article retourné',                  label: 'Article retourné',              color: C.roseDeep     },
   { value: 'Adresse inconnue',                  label: 'Adresse inconnue',              color: C.roseDeep     },
   { value: "Erreur d'expédition",               label: "Erreur d'expédition",           color: C.roseDeep     },
@@ -152,8 +152,34 @@ export const ORDER_STATUSES = [
   { value: 'Interessé',                         label: 'Intéressé',                     color: C.slate        },
   { value: 'Colis archivé',                     label: 'Colis archivé',                 color: C.slate        },
   { value: 'Nouvelle info',                     label: 'Nouvelle info',                 color: C.slate        },
-  { value: 'Reçu par erreur',                   label: 'Reçu par erreur',               color: C.slate        },
   { value: 'Non reçu',                          label: 'Non reçu',                      color: C.slate        },
+
+  // ── Ameex / Olivraison carrier statuses ─────────────────────────────────────
+  // GREEN — delivered
+  // (Livré, Livré au client, Retour livré au client already covered above)
+
+  // BLUE — in transit / active shipping
+  { value: 'Expédié',                           label: 'Expédié',                       color: C.blue         }, // capital-E form from Ameex (distinct from lowercase 'expédié' → slate)
+  { value: "En cours d'expédition",             label: "En cours d'expédition",         color: C.blue         },
+  { value: 'Mise en distribution',              label: 'Mise en distribution',          color: C.blue         },
+  { value: 'Reçu sur agence',                   label: 'Reçu sur agence',               color: C.blue         }, // accented form (Ameex sends with ç)
+  { value: 'Confirmé Par Livreur',              label: 'Confirmé par livreur',          color: C.teal         }, // Ameex capitalization variant
+
+  // PURPLE — postponed / on hold
+  { value: 'Reporté indéfiniment',              label: 'Reporté indéfiniment',          color: C.violet       }, // masculine form from Ameex
+
+  // YELLOW — unreachable / no answer
+  { value: 'Pas de réponse',                    label: 'Pas de réponse',                color: C.amber        }, // base form (Ameex sends without number suffix)
+  { value: 'Pas de réponse - SMS',              label: 'Pas de réponse - SMS',          color: C.amber        },
+
+  // ORANGE — returns in progress
+  { value: 'Retour reçu',                       label: 'Retour reçu',                   color: C.orange       }, // accented form
+  { value: "Retour prêt pour l'expédition",     label: "Prêt pour expédition",          color: C.orange       }, // correct accents
+  { value: 'Retour expédié',                    label: 'Retour expédié',                color: C.orange       }, // correct spelling
+  { value: 'Colis prêt pour le retour',         label: 'Prêt pour retour',              color: C.orange       },
+
+  // RED — failed / cancelled / lost
+  { value: 'Reçu par erreur',                   label: 'Reçu par erreur',               color: C.rose         }, // error receipt → red
 ] as const;
 
 export const SUIVI_STATUSES = [
@@ -178,13 +204,116 @@ export const REFUSED_GROUP_STATUSES = [
 const STATUS_MAP = Object.fromEntries(ORDER_STATUSES.map(s => [s.value, s]));
 const CARRIER_DYNAMIC_COLOR = C.blue;
 
+// ── Ameex normalized fallback ────────────────────────────────────────────────
+// Strip {{city}} tokens, NFD-normalize (removes accent combining chars),
+// lowercase, collapse whitespace.
+function normalizeForAmeex(s: string): string {
+  return s
+    .replace(/\{\{[^}]*\}\}/g, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+// Central Ameex color map — accent-stripped, lowercased keys.
+// Add new Ameex statuses here as they are discovered.
+const AMEEX_NORM_MAP: Record<string, string> = {
+  // GREEN — delivered / success
+  'livre':                              C.emerald,
+  'livre au client':                    C.emerald,
+  'retour livre au client':             C.emerald,
+  'livraison effectuee':                C.emerald,
+  'delivered':                          C.emerald,
+
+  // BLUE — in transit / active shipping
+  'expedie':                            C.blue,
+  "en cours d'expedition":              C.blue,
+  'mise en distribution':               C.blue,
+  'en cours de livraison':              C.sky,
+  'en transport':                       C.blue,
+  'recu sur agence':                    C.blue,
+  'ramasse':                            C.cyan,
+  'confirme par livreur':               C.teal,
+  'in_progress':                        C.blue,
+  'distribution':                       C.blue,
+
+  // PURPLE — postponed / on hold
+  'reporte':                            C.violet,
+  'reporte indefiniment':               C.violet,
+  'postponed':                          C.violet,
+
+  // YELLOW — unreachable / no answer
+  'pas de reponse':                     C.amber,
+  'injoignable':                        C.amber,
+  'telephone injoignable':              C.amber,
+  'toujours injoignable':               C.amber,
+  'hors zone':                          C.amber,
+  'no_answer_team':                     C.amber,
+
+  // ORANGE — returns in progress
+  'retour recu':                        C.orange,
+  'demande retour':                     C.orange,
+  'colis pret pour le retour':          C.orange,
+  'retour en cours':                    C.orange,
+  'retour en stock':                    C.orange,
+  "retour pret pour l'expedition":      C.orange,
+  'retour expedie':                     C.orange,
+  'retour debarrasse':                  C.orange,
+  'returned':                           C.orange,
+  'rts':                                C.orange,
+
+  // RED — failed / cancelled / lost
+  'refuse':                             C.rose,
+  'refused':                            C.rose,
+  'annule':                             C.rose,
+  'canceled':                           C.rose,
+  'perdu':                              C.rose,
+  'produit endommage':                  C.rose,
+  'recu par erreur':                    C.rose,
+
+  // GRAY — pending / neutral
+  'nouveau colis':                      C.slate,
+  'attente de ramassage':               C.slate,
+  'en stock':                           C.slate,
+  'recu':                               C.slate,
+  'interesse':                          C.slate,
+  'nouvelle info':                      C.slate,
+  'colis archive':                      C.slate,
+  'non recu':                           C.slate,
+  'changer destinataire':               C.slate,
+  'programme':                          C.slate,
+};
+
+/**
+ * Returns a Tailwind color class for an Ameex STATUT or STATUT_NAME string,
+ * using normalized (accent/case-insensitive) matching.
+ * Returns null if the status is not recognized as an Ameex status.
+ */
+export function getAmeexStatusColor(status: string): string | null {
+  const n = normalizeForAmeex(status);
+  if (AMEEX_NORM_MAP[n]) return AMEEX_NORM_MAP[n];
+  // Catchall: any "Retour …" label → orange
+  if (n.startsWith('retour')) return C.orange;
+  // "Pas de réponse …" variants → amber
+  if (n.startsWith('pas de reponse')) return C.amber;
+  return null;
+}
+
 export function StatusBadge({ status, displayText, className }: { status: string, displayText?: string, className?: string }) {
   const knownConfig = STATUS_MAP[status];
   const label = displayText || status || "—";
-  const config = knownConfig ? knownConfig : { label, color: CARRIER_DYNAMIC_COLOR };
+  let color: string;
+  if (knownConfig) {
+    color = knownConfig.color;
+  } else {
+    // Try Ameex normalized fallback before defaulting to carrier-dynamic blue
+    color = getAmeexStatusColor(status) ?? CARRIER_DYNAMIC_COLOR;
+  }
   return (
-    <Badge variant="outline" className={cn("font-medium px-2.5 py-0.5 rounded-md whitespace-nowrap", config.color, className)}>
-      {config.label}
+    <Badge variant="outline" className={cn("font-medium px-2.5 py-0.5 rounded-md whitespace-nowrap", color, className)}>
+      {knownConfig ? knownConfig.label : label}
     </Badge>
   );
 }

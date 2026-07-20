@@ -1,0 +1,52 @@
+Extend the Ameex status badge coloring to cover ALL Ameex statuses, including ones not yet 
+mapped: "Expédié", "Mise en distribution", "Confirmé Par Livreur", "En cours d'expédition", and 
+any others. Do NOT change other carriers. Keep the semantic coloring consistent with Express 
+Coursier.
+
+Color each Ameex status (match on normalized STATUT and/or STATUT_NAME — accent/case-insensitive, 
+strip "{{city}}" and extra spaces) into these buckets, reusing the app's existing badge color 
+tokens:
+
+  GREEN (delivered / success):
+    "Livré", "Livré au client", "Retour livré au client", DELIVERED
+
+  BLUE (in transit / active shipping):
+    "Expédié", "En cours d'expédition", "Mise en distribution", "En cours de livraison",
+    "En Transport", "Reçu sur agence", "Ramassé", "Confirmé Par Livreur",
+    DISTRIBUTION, IN_PROGRESS (no sub)
+
+  PURPLE (on hold / postponed):
+    "Reporté", "Reporté indéfiniment", POSTPONED
+
+  YELLOW (unreachable / attention):
+    "Pas de réponse", "Injoignable", "Téléphone Injoignable", "Toujours injoignable",
+    "Hors zone", NO_ANSWER_TEAM
+
+  ORANGE (returns in progress):
+    any label starting with / containing "Retour" ("Retour reçu", "Demande retour",
+    "Colis prêt pour le retour", "Retour en cours", "Retour en stock",
+    "Retour prêt pour l'expédition", "Retour expédié", "Retour débarrasse"), RETURNED, RTS
+
+  RED (failed / cancelled / lost):
+    "Refusé", REFUSED, "Annulé", CANCELED, "Perdu", "Produit endommagé", "Reçu par erreur"
+
+  GRAY (pending / new / neutral):
+    "Nouveau Colis", "Attente De Ramassage", "En stock", "Reçu", "Interessé",
+    "Nouvelle info", "Colis archivé", "Non reçu", "Changer destinataire", "Programmé"
+
+  Unknown / unmapped -> GRAY (neutral). Never leave everything the same color.
+
+REQUIREMENTS:
+- Build this as ONE central Ameex color map (so new statuses are easy to add later). Match STATUT 
+  first, then fall back to STATUT_NAME.
+- Alternatively, if simpler and accurate, use the STATUT_COLOR hex Ameex already sends in the 
+  webhook as the badge background, with an auto-computed readable text color. Pick ONE approach 
+  and keep it consistent.
+- Text must stay readable (good contrast) on every badge, in light AND dark mode. Color only — 
+  no layout changes.
+
+VERIFY in Suivi: "Livré" green, "Expédié"/"Mise en distribution"/"En cours d'expédition"/
+"Confirmé Par Livreur" blue, "Reporté" purple, "Pas de réponse" yellow, "Retour…" orange, 
+"Refusé"/"Annulé" red, "Attente De Ramassage" gray — all visually distinct.
+
+Deploy to main.
