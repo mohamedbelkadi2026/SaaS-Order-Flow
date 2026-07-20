@@ -315,14 +315,30 @@ export async function computeProfitability(
         ?? (order as any).productCost
         ?? 0;
 
-      // Fallback additionnel — UNIQUEMENT si tout le reste a donné 0 : essayer le
-      // coût de la variante spécifique déduite du rawProductName (ex: "... 42").
-      if (!unitCostCents && item.productId && item.rawProductName) {
-        const { suffix: variantName } = splitVariant(item.rawProductName);
-        const suffixGuess = variantName || item.rawProductName.trim().split(' ').pop();
-        if (suffixGuess) {
+      // Fallbacks coût — actifs UNIQUEMENT si tout le reste a donné 0.
+      if (!unitCostCents && item.rawProductName) {
+        const { base, suffix } = splitVariant(item.rawProductName);
+        const suffixGuess = suffix || item.rawProductName.trim().split(' ').pop() || '';
+        const baseGuess   = suffix
+          ? base
+          : item.rawProductName.replace(new RegExp('\\s+' + suffixGuess + '$'), '').trim();
+
+        // 1) Coût d'une variante du produit déjà matché (parent direct + suffixe).
+        if (item.productId && suffixGuess) {
           const vCost = variantCostByKey.get(`${item.productId}::${norm(suffixGuess)}`);
           if (vCost) unitCostCents = vCost;
+        }
+
+        // 2) Le produit matché EST LUI-MÊME un catalogue "Nom Taille" (coût à 0) :
+        //    chercher le produit "Nom" seul et emprunter son coût ou celui de sa variante.
+        if (!unitCostCents && baseGuess && baseGuess.toLowerCase() !== item.rawProductName.toLowerCase()) {
+          const altProductId = idByName.get(norm(baseGuess));
+          if (altProductId && altProductId !== item.productId) {
+            const altVariantCost = suffixGuess
+              ? variantCostByKey.get(`${altProductId}::${norm(suffixGuess)}`)
+              : undefined;
+            unitCostCents = altVariantCost || costByName.get(norm(baseGuess)) || 0;
+          }
         }
       }
 
