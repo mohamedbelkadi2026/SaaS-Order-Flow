@@ -341,13 +341,16 @@ function ConnectModal({ providerId, providerName, existingAccount, onClose }: Co
   // Permanent webhook URL — based on storeId + carrierName, never changes
   // even if the token or API key is updated.
   const resolvedStoreId = existingAccount?.storeId || selectedStoreId;
+  // For Ameex the backend requires ?token= in the URL (validated by TOKENED_CARRIERS guard).
+  // Append it when editing an existing account (token is known); show placeholder when adding new.
+  const existingWebhookToken = (existingAccount as any)?.webhookToken ?? '';
   const webhookUrl = resolvedStoreId
     ? (providerId === "expresscoursier"
         ? `${domain}/api/webhooks/shipping/expresscoursier/${resolvedStoreId}`
-        : `${domain}/api/webhooks/carrier/${resolvedStoreId}/${providerId}`)
+        : `${domain}/api/webhooks/carrier/${resolvedStoreId}/${providerId}${isAmeex ? `?token=${existingWebhookToken || '{WEBHOOK_TOKEN}'}` : ''}`)
     : (providerId === "expresscoursier"
         ? `${domain}/api/webhooks/shipping/expresscoursier/{STORE_ID}`
-        : `${domain}/api/webhooks/carrier/{STORE_ID}/${providerId}`);
+        : `${domain}/api/webhooks/carrier/{STORE_ID}/${providerId}${isAmeex ? '?token={WEBHOOK_TOKEN}' : ''}`);
 
   /* Resolve display name for the selected store */
   const selectedStore = stores.find((s: any) => s.id?.toString() === selectedStoreId);
@@ -2342,11 +2345,11 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                         <tr>
                           <td className="px-4 py-3 font-medium">WebHook URL</td>
                           <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-[180px] truncate">
-                            {`${domain}/api/webhook/carrier/${acct.webhookToken}`}
+                            {`${domain}/api/webhooks/carrier/${acct.storeId}/${(acct.carrierName || providerId).toLowerCase()}?token=${acct.webhookToken}`}
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
-                              onClick={() => copyText(`${domain}/api/webhook/carrier/${acct.webhookToken}`, `wh-${acct.id}`)}
+                              onClick={() => copyText(`${domain}/api/webhooks/carrier/${acct.storeId}/${(acct.carrierName || providerId).toLowerCase()}?token=${acct.webhookToken}`, `wh-${acct.id}`)}
                               className="p-1.5 rounded-lg border border-border/50 hover:bg-muted/60 transition-colors"
                             >
                               {copiedKey === `wh-${acct.id}`
