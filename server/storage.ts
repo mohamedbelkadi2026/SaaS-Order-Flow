@@ -132,7 +132,6 @@ export interface IStorage {
   getDuplicateProducts(storeId: number): Promise<any[]>;
   getArchivedProducts(storeId: number): Promise<any[]>;
   getProductsWithVariants(storeId: number): Promise<ProductWithVariants[]>;
-  getVariantsByStore(storeId: number): Promise<{ productId: number; name: string; costPrice: number | null }[]>;
   getCsvProfitReports(storeId: number): Promise<CsvProfitReport[]>;
   getCsvProfitReport(id: number, storeId: number): Promise<CsvProfitReport | undefined>;
   createCsvProfitReport(data: InsertCsvProfitReport): Promise<CsvProfitReport>;
@@ -1859,12 +1858,6 @@ export class DatabaseStorage implements IStorage {
       createdVariants.push(nv);
     }
     return { ...newProduct, variants: createdVariants };
-  }
-
-  async getVariantsByStore(storeId: number): Promise<{ productId: number; name: string; costPrice: number | null }[]> {
-    return db.select({ productId: productVariants.productId, name: productVariants.name, costPrice: productVariants.costPrice })
-      .from(productVariants)
-      .where(eq(productVariants.storeId, storeId));
   }
 
   async getVariantsByProduct(productId: number): Promise<ProductVariant[]> {
