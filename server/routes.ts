@@ -9069,14 +9069,20 @@ function ensureHeaders(sheet) {
     });
   });
 
+
   /**
    * POST /api/shipping/ameex/sync
-   * Bulk-sync statuses for all orders currently shipped via Ameex.
-   * Iterates over all orders with shipping_provider = 'ameex' and track_number set,
-   * fetches their live status from Ameex, and updates the DB when status changed.
+   * Fetches the LIVE parcel list from the Ameex API, matches each Ameex order
+   * by trackNumber === parcel tracking code, and applies the real carrier status.
+   *
+   * If the Ameex API is unreachable (all candidate URLs fail), falls back to
+   * replaying stored webhook events (integration_logs), which works now that
+   * real tracking codes are stored on every order.
+   *
+   * Response: { checked, updated, unchanged, notFoundInAmeex, errors,
+   *             workingUrl, totalParcelsFromAmeex, distinctStatuses, details }
    */
   app.post("/api/shipping/ameex/sync", requireAuth, requireActiveSubscription, async (req, res) => {
-    // Same single-response guard as the Digylog handler.
     let responded = false;
     const safeJson = (status: number, body: any) => {
       if (responded || res.headersSent) return;
@@ -9088,18 +9094,223 @@ function ensureHeaders(sheet) {
       const storeId = req.user!.storeId!;
 
       const accounts = await storage.getCarrierAccounts(storeId, "ameex");
-      const account = accounts[0];
+      const account  = accounts[0];
       if (!account) {
         return safeJson(400, { message: "Aucun compte Ameex configuré dans Intégrations → Sociétés de Livraison." });
       }
 
-      // ── Ameex has NO tracking pull endpoint — replay from integration_logs ──
-      // Same pattern as Express Coursier sync. Reads all stored Ameex webhook
-      // events (integration_logs provider='ameex' action='webhook_received'),
-      // groups by CODE, applies the most recent STATUT to matched orders.
-      console.log(`[AMEEX-SYNC] storeId=${storeId} — replaying from integration_logs`);
+      const stripHtml = (s: string) => (s || '').replace(/<[^>]*>/g, '').trim();
+      const apiKey    = stripHtml(account.apiKey);
+      const apiId     = stripHtml((account as any).apiSecret || (account as any).storeName || '');
+      if (!apiKey) {
+        return safeJson(400, { message: "Clé API Ameex manquante sur ce compte. Ajoutez-la dans Intégrations → Sociétés de Livraison." });
+      }
 
-      // Load all stored Ameex webhook events for this store
+      // ── Fetch live parcel list from Ameex API ─────────────────────────────
+      // Same URL-discovery logic as /api/shipping/ameex/reconcile.
+      const SSL_AGENT_s = new (await import('https')).default.Agent({ rejectUnauthorized: false });
+      const axiosLib    = (await import('axios')).default;
+      const reqHeaders: Record<string, string> = {
+        'C-Api-Key': apiKey,
+        'C-Api-Id':  apiId,
+        'Accept':    'application/json',
+      };
+      const business = apiId || apiKey.split('-')[0] || '';
+      const CANDIDATE_URLS = [
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/Get`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/GetAll`,
+        `https://api.ameex.app/customer/Delivery/Parcels/Action/Type/List`,
+        `https://api.ameex.app/customer/Delivery/Parcels`,
+        `https://api.ameex.app/customer/Delivery/Parcels/List`,
+        `https://api.ameex.app/customer/Parcels/Action/Type/Get`,
+      ];
+
+      let parcelsRaw: any = null;
+      let workingUrl  = '';
+      let apiAttempts = 0;
+
+      console.log(`[AMEEX-SYNC] storeId=${storeId} — probing Ameex API (${CANDIDATE_URLS.length} candidates)`);
+
+      outer:
+      for (const url of CANDIDATE_URLS) {
+        for (const method of ['get', 'post'] as const) {
+          apiAttempts++;
+          try {
+            const opts: any = {
+              headers: reqHeaders,
+              timeout: 20_000,
+              httpsAgent: SSL_AGENT_s,
+              validateStatus: () => true,
+            };
+            let r: any;
+            if (method === 'get') {
+              r = await axiosLib.get(url, { ...opts, params: business ? { business } : {} });
+            } else {
+              const FormDataLib = (await import('form-data')).default;
+              const fd = new FormDataLib();
+              if (business) fd.append('business', business);
+              r = await axiosLib.post(url, fd, { ...opts, headers: { ...reqHeaders, ...fd.getHeaders() } });
+            }
+            const ct = (r.headers?.['content-type'] || '').toLowerCase();
+            console.log(`[AMEEX-SYNC] ${method.toUpperCase()} ${url} → HTTP ${r.status} ct=${ct.split(';')[0]}`);
+            if (r.status === 200 && r.data) {
+              let data = r.data;
+              if (typeof data === 'string') {
+                try { data = JSON.parse(data); } catch { continue; } // HTML or non-JSON
+              }
+              if (typeof data === 'object') {
+                parcelsRaw = data;
+                workingUrl = url;
+                console.log(`[AMEEX-SYNC] ✅ Working endpoint: ${method.toUpperCase()} ${url}`);
+                break outer;
+              }
+            }
+          } catch (e: any) {
+            console.log(`[AMEEX-SYNC] ${method.toUpperCase()} ${url} error: ${e?.message}`);
+          }
+        }
+      }
+
+      // ── Parse parcel array ────────────────────────────────────────────────
+      type AmeexParcel = { trackingCode: string; rawStatus: string; statusUC: string };
+
+      function extractParcelsForSync(data: any): AmeexParcel[] {
+        let arr: any[] = [];
+        if      (Array.isArray(data))             arr = data;
+        else if (Array.isArray(data?.data))       arr = data.data;
+        else if (Array.isArray(data?.parcels))    arr = data.parcels;
+        else if (Array.isArray(data?.items))      arr = data.items;
+        else if (Array.isArray(data?.result))     arr = data.result;
+        else if (Array.isArray(data?.orders))     arr = data.orders;
+        else if (typeof data === 'object' && data !== null) {
+          const vals = Object.values(data);
+          if (vals.length > 0 && typeof vals[0] === 'object') arr = vals as any[];
+        }
+        return arr.map((item: any) => {
+          const rawStatus = String(
+            item.status  || item.statut  || item.etat   ||
+            item.STATUS  || item.STATUT  || item.state  || ''
+          ).trim();
+          const trackingCode = String(
+            item.tracking_code || item.trackingCode || item.order_id ||
+            item.code          || item.barcode      || item.tracking  ||
+            item.CODE          || item.num           || ''
+          ).trim();
+          return { trackingCode, rawStatus, statusUC: rawStatus.toUpperCase() };
+        }).filter(p => p.trackingCode);
+      }
+
+      const { AMEEX_STATUS_MAP } = await import('./services/carrier-service');
+
+      // ── If Ameex API is reachable, apply live statuses ─────────────────────
+      if (parcelsRaw !== null) {
+        const parcels = extractParcelsForSync(parcelsRaw);
+        console.log(`[AMEEX-SYNC] ${parcels.length} parcels parsed from ${workingUrl}`);
+        if (parcels.length > 0) {
+          console.log(`[AMEEX-SYNC] Sample parcel: ${JSON.stringify(parcels[0])}`);
+        }
+
+        if (parcels.length === 0) {
+          return safeJson(200, {
+            message: `Ameex a répondu (${workingUrl}) mais aucun colis n'a pu être extrait. Vérifiez les logs [AMEEX-SYNC] sur Railway pour voir la structure brute.`,
+            workingUrl,
+            rawShape: JSON.stringify(parcelsRaw).slice(0, 500),
+          });
+        }
+
+        // Index by tracking code (first occurrence wins — API may have dups)
+        const byCode = new Map<string, AmeexParcel>();
+        for (const p of parcels) {
+          if (!byCode.has(p.trackingCode)) byCode.set(p.trackingCode, p);
+        }
+
+        // Load all Ameex orders that have a real tracking code
+        const allOrders     = await storage.getOrdersByStore(storeId) as any[];
+        const ameexOrders   = allOrders.filter((o: any) =>
+          (o.shippingProvider === 'ameex' || (o.carrierName || '').toLowerCase() === 'ameex') &&
+          o.trackNumber &&
+          !String(o.trackNumber).startsWith('AMEEX-PENDING')
+        );
+        console.log(`[AMEEX-SYNC] ${ameexOrders.length} Ameex orders with real tracking codes`);
+
+        const TERMINAL = new Set(['delivered', 'refused', 'retourné']);
+        let checked = 0, updated = 0, unchanged = 0, notFoundInAmeex = 0;
+        const errors: string[] = [];
+        const distinctStatuses = new Map<string, number>();
+        const details: Array<{ orderNumber: string; trackNumber: string; oldStatus: string; newStatus: string; ameexRaw: string }> = [];
+
+        for (const order of ameexOrders) {
+          checked++;
+          const parcel = byCode.get(order.trackNumber);
+          if (!parcel) { notFoundInAmeex++; continue; }
+
+          try {
+            const rawLabel = parcel.rawStatus;
+            // Accent-stripped fallback key (LIVRÉ → LIVRE)
+            const strippedKey = parcel.statusUC.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const mappedStatus: string = AMEEX_STATUS_MAP[parcel.statusUC]
+              ?? AMEEX_STATUS_MAP[strippedKey]
+              ?? 'in_progress';
+
+            // Terminal guard: never downgrade delivered/refused/retourné to in_progress
+            if (TERMINAL.has(order.status || '') && !TERMINAL.has(mappedStatus)) {
+              unchanged++;
+              continue;
+            }
+
+            const statusChanged  = mappedStatus !== (order.status || '');
+            const commentChanged = rawLabel !== (order.commentStatus || '');
+
+            if (statusChanged || commentChanged) {
+              if (statusChanged) {
+                await storage.updateOrderStatus(order.id, mappedStatus);
+                notifyStatusUpdate(
+                  { id: order.id, storeId, assignedToId: order.assignedToId ?? null, customerName: order.customerName || '' },
+                  mappedStatus,
+                );
+              }
+              await storage.updateOrder(order.id, { commentStatus: rawLabel } as any);
+              await storage.createOrderFollowUpLog({
+                orderId: order.id, agentId: null, agentName: 'Ameex Sync',
+                note: `Sync API Ameex: "${order.status || '?'}" → "${mappedStatus}" (portail: "${rawLabel}")`,
+              });
+              broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: mappedStatus, commentStatus: rawLabel });
+              distinctStatuses.set(mappedStatus, (distinctStatuses.get(mappedStatus) ?? 0) + 1);
+              details.push({ orderNumber: order.orderNumber, trackNumber: order.trackNumber, oldStatus: order.status || '', newStatus: mappedStatus, ameexRaw: rawLabel });
+              updated++;
+            } else {
+              unchanged++;
+            }
+          } catch (e: any) {
+            errors.push(`#${order.orderNumber}: ${(e as any)?.message}`);
+          }
+        }
+
+        console.log(`[AMEEX-SYNC] checked=${checked} updated=${updated} unchanged=${unchanged} notFoundInAmeex=${notFoundInAmeex} errors=${errors.length}`);
+        const distinctList = Array.from(distinctStatuses.entries()).map(([s, n]) => `${s}(${n})`).join(', ');
+
+        return safeJson(200, {
+          source:                'ameex-api',
+          workingUrl,
+          totalParcelsFromAmeex: parcels.length,
+          checked,
+          updated,
+          unchanged,
+          notFoundInAmeex,
+          errors,
+          distinctStatuses:      Object.fromEntries(distinctStatuses),
+          details:               details.slice(0, 20),
+          message: updated > 0
+            ? `\u2705 Sync Ameex: ${updated} commande(s) mise(s) \u00e0 jour \u00b7 ${unchanged} inchang\u00e9e(s) \u00b7 ${notFoundInAmeex} introuvable(s) dans Ameex${distinctList ? ' \u2014 ' + distinctList : ''}`
+            : `\u2139\ufe0f Sync Ameex: ${checked} commandes v\u00e9rifi\u00e9es \u00b7 ${unchanged} d\u00e9j\u00e0 \u00e0 jour \u00b7 ${notFoundInAmeex} introuvable(s) dans Ameex`,
+        });
+      }
+
+      // ── Fallback: Ameex API unreachable — replay from integration_logs ─────
+      // This works now that real tracking codes are stored on every order.
+      // Webhook events keyed by those same codes will match correctly.
+      console.warn(`[AMEEX-SYNC] API unreachable after ${apiAttempts} attempts — falling back to log replay`);
+
       const ameexLogs = await db
         .select()
         .from(integrationLogs)
@@ -9111,50 +9322,36 @@ function ensureHeaders(sheet) {
         .orderBy(desc(integrationLogs.createdAt))
         .limit(1000);
 
-      // Parse each log entry — handles both payload formats:
-      //   NEW (real Ameex via olivraison): { event:"package_updated", payload:{order_id, status,
-      //     description, return_status, reported_date}, code_colis, commentaire, ... }
-      //   OLD (token-based route):        { CODE, STATUT, STATUT_S, STATUT_NAME }
       type AmeexEvent = { code: string; statut: string; statutS: string; statutName: string };
       const parseAmeexLog = (row: { payload: string | null; message: string | null }): AmeexEvent | null => {
         if (row.payload) {
           try {
             const p = JSON.parse(row.payload);
-
-            // ── New real Ameex shape (from olivraison webhook) ────────────────
             if (p.code_colis || p.event === 'package_updated') {
               let nested: Record<string, any> = {};
               if (p.payload) {
                 if (typeof p.payload === 'object') nested = p.payload;
                 else try { nested = JSON.parse(String(p.payload)); } catch { /* ignore */ }
               }
-              const code   = (nested.order_id || p.code_colis || '').toString().trim();
-              // return_status overrides status
-              const rawStatut = nested.return_status === true ? 'RETURNED' : (nested.status || '');
-              const statut = rawStatut.toString().trim();
-              const label  = nested.description || p.commentaire || statut;
+              const code    = (nested.order_id || p.code_colis || '').toString().trim();
+              const rawStat = nested.return_status === true ? 'RETURNED' : (nested.status || '');
+              const statut  = rawStat.toString().trim();
+              const label   = nested.description || p.commentaire || statut;
               if (code && statut) return { code, statut, statutS: '', statutName: label };
-              // code without status — still useful so we can find the order
               if (code) return { code, statut: 'IN_PROGRESS', statutS: '', statutName: p.commentaire || 'En cours' };
             }
-
-            // ── Old token-based Ameex format ──────────────────────────────────
-            const code = (p.CODE || '').toString().trim();
+            const code   = (p.CODE   || '').toString().trim();
             const statut = (p.STATUT || '').toString().trim();
             if (code && statut) return { code, statut, statutS: p.STATUT_S || '', statutName: p.STATUT_NAME || statut };
           } catch { /* fall through */ }
         }
-        // Oldest format: parse message string "Ameex webhook: CODE=X STATUT=Y"
-        const msg = row.message || '';
+        const msg   = row.message || '';
         const codeM = msg.match(/CODE=([^\s]+)/);
         const statM = msg.match(/STATUT=([^\s/(]+)/);
-        if (codeM?.[1] && statM?.[1]) {
-          return { code: codeM[1], statut: statM[1], statutS: '', statutName: statM[1] };
-        }
+        if (codeM?.[1] && statM?.[1]) return { code: codeM[1], statut: statM[1], statutS: '', statutName: statM[1] };
         return null;
       };
 
-      // Group by CODE — keep only the most recent event per CODE (logs are DESC)
       const latestByCode = new Map<string, AmeexEvent>();
       for (const row of ameexLogs) {
         const evt = parseAmeexLog(row);
@@ -9162,50 +9359,19 @@ function ensureHeaders(sheet) {
         if (!latestByCode.has(evt.code)) latestByCode.set(evt.code, evt);
       }
 
-      console.log(`[AMEEX-SYNC] ${ameexLogs.length} log entries → ${latestByCode.size} unique CODEs`);
-
-      const { AMEEX_STATUS_MAP } = await import('./services/carrier-service');
-      const normPhone = (p: string) => {
-        let s = String(p || '').replace(/[\s\-().+]/g, '');
-        if (s.startsWith('00212')) s = '0' + s.slice(5);
-        else if (s.startsWith('212') && s.length === 12) s = '0' + s.slice(3);
-        return s;
-      };
+      console.log(`[AMEEX-SYNC] log-replay: ${ameexLogs.length} entries \u2192 ${latestByCode.size} unique codes`);
 
       let updated = 0, skipped = 0, noMatch = 0;
-      const distinctStatuses = new Map<string, number>();  // mapped_status → count
-      const details: Array<{ code: string; orderNumber: string; oldStatus: string; newStatus: string }> = [];
-      const allStoreOrders = await storage.getOrdersByStore(storeId);
+      const distinctStatuses2 = new Map<string, number>();
+      const details2: Array<{ code: string; orderNumber: string; oldStatus: string; newStatus: string }> = [];
+      const TERMINAL2 = new Set(['delivered', 'refused', 'retourn\u00e9']);
 
       for (const [code, evt] of latestByCode) {
         try {
-          // Map the STATUT
-          const mappedStatus = AMEEX_STATUS_MAP[evt.statut.toUpperCase()] ?? 'in_progress';
-
-          // 1. Direct match by CODE == order.trackNumber
-          let order: any = await storage.getOrderByTrackingNumber(storeId, code);
-
-          // NOTE: AMEEX-PENDING fallback intentionally removed.
-          // Ameex's payload.order_id is Ameex's own code — NOT our order number.
-          // We have no reliable 1-to-1 mapping from an Ameex code to our order
-          // unless the real code was stored at ship time. Guessing by scanning
-          // AMEEX-PENDING orders caused all codes to be backfilled onto the same
-          // order (the first one in the list). Safe behaviour: log no_match and
-          // wait for real codes to be stored at ship time.
-          // Real codes will be stored once Ameex's ship response includes the code.
-
-          if (!order) {
-            noMatch++;
-            continue;
-          }
-
-          // Terminal protection: never downgrade
-          const TERMINAL = new Set(['delivered', 'refused', 'retourné']);
-          if (TERMINAL.has(order.status || '') && !TERMINAL.has(mappedStatus)) {
-            skipped++;
-            continue;
-          }
-
+          const mappedStatus: string = AMEEX_STATUS_MAP[evt.statut.toUpperCase()] ?? 'in_progress';
+          const order: any = await storage.getOrderByTrackingNumber(storeId, code);
+          if (!order) { noMatch++; continue; }
+          if (TERMINAL2.has(order.status || '') && !TERMINAL2.has(mappedStatus)) { skipped++; continue; }
           if (mappedStatus !== order.status) {
             await storage.updateOrderStatus(order.id, mappedStatus);
             await storage.updateOrder(order.id, { commentStatus: evt.statutName || evt.statut } as any);
@@ -9215,39 +9381,40 @@ function ensureHeaders(sheet) {
             );
             await storage.createOrderFollowUpLog({
               orderId: order.id, agentId: null, agentName: 'Ameex Replay',
-              note: `Replay webhook: ${evt.statut}${evt.statutS ? '/' + evt.statutS : ''} (${evt.statutName}) → ${mappedStatus}`,
+              note: `Replay webhook: ${evt.statut}${evt.statutS ? '/' + evt.statutS : ''} (${evt.statutName}) \u2192 ${mappedStatus}`,
             });
             broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: mappedStatus, commentStatus: evt.statutName || evt.statut });
-            distinctStatuses.set(mappedStatus, (distinctStatuses.get(mappedStatus) ?? 0) + 1);
-            details.push({ code, orderNumber: order.orderNumber, oldStatus: order.status || '', newStatus: mappedStatus });
+            distinctStatuses2.set(mappedStatus, (distinctStatuses2.get(mappedStatus) ?? 0) + 1);
+            details2.push({ code, orderNumber: order.orderNumber, oldStatus: order.status || '', newStatus: mappedStatus });
             updated++;
           } else {
             skipped++;
           }
         } catch (e: any) {
-          console.error(`[AMEEX-SYNC] CODE=${code} error:`, e?.message);
+          console.error(`[AMEEX-SYNC] replay CODE=${code} error:`, (e as any)?.message);
         }
       }
 
-      console.log(`[AMEEX-SYNC] storeId=${storeId} codes=${latestByCode.size} updated=${updated} skipped=${skipped} noMatch=${noMatch}`);
-      const distinctList = Array.from(distinctStatuses.entries())
-        .map(([s, n]) => `${s}(${n})`).join(', ');
+      const distinctList2 = Array.from(distinctStatuses2.entries()).map(([s, n]) => `${s}(${n})`).join(', ');
       return safeJson(200, {
-        synced:          latestByCode.size,
+        source:    'log-replay-fallback',
+        apiNote:   `L'API Ameex est inaccessible (${apiAttempts} URLs testées). Replay des webhooks stock\u00e9s.`,
+        synced:    latestByCode.size,
         updated,
         skipped,
         noMatch,
-        details,
-        distinctStatuses: Object.fromEntries(distinctStatuses),
+        details:   details2,
+        distinctStatuses: Object.fromEntries(distinctStatuses2),
         message: updated > 0
-          ? `✅ Replay Ameex: ${updated} commande(s) mise(s) à jour · ${skipped} déjà à jour · ${noMatch} sans correspondance${distinctList ? ' — ' + distinctList : ''}`
-          : `ℹ️ Replay Ameex: ${latestByCode.size} événement(s) trouvé(s) — ${skipped} déjà à jour · ${noMatch} sans correspondance`,
+          ? `\u2705 Replay Ameex: ${updated} commande(s) mise(s) \u00e0 jour \u00b7 ${skipped} d\u00e9j\u00e0 \u00e0 jour \u00b7 ${noMatch} sans correspondance${distinctList2 ? ' \u2014 ' + distinctList2 : ''}`
+          : `\u2139\ufe0f Replay Ameex: ${latestByCode.size} \u00e9v\u00e9nement(s) trouv\u00e9(s) \u2014 ${skipped} d\u00e9j\u00e0 \u00e0 jour \u00b7 ${noMatch} sans correspondance`,
       });
     } catch (err: any) {
-      console.error('[AMEEX-SYNC] fatal', err?.message);
-      return safeJson(500, { message: err?.message || 'Sync Ameex failed' });
+      console.error('[AMEEX-SYNC] fatal', (err as any)?.message);
+      return safeJson(500, { message: (err as any)?.message || 'Sync Ameex failed' });
     }
   });
+
 
   /**
    * POST /api/shipping/ameex/patch-codes
