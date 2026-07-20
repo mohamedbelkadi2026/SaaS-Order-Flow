@@ -1,0 +1,36 @@
+All Ameex orders now have their real tracking codes. Make "Synchroniser les statuts" pull/apply 
+the current Ameex statuses so they show automatically in the platform, and make live webhooks 
+keep them updated.
+
+CONTEXT: Ameex primarily works via webhook (payload.status). Orders now have real codes stored 
+as trackNumber, so matching works by trackNumber === code.
+
+IMPLEMENT "Synchroniser les statuts" for Ameex (button already exists):
+1) PRIMARY — replay stored webhooks: iterate the stored Ameex webhook events in integration_logs, 
+   read the real code (payload.order_id / CODE) + status (payload.status / STATUT), match order 
+   by trackNumber === code, map via AMEEX_STATUS_MAP, and update status + commentStatus. Report 
+   updated/skipped counts.
+2) SECONDARY — if Ameex exposes a status/track API that accepts the real code, use it to fetch 
+   the CURRENT status for orders that have no recent webhook (so "Synchroniser" reflects the 
+   latest even if we missed a webhook). Check the Ameex API 
+   (base https://api.ameex.app/customer/Delivery/Parcels/...) for a track-by-code or 
+   list-parcels endpoint; if it returns the status, map + apply. If no such API exists, rely on 
+   replay only and say so.
+3) AMEEX_STATUS_MAP (French labels + codes, single source of truth):
+   "Livré"/DELIVERED -> delivered
+   "Refusé"/REFUSED -> refused
+   "Annulé"/CANCELED -> refused/annulé
+   "Reporté"/POSTPONED (or reported_date) -> in_progress (label "Reporté")
+   "Expédié"/"Reçu"/"Mise en distribution"/"Pas de réponse"/DISTRIBUTION/INHOUSE -> in_progress
+   "Attente De Ramassage" -> stays 'Attente De Ramassage'
+   unknown -> in_progress (never guess). Store raw French label in commentStatus.
+4) LIVE: ensure the live Ameex webhook handler applies the same map immediately, so from now on 
+   statuses update automatically without pressing Synchroniser.
+5) Make sure the delivered/refused results count in Dashboard + Profit (same isDeliveredStatus).
+
+VERIFY: pressing "Synchroniser les statuts" updates the Ameex orders to their real statuses 
+(Livré/Refusé/Reporté/En cours...) matching the Ameex portal; new webhooks then update 
+automatically. Paste me the sync result counts (updated/skipped) and log the distinct statuses 
+applied.
+
+Deploy to main.
