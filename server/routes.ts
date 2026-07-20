@@ -1862,8 +1862,9 @@ export async function registerRoutes(
                     status:           'Attente De Ramassage',
                   } as any)
                 );
+                // Static delivery fee fallback (skipped for EC — per-city table takes priority)
                 const fee = (orderCreds as any).deliveryFee || 0;
-                if (fee > 0) {
+                if (fee > 0 && provider.toLowerCase() !== 'expresscoursier') {
                   allDbUpdates.push(storage.updateOrder(order.id, { shippingCost: fee }));
                 }
                 // Try to get real per-city delivery cost from Digylog
@@ -1878,6 +1879,19 @@ export async function registerRoutes(
                         }
                       })
                       .catch(costErr => console.error('[DIGYLOG-COST] Failed to fetch cost:', costErr))
+                  );
+                }
+                // Per-city delivery cost for Express Coursier (replaces static deliveryFee)
+                if (provider.toLowerCase() === 'expresscoursier') {
+                  allDbUpdates.push(
+                    storage.getCarrierCityPrice(storeId, 'expresscoursier', (order as any).customerCity || '')
+                      .then(async (cityFee) => {
+                        const { EC_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/ec-city-pricing');
+                        const price = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100);
+                        console.log(`[EC-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH fallback'})`);
+                        return storage.updateOrder(order.id, { shippingCost: price });
+                      })
+                      .catch(costErr => console.error('[EC-COST] Failed to fetch city price:', costErr))
                   );
                 }
                 allLogUpdates.push(storage.createIntegrationLog({
@@ -3807,6 +3821,54 @@ export async function registerRoutes(
     }
   });
 
+  // ── Per-city pricing endpoints ───────────────────────────────────────────────
+
+  // Bulk import seed from historical data (call once after deploy)
+  app.post("/api/carriers/expresscoursier/import-city-pricing", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { EC_CITY_PRICING_SEED } = await import("./seed-data/ec-city-pricing");
+      let count = 0;
+      for (const [city, priceDh] of EC_CITY_PRICING_SEED) {
+        await storage.upsertCarrierCityPrice(storeId, "expresscoursier", city, priceDh * 100, "import_historique");
+        count++;
+      }
+      res.json({ message: `${count} tarifs de ville importés pour Express Coursier`, count });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // List all city pricing rows for a carrier
+  app.get("/api/carriers/:carrierName/city-pricing", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { carrierName } = req.params;
+      const rows = await storage.getCarrierCityPricing(storeId, carrierName);
+      // Sort alphabetically by cityName
+      rows.sort((a: any, b: any) => a.cityName.localeCompare(b.cityName, 'fr', { sensitivity: 'base' }));
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // Upsert a single city price
+  app.post("/api/carriers/:carrierName/city-pricing", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { carrierName } = req.params;
+      const { cityName, priceDh } = req.body;
+      if (!cityName || typeof priceDh !== 'number' || priceDh < 0) {
+        return res.status(400).json({ message: "cityName (string) and priceDh (number ≥ 0) are required" });
+      }
+      await storage.upsertCarrierCityPrice(storeId, carrierName, cityName, Math.round(priceDh * 100), "manual");
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── Shared carrier webhook processor ────────────────────────────────────────
   // Maps Digylog/carrier raw status strings to internal system statuses,
   // captures driver info into the follow-up journal, updates commentStatus,
@@ -4348,13 +4410,20 @@ export async function registerRoutes(
           );
           if (cost && cost > 0) {
             await storage.updateOrder(order.id, { shippingCost: cost });
-            console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cost} (per-city)`);
+            console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cost} (per-city API)`);
           } else {
-            // Fallback to static deliveryFee from account
-            const fee = (acct as any)?.deliveryFee || 0;
-            if (fee > 0) {
-              await storage.updateOrder(order.id, { shippingCost: fee });
-              console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee} (static fee)`);
+            // Middle tier: per-city price table (covers EC and any carrier without a cost API)
+            const cityFee = await storage.getCarrierCityPrice((order as any).storeId, carrierName, (order as any).customerCity || '');
+            if (cityFee && cityFee > 0) {
+              await storage.updateOrder(order.id, { shippingCost: cityFee });
+              console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cityFee} (per-city table)`);
+            } else {
+              // Final fallback: static deliveryFee from account
+              const fee = (acct as any)?.deliveryFee || 0;
+              if (fee > 0) {
+                await storage.updateOrder(order.id, { shippingCost: fee });
+                console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee} (static fee)`);
+              }
             }
           }
         }
@@ -8892,13 +8961,9 @@ function ensureHeaders(sheet) {
     try {
       const storeId = req.user!.storeId!;
       const { trackDigylogShipment } = await import('./services/carrier-service');
-      const accounts = await storage.getCarrierAccounts(storeId, 'digylog');
-      const account = accounts[0];
-      if (!account) return res.status(400).json({ message: 'No Digylog account' });
-
+      const { EC_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/ec-city-pricing');
       const allOrders = await storage.getOrdersByStore(storeId);
       const toFix = allOrders.filter((o: any) =>
-        o.shippingProvider === 'digylog' &&
         o.trackNumber &&
         (!o.shippingCost || o.shippingCost === 0)
       );
@@ -8907,12 +8972,34 @@ function ensureHeaders(sheet) {
       let fixed = 0;
 
       for (const order of toFix) {
-        const result = await trackDigylogShipment(order.trackNumber!, (account as any).apiKey);
-        const cost = result.deliveryCost;
-        if (cost && cost > 0) {
-          await storage.updateOrder(order.id, { shippingCost: cost });
-          console.log(`[FIX-COST] #${(order as any).orderNumber} → shippingCost=${cost}`);
+        const carrier = ((order as any).shippingProvider || '').toLowerCase();
+
+        if (carrier === 'digylog') {
+          const accounts = await storage.getCarrierAccounts(storeId, 'digylog');
+          const account = accounts[0];
+          if (!account) continue;
+          const result = await trackDigylogShipment(order.trackNumber!, (account as any).apiKey);
+          const cost = result.deliveryCost;
+          if (cost && cost > 0) {
+            await storage.updateOrder(order.id, { shippingCost: cost });
+            console.log(`[FIX-COST] #${(order as any).orderNumber} digylog → shippingCost=${cost}`);
+            fixed++;
+          }
+        } else if (carrier === 'expresscoursier') {
+          // Use per-city table; fall back to EC default (35 DH)
+          const cityFee = await storage.getCarrierCityPrice(storeId, 'expresscoursier', (order as any).customerCity || '');
+          const price = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100);
+          await storage.updateOrder(order.id, { shippingCost: price });
+          console.log(`[FIX-COST] #${(order as any).orderNumber} EC city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH'})`);
           fixed++;
+        } else if (carrier) {
+          // Any other carrier: try per-city table first
+          const cityFee = await storage.getCarrierCityPrice(storeId, carrier, (order as any).customerCity || '');
+          if (cityFee && cityFee > 0) {
+            await storage.updateOrder(order.id, { shippingCost: cityFee });
+            console.log(`[FIX-COST] #${(order as any).orderNumber} ${carrier} → shippingCost=${cityFee} (per-city table)`);
+            fixed++;
+          }
         }
       }
 

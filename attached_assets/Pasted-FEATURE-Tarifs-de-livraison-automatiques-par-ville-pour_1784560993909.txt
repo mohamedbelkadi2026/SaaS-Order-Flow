@@ -1,0 +1,503 @@
+FEATURE — Tarifs de livraison automatiques par ville pour Express Coursier
+(+ tout autre transporteur sans coût par ville via API)
+
+CONTEXTE
+Aujourd'hui, `carrierAccounts.deliveryFee` (shared/schema.ts) est un SEUL frais
+fixe par compte transporteur, appliqué à TOUTES les villes (voir le fallback
+"static fee" dans le webhook générique, server/routes.ts, bloc
+"Auto-set shippingCost when order is delivered", ~ligne 4334). Pour Digylog on
+récupère le vrai coût par ville via `getDigylogDeliveryCost()` (API), mais
+Express Coursier n'a AUCUN endpoint qui retourne le prix de livraison — donc
+toutes les commandes EC reçoivent le même `deliveryFee` statique, peu importe
+la ville, ce qui fausse le calcul de profit.
+
+Objectif : créer une table de tarifs par ville par transporteur, la pré-remplir
+avec les vrais prix Express Coursier (calculés à partir de l'historique réel de
+11 203 commandes), l'utiliser pour remplir `orders.shippingCost`
+automatiquement (au ship + en fallback webhook + en backfill), et l'exposer
+dans l'UI pour que je puisse la consulter/corriger.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Schéma (shared/schema.ts)
+
+Ajouter une nouvelle table, juste après `expressCoursierCities` :
+
+```ts
+// ─── Per-city delivery pricing (per carrier) ────────────────────────────────
+// Fills orders.shippingCost automatically for carriers that don't return a
+// real per-city cost via API (Express Coursier has no such endpoint — unlike
+// Digylog's getDigylogDeliveryCost). One row per store+carrier+city.
+export const carrierCityPricing = pgTable("carrier_city_pricing", {
+  id:          serial("id").primaryKey(),
+  storeId:     integer("store_id").notNull(),
+  carrierName: text("carrier_name").notNull(),   // e.g. "expresscoursier"
+  cityName:    text("city_name").notNull(),       // display name, as typed by the user
+  cityNorm:    text("city_norm").notNull(),        // normalizeCityKey(cityName) — used for lookup
+  priceDh:     integer("price_dh").notNull(),      // price in CENTIMES (same convention as shippingCost/deliveryFee — e.g. 3500 = 35.00 DH)
+  source:      text("source").default("manual"),   // "manual" | "import_historique"
+  createdAt:   timestamp("created_at").defaultNow(),
+  updatedAt:   timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  uniqueCityPerCarrier: uniqueIndex("carrier_city_pricing_unique")
+    .on(table.storeId, table.carrierName, table.cityNorm),
+}));
+export type CarrierCityPricing = typeof carrierCityPricing.$inferSelect;
+```
+
+Run the migration (`npm run db:push` or the project's existing drizzle push
+script — check package.json).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Storage layer (server/storage.ts)
+
+Add next to the existing `expressCoursierCities` helpers:
+
+```ts
+async getCarrierCityPricing(storeId: number, carrierName: string) {
+  return db.select().from(carrierCityPricing)
+    .where(and(eq(carrierCityPricing.storeId, storeId), eq(carrierCityPricing.carrierName, carrierName)));
+}
+
+// city price lookup used at ship-time / webhook fallback — returns centimes or null
+async getCarrierCityPrice(storeId: number, carrierName: string, cityRaw: string): Promise<number | null> {
+  const norm = normalizeCityKey(cityRaw || "");
+  if (!norm) return null;
+  const [row] = await db.select().from(carrierCityPricing)
+    .where(and(
+      eq(carrierCityPricing.storeId, storeId),
+      eq(carrierCityPricing.carrierName, carrierName),
+      eq(carrierCityPricing.cityNorm, norm),
+    ));
+  return row ? row.priceDh : null;
+}
+
+async upsertCarrierCityPrice(storeId: number, carrierName: string, cityName: string, priceDh: number, source = "manual") {
+  const norm = normalizeCityKey(cityName);
+  const existing = await db.select().from(carrierCityPricing)
+    .where(and(eq(carrierCityPricing.storeId, storeId), eq(carrierCityPricing.carrierName, carrierName), eq(carrierCityPricing.cityNorm, norm)));
+  if (existing.length) {
+    await db.update(carrierCityPricing).set({ priceDh, cityName, source, updatedAt: new Date() }).where(eq(carrierCityPricing.id, existing[0].id));
+  } else {
+    await db.insert(carrierCityPricing).values({ storeId, carrierName, cityName, cityNorm: norm, priceDh, source });
+  }
+}
+```
+
+Import `normalizeCityKey` from `./services/city-aliases` at the top of
+storage.ts if not already imported.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Seed des vrais tarifs Express Coursier
+
+Créer `server/seed-data/ec-city-pricing.ts` avec EXACTEMENT ce contenu (prix
+calculés depuis l'historique réel de 11 203 commandes Express Coursier — mode
+statistique par ville, hors commandes "échange" qui suivent une autre grille) :
+
+```ts
+// Prix en DH (converti en centimes ×100 au moment de l'insertion).
+// Calculé depuis commandes_2026-06-03_18-04-53.csv (11 203 commandes réelles),
+// puis corrigé manuellement : les grandes villes (Marrakech, Tanger, Rabat,
+// Fes, Agadir, Meknes, Kenitra, Sale, Oujda, El jadida, Mohammedia, Tetouan,
+// Safi, Beni mellal, Temara) sont à 30 DH, Casablanca reste à 20 DH.
+// Par défaut toute ville absente de cette liste reçoit 35 DH (tarif standard EC).
+export const EC_CITY_PRICING_SEED: [string, number][] = [
+  ["Marrakech", 30],
+  ["Casablanca", 20],
+  ["Tanger", 30],
+  ["Rabat", 30],
+  ["Fes", 30],
+  ["Agadir", 30],
+  ["Meknes", 30],
+  ["Kenitra", 30],
+  ["Sale", 30],
+  ["Oujda", 30],
+  ["El jadida", 30],
+  ["Temara", 30],
+  ["Mohammedia", 30],
+  ["Tetouan", 30],
+  ["Nador", 35],
+  ["Safi", 30],
+  ["Beni mellal", 30],
+  ["Laayoune", 35],
+  ["Bouskoura", 35],
+  ["Dakhla", 35],
+  ["Berkane", 35],
+  ["Berrechid", 35],
+  ["Khouribga", 35],
+  ["Kelaa seraghna", 35],
+  ["Settat", 35],
+  ["Dar bouazza", 35],
+  ["Larache", 35],
+  ["Taza", 35],
+  ["Tit mellil", 35],
+  ["Sale al jadida", 30],
+  ["Gulmim", 35],
+  ["khemisset", 35],
+  ["Fkih ben salah", 35],
+  ["Ait melloul", 35],
+  ["Errachidia", 35],
+  ["Inzegane", 35],
+  ["Kser el kebir", 35],
+  ["Benslimane", 35],
+  ["Ouarzazate", 35],
+  ["Martil", 35],
+  ["Ben guerir", 35],
+  ["El Hoceima", 35],
+  ["Essaouira", 35],
+  ["Guercif", 35],
+  ["deroua", 35],
+  ["Bouznika", 35],
+  ["Sekhirat", 35],
+  ["Tiflet", 35],
+  ["Gznaya", 35],
+  ["Tamesna", 35],
+  ["Driouch", 35],
+  ["Khenifra", 35],
+  ["Sidi sliman", 35],
+  ["Biougra", 35],
+  ["Azilal", 35],
+  ["Youssoufia", 35],
+  ["Sidi bennour", 35],
+  ["Souk el arbaa", 35],
+  ["Ouazzane", 35],
+  ["Sefrou ( fes )", 35],
+  ["Sidi kasem", 35],
+  ["Taourirt", 35],
+  ["Azrou (ifran)", 35],
+  ["Ouled nemma", 35],
+  ["kasba tadla", 35],
+  ["Ain harrouda", 35],
+  ["Oulad teima houara", 35],
+  ["Tamansourt", 35],
+  ["azemmour ( El jadida )", 35],
+  ["Harhoura", 35],
+  ["Mediouna", 35],
+  ["Selouane", 35],
+  ["Taounate", 35],
+  ["Taroudant", 35],
+  ["Dchira", 35],
+  ["Sidi bouknadel", 35],
+  ["Chefchaouen", 35],
+  ["Chichaoua", 35],
+  ["Sidi yahya du rharb", 35],
+  ["Tinghir", 35],
+  ["Tiznit", 35],
+  ["Zagora", 35],
+  ["Ain aouda", 35],
+  ["Arrahma", 35],
+  ["Oued zem", 35],
+  ["Had soualem", 35],
+  ["Boujdour", 35],
+  ["Mechra bel ksiri", 35],
+  ["Tassoultant", 35],
+  ["ben ahmed ( Settat )", 35],
+  ["El Hajeb", 35],
+  ["Ifrane", 35],
+  ["Ouled berhil", 35],
+  ["Ain atiq", 35],
+  ["Mdiq", 35],
+  ["Smara", 40],
+  ["Tantan", 35],
+  ["AIT Ourir", 35],
+  ["imzouren", 35],
+  ["Al aroui", 35],
+  ["Fnideq", 35],
+  ["Mrirt", 35],
+  ["Midelt", 35],
+  ["Nouasseur", 35],
+  ["Segangan", 35],
+  ["Tahla(taza)", 35],
+  ["Belfaa", 35],
+  ["ahfir (saidia)", 35],
+  ["bir jdide", 40],
+  ["Ain taoujdate ( meknes )", 35],
+  ["Beni ensar", 35],
+  ["Chemaia", 35],
+  ["Khenichet", 35],
+  ["Sidi allal el bahraoui", 35],
+  ["bejaad(tadla)", 35],
+  ["jourf el melha", 35],
+  ["Demnate", 35],
+  ["El garra ( Settat )", 35],
+  ["Tahannaout", 35],
+  ["Asilah", 35],
+  ["Jerada", 35],
+  ["Ourika", 35],
+  ["El Mansouria", 40],
+  ["El oualidia ( El jadida )", 35],
+  ["Kariat Ba Mohamed (taounat)", 45],
+  ["Layayda(rabat)", 40],
+  ["Saidia", 35],
+  ["Targuist", 35],
+  ["kalaat mgouna", 35],
+  ["Errich(midalt)", 35],
+  ["Sidi ifni", 35],
+  ["ghafsi (tounat)", 45],
+  ["Ain chqef ( fes )", 35],
+  ["BOUARFA", 35],
+  ["El ksiba(tadla)", 35],
+  ["Oued amlil", 35],
+  ["Outat el haj(midalt)", 35],
+  ["Sidi Allal Tazi ( kenitra )", 35],
+  ["Tnin chtouka (jdida)", 35],
+  ["Zaio", 35],
+  ["moulay abdallah ( El jadida )", 35],
+  ["Skhour rehamna", 35],
+  ["missour(midalt)", 35],
+  ["Afourar(bnimllal)", 35],
+  ["Agdz", 35],
+  ["Bab Berred", 45],
+  ["Boumalne dades (kelaa)", 35],
+  ["Moulay bousselham", 35],
+  ["Ouled mrah(bnimllal)", 35],
+  ["Sidi el mokhtar", 35],
+  ["Tadart anza", 35],
+  ["Tamelelt", 35],
+  ["Tinjdad", 35],
+  ["aoulouz", 35],
+  ["laayoune port ( Laayoune )", 35],
+  ["Akka (tata)", 45],
+  ["Arfoud", 35],
+  ["El aattaouia", 35],
+  ["El aioun sidi mellouk", 35],
+  ["El aouamra", 40],
+  ["Oualmas", 35],
+  ["Sabaa aiyoun ( meknes )", 35],
+  ["Sidi Abdellah Ghiat", 35],
+  ["Sidi rahal", 35],
+  ["Taliwin", 35],
+  ["Tarfaya ( Laayoune )", 35],
+  ["Tighssaline", 35],
+  ["Zemamra", 35],
+  ["bab taza(chefchaoun)", 35],
+  ["bni bouayach", 50],
+  ["Amizmiz", 35],
+  ["Anza(agadir)", 35],
+  ["Aourir(agadir)", 35],
+  ["Boufkrane", 35],
+  ["Imintanoute", 40],
+  ["Imouzzer Kandar", 45],
+  ["Jemaa-shaim", 35],
+  ["Rommani(khemissat)", 35],
+  ["Sidi bouzid ( El jadida )", 35],
+  ["Tamesluht", 45],
+  ["Tata", 35],
+  ["Temsia", 35],
+  ["Zaouiat cheikh(tadla)", 35],
+  ["sidi taibi (kenitra)", 35],
+  ["Agourai(mknes)", 45],
+  ["Ain bnimathar", 35],
+  ["Aoufous", 35],
+  ["Boujniba(khoribga)", 35],
+  ["Boumia(midalt)", 35],
+  ["Ksar sgher", 35],
+  ["Midar(nador)", 35],
+  ["Ouled mbarek(bnimllal)", 45],
+  ["Ras el ma (saidia)", 35],
+  ["Rissani", 35],
+  ["Sidi bibi", 35],
+  ["Tafraoute", 35],
+  ["issaguen", 35],
+  ["Aguelmous", 35],
+  ["Alnif (tinghir)", 35],
+  ["Boudnib", 35],
+  ["El Afak", 40],
+  ["El Borouj ( Settat )", 35],
+  ["Figuig", 45],
+  ["Goulmima", 35],
+  ["Kaf Ennessoure", 35],
+  ["Kariat Arekmane", 35],
+  ["Massa", 35],
+  ["Mhaya (meknes)", 45],
+  ["Sebt el guerdane", 35],
+  ["Sidi bou othmane", 35],
+  ["Tamaresse", 35],
+  ["Taznakht", 40],
+  ["Tiztoutine", 35],
+  ["Zaouiet Sidi Ismail", 35],
+  ["ajdir(houcaima)", 35],
+  ["tinzouline", 35],
+  ["zoumi(ouazan)", 35],
+  ["Ait Kamara", 35],
+  ["Ait aamira", 35],
+  ["Ait ishaq", 35],
+  ["Beni Ahmed Gharbia", 40],
+  ["Boulmane(midalt)", 35],
+  ["Chouiter", 35],
+  ["Drarga", 35],
+  ["Farkhana(nador)", 35],
+  ["Guigou(midalt)", 35],
+  ["Mirleft", 35],
+  ["Oued Laou (tetouan)", 45],
+  ["Oulad ayad(bnimllal)", 35],
+  ["Skoura", 35],
+  ["Tamraght", 35],
+  ["Tendrara", 35],
+  ["Teroual(ouazan)", 35],
+  ["Tissa (taounat)", 45],
+  ["Zaida(midalt)", 35],
+  ["ain dorij", 35],
+  ["beni bouayach", 45],
+  ["sidi redouane", 35],
+  ["xxxx", 40],
+  ["Aghbalou nserdan", 35],
+  ["Ain aicha(taounat)", 35],
+  ["Ain leuh(ifran)", 35],
+  ["Ait Aissa Ou Brahim", 35],
+  ["Ait ia&agrave;za", 35],
+  ["Akka Ighane (tata)", 45],
+  ["Aknoul(taza)", 40],
+  ["Assa Zag", 35],
+  ["Belaaguid", 30],
+  ["Beni drar (saidia)", 35],
+  ["Bni Hadifa", 35],
+  ["Chalalt(mohmadia)", 40],
+  ["El Kebab(khenifra)", 35],
+  ["El Menzel(fes)", 40],
+  ["Elhaj kaddour (meknes)", 35],
+  ["Foum Zguid", 45],
+  ["Galaz (taounat)", 50],
+  ["Ghazwa", 40],
+  ["Guisser (settat)", 40],
+  ["Had Bouhssoussen", 35],
+  ["Hattane(khoribga)", 40],
+  ["Ighrem Nougdal", 35],
+  ["Khemis sahel(laraich)", 35],
+  ["Lalla Mimouna", 35],
+  ["Lamrabta(bnimllal)", 35],
+  ["Merzouga", 35],
+  ["Moulay Idriss Zerhoun ( meknes )", 45],
+  ["Oulad Said ( Settat )", 35],
+  ["Ounara", 35],
+  ["Ourtzagh(taounat)", 45],
+  ["Sidi Hajjaj (settat)", 35],
+  ["Sidi Jaber", 45],
+  ["Sidi yahya zaer", 35],
+  ["Tagzert(tadla)", 35],
+  ["Tikiwine", 40],
+  ["Timahdite(ifran)", 35],
+  ["Tissint (tata)", 45],
+  ["Tlata loulad(khoribga)", 35],
+  ["Tleta El Henchane", 40],
+  ["maaziz(khemissat)", 45],
+  ["nkoub", 35],
+  ["nzalat laadam", 35],
+  ["tagounite", 35],
+  ["tazarine(zagora)", 50],
+];
+
+// Tarif par défaut pour toute ville absente de la liste (35 DH = tarif standard EC).
+export const EC_DEFAULT_CITY_PRICE_DH = 35;
+
+// Tarif spécial commandes "échange" (retour/remplacement) — plat, pas lié à la ville.
+export const EC_EXCHANGE_PRICE_DH = 20;
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — Endpoint d'import (à appeler UNE SEULE FOIS après déploiement)
+
+In server/routes.ts, add near the other `/api/carriers/expresscoursier/...`
+routes:
+
+```ts
+app.post("/api/carriers/expresscoursier/import-city-pricing", requireAuth, requireAdmin, async (req: any, res: any) => {
+  const storeId = req.user.storeId;
+  const { EC_CITY_PRICING_SEED } = await import("./seed-data/ec-city-pricing");
+  let count = 0;
+  for (const [city, priceDh] of EC_CITY_PRICING_SEED) {
+    await storage.upsertCarrierCityPrice(storeId, "expresscoursier", city, priceDh * 100, "import_historique");
+    count++;
+  }
+  res.json({ message: `${count} tarifs de ville importés pour Express Coursier`, count });
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 5 — Utiliser le tarif automatiquement (3 endroits)
+
+5a) AU MOMENT DE L'EXPÉDITION — server/routes.ts, dans le bloc d'expédition
+Express Coursier (~ligne 1723, là où le `city id` est résolu avant l'appel API
+EC). Juste après un envoi réussi et avant/juste après avoir set
+`shippingProvider`/`carrierName`, si `order.shippingCost` est 0, faire :
+
+```ts
+if (!order.shippingCost || order.shippingCost === 0) {
+  const cityPrice = await storage.getCarrierCityPrice(storeId, 'expresscoursier', order.customerCity || '');
+  const fee = cityPrice ?? (EC_DEFAULT_CITY_PRICE_DH * 100); // fallback 35 DH si ville absente de la table
+  await storage.updateOrder(order.id, { shippingCost: fee });
+}
+```
+
+5b) FALLBACK WEBHOOK — server/routes.ts, bloc "Auto-set shippingCost when
+order is delivered" (~ligne 4334). Actuellement il essaie
+`getDigylogDeliveryCost` puis retombe sur `acct.deliveryFee` (fixe). AJOUTER
+un palier intermédiaire "prix par ville" AVANT le fallback statique :
+
+```ts
+if (cost && cost > 0) {
+  await storage.updateOrder(order.id, { shippingCost: cost });
+  console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cost} (per-city API)`);
+} else {
+  // NOUVEAU : tarif par ville stocké (Express Coursier & tout transporteur sans API de coût)
+  const cityFee = await storage.getCarrierCityPrice((order as any).storeId, carrierName, (order as any).customerCity || '');
+  if (cityFee && cityFee > 0) {
+    await storage.updateOrder(order.id, { shippingCost: cityFee });
+    console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${cityFee} (per-city table)`);
+  } else {
+    const fee = (acct as any)?.deliveryFee || 0;
+    if (fee > 0) {
+      await storage.updateOrder(order.id, { shippingCost: fee });
+      console.log(`[DeliveryFee] Order #${(order as any).orderNumber} delivered — shippingCost=${fee} (static fee)`);
+    }
+  }
+}
+```
+
+5c) BACKFILL — server/routes.ts, le job "FIX-COST" (~ligne 8903, orders avec
+`shippingCost === 0` en statut final). Même logique : essayer
+`storage.getCarrierCityPrice(storeId, carrierName, order.customerCity)` avant
+tout fallback statique, pour corriger aussi les vieilles commandes EC déjà en
+base.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 6 — UI (Intégrations → Sociétés de Livraison → compte Express Coursier)
+
+Ajouter une section/table "Tarifs de livraison par ville" sur la page du
+compte carrier (client/src/pages/... — trouver le composant qui affiche déjà
+"Synchroniser les villes" pour Express Coursier, mettre la nouvelle table
+juste en dessous) :
+- GET /api/carriers/:carrierName/city-pricing → liste { cityName, priceDh (÷100 pour affichage) }, triée alphabétiquement, avec une barre de recherche.
+- Chaque ligne éditable inline (input DH → PATCH/POST upsert au blur).
+- Un bouton "Importer les tarifs historiques" qui appelle
+  POST /api/carriers/expresscoursier/import-city-pricing (à utiliser une seule
+  fois, ou pour ré-importer si besoin).
+- Afficher le tarif par défaut (35 DH) en haut, éditable aussi
+  (stocker sous cityName="__default__" ou une colonne séparée — au choix,
+  garder simple).
+
+────────────────────────────────────────────────────────────────────────────
+VÉRIFICATION
+- Après l'import, une commande Express Coursier vers Casablanca doit recevoir
+  shippingCost = 2000 (20 DH), vers une grande ville (Marrakech, Tanger, Rabat,
+  Fes, Agadir, Meknes, Kenitra, Sale, Oujda, El jadida, Mohammedia, Tetouan,
+  Safi, Beni mellal, Temara) shippingCost = 3000 (30 DH), et vers une ville
+  secondaire/rurale shippingCost = 3500 (35 DH, tarif par défaut) — PAS le
+  même deliveryFee fixe qu'avant pour toutes les villes.
+- Une ville absente de la table (nouvelle ville jamais vue) reçoit 3500
+  (fallback 35 DH), pas 0.
+- Le Profit Analyzer (server/services/profit.ts, qui lit déjà
+  `order.shippingCost` directement — AUCUNE modification nécessaire là-bas)
+  reflète immédiatement le vrai coût par ville dans le netProfit.
+- Lancer le job de backfill sur les commandes EC déjà livrées avec
+  shippingCost=0 pour corriger l'historique.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+1. `git add -A && git commit -m "Add per-city delivery pricing for Express Coursier"`
+2. `git push` vers la branche connectée à Railway (le déploiement se déclenche
+   automatiquement si Railway est branché sur ce repo GitHub — sinon utiliser
+   `railway up` depuis la CLI Railway).
+3. Une fois déployé, appeler UNE FOIS
+   `POST /api/carriers/expresscoursier/import-city-pricing` (depuis l'admin,
+   via le bouton "Importer les tarifs historiques" ou Postman) pour peupler la
+   table en production.

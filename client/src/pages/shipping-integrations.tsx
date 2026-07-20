@@ -2237,6 +2237,11 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     </div>
                   </div>
 
+                  {/* EC per-city delivery pricing */}
+                  {(acct.carrierName || "").toLowerCase() === "expresscoursier" && (
+                    <EcCityPricingSection accountId={acct.id} />
+                  )}
+
                   {/* Credential table */}
                   <div className="rounded-xl border border-border/50 overflow-hidden">
                     <table className="w-full text-sm">
@@ -2472,6 +2477,180 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
 }
 
 /* ─── Main page ──────────────────────────────────────────────── */
+// ── EC per-city delivery pricing section ────────────────────────────────────
+function EcCityPricingSection({ accountId, storeId }: { accountId: number; storeId?: number }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState<Record<string, string>>({}); // cityNorm → draft DH value
+
+  const { data: rows = [], isLoading } = useQuery<any[]>({
+    queryKey: ["/api/carriers/expresscoursier/city-pricing"],
+    queryFn: () => apiRequest("GET", "/api/carriers/expresscoursier/city-pricing").then(r => r.json ? r.json() : r),
+    staleTime: 30_000,
+  });
+
+  const importMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/carriers/expresscoursier/import-city-pricing", {}),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["/api/carriers/expresscoursier/city-pricing"] });
+      toast({ title: "✅ Tarifs importés", description: `${data?.count ?? "?"} villes importées depuis l'historique.` });
+    },
+    onError: (e: any) => toast({ title: "Erreur import", description: e.message, variant: "destructive" }),
+  });
+
+  const savePriceMutation = useMutation({
+    mutationFn: ({ cityName, priceDh }: { cityName: string; priceDh: number }) =>
+      apiRequest("POST", "/api/carriers/expresscoursier/city-pricing", { cityName, priceDh }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/carriers/expresscoursier/city-pricing"] });
+    },
+    onError: (e: any) => toast({ title: "Erreur sauvegarde", description: e.message, variant: "destructive" }),
+  });
+
+  const handleBlur = (cityName: string, cityNorm: string) => {
+    const draft = editing[cityNorm];
+    if (draft === undefined) return;
+    const val = parseFloat(draft.replace(",", "."));
+    if (isNaN(val) || val < 0) {
+      toast({ title: "Valeur invalide", description: "Entrez un prix en DH (ex : 35)", variant: "destructive" });
+      return;
+    }
+    setEditing(e => { const c = { ...e }; delete c[cityNorm]; return c; });
+    savePriceMutation.mutate({ cityName, priceDh: val });
+  };
+
+  const filtered = search.trim()
+    ? rows.filter((r: any) => r.cityName.toLowerCase().includes(search.toLowerCase()))
+    : rows;
+
+  return (
+    <div className="mt-4 rounded-xl border border-amber-200/60 dark:border-amber-800/40 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-amber-50/60 dark:bg-amber-900/10 border-b border-amber-200/60 dark:border-amber-800/40">
+        <div>
+          <span className="text-sm font-bold text-amber-800 dark:text-amber-300">Tarifs de livraison par ville</span>
+          <span className="ml-2 text-xs text-muted-foreground">({rows.length} villes)</span>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          className="border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-400 font-semibold text-xs h-7 px-2.5"
+          onClick={() => importMutation.mutate()}
+          disabled={importMutation.isPending}
+          data-testid="button-import-ec-city-pricing"
+        >
+          {importMutation.isPending
+            ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+            : <RefreshCw className="w-3 h-3 mr-1" />}
+          Importer tarifs historiques
+        </Button>
+      </div>
+
+      {/* Default price row */}
+      <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50/60 dark:bg-slate-800/20 border-b border-border/30 text-sm">
+        <span className="text-muted-foreground flex-1">Tarif par défaut (villes absentes de la liste)</span>
+        <div className="flex items-center gap-1.5">
+          {(() => {
+            const def = rows.find((r: any) => r.cityName === "__default__");
+            const norm = "__default__";
+            const draft = editing[norm];
+            const currentDh = def ? (def.priceDh / 100).toFixed(0) : "35";
+            return (
+              <>
+                <input
+                  type="number"
+                  min="0"
+                  step="5"
+                  className="w-16 text-right border border-border/60 rounded px-2 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-amber-400"
+                  value={draft !== undefined ? draft : currentDh}
+                  onChange={e => setEditing(ed => ({ ...ed, [norm]: e.target.value }))}
+                  onBlur={() => handleBlur("__default__", norm)}
+                  onKeyDown={e => e.key === "Enter" && handleBlur("__default__", norm)}
+                />
+                <span className="text-xs text-muted-foreground">DH</span>
+              </>
+            );
+          })()}
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="px-4 py-2 border-b border-border/20 bg-background">
+        <input
+          type="text"
+          placeholder="Rechercher une ville…"
+          className="w-full text-sm border border-border/50 rounded-lg px-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-amber-400"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
+
+      {/* City rows */}
+      <div className="max-h-72 overflow-y-auto">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="py-8 text-center text-sm text-muted-foreground">
+            {rows.length === 0
+              ? "Aucun tarif importé — cliquez « Importer tarifs historiques »"
+              : "Aucune ville correspondante"}
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-muted/40 border-b border-border/30 z-10">
+              <tr>
+                <th className="text-left px-4 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Ville</th>
+                <th className="text-right px-4 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Prix (DH)</th>
+                <th className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground text-right">Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered
+                .filter((r: any) => r.cityName !== "__default__")
+                .map((row: any) => {
+                  const draft = editing[row.cityNorm];
+                  const displayDh = (row.priceDh / 100).toFixed(0);
+                  return (
+                    <tr key={row.cityNorm} className="border-b border-border/10 hover:bg-muted/20 transition-colors">
+                      <td className="px-4 py-2 font-medium">{row.cityName}</td>
+                      <td className="px-4 py-2 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            step="5"
+                            className="w-16 text-right border border-border/50 rounded px-2 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-amber-400"
+                            value={draft !== undefined ? draft : displayDh}
+                            onChange={e => setEditing(ed => ({ ...ed, [row.cityNorm]: e.target.value }))}
+                            onBlur={() => handleBlur(row.cityName, row.cityNorm)}
+                            onKeyDown={e => e.key === "Enter" && handleBlur(row.cityName, row.cityNorm)}
+                          />
+                          <span className="text-xs text-muted-foreground">DH</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          row.source === "import_historique"
+                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                            : "bg-slate-100 text-slate-600 dark:bg-slate-800/50 dark:text-slate-400"
+                        }`}>
+                          {row.source === "import_historique" ? "historique" : "manuel"}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ShippingIntegrations() {
   const { data: allAccounts = [] } = useCarrierAccounts();
   const { data: logs = [], isLoading: logsLoading } = useQuery<WebhookLog[]>({

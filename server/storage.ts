@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities,
+  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, carrierCityPricing,
   pushSubscriptions,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
@@ -21,7 +21,7 @@ import {
 import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
 import { eq, desc, and, sql, count, ne, like, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
-import { matchCityId } from "./services/city-aliases";
+import { matchCityId, normalizeCityKey } from "./services/city-aliases";
 
 export interface IStorage {
   getStore(id: number): Promise<Store | undefined>;
@@ -1367,6 +1367,49 @@ export class DatabaseStorage implements IStorage {
     // Not found → matchCityId returns null. The caller MUST fail fast — never
     // send the city name, which Ozon Express rejects.
     return matchCityId(cities, cityName);
+  }
+
+  // ── Per-city delivery pricing ─────────────────────────────────────────────
+  // Used for carriers that don't expose a per-city cost via API (Express
+  // Coursier has no such endpoint). priceDh is stored in CENTIMES (×100).
+
+  async getCarrierCityPricing(storeId: number, carrierName: string) {
+    return db.select().from(carrierCityPricing)
+      .where(and(
+        eq(carrierCityPricing.storeId, storeId),
+        eq(carrierCityPricing.carrierName, carrierName),
+      ));
+  }
+
+  // Returns price in centimes, or null if city is not in the table.
+  async getCarrierCityPrice(storeId: number, carrierName: string, cityRaw: string): Promise<number | null> {
+    const norm = normalizeCityKey(cityRaw || "");
+    if (!norm) return null;
+    const [row] = await db.select().from(carrierCityPricing)
+      .where(and(
+        eq(carrierCityPricing.storeId, storeId),
+        eq(carrierCityPricing.carrierName, carrierName),
+        eq(carrierCityPricing.cityNorm, norm),
+      ));
+    return row ? row.priceDh : null;
+  }
+
+  async upsertCarrierCityPrice(storeId: number, carrierName: string, cityName: string, priceDh: number, source = "manual"): Promise<void> {
+    const norm = normalizeCityKey(cityName);
+    const existing = await db.select().from(carrierCityPricing)
+      .where(and(
+        eq(carrierCityPricing.storeId, storeId),
+        eq(carrierCityPricing.carrierName, carrierName),
+        eq(carrierCityPricing.cityNorm, norm),
+      ));
+    if (existing.length) {
+      await db.update(carrierCityPricing)
+        .set({ priceDh, cityName, source, updatedAt: new Date() })
+        .where(eq(carrierCityPricing.id, existing[0].id));
+    } else {
+      await db.insert(carrierCityPricing)
+        .values({ storeId, carrierName, cityName, cityNorm: norm, priceDh, source });
+    }
   }
 
   /**

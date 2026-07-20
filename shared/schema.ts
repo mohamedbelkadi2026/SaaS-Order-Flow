@@ -285,6 +285,25 @@ export const ozonExpressCities = pgTable("ozon_express_cities", {
 });
 export type OzonExpressCity = typeof ozonExpressCities.$inferSelect;
 
+// ─── Per-city delivery pricing (per carrier) ────────────────────────────────
+// Fills orders.shippingCost automatically for carriers that don't return a
+// real per-city cost via API (Express Coursier has no such endpoint — unlike
+// Digylog's getDigylogDeliveryCost). One row per store+carrier+city.
+export const carrierCityPricing = pgTable("carrier_city_pricing", {
+  id:          serial("id").primaryKey(),
+  storeId:     integer("store_id").notNull(),
+  carrierName: text("carrier_name").notNull(),   // e.g. "expresscoursier"
+  cityName:    text("city_name").notNull(),       // display name, as typed by the user
+  cityNorm:    text("city_norm").notNull(),        // normalizeCityKey(cityName) — used for lookup
+  priceDh:     integer("price_dh").notNull(),      // price in CENTIMES (e.g. 3500 = 35.00 DH)
+  source:      text("source").default("manual"),   // "manual" | "import_historique"
+  createdAt:   timestamp("created_at").defaultNow(),
+  updatedAt:   timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  uniqueCityPerCarrier: uniqueIndex("carrier_city_pricing_unique")
+    .on(table.storeId, table.carrierName, table.cityNorm),
+}));
+export type CarrierCityPricing = typeof carrierCityPricing.$inferSelect;
 
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),
