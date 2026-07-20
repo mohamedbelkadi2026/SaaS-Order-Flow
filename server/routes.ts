@@ -7437,7 +7437,7 @@ function ensureHeaders(sheet) {
       const storeId = req.user!.storeId!;
       const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
       const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange });
-      res.json({ products: result.products, platforms: result.platforms, globalAdSpend: result.globalAdSpend });
+      res.json({ products: result.products, platforms: result.platforms, totals: result.totals, globalAdSpend: result.globalAdSpend });
     } catch (err) {
       throw err;
     }

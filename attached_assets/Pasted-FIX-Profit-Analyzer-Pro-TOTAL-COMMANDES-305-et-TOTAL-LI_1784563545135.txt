@@ -1,0 +1,82 @@
+FIX — Profit Analyzer Pro : "TOTAL COMMANDES" (305) et "TOTAL LIVRÉES" (188)
+ne correspondent pas au Dashboard (289 commandes / 174 livrées) ni à
+l'onglet "Par Plateforme" du même Profit Analyzer (qui donne bien 174 en
+sommant les livrées par plateforme).
+
+CAUSE RACINE (confirmée dans le code)
+- server/services/profit.ts, fonction computeProfitability() : le total
+  correct existe DÉJÀ, calculé à partir des commandes elles-mêmes
+  (dédupliqué, une commande = une unité) :
+    totals.totalOrders     = storeOrders.length;
+    totals.deliveredOrders = storeOrders.filter(o => isDeliveredStatus(o.status)).length;
+  → C'est CE nombre qui doit s'afficher (il correspond exactement au Dashboard).
+
+- server/routes.ts, route GET /api/products/profitability (~ligne 7339-7346) :
+  la réponse JSON ne renvoie PAS ce champ `totals` :
+    res.json({ products: result.products, platforms: result.platforms, globalAdSpend: result.globalAdSpend });
+  → `totals` est calculé côté serveur mais jamais envoyé au frontend.
+
+- client/src/pages/profit-analyzer.tsx (~ligne 356-360) : en l'absence de
+  `totals`, le frontend recalcule lui-même en sommant PAR PRODUIT :
+    const liveTotalOrders    = liveProducts.reduce((s, p) => s + p.totalOrders, 0);
+    const liveTotalDelivered = liveProducts.reduce((s, p) => s + p.deliveredOrders, 0);
+  → Une commande contenant 2 produits différents (ex: sandale + ceinture)
+    est comptée une fois dans les stats du produit A ET une fois dans les
+    stats du produit B → total gonflé (305 au lieu de 289, 188 au lieu de 174).
+    L'onglet "Par Plateforme" n'a pas ce problème car il regroupe par
+    commande (une commande = une plateforme), pas par produit.
+
+────────────────────────────────────────────────────────────────────────────
+FIX A — server/routes.ts, GET /api/products/profitability
+
+Renvoyer aussi `totals` :
+
+```ts
+app.get("/api/products/profitability", requireAuth, async (req, res) => {
+  try {
+    const storeId = req.user!.storeId!;
+    const { dateFrom, dateTo, dateRange } = req.query as Record<string, string>;
+    const result = await computeProfitability(storeId, { dateFrom, dateTo, dateRange });
+    res.json({ products: result.products, platforms: result.platforms, totals: result.totals, globalAdSpend: result.globalAdSpend });
+  } catch (err) {
+    throw err;
+  }
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+FIX B — client/src/pages/profit-analyzer.tsx
+
+1. Remplacer le calcul par sommation par produit (~ligne 356-357) par une
+   lecture directe de `liveData.totals`, avec fallback (au cas où
+   l'API ne renvoie pas encore `totals`, ex. cache navigateur pas encore
+   rafraîchi) :
+
+```ts
+const liveTotalOrders    = liveData?.totals?.totalOrders     ?? liveProducts.reduce((s: number, p: any) => s + p.totalOrders, 0);
+const liveTotalDelivered = liveData?.totals?.deliveredOrders ?? liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
+```
+
+Ne PAS toucher à `liveTotalRevenue` et `liveTotalProfit` (~ligne 358-359) —
+ceux-là sont corrects tels quels : le revenu/coût est une valeur PAR LIGNE DE
+COMMANDE (order_item), donc sommer sur tous les produits est légitime, ce
+n'est que le COMPTE de commandes qui était dupliqué.
+
+2. Carte "TOTAL COMMANDES" (~ligne 1013) : le sous-texte "toutes périodes"
+   est trompeur — `totals.totalOrders` respecte maintenant bien le filtre de
+   période sélectionné (comme le Dashboard). Corriger le label :
+
+```ts
+{ label: 'TOTAL COMMANDES', val: liveTotalOrders.toString(), sub: 'période sélectionnée', color: '#f59e0b', icon: '📦' },
+```
+
+────────────────────────────────────────────────────────────────────────────
+VÉRIFICATION
+- Recharger Profit Analyzer Pro sur "Ce mois" : TOTAL COMMANDES doit
+  afficher 289 et TOTAL LIVRÉES doit afficher 174 — identiques au Dashboard
+  ET à la somme de la colonne "Livrées" dans l'onglet "Par Plateforme".
+- Changer la période (7 jours, Aujourd'hui, Tout...) → les 3 sources
+  (Dashboard, TOTAL COMMANDES/LIVRÉES, Par Plateforme) doivent toujours
+  rester cohérentes entre elles.
+- CA TOTAL et PROFIT NET TOTAL ne doivent PAS changer suite à ce fix (ils
+  étaient déjà corrects).

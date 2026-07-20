@@ -353,8 +353,8 @@ export default function ProfitAnalyzer() {
 
   const liveProducts  = liveData?.products  ?? [];
   const livePlatforms = liveData?.platforms ?? [];
-  const liveTotalOrders    = liveProducts.reduce((s: number, p: any) => s + p.totalOrders, 0);
-  const liveTotalDelivered = liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
+  const liveTotalOrders    = (liveData as any)?.totals?.totalOrders     ?? liveProducts.reduce((s: number, p: any) => s + p.totalOrders, 0);
+  const liveTotalDelivered = (liveData as any)?.totals?.deliveredOrders ?? liveProducts.reduce((s: number, p: any) => s + p.deliveredOrders, 0);
   const liveTotalRevenue   = liveProducts.reduce((s: number, p: any) => s + p.revenue, 0);
   const liveTotalProfit    = liveProducts.reduce((s: number, p: any) => s + p.netProfit, 0) - (liveData?.globalAdSpend ?? 0);
   const liveDeliveryRate   = liveTotalOrders > 0 ? ((liveTotalDelivered / liveTotalOrders) * 100).toFixed(1) : "0";
@@ -1010,7 +1010,7 @@ export default function ProfitAnalyzer() {
             {!liveLoading && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {[
-                  { label: 'TOTAL COMMANDES', val: liveTotalOrders.toString(), sub: 'toutes périodes', color: '#f59e0b', icon: '📦' },
+                  { label: 'TOTAL COMMANDES', val: liveTotalOrders.toString(), sub: 'période sélectionnée', color: '#f59e0b', icon: '📦' },
                   { label: 'TOTAL LIVRÉES', val: liveTotalDelivered.toString(), sub: `${liveDeliveryRate}% taux`, color: '#06b6d4', icon: '🚚' },
                   { label: 'CA TOTAL', val: liveTotalRevenue.toLocaleString('fr-MA', { minimumFractionDigits: 2 }) + ' DH', sub: 'revenus livrées', color: '#3b82f6', icon: '💰' },
                   { label: 'PROFIT NET TOTAL', val: liveTotalProfit.toLocaleString('fr-MA', { minimumFractionDigits: 2 }) + ' DH', sub: liveTotalProfit >= 0 ? 'En bénéfice' : 'En perte', color: liveTotalProfit >= 0 ? '#10b981' : '#f43f5e', icon: liveTotalProfit >= 0 ? '📈' : '📉' },
