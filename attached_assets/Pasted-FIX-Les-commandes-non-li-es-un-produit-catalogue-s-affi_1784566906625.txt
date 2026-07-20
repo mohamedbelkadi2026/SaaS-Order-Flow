@@ -1,0 +1,89 @@
+FIX — Les commandes non-liées à un produit catalogue s'affichent TOUTES sous
+un seul nom générique "— Sans produit —" au lieu d'afficher leur VRAI nom de
+produit (rawProductName), même quand ce nom est connu et présent en base.
+
+CAUSE
+server/services/profit.ts, ~ligne 320-343 : le bucket "orders sans
+order_items" regroupe TOUTES ces commandes sous UNE seule clé fixe, peu
+importe leur contenu réel :
+
+```ts
+const itemCoveredOrderIds = new Set(itemRows.map((i: any) => i.orderId));
+const UNMATCHED_KEY = '___sans_produit___';
+for (const order of storeOrders) {
+  if (itemCoveredOrderIds.has((order as any).id)) continue;
+  if (!statsMap[UNMATCHED_KEY]) {
+    statsMap[UNMATCHED_KEY] = makeEmptyRow('— Sans produit —', 0);
+  }
+  const s = statsMap[UNMATCHED_KEY];
+  ...
+}
+```
+
+Résultat : une commande dont `rawProductName = "Sandale En Cuir Rf210 X2
+Noir"` (nom connu, juste jamais matché à un produit catalogue au moment de
+la création) finit noyée dans le même tas anonyme que les commandes qui n'ont
+strictement AUCUNE info produit.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — server/services/profit.ts, remplacer ce bloc
+
+Grouper par `rawProductName` (normalisé) quand il existe, et ne tomber dans
+"— Sans produit —" QUE pour les commandes qui n'ont vraiment aucun nom :
+
+```ts
+const itemCoveredOrderIds = new Set(itemRows.map((i: any) => i.orderId));
+const UNMATCHED_KEY = '___sans_produit___';
+for (const order of storeOrders) {
+  if (itemCoveredOrderIds.has((order as any).id)) continue;
+
+  const raw = ((order as any).rawProductName || '').trim();
+  // Clé de regroupement : nom brut normalisé s'il existe, sinon le bucket générique.
+  const key = raw ? `unlinked_${norm(raw)}` : UNMATCHED_KEY;
+  const displayName = raw ? `${raw} (non lié)` : '— Sans produit —';
+
+  if (!statsMap[key]) {
+    statsMap[key] = makeEmptyRow(displayName, 0);
+  }
+  const s = statsMap[key];
+  const status = ((order as any).status || '').toLowerCase().trim();
+  const isDel  = isDeliveredStatus((order as any).status);
+  s.totalOrders++;
+  if (CONFIRMED_SET.has(status)) s.confirmedOrders++;
+  if (isDel)                     s.deliveredOrders++;
+  if (REFUSED_SET.has(status))   s.refusedOrders++;
+  if (RETURN_SET.has(status))    s.returnedOrders++;
+  if (isDel) {
+    s.revenue      += Number((order as any).totalPrice   || 0) / 100;
+    s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+    s.productCost  += Number((order as any).productCost  || 0) / 100;
+    const agentDH   = agentRateMap.get((order as any).assignedToId) ?? 0;
+    s.confirmationCost += agentDH;
+  }
+}
+```
+
+`norm(...)` est déjà utilisé plus haut dans ce même fichier pour normaliser
+les noms de produits (accents/casse/espaces) — réutiliser exactement la même
+fonction pour rester cohérent, pas besoin d'en recréer une.
+
+Le suffixe " (non lié)" dans `displayName` est volontaire : ça permet à
+l'utilisateur de repérer d'un coup d'œil, dans le tableau "Rentabilité Par
+Produit", quelles lignes sont des produits catalogue normaux et lesquelles
+sont des commandes dont le nom est connu mais qui ne sont PAS reliées au
+catalogue (donc sans coût sourcing fiable) — s'il préfère sans ce suffixe,
+l'enlever, mais le signal visuel est utile pour repérer ce qu'il faut relier
+manuellement plus tard.
+
+────────────────────────────────────────────────────────────────────────────
+VÉRIFICATION
+- Rentabilité Par Produit : au lieu d'une seule ligne "— Sans produit —"
+  regroupant 43 commandes, on doit voir plusieurs lignes du type
+  "Sandale En Cuir Rf210 X2 Noir (non lié)", chacune avec son propre
+  CMD / CA / marge — et la ligne "— Sans produit —" ne reste QUE pour les
+  commandes sans rawProductName du tout (normalement un petit nombre).
+- Le total (bénéfice net, CA, nombre de commandes) ne change PAS avec ce fix
+  seul — c'est purement un fix d'affichage/regroupement, pas de calcul. Le
+  vrai calcul de coût pour ces commandes dépend toujours du fix précédent
+  (repair-unlinked / matching des webhooks gsheets) pour leur donner un
+  sourcing réel au lieu de 0.

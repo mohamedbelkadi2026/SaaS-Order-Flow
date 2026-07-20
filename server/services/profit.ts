@@ -329,10 +329,13 @@ export async function computeProfitability(
   const UNMATCHED_KEY = '___sans_produit___';
   for (const order of storeOrders) {
     if (itemCoveredOrderIds.has((order as any).id)) continue;
-    if (!statsMap[UNMATCHED_KEY]) {
-      statsMap[UNMATCHED_KEY] = makeEmptyRow('— Sans produit —', 0);
+    const raw = ((order as any).rawProductName || '').trim();
+    const key = raw ? `unlinked_${norm(raw)}` : UNMATCHED_KEY;
+    const displayName = raw ? `${raw} (non lié)` : '— Sans produit —';
+    if (!statsMap[key]) {
+      statsMap[key] = makeEmptyRow(displayName, 0);
     }
-    const s      = statsMap[UNMATCHED_KEY];
+    const s      = statsMap[key];
     const status = ((order as any).status || '').toLowerCase().trim();
     const isDel  = isDeliveredStatus((order as any).status);
     s.totalOrders++;
