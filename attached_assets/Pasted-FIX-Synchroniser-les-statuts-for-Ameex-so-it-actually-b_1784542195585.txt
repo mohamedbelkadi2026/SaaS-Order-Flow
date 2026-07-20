@@ -1,0 +1,47 @@
+FIX "Synchroniser les statuts" for Ameex so it actually brings in the real statuses. All Ameex 
+orders now have their REAL tracking codes stored in trackNumber. Currently the button only 
+replays stored webhook events and reports "31 sans correspondance" (old events with no usable 
+code). Make the button fetch the CURRENT status of each Ameex order from Ameex itself, keyed by 
+the real tracking code, and apply it.
+
+REQUIREMENTS:
+1) On "Synchroniser les statuts" for an Ameex connection (store-scoped): 
+   - Get all orders in that store shipped via Ameex (shippingProvider/carrierName = 'ameex') 
+     that have a REAL trackNumber (not an AMEEX-PENDING placeholder).
+   - For each, fetch its current status from Ameex by its real code. Use the Ameex API 
+     (base https://api.ameex.app/customer/Delivery/Parcels/...). Find the correct endpoint:
+       * a track-by-code endpoint, OR
+       * a list-parcels endpoint (the same data behind the Ameex portal table: Code Suivi, 
+         Téléphone, Statut, Ville...) — then match each of our orders to a parcel by trackNumber 
+         === "Code Suivi" and read its "Statut".
+     Use the connection's Authorization credential. Paste me the endpoint + response shape you 
+     use.
+   - Handle pagination and rate limits; batch if needed. Detect non-JSON/HTML/404 and surface a 
+     clear error instead of failing silently.
+2) MAP the Ameex status (French label or code) via a single AMEEX_STATUS_MAP:
+     "Livré"/DELIVERED -> delivered
+     "Refusé"/REFUSED -> refused
+     "Annulé"/CANCELED -> refused (or 'annulé' if that internal status exists)
+     "Reporté"/POSTPONED (or reported_date) -> in_progress, label "Reporté"
+     "Expédié" -> in_progress ; "Reçu" -> in_progress ; "Mise en distribution"/DISTRIBUTION -> 
+       in_progress ; "Pas de réponse" -> in_progress ; INHOUSE -> in_progress
+     "Attente De Ramassage" / "Nouveau Colis" -> stays pending (Attente De Ramassage)
+     unknown -> in_progress (NEVER guess delivered/refused)
+   Store the raw French label in commentStatus so Suivi shows the exact carrier text.
+3) Update each order's status only if it changed. Return a clear result: 
+   { checked, updated, unchanged, notFoundInAmeex, errors } and show it in the toast (not the 
+   old "31 sans correspondance" replay message).
+4) LIVE webhooks: ensure the live Ameex webhook handler matches by trackNumber === 
+   payload.order_id and applies the same map immediately, so statuses keep updating 
+   automatically after this one sync.
+5) Delivered/refused must count in Dashboard + Profit (same isDeliveredStatus).
+
+If Ameex has NO API to fetch status by code (webhook-only), say so explicitly, and instead: keep 
+the current statuses (from the portal backfill) and make "Synchroniser" replay stored webhooks 
+by real trackNumber (which now works since codes are stored), reporting real counts.
+
+VERIFY: pressing "Synchroniser les statuts" makes the Ameex orders show their real statuses 
+matching the Ameex portal (Livré/Refusé/Reporté/En cours...), and new webhooks auto-update. 
+Paste me: the Ameex endpoint used + response shape, and the sync result counts.
+
+Deploy to main.
