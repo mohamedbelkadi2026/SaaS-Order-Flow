@@ -22,11 +22,17 @@ export function splitVariant(raw: string): { base: string; suffix: string | null
   return { base: m[1].trim(), suffix: m[2].trim() };
 }
 
+export type ProductWithVariants = {
+  id: number;
+  name: string;
+  variants?: { name: string }[];
+};
+
 // Resolve a raw order item name to a catalog product.
 // Returns { productId, variantName } where variantName is the suffix (e.g. "40") or null.
 export function resolveProductId(
   rawName: string,
-  storeProducts: { id: number; name: string }[],
+  storeProducts: ProductWithVariants[],
 ): { productId: number | null; variantName: string | null } {
   const n = normStr;
   const rawNorm = n(rawName);
@@ -40,6 +46,16 @@ export function resolveProductId(
   if (suffix && base !== rawName) {
     const parent = storeProducts.find(p => n(p.name) === n(base));
     if (parent) return { productId: parent.id, variantName: suffix };
+  }
+
+  // 3) No separator — "Nom Produit 42" matched against KNOWN variant names of each product.
+  for (const p of storeProducts) {
+    if (!p.variants || p.variants.length === 0) continue;
+    for (const v of p.variants) {
+      if (n(`${p.name} ${v.name}`) === rawNorm) {
+        return { productId: p.id, variantName: v.name };
+      }
+    }
   }
 
   return { productId: null, variantName: null };

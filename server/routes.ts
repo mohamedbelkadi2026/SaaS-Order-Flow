@@ -3826,6 +3826,13 @@ export async function registerRoutes(
     try {
       const storeId = req.user!.storeId!;
       const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const variantsByProduct = new Map<number, { name: string }[]>();
+      for (const v of allVariants) {
+        if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+        variantsByProduct.get(v.productId)!.push({ name: v.name });
+      }
+      const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
       const allOrders = await storage.getOrdersByStore(storeId);
 
       // Find order IDs that already have at least one item row
@@ -3844,7 +3851,7 @@ export async function registerRoutes(
           stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: null });
           continue;
         }
-        const resolved = resolveProductId(raw, storeProducts);
+        const resolved = resolveProductId(raw, storeProductsWithVariants);
         if (!resolved.productId) {
           stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: raw });
           continue;
@@ -5323,9 +5330,13 @@ export async function registerRoutes(
       const gsheetsPaywall = await storage.checkPaywall(storeId);
       if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariantsGS1 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const vByProdGS1 = new Map<number, { name: string }[]>();
+      for (const v of allVariantsGS1) { if (!vByProdGS1.has(v.productId)) vByProdGS1.set(v.productId, []); vByProdGS1.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsGS1 = storeProducts.map(p => ({ ...p, variants: vByProdGS1.get(p.id) || [] }));
       let matched = storeProducts.find(p => p.sku && p.sku === productName);
       if (!matched) {
-        const resolved = resolveProductId(productName, storeProducts);
+        const resolved = resolveProductId(productName, storeProductsGS1);
         if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
       }
       const orderItems = productName
@@ -5433,9 +5444,13 @@ export async function registerRoutes(
       const paywall = await storage.checkPaywall(storeId);
       if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariantsGS2 = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const vByProdGS2 = new Map<number, { name: string }[]>();
+      for (const v of allVariantsGS2) { if (!vByProdGS2.has(v.productId)) vByProdGS2.set(v.productId, []); vByProdGS2.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsGS2 = storeProducts.map(p => ({ ...p, variants: vByProdGS2.get(p.id) || [] }));
       let matched = storeProducts.find(p => p.sku && p.sku === productName);
       if (!matched) {
-        const resolved = resolveProductId(productName, storeProducts);
+        const resolved = resolveProductId(productName, storeProductsGS2);
         if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
       }
       const orderItems = productName

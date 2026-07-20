@@ -7,7 +7,7 @@
 import { db } from "../db";
 import { storage } from "../storage";
 import {
-  orderItems, products, adSpendTracking,
+  orderItems, products, productVariants, adSpendTracking,
 } from "@shared/schema";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { splitVariant } from "./variants";
@@ -227,6 +227,20 @@ export async function computeProfitability(
     if (!idByName.has(nk)) idByName.set(nk, p.id);
   }
 
+  // ── Variant cost map (séparé, n'affecte jamais la requête itemRows) ──────────
+  const storeVariantsList = await db.select({
+    productId: productVariants.productId,
+    name:      productVariants.name,
+    costPrice: productVariants.costPrice,
+  }).from(productVariants).where(eq(productVariants.storeId, storeId));
+
+  const variantCostByKey = new Map<string, number>(); // key = `${productId}::${normVariantName}`
+  for (const v of storeVariantsList) {
+    if (v.costPrice && v.costPrice > 0) {
+      variantCostByKey.set(`${v.productId}::${norm(v.name)}`, Number(v.costPrice));
+    }
+  }
+
   // ── Status sets ───────────────────────────────────────────────────────────────
   const CONFIRMED_SET = new Set(["confirme","confirmé","expédié","attente de ramassage","in_progress","delivered","livré","livrée"]);
   const REFUSED_SET   = new Set(["refused","refusé"]);
@@ -295,11 +309,23 @@ export async function computeProfitability(
     s.totalUnits += Number(item.quantity || 1);
     if (isDelivered) {
       s.deliveredUnits += Number(item.quantity || 1);
-      const unitCostCents = item.productCostPrice
+      let unitCostCents = item.productCostPrice
         ?? costByName.get(key)
         ?? costByName.get(norm(item.rawProductName || ''))
         ?? (order as any).productCost
         ?? 0;
+
+      // Fallback additionnel — UNIQUEMENT si tout le reste a donné 0 : essayer le
+      // coût de la variante spécifique déduite du rawProductName (ex: "... 42").
+      if (!unitCostCents && item.productId && item.rawProductName) {
+        const { suffix: variantName } = splitVariant(item.rawProductName);
+        const suffixGuess = variantName || item.rawProductName.trim().split(' ').pop();
+        if (suffixGuess) {
+          const vCost = variantCostByKey.get(`${item.productId}::${norm(suffixGuess)}`);
+          if (vCost) unitCostCents = vCost;
+        }
+      }
+
       s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
 
       const guardKey = `${key}_${item.orderId}`;
