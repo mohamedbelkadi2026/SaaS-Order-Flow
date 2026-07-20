@@ -11701,7 +11701,7 @@ function ensureHeaders(sheet) {
         provider: resolvedCarrier || 'manual',
         action: 'tracking_attached',
         status: 'success',
-        message: `✅ Tracking attaché: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} (carrier=${resolvedCarrier}) → ${attachStatus}${attachCommentStatus ? \` (${attachCommentStatus})\` : ''}`,
+        message: `✅ Tracking attaché: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} (carrier=${resolvedCarrier}) → ${attachStatus}${attachCommentStatus ? ' (' + attachCommentStatus + ')' : ''}`,
       });
 
       res.json({
