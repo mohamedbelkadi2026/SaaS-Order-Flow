@@ -652,6 +652,22 @@ app.use((req, res, next) => {
     }, 3000);
   }
 
+  // ── One-shot Ameex carrier correction (Railway only, gated on env var) ───
+  // =1        → dry-run: logs which orders need correction, writes nothing
+  // =apply    → applies corrections (shippingProvider/carrierName → 'ameex')
+  if (process.env.RUN_AMEEX_CARRIER_CORRECTION) {
+    const mode = process.env.RUN_AMEEX_CARRIER_CORRECTION;
+    console.log(`[AMEEX-CARRIER-FIX] Env flag detected (mode=${mode}) — running in 4 s…`);
+    setTimeout(async () => {
+      try {
+        const { runAmeexCarrierCorrection } = await import("./ameex-carrier-correction");
+        await runAmeexCarrierCorrection();
+      } catch (err: any) {
+        console.error("[AMEEX-CARRIER-FIX] FATAL:", err?.message ?? err);
+      }
+    }, 4000);
+  }
+
   // ── DB keepalive — ping every 4 min to prevent idle connection drops ─────
   const dbKeepalive = setInterval(async () => {
     try {
