@@ -88,6 +88,42 @@ export const AMEEX_STATUS_MAP: Record<string, string> = {
   // ── Named sub-statuses ────────────────────────────────────────────────────
   'PICKUP':       'Attente De Ramassage',
   'NO_ANSWER':    'Injoignable',
+
+  // ── French labels (new olivraison/Ameex webhook format: nested.status) ────
+  // mapAmeexStatus() uppercases before lookup; JS .toUpperCase() preserves
+  // accented chars (e.g. 'Livr\u00e9'.toUpperCase() === 'LIVR\u00c9').
+  // Also include accent-stripped variants as a safe fallback.
+  '\u004c\u0049\u0056\u0052\u00c9':                   'delivered',   // LIVRÉ
+  '\u004c\u0049\u0056\u0052\u00c9\u0045':             'delivered',   // LIVRÉE
+  'LIVRE':                                             'delivered',
+  '\u0052\u0045\u0046\u0055\u0053\u00c9':             'refused',     // REFUSÉ
+  '\u0052\u0045\u0046\u0055\u0053\u00c9\u0045':       'refused',     // REFUSÉE
+  'REFUSE':                                            'refused',
+  '\u0041\u004e\u004e\u0055\u004c\u00c9':             'refused',     // ANNULÉ
+  'ANNULE':                                            'refused',
+  '\u0052\u0045\u0050\u004f\u0052\u0054\u00c9':       'in_progress', // REPORTÉ
+  'REPORTE':                                           'in_progress',
+  '\u0045\u0058\u0050\u00c9\u0044\u0049\u00c9':       'in_progress', // EXPÉDIÉ
+  'EXPEDIE':                                           'in_progress',
+  '\u0052\u0045\u00c7\u0055':                         'in_progress', // REÇU
+  'RECU':                                              'in_progress',
+  'MISE EN DISTRIBUTION':                              'in_progress',
+  'EN COURS DE DISTRIBUTION':                         'in_progress',
+  'EN COURS DE LIVRAISON':                            'in_progress',
+  'PAS DE R\u00c9PONSE':                              'in_progress', // PAS DE RÉPONSE
+  'PAS DE REPONSE':                                   'in_progress',
+  'EN COURS':                                         'in_progress',
+  'EN TRANSIT':                                       'in_progress',
+  'RAMASS\u00c9':                                     'in_progress', // RAMASSÉ
+  'RAMASSE':                                          'in_progress',
+  'SORTI POUR LIVRAISON':                             'in_progress',
+  'ARRIV\u00c9 AU HUB':                              'in_progress', // ARRIVÉ AU HUB
+  'ARRIVE AU HUB':                                    'in_progress',
+  'PRIS EN CHARGE':                                   'in_progress',
+  'INJOIGNABLE':                                      'in_progress',
+  'RETOUR\u004e\u00c9':                              'retourné',    // RETOURNÉ
+  'RETOURNE':                                         'retourné',
+  'ATTENTE DE RAMASSAGE':                             'Attente De Ramassage',
 };
 
 /**

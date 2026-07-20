@@ -9105,11 +9105,11 @@ function ensureHeaders(sheet) {
         .from(integrationLogs)
         .where(and(
           eq(integrationLogs.storeId, storeId),
-          eq(integrationLogs.provider, 'ameex'),
+          inArray(integrationLogs.provider, ['ameex', 'olivraison']),
           eq(integrationLogs.action, 'webhook_received'),
         ))
         .orderBy(desc(integrationLogs.createdAt))
-        .limit(500);
+        .limit(1000);
 
       // Parse each log entry — handles both payload formats:
       //   NEW (real Ameex via olivraison): { event:"package_updated", payload:{order_id, status,
@@ -9173,6 +9173,7 @@ function ensureHeaders(sheet) {
       };
 
       let updated = 0, skipped = 0, noMatch = 0;
+      const distinctStatuses = new Map<string, number>();  // mapped_status → count
       const details: Array<{ code: string; orderNumber: string; oldStatus: string; newStatus: string }> = [];
       const allStoreOrders = await storage.getOrdersByStore(storeId);
 
@@ -9217,6 +9218,7 @@ function ensureHeaders(sheet) {
               note: `Replay webhook: ${evt.statut}${evt.statutS ? '/' + evt.statutS : ''} (${evt.statutName}) → ${mappedStatus}`,
             });
             broadcastToStore(storeId, 'order_updated', { orderId: order.id, status: mappedStatus, commentStatus: evt.statutName || evt.statut });
+            distinctStatuses.set(mappedStatus, (distinctStatuses.get(mappedStatus) ?? 0) + 1);
             details.push({ code, orderNumber: order.orderNumber, oldStatus: order.status || '', newStatus: mappedStatus });
             updated++;
           } else {
@@ -9228,14 +9230,17 @@ function ensureHeaders(sheet) {
       }
 
       console.log(`[AMEEX-SYNC] storeId=${storeId} codes=${latestByCode.size} updated=${updated} skipped=${skipped} noMatch=${noMatch}`);
+      const distinctList = Array.from(distinctStatuses.entries())
+        .map(([s, n]) => `${s}(${n})`).join(', ');
       return safeJson(200, {
-        synced:  latestByCode.size,
+        synced:          latestByCode.size,
         updated,
         skipped,
         noMatch,
         details,
+        distinctStatuses: Object.fromEntries(distinctStatuses),
         message: updated > 0
-          ? `✅ Replay Ameex: ${updated} commande(s) mise(s) à jour · ${skipped} déjà à jour · ${noMatch} sans correspondance`
+          ? `✅ Replay Ameex: ${updated} commande(s) mise(s) à jour · ${skipped} déjà à jour · ${noMatch} sans correspondance${distinctList ? ' — ' + distinctList : ''}`
           : `ℹ️ Replay Ameex: ${latestByCode.size} événement(s) trouvé(s) — ${skipped} déjà à jour · ${noMatch} sans correspondance`,
       });
     } catch (err: any) {
@@ -10694,6 +10699,30 @@ function ensureHeaders(sheet) {
 
       // ── Parse Ameex urlencoded fields (official names are UPPERCASE) ──────
       // Accept both UPPER and lower variants defensively.
+      // ── Normalize new olivraison/Ameex webhook format (event:package_updated) ─
+      // The new format sends body.code_colis + body.payload.{order_id,status,...}
+      // Normalize it into body.CODE / body.STATUT / body.STATUT_NAME so the rest
+      // of this handler works unchanged for both old and new formats.
+      if (body.event === 'package_updated' || body.code_colis) {
+        let nestedNew: any = {};
+        if (body.payload) {
+          try {
+            nestedNew = typeof body.payload === 'object'
+              ? body.payload
+              : JSON.parse(String(body.payload));
+          } catch { /* ignore */ }
+        }
+        const newCode   = (nestedNew.order_id || body.code_colis || '').toString().trim();
+        const rawNewSt  = nestedNew.return_status === true
+          ? 'RETURNED'
+          : (nestedNew.status || '').toString().trim();
+        const newLabel  = nestedNew.description || body.commentaire || rawNewSt;
+        if (newCode)   body.CODE        = newCode;
+        if (rawNewSt)  body.STATUT      = rawNewSt;
+        if (newLabel)  body.STATUT_NAME  = newLabel;
+        console.log(`[AMEEX-WEBHOOK] New olivraison format: CODE=${newCode} STATUT=${rawNewSt} (${newLabel})`);
+      }
+
       const code: string      = String(body.CODE      || body.code      || '').trim();
       const statut: string    = String(body.STATUT     || body.statut     || '').trim();
       const statutS: string   = String(body.STATUT_S   || body.statut_s   || '').trim();
