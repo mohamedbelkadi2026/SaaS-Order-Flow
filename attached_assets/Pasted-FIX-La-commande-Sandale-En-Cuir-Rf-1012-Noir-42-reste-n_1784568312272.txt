@@ -1,0 +1,198 @@
+FIX — La commande "Sandale En Cuir Rf 1012 Noir 42" reste "(non lié)" avec
+SOURCING = "—" alors que le produit "Sandale En Cuir Rf 1012 Noir" existe en
+catalogue AVEC une variante "42" dont le Prix coûtant est bien rempli
+(140,00 DH — voir Modifier le produit → Variantes → ligne "42").
+
+DEUX BUGS DISTINCTS ICI, à corriger tous les deux :
+
+────────────────────────────────────────────────────────────────────────────
+BUG 1 — resolveProductId() ne reconnaît la variante QUE s'il y a un
+séparateur ("-", "/", "|") entre le nom et la taille
+
+server/services/variants.ts, fonction `splitVariant()` :
+```ts
+const m = raw.match(/^(.*?)(?:\s*[-–\/|]\s*)([^-–\/|]{1,30})$/);
+```
+Ce regex EXIGE un tiret/slash/pipe. "Sandale En Cuir Rf 1012 Noir 42" n'a
+QU'UN ESPACE entre "Noir" et "42" (pas de tiret) → `splitVariant` ne trouve
+aucun suffixe → `resolveProductId` retourne `{ productId: null }` → la
+commande ne matche jamais, même si le produit ET sa variante "42" existent.
+
+FIX — server/services/variants.ts : `resolveProductId` doit aussi accepter
+un dernier mot collé sans séparateur, à condition qu'il corresponde
+EXACTEMENT au nom d'une variante connue de ce produit. Remplacer la fonction
+entière par :
+
+```ts
+export type ProductWithVariants = {
+  id: number;
+  name: string;
+  variants?: { name: string }[];
+};
+
+export function resolveProductId(
+  rawName: string,
+  storeProducts: ProductWithVariants[],
+): { productId: number | null; variantName: string | null } {
+  const n = normStr;
+  const rawNorm = n(rawName);
+
+  // 1) Exact product-name match
+  const exact = storeProducts.find(p => n(p.name) === rawNorm);
+  if (exact) return { productId: exact.id, variantName: null };
+
+  // 2) Strip variant suffix using an explicit separator ("-", "/", "|") and match the BASE.
+  const { base, suffix } = splitVariant(rawName);
+  if (suffix && base !== rawName) {
+    const parent = storeProducts.find(p => n(p.name) === n(base));
+    if (parent) return { productId: parent.id, variantName: suffix };
+  }
+
+  // 3) NEW — no separator at all: "Nom Produit 42" where "42" matches one of
+  // this product's KNOWN variant names exactly. normStr() already reduces
+  // any punctuation/space to a single space, so this also naturally covers
+  // "Nom Produit-42", "Nom Produit / 42", etc. — it just needs the variant
+  // list to check against, which the plain dash-split above doesn't have.
+  for (const p of storeProducts) {
+    if (!p.variants || p.variants.length === 0) continue;
+    for (const v of p.variants) {
+      const candidate = n(`${p.name} ${v.name}`);
+      if (candidate === rawNorm) return { productId: p.id, variantName: v.name };
+    }
+  }
+
+  return { productId: null, variantName: null };
+}
+```
+
+Tous les appels existants à `resolveProductId(rawName, storeProducts)` dans
+server/routes.ts doivent maintenant recevoir des `storeProducts` enrichis
+avec leurs variantes (voir Fix 3 plus bas pour comment les charger), sinon
+l'étape 3 ne matchera jamais rien (products sans `.variants` = comportement
+identique à avant, donc sans risque de régression si un appelant n'est pas
+encore mis à jour).
+
+────────────────────────────────────────────────────────────────────────────
+BUG 2 — Même quand un item EST lié à une variante (variantInfo rempli), le
+calcul de profit utilise TOUJOURS le Prix coûtant du PRODUIT PARENT, jamais
+celui de la variante spécifique
+
+server/services/profit.ts, la requête qui charge les lignes de commande
+(~ligne 183-195) :
+```ts
+const itemRows = orderIds.length > 0 ? await db
+  .select({
+    orderId:          orderItems.orderId,
+    productId:        orderItems.productId,
+    rawProductName:   orderItems.rawProductName,
+    quantity:         orderItems.quantity,
+    price:            orderItems.price,
+    productName:      products.name,
+    productCostPrice: products.costPrice,   // ← TOUJOURS le coût du produit PARENT
+    productSettings:  products.settings,
+  })
+  .from(orderItems)
+  .leftJoin(products, eq(orderItems.productId, products.id))
+  .where(inArray(orderItems.orderId, orderIds)) : [];
+```
+`orderItems.variantInfo` (ex: "42") n'est jamais utilisé pour aller chercher
+le `costPrice` de LA VARIANTE dans `product_variants` — le join ne touche que
+`products`. Résultat : même un produit avec variantes correctement liées aura
+un coût faux si le produit PARENT a un `costPrice` à 0 (courant quand le vrai
+coût est saisi variante par variante, comme dans le screenshot : tailles
+40/41/43/44 ont "Coûtant" vide/0, seule la 42 a 140 DH).
+
+FIX — server/services/profit.ts :
+
+1. Ajouter un deuxième join sur `productVariants`, matché par
+   `productId + variantInfo (normalisé) = variant.name` :
+
+```ts
+import { orderItems, products, productVariants, adSpendTracking } from "@shared/schema";
+// ...
+const itemRows = orderIds.length > 0 ? await db
+  .select({
+    orderId:          orderItems.orderId,
+    productId:        orderItems.productId,
+    rawProductName:   orderItems.rawProductName,
+    variantInfo:      orderItems.variantInfo,
+    quantity:         orderItems.quantity,
+    price:            orderItems.price,
+    productName:      products.name,
+    productCostPrice: products.costPrice,
+    variantCostPrice: productVariants.costPrice,   // NEW — peut être null si pas de variante
+    productSettings:  products.settings,
+  })
+  .from(orderItems)
+  .leftJoin(products, eq(orderItems.productId, products.id))
+  .leftJoin(productVariants, and(
+    eq(productVariants.productId, orderItems.productId),
+    sql`lower(trim(${productVariants.name})) = lower(trim(${orderItems.variantInfo}))`,
+  ))
+  .where(inArray(orderItems.orderId, orderIds)) : [];
+```
+
+2. Dans la boucle qui calcule `s.productCost` (~ligne 296), donner la
+   PRIORITÉ au coût de la variante si présent :
+
+```ts
+const unitCostCents = item.variantCostPrice   // NEW — priorité #1 : coût de LA variante spécifique
+  ?? item.productCostPrice
+  ?? costByName.get(key)
+  ?? costByName.get(norm(item.rawProductName || ''))
+  ?? (order as any).productCost
+  ?? 0;
+s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
+```
+
+────────────────────────────────────────────────────────────────────────────
+FIX 3 — Charger les variantes partout où resolveProductId() est appelé avec
+un objectif de matching (sinon le Fix 1 ne sert à rien)
+
+Dans server/routes.ts, à chaque endroit qui fait :
+```ts
+const storeProducts = await storage.getProductsByStore(storeId);
+```
+puis appelle `resolveProductId(name, storeProducts)` avec l'intention de
+matcher des variantes (les 2 webhooks gsheets ~5178/~5283, l'endpoint
+`POST /api/orders/repair-unlinked` du fix précédent, et
+`POST /api/products/backfill-variants` ~ligne 7351), enrichir la liste avec
+les variantes AVANT l'appel :
+
+```ts
+const storeProducts = await storage.getProductsByStore(storeId);
+const allVariants = await storage.getVariantsByStore ? await (storage as any).getVariantsByStore(storeId) : [];
+// Si getVariantsByStore n'existe pas encore dans storage.ts, l'ajouter :
+//   async getVariantsByStore(storeId: number) {
+//     return db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+//   }
+const variantsByProduct = new Map<number, { name: string }[]>();
+for (const v of allVariants) {
+  if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+  variantsByProduct.get(v.productId)!.push({ name: v.name });
+}
+const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+// Utiliser storeProductsWithVariants (pas storeProducts) dans les appels à resolveProductId
+```
+
+────────────────────────────────────────────────────────────────────────────
+RE-EXÉCUTER LE BACKFILL après ces fixes
+
+Une fois déployé, rappeler :
+POST /api/orders/repair-unlinked
+(déjà créé dans un fix précédent — il va maintenant matcher "Sandale En Cuir
+Rf 1012 Noir 42" grâce au Fix 1, ET utiliser le coût de la variante grâce au
+Fix 2 côté profit.ts).
+
+────────────────────────────────────────────────────────────────────────────
+VÉRIFICATION
+- La ligne "Sandale En Cuir Rf 1012 Noir 42 (non lié)" disparaît de
+  Rentabilité Par Produit ; ses commandes rejoignent maintenant la ligne du
+  vrai produit "Sandale En Cuir Rf 1012 Noir" (ou une sous-ligne par
+  variante, selon comment le tableau groupe déjà les variantes).
+- SOURCING pour ces 3 commandes = 140,00 DH × quantité (pas "—", pas 0).
+- Vérifier aussi une commande avec une taille dont le Coûtant variante est
+  encore à 0 (40, 41, 43, 44 dans le screenshot) : elle doit maintenant matcher
+  le produit correctement (Fix 1) mais afficher un sourcing à 0 tant que ces
+  variantes n'ont pas leur Prix coûtant renseigné dans "Modifier le produit"
+  — ce n'est pas un bug, juste une donnée manquante à compléter côté produit.

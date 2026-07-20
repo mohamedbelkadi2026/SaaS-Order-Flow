@@ -3826,6 +3826,13 @@ export async function registerRoutes(
     try {
       const storeId = req.user!.storeId!;
       const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariantsRepair = await storage.getVariantsByStore(storeId);
+      const variantsByProductRepair = new Map<number, { name: string }[]>();
+      for (const v of allVariantsRepair) {
+        if (!variantsByProductRepair.has(v.productId)) variantsByProductRepair.set(v.productId, []);
+        variantsByProductRepair.get(v.productId)!.push({ name: v.name });
+      }
+      const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProductRepair.get(p.id) || [] }));
       const allOrders = await storage.getOrdersByStore(storeId);
 
       // Find order IDs that already have at least one item row
@@ -3844,7 +3851,7 @@ export async function registerRoutes(
           stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: null });
           continue;
         }
-        const resolved = resolveProductId(raw, storeProducts);
+        const resolved = resolveProductId(raw, storeProductsWithVariants);
         if (!resolved.productId) {
           stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: raw });
           continue;
@@ -5323,9 +5330,13 @@ export async function registerRoutes(
       const gsheetsPaywall = await storage.checkPaywall(storeId);
       if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariantsGS1 = await storage.getVariantsByStore(storeId);
+      const vByProdGS1 = new Map<number, { name: string }[]>();
+      for (const v of allVariantsGS1) { if (!vByProdGS1.has(v.productId)) vByProdGS1.set(v.productId, []); vByProdGS1.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsGS1 = storeProducts.map(p => ({ ...p, variants: vByProdGS1.get(p.id) || [] }));
       let matched = storeProducts.find(p => p.sku && p.sku === productName);
       if (!matched) {
-        const resolved = resolveProductId(productName, storeProducts);
+        const resolved = resolveProductId(productName, storeProductsGS1);
         if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
       }
       const orderItems = productName
@@ -5433,9 +5444,13 @@ export async function registerRoutes(
       const paywall = await storage.checkPaywall(storeId);
       if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariantsGS2 = await storage.getVariantsByStore(storeId);
+      const vByProdGS2 = new Map<number, { name: string }[]>();
+      for (const v of allVariantsGS2) { if (!vByProdGS2.has(v.productId)) vByProdGS2.set(v.productId, []); vByProdGS2.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsGS2 = storeProducts.map(p => ({ ...p, variants: vByProdGS2.get(p.id) || [] }));
       let matched = storeProducts.find(p => p.sku && p.sku === productName);
       if (!matched) {
-        const resolved = resolveProductId(productName, storeProducts);
+        const resolved = resolveProductId(productName, storeProductsGS2);
         if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
       }
       const orderItems = productName
@@ -7524,10 +7539,14 @@ function ensureHeaders(sheet) {
         ));
 
       const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariantsBV = await storage.getVariantsByStore(storeId);
+      const vByProdBV = new Map<number, { name: string }[]>();
+      for (const v of allVariantsBV) { if (!vByProdBV.has(v.productId)) vByProdBV.set(v.productId, []); vByProdBV.get(v.productId)!.push({ name: v.name }); }
+      const storeProductsBV = storeProducts.map(p => ({ ...p, variants: vByProdBV.get(p.id) || [] }));
       let linked = 0;
 
       for (const item of unlinkedItems) {
-        const { productId, variantName } = resolveProductId(item.rawProductName || '', storeProducts);
+        const { productId, variantName } = resolveProductId(item.rawProductName || '', storeProductsBV);
         if (productId) {
           await db.update(orderItems)
             .set({

@@ -7,7 +7,7 @@
 import { db } from "../db";
 import { storage } from "../storage";
 import {
-  orderItems, products, adSpendTracking,
+  orderItems, products, productVariants, adSpendTracking,
 } from "@shared/schema";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { splitVariant } from "./variants";
@@ -190,14 +190,20 @@ export async function computeProfitability(
       orderId:          orderItems.orderId,
       productId:        orderItems.productId,
       rawProductName:   orderItems.rawProductName,
+      variantInfo:      orderItems.variantInfo,
       quantity:         orderItems.quantity,
       price:            orderItems.price,
       productName:      products.name,
       productCostPrice: products.costPrice,
+      variantCostPrice: productVariants.costPrice,   // null when no variant row matched
       productSettings:  products.settings,
     })
     .from(orderItems)
     .leftJoin(products, eq(orderItems.productId, products.id))
+    .leftJoin(productVariants, and(
+      eq(productVariants.productId, orderItems.productId),
+      sql`lower(trim(${productVariants.name})) = lower(trim(${orderItems.variantInfo}))`,
+    ))
     .where(inArray(orderItems.orderId, orderIds)) : [];
 
   const orderMap = new Map(storeOrders.map(o => [o.id, o]));
@@ -295,7 +301,8 @@ export async function computeProfitability(
     s.totalUnits += Number(item.quantity || 1);
     if (isDelivered) {
       s.deliveredUnits += Number(item.quantity || 1);
-      const unitCostCents = item.productCostPrice
+      const unitCostCents = item.variantCostPrice    // priority #1: cost of the specific variant
+        ?? item.productCostPrice
         ?? costByName.get(key)
         ?? costByName.get(norm(item.rawProductName || ''))
         ?? (order as any).productCost
