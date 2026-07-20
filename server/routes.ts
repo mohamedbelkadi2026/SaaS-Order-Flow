@@ -3821,6 +3821,55 @@ export async function registerRoutes(
     }
   });
 
+  // ── One-shot: repair orders with no order_item rows ─────────────────────────
+  app.post("/api/orders/repair-unlinked", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const allOrders = await storage.getOrdersByStore(storeId);
+
+      // Find order IDs that already have at least one item row
+      const itemRows = await db.select({ orderId: orderItems.orderId }).from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(eq(orders.storeId, storeId));
+      const covered = new Set(itemRows.map((r: any) => r.orderId));
+
+      let repaired = 0;
+      const stillUnmatched: { id: number; orderNumber: string; rawProductName: string | null }[] = [];
+
+      for (const order of allOrders) {
+        if (covered.has(order.id)) continue;
+        const raw = (order as any).rawProductName || '';
+        if (!raw) {
+          stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: null });
+          continue;
+        }
+        const resolved = resolveProductId(raw, storeProducts);
+        if (!resolved.productId) {
+          stillUnmatched.push({ id: order.id, orderNumber: (order as any).orderNumber, rawProductName: raw });
+          continue;
+        }
+        const product = storeProducts.find(p => p.id === resolved.productId)!;
+        const qty = (order as any).rawQuantity || 1;
+        await db.insert(orderItems).values({
+          orderId: order.id,
+          productId: product.id,
+          quantity: qty,
+          price: (order as any).totalPrice || 0,
+          rawProductName: raw,
+          variantInfo: resolved.variantName || null,
+        } as any);
+        await storage.updateOrder(order.id, { productCost: (product.costPrice || 0) * qty } as any);
+        repaired++;
+      }
+
+      console.log(`[REPAIR-UNLINKED] store=${storeId} repaired=${repaired} stillUnmatched=${stillUnmatched.length}`);
+      res.json({ repaired, stillUnmatched: stillUnmatched.length, details: stillUnmatched });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── Per-city pricing endpoints ───────────────────────────────────────────────
 
   // Bulk import seed from historical data (call once after deploy)
@@ -5274,8 +5323,14 @@ export async function registerRoutes(
       const gsheetsPaywall = await storage.checkPaywall(storeId);
       if (gsheetsPaywall.isBlocked) return res.status(402).json({ message: gsheetsPaywall.reason === 'expired' ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
-      const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
-      const orderItems = matched ? [{ productId: matched.id, rawProductName: productName || matched.name, quantity: 1, price: totalPrice, orderId: 0 }] : [];
+      let matched = storeProducts.find(p => p.sku && p.sku === productName);
+      if (!matched) {
+        const resolved = resolveProductId(productName, storeProducts);
+        if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
+      }
+      const orderItems = productName
+        ? [{ productId: matched?.id ?? null, rawProductName: productName, quantity: 1, price: totalPrice, orderId: 0 }]
+        : [];
       console.log("━━━ NEW WEBHOOK ARRIVED (GSheets) ━━━");
       console.log(`[Webhook] Customer: ${customerName} | Phone: ${customerPhone} | Product: ${productName}`);
       const integration = await storage.getIntegrationByProvider(storeId, 'gsheets');
@@ -5378,8 +5433,14 @@ export async function registerRoutes(
       const paywall = await storage.checkPaywall(storeId);
       if (paywall.isBlocked) return res.status(402).json({ success: false, message: paywall.reason === "expired" ? "Subscription expired" : "Order limit reached" });
       const storeProducts = await storage.getProductsByStore(storeId);
-      const matched = storeProducts.find(p => p.name === productName || p.sku === productName);
-      const orderItems = matched ? [{ productId: matched.id, rawProductName: productName || matched.name, quantity, price: matched.sellingPrice || totalPrice, orderId: 0 }] : [];
+      let matched = storeProducts.find(p => p.sku && p.sku === productName);
+      if (!matched) {
+        const resolved = resolveProductId(productName, storeProducts);
+        if (resolved.productId) matched = storeProducts.find(p => p.id === resolved.productId);
+      }
+      const orderItems = productName
+        ? [{ productId: matched?.id ?? null, rawProductName: productName, quantity, price: matched?.sellingPrice || totalPrice, orderId: 0 }]
+        : [];
       const integration = await storage.getIntegrationByProvider(storeId, "gsheets");
       const gsheetsApiMagasinId = integration?.magasinId ?? null;
       // Build comment: note + offer prefix
