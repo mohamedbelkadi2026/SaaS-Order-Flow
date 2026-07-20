@@ -3839,6 +3839,33 @@ export async function registerRoutes(
     }
   });
 
+  // Backfill shippingCost for all existing EC orders that still have 0/null
+  app.post("/api/carriers/expresscoursier/backfill-shipping-cost", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { EC_DEFAULT_CITY_PRICE_DH } = await import("./seed-data/ec-city-pricing");
+      const orders = await storage.getOrdersByStoreAndCarrier(storeId, "expresscoursier");
+
+      let updated = 0, skippedNoCity = 0, usedDefault = 0;
+      for (const order of orders) {
+        if ((order as any).shippingCost && (order as any).shippingCost > 0) continue;
+        if (!(order as any).customerCity) { skippedNoCity++; continue; }
+
+        const cityFee = await storage.getCarrierCityPrice(storeId, "expresscoursier", (order as any).customerCity);
+        const fee = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100);
+        if (!cityFee) usedDefault++;
+
+        await storage.updateOrder(order.id, { shippingCost: fee });
+        updated++;
+      }
+
+      console.log(`[EC-BACKFILL] store=${storeId} total=${orders.length} updated=${updated} usedDefault=${usedDefault} skippedNoCity=${skippedNoCity}`);
+      res.json({ message: `${updated} commandes mises à jour`, updated, usedDefault, skippedNoCity, total: orders.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // List all city pricing rows for a carrier
   app.get("/api/carriers/:carrierName/city-pricing", requireAuth, async (req: any, res: any) => {
     try {

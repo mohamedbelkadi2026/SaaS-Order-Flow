@@ -2499,6 +2499,17 @@ function EcCityPricingSection({ accountId, storeId }: { accountId: number; store
     onError: (e: any) => toast({ title: "Erreur import", description: e.message, variant: "destructive" }),
   });
 
+  const backfillMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/carriers/expresscoursier/backfill-shipping-cost", {}),
+    onSuccess: (data: any) => {
+      toast({
+        title: "✅ Frais de livraison corrigés",
+        description: `${data?.updated ?? 0} commandes mises à jour${data?.usedDefault ? ` (${data.usedDefault} au tarif par défaut 35 DH)` : ""}${data?.skippedNoCity ? ` · ${data.skippedNoCity} sans ville ignorées` : ""}.`,
+      });
+    },
+    onError: (e: any) => toast({ title: "Erreur backfill", description: e.message, variant: "destructive" }),
+  });
+
   const savePriceMutation = useMutation({
     mutationFn: ({ cityName, priceDh }: { cityName: string; priceDh: number }) =>
       apiRequest("POST", "/api/carriers/expresscoursier/city-pricing", { cityName, priceDh }),
@@ -2532,19 +2543,34 @@ function EcCityPricingSection({ accountId, storeId }: { accountId: number; store
           <span className="text-sm font-bold text-amber-800 dark:text-amber-300">Tarifs de livraison par ville</span>
           <span className="ml-2 text-xs text-muted-foreground">({rows.length} villes)</span>
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          className="border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-400 font-semibold text-xs h-7 px-2.5"
-          onClick={() => importMutation.mutate()}
-          disabled={importMutation.isPending}
-          data-testid="button-import-ec-city-pricing"
-        >
-          {importMutation.isPending
-            ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-            : <RefreshCw className="w-3 h-3 mr-1" />}
-          Importer tarifs historiques
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-amber-300 text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-400 font-semibold text-xs h-7 px-2.5"
+            onClick={() => importMutation.mutate()}
+            disabled={importMutation.isPending || backfillMutation.isPending}
+            data-testid="button-import-ec-city-pricing"
+          >
+            {importMutation.isPending
+              ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+              : <RefreshCw className="w-3 h-3 mr-1" />}
+            Importer tarifs historiques
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-blue-300 text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:text-blue-400 font-semibold text-xs h-7 px-2.5"
+            onClick={() => backfillMutation.mutate()}
+            disabled={importMutation.isPending || backfillMutation.isPending}
+            data-testid="button-backfill-ec-shipping-cost"
+          >
+            {backfillMutation.isPending
+              ? <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+              : <RefreshCw className="w-3 h-3 mr-1" />}
+            Corriger frais existants
+          </Button>
+        </div>
       </div>
 
       {/* Default price row */}

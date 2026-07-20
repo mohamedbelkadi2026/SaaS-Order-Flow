@@ -1394,6 +1394,27 @@ export class DatabaseStorage implements IStorage {
     return row ? row.priceDh : null;
   }
 
+  // Returns all orders for a store where carrierName or shippingProvider matches
+  // any alias of the given carrier (e.g. "expresscoursier", "express coursier", "olivraison").
+  async getOrdersByStoreAndCarrier(storeId: number, carrier: string): Promise<OrderWithDetails[]> {
+    const aliases: Record<string, string[]> = {
+      expresscoursier: ["expresscoursier", "express coursier", "olivraison"],
+      digylog: ["digylog"],
+      ameex: ["ameex"],
+      "ozon express": ["ozon express", "ozonexpress"],
+    };
+    const norm = carrier.toLowerCase().replace(/\s+/g, "");
+    const key = Object.keys(aliases).find(k => k.replace(/\s+/g, "") === norm) || carrier.toLowerCase();
+    const list = aliases[key] || [carrier.toLowerCase()];
+
+    const all = await this.getOrdersByStore(storeId);
+    return all.filter((o: any) => {
+      const cn = (o.carrierName || "").toLowerCase();
+      const sp = (o.shippingProvider || "").toLowerCase();
+      return list.some(a => cn.includes(a) || sp.includes(a));
+    });
+  }
+
   async upsertCarrierCityPrice(storeId: number, carrierName: string, cityName: string, priceDh: number, source = "manual"): Promise<void> {
     const norm = normalizeCityKey(cityName);
     const existing = await db.select().from(carrierCityPricing)
