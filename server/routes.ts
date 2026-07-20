@@ -4480,33 +4480,43 @@ export async function registerRoutes(
     // secret at the carrier side, so we skip the header check for them
     // and rely on the existing storeId+carrier-account validation below.
     // TODO: extend this check to all carriers once each one supports a
-    // configurable webhook token at the carrier side.
-    const TOKENED_CARRIERS = new Set(["ameex"]);
-    if (TOKENED_CARRIERS.has(carrierName)) {
+    // ── Optional token validation for Ameex ──────────────────────────────────
+    // Ameex does NOT support appending ?token= or custom headers to the webhook
+    // URL configured in their portal — they POST to a plain URL with no auth.
+    // Safety is provided by CODE-based order matching: we only act on payloads
+    // whose CODE exactly matches an existing order's trackNumber in this store,
+    // so a random POST cannot create or modify any order it doesn't already know.
+    // (Same model as garean.com and similar Moroccan OMS platforms.)
+    //
+    // If a token IS present (X-Webhook-Token header or ?token= query param),
+    // we still validate it for defense-in-depth — but NEVER hard-reject for
+    // a missing or invalid token.
+    if (carrierName === 'ameex') {
       const headerToken = (req.header("x-webhook-token") || "").trim();
       const queryToken  = (typeof req.query.token === "string" ? req.query.token : "").trim();
       const provided    = headerToken || queryToken;
-      if (!provided || provided.length < 18) {
-        console.warn(`[CARRIER-WEBHOOK-SEC] ${carrierName} store=${storeId} missing/short token — rejected`);
-        return res.status(401).json({ message: "Webhook token required" });
-      }
-      try {
-        const [validAcct] = await db
-          .select()
-          .from(carrierAccounts)
-          .where(and(
-            eq(carrierAccounts.storeId, storeId),
-            eq(carrierAccounts.carrierName, carrierName),
-            eq(carrierAccounts.webhookToken, provided),
-            eq(carrierAccounts.isActive, 1),
-          ));
-        if (!validAcct) {
-          console.warn(`[CARRIER-WEBHOOK-SEC] ${carrierName} store=${storeId} invalid token — rejected`);
-          return res.status(401).json({ message: "Invalid webhook token" });
+      if (provided && provided.length >= 18) {
+        try {
+          const [validAcct] = await db
+            .select()
+            .from(carrierAccounts)
+            .where(and(
+              eq(carrierAccounts.storeId, storeId),
+              eq(carrierAccounts.carrierName, 'ameex'),
+              eq(carrierAccounts.webhookToken, provided),
+              eq(carrierAccounts.isActive, 1),
+            ));
+          if (validAcct) {
+            console.log(`[CARRIER-WEBHOOK-SEC] ameex store=${storeId} optional token validated ✅`);
+          } else {
+            console.warn(`[CARRIER-WEBHOOK-SEC] ameex store=${storeId} token provided but not matched — proceeding anyway (CODE-match safety)`);
+          }
+        } catch (lookupErr) {
+          console.error("[CARRIER-WEBHOOK-SEC] ameex token lookup failed:", lookupErr);
+          // Non-fatal — proceed without token validation
         }
-      } catch (lookupErr) {
-        console.error("[CARRIER-WEBHOOK-SEC] token lookup failed:", lookupErr);
-        return res.status(500).json({ message: "Webhook auth error" });
+      } else {
+        console.log(`[CARRIER-WEBHOOK-SEC] ameex store=${storeId} no token — relying on CODE-based order matching`);
       }
     }
 
@@ -10812,28 +10822,44 @@ function ensureHeaders(sheet) {
    *    RTS | REFUSED | REJECTED | CANCELED | ANNULE  (uppercase English enum codes).
    *  - :token is the webhookToken from carrier_accounts (same auth pattern as EC).
    */
+  // Also accept the tokenless legacy path (Ameex posts to a plain URL)
+  app.post("/api/webhooks/shipping/ameex", (req, res, next) => {
+    // Reuse the same handler by faking an empty token param so the route below fires
+    (req.params as any).token = '';
+    next('route');
+  });
+
   app.post("/api/webhooks/shipping/ameex/:token", async (req, res) => {
     // Respond 200 immediately — Ameex may retry on timeout
     res.json({ success: true });
 
     try {
-      const { token } = req.params;
+      const token = (req.params.token || '').trim();
 
-      // ── Auth: validate token against carrier_accounts ─────────────────────
-      if (!token || token.length < 18) {
-        console.warn("[AMEEX-WEBHOOK] short/missing token — rejected");
-        return;
+      // ── Token lookup: optional — used only to identify the store ─────────
+      // If no token (or token is blank/short), we CANNOT identify the store from
+      // this URL — use the permanent /api/webhooks/carrier/:storeId/ameex instead.
+      // If a valid token is supplied, use it to find the store (backward compat).
+      let carrierAccount: any = null;
+      if (token.length >= 18) {
+        const rows = await db
+          .select()
+          .from(carrierAccounts)
+          .where(and(eq(carrierAccounts.webhookToken, token), eq(carrierAccounts.carrierName, "ameex")));
+        carrierAccount = rows[0] ?? null;
+        if (!carrierAccount) {
+          console.warn(`[AMEEX-WEBHOOK] unknown token: ${token.slice(0, 12)}… — ignored`);
+          return;
+        }
+        if (carrierAccount.isActive === 0) {
+          console.warn(`[AMEEX-WEBHOOK] inactive account #${carrierAccount.id} — ignored`);
+          return;
+        }
       }
-      const [carrierAccount] = await db
-        .select()
-        .from(carrierAccounts)
-        .where(and(eq(carrierAccounts.webhookToken, token), eq(carrierAccounts.carrierName, "ameex")));
       if (!carrierAccount) {
-        console.warn(`[AMEEX-WEBHOOK] unknown token: ${token.slice(0, 12)}…`);
-        return;
-      }
-      if (carrierAccount.isActive === 0) {
-        console.warn(`[AMEEX-WEBHOOK] inactive account #${carrierAccount.id} — ignored`);
+        // No token — cannot identify the store on this legacy URL.
+        // The permanent URL /api/webhooks/carrier/:storeId/ameex should be used instead.
+        console.warn("[AMEEX-WEBHOOK] no token on legacy URL — use /api/webhooks/carrier/:storeId/ameex");
         return;
       }
 
