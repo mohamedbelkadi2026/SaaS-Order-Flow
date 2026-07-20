@@ -267,6 +267,7 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
   const [newItemCounter, setNewItemCounter] = useState(0);
   const [manualPriceOverride, setManualPriceOverride] = useState(false);
   const [attachTrackNum, setAttachTrackNum] = useState("");
+  const [attachCarrier, setAttachCarrier]   = useState<string>(""); // explicit override when store has multiple carriers
   // Track the last order ID so we only reset the manual override when a
   // different order is opened — NOT when the same order's data refreshes
   // after save (which would immediately re-run the auto-calc and undo the
@@ -308,6 +309,20 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
     staleTime: 5 * 60 * 1000,
     enabled: !!user && !user.isSuperAdmin,
   });
+
+  // Carrier accounts — needed to determine the carrier dropdown in the attach box.
+  // Only fetched when the attach box would be visible (confirmé order + feature enabled).
+  const attachBoxVisible = order?.status === 'confirme' && (user?.isSuperAdmin || storeInfo?.settings?.allowAttachTracking);
+  const orderHasCarrier  = !!((order as any)?.shippingProvider || (order as any)?.carrierName);
+  const { data: carrierAccounts = [] } = useQuery<any[]>({
+    queryKey: ['/api/carrier-accounts'],
+    staleTime: 5 * 60 * 1000,
+    enabled: attachBoxVisible && !orderHasCarrier,  // only needed when carrier isn't already set
+  });
+  // If the order already has a carrier, the backend will keep it — no dropdown needed.
+  // If only one carrier account exists, the backend auto-selects it — no dropdown needed.
+  // Show dropdown only when the order has no carrier AND the store has multiple carrier accounts.
+  const showCarrierDropdown = attachBoxVisible && !orderHasCarrier && carrierAccounts.length > 1;
 
   // Always fetch the latest order from the server when the modal opens.
   // staleTime=0 ensures a refetch even when the same order is reopened after
@@ -581,16 +596,23 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
 
   const attachTrackingMutation = useMutation({
     mutationFn: async (trackingNumber: string) => {
-      const res = await apiRequest("PATCH", `/api/orders/${order?.id}/attach-tracking`, { trackingNumber });
+      // Pass the explicit carrier only when the dropdown was used.
+      // If the order already has a carrier, the backend preserves it automatically.
+      const body: Record<string, string> = { trackingNumber };
+      if (showCarrierDropdown && attachCarrier) body.carrier = attachCarrier;
+      const res = await apiRequest("PATCH", `/api/orders/${order?.id}/attach-tracking`, body);
       return res.json();
     },
     onSuccess: (data: any) => {
-      toast({ title: "✅ Tracking attaché", description: `${data.trackNumber} → Attente De Ramassage` });
+      const statusLabel = data.status || 'Attente De Ramassage';
+      const carrierLabel = data.carrier ? ` — ${data.carrier}` : '';
+      toast({ title: "✅ Tracking attaché", description: `${data.trackNumber}${carrierLabel} → ${statusLabel}` });
       setAttachTrackNum("");
+      setAttachCarrier("");
       queryClient.invalidateQueries({ queryKey: ['/api/orders', order?.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/orders'] });
       queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
-      onUpdated?.({ ...order, trackNumber: data.trackNumber, status: data.status });
+      onUpdated?.({ ...order, trackNumber: data.trackNumber, status: data.status, shippingProvider: data.carrier, carrierName: data.carrier });
       onClose();
     },
     onError: (e: any) => {
@@ -1074,27 +1096,49 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
           </div>
 
           {/* ── ATTACH TRACKING BOX — confirmé orders only, when feature is enabled ── */}
-          {order?.status === 'confirme' && (user?.isSuperAdmin || storeInfo?.settings?.allowAttachTracking) && (
+          {attachBoxVisible && (
             <div className="mx-4 mb-3 rounded-xl border border-orange-200 bg-orange-50 dark:bg-orange-950/30 dark:border-orange-800 p-4">
               <p className="text-xs font-bold text-orange-800 dark:text-orange-200 mb-0.5">
-                📦 Attacher Tracking (package_id)
+                📦 Attacher Tracking
               </p>
               <p className="text-[10px] text-orange-700/80 dark:text-orange-300/80 mb-3">
-                Collez le numéro de suivi transporteur — la commande passera en <strong>Attente De Ramassage</strong> et le CODE affichera ce tracking.
+                {orderHasCarrier
+                  ? <>Collez le numéro de suivi — le transporteur <strong>{(order as any).shippingProvider || (order as any).carrierName}</strong> sera conservé.</>
+                  : <>Collez le numéro de suivi — le transporteur et le statut seront mis à jour automatiquement.</>}
               </p>
+
+              {/* Carrier dropdown — only when order has no carrier and store has multiple accounts */}
+              {showCarrierDropdown && (
+                <div className="mb-2">
+                  <select
+                    value={attachCarrier}
+                    onChange={e => setAttachCarrier(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-orange-200 bg-white dark:bg-orange-900/20 dark:border-orange-700 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300 focus:ring-offset-0"
+                    data-testid="select-attach-carrier"
+                  >
+                    <option value="">— Choisir le transporteur —</option>
+                    {carrierAccounts.map((acct: any) => (
+                      <option key={acct.id} value={acct.carrierName}>
+                        {acct.carrierName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={attachTrackNum}
                   onChange={e => setAttachTrackNum(e.target.value)}
-                  placeholder="Ex: CL-EXP-123456789"
+                  placeholder="Ex: ATQ0726B27347…"
                   className="flex-1 px-3 py-2 rounded-lg border border-orange-200 bg-white dark:bg-orange-900/20 dark:border-orange-700 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300 focus:ring-offset-0"
                   data-testid="input-attach-tracking"
                   onKeyDown={e => { if (e.key === 'Enter' && attachTrackNum.trim()) attachTrackingMutation.mutate(attachTrackNum.trim()); }}
                 />
                 <button
                   onClick={() => { if (attachTrackNum.trim()) attachTrackingMutation.mutate(attachTrackNum.trim()); }}
-                  disabled={!attachTrackNum.trim() || attachTrackingMutation.isPending}
+                  disabled={!attachTrackNum.trim() || attachTrackingMutation.isPending || (showCarrierDropdown && !attachCarrier)}
                   className="px-4 py-2 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-sm font-semibold disabled:opacity-50 transition-colors flex items-center gap-1.5 shrink-0"
                   data-testid="button-attach-tracking-submit"
                 >

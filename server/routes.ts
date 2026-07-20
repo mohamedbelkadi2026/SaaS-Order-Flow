@@ -11506,8 +11506,9 @@ function ensureHeaders(sheet) {
   app.patch("/api/orders/:id/attach-tracking", requireAuth, async (req, res) => {
     try {
       const orderId = Number(req.params.id);
-      const { trackingNumber } = z.object({
+      const { trackingNumber, carrier: bodyCarrier } = z.object({
         trackingNumber: z.string().min(1).max(120).trim(),
+        carrier:        z.string().trim().optional(),  // explicit override from frontend dropdown
       }).parse(req.body);
 
       const order = await storage.getOrder(orderId);
@@ -11549,18 +11550,40 @@ function ensureHeaders(sheet) {
         return res.status(409).json({ message: "Ce numéro de suivi est déjà utilisé par une autre commande dans cette boutique." });
       }
 
-      // Determine carrier from the existing order — fall back to expresscoursier
-      const carrier = (order as any).shippingProvider || (order as any).carrierName || 'expresscoursier';
+      // ── Carrier resolution (priority order) ────────────────────────────────
+      // 1. Order already has a carrier → preserve it (never overwrite a set carrier)
+      // 2. Client sent an explicit carrier in body → use that
+      // 3. Store has exactly one active carrier account → use that
+      // 4. Multiple accounts without explicit selection → use first (frontend should have sent one)
+      // No hardcoded 'expresscoursier' fallback.
+      let resolvedCarrier = ((order as any).shippingProvider || (order as any).carrierName || '').trim();
+      if (!resolvedCarrier) {
+        if (bodyCarrier) {
+          resolvedCarrier = bodyCarrier.trim();
+        } else {
+          const allAccounts = await storage.getCarrierAccounts(storeId);
+          const activeAccounts = allAccounts.filter((a: any) => a.isActive === 1 || a.isActive === true);
+          if (activeAccounts.length === 1) {
+            resolvedCarrier = activeAccounts[0].carrierName;
+          } else if (activeAccounts.length > 1) {
+            resolvedCarrier = activeAccounts[0].carrierName;
+            console.warn(`[ATTACH-TRACKING] Order #${(order as any).orderNumber} — multiple carrier accounts for store ${storeId}, no carrier sent; defaulting to "${resolvedCarrier}"`);
+          }
+        }
+      }
+      resolvedCarrier = resolvedCarrier.toLowerCase().trim();
 
-      // ── TASK 1: retro-apply most recent EC webhook status ──────────────────────
-      // If an EC ChangeStatus event for this tracking number is already stored in
-      // integration_logs (including "no order found" ones), replay that status
-      // instead of blindly defaulting to 'Attente De Ramassage'.
+      // ── Retro-apply most recent stored webhook status ──────────────────────
+      // Search integration_logs for a prior webhook event matching this tracking
+      // number so we can set the real current status instead of always defaulting
+      // to 'Attente De Ramassage'. Works for EC and Ameex.
       let attachStatus = 'Attente De Ramassage';
       let attachCommentStatus: string | null = null;
-      const isEcCarrier = ['expresscoursier', 'olivraison'].includes((carrier || '').toLowerCase());
+
+      const isEcCarrier    = ['expresscoursier', 'olivraison', 'express coursier'].includes(resolvedCarrier);
+      const isAmeexCarrier = resolvedCarrier === 'ameex';
+
       if (isEcCarrier) {
-        // Search both payload (new logs) and message (old orphan logs where payload=null)
         const ecPriorLogs = await db
           .select()
           .from(integrationLogs)
@@ -11576,7 +11599,6 @@ function ensureHeaders(sheet) {
           .limit(50);
 
         for (const priorLog of ecPriorLogs) {
-          // Parse both new (JSON payload) and old (message string) formats
           let pId = '';
           let code = '';
           if (priorLog.payload) {
@@ -11593,47 +11615,108 @@ function ensureHeaders(sheet) {
             if (dsM?.[1])  code = dsM[1];
           }
           if (!pId || !code) continue;
-          if (pId !== trackingNumber.trim()) continue;  // case-sensitive match
-          // mapEcNumericStatus always returns a valid ORDER_STATUS (unknown → 'in_progress')
-          const mapped = mapEcNumericStatus(code);
-          const ecLabel = getEcStatusName(code); // French label, e.g. "Livré au client"
-          console.log(`[ATTACH-TRACKING] Found prior EC event: package_id=${pId} delivery_status=${code} (${ecLabel}) → ${mapped}`);
-          attachCommentStatus = ecLabel;          // French name, never "EC 35"
-          attachStatus = mapped;                  // always valid including 'in_progress'
+          if (pId.toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+          const mapped  = mapEcNumericStatus(code);
+          const ecLabel = getEcStatusName(code);
+          console.log(`[ATTACH-TRACKING] Prior EC event: package_id=${pId} delivery_status=${code} (${ecLabel}) → ${mapped}`);
+          attachCommentStatus = ecLabel;
+          attachStatus = mapped;
+          break;
+        }
+      } else if (isAmeexCarrier) {
+        const ameexPriorLogs = await db
+          .select()
+          .from(integrationLogs)
+          .where(and(
+            eq(integrationLogs.storeId, storeId),
+            inArray(integrationLogs.provider, ['ameex', 'olivraison']),
+            or(
+              sql`${integrationLogs.payload} LIKE ${'%' + trackingNumber + '%'}`,
+              sql`${integrationLogs.message} LIKE ${'%' + trackingNumber + '%'}`,
+            ),
+          ))
+          .orderBy(desc(integrationLogs.createdAt))
+          .limit(50);
+
+        const { mapAmeexStatus: _mapAmeex } = await import('./services/carrier-service');
+
+        for (const priorLog of ameexPriorLogs) {
+          let statut = '';
+          let label  = '';
+          if (priorLog.payload) {
+            try {
+              const p = JSON.parse(priorLog.payload);
+              if (p.code_colis || p.event === 'package_updated') {
+                let nested: any = {};
+                if (p.payload) { try { nested = typeof p.payload === 'object' ? p.payload : JSON.parse(String(p.payload)); } catch { /**/ } }
+                const evtCode = (nested.order_id || p.code_colis || '').toString().trim();
+                if (evtCode.toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+                statut = nested.return_status === true ? 'RETURNED' : (nested.status || '').toString().trim();
+                label  = nested.description || p.commentaire || statut;
+              } else {
+                const evtCode = (p.CODE || '').toString().trim();
+                if (evtCode.toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+                statut = (p.STATUT || '').toString().trim();
+                label  = p.STATUT_NAME || statut;
+              }
+            } catch { /* fall through */ }
+          }
+          if (!statut) {
+            const msg   = priorLog.message || '';
+            const codeM = msg.match(/CODE=([^\s]+)/);
+            const statM = msg.match(/STATUT=([^\s/(]+)/);
+            if (!codeM?.[1] || codeM[1].toLowerCase() !== trackingNumber.trim().toLowerCase()) continue;
+            statut = statM?.[1] || '';
+            label  = statut;
+          }
+          if (!statut) continue;
+          const mapped = _mapAmeex(statut);
+          console.log(`[ATTACH-TRACKING] Prior Ameex event: code=${trackingNumber} statut="${statut}" (${label}) → ${mapped}`);
+          attachCommentStatus = label || statut;
+          attachStatus = mapped;
           break;
         }
       }
 
-      // ONE atomic update: trackNumber + provider + carrier + status (retro-applied or default)
+      // ── ONE atomic update ──────────────────────────────────────────────────
+      const carrierUpdate = resolvedCarrier
+        ? { shippingProvider: resolvedCarrier, carrierName: resolvedCarrier }
+        : {};
+
       const [updated] = await db.update(orders)
         .set({
           trackNumber:      trackingNumber,
-          shippingProvider: carrier,
-          carrierName:      carrier,
+          ...carrierUpdate,
           status:           attachStatus,
           ...(attachCommentStatus ? { commentStatus: attachCommentStatus } : {}),
         })
         .where(eq(orders.id, orderId))
         .returning();
 
-      console.log(`[ATTACH-TRACKING] Order #${(order as any).orderNumber || orderId} → trackNumber="${updated?.trackNumber}" status="${updated?.status}" user=${user.id}${user.isSuperAdmin ? ' (superAdmin)' : ''}`);
+      console.log(`[ATTACH-TRACKING] Order #${(order as any).orderNumber || orderId} → carrier="${resolvedCarrier}" trackNumber="${updated?.trackNumber}" status="${updated?.status}" user=${user.id}${user.isSuperAdmin ? ' (superAdmin)' : ''}`);
 
       await storage.createIntegrationLog({
         storeId,
         integrationId: null,
-        provider: carrier,
+        provider: resolvedCarrier || 'manual',
         action: 'tracking_attached',
         status: 'success',
-        message: `✅ Tracking attaché: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} → ${attachStatus}${attachCommentStatus ? ` (${attachCommentStatus})` : ''}`,
+        message: `✅ Tracking attaché: ${trackingNumber} → Commande #${(order as any).orderNumber || orderId} (carrier=${resolvedCarrier}) → ${attachStatus}${attachCommentStatus ? \` (${attachCommentStatus})\` : ''}`,
       });
 
-      res.json({ success: true, trackNumber: updated?.trackNumber, status: updated?.status });
+      res.json({
+        success:     true,
+        trackNumber: updated?.trackNumber,
+        status:      updated?.status,
+        carrier:     resolvedCarrier || null,
+      });
     } catch (err: any) {
       if (err instanceof z.ZodError) return res.status(400).json({ message: "Données invalides", errors: err.errors });
       console.error("[ATTACH-TRACKING] Error:", err?.message ?? err);
       res.status(500).json({ message: err?.message || "Erreur serveur" });
     }
   });
+
 
   // ── Diagnostic: distinct EC delivery_status codes in integration_logs ────────
   // Call this from the deployed app to get the full code list to send to EC support.
