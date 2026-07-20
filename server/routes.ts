@@ -24,7 +24,7 @@ import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStat
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
-import { resolveProductId, splitVariant } from "./services/variants";
+import { resolveProductId, splitVariant, normStr } from "./services/variants";
 
 import fs from "fs";
 
@@ -2500,6 +2500,31 @@ export async function registerRoutes(
   // Conservative criteria (all must match): source=shopify, status=nouveau,
   // phone null/empty, totalPrice=0, customer is one of the generic fallbacks.
   // Orders with a real phone or non-zero price are NEVER touched.
+  // ── Debug: resolve a raw product name against the catalogue ─────────────────
+  app.get("/api/debug/resolve-product-name", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const rawName = String(req.query.name || '');
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const variantsByProduct = new Map<number, { name: string }[]>();
+      for (const v of allVariants) {
+        if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+        variantsByProduct.get(v.productId)!.push({ name: v.name });
+      }
+      const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+      const result = resolveProductId(rawName, storeProductsWithVariants);
+      res.json({
+        rawName,
+        normalizedRawName: normStr(rawName),
+        result,
+        candidateProductNames: storeProducts.map(p => ({ id: p.id, name: p.name, normalized: normStr(p.name) })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.post("/api/admin/shopify/cleanup-empty", requireAuth, requireAdmin, async (req, res) => {
     try {
       const storeId = req.user!.storeId!;

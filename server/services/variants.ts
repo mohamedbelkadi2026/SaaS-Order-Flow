@@ -3,15 +3,18 @@
  * Used by routes (order creation / backfill) and profit computation.
  */
 
-// Normalise: strip Arabic diacritics, punctuation, extra spaces, lowercase.
+// Normalise: strip diacritics, collapse all whitespace variants, lowercase.
+// Handles double spaces, non-breaking spaces (U+00A0), unicode spaces, tabs
+// so "Cuir  Rf" (double espace catalogue) === "Cuir Rf" (commande espace simple).
 export function normStr(s: string): string {
   return (s || '')
-    .toLowerCase()
     .normalize('NFKD')
-    .replace(/[\u064B-\u065F\u0670]/g, '')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/[\u0300-\u036f]/g, '')          // strip combining diacritics
+    .replace(/[\u00A0\u2000-\u200B\t\n\r]/g, ' ') // non-breaking / unicode spaces → normal space
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')              // punctuation & repeated spaces → single space
+    .trim()
+    .replace(/\s+/g, ' ');
 }
 
 // Split "Parent Name - Variant" into { base, suffix }.
