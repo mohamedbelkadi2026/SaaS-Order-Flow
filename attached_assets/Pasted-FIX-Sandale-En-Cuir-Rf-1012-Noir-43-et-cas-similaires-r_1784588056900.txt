@@ -1,0 +1,84 @@
+FIX — "Sandale En Cuir Rf 1012 Noir 43" (et cas similaires) restent à
+Sourcing = 0/"—" même s'ils SONT matchés à un produit catalogue.
+
+CAUSE (différente des fix précédents)
+Ce produit est un produit CATALOGUE À PART ENTIÈRE — sa propre ligne dans
+`products`, son propre id, son nom littéral est "Sandale En Cuir Rf 1012
+Noir 43". Il matche donc en ÉTAPE 1 (exact match) de `resolveProductId`, PAS
+via la logique de variante. Son `costPrice` à lui est 0 (jamais rempli dans
+"Modifier le produit"), alors que le VRAI coût (140 DH) existe sur un AUTRE
+produit catalogue : "Sandale En Cuir Rf 1012 Noir" (sans le "43"), soit
+directement sur ce produit, soit sur sa variante "43".
+
+Le fallback ajouté précédemment (`variantCostByKey.get(`${item.productId}::...`)`)
+cherche les variantes DE CE PRODUIT LUI-MÊME (qui n'en a aucune) → ne trouve
+rien → coût reste 0. Il faut un fallback supplémentaire qui, lorsque le
+produit matché a un coût à 0 ET que son nom se termine par un token qui
+ressemble à une taille, cherche un AUTRE produit catalogue (le "parent
+probable") dont le nom correspond au nom SANS ce dernier token, et utilise
+LE COÛT DE CE PARENT (directement ou via une de ses variantes).
+
+────────────────────────────────────────────────────────────────────────────
+FIX — server/services/profit.ts
+
+Dans la boucle `for (const item of itemRows)`, remplacer le bloc de calcul
+du coût unitaire (celui avec le fallback "variant" déjà en place) par :
+
+```ts
+let unitCostCents = item.productCostPrice
+  ?? costByName.get(key)
+  ?? costByName.get(norm(item.rawProductName || ''))
+  ?? (order as any).productCost
+  ?? 0;
+
+if (!unitCostCents && item.rawProductName) {
+  const { base, suffix } = splitVariant(item.rawProductName);
+  const suffixGuess = suffix || item.rawProductName.trim().split(' ').pop() || '';
+  const baseGuess = suffix ? base : item.rawProductName.replace(new RegExp(`\\s+${suffixGuess}$`), '').trim();
+
+  // 1) Coût d'une variante DU PRODUIT DÉJÀ MATCHÉ (cas où productId pointe
+  //    vers le vrai parent et rawProductName porte juste un suffixe en plus).
+  if (item.productId && suffixGuess) {
+    const vCost = variantCostByKey.get(`${item.productId}::${norm(suffixGuess)}`);
+    if (vCost) unitCostCents = vCost;
+  }
+
+  // 2) NOUVEAU — le produit matché EST LUI-MÊME un produit catalogue nommé
+  //    "Nom Taille" (ex: "Sandale En Cuir Rf 1012 Noir 43", id propre, coût à
+  //    0) : chercher un AUTRE produit catalogue dont le nom correspond à
+  //    "Nom" seul, et emprunter son coût (direct ou via sa variante "Taille").
+  if (!unitCostCents && baseGuess && baseGuess.toLowerCase() !== item.rawProductName.toLowerCase()) {
+    const altProductId = idByName.get(norm(baseGuess));
+    if (altProductId && altProductId !== item.productId) {
+      const altVariantCost = suffixGuess ? variantCostByKey.get(`${altProductId}::${norm(suffixGuess)}`) : undefined;
+      unitCostCents = altVariantCost || costByName.get(norm(baseGuess)) || 0;
+    }
+  }
+}
+
+s.productCost += (Number(unitCostCents) / 100) * Number(item.quantity || 1);
+```
+
+Ce fallback #2 ne s'active QUE si :
+- le coût direct du produit matché est 0, ET
+- son nom se termine par un token détachable (via `splitVariant` ou le
+  dernier mot), ET
+- un AUTRE produit catalogue existe avec le nom "sans ce token" (ex:
+  "Sandale En Cuir Rf 1012 Noir" existe séparément de "...Rf 1012 Noir 43").
+
+Aucun risque pour les produits déjà corrects : si `item.productCostPrice`
+(ou les autres sources existantes) donne déjà un coût > 0, ce bloc entier
+est sauté (`if (!unitCostCents...)`).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fallback: borrow cost from sibling base product when a size-suffixed standalone catalog entry has cost=0" && git push
+
+VÉRIFICATION
+- "Sandale En Cuir Rf 1012 Noir 43" : Sourcing passe de "—" à 140,00 DH ×
+  quantité (emprunté depuis "Sandale En Cuir Rf 1012 Noir", variante "43",
+  ou son coût produit direct si pas de variante).
+- Idem pour toute autre ligne du même type (produit catalogue autonome dont
+  le nom finit par une taille, coût à 0, alors qu'un produit "de base"
+  correspondant existe avec un vrai coût).
+- Aucun changement sur les produits qui avaient déjà un coût correct.
