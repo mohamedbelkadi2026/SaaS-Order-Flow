@@ -6339,12 +6339,31 @@ function ensureHeaders(sheet) {
     }
   }
 
+  function signYouCanState(storeId: number): string {
+    const payload = `${storeId}.${Date.now()}`;
+    const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+    const sig = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+    return `${payload}.${sig}`;
+  }
+
+  function verifyYouCanState(state: string): number | null {
+    const parts = (state || "").split(".");
+    if (parts.length !== 3) return null;
+    const [storeIdStr, ts, sig] = parts;
+    const payload = `${storeIdStr}.${ts}`;
+    const secret = process.env.SESSION_SECRET || process.env.YOUCAN_CLIENT_SECRET!;
+    const expected = createHmac("sha256", secret).update(payload).digest("hex").slice(0, 32);
+    if (expected !== sig) return null;
+    if (Date.now() - Number(ts) > 15 * 60 * 1000) return null;
+    const storeId = parseInt(storeIdStr, 10);
+    return isNaN(storeId) ? null : storeId;
+  }
+
   app.get("/api/integrations/youcan/oauth/start", requireAuth, (req: any, res: any) => {
     const clientId = process.env.YOUCAN_CLIENT_ID;
     if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
     const storeId = req.user!.storeId!;
-    const state = `${storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    (req.session as any).youcanOauthState = state;
+    const state = signYouCanState(storeId);
     const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
       `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
     const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
@@ -6353,17 +6372,23 @@ function ensureHeaders(sheet) {
     url.searchParams.set("response_type", "code");
     url.searchParams.append("scope[]", "*");
     url.searchParams.set("state", state);
+    console.log(`[YOUCAN-OAUTH] start — storeId=${storeId}, redirectUri=${redirectUri}`);
     res.redirect(url.toString());
   });
 
   app.get("/api/integrations/youcan/oauth/callback", async (req: any, res: any) => {
+    console.log("[YOUCAN-OAUTH] callback hit — query:", JSON.stringify(req.query));
     const { code, state, error } = req.query;
-    if (error) return res.redirect(`/integrations?youcan_error=${error}`);
-    const sessionState = (req.session as any).youcanOauthState;
-    if (!state || state !== sessionState) return res.redirect("/integrations?youcan_error=invalid_state");
-    delete (req.session as any).youcanOauthState;
-    const storeId = parseInt((state as string).split("-")[0]);
-    if (isNaN(storeId)) return res.redirect("/integrations?youcan_error=invalid_state");
+    if (error) {
+      console.error("[YOUCAN-OAUTH] YouCan returned error:", error);
+      return res.redirect(`/integrations?youcan_error=${error}`);
+    }
+    const storeId = verifyYouCanState(state as string);
+    if (!storeId) {
+      console.error("[YOUCAN-OAUTH] Invalid or expired state:", state);
+      return res.redirect("/integrations?youcan_error=invalid_state");
+    }
+    console.log(`[YOUCAN-OAUTH] callback verified — storeId=${storeId}`);
     const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
       `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
     try {
@@ -6420,7 +6445,7 @@ function ensureHeaders(sheet) {
 
       res.redirect("/integrations?youcan=connected");
     } catch (err: any) {
-      console.error("[YOUCAN-OAUTH] Error:", err.message);
+      console.error("[YOUCAN-OAUTH] Callback error — full stack:", err);
       res.redirect("/integrations?youcan_error=server_error");
     }
   });
