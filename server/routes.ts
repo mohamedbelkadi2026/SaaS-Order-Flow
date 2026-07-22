@@ -5178,7 +5178,7 @@ export async function registerRoutes(
   });
 
   // ─── YouCan OAuth webhook — order.create (signed with YOUCAN_CLIENT_SECRET) ──
-  app.post("/api/webhooks/youcan/order/:webhookKey", async (req: any, res: any) => {
+  app.post("/api/webhooks/youcan/order/:webhookKey", express.raw({ type: "application/json" }), async (req: any, res: any) => {
     try {
       const { webhookKey } = req.params;
       const integrationRows = await db.select().from(storeIntegrations)
@@ -5186,24 +5186,30 @@ export async function registerRoutes(
         .limit(1);
       const integration = integrationRows[0];
       if (!integration || !integration.oauthAccessToken) {
+        console.warn(`[YOUCAN-WEBHOOK] Unknown or unconfigured webhookKey: ${webhookKey}`);
         return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
       }
 
-      // Verify HMAC-SHA256 signature (x-youcan-signature, signed with YOUCAN_CLIENT_SECRET).
+      // req.body is a raw Buffer thanks to express.raw() — use it directly for HMAC.
+      const rawBody = req.body as Buffer;
       const signature = req.headers["x-youcan-signature"] as string | undefined;
-      const clientSecret = process.env.YOUCAN_CLIENT_SECRET;
-      if (signature && clientSecret) {
-        const rawBody = (req as any).rawBody as Buffer | undefined;
-        const bodyStr = rawBody ? rawBody.toString("utf8") : JSON.stringify(req.body);
-        const expected = createHmac("sha256", clientSecret).update(bodyStr).digest("hex");
+      const clientSecret = process.env.YOUCAN_CLIENT_SECRET!;
+
+      console.log(`[YOUCAN-WEBHOOK] Hit — webhookKey=${webhookKey}, hasSignature=${!!signature}, bodyLength=${rawBody?.length}`);
+
+      if (signature) {
+        const expected = createHmac("sha256", clientSecret).update(rawBody).digest("hex");
         if (expected !== signature) {
-          console.warn("[YOUCAN-WEBHOOK] Invalid signature — rejecting");
+          console.warn(`[YOUCAN-WEBHOOK] Invalid signature — expected=${expected.slice(0, 12)}... got=${signature.slice(0, 12)}...`);
           return res.status(401).json({ message: "Invalid signature" });
         }
+      } else {
+        console.warn("[YOUCAN-WEBHOOK] No x-youcan-signature header — proceeding without verification");
       }
 
       const storeId = integration.storeId;
-      const payload = req.body as any;
+      const payload = JSON.parse(rawBody.toString("utf-8")) as any;
+      console.log("[YOUCAN-WEBHOOK] Payload parsed — ref:", payload.ref, "id:", payload.id);
       const orderRef = payload.ref || payload.id;
       if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
 
@@ -6470,6 +6476,27 @@ function ensureHeaders(sheet) {
       .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
     res.json({ success: true });
+  });
+
+  // Diagnostic: list active YouCan resthook subscriptions for this store.
+  app.get("/api/integrations/youcan/resthooks", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+      .limit(1);
+    const integration = rows[0];
+    if (!integration?.oauthAccessToken) return res.status(400).json({ message: "not_connected" });
+    const accessToken = await refreshYouCanToken(integration);
+    if (!accessToken) return res.status(400).json({ message: "token_unavailable" });
+    try {
+      const resp = await fetch("https://api.youcan.shop/resthooks", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const json = await resp.json();
+      res.json(json);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
   });
 
   // Verify connection: check if integration has received recent logs
