@@ -5177,6 +5177,150 @@ export async function registerRoutes(
     }
   });
 
+  // ─── YouCan OAuth webhook — order.create (signed with YOUCAN_CLIENT_SECRET) ──
+  app.post("/api/webhooks/youcan/order/:webhookKey", async (req: any, res: any) => {
+    try {
+      const { webhookKey } = req.params;
+      const integrationRows = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.webhookKey, webhookKey), eq(storeIntegrations.provider, "youcan")))
+        .limit(1);
+      const integration = integrationRows[0];
+      if (!integration || !integration.oauthAccessToken) {
+        return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
+      }
+
+      // Verify HMAC-SHA256 signature (x-youcan-signature, signed with YOUCAN_CLIENT_SECRET).
+      const signature = req.headers["x-youcan-signature"] as string | undefined;
+      const clientSecret = process.env.YOUCAN_CLIENT_SECRET;
+      if (signature && clientSecret) {
+        const rawBody = (req as any).rawBody as Buffer | undefined;
+        const bodyStr = rawBody ? rawBody.toString("utf8") : JSON.stringify(req.body);
+        const expected = createHmac("sha256", clientSecret).update(bodyStr).digest("hex");
+        if (expected !== signature) {
+          console.warn("[YOUCAN-WEBHOOK] Invalid signature — rejecting");
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+      }
+
+      const storeId = integration.storeId;
+      const payload = req.body as any;
+      const orderRef = payload.ref || payload.id;
+      if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
+
+      // Duplicate check
+      const existingOrder = await storage.getOrderByNumber(storeId, `YC-${orderRef}`);
+      if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
+
+      // Paywall check
+      const paywallCheck = await storage.checkPaywall(storeId);
+      if (paywallCheck.isBlocked) return res.status(402).json({ message: paywallCheck.reason === "expired" ? "Subscription expired" : "Order limit reached" });
+
+      const customerName = [payload.customer?.first_name, payload.customer?.last_name].filter(Boolean).join(" ") || payload.customer?.full_name || "Client YouCan";
+      const customerPhone = payload.customer?.phone || payload.shipping_address?.phone || "";
+      let customerCity = payload.shipping_address?.city || "";
+      let customerAddress = payload.shipping_address?.address || "";
+
+      // Re-fetch full order for address if not in payload
+      const accessToken = await refreshYouCanToken(integration);
+      if (accessToken && payload.id && !customerCity) {
+        try {
+          const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          const fullOrder = await fullOrderResp.json() as any;
+          customerCity = fullOrder?.shipping?.address?.city || fullOrder?.customer?.address?.city || customerCity;
+          customerAddress = fullOrder?.shipping?.address?.address || customerAddress;
+        } catch (fetchErr: any) {
+          console.error("[YOUCAN-WEBHOOK] Failed to fetch full order:", fetchErr.message);
+        }
+      }
+
+      const totalPriceCents = Math.round((payload.total || payload.total_price || 0) * 100);
+      const shippingCostCents = Math.round((payload.shipping?.price || 0) * 100);
+
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const variantsByProduct = new Map<number, { name: string }[]>();
+      for (const v of allVariants) {
+        if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+        variantsByProduct.get(v.productId)!.push({ name: v.name });
+      }
+      const storeProductsWithVariants = storeProducts.map(p => ({ ...p, variants: variantsByProduct.get(p.id) || [] }));
+
+      const lineItems: any[] = payload.variants || payload.items || payload.line_items || [];
+      const orderItemsToCreate: any[] = [];
+      let orderProductCost = 0;
+
+      for (const v of lineItems) {
+        const rawName = v.variant?.product?.name || v.name || v.title || "Produit YouCan";
+        const sku = v.variant?.sku || v.sku || "";
+        let matchedProduct = storeProducts.find(p => sku && p.sku === sku);
+        let resolvedVariantName: string | null = null;
+        if (!matchedProduct) {
+          const resolved = resolveProductId(rawName, storeProductsWithVariants);
+          if (resolved.productId) {
+            matchedProduct = storeProducts.find(p => p.id === resolved.productId);
+            resolvedVariantName = resolved.variantName;
+          }
+        }
+        orderItemsToCreate.push({
+          productId: matchedProduct?.id ?? null,
+          rawProductName: rawName,
+          variantInfo: resolvedVariantName || v.variant?.sku || null,
+          quantity: v.quantity || 1,
+          price: Math.round((v.price || 0) * 100),
+          orderId: 0,
+        });
+        orderProductCost += (matchedProduct?.costPrice || 0) * (v.quantity || 1);
+      }
+
+      const rawProductName = orderItemsToCreate.map(i => i.rawProductName).join(" + ") || null;
+      const rawQuantity = orderItemsToCreate.reduce((s, i) => s + i.quantity, 0) || null;
+
+      const order = await storage.createOrder({
+        storeId,
+        magasinId: integration.magasinId ?? null,
+        orderNumber: `YC-${orderRef}`,
+        customerName,
+        customerPhone,
+        customerAddress,
+        customerCity,
+        status: "nouveau",
+        totalPrice: totalPriceCents,
+        shippingCost: shippingCostCents,
+        productCost: orderProductCost,
+        adSpend: 0,
+        source: "youcan",
+        rawProductName,
+        rawQuantity,
+      } as any, orderItemsToCreate);
+
+      await db.update(storeIntegrations)
+        .set({ ordersCount: (integration.ordersCount || 0) + 1 })
+        .where(eq(storeIntegrations.id, integration.id));
+
+      const firstProductId = orderItemsToCreate.find(i => i.productId)?.productId ?? undefined;
+      const nextAgentId = await storage.getNextAgent(storeId, integration.magasinId, firstProductId, customerCity);
+      if (nextAgentId) await storage.assignOrder(order.id, nextAgentId);
+      await storage.incrementMonthlyOrders(storeId);
+      await storage.createIntegrationLog({ storeId, integrationId: integration.id, provider: "youcan", action: "order_synced", status: "success", message: `Commande YouCan YC-${orderRef} importée` });
+
+      emitNewOrder(storeId, { id: order.id, orderNumber: `YC-${orderRef}`, customerName, status: "nouveau", source: "youcan" });
+      notifyNewOrder({ id: order.id, storeId, assignedToId: nextAgentId ?? null, customerName, customerCity: customerCity ?? null, totalPrice: order.totalPrice || 0 });
+      broadcastToStore(storeId, "new_order", { id: order.id, orderNumber: `YC-${orderRef}` });
+
+      res.json({ success: true, orderId: order.id });
+
+      if (getWaAutoSettings(storeId).aiConfirmation) {
+        triggerAIForNewOrder(storeId, order.id, customerPhone, customerName, firstProductId)
+          .catch(err => console.error(`[AI] YouCan trigger failed for order ${order.id}:`, err.message));
+      }
+    } catch (err: any) {
+      console.error("[YOUCAN-WEBHOOK] Error:", err);
+      res.status(500).json({ success: false, message: "Processing failed" });
+    }
+  });
+
   // Universal webhook via token URL: POST /api/webhooks/:provider/order/:webhookKey
   app.post("/api/webhooks/:provider/order/:webhookKey", async (req, res) => {
     const provider = req.params.provider;
@@ -6158,6 +6302,148 @@ function ensureHeaders(sheet) {
     await db.update(storeIntegrations)
       .set({ status: "inactive", gsheetUrl: null, gsheetId: null, gsheetTabs: null, gsheetSyncState: null })
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")));
+    res.json({ success: true });
+  });
+
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // YOUCAN OAUTH INTEGRATION
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  async function refreshYouCanToken(integration: any): Promise<string | null> {
+    const refreshToken = decrypt(integration.oauthRefreshToken || "");
+    if (!refreshToken) return decrypt(integration.oauthAccessToken || "");
+    const expiresAt = integration.oauthExpiresAt ? new Date(integration.oauthExpiresAt).getTime() : 0;
+    if (expiresAt - Date.now() > 24 * 60 * 60 * 1000) return decrypt(integration.oauthAccessToken || "");
+    try {
+      const resp = await fetch("https://api.youcan.shop/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: process.env.YOUCAN_CLIENT_ID!,
+          client_secret: process.env.YOUCAN_CLIENT_SECRET!,
+          refresh_token: refreshToken,
+        }),
+      });
+      const tokens = await resp.json() as any;
+      if (!tokens.access_token) return decrypt(integration.oauthAccessToken || "");
+      await db.update(storeIntegrations).set({
+        oauthAccessToken: encrypt(tokens.access_token),
+        oauthRefreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : integration.oauthRefreshToken,
+        oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
+      }).where(eq(storeIntegrations.id, integration.id));
+      return tokens.access_token;
+    } catch {
+      return decrypt(integration.oauthAccessToken || "");
+    }
+  }
+
+  app.get("/api/integrations/youcan/oauth/start", requireAuth, (req: any, res: any) => {
+    const clientId = process.env.YOUCAN_CLIENT_ID;
+    if (!clientId) return res.redirect("/integrations?youcan_error=not_configured");
+    const storeId = req.user!.storeId!;
+    const state = `${storeId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    (req.session as any).youcanOauthState = state;
+    const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+      `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+    const url = new URL("https://seller-area.youcan.shop/admin/oauth/authorize");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.append("scope[]", "*");
+    url.searchParams.set("state", state);
+    res.redirect(url.toString());
+  });
+
+  app.get("/api/integrations/youcan/oauth/callback", async (req: any, res: any) => {
+    const { code, state, error } = req.query;
+    if (error) return res.redirect(`/integrations?youcan_error=${error}`);
+    const sessionState = (req.session as any).youcanOauthState;
+    if (!state || state !== sessionState) return res.redirect("/integrations?youcan_error=invalid_state");
+    delete (req.session as any).youcanOauthState;
+    const storeId = parseInt((state as string).split("-")[0]);
+    if (isNaN(storeId)) return res.redirect("/integrations?youcan_error=invalid_state");
+    const redirectUri = process.env.YOUCAN_REDIRECT_URI ||
+      `${req.protocol}://${req.get("host")}/api/integrations/youcan/oauth/callback`;
+    try {
+      const tokenResp = await fetch("https://api.youcan.shop/oauth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: process.env.YOUCAN_CLIENT_ID!,
+          client_secret: process.env.YOUCAN_CLIENT_SECRET!,
+          redirect_uri: redirectUri,
+          code: code as string,
+        }),
+      });
+      const tokens = await tokenResp.json() as any;
+      if (!tokens.access_token) {
+        console.error("[YOUCAN-OAUTH] Token exchange failed:", tokens);
+        return res.redirect("/integrations?youcan_error=token_exchange_failed");
+      }
+
+      const webhookKey = await storage.getOrGenerateWebhookKey(storeId);
+      const targetUrl = `${req.protocol}://${req.get("host")}/api/webhooks/youcan/order/${webhookKey}`;
+
+      const oauthData: any = {
+        oauthAccessToken: encrypt(tokens.access_token),
+        oauthExpiresAt: new Date(Date.now() + (tokens.expires_in || 1295999) * 1000),
+        isActive: 1,
+      };
+      if (tokens.refresh_token) oauthData.oauthRefreshToken = encrypt(tokens.refresh_token);
+
+      const existing = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+        .limit(1);
+      if (existing.length > 0) {
+        await db.update(storeIntegrations).set(oauthData).where(eq(storeIntegrations.id, existing[0].id));
+      } else {
+        await db.insert(storeIntegrations).values({
+          storeId, provider: "youcan", type: "webhook", credentials: "{}", webhookKey, ...oauthData,
+        });
+      }
+
+      // Abonner automatiquement au webhook "order.create".
+      try {
+        const subResp = await fetch("https://api.youcan.shop/resthooks/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.access_token}` },
+          body: JSON.stringify({ event: "order.create", target_url: targetUrl }),
+        });
+        const subJson = await subResp.json();
+        console.log("[YOUCAN-OAUTH] resthooks/subscribe response:", subJson);
+      } catch (subErr: any) {
+        console.error("[YOUCAN-OAUTH] Failed to subscribe webhook (non-fatal):", subErr.message);
+      }
+
+      res.redirect("/integrations?youcan=connected");
+    } catch (err: any) {
+      console.error("[YOUCAN-OAUTH] Error:", err.message);
+      res.redirect("/integrations?youcan_error=server_error");
+    }
+  });
+
+  app.get("/api/integrations/youcan/status", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const rows = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+      .limit(1);
+    const row = rows[0];
+    res.json({
+      connected: !!(row?.oauthAccessToken),
+      ordersCount: row?.ordersCount ?? 0,
+      connectionName: row?.connectionName ?? null,
+      createdAt: row?.createdAt ?? null,
+    });
+  });
+
+  app.post("/api/integrations/youcan/disconnect", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    await db.update(storeIntegrations)
+      .set({ oauthAccessToken: null, oauthRefreshToken: null, oauthExpiresAt: null, isActive: 0 })
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")));
     res.json({ success: true });
   });
 

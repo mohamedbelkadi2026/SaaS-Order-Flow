@@ -904,75 +904,88 @@ function resetActiveSheetStatuses() {
 // --- YouCan Tab ---
 function YouCanTab() {
   const { toast } = useToast();
-  const createIntegration = useCreateIntegration();
-  const [tokenOpen, setTokenOpen] = useState(false);
-  const [token, setToken] = useState("");
+  const { data: status, refetch } = useQuery<any>({
+    queryKey: ["/api/integrations/youcan/status"],
+    queryFn: () => fetch("/api/integrations/youcan/status", { credentials: "include" }).then(r => r.json()),
+    refetchInterval: 5000,
+  });
 
-  const handleConnect = async () => {
-    if (!token.trim()) { toast({ title: "Token requis", variant: "destructive" }); return; }
-    try {
-      await createIntegration.mutateAsync({ provider: "youcan", type: "store", credentials: { apiToken: token } });
-      toast({ title: "YouCan connecté !", description: "Votre boutique est maintenant synchronisée" });
-      setTokenOpen(false);
-    } catch (err: any) {
-      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+  // Handle redirect back from OAuth with ?youcan=connected or ?youcan_error=...
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("youcan") === "connected") {
+      toast({ title: "YouCan connecté !", description: "Votre boutique synchronisera automatiquement les nouvelles commandes." });
+      window.history.replaceState({}, "", window.location.pathname);
+      refetch();
+    } else if (params.get("youcan_error")) {
+      toast({ title: "Erreur YouCan", description: params.get("youcan_error") || "Erreur inconnue", variant: "destructive" });
+      window.history.replaceState({}, "", window.location.pathname);
     }
+  }, []);
+
+  const handleDisconnect = async () => {
+    await fetch("/api/integrations/youcan/disconnect", { method: "POST", credentials: "include" });
+    refetch();
+    toast({ title: "YouCan déconnecté" });
   };
+
+  const connected = status?.connected;
 
   return (
     <div className="max-w-lg mx-auto">
-      <div className="bg-white dark:bg-card rounded-2xl border-2 border-dashed border-blue-200 shadow-sm p-10 text-center space-y-6">
-        <div className="w-16 h-16 rounded-full border-2 border-blue-200 flex items-center justify-center mx-auto">
-          <Link2 className="w-8 h-8 text-blue-400" />
+      <div className="bg-white dark:bg-card rounded-2xl border-2 border-dashed border-red-200 shadow-sm p-10 text-center space-y-6">
+        <div className={cn("w-16 h-16 rounded-full border-2 flex items-center justify-center mx-auto", connected ? "border-green-400 bg-green-50" : "border-red-200")}>
+          <div className="w-8 h-8 bg-red-600 rounded text-white text-sm flex items-center justify-center font-bold">Y</div>
         </div>
         <div>
-          <h2 className="text-xl font-bold mb-2">Connectez votre boutique Youcan</h2>
-          <div className="flex items-center justify-center gap-2 mb-3">
-            <div className="w-6 h-6 bg-green-600 rounded text-white text-xs flex items-center justify-center font-bold">G</div>
-            <span className="text-muted-foreground">×</span>
-            <div className="w-6 h-6 bg-red-600 rounded text-white text-xs flex items-center justify-center font-bold">Y</div>
-          </div>
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            Vous n'avez pas encore connecté votre boutique Youcan à Garean. En quelques clics, activez l'intégration pour commencer à synchroniser vos produits, commandes et clients.
-          </p>
-        </div>
-        <div className="bg-gray-50 dark:bg-muted/30 rounded-lg p-4 text-sm text-muted-foreground text-left">
-          Une fois connecté, vous pourrez automatiser vos tâches e-commerce et gérer vos ventes directement depuis Garean.
-        </div>
-        <Button onClick={() => setTokenOpen(true)} className="w-full bg-blue-600 hover:bg-blue-700 text-white h-11 font-semibold gap-2">
-          <Link2 className="w-4 h-4" /> Connecter ma boutique Youcan
-        </Button>
-        <div>
-          <a href="#" className="text-sm text-muted-foreground underline">En savoir plus sur l'intégration</a>
-        </div>
-        <div className="flex items-center justify-center gap-6 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Non connecté</span>
-          <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-gray-400 inline-block" /> Données non synchronisées</span>
-        </div>
-      </div>
-
-      <Dialog open={tokenOpen} onOpenChange={setTokenOpen}>
-        <DialogContent className="sm:max-w-sm rounded-2xl">
-          <DialogTitle>Connecter YouCan</DialogTitle>
-          <div className="space-y-4 py-2">
-            <p className="text-sm text-muted-foreground">Entrez votre token API YouCan pour synchroniser vos commandes.</p>
-            <div className="space-y-1.5">
-              <Label>Token API YouCan</Label>
-              <Input value={token} onChange={e => setToken(e.target.value)} placeholder="yc_live_..." type="password" />
+          <h2 className="text-xl font-bold mb-2">Intégration YouCan</h2>
+          {connected ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+                <span className="text-sm font-medium text-green-600">Boutique connectée</span>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {status?.ordersCount ?? 0} commande{(status?.ordersCount ?? 0) !== 1 ? "s" : ""} synchronisée{(status?.ordersCount ?? 0) !== 1 ? "s" : ""}
+              </p>
             </div>
-            <a href="https://youcan.shop" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-blue-500 hover:underline">
-              Trouver mon token YouCan <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setTokenOpen(false)}>Annuler</Button>
-            <Button onClick={handleConnect} disabled={createIntegration.isPending} className="bg-blue-600 hover:bg-blue-700">
-              {createIntegration.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              Connecter
+          ) : (
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Connectez votre boutique YouCan via OAuth pour synchroniser automatiquement les nouvelles commandes.
+            </p>
+          )}
+        </div>
+
+        {connected ? (
+          <div className="space-y-3">
+            <div className="bg-green-50 dark:bg-green-950/20 rounded-lg p-4 text-sm text-green-700 dark:text-green-400 text-left">
+              ✅ Les nouvelles commandes YouCan arrivent automatiquement dans la plateforme.
+            </div>
+            <Button variant="outline" onClick={handleDisconnect} className="w-full h-10 text-red-600 border-red-200 hover:bg-red-50 gap-2">
+              Déconnecter YouCan
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
+        ) : (
+          <div className="space-y-4">
+            <div className="bg-gray-50 dark:bg-muted/30 rounded-lg p-4 text-sm text-muted-foreground text-left space-y-1">
+              <p className="font-medium text-foreground">Pré-requis :</p>
+              <p>• Compte Partner YouCan créé sur partners.youcan.shop</p>
+              <p>• App créée manuellement (Embedded = False)</p>
+              <p>• Variables <code className="bg-muted px-1 rounded text-xs">YOUCAN_CLIENT_ID</code> et <code className="bg-muted px-1 rounded text-xs">YOUCAN_CLIENT_SECRET</code> configurées sur Railway</p>
+            </div>
+            <Button
+              onClick={() => { window.location.href = "/api/integrations/youcan/oauth/start"; }}
+              className="w-full bg-red-600 hover:bg-red-700 text-white h-11 font-semibold gap-2"
+            >
+              <Link2 className="w-4 h-4" /> Connecter ma boutique YouCan
+            </Button>
+            <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+              <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />
+              Non connecté — aucune commande synchronisée
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
