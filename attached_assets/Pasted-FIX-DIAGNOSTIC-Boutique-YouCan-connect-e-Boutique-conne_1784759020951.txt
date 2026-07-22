@@ -1,0 +1,146 @@
+FIX / DIAGNOSTIC — Boutique YouCan connectée ("Boutique connectée" ✅) mais
+0 commande synchronisée après une commande test. Deux causes probables à
+corriger + logs pour confirmer laquelle s'applique.
+
+────────────────────────────────────────────────────────────────────────────
+CAUSE A (la plus probable) — La vérification de signature HMAC compare le
+mauvais contenu
+
+Le code actuel (dans le webhook /api/webhooks/youcan/order/:webhookKey) fait :
+```ts
+const expected = crypto.createHmac("sha256", clientSecret)
+  .update(JSON.stringify(req.body))
+  .digest("hex");
+```
+`JSON.stringify(req.body)` RE-SÉRIALISE le body après qu'Express l'a déjà
+parsé en objet JS — l'ordre des clés, les espaces, l'encodage peuvent différer
+de ce que YouCan a RÉELLEMENT signé côté serveur (le JSON brut envoyé sur le
+fil). Résultat : la signature calculée ne correspond QUASI JAMAIS à celle
+envoyée par YouCan, même pour un webhook 100% légitime → le check
+`if (expected !== signature) return res.status(401)...` rejette la commande
+silencieusement.
+
+FIX — Capturer le corps BRUT (raw bytes) de la requête AVANT le parsing JSON,
+et signer CE contenu-là, pas l'objet re-sérialisé.
+
+Dans server/index.ts (ou où `express.json()` est configuré globalement),
+vérifier s'il y a déjà un `verify` callback ; si le webhook YouCan utilise le
+même parser global sans capture du raw body, ajouter une route dédiée AVANT
+le parsing JSON global pour ce endpoint spécifique :
+
+```ts
+// Dans server/routes.ts, remplacer la déclaration de la route pour capturer le raw body :
+app.post(
+  "/api/webhooks/youcan/order/:webhookKey",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    try {
+      const { webhookKey } = req.params;
+      const integrationRows = await db.select().from(storeIntegrations)
+        .where(and(eq(storeIntegrations.webhookKey, webhookKey), eq(storeIntegrations.provider, "youcan")))
+        .limit(1);
+      const integration = integrationRows[0];
+      if (!integration) {
+        console.warn(`[YOUCAN-WEBHOOK] Unknown webhookKey: ${webhookKey}`);
+        return res.status(404).json({ message: "Unknown webhook" });
+      }
+
+      const rawBody = req.body as Buffer; // Buffer brut grâce à express.raw()
+      const signature = req.headers["x-youcan-signature"] as string | undefined;
+      const clientSecret = process.env.YOUCAN_CLIENT_SECRET!;
+
+      console.log(`[YOUCAN-WEBHOOK] Hit — webhookKey=${webhookKey}, hasSignature=${!!signature}, bodyLength=${rawBody?.length}`);
+
+      if (signature) {
+        const expected = crypto.createHmac("sha256", clientSecret).update(rawBody).digest("hex");
+        if (expected !== signature) {
+          console.warn(`[YOUCAN-WEBHOOK] Invalid signature — expected=${expected.slice(0,12)}... got=${signature.slice(0,12)}...`);
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+      } else {
+        console.warn("[YOUCAN-WEBHOOK] No x-youcan-signature header present — proceeding without verification (dev only, tighten later)");
+      }
+
+      const payload = JSON.parse(rawBody.toString("utf-8"));
+      console.log("[YOUCAN-WEBHOOK] Payload parsed — ref:", payload.ref, "id:", payload.id);
+
+      // ── (reste du handler inchangé à partir d'ici : storeId, customerName, fetch full order, orderItemsToCreate, storage.createOrder, etc.) ──
+      ...
+    } catch (err: any) {
+      console.error("[YOUCAN-WEBHOOK] Error:", err);
+      res.status(500).json({ success: false, message: "Processing failed" });
+    }
+  }
+);
+```
+
+IMPORTANT : `express.raw({ type: "application/json" })` doit être appliqué
+UNIQUEMENT sur cette route (comme montré ci-dessus, en 2ème argument avant le
+handler), pas globalement — sinon toutes les autres routes JSON du projet
+cesseraient de fonctionner. Le reste du corps de la fonction (résolution du
+storeId, customerName, appel à `resolveProductId`, `storage.createOrder`,
+etc.) reste exactement identique à la version précédente, seule la partie
+lecture du body + vérification signature change.
+
+────────────────────────────────────────────────────────────────────────────
+CAUSE B — Confirmer que l'abonnement resthooks a réussi
+
+Dans le callback OAuth (`/api/integrations/youcan/oauth/callback`), le code
+logue déjà la réponse de `resthooks/subscribe` mais ne bloque rien si ça
+échoue (comportement "non-fatal" volontaire). Il faut juste ALLER VOIR ce log
+maintenant :
+
+Dans Railway → Deployments → Logs, chercher la ligne :
+```
+[YOUCAN-OAUTH] resthooks/subscribe response: ...
+```
+(celle générée lors du clic sur "Connecter ma boutique YouCan", pas au
+moment du test de commande). Si elle contient une erreur (ex: `"message":
+"forbidden"` ou un scope manquant), c'est que l'app YouCan (tajergrow) n'a
+PAS la permission "Orders" activée dans ses Scopes (Partners Dashboard → App
+→ OAuth → cocher au moins "Read orders" dans la section ORDERS, même si "All
+scopes" semble déjà sélectionné visuellement — cocher les cases explicitement
+pour être sûr). Si les scopes ont changé APRÈS la connexion existante, il
+faut se déconnecter puis se reconnecter (le token existant a les anciennes
+permissions).
+
+Si la subscription a réussi, ajouter un endpoint pour la vérifier à tout
+moment (utile pour du debug futur aussi) :
+
+```ts
+app.get("/api/integrations/youcan/resthooks", requireAuth, async (req: any, res) => {
+  const storeId = req.user.storeId;
+  const rows = await db.select().from(storeIntegrations)
+    .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))
+    .limit(1);
+  const integration = rows[0];
+  if (!integration?.oauthAccessToken) return res.status(400).json({ message: "not_connected" });
+  const accessToken = decrypt(integration.oauthAccessToken);
+  const resp = await fetch("https://api.youcan.shop/resthooks", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const json = await resp.json();
+  res.json(json);
+});
+```
+
+Appeler `GET /api/integrations/youcan/resthooks` (dans la console navigateur,
+`fetch('/api/integrations/youcan/resthooks').then(r=>r.json()).then(console.log)`)
+pour lister les webhooks réellement enregistrés côté YouCan pour ce store —
+ça confirme si "order.create" y figure avec la bonne target_url.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix YouCan webhook signature verification (raw body) + add diagnostics" && git push
+
+VÉRIFICATION
+1. `GET /api/integrations/youcan/resthooks` → doit lister un abonnement
+   `order.create` avec la bonne `target_url` (celle qui contient le
+   webhookKey du store).
+2. Passer une nouvelle commande test sur la boutique YouCan connectée.
+3. Regarder les logs Railway → chercher `[YOUCAN-WEBHOOK] Hit` → si cette
+   ligne apparaît, YouCan appelle bien notre serveur (bonne nouvelle, le
+   souci était juste la signature). Si elle n'apparaît PAS du tout après une
+   commande test, le problème est côté abonnement (CAUSE B) — dans ce cas
+   coller-moi la réponse de `GET /api/integrations/youcan/resthooks`.
+4. La commande doit apparaître dans la liste des commandes de la plateforme.
