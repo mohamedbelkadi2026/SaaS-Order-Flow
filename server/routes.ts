@@ -5178,7 +5178,7 @@ export async function registerRoutes(
   });
 
   // ─── YouCan OAuth webhook — order.create (signed with YOUCAN_CLIENT_SECRET) ──
-  app.post("/api/webhooks/youcan/order/:webhookKey", express.raw({ type: "application/json" }), async (req: any, res: any) => {
+  app.post("/api/webhooks/youcan/order/:webhookKey", async (req: any, res: any) => {
     try {
       const { webhookKey } = req.params;
       const integrationRows = await db.select().from(storeIntegrations)
@@ -5190,25 +5190,30 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Unknown or unconfigured YouCan webhook" });
       }
 
-      // req.body is a raw Buffer thanks to express.raw() — use it directly for HMAC.
-      const rawBody = req.body as Buffer;
+      // Use webhookRawBody captured by global middleware (server/index.ts) before express.json().
+      const rawBody = (req as any).webhookRawBody as Buffer | undefined;
       const signature = req.headers["x-youcan-signature"] as string | undefined;
       const clientSecret = process.env.YOUCAN_CLIENT_SECRET!;
 
-      console.log(`[YOUCAN-WEBHOOK] Hit — webhookKey=${webhookKey}, hasSignature=${!!signature}, bodyLength=${rawBody?.length}`);
+      console.log(`[YOUCAN-WEBHOOK] Hit — webhookKey=${webhookKey}, hasSignature=${!!signature}, rawBodyLength=${rawBody?.length}`);
 
       if (signature) {
-        const expected = createHmac("sha256", clientSecret).update(rawBody).digest("hex");
-        if (expected !== signature) {
-          console.warn(`[YOUCAN-WEBHOOK] Invalid signature — expected=${expected.slice(0, 12)}... got=${signature.slice(0, 12)}...`);
+        if (!rawBody) {
+          console.warn("[YOUCAN-WEBHOOK] No raw body captured — cannot verify signature, rejecting");
           return res.status(401).json({ message: "Invalid signature" });
         }
+        const expected = createHmac("sha256", clientSecret).update(rawBody).digest("hex");
+        if (expected !== signature) {
+          console.warn(`[YOUCAN-WEBHOOK] Invalid signature — expected=${expected.slice(0, 12)}... received=${signature.slice(0, 12)}... rejecting`);
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+        console.log("[YOUCAN-WEBHOOK] Signature verified OK");
       } else {
         console.warn("[YOUCAN-WEBHOOK] No x-youcan-signature header — proceeding without verification");
       }
 
       const storeId = integration.storeId;
-      const payload = JSON.parse(rawBody.toString("utf-8")) as any;
+      const payload = req.body as any;
       console.log("[YOUCAN-WEBHOOK] Payload parsed — ref:", payload.ref, "id:", payload.id);
       const orderRef = payload.ref || payload.id;
       if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
