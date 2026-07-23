@@ -5231,18 +5231,31 @@ export async function registerRoutes(
       let customerCity = payload.shipping_address?.city || "";
       let customerAddress = payload.shipping_address?.address || "";
 
-      // Re-fetch full order for address if not in payload
+      // Always re-fetch full order for complete address (webhook payload is often partial).
       const accessToken = await refreshYouCanToken(integration);
-      if (accessToken && payload.id && !customerCity) {
+      if (accessToken && payload.id) {
         try {
           const fullOrderResp = await fetch(`https://api.youcan.shop/orders/${payload.id}?include=customer,shipping`, {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
           const fullOrder = await fullOrderResp.json() as any;
-          customerCity = fullOrder?.shipping?.address?.city || fullOrder?.customer?.address?.city || customerCity;
-          customerAddress = fullOrder?.shipping?.address?.address || customerAddress;
+
+          // Temporary diagnostic log — remove once city/address resolve correctly.
+          console.log(`[YOUCAN-WEBHOOK] Full order response for order ${payload.id}:`, JSON.stringify(fullOrder, null, 2));
+
+          const addr = fullOrder?.shipping?.address
+            || fullOrder?.customer?.address
+            || (Array.isArray(fullOrder?.shipping?.addresses) ? fullOrder.shipping.addresses[0] : null)
+            || (Array.isArray(fullOrder?.addresses) ? fullOrder.addresses[0] : null)
+            || null;
+
+          customerCity = addr?.city || addr?.city_name || fullOrder?.city || customerCity;
+          customerAddress = [addr?.address, addr?.address_line_1, addr?.street, addr?.line1]
+            .filter(Boolean)[0] || addr?.full_address || customerAddress;
+
+          if (!customerCity) console.warn(`[YOUCAN-WEBHOOK] Could not extract city for order ${payload.id} — check the logged response above to find the right field path`);
         } catch (fetchErr: any) {
-          console.error("[YOUCAN-WEBHOOK] Failed to fetch full order:", fetchErr.message);
+          console.error("[YOUCAN-WEBHOOK] Failed to fetch full order for address:", fetchErr.message);
         }
       }
 
