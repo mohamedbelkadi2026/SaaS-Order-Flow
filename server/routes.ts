@@ -5231,7 +5231,7 @@ export async function registerRoutes(
       let customerCity = payload.shipping_address?.city || "";
       let customerAddress = payload.shipping_address?.address || "";
 
-      // Always re-fetch full order for complete address (webhook payload is often partial).
+      // Re-fetch full order — webhook payload is partial; real address is in customer.city/region/location.
       const accessToken = await refreshYouCanToken(integration);
       if (accessToken && payload.id) {
         try {
@@ -5240,20 +5240,27 @@ export async function registerRoutes(
           });
           const fullOrder = await fullOrderResp.json() as any;
 
-          // Temporary diagnostic log — remove once city/address resolve correctly.
-          console.log(`[YOUCAN-WEBHOOK] Full order response for order ${payload.id}:`, JSON.stringify(fullOrder, null, 2));
+          const customer = fullOrder?.customer || {};
+          const shippingAddr = fullOrder?.shipping?.address && !Array.isArray(fullOrder.shipping.address)
+            ? fullOrder.shipping.address
+            : null;
 
-          const addr = fullOrder?.shipping?.address
-            || fullOrder?.customer?.address
-            || (Array.isArray(fullOrder?.shipping?.addresses) ? fullOrder.shipping.addresses[0] : null)
-            || (Array.isArray(fullOrder?.addresses) ? fullOrder.addresses[0] : null)
-            || null;
+          // City: prefer shipping.address.city (structured orders), else customer.city (COD text).
+          customerCity = shippingAddr?.city || customer.city || customerCity;
 
-          customerCity = addr?.city || addr?.city_name || fullOrder?.city || customerCity;
-          customerAddress = [addr?.address, addr?.address_line_1, addr?.street, addr?.line1]
-            .filter(Boolean)[0] || addr?.full_address || customerAddress;
+          // Address: customer.location / region hold the free-text address for COD orders.
+          customerAddress = shippingAddr?.address
+            || customer.location
+            || customer.region
+            || customerAddress;
 
-          if (!customerCity) console.warn(`[YOUCAN-WEBHOOK] Could not extract city for order ${payload.id} — check the logged response above to find the right field path`);
+          // If city looks like a raw numeric code, fall back to region/location text.
+          if (customerCity && /^\d+$/.test(customerCity.trim())) {
+            console.warn(`[YOUCAN-WEBHOOK] city is numeric code ("${customerCity}") for order ${payload.id}, falling back to region/location`);
+            customerCity = customer.region || customer.location || customerCity;
+          }
+
+          if (!customerCity) console.warn(`[YOUCAN-WEBHOOK] No usable city for order ${payload.id}`);
         } catch (fetchErr: any) {
           console.error("[YOUCAN-WEBHOOK] Failed to fetch full order for address:", fetchErr.message);
         }
