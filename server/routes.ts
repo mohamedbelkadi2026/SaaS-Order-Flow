@@ -1459,6 +1459,35 @@ export async function registerRoutes(
     }
   });
 
+  // Physical return confirmation by order id (button click from the returns list)
+  app.post("/api/orders/confirm-return-by-code", requireAuth, async (req: any, res) => {
+    const storeId = req.user!.storeId!;
+    const code = String(req.body.code || "").trim();
+    if (!code) return res.status(400).json({ success: false, message: "Code vide" });
+
+    const [order] = await db.select().from(orders).where(and(
+      eq(orders.storeId, storeId),
+      or(
+        eq(orders.trackNumber, code),
+        eq(orders.returnTrackingNumber, code),
+        eq(orders.orderNumber, code),
+      ),
+    )).limit(1);
+
+    if (!order) return res.status(404).json({ success: false, message: `Aucune commande trouvée pour le code "${code}"` });
+
+    const result = await storage.confirmReturnReceipt(storeId, order.id, req.user!.id);
+    res.status(result.success ? 200 : 400).json({ ...result, orderNumber: order.orderNumber, customerName: order.customerName });
+  });
+
+  app.post("/api/orders/:id/confirm-return", requireAuth, async (req: any, res) => {
+    const storeId = req.user!.storeId!;
+    const orderId = parseInt(req.params.id, 10);
+    const result = await storage.confirmReturnReceipt(storeId, orderId, req.user!.id);
+    if (!result.success) return res.status(400).json(result);
+    res.json(result);
+  });
+
   app.post("/api/orders/bulk-assign", requireAuth, async (req, res) => {
     try {
       const user = req.user!;

@@ -145,6 +145,8 @@ export const orders = pgTable("orders", {
   commentStatus: text("comment_status"),
   commentOrder: text("comment_order"),
   returnTrackingNumber: text("return_tracking_number"),
+  returnConfirmedAt: timestamp("return_confirmed_at"),
+  returnConfirmedBy: integer("return_confirmed_by").references(() => users.id),
   wasAbandoned: integer("was_abandoned").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),

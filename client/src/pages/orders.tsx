@@ -386,6 +386,51 @@ function FollowUpLogsPanel({ orderId }: { orderId: number }) {
 // filtered set in one page, so cross-page selection acts on real, loaded IDs.
 const SELECT_ALL_LIMIT = 100000;
 
+function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
+  const [code, setCode] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const { toast } = useToast();
+  const [todayCount, setTodayCount] = useState(0);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!code.trim()) return;
+    try {
+      const res = await apiRequest("POST", "/api/orders/confirm-return-by-code", { code: code.trim() });
+      const data = await res.json();
+      if (data.success) {
+        toast({ title: "✅ Retour confirmé", description: `${data.orderNumber} — ${data.customerName}` });
+        setTodayCount((c) => c + 1);
+        onConfirmed();
+      } else {
+        toast({ title: "Non confirmé", description: data.message, variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+    } finally {
+      setCode("");
+      inputRef.current?.focus();
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
+      <span className="text-sm font-medium shrink-0">📷 Scanner un retour :</span>
+      <input
+        ref={inputRef}
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        placeholder="Scanner ou taper le code de suivi..."
+        className="flex-1 rounded border px-3 py-1.5 text-sm bg-background"
+        autoComplete="off"
+      />
+      <span className="text-xs text-muted-foreground shrink-0">{todayCount} confirmé{todayCount !== 1 ? "s" : ""} aujourd'hui</span>
+    </form>
+  );
+}
+
 export default function Orders() {
   const [, params] = useRoute("/orders/:filter");
   const filterKey = params?.filter || "";
@@ -1497,28 +1542,36 @@ export default function Orders() {
       </Card>
 
       {filterKey === 'retours' && (
-        <div className="flex items-center gap-1.5 flex-wrap" data-testid="segmented-retours-filter">
-          {[
-            { key: '', label: 'Tous' },
-            { key: 'retour_en_route', label: '🚚 En route' },
-            { key: 'retour_recu', label: '✅ Reçus' },
-          ].map(opt => {
-            const active = filters.statusFilter === opt.key;
-            return (
-              <button
-                key={opt.key || 'all'}
-                onClick={() => setFilters(f => ({ ...f, statusFilter: opt.key, page: 1 }))}
-                data-testid={`button-retours-${opt.key || 'all'}`}
-                className={`h-9 px-4 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap ${
-                  active
-                    ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                    : "bg-background border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/40"
-                }`}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap" data-testid="segmented-retours-filter">
+            {[
+              { key: '', label: 'Tous' },
+              { key: 'retour_en_route', label: '🚚 En route' },
+              { key: 'retour_recu', label: '✅ Reçus' },
+              { key: 'retour_non_confirme', label: '⏳ Non confirmés' },
+              { key: 'retour_confirme', label: '✅ Confirmés' },
+            ].map(opt => {
+              const active = filters.statusFilter === opt.key;
+              return (
+                <button
+                  key={opt.key || 'all'}
+                  onClick={() => setFilters(f => ({ ...f, statusFilter: opt.key, page: 1 }))}
+                  data-testid={`button-retours-${opt.key || 'all'}`}
+                  className={`h-9 px-4 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap ${
+                    active
+                      ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                      : "bg-background border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/40"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          <ReturnScanner onConfirmed={() => {
+            queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+          }} />
         </div>
       )}
 
@@ -1562,6 +1615,7 @@ export default function Orders() {
                 {isColVisible('livraison') && <TableHead>Frais de livraison</TableHead>}
                 {isColVisible('derniereAction') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Dernière action</TableHead>}
                 {isColVisible('status') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Status</TableHead>}
+                {filterKey === 'retours' && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Confirmé</TableHead>}
                 {isColVisible('prix') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Prix</TableHead>}
                 {isColVisible('adresse') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Adresse</TableHead>}
                 {isColVisible('reference') && <TableHead className="text-[11px] font-semibold uppercase tracking-wider">Référence</TableHead>}
@@ -1904,6 +1958,39 @@ export default function Orders() {
                                   {(order as any).driverPhone}
                                 </a>
                               )}
+                            </div>
+                          )}
+                        </TableCell>
+                      )}
+                      {filterKey === 'retours' && (
+                        <TableCell onClick={e => e.stopPropagation()}>
+                          {(order as any).returnConfirmedAt ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-[10px] font-semibold whitespace-nowrap">
+                              ✅ {new Date((order as any).returnConfirmedAt).toLocaleDateString('fr-FR')}
+                            </span>
+                          ) : (
+                            <div className="flex items-center gap-1.5">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 text-[10px] font-semibold whitespace-nowrap">⏳ Non confirmé</span>
+                              <button
+                                className="h-6 px-2 text-[10px] font-medium rounded border border-green-300 text-green-700 hover:bg-green-50 dark:hover:bg-green-900/20 whitespace-nowrap"
+                                onClick={async () => {
+                                  try {
+                                    const res = await apiRequest("POST", `/api/orders/${order.id}/confirm-return`, {});
+                                    const data = await res.json();
+                                    if (data.success) {
+                                      toast({ title: "✅ Retour confirmé", description: data.message });
+                                      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+                                      queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+                                    } else {
+                                      toast({ title: "Erreur", description: data.message, variant: "destructive" });
+                                    }
+                                  } catch {
+                                    toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+                                  }
+                                }}
+                              >
+                                Confirmer réception
+                              </button>
                             </div>
                           )}
                         </TableCell>

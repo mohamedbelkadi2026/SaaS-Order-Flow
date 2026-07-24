@@ -716,6 +716,12 @@ export class DatabaseStorage implements IStorage {
         conditions.push(inArray(orders.status, ['En Cours De Retour']));
       } else if (filters.status === 'retour_recu') {
         conditions.push(inArray(orders.status, ['Retour Recu', 'retourné']));
+      } else if (filters.status === 'retour_non_confirme') {
+        conditions.push(inArray(orders.status, ['retourné', 'Retour Recu', 'En Cours De Retour', 'refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']));
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);
+      } else if (filters.status === 'retour_confirme') {
+        conditions.push(inArray(orders.status, ['retourné', 'Retour Recu', 'En Cours De Retour', 'refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']));
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
         conditions.push(inArray(orders.status, [
@@ -1108,33 +1114,12 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // ── RULE 2: Return/cancel from delivered OR confirmed → restore stock ─
-      // Triggers when prev was delivered/confirme/confirme_reporte AND now switching to a return status
-      if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && this.RETURN_STATUSES.has(status)) {
-        for (const item of items) {
-          if (!item.productId) continue;
-          const qty = Number(item.quantity);
-          await tx.update(products)
-            .set({ stock: sql`${products.stock} + ${qty}` })
-            .where(eq(products.id, item.productId));
-          await tx.insert(stockLogs).values({
-            storeId: currentOrder.storeId!,
-            productId: item.productId,
-            orderId: id,
-            changeAmount: qty,
-            reason: `Retour commande #${id} → ${status}`,
-          });
-          await tx.insert(stockMovements).values({
-            storeId: currentOrder.storeId!,
-            productId: item.productId,
-            type: 'returned',
-            quantity: qty,
-            orderId: id,
-            userId: actorId ?? null,
-            reason: `Retour commande #${id} → ${status}`,
-          });
-        }
-      }
+      // ── RULE 2 (RETIRÉE) ─────────────────────────────────────────────────────
+      // La restauration du stock au passage en statut retour a été déplacée vers
+      // confirmReturnReceipt() : elle ne se déclenche plus automatiquement sur un
+      // simple changement de statut rapporté par le transporteur, mais uniquement
+      // après confirmation physique manuelle (scan / tracking number) par un
+      // utilisateur de la plateforme. Voir storage.confirmReturnReceipt().
 
       return updated;
     });
@@ -1152,6 +1137,51 @@ export class DatabaseStorage implements IStorage {
       .where(eq(orders.id, id))
       .returning();
     return updated;
+  }
+
+  async confirmReturnReceipt(storeId: number, orderId: number, actorId: number | null): Promise<{ success: boolean; message: string; order?: any }> {
+    return await db.transaction(async (tx) => {
+      const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
+      if (!order) return { success: false, message: "Commande introuvable" };
+      if (!this.RETURN_STATUSES.has(order.status)) {
+        return { success: false, message: `Cette commande n'est pas en statut retour (statut actuel: ${order.status})` };
+      }
+      if ((order as any).returnConfirmedAt) {
+        return { success: false, message: `Retour déjà confirmé le ${new Date((order as any).returnConfirmedAt).toLocaleString('fr-FR')}` };
+      }
+
+      const items = await tx.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+      for (const item of items) {
+        if (!item.productId) continue;
+        const qty = Number(item.quantity);
+        await tx.update(products)
+          .set({ stock: sql`${products.stock} + ${qty}` })
+          .where(eq(products.id, item.productId));
+        await tx.insert(stockLogs).values({
+          storeId,
+          productId: item.productId,
+          orderId,
+          changeAmount: qty,
+          reason: `Retour confirmé physiquement — commande #${orderId}`,
+        });
+        await tx.insert(stockMovements).values({
+          storeId,
+          productId: item.productId,
+          type: 'returned',
+          quantity: qty,
+          orderId,
+          userId: actorId,
+          reason: `Retour confirmé physiquement (scan/tracking) — commande #${orderId}`,
+        });
+      }
+
+      const [updated] = await tx.update(orders)
+        .set({ returnConfirmedAt: new Date(), returnConfirmedBy: actorId } as any)
+        .where(eq(orders.id, orderId))
+        .returning();
+
+      return { success: true, message: "Retour confirmé, stock mis à jour", order: updated };
+    });
   }
 
   async getAdSpend(storeId: number, date?: string): Promise<AdSpendEntry[]> {
