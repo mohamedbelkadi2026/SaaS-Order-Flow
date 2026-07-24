@@ -388,6 +388,7 @@ const SELECT_ALL_LIMIT = 100000;
 
 function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
   const scannerRef = useRef<any>(null);
+  const startedRef = useRef(false); // tracks whether start() fully succeeded — gates safe .stop()
   const elementId = "qr-reader-region";
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
@@ -401,28 +402,28 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
       try {
         const { Html5Qrcode } = await import("html5-qrcode");
         if (cancelled) return;
-        const cameras = await Html5Qrcode.getCameras();
-        if (cancelled) return;
-        if (!cameras || cameras.length === 0) {
-          setError("Aucune caméra détectée sur cet appareil.");
-          setStarting(false);
-          return;
+
+        // getCameras() can fail on iOS before permission is granted — don't block on empty list,
+        // let start() request permission itself.
+        let cameras: any[] = [];
+        try { cameras = await Html5Qrcode.getCameras(); } catch (camErr: any) {
+          console.warn("[CameraScanner] getCameras failed, will try start() anyway:", camErr?.message);
         }
+        if (cancelled) return;
+        // If cameras.length === 0 we still try start() — iOS fills the list only after first grant.
+
         const scanner = new Html5Qrcode(elementId);
         scannerRef.current = scanner;
 
-        // FIX 1 — continuous autofocus + larger dynamic qrbox + more fps
+        // BUG 1 FIX — pass EXACTLY ONE key to cameraIdOrConfig; html5-qrcode validates strictly.
+        // "advanced" must NOT be in this object — apply focus separately via MediaStreamTrack below.
         await scanner.start(
-          {
-            facingMode: "environment",
-            // @ts-ignore — non-typed but supported on most Android browsers
-            advanced: [{ focusMode: "continuous" }],
-          },
+          { facingMode: "environment" },
           {
             fps: 15,
             qrbox: (w: number, h: number) => {
-              const size = Math.floor(Math.min(w, h) * 0.7);
-              return { width: size, height: size };
+              const s = Math.floor(Math.min(w, h) * 0.7);
+              return { width: s, height: s };
             },
             aspectRatio: 1.0,
             disableFlip: false,
@@ -431,16 +432,36 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
             if (nativeStopped || cancelled) return;
             nativeStopped = true;
             onScan(decodedText);
-            scanner.stop().catch(() => {});
+            if (startedRef.current) { scanner.stop().catch(() => {}); startedRef.current = false; }
           },
-          () => { /* per-frame errors ignored — normal in continuous scan */ }
+          () => { /* per-frame decode errors ignored — normal in continuous scan */ }
         );
-        if (!cancelled) setStarting(false);
 
-        // FIX 2 — BarcodeDetector native API in parallel (Chrome Android, tolerates blur)
-        // @ts-ignore
-        if (!cancelled && "BarcodeDetector" in window) {
-          // @ts-ignore
+        if (cancelled) {
+          // Unmounted while starting — stop cleanly without letting error propagate.
+          scanner.stop().catch(() => {});
+          return;
+        }
+
+        startedRef.current = true;
+        setStarting(false);
+
+        // Apply continuous autofocus as a BONUS via MediaStreamTrack — never fatal if unsupported.
+        try {
+          const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+          const track = (videoEl?.srcObject as MediaStream | null)?.getVideoTracks?.()?.[0];
+          if (track && typeof track.getCapabilities === "function") {
+            const caps: any = track.getCapabilities();
+            if (caps.focusMode?.includes?.("continuous")) {
+              await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as any] });
+            }
+          }
+        } catch { /* focus not supported — no-op */ }
+
+        // BarcodeDetector native API in parallel (Chrome Android — hardware-accelerated, blur-tolerant).
+        // The guard is inside useEffect (not a conditional hook call) — safe for React's rules.
+        // On Safari/iOS where BarcodeDetector is absent this block is a complete no-op.
+        if (!cancelled && typeof window !== "undefined" && "BarcodeDetector" in window) {
           const detector = new (window as any).BarcodeDetector({
             formats: ["qr_code", "code_128", "code_39", "ean_13"],
           });
@@ -456,17 +477,19 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
               if (codes.length > 0 && !nativeStopped && !cancelled) {
                 nativeStopped = true;
                 onScan(codes[0].rawValue);
-                scannerRef.current?.stop().catch(() => {});
+                if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
                 return;
               }
-            } catch { /* invalid frame, continue */ }
+            } catch { /* invalid frame — continue */ }
             if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
           };
           requestAnimationFrame(tick);
         }
       } catch (err: any) {
+        // BUG 2 FIX — ALL errors are caught here and shown inside the modal.
+        // Nothing escapes to the global Error Boundary.
         if (cancelled) return;
-        console.error("[CameraScanner] failed:", err);
+        console.error("[CameraScanner] fatal start error (contained, app not affected):", err);
         setError(
           err?.name === "NotAllowedError"
             ? "Permission caméra refusée. Autorise l'accès à la caméra dans les réglages du navigateur."
@@ -475,51 +498,55 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
             : `Erreur caméra : ${err?.message || String(err)}`
         );
         setStarting(false);
+        startedRef.current = false;
       }
     })();
 
     return () => {
       cancelled = true;
       nativeStopped = true;
-      scannerRef.current?.stop().catch(() => {});
-      scannerRef.current?.clear();
+      // BUG 2 FIX — only call .stop() if start() fully succeeded; otherwise just clear.
+      if (startedRef.current && scannerRef.current) {
+        scannerRef.current.stop().catch(() => {}).finally(() => {
+          try { scannerRef.current?.clear(); } catch { /* ignore */ }
+        });
+      } else {
+        try { scannerRef.current?.clear(); } catch { /* ignore */ }
+      }
+      startedRef.current = false;
     };
   }, []);
 
-  // FIX 3 — manual photo capture fallback (freezes a frame, decodes it)
+  // Manual photo capture — freezes one frame, decodes with BarcodeDetector (Chrome Android).
+  // On Safari/iOS where BarcodeDetector is absent, shows a clear message instead of crashing.
   const capturePhoto = async () => {
     setCapturing(true);
     setError(null);
     try {
       const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
       if (!videoEl) { setError("Flux caméra non disponible."); setCapturing(false); return; }
+      if (typeof window === "undefined" || !("BarcodeDetector" in window)) {
+        setError("Capture photo non disponible sur ce navigateur (Safari/iOS). Utilise le scan continu ou la saisie manuelle.");
+        setCapturing(false);
+        return;
+      }
       const canvas = document.createElement("canvas");
       canvas.width = videoEl.videoWidth;
       canvas.height = videoEl.videoHeight;
       canvas.getContext("2d")!.drawImage(videoEl, 0, 0);
-
-      // @ts-ignore
-      if ("BarcodeDetector" in window) {
-        // @ts-ignore
-        const detector = new (window as any).BarcodeDetector({
-          formats: ["qr_code", "code_128", "code_39", "ean_13"],
-        });
-        const codes: any[] = await detector.detect(canvas);
-        if (codes.length > 0) {
-          onScan(codes[0].rawValue);
-          scannerRef.current?.stop().catch(() => {});
-          setCapturing(false);
-          return;
-        }
-      } else {
-        // BarcodeDetector non disponible (iOS/Safari) — la capture photo n'est pas supportée
-        setError("Capture photo non disponible sur ce navigateur. Utilise le scan continu ou saisie manuelle.");
+      const detector = new (window as any).BarcodeDetector({
+        formats: ["qr_code", "code_128", "code_39", "ean_13"],
+      });
+      const codes: any[] = await detector.detect(canvas);
+      if (codes.length > 0) {
+        onScan(codes[0].rawValue);
+        if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
         setCapturing(false);
         return;
       }
       setError("Aucun code détecté sur la photo — rapproche-toi légèrement et réessaie.");
     } catch (e: any) {
-      setError(`Erreur capture : ${e?.message || e}`);
+      setError(`Erreur capture : ${e?.message || String(e)}`);
     }
     setCapturing(false);
   };
@@ -527,7 +554,6 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4">
       <div className="flex flex-col items-center gap-3 w-full max-w-[360px]">
-        {/* FIX 4 — distance hint */}
         <p className="text-white text-sm font-medium text-center leading-snug">
           {starting && !error
             ? "Ouverture de la caméra…"
@@ -539,7 +565,6 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
           <p className="text-red-400 text-sm text-center max-w-xs bg-black/40 rounded-lg px-3 py-2">{error}</p>
         )}
         <div id={elementId} className="w-full max-w-[320px] aspect-square bg-white rounded-xl overflow-hidden" />
-        {/* FIX 3 — manual photo capture button */}
         {!starting && !error && (
           <button
             onClick={capturePhoto}

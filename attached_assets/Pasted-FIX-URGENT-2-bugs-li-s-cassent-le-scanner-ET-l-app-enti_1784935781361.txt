@@ -1,0 +1,227 @@
+FIX URGENT — 2 bugs liés, cassent le scanner ET l'app entière sur iPhone.
+
+────────────────────────────────────────────────────────────────────────────
+BUG 1 — "Erreur caméra : 'cameraIdOrConfig' object should have exactly 1
+key, if passed as an object, found 2 keys"
+
+CAUSE
+Le fix précédent passait un objet à 2 clés au premier paramètre de
+`scanner.start()` :
+```ts
+{
+  facingMode: "environment",
+  advanced: [{ focusMode: "continuous" }],
+}
+```
+html5-qrcode valide STRICTEMENT que ce paramètre, quand c'est un objet, n'a
+QU'UNE SEULE clé (soit `{ facingMode: ... }`, soit `{ deviceId: ... }`) — ce
+n'est PAS un objet de contraintes `MediaTrackConstraints` classique malgré
+les apparences. Passer `advanced` ici plante systématiquement, sur tous les
+appareils (le fait que ça n'ait été remarqué que sur iPhone est un hasard de
+timing/ordre de test, pas une différence de plateforme).
+
+FIX — Revenir à une seule clé pour `cameraIdOrConfig`, et appliquer le focus
+continu SÉPARÉMENT, après le démarrage réussi, directement sur la piste
+vidéo (`MediaStreamTrack`) — avec un try/catch qui ne fait JAMAIS remonter
+d'erreur (le focus continu est un bonus, pas un pré-requis ; s'il échoue, le
+scan doit continuer de fonctionner quand même) :
+
+```ts
+await scanner.start(
+  { facingMode: "environment" },   // ← UNE SEULE clé, comme avant le fix précédent
+  {
+    fps: 15,
+    qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
+      const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.7);
+      return { width: size, height: size };
+    },
+    aspectRatio: 1.0,
+    disableFlip: false,
+  },
+  (decodedText) => {
+    onScan(decodedText);
+    scanner.stop().catch(() => {});
+  },
+  () => {}
+);
+
+// Focus continu en bonus, sur la piste vidéo réelle — jamais fatal si ça échoue.
+try {
+  const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+  const track = (videoEl?.srcObject as MediaStream | null)?.getVideoTracks()?.[0];
+  if (track && typeof track.getCapabilities === "function") {
+    const caps: any = track.getCapabilities();
+    if (caps.focusMode?.includes?.("continuous")) {
+      await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as any] });
+    }
+  }
+} catch {
+  // Focus avancé non supporté sur cet appareil/navigateur — pas grave, le scan continue normalement.
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+BUG 2 — L'erreur du scanner fait planter TOUTE l'application ("Une erreur
+inattendue s'est produite / Actualisez la page")
+
+CAUSE
+Une erreur non interceptée quelque part dans le flux du scanner (démarrage
+raté, ou `.stop()` appelé sur un scanner qui n'a jamais démarré avec
+succès, ou promesse rejetée non catchée) remonte jusqu'à l'Error Boundary
+global de l'app, qui affiche cet écran de crash générique au lieu de rester
+localisé à la modale caméra.
+
+FIX — Rendre CHAQUE opération async du composant `CameraScanner`
+totalement défensive, pour qu'AUCUNE erreur ne puisse s'échapper du
+composant, et suivre explicitement si le scanner a réellement démarré avant
+de tenter de l'arrêter :
+
+```tsx
+function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
+  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const startedRef = useRef(false);   // ← suit si start() a vraiment réussi
+  const elementId = "qr-reader-region";
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        let cameras: any[] = [];
+        try {
+          cameras = await Html5Qrcode.getCameras();
+        } catch (camErr: any) {
+          // getCameras() peut échouer si permission pas encore accordée sur certains navigateurs —
+          // on tente quand même start() directement, qui redemandera la permission lui-même.
+          console.warn("[CameraScanner] getCameras failed, trying start() anyway:", camErr?.message);
+        }
+        if (cancelled) return;
+        if (cameras.length === 0) {
+          // Ne pas bloquer ici — certains navigateurs (notamment iOS Safari) ne remplissent
+          // la liste qu'après une première autorisation. On continue vers start().
+        }
+
+        const scanner = new Html5Qrcode(elementId);
+        scannerRef.current = scanner;
+
+        await scanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 15,
+            qrbox: (w: number, h: number) => { const s = Math.floor(Math.min(w, h) * 0.7); return { width: s, height: s }; },
+            aspectRatio: 1.0,
+          },
+          (decodedText) => {
+            onScan(decodedText);
+            if (startedRef.current) {
+              scanner.stop().catch(() => {});
+              startedRef.current = false;
+            }
+          },
+          () => {}
+        );
+
+        if (cancelled) {
+          // Le composant a été démonté pendant le démarrage — arrêter proprement sans throw.
+          scanner.stop().catch(() => {});
+          return;
+        }
+
+        startedRef.current = true;
+        setStarting(false);
+
+        // Focus continu en bonus (voir BUG 1) — jamais fatal.
+        try {
+          const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+          const track = (videoEl?.srcObject as MediaStream | null)?.getVideoTracks()?.[0];
+          if (track && typeof track.getCapabilities === "function") {
+            const caps: any = track.getCapabilities();
+            if (caps.focusMode?.includes?.("continuous")) {
+              await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as any] });
+            }
+          }
+        } catch { /* ignoré volontairement */ }
+
+      } catch (err: any) {
+        if (cancelled) return;
+        console.error("[CameraScanner] fatal start error (contained, app not affected):", err);
+        setError(
+          err?.name === "NotAllowedError" ? "Permission caméra refusée. Autorise l'accès à la caméra dans les réglages du navigateur."
+          : err?.name === "NotFoundError" ? "Aucune caméra trouvée."
+          : `Erreur caméra : ${err?.message || String(err)}`
+        );
+        setStarting(false);
+        startedRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (startedRef.current && scannerRef.current) {
+        scannerRef.current.stop().catch(() => {}).finally(() => {
+          try { scannerRef.current?.clear(); } catch {}
+        });
+      } else {
+        try { scannerRef.current?.clear(); } catch {}
+      }
+      startedRef.current = false;
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4">
+      {starting && !error && <p className="text-white mb-2">Ouverture de la caméra...</p>}
+      {error && <p className="text-red-400 mb-3 text-center max-w-xs">{error}</p>}
+      <div id={elementId} className="w-full max-w-[320px] aspect-square bg-white rounded-lg overflow-hidden" />
+      <button onClick={onClose} className="mt-4 rounded bg-white px-4 py-2 text-sm font-medium">
+        Fermer
+      </button>
+    </div>
+  );
+}
+```
+
+Points clés de robustesse ajoutés :
+- `startedRef` suit précisément si `.stop()` peut être appelé sans risque —
+  élimine l'erreur classique "cannot stop, scanner not running" qui plante
+  au démontage si le scanner n'avait jamais fini de démarrer.
+- `cancelled` empêche toute mise à jour d'état ou action après démontage du
+  composant (cas où l'utilisateur ferme la modale pendant que la caméra
+  démarre encore).
+- Le seul `catch` qui peut réellement échouer (le `try` principal autour de
+  `scanner.start()`) est TOUJOURS suivi d'un `setError(...)` qui affiche le
+  message DANS la modale, jamais une exception qui remonte plus haut.
+
+────────────────────────────────────────────────────────────────────────────
+BUG 3 (préventif) — Vérifier que le hook `BarcodeDetector` (ajouté au fix
+précédent, PARTIE B/FIX 2) ne s'exécute jamais sur Safari/iOS où l'API
+n'existe pas
+
+Vérifier que la garde est bien :
+```ts
+if (typeof window === "undefined" || !("BarcodeDetector" in window)) return;
+```
+et QUE ce hook est appelé de façon inconditionnelle (pas dans un
+try/catch qui pourrait masquer un problème de dépendances React), pour que
+React ne se plaigne jamais d'un hook appelé conditionnellement. Sur iPhone,
+ce hook doit ainsi être un no-op total, laissant html5-qrcode (BUG 1/2)
+comme seul mécanisme actif — c'est normal et attendu, Safari ne supporte
+pas `BarcodeDetector` nativement à ce jour.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix invalid html5-qrcode camera config (single key only) and make CameraScanner fully error-contained to prevent app-wide crashes on iOS" && git push
+
+VÉRIFICATION
+1. iPhone Safari : ouvrir le scanner → PLUS d'erreur "cameraIdOrConfig...
+   found 2 keys", PLUS d'écran de crash "Une erreur inattendue s'est
+   produite" pour toute l'app.
+2. Fermer la modale caméra en plein démarrage (clic rapide sur Fermer) →
+   ne doit rien casser, pas d'erreur console fatale.
+3. Refuser la permission caméra volontairement (réglages navigateur) →
+   message d'erreur clair DANS la modale, reste de l'app utilisable
+   normalement.
+4. Re-tester le scan complet (flux continu + bouton "Prendre une photo") du
+   fix précédent sur iPhone, maintenant que le crash est réglé.
