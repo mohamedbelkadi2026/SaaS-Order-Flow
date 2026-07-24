@@ -1,0 +1,67 @@
+FIX — Le build Railway échoue avec :
+```
+npm error network request to http://package-firewall.replit.local/npm/html5-qrcode/-/html5-qrcode-2.3.8.tgz failed
+npm error network getaddrinfo ENOTFOUND package-firewall.replit.local
+```
+
+CAUSE (confirmée dans les logs de build)
+`package-lock.json` contient une (ou plusieurs) URL "resolved" pointant vers
+le proxy interne de Replit (`package-firewall.replit.local`) — un domaine
+qui n'existe QUE dans l'environnement Replit, jamais accessible depuis
+Railway. Ça arrive quand un package est ajouté/installé pendant que le repo
+tourne dans l'éditeur Replit : toutes les installations npm y passent par ce
+proxy interne par défaut, et l'URL exacte se retrouve figée dans le lockfile.
+Résultat : même si `nixpacks.toml` force
+`npm install --registry=https://registry.npmjs.org/`, npm respecte quand
+même l'URL "resolved" déjà présente dans le lockfile pour ce package
+précis, donc le flag `--registry` ne suffit pas à corriger ce cas.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — Nettoyer le lockfile et empêcher que ça se reproduise
+
+1) Chercher toutes les occurrences de l'URL interne dans le lockfile :
+```bash
+grep -n "package-firewall.replit.local" package-lock.json
+```
+S'il y en a UNE seule ou quelques-unes ciblées (ex: juste html5-qrcode),
+les remplacer directement :
+```bash
+sed -i 's#http://package-firewall.replit.local/npm/#https://registry.npmjs.org/#g' package-lock.json
+```
+
+2) Si ça ne suffit pas ou pour repartir sur une base garantie saine,
+régénérer complètement le lockfile en forçant le registre public :
+```bash
+rm -f package-lock.json
+rm -rf node_modules
+npm install --registry=https://registry.npmjs.org/
+```
+
+3) Vérifier qu'il ne reste plus AUCUNE trace de l'URL interne :
+```bash
+grep -c "package-firewall.replit.local" package-lock.json
+# doit renvoyer 0
+```
+
+4) Empêcher que ça se reproduise à l'avenir (chaque fois qu'un package est
+ajouté depuis l'éditeur Replit) : créer un fichier `.npmrc` à la racine du
+projet avec ce contenu exact :
+```
+registry=https://registry.npmjs.org/
+```
+Ça force TOUTES les commandes npm (y compris celles lancées depuis Replit)
+à utiliser le registre npm public, donc plus aucune URL `replit.local` ne
+pourra se glisser dans le lockfile.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+```bash
+git add -A && git commit -m "Fix package-lock.json: remove Replit-internal registry URLs, add .npmrc to prevent recurrence" && git push
+```
+
+VÉRIFICATION
+1. Le build Railway doit passer l'étape `npm install` sans erreur
+   `ENOTFOUND package-firewall.replit.local`.
+2. Le déploiement doit atteindre `ACTIVE` / healthcheck réussi.
+3. `grep -c "replit.local" package-lock.json` doit renvoyer 0 en local
+   avant de push, comme garde-fou.
