@@ -314,6 +314,12 @@ const REGION_CITY_MAP: Record<string, string[]> = {
   dakhla: ['dakhla', 'aousserd', 'oued dahab'],
 };
 
+/** True for any status that represents a physical parcel coming back
+ *  (contains the word "retour", case-insensitive). Excludes refused/Annulé. */
+export function isReturnStatus(status: string | null | undefined): boolean {
+  return !!status && status.toLowerCase().includes('retour');
+}
+
 export class DatabaseStorage implements IStorage {
   async getStore(id: number): Promise<Store | undefined> {
     const [store] = await db.select().from(stores).where(eq(stores.id, id));
@@ -711,16 +717,16 @@ export class DatabaseStorage implements IStorage {
         // Also exclude deleted parcels caught via commentStatus on any status path
         conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
       } else if (filters.status === 'retour_group') {
-        conditions.push(inArray(orders.status, ['retourné', 'Retour Recu', 'En Cours De Retour']));
+        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%'`);
       } else if (filters.status === 'retour_en_route') {
-        conditions.push(inArray(orders.status, ['En Cours De Retour']));
+        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retour recu')`);
       } else if (filters.status === 'retour_recu') {
         conditions.push(inArray(orders.status, ['Retour Recu', 'retourné']));
       } else if (filters.status === 'retour_non_confirme') {
-        conditions.push(inArray(orders.status, ['retourné', 'Retour Recu', 'En Cours De Retour', 'refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']));
+        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%'`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);
       } else if (filters.status === 'retour_confirme') {
-        conditions.push(inArray(orders.status, ['retourné', 'Retour Recu', 'En Cours De Retour', 'refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']));
+        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%'`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
@@ -1114,12 +1120,33 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      // ── RULE 2 (RETIRÉE) ─────────────────────────────────────────────────────
-      // La restauration du stock au passage en statut retour a été déplacée vers
-      // confirmReturnReceipt() : elle ne se déclenche plus automatiquement sur un
-      // simple changement de statut rapporté par le transporteur, mais uniquement
-      // après confirmation physique manuelle (scan / tracking number) par un
-      // utilisateur de la plateforme. Voir storage.confirmReturnReceipt().
+      // ── RULE 2a: Refus/Annulation → restauration AUTOMATIQUE ─────────────
+      // Refused et Annulé* ne correspondent pas à un colis qui revient
+      // physiquement (annulation/refus administratif) → pas de scan requis,
+      // le stock est restauré immédiatement comme avant.
+      const AUTO_RESTORE_STATUSES = new Set(['refused', 'Annulé', 'Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)']);
+      if ((prevStatus === 'delivered' || this.CONFIRMED_FOR_STOCK.has(prevStatus)) && AUTO_RESTORE_STATUSES.has(status)) {
+        for (const item of items) {
+          if (!item.productId) continue;
+          const qty = Number(item.quantity);
+          await tx.update(products)
+            .set({ stock: sql`${products.stock} + ${qty}` })
+            .where(eq(products.id, item.productId));
+          await tx.insert(stockLogs).values({
+            storeId: currentOrder.storeId!, productId: item.productId, orderId: id,
+            changeAmount: qty,
+            reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
+          });
+          await tx.insert(stockMovements).values({
+            storeId: currentOrder.storeId!, productId: item.productId, type: 'returned', quantity: qty,
+            orderId: id, userId: actorId ?? null,
+            reason: `${status === 'refused' ? 'Refus' : 'Annulation'} commande #${id} → ${status}`,
+          });
+        }
+      }
+      // ── RULE 2b: Vrai retour physique (statut contenant "retour") ─────────
+      // Pas de restauration automatique ici. Attend confirmReturnReceipt()
+      // (scan douchette ou caméra). Rien à faire volontairement.
 
       return updated;
     });
@@ -1143,7 +1170,7 @@ export class DatabaseStorage implements IStorage {
     return await db.transaction(async (tx) => {
       const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
       if (!order) return { success: false, message: "Commande introuvable" };
-      if (!this.RETURN_STATUSES.has(order.status)) {
+      if (!isReturnStatus(order.status)) {
         return { success: false, message: `Cette commande n'est pas en statut retour (statut actuel: ${order.status})` };
       }
       if ((order as any).returnConfirmedAt) {

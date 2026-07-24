@@ -386,19 +386,52 @@ function FollowUpLogsPanel({ orderId }: { orderId: number }) {
 // filtered set in one page, so cross-page selection acts on real, loaded IDs.
 const SELECT_ALL_LIMIT = 100000;
 
+function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
+  const elementId = "qr-reader-region";
+
+  useEffect(() => {
+    let scanner: any;
+    import("html5-qrcode").then(({ Html5Qrcode }) => {
+      scanner = new Html5Qrcode(elementId);
+      scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (decodedText: string) => {
+          onScan(decodedText);
+          scanner.stop().catch(() => {});
+        },
+        () => { /* frame errors ignored silently — normal in continuous scan */ }
+      ).catch((err: any) => console.error("Camera scanner failed to start:", err));
+    });
+    return () => { if (scanner) scanner.stop().catch(() => {}); };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="flex flex-col items-center gap-4">
+        <p className="text-white text-sm font-medium">Pointez la caméra vers le code-barres ou QR code</p>
+        <div id={elementId} className="w-[300px] h-[300px] bg-white rounded-lg overflow-hidden" />
+        <button onClick={onClose} className="rounded bg-white px-6 py-2 text-sm font-medium hover:bg-gray-100">
+          Fermer
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
   const [code, setCode] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const [todayCount, setTodayCount] = useState(0);
+  const [showCamera, setShowCamera] = useState(false);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!code.trim()) return;
+  const submitCode = async (raw: string) => {
+    if (!raw.trim()) return;
     try {
-      const res = await apiRequest("POST", "/api/orders/confirm-return-by-code", { code: code.trim() });
+      const res = await apiRequest("POST", "/api/orders/confirm-return-by-code", { code: raw.trim() });
       const data = await res.json();
       if (data.success) {
         toast({ title: "✅ Retour confirmé", description: `${data.orderNumber} — ${data.customerName}` });
@@ -415,19 +448,39 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
     }
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    submitCode(code);
+  };
+
   return (
-    <form onSubmit={handleSubmit} className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
-      <span className="text-sm font-medium shrink-0">📷 Scanner un retour :</span>
-      <input
-        ref={inputRef}
-        value={code}
-        onChange={(e) => setCode(e.target.value)}
-        placeholder="Scanner ou taper le code de suivi..."
-        className="flex-1 rounded border px-3 py-1.5 text-sm bg-background"
-        autoComplete="off"
-      />
-      <span className="text-xs text-muted-foreground shrink-0">{todayCount} confirmé{todayCount !== 1 ? "s" : ""} aujourd'hui</span>
-    </form>
+    <>
+      {showCamera && (
+        <CameraScanner
+          onScan={(decoded) => { setShowCamera(false); submitCode(decoded); }}
+          onClose={() => setShowCamera(false)}
+        />
+      )}
+      <form onSubmit={handleSubmit} className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
+        <span className="text-sm font-medium shrink-0">Scanner un retour :</span>
+        <input
+          ref={inputRef}
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="Douchette ou code de suivi..."
+          className="flex-1 rounded border px-3 py-1.5 text-sm bg-background"
+          autoComplete="off"
+        />
+        <button
+          type="button"
+          onClick={() => setShowCamera(true)}
+          className="shrink-0 rounded bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-3 py-1.5 text-sm text-white whitespace-nowrap"
+        >
+          📷 Caméra
+        </button>
+        <span className="text-xs text-muted-foreground shrink-0">{todayCount} confirmé{todayCount !== 1 ? "s" : ""} aujourd'hui</span>
+      </form>
+    </>
   );
 }
 
