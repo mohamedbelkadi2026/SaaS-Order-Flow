@@ -4467,11 +4467,14 @@ export async function registerRoutes(
       newStatus = "in_progress"; // "en cours de livraison", "sorti en livraison" etc = still in transit
     } else if (rawStatus.includes("supprim")) {
       newStatus = "Supprimée";
-    } else if (
-      rawStatus.includes("refus") || rawStatus.includes("retour") ||
-      rawStatus.includes("annul") || rawStatus === "refused"
-    ) {
+    } else if (rawStatus.includes("refus") || rawStatus === "refused") {
       newStatus = "refused";
+    } else if (rawStatus.includes("retour")) {
+      // Physical return in transit → needs scan confirmation (confirmReturnReceipt).
+      // Stored as "retourné" so it appears on the Retours page, NOT Refusées.
+      newStatus = "retourné";
+    } else if (rawStatus.includes("annul")) {
+      newStatus = "refused"; // administrative cancellation — auto stock restore applies
     } else if (
       rawStatus.includes("injoignable") || rawStatus.includes("unreachable") ||
       rawStatus.includes("pas de réponse")

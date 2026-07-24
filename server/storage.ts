@@ -717,16 +717,19 @@ export class DatabaseStorage implements IStorage {
         // Also exclude deleted parcels caught via commentStatus on any status path
         conditions.push(sql`(${orders.commentStatus} IS NULL OR ${orders.commentStatus} NOT ILIKE '%supprim%')`);
       } else if (filters.status === 'retour_group') {
-        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%'`);
+        // Catch both: (a) orders whose internal status contains "retour" (correct mapping),
+        // and (b) legacy orders stored as "refused" whose commentStatus contains "retour"
+        // (old webhook mapping bug where "retour" raw text → "refused" internal status).
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
       } else if (filters.status === 'retour_en_route') {
-        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retour recu')`);
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retour recu')) OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%' AND LOWER(COALESCE(${orders.commentStatus}, '')) NOT IN ('retourné', 'retour recu'))`);
       } else if (filters.status === 'retour_recu') {
         conditions.push(inArray(orders.status, ['Retour Recu', 'retourné']));
       } else if (filters.status === 'retour_non_confirme') {
-        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%'`);
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);
       } else if (filters.status === 'retour_confirme') {
-        conditions.push(sql`LOWER(${orders.status}) LIKE '%retour%'`);
+        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
       } else if (filters.status === 'refused') {
         // Expand the refused filter to include all carrier issue/refused statuses
@@ -1170,7 +1173,9 @@ export class DatabaseStorage implements IStorage {
     return await db.transaction(async (tx) => {
       const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.storeId, storeId)));
       if (!order) return { success: false, message: "Commande introuvable" };
-      if (!isReturnStatus(order.status)) {
+      // Accept both new mapping (status contains "retour") and legacy mapping
+      // (status = "refused" but commentStatus contains "retour" — old webhook bug).
+      if (!isReturnStatus(order.status) && !isReturnStatus((order as any).commentStatus)) {
         return { success: false, message: `Cette commande n'est pas en statut retour (statut actuel: ${order.status})` };
       }
       if ((order as any).returnConfirmedAt) {
