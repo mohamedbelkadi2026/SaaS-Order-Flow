@@ -1,0 +1,147 @@
+FIX — Le scanner caméra s'ouvre correctement (progrès confirmé) mais
+l'image reste floue et le QR code/code-barres n'est jamais détecté, même
+bien cadré dans la zone de scan. Cause : la caméra arrière du téléphone ne
+fait pas correctement le point (autofocus) sur un objet aussi proche
+(étiquette tenue à quelques centimètres), et html5-qrcode (basé sur jsQR)
+est sensible au flou. Rendre le scan fiable à 100% nécessite plusieurs
+couches de robustesse, pas un seul changement.
+
+────────────────────────────────────────────────────────────────────────────
+FIX 1 — Forcer l'autofocus continu et le mode macro via les contraintes
+caméra
+
+Remplacer le `scanner.start(...)` actuel par une configuration qui demande
+explicitement l'autofocus continu (supporté sur la plupart des Android
+récents, dégradation silencieuse sur les appareils qui ne le supportent
+pas) :
+
+```ts
+await scanner.start(
+  {
+    facingMode: "environment",
+    // @ts-ignore — propriétés avancées non typées mais supportées par la plupart des navigateurs mobiles
+    advanced: [{ focusMode: "continuous" }],
+  },
+  {
+    fps: 15,                                  // plus de tentatives de décodage par seconde
+    qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
+      const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.7);
+      return { width: size, height: size };   // zone de scan plus grande = plus facile à cadrer net
+    },
+    aspectRatio: 1.0,
+    disableFlip: false,
+  },
+  (decodedText) => {
+    onScan(decodedText);
+    scanner.stop().catch(() => {});
+  },
+  () => {}
+);
+```
+
+────────────────────────────────────────────────────────────────────────────
+FIX 2 — Utiliser l'API native `BarcodeDetector` du navigateur en priorité
+(bien plus robuste sur image floue que jsQR/html5-qrcode), avec repli
+automatique sur html5-qrcode si non supportée
+
+Les navigateurs mobiles récents (Chrome Android notamment) exposent une API
+native de détection de codes-barres, accélérée matériellement, beaucoup
+plus tolérante au flou et à l'angle que la détection en JavaScript pur.
+
+```tsx
+function useNativeBarcodeScanner(videoRef: React.RefObject<HTMLVideoElement>, onScan: (code: string) => void, active: boolean) {
+  useEffect(() => {
+    if (!active) return;
+    // @ts-ignore — BarcodeDetector pas encore dans tous les types TS
+    if (typeof window === "undefined" || !("BarcodeDetector" in window)) return;
+
+    let stopped = false;
+    // @ts-ignore
+    const detector = new window.BarcodeDetector({ formats: ["qr_code", "code_128", "code_39", "ean_13"] });
+
+    const tick = async () => {
+      if (stopped || !videoRef.current || videoRef.current.readyState < 2) {
+        if (!stopped) requestAnimationFrame(tick);
+        return;
+      }
+      try {
+        const codes = await detector.detect(videoRef.current);
+        if (codes.length > 0) {
+          onScan(codes[0].rawValue);
+          stopped = true;
+          return;
+        }
+      } catch { /* frame invalide, on continue */ }
+      if (!stopped) requestAnimationFrame(tick);
+    };
+    tick();
+    return () => { stopped = true; };
+  }, [active]);
+}
+```
+
+Intégrer ce hook en PARALLÈLE de html5-qrcode dans `CameraScanner` : démarrer
+html5-qrcode normalement (FIX 1) pour avoir le flux vidéo affiché, ET lancer
+ce détecteur natif sur le même `<video>` élément (html5-qrcode crée son
+propre `<video>` dans la div `qr-reader-region` — récupérer une référence
+vers cet élément vidéo après le `scanner.start()`, via
+`document.querySelector('#qr-reader-region video')`). Le premier des deux
+qui détecte un code déclenche `onScan`.
+
+────────────────────────────────────────────────────────────────────────────
+FIX 3 — Filet de sécurité : capture photo + décodage, si le flux live ne
+capte toujours rien après quelques secondes
+
+Ajouter un bouton "📸 Prendre une photo" dans la modale caméra, qui capture
+une frame nette (photo fixe, pas de flou de mouvement) via `<canvas>` et la
+décode avec `BarcodeDetector` (ou `jsQR` si l'API native est absente) :
+
+```tsx
+const capturePhoto = async () => {
+  const videoEl = document.querySelector<HTMLVideoElement>("#qr-reader-region video");
+  if (!videoEl) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = videoEl.videoWidth;
+  canvas.height = videoEl.videoHeight;
+  canvas.getContext("2d")!.drawImage(videoEl, 0, 0);
+  // @ts-ignore
+  if ("BarcodeDetector" in window) {
+    // @ts-ignore
+    const detector = new window.BarcodeDetector({ formats: ["qr_code", "code_128", "code_39", "ean_13"] });
+    const codes = await detector.detect(canvas);
+    if (codes.length > 0) { onScan(codes[0].rawValue); return; }
+  }
+  setError("Aucun code détecté sur la photo — réessaie en te rapprochant/éloignant légèrement.");
+};
+```
+
+Ce bouton donne à l'utilisateur un contrôle manuel du moment de capture
+(après avoir laissé l'autofocus se stabiliser une seconde), ce qui règle la
+majorité des cas où le flux continu reste flou en permanence.
+
+────────────────────────────────────────────────────────────────────────────
+FIX 4 — Ajustement pratique pendant les tests
+
+Sur le terrain, un QR code imprimé se scanne mieux à 10-15 cm de distance
+minimum (pas collé à quelques cm), avec un bon éclairage et sans reflet sur
+le papier — mentionner ce point dans l'aide contextuelle affichée au-dessus
+de la caméra ("Pointez la caméra vers le code-barres ou QR code, à environ
+15 cm de distance").
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add robust QR/barcode scanning: continuous autofocus, native BarcodeDetector, manual photo capture fallback" && git push
+
+VÉRIFICATION
+1. Ouvrir le scanner sur mobile (Chrome Android de préférence, meilleur
+   support de BarcodeDetector) → l'image doit faire le point plus
+   rapidement grâce à `focusMode: continuous`.
+2. Scanner une étiquette Digylog réelle → doit détecter automatiquement en
+   flux continu dans la majorité des cas désormais.
+3. Si le flux continu échoue encore, utiliser "📸 Prendre une photo" →
+   doit détecter le code sur l'image figée, qui est nette même si le flux
+   live était flou.
+4. Tester aussi sur iPhone Safari (BarcodeDetector n'est PAS supporté sur
+   Safari/iOS à ce jour — html5-qrcode + FIX 1 doit rester le chemin
+   principal sur iOS, donc bien vérifier que ça marche sans l'API native
+   sur cet appareil précisément).

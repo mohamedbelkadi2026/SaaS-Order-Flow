@@ -391,9 +391,11 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
   const elementId = "qr-reader-region";
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(true);
+  const [capturing, setCapturing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    let nativeStopped = false;
 
     (async () => {
       try {
@@ -408,16 +410,60 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
         }
         const scanner = new Html5Qrcode(elementId);
         scannerRef.current = scanner;
+
+        // FIX 1 — continuous autofocus + larger dynamic qrbox + more fps
         await scanner.start(
-          { facingMode: "environment" },
-          { fps: 10, qrbox: { width: 250, height: 250 } },
+          {
+            facingMode: "environment",
+            // @ts-ignore — non-typed but supported on most Android browsers
+            advanced: [{ focusMode: "continuous" }],
+          },
+          {
+            fps: 15,
+            qrbox: (w: number, h: number) => {
+              const size = Math.floor(Math.min(w, h) * 0.7);
+              return { width: size, height: size };
+            },
+            aspectRatio: 1.0,
+            disableFlip: false,
+          },
           (decodedText: string) => {
+            if (nativeStopped || cancelled) return;
+            nativeStopped = true;
             onScan(decodedText);
             scanner.stop().catch(() => {});
           },
-          () => { /* frame errors ignored — normal in continuous scan */ }
+          () => { /* per-frame errors ignored — normal in continuous scan */ }
         );
         if (!cancelled) setStarting(false);
+
+        // FIX 2 — BarcodeDetector native API in parallel (Chrome Android, tolerates blur)
+        // @ts-ignore
+        if (!cancelled && "BarcodeDetector" in window) {
+          // @ts-ignore
+          const detector = new (window as any).BarcodeDetector({
+            formats: ["qr_code", "code_128", "code_39", "ean_13"],
+          });
+          const tick = async () => {
+            if (nativeStopped || cancelled) return;
+            const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+            if (!videoEl || videoEl.readyState < 2) {
+              if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
+              return;
+            }
+            try {
+              const codes: any[] = await detector.detect(videoEl);
+              if (codes.length > 0 && !nativeStopped && !cancelled) {
+                nativeStopped = true;
+                onScan(codes[0].rawValue);
+                scannerRef.current?.stop().catch(() => {});
+                return;
+              }
+            } catch { /* invalid frame, continue */ }
+            if (!nativeStopped && !cancelled) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }
       } catch (err: any) {
         if (cancelled) return;
         console.error("[CameraScanner] failed:", err);
@@ -434,24 +480,78 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
 
     return () => {
       cancelled = true;
+      nativeStopped = true;
       scannerRef.current?.stop().catch(() => {});
       scannerRef.current?.clear();
     };
   }, []);
 
+  // FIX 3 — manual photo capture fallback (freezes a frame, decodes it)
+  const capturePhoto = async () => {
+    setCapturing(true);
+    setError(null);
+    try {
+      const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+      if (!videoEl) { setError("Flux caméra non disponible."); setCapturing(false); return; }
+      const canvas = document.createElement("canvas");
+      canvas.width = videoEl.videoWidth;
+      canvas.height = videoEl.videoHeight;
+      canvas.getContext("2d")!.drawImage(videoEl, 0, 0);
+
+      // @ts-ignore
+      if ("BarcodeDetector" in window) {
+        // @ts-ignore
+        const detector = new (window as any).BarcodeDetector({
+          formats: ["qr_code", "code_128", "code_39", "ean_13"],
+        });
+        const codes: any[] = await detector.detect(canvas);
+        if (codes.length > 0) {
+          onScan(codes[0].rawValue);
+          scannerRef.current?.stop().catch(() => {});
+          setCapturing(false);
+          return;
+        }
+      } else {
+        // BarcodeDetector non disponible (iOS/Safari) — la capture photo n'est pas supportée
+        setError("Capture photo non disponible sur ce navigateur. Utilise le scan continu ou saisie manuelle.");
+        setCapturing(false);
+        return;
+      }
+      setError("Aucun code détecté sur la photo — rapproche-toi légèrement et réessaie.");
+    } catch (e: any) {
+      setError(`Erreur capture : ${e?.message || e}`);
+    }
+    setCapturing(false);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4">
-      <div className="flex flex-col items-center gap-4 w-full max-w-[360px]">
-        <p className="text-white text-sm font-medium text-center">
-          {starting && !error ? "Ouverture de la caméra…" : !error ? "Pointez vers le code-barres / QR code" : ""}
+      <div className="flex flex-col items-center gap-3 w-full max-w-[360px]">
+        {/* FIX 4 — distance hint */}
+        <p className="text-white text-sm font-medium text-center leading-snug">
+          {starting && !error
+            ? "Ouverture de la caméra…"
+            : !error
+            ? "Pointez la caméra vers le code-barres ou QR code, à environ 15 cm de distance"
+            : ""}
         </p>
         {error && (
           <p className="text-red-400 text-sm text-center max-w-xs bg-black/40 rounded-lg px-3 py-2">{error}</p>
         )}
-        <div id={elementId} className="w-full max-w-[300px] aspect-square bg-white rounded-lg overflow-hidden" />
+        <div id={elementId} className="w-full max-w-[320px] aspect-square bg-white rounded-xl overflow-hidden" />
+        {/* FIX 3 — manual photo capture button */}
+        {!starting && !error && (
+          <button
+            onClick={capturePhoto}
+            disabled={capturing}
+            className="w-full max-w-[320px] rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-60 px-4 py-3 text-sm font-semibold text-white"
+          >
+            {capturing ? "Analyse en cours…" : "📸 Prendre une photo"}
+          </button>
+        )}
         <button
           onClick={onClose}
-          className="w-full max-w-[300px] rounded-lg bg-white px-4 py-3 text-sm font-semibold hover:bg-gray-100 active:scale-95"
+          className="w-full max-w-[320px] rounded-lg bg-white px-4 py-3 text-sm font-semibold hover:bg-gray-100 active:scale-95"
         >
           Fermer
         </button>
