@@ -722,9 +722,17 @@ export class DatabaseStorage implements IStorage {
         // (old webhook mapping bug where "retour" raw text → "refused" internal status).
         conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
       } else if (filters.status === 'retour_en_route') {
-        conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retour recu')) OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%' AND LOWER(COALESCE(${orders.commentStatus}, '')) NOT IN ('retourné', 'retour recu'))`);
+        // In-transit returns only: status contains "retour" but is NOT a terminal arrival
+        // ("retourné", "retournée", "retour recu") AND not yet physically confirmed by user.
+        conditions.push(sql`(
+          (LOWER(${orders.status}) LIKE '%retour%' AND LOWER(${orders.status}) NOT IN ('retourné', 'retournée', 'retour recu'))
+          OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'
+              AND LOWER(COALESCE(${orders.commentStatus}, '')) NOT IN ('retourné', 'retournée', 'retour recu'))
+        )`);
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);
       } else if (filters.status === 'retour_recu') {
-        conditions.push(inArray(orders.status, ['Retour Recu', 'retourné']));
+        // "Reçus" = physically confirmed by the user (scan/button), regardless of carrier status.
+        conditions.push(sql`${(orders as any).returnConfirmedAt} IS NOT NULL`);
       } else if (filters.status === 'retour_non_confirme') {
         conditions.push(sql`(LOWER(${orders.status}) LIKE '%retour%' OR (${orders.status} = 'refused' AND LOWER(COALESCE(${orders.commentStatus}, '')) LIKE '%retour%'))`);
         conditions.push(sql`${(orders as any).returnConfirmedAt} IS NULL`);

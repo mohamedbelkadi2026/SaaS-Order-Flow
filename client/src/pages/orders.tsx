@@ -387,31 +387,72 @@ function FollowUpLogsPanel({ orderId }: { orderId: number }) {
 const SELECT_ALL_LIMIT = 100000;
 
 function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
+  const scannerRef = useRef<any>(null);
   const elementId = "qr-reader-region";
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(true);
 
   useEffect(() => {
-    let scanner: any;
-    import("html5-qrcode").then(({ Html5Qrcode }) => {
-      scanner = new Html5Qrcode(elementId);
-      scanner.start(
-        { facingMode: "environment" },
-        { fps: 10, qrbox: { width: 250, height: 250 } },
-        (decodedText: string) => {
-          onScan(decodedText);
-          scanner.stop().catch(() => {});
-        },
-        () => { /* frame errors ignored silently — normal in continuous scan */ }
-      ).catch((err: any) => console.error("Camera scanner failed to start:", err));
-    });
-    return () => { if (scanner) scanner.stop().catch(() => {}); };
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const { Html5Qrcode } = await import("html5-qrcode");
+        if (cancelled) return;
+        const cameras = await Html5Qrcode.getCameras();
+        if (cancelled) return;
+        if (!cameras || cameras.length === 0) {
+          setError("Aucune caméra détectée sur cet appareil.");
+          setStarting(false);
+          return;
+        }
+        const scanner = new Html5Qrcode(elementId);
+        scannerRef.current = scanner;
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (decodedText: string) => {
+            onScan(decodedText);
+            scanner.stop().catch(() => {});
+          },
+          () => { /* frame errors ignored — normal in continuous scan */ }
+        );
+        if (!cancelled) setStarting(false);
+      } catch (err: any) {
+        if (cancelled) return;
+        console.error("[CameraScanner] failed:", err);
+        setError(
+          err?.name === "NotAllowedError"
+            ? "Permission caméra refusée. Autorise l'accès à la caméra dans les réglages du navigateur."
+            : err?.name === "NotFoundError"
+            ? "Aucune caméra trouvée."
+            : `Erreur caméra : ${err?.message || String(err)}`
+        );
+        setStarting(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      scannerRef.current?.stop().catch(() => {});
+      scannerRef.current?.clear();
+    };
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="flex flex-col items-center gap-4">
-        <p className="text-white text-sm font-medium">Pointez la caméra vers le code-barres ou QR code</p>
-        <div id={elementId} className="w-[300px] h-[300px] bg-white rounded-lg overflow-hidden" />
-        <button onClick={onClose} className="rounded bg-white px-6 py-2 text-sm font-medium hover:bg-gray-100">
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4">
+      <div className="flex flex-col items-center gap-4 w-full max-w-[360px]">
+        <p className="text-white text-sm font-medium text-center">
+          {starting && !error ? "Ouverture de la caméra…" : !error ? "Pointez vers le code-barres / QR code" : ""}
+        </p>
+        {error && (
+          <p className="text-red-400 text-sm text-center max-w-xs bg-black/40 rounded-lg px-3 py-2">{error}</p>
+        )}
+        <div id={elementId} className="w-full max-w-[300px] aspect-square bg-white rounded-lg overflow-hidden" />
+        <button
+          onClick={onClose}
+          className="w-full max-w-[300px] rounded-lg bg-white px-4 py-3 text-sm font-semibold hover:bg-gray-100 active:scale-95"
+        >
           Fermer
         </button>
       </div>
@@ -461,24 +502,32 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
           onClose={() => setShowCamera(false)}
         />
       )}
-      <form onSubmit={handleSubmit} className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
-        <span className="text-sm font-medium shrink-0">Scanner un retour :</span>
+      <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3">
+        <span className="text-sm font-medium shrink-0 hidden sm:block">Scanner un retour :</span>
         <input
           ref={inputRef}
           value={code}
           onChange={(e) => setCode(e.target.value)}
-          placeholder="Douchette ou code de suivi..."
-          className="flex-1 rounded border px-3 py-1.5 text-sm bg-background"
+          placeholder="Douchette ou code de suivi…"
+          className="flex-1 rounded border px-3 py-2 text-sm bg-background"
           autoComplete="off"
         />
-        <button
-          type="button"
-          onClick={() => setShowCamera(true)}
-          className="shrink-0 rounded bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-3 py-1.5 text-sm text-white whitespace-nowrap"
-        >
-          📷 Caméra
-        </button>
-        <span className="text-xs text-muted-foreground shrink-0">{todayCount} confirmé{todayCount !== 1 ? "s" : ""} aujourd'hui</span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCamera(true)}
+            className="flex-1 sm:flex-none rounded bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-3 py-2 text-sm text-white whitespace-nowrap font-medium"
+          >
+            📷 Scanner caméra
+          </button>
+          <button
+            type="submit"
+            className="flex-1 sm:flex-none rounded bg-green-600 hover:bg-green-700 active:bg-green-800 px-3 py-2 text-sm text-white whitespace-nowrap font-medium sm:hidden"
+          >
+            Confirmer
+          </button>
+        </div>
+        <span className="text-xs text-muted-foreground shrink-0 text-right sm:text-left">{todayCount} confirmé{todayCount !== 1 ? "s" : ""} aujourd'hui</span>
       </form>
     </>
   );
@@ -2337,6 +2386,44 @@ export default function Orders() {
                       <span className="text-[15px] font-extrabold text-foreground">{formatCurrency(order.totalPrice)}</span>
                     </div>
                   </div>
+
+                  {/* ── RETOUR CONFIRMATION ROW (mobile, retours page only) ── */}
+                  {filterKey === 'retours' && (
+                    <div className="px-3 pb-2">
+                      {(order as any).returnConfirmedAt ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 text-xs font-semibold">
+                          ✅ Retour confirmé le {new Date((order as any).returnConfirmedAt).toLocaleDateString('fr-FR')}
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 text-[11px] font-semibold">
+                            ⏳ Non confirmé
+                          </span>
+                          <button
+                            className="flex-1 h-8 px-3 text-xs font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 active:scale-95"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                const res = await apiRequest("POST", `/api/orders/${order.id}/confirm-return`, {});
+                                const data = await res.json();
+                                if (data.success) {
+                                  toast({ title: "✅ Retour confirmé", description: data.message });
+                                  queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+                                  queryClient.invalidateQueries({ queryKey: ["/api/orders/filtered"] });
+                                } else {
+                                  toast({ title: "Erreur", description: data.message, variant: "destructive" });
+                                }
+                              } catch {
+                                toast({ title: "Erreur", description: "Échec de la confirmation", variant: "destructive" });
+                              }
+                            }}
+                          >
+                            Confirmer réception
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* ── BOTTOM ACTIONS ── */}
                   <div className="px-3 pb-3 flex items-center gap-2">

@@ -1,0 +1,212 @@
+3 CORRECTIONS sur la page Retours : (A) sémantique des onglets En route/Reçus,
+(B) le scanner caméra QR ne fonctionne pas, (C) page pas responsive mobile.
+
+────────────────────────────────────────────────────────────────────────────
+PARTIE A — Onglets "En route" et "Reçus" mal définis
+
+PROBLÈME OBSERVÉ
+- Onglet "En route" affiche À LA FOIS "En cours d'expédition au hub de
+  retour" ET "Retournée" — alors que "Retournée" signifie déjà arrivé, pas
+  en transit.
+- Onglet "Reçus" affiche des commandes "Retournée" (statut transporteur)
+  mais elles sont toutes marquées "Non confirmé" dans la colonne CONFIRMÉ —
+  contradictoire : "Reçus" doit représenter les retours que L'UTILISATEUR a
+  confirmés avoir physiquement reçus (via scan/bouton), pas simplement ce
+  que dit le transporteur.
+
+FIX — Redéfinir les filtres de ces 2 onglets dans le composant de la page
+Retours (celui qui gère les boutons Tous/En route/Reçus/Non confirmés/
+Confirmés) :
+
+```ts
+// "En route" = statuts de retour EN TRANSIT uniquement (pas encore arrivé)
+const enRoute = orders.filter(o =>
+  (o.status || '').toLowerCase().includes('retour') &&
+  (o.status || '').toLowerCase() !== 'retournée' &&
+  !o.returnConfirmedAt
+);
+
+// "Reçus" = confirmés physiquement par l'utilisateur (scan/bouton), peu
+// importe le statut transporteur exact — c'est LA confirmation qui définit
+// "reçu", pas le statut brut du transporteur.
+const recus = orders.filter(o => !!o.returnConfirmedAt);
+
+// "Non confirmés" = en statut retour (quel qu'il soit) mais pas encore
+// confirmé physiquement — inchangé par rapport au fix précédent.
+const nonConfirmes = orders.filter(o =>
+  (o.status || '').toLowerCase().includes('retour') && !o.returnConfirmedAt
+);
+
+// "Confirmés" = identique à "Reçus" en pratique (les deux se basent sur
+// returnConfirmedAt) — les garder comme 2 libellés d'un même filtre est OK,
+// ou fusionner les onglets si ça semble redondant, au choix.
+const confirmes = orders.filter(o => !!o.returnConfirmedAt);
+```
+
+Vérifier où ce filtrage est fait (client-side sur les données déjà chargées,
+OU server-side via un paramètre de query) et appliquer la correction au bon
+endroit — si c'est server-side, adapter la clause SQL équivalente (statut
+différent de 'retournée' pour "en route", `returnConfirmedAt IS NOT NULL`
+pour "reçus").
+
+────────────────────────────────────────────────────────────────────────────
+PARTIE B — Le scanner caméra ne fonctionne pas
+
+Debugger étape par étape, car plusieurs causes possibles avec html5-qrcode :
+
+1) Vérifier dans la console navigateur (F12) l'erreur exacte au clic sur
+   "📷 Caméra" — souvent une erreur de permission, de HTTPS, ou "no cameras
+   found".
+
+2) Remplacer le composant `CameraScanner` par une version avec gestion
+   d'erreur VISIBLE (pas juste `console.error`) et une liste explicite des
+   caméras disponibles avant de démarrer :
+
+```tsx
+function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
+  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const elementId = "qr-reader-region";
+  const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(true);
+
+  useEffect(() => {
+    let scanner: Html5Qrcode;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // Demander explicitement la permission caméra en premier, avec un
+        // message d'erreur clair si refusée/indisponible.
+        const cameras = await Html5Qrcode.getCameras();
+        if (cancelled) return;
+        if (!cameras || cameras.length === 0) {
+          setError("Aucune caméra détectée sur cet appareil.");
+          setStarting(false);
+          return;
+        }
+        scanner = new Html5Qrcode(elementId);
+        scannerRef.current = scanner;
+        await scanner.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          (decodedText) => {
+            onScan(decodedText);
+            scanner.stop().catch(() => {});
+          },
+          () => {}
+        );
+        setStarting(false);
+      } catch (err: any) {
+        console.error("[CameraScanner] failed:", err);
+        setError(
+          err?.name === "NotAllowedError"
+            ? "Permission caméra refusée. Autorise l'accès à la caméra dans les réglages du navigateur."
+            : err?.name === "NotFoundError"
+            ? "Aucune caméra trouvée."
+            : `Erreur caméra : ${err?.message || err}`
+        );
+        setStarting(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      scannerRef.current?.stop().catch(() => {});
+      scannerRef.current?.clear();
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4">
+      {starting && <p className="text-white mb-2">Ouverture de la caméra...</p>}
+      {error && <p className="text-red-400 mb-3 text-center max-w-xs">{error}</p>}
+      <div id={elementId} className="w-full max-w-[320px] aspect-square bg-white rounded-lg overflow-hidden" />
+      <button onClick={onClose} className="mt-4 rounded bg-white px-4 py-2 text-sm font-medium">
+        Fermer
+      </button>
+    </div>
+  );
+}
+```
+
+3) Vérifier que `html5-qrcode` est bien listé dans `package.json` après le
+   fix du lockfile précédent (`grep html5-qrcode package.json package-lock.json`)
+   — s'il a disparu suite au nettoyage du lockfile, le réinstaller proprement :
+   `npm install html5-qrcode --registry=https://registry.npmjs.org/`.
+
+4) Tester d'abord sur desktop avec webcam (plus facile à déboguer via
+   console), puis sur mobile. Si ça marche sur desktop mais pas mobile,
+   c'est probablement un souci de permission navigateur mobile ou de layout
+   (voir PARTIE C) qui cache l'élément vidéo.
+
+────────────────────────────────────────────────────────────────────────────
+PARTIE C — Page pas responsive sur mobile
+
+Le tableau actuel (nombreuses colonnes larges : CODE, DESTINATAIRE,
+TÉLÉPHONE, VILLE, PRODUIT, BOUTIQUE, ACTION BY, COMMENT, FRAIS, DATE,
+STATUS, CONFIRMÉ, PRIX, ADRESSE, RÉFÉRENCE...) déborde forcément sur un
+écran mobile. Adapter avec un layout à 2 niveaux :
+
+1) Barre de filtres (MENU/RECHERCHER/TYPE SERVICE/etc.) : sur mobile,
+   remplacer la grille horizontale par un bouton "Filtres" qui ouvre un
+   panneau/drawer, OU empiler les champs verticalement avec `flex-col` en
+   dessous d'un breakpoint (`sm:flex-row`).
+
+2) Barre "Scanner un retour" : empiler input + bouton Caméra verticalement
+   sur mobile (`flex-col sm:flex-row`), le bouton Caméra doit rester
+   facilement accessible au pouce (pleine largeur sur mobile).
+
+3) Tableau de commandes : EN DESSOUS d'un breakpoint (`md:hidden` /
+   `hidden md:block` sur les 2 vues), remplacer le `<table>` par une liste
+   de cartes empilées (une carte par commande) affichant les infos
+   essentielles seulement — destinataire, ville, produit, statut, confirmé,
+   prix, boutons d'action — et masquer les colonnes secondaires
+   (référence, UTM source...) ou les mettre dans un menu "..." dépliable
+   par carte. Exemple de structure :
+
+```tsx
+{/* Vue desktop */}
+<table className="hidden md:table w-full">...</table>
+
+{/* Vue mobile : cartes empilées */}
+<div className="flex flex-col gap-3 md:hidden">
+  {orders.map((o) => (
+    <div key={o.id} className="rounded-lg border p-3 space-y-2">
+      <div className="flex justify-between items-start">
+        <div>
+          <p className="font-semibold">{o.customerName}</p>
+          <p className="text-sm text-gray-500">{o.customerCity}</p>
+        </div>
+        <StatusBadge status={o.status} />
+      </div>
+      <p className="text-sm">{o.rawProductName}</p>
+      <div className="flex justify-between items-center">
+        <span className="font-bold">{(o.totalPrice / 100).toFixed(2)} DH</span>
+        <ConfirmedBadge confirmed={!!o.returnConfirmedAt} />
+      </div>
+      {!o.returnConfirmedAt && (
+        <button onClick={() => confirmReturn(o.id)} className="w-full rounded bg-green-600 text-white py-2 text-sm">
+          Confirmer réception
+        </button>
+      )}
+    </div>
+  ))}
+</div>
+```
+
+Adapter `StatusBadge`/`ConfirmedBadge` aux composants déjà existants dans le
+projet (réutiliser ceux du tableau desktop, ne pas en recréer si possible).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix return tabs semantics, debug camera QR scanner with visible errors, add mobile-responsive card layout for Retours page" && git push
+
+VÉRIFICATION
+- "En route" ne montre plus que les statuts en transit (pas "Retournée").
+- "Reçus" ne montre que les commandes avec `returnConfirmedAt` rempli.
+- Scanner caméra : ouvrir sur mobile ET desktop, vérifier qu'un message
+  d'erreur clair apparaît si la caméra est refusée/indisponible, et que le
+  scan d'un QR/code-barres valide déclenche bien la confirmation.
+- Page consultée sur un écran de téléphone (ou mode responsive du
+  navigateur, ~375px de large) : plus de débordement horizontal, filtres et
+  tableau lisibles et utilisables au doigt.
