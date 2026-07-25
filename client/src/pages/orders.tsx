@@ -387,15 +387,33 @@ function FollowUpLogsPanel({ orderId }: { orderId: number }) {
 // filtered set in one page, so cross-page selection acts on real, loaded IDs.
 const SELECT_ALL_LIMIT = 100000;
 
+// Shared AudioContext — created once, unlocked synchronously on first user click,
+// then reused for every beep. Creating a new context after an `await` keeps it
+// "suspended" on mobile browsers (they require the resume to happen in a sync
+// user-gesture handler), which is why a single shared context is necessary.
+let sharedAudioContext: AudioContext | null = null;
+
+function unlockAudio() {
+  try {
+    if (!sharedAudioContext) {
+      sharedAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    if (sharedAudioContext.state === "suspended") {
+      sharedAudioContext.resume().catch(() => {});
+    }
+  } catch { /* audio not available — no-op */ }
+}
+
 function playSuccessBeep() {
   try {
-    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    if (!sharedAudioContext || sharedAudioContext.state === "suspended") unlockAudio();
+    const ctx = sharedAudioContext!;
     const oscillator = ctx.createOscillator();
     const gain = ctx.createGain();
     oscillator.connect(gain);
     gain.connect(ctx.destination);
     oscillator.type = "sine";
-    oscillator.frequency.value = 880; // la5 — clear and distinct
+    oscillator.frequency.value = 880;
     gain.gain.setValueAtTime(0.3, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
     oscillator.start();
@@ -540,6 +558,7 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
   // Uses jsQR (pure JS, works on ALL browsers incl. Safari/iOS) with BarcodeDetector
   // as a first-pass bonus when available (also handles 1D barcodes on Android/Chrome).
   const capturePhoto = async () => {
+    unlockAudio(); // MUST be first — before any await — to stay within the sync user gesture
     setCapturing(true);
     setError(null);
     try {
@@ -674,11 +693,12 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
           placeholder="Douchette ou code de suivi…"
           className="flex-1 rounded border px-3 py-2 text-sm bg-background"
           autoComplete="off"
+          onFocus={unlockAudio}
         />
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => setShowCamera(true)}
+            onClick={() => { unlockAudio(); setShowCamera(true); }}
             className="flex-1 sm:flex-none rounded bg-blue-600 hover:bg-blue-700 active:bg-blue-800 px-3 py-2 text-sm text-white whitespace-nowrap font-medium"
           >
             📷 Scanner caméra
