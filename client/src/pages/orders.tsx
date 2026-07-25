@@ -25,6 +25,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { apiRequest } from "@/lib/queryClient";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
+import jsQR from "jsqr";
 
 function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
@@ -517,35 +518,50 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
     };
   }, []);
 
-  // Manual photo capture — freezes one frame, decodes with BarcodeDetector (Chrome Android).
-  // On Safari/iOS where BarcodeDetector is absent, shows a clear message instead of crashing.
+  // Manual photo capture — freezes one frame and decodes it.
+  // Uses jsQR (pure JS, works on ALL browsers incl. Safari/iOS) with BarcodeDetector
+  // as a first-pass bonus when available (also handles 1D barcodes on Android/Chrome).
   const capturePhoto = async () => {
     setCapturing(true);
     setError(null);
     try {
       const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
-      if (!videoEl) { setError("Flux caméra non disponible."); setCapturing(false); return; }
-      if (typeof window === "undefined" || !("BarcodeDetector" in window)) {
-        setError("Capture photo non disponible sur ce navigateur (Safari/iOS). Utilise le scan continu ou la saisie manuelle.");
+      if (!videoEl || videoEl.readyState < 2) {
+        setError("Caméra pas encore prête, réessaie dans une seconde.");
         setCapturing(false);
         return;
       }
       const canvas = document.createElement("canvas");
       canvas.width = videoEl.videoWidth;
       canvas.height = videoEl.videoHeight;
-      canvas.getContext("2d")!.drawImage(videoEl, 0, 0);
-      const detector = new (window as any).BarcodeDetector({
-        formats: ["qr_code", "code_128", "code_39", "ean_13"],
-      });
-      const codes: any[] = await detector.detect(canvas);
-      if (codes.length > 0) {
-        onScan(codes[0].rawValue);
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(videoEl, 0, 0);
+
+      const doScan = (value: string) => {
+        onScan(value);
         if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
         setCapturing(false);
-        return;
+      };
+
+      // 1) BarcodeDetector native (Chrome/Android) — also handles 1D barcodes (Code128, EAN…)
+      if (typeof window !== "undefined" && "BarcodeDetector" in window) {
+        try {
+          const detector = new (window as any).BarcodeDetector({
+            formats: ["qr_code", "code_128", "code_39", "ean_13"],
+          });
+          const codes: any[] = await detector.detect(canvas);
+          if (codes.length > 0) { doScan(codes[0].rawValue); return; }
+        } catch { /* fall through to jsQR */ }
       }
-      setError("Aucun code détecté sur la photo — rapproche-toi légèrement et réessaie.");
+
+      // 2) jsQR — pure JS, works on every browser including Safari/iOS
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const result = jsQR(imageData.data, imageData.width, imageData.height);
+      if (result?.data) { doScan(result.data); return; }
+
+      setError("Aucun code détecté sur la photo — recadre le QR code bien au centre, à environ 15 cm, et réessaie.");
     } catch (e: any) {
+      console.error("[CameraScanner] capturePhoto failed:", e);
       setError(`Erreur capture : ${e?.message || String(e)}`);
     }
     setCapturing(false);

@@ -1,0 +1,97 @@
+FIX — Le bouton "📸 Prendre une photo" affiche "Capture photo non disponible
+sur ce navigateur (Safari/iOS)" car il dépend uniquement de l'API native
+`BarcodeDetector`, absente sur Safari/iOS. Le remplacer par une librairie
+JavaScript pure (`jsqr`) qui fonctionne identiquement sur TOUS les
+navigateurs, y compris Safari/iOS — c'est d'ailleurs le même moteur de
+décodage que html5-qrcode utilise en interne pour le flux continu, donc
+aucune dépendance native.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Installer jsQR
+
+```bash
+npm install jsqr --registry=https://registry.npmjs.org/
+```
+
+Vérifier après install qu'AUCUNE entrée `replit.local` ne s'est glissée dans
+package-lock.json (même vérification que le fix précédent sur le lockfile) :
+```bash
+grep -c "replit.local" package-lock.json   # doit renvoyer 0
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Remplacer la fonction `capturePhoto` pour utiliser jsQR en
+priorité (fonctionne partout), avec BarcodeDetector comme optimisation
+supplémentaire quand disponible (détecte aussi les codes-barres classiques,
+pas seulement les QR codes)
+
+```tsx
+import jsQR from "jsqr";
+
+const capturePhoto = async () => {
+  const videoEl = document.querySelector<HTMLVideoElement>(`#${elementId} video`);
+  if (!videoEl || videoEl.readyState < 2) {
+    setError("Caméra pas encore prête, réessaie dans une seconde.");
+    return;
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = videoEl.videoWidth;
+  canvas.height = videoEl.videoHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(videoEl, 0, 0);
+
+  // 1) Essayer BarcodeDetector natif si disponible (Chrome/Android) — détecte
+  // aussi les codes-barres 1D (Code128, EAN...), pas seulement les QR codes.
+  // @ts-ignore
+  if ("BarcodeDetector" in window) {
+    try {
+      // @ts-ignore
+      const detector = new window.BarcodeDetector({ formats: ["qr_code", "code_128", "code_39", "ean_13"] });
+      const codes = await detector.detect(canvas);
+      if (codes.length > 0) { onScan(codes[0].rawValue); return; }
+    } catch { /* on retente avec jsQR ci-dessous */ }
+  }
+
+  // 2) jsQR — fonctionne sur TOUS les navigateurs (Safari/iOS inclus), pur JS,
+  // décode les QR codes sur l'image capturée (pas les codes-barres 1D).
+  try {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const result = jsQR(imageData.data, imageData.width, imageData.height);
+    if (result?.data) { onScan(result.data); return; }
+  } catch (err) {
+    console.error("[CameraScanner] jsQR decode failed:", err);
+  }
+
+  setError("Aucun code détecté sur la photo — recadre le QR code bien au centre, à environ 15 cm, et réessaie.");
+};
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Si l'étiquette scannée est un CODE-BARRES 1D (pas un QR code —
+regarder l'étiquette Digylog du screenshot précédent, elle avait un QR
+carré donc jsQR suffit, mais d'autres transporteurs utilisent parfois des
+codes-barres classiques Code128/EAN)
+
+jsQR ne décode QUE les QR codes (carrés), pas les codes-barres linéaires
+1D. Si besoin de supporter aussi les 1D sur Safari/iOS (où BarcodeDetector
+est absent), ajouter en complément la librairie `@zxing/browser` (plus
+lourde mais gère QR + 1D + tous formats, en pur JS) UNIQUEMENT si des tests
+montrent que des étiquettes non-QR sont utilisées en pratique. Ne pas
+l'ajouter préventivement — jsQR + BarcodeDetector couvre déjà la grande
+majorité des cas (QR codes partout, 1D sur Android via l'API native).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+```bash
+git add -A && git commit -m "Fix photo-capture QR scan on Safari/iOS using pure-JS jsQR fallback" && git push
+```
+
+VÉRIFICATION
+1. iPhone Safari : ouvrir le scanner → cadrer un QR code → cliquer
+   "📸 Prendre une photo" → doit maintenant décoder correctement au lieu
+   d'afficher "non disponible sur ce navigateur".
+2. Android Chrome : même test → doit continuer de fonctionner (BarcodeDetector
+   toujours essayé en premier, jsQR en repli si besoin).
+3. Photo floue/mal cadrée → message d'erreur clair invitant à réessayer,
+   PAS de crash de l'app (comportement du fix précédent conservé).
