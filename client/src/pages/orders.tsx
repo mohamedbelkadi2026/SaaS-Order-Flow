@@ -25,7 +25,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { apiRequest } from "@/lib/queryClient";
 import { validateOrdersBatch, type OrderValidationResult } from "@/lib/shipping-guard";
 import { getDefaultCitiesForCarrier } from "@/lib/carrier-cities";
-import jsQR from "jsqr";
+import { BrowserMultiFormatReader } from "@zxing/library";
 
 function cleanCustomerName(name: string): string {
   return (name || "").split(" ").map(p => p.trim()).filter(p => p !== "" && p !== "-" && p !== "–" && p !== "—").join(" ").trim();
@@ -387,6 +387,22 @@ function FollowUpLogsPanel({ orderId }: { orderId: number }) {
 // filtered set in one page, so cross-page selection acts on real, loaded IDs.
 const SELECT_ALL_LIMIT = 100000;
 
+function playSuccessBeep() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880; // la5 — clear and distinct
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.15);
+  } catch { /* audio not available — no-op */ }
+}
+
 function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; onClose: () => void }) {
   const scannerRef = useRef<any>(null);
   const startedRef = useRef(false); // tracks whether start() fully succeeded — gates safe .stop()
@@ -432,6 +448,7 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
           (decodedText: string) => {
             if (nativeStopped || cancelled) return;
             nativeStopped = true;
+            playSuccessBeep();
             onScan(decodedText);
             if (startedRef.current) { scanner.stop().catch(() => {}); startedRef.current = false; }
           },
@@ -477,6 +494,7 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
               const codes: any[] = await detector.detect(videoEl);
               if (codes.length > 0 && !nativeStopped && !cancelled) {
                 nativeStopped = true;
+                playSuccessBeep();
                 onScan(codes[0].rawValue);
                 if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
                 return;
@@ -538,12 +556,13 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
       ctx.drawImage(videoEl, 0, 0);
 
       const doScan = (value: string) => {
+        playSuccessBeep();
         onScan(value);
         if (startedRef.current) { scannerRef.current?.stop().catch(() => {}); startedRef.current = false; }
         setCapturing(false);
       };
 
-      // 1) BarcodeDetector native (Chrome/Android) — also handles 1D barcodes (Code128, EAN…)
+      // 1) BarcodeDetector native (Chrome/Android) — handles QR + 1D barcodes (Code128, EAN…)
       if (typeof window !== "undefined" && "BarcodeDetector" in window) {
         try {
           const detector = new (window as any).BarcodeDetector({
@@ -551,15 +570,17 @@ function CameraScanner({ onScan, onClose }: { onScan: (code: string) => void; on
           });
           const codes: any[] = await detector.detect(canvas);
           if (codes.length > 0) { doScan(codes[0].rawValue); return; }
-        } catch { /* fall through to jsQR */ }
+        } catch { /* fall through to ZXing */ }
       }
 
-      // 2) jsQR — pure JS, works on every browser including Safari/iOS
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const result = jsQR(imageData.data, imageData.width, imageData.height);
-      if (result?.data) { doScan(result.data); return; }
+      // 2) ZXing — pure JS, QR + 1D barcodes (Code128, Code39, EAN…), all browsers incl. Safari/iOS
+      try {
+        const reader = new BrowserMultiFormatReader();
+        const result = await reader.decodeFromCanvas(canvas as any);
+        if (result?.getText()) { doScan(result.getText()); return; }
+      } catch { /* NotFoundException is normal when no code found — not a fatal error */ }
 
-      setError("Aucun code détecté sur la photo — recadre le QR code bien au centre, à environ 15 cm, et réessaie.");
+      setError("Aucun code détecté sur la photo — recadre le code bien au centre, à environ 15 cm, et réessaie.");
     } catch (e: any) {
       console.error("[CameraScanner] capturePhoto failed:", e);
       setError(`Erreur capture : ${e?.message || String(e)}`);
@@ -616,6 +637,7 @@ function ReturnScanner({ onConfirmed }: { onConfirmed: () => void }) {
       const res = await apiRequest("POST", "/api/orders/confirm-return-by-code", { code: raw.trim() });
       const data = await res.json();
       if (data.success) {
+        playSuccessBeep();
         toast({ title: "✅ Retour confirmé", description: `${data.orderNumber} — ${data.customerName}` });
         setTodayCount((c) => c + 1);
         onConfirmed();
