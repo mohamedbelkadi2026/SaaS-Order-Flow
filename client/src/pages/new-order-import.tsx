@@ -104,7 +104,8 @@ export default function NewOrderImport() {
   const handleImport = async () => {
     const reversedMap: Record<string, string> = {};
     Object.entries(mapping).forEach(([col, field]) => { if (field) reversedMap[col] = field; });
-    if (!reversedMap.customerName && !reversedMap.customerPhone) {
+    const mappedFields = Object.values(reversedMap);
+    if (!mappedFields.includes("customerName") && !mappedFields.includes("customerPhone")) {
       toast({ title: "Mapping incomplet", description: "Associez au moins 'Nom du client' ou 'Téléphone'.", variant: "destructive" });
       return;
     }
