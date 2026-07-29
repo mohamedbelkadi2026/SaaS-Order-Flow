@@ -463,6 +463,14 @@ export async function registerRoutes(
   /* ── Health check — used by Railway (and load balancers) ─────── */
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
+  // Update lastSeenAt on every authenticated request (fire-and-forget — no latency impact)
+  app.use((req: any, _res, next) => {
+    if (req.user?.id) {
+      db.update(users).set({ lastSeenAt: new Date() } as any).where(eq(users.id, req.user.id)).catch(() => {});
+    }
+    next();
+  });
+
   // Fetch the EC official status table at startup (public endpoint, no auth).
   // Runs fire-and-forget — server starts immediately even if this is slow/fails.
   fetchEcStatusTable().catch(e => console.warn('[EC-STATUS-TABLE] Startup fetch failed:', e?.message));
@@ -8614,6 +8622,12 @@ function ensureHeaders(sheet) {
     const dateFrom = (req.query.dateFrom as string | undefined) || null;
     const dateTo   = (req.query.dateTo   as string | undefined) || null;
     res.json(await storage.getAgentPerformanceByAssignment(storeId, { magasinId, dateFrom, dateTo }));
+  });
+
+  // Agent comparison by product — rows=products, columns=agents, value=confirmation rate
+  app.get("/api/agents/comparison-by-product", requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    res.json(await storage.getAgentComparisonByProduct(storeId));
   });
 
   // ============================================================

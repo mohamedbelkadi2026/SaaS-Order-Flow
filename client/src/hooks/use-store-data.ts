@@ -556,6 +556,18 @@ export function useAgentPerformance(magasinId?: number | null, date?: string) {
   });
 }
 
+export function useAgentComparisonByProduct() {
+  return useQuery<{ productId: number; productName: string; agentId: number; total: number; confirmed: number }[]>({
+    queryKey: ["/api/agents/comparison-by-product"],
+    queryFn: async () => {
+      const res = await fetch("/api/agents/comparison-by-product", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch agent comparison by product");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export function useDeleteAgent() {
   const queryClient = useQueryClient();
   return useMutation({

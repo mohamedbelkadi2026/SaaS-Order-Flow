@@ -715,6 +715,13 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] push_subscriptions table ensured ✅');
 
+    // ── users.last_seen_at — tracks when each user last made an authenticated request
+    await client.query(`
+      ALTER TABLE public.users
+        ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;
+    `);
+    console.log('[Migration] users.last_seen_at ensured ✅');
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);

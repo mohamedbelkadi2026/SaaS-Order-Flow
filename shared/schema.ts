@@ -69,6 +69,7 @@ export const users = pgTable("users", {
     importantOnly?: boolean;
   }>(),
   createdAt: timestamp("created_at").defaultNow(),
+  lastSeenAt: timestamp("last_seen_at"),
 });
 
 export const emailVerificationCodes = pgTable("email_verification_codes", {

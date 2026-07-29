@@ -160,7 +160,8 @@ export interface IStorage {
   checkOrderLimit(storeId: number): Promise<{ allowed: boolean; current: number; limit: number; plan: string; isBlocked: boolean }>;
   checkPaywall(storeId: number): Promise<{ isExpired: boolean; isLimitReached: boolean; isBlocked: boolean; reason: 'expired' | 'limit' | null; current: number; limit: number; plan: string }>;
 
-  getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number }[]>;
+  getAgentPerformance(storeId: number, options?: { magasinId?: number | null; date?: string }): Promise<{ agentId: number; total: number; confirmed: number; delivered: number; cancelled: number; avgResponseMinutes: number | null }[]>;
+  getAgentComparisonByProduct(storeId: number): Promise<{ productId: number; productName: string; agentId: number; total: number; confirmed: number }[]>;
   // Like getAgentPerformance but groups by `assigned_to_id` over a date range
   // of `created_at`. Powers the Dashboard's "Performance de l'Équipe" panel
   // where the question is "out of all orders ASSIGNED to this agent in the
@@ -2803,6 +2804,7 @@ export class DatabaseStorage implements IStorage {
       confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
       delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')`,
       cancelled: sql<number>`count(*) filter (where ${orders.status} in ('Annulé (fake)', 'Annulé (faux numéro)', 'Annulé (double)'))`,
+      avgResponseMinutes: sql<number>`ROUND(AVG(EXTRACT(EPOCH FROM (${orders.updatedAt} - ${orders.createdAt}))/60))::int`,
     }).from(orders)
       .where(and(...conditions))
       .groupBy(orders.lastActionBy);
@@ -2813,6 +2815,32 @@ export class DatabaseStorage implements IStorage {
       confirmed: Number(r.confirmed),
       delivered: Number(r.delivered),
       cancelled: Number(r.cancelled),
+      avgResponseMinutes: r.avgResponseMinutes != null ? Number(r.avgResponseMinutes) : null,
+    }));
+  }
+
+  async getAgentComparisonByProduct(
+    storeId: number,
+  ): Promise<{ productId: number; productName: string; agentId: number; total: number; confirmed: number }[]> {
+    const rows = await db.select({
+      productId: products.id,
+      productName: products.name,
+      agentId: orders.assignedToId,
+      total: count(),
+      confirmed: sql<number>`count(*) filter (where ${orders.status} not in (${sql.join(NOT_CONFIRMED_STATUSES_ARRAY.map(s => sql`${s}`), sql`, `)}) and ${orders.status} not like 'Pas de réponse%')`,
+    })
+      .from(orders)
+      .innerJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .innerJoin(products, eq(products.id, orderItems.productId))
+      .where(and(eq(orders.storeId, storeId), sql`${orders.assignedToId} IS NOT NULL`))
+      .groupBy(products.id, products.name, orders.assignedToId);
+
+    return rows.map(r => ({
+      productId: r.productId,
+      productName: r.productName,
+      agentId: r.agentId!,
+      total: Number(r.total),
+      confirmed: Number(r.confirmed),
     }));
   }
 
