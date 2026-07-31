@@ -288,6 +288,21 @@ export const ozonExpressCities = pgTable("ozon_express_cities", {
 });
 export type OzonExpressCity = typeof ozonExpressCities.$inferSelect;
 
+// ─── Vitipsexpress City Map — display name → API abbr ────────────────────────
+// Vitipsexpress's add-parcel API requires the 'city' field to be an abbr (e.g.
+// "Casablanca"), NOT the full uppercase name (e.g. "CASABLANCA"). This table
+// maps synced city display names to their abbr values.
+// Populated by "Synchroniser les villes" on the Vitipsexpress carrier account.
+export const vitipsCities = pgTable("vitips_cities", {
+  id:         serial("id").primaryKey(),
+  storeId:    integer("store_id").notNull(),
+  externalId: text("external_id").notNull(),   // abbr sent to Vitips API (e.g. "Casablanca")
+  name:       text("name").notNull(),           // full display name (e.g. "CASABLANCA")
+  nameNorm:   text("name_norm").notNull(),      // lowercase + accent-stripped for fuzzy match
+  createdAt:  timestamp("created_at").defaultNow(),
+});
+export type VitipsCity = typeof vitipsCities.$inferSelect;
+
 // ─── Per-city delivery pricing (per carrier) ────────────────────────────────
 // Fills orders.shippingCost automatically for carriers that don't return a
 // real per-city cost via API (Express Coursier has no such endpoint — unlike

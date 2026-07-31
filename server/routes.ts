@@ -1806,6 +1806,18 @@ export async function registerRoutes(
                   ? ((orderCreds as any).settings || {})
                   : {};
 
+                // For Vitipsexpress: resolve city name → abbr (e.g. "CASABLANCA" → "Casablanca")
+                let vitipsCityAbbr: string | undefined;
+                if (provider.toLowerCase() === 'vitipsexpress') {
+                  const resolved = await storage.getVitipsCityAbbr(storeId, resolvedCity);
+                  if (resolved) {
+                    vitipsCityAbbr = resolved;
+                    console.log(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → abbr="${vitipsCityAbbr}"`);
+                  } else {
+                    console.warn(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → no abbr found, sending name directly`);
+                  }
+                }
+
                 return shipOrderToCarrier(provider, orderCreds, {
                   customerName:     order.customerName,
                   phone:            order.customerPhone,
@@ -1825,7 +1837,7 @@ export async function registerRoutes(
                   apiId:            (orderCreds as any).apiSecret || (orderCreds as any).settings?.apiId || '',
                   apiSecret:        (orderCreds as any).apiSecret || '',
                   previousAttemptHadPlaceholder: isAmeexRetry,
-                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId,
+                  cityId:           ameexCityId ?? ecCityId ?? ozonCityId ?? vitipsCityAbbr,
                   ecSettings,
                   ozonSettings,
                 });
@@ -3651,15 +3663,29 @@ export async function registerRoutes(
             raw: vitipsResp.data,
           });
         }
-        const vitipsCities: string[] = (vitipsResp.data.data as any[])
-          .map((c: any) => (c.abbr || c.name || "").trim())
+        const rawList: any[] = Array.isArray(vitipsResp.data.data) ? vitipsResp.data.data : [];
+        // Display names: use c.name (full uppercase, e.g. "CASABLANCA")
+        const vitipsCityNames: string[] = rawList
+          .map((c: any) => (c.name || "").trim())
           .filter(Boolean);
-        if (vitipsCities.length === 0) {
+        if (vitipsCityNames.length === 0) {
           return res.status(422).json({ message: "Aucune ville reçue de Vitipsexpress." });
         }
-        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, vitipsCities);
-        console.log(`[VITIPS-CITIES-SYNC] ✅ Saved ${vitipsCities.length} cities for account #${accountId}`);
-        return res.json({ count: vitipsCities.length, cities: vitipsCities, syncedAt: new Date().toISOString() });
+        // abbr mapping: name → abbr (e.g. "CASABLANCA" → "Casablanca")
+        const normVitips = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+        const vitipsMappings = rawList
+          .map((c: any) => ({
+            externalId: (c.abbr || c.name || "").trim(),  // abbr is what Vitips API expects
+            name:       (c.name || "").trim(),
+            nameNorm:   normVitips(c.name || ""),
+          }))
+          .filter(m => m.name && m.externalId);
+        // Save full names for dropdown display
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, vitipsCityNames);
+        // Save name→abbr mapping for shipment creation
+        await storage.upsertVitipsCities(storeId, vitipsMappings);
+        console.log(`[VITIPS-CITIES-SYNC] ✅ Saved ${vitipsCityNames.length} cities (${vitipsMappings.length} with abbr) for account #${accountId}`);
+        return res.json({ count: vitipsCityNames.length, cities: vitipsCityNames, syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
@@ -13275,6 +13301,18 @@ function ensureHeaders(sheet) {
         ? ((creds as any).settings || {})
         : {};
 
+      // For Vitipsexpress: resolve city name → abbr (e.g. "CASABLANCA" → "Casablanca")
+      let singleVitipsCityAbbr: string | undefined;
+      if (provider.toLowerCase() === 'vitipsexpress') {
+        const resolved = await storage.getVitipsCityAbbr(storeId, matchedCity);
+        if (resolved) {
+          singleVitipsCityAbbr = resolved;
+          console.log(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → abbr="${singleVitipsCityAbbr}"`);
+        } else {
+          console.warn(`[VITIPS-CITY] order=${orderId} city="${matchedCity}" → no abbr found, sending name directly`);
+        }
+      }
+
       const shipResult = await shipOrderToCarrier(provider, creds, {
         customerName:     order.customerName,
         phone:            order.customerPhone,
@@ -13293,7 +13331,7 @@ function ensureHeaders(sheet) {
         digylogNetworkId: (creds as any).digylogNetworkId || 1,
         apiId:            (creds as any).apiSecret || (creds as any).settings?.apiId || '',
         apiSecret:        (creds as any).apiSecret || '',
-        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId,
+        cityId:           singleAmeexCityId ?? singleEcCityId ?? singleOzonCityId ?? singleVitipsCityAbbr,
         ecSettings:       singleEcSettings,
         ozonSettings:     singleOzonSettings,
       });

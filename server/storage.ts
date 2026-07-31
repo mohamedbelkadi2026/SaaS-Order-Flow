@@ -2,7 +2,7 @@ import { db } from "./db";
 import { 
   users, stores, products, productVariants, orders, orderItems, adSpendTracking, adSpend, storeIntegrations, integrationLogs, adCampaignProductMap,
   subscriptions, customers, agentProducts, storeAgentSettings, orderFollowUpLogs, stockLogs, stockMovements, payments, emailVerificationCodes,
-  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, carrierCityPricing,
+  carrierAccounts, carrierCities, ameexCities, expressCoursierCities, ozonExpressCities, vitipsCities, carrierCityPricing,
   pushSubscriptions,
   type User, type Store, type Product, type ProductVariant, type ProductWithVariants, type Order, type OrderItem, type OrderWithDetails,
   type InsertUser, type InsertStore, type InsertProduct, type InsertProductVariant, type InsertOrder, type InsertOrderItem,
@@ -89,6 +89,8 @@ export interface IStorage {
   resolveExpressCoursierCityId(storeId: number, cityName: string): Promise<string | null>;
   upsertOzonExpressCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
   resolveOzonExpressCityId(storeId: number, cityName: string): Promise<string | null>;
+  upsertVitipsCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void>;
+  getVitipsCityAbbr(storeId: number, cityName: string): Promise<string | null>;
   getAccountForShipping(storeId: number, provider: string, city?: string): Promise<{
     id?: number;
     settings?: Record<string, any>;
@@ -1464,6 +1466,25 @@ export class DatabaseStorage implements IStorage {
       .where(eq(ozonExpressCities.storeId, storeId));
     // Not found → matchCityId returns null. The caller MUST fail fast — never
     // send the city name, which Ozon Express rejects.
+    return matchCityId(cities, cityName);
+  }
+
+  // ── Vitipsexpress city abbr mapping (name → abbr) ────────────────────────
+  // Vitipsexpress requires 'city' = abbr (e.g. "Casablanca"), not the full
+  // uppercase name (e.g. "CASABLANCA"). externalId stores the abbr.
+
+  async upsertVitipsCities(storeId: number, cities: { externalId: string; name: string; nameNorm: string }[]): Promise<void> {
+    if (!cities.length) return;
+    await db.delete(vitipsCities).where(eq(vitipsCities.storeId, storeId));
+    await db.insert(vitipsCities).values(
+      cities.map(c => ({ storeId, externalId: c.externalId, name: c.name, nameNorm: c.nameNorm }))
+    );
+  }
+
+  async getVitipsCityAbbr(storeId: number, cityName: string): Promise<string | null> {
+    if (!(cityName || "").trim()) return null;
+    const cities = await db.select().from(vitipsCities)
+      .where(eq(vitipsCities.storeId, storeId));
     return matchCityId(cities, cityName);
   }
 

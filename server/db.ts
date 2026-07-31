@@ -234,6 +234,26 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log("[DATABASE]: ozon_express_cities table verified/created.");
 
+    // ── 5b-ter. vitips_cities — Vitipsexpress city name → abbr map ────────────
+    // Vitipsexpress add-parcel requires 'city' = abbr (e.g. "Casablanca"), not
+    // the full uppercase name. Populated by "Synchroniser les villes".
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.vitips_cities (
+        id          SERIAL PRIMARY KEY,
+        store_id    INTEGER NOT NULL,
+        external_id TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        name_norm   TEXT NOT NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        UNIQUE(store_id, external_id)
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_vitips_cities_store_norm
+        ON public.vitips_cities (store_id, name_norm);
+    `);
+    console.log("[DATABASE]: vitips_cities table verified/created.");
+
     // ── 5c. orders: offer_name + ameex_product_id enrichment columns ─────────
     await client.query(`
       ALTER TABLE public.orders
