@@ -47,7 +47,7 @@ const PROVIDERS = [
   { id: "oscario",        name: "Oscario",           cities: 390, logo: null                     },
   { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                             },
   { id: "expresscoursier", name: "Express Coursier", cities: 450, logo: "/carriers/expresscoursier.png" },
-  { id: "vitipsexpress",  name: "Vitips Express",        cities: 200, logo: "/carriers/vitips.png", initials: "VE", color: "#FF6B00" },
+  { id: "vitipsexpress",  name: "Vitips Express",        cities: 200, logo: "https://vitipsexpress.com/template/images/logo.png", initials: "VE", color: "#FF6B00" },
   { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                         },
 ];
 

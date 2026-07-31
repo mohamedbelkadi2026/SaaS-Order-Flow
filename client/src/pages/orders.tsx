@@ -56,6 +56,9 @@ const CARRIER_LOGOS: Record<string, string> = {
   quicklivraison: '/carriers/ql.svg',
   'quick livraison': '/carriers/ql.svg',
   ql: '/carriers/ql.svg',
+  vitipsexpress: '/carriers/vitips.png',
+  'vitips express': '/carriers/vitips.png',
+  vitips: '/carriers/vitips.png',
 };
 
 function getCarrierLogo(provider: string | null | undefined): string | null {
