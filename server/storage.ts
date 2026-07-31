@@ -19,7 +19,7 @@ import {
   type PushSubscription, type InsertPushSubscription,
 } from "@shared/schema";
 import { DELIVERED_STATUSES, isConfirmedCumulative, NOT_CONFIRMED_STATUSES_ARRAY, SHIPPED_STATUS_SET } from "@shared/order-status-sets";
-import { eq, desc, and, sql, count, ne, like, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
+import { eq, desc, and, sql, count, ne, like, ilike, notLike, gte, lte, lt, inArray, notInArray, or, isNull } from "drizzle-orm";
 import { alias as aliasedTable } from "drizzle-orm/pg-core";
 import { matchCityId, normalizeCityKey } from "./services/city-aliases";
 
@@ -797,13 +797,40 @@ export class DatabaseStorage implements IStorage {
       }
     }
     if (filters.search) {
-      const term = `%${filters.search}%`;
-      conditions.push(or(
-        like(orders.customerName, term),
-        like(orders.customerPhone, term),
-        like(orders.orderNumber, term),
-        like(orders.customerCity, term)
-      ));
+      const raw = filters.search.trim();
+      const term = `%${raw}%`;
+
+      // Normalize phone: strip all non-digits, then match last 9 digits
+      const digitsOnly = raw.replace(/\D/g, '');
+      const phoneSuffix = digitsOnly.length >= 6 ? `%${digitsOnly.slice(-9)}` : null;
+
+      const searchConditions: any[] = [
+        ilike(orders.customerName, term),
+        ilike(orders.orderNumber, term),
+        ilike(orders.customerCity, term),
+        ilike(orders.customerAddress, term),
+        ilike(orders.trackNumber, term),
+      ];
+
+      // Phone: match by suffix of digits (handles +212, 06, 6 prefixes)
+      if (phoneSuffix) {
+        searchConditions.push(
+          sql`regexp_replace(${orders.customerPhone}, '[^0-9]', '', 'g') LIKE ${phoneSuffix}`
+        );
+      } else {
+        searchConditions.push(ilike(orders.customerPhone, term));
+      }
+
+      // Product name: subquery on order_items joined with products
+      const matchingOrderIds = db
+        .select({ orderId: orderItems.orderId })
+        .from(orderItems)
+        .innerJoin(products, eq(orderItems.productId, products.id))
+        .where(ilike(products.name, term));
+
+      searchConditions.push(sql`${orders.id} IN (${matchingOrderIds})`);
+
+      conditions.push(or(...searchConditions));
     }
 
     const whereClause = and(...conditions);
