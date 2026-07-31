@@ -3631,6 +3631,35 @@ export async function registerRoutes(
         await storage.upsertOzonExpressCities(storeId, ozonFinalEntries);
         console.log(`[Ozon-SyncCities] ✅ Parsed ${ozonFinalEntries.length} cities from ${usedOzonUrl}`);
         return res.json({ count: ozonFinalEntries.length, usedUrl: usedOzonUrl, cities: ozonFinalEntries.map(e => e.name), syncedAt: new Date().toISOString() });
+      } else if (carrierKey === "vitipsexpress") {
+        // Vitipsexpress city sync — GET /villes, auth: "API Token" header
+        // Response: { data: [{ name: "CASABLANCA", abbr: "Casablanca" }, ...] }
+        // City label = abbr (human-readable), fallback to name
+        const axiosVitips = (await import("axios")).default;
+        const httpsVitips = new (await import("https")).default.Agent({ rejectUnauthorized: false });
+        console.log(`[VITIPS-CITIES-SYNC] Fetching cities for account #${accountId}`);
+        const vitipsResp = await axiosVitips.get("https://app.vitipsexpress.com/api/client/villes", {
+          headers: { "API Token": apiKey, "Accept": "application/json" },
+          timeout: 15_000,
+          httpsAgent: httpsVitips,
+          validateStatus: () => true,
+        });
+        console.log(`[VITIPS-CITIES-SYNC] HTTP ${vitipsResp.status}: ${JSON.stringify(vitipsResp.data).slice(0, 300)}`);
+        if (vitipsResp.status !== 200 || !vitipsResp.data?.data) {
+          return res.status(502).json({
+            message: `Erreur API Vitipsexpress: HTTP ${vitipsResp.status}`,
+            raw: vitipsResp.data,
+          });
+        }
+        const vitipsCities: string[] = (vitipsResp.data.data as any[])
+          .map((c: any) => (c.abbr || c.name || "").trim())
+          .filter(Boolean);
+        if (vitipsCities.length === 0) {
+          return res.status(422).json({ message: "Aucune ville reçue de Vitipsexpress." });
+        }
+        await storage.upsertCarrierCities(storeId, acct.carrierName, accountId, vitipsCities);
+        console.log(`[VITIPS-CITIES-SYNC] ✅ Saved ${vitipsCities.length} cities for account #${accountId}`);
+        return res.json({ count: vitipsCities.length, cities: vitipsCities, syncedAt: new Date().toISOString() });
       } else {
         return res.status(422).json({ message: `Synchronisation des villes non supportée pour ${acct.carrierName}` });
       }
