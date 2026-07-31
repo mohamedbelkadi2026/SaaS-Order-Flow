@@ -1027,8 +1027,8 @@ export async function shipOrderToCarrier(
     if (apiKey)    headers["C-Api-Key"] = cleanKey(apiKey);
     if (apiSecret) headers["C-Api-Id"]  = cleanKey(apiSecret);
   } else if (providerKey === "vitipsexpress") {
-    // Vitipsexpress uses "API Token" header (not Bearer)
-    if (apiKey) headers["API Token"] = apiKey;
+    // Vitipsexpress uses "api-token" header (not Bearer)
+    if (apiKey) headers["api-token"] = apiKey;
   } else {
     if (apiKey) {
       headers["Authorization"] = `Bearer ${apiKey}`;
@@ -2833,7 +2833,7 @@ export async function trackVitipsShipment(
   console.log(`[VITIPS-TRACK] ${trackingCode} → GET ${url}`);
   try {
     const response = await axios.get(url, {
-      headers: { 'API Token': apiToken, 'Accept': 'application/json' },
+      headers: { 'api-token': apiToken, 'Accept': 'application/json' },
       timeout: 15000,
       httpsAgent: SSL_AGENT,
       validateStatus: () => true,
@@ -2868,7 +2868,7 @@ export async function getVitipsCities(
   console.log(`[VITIPS-CITIES] → GET ${url}`);
   try {
     const response = await axios.get(url, {
-      headers: { 'API Token': apiToken, 'Accept': 'application/json' },
+      headers: { 'api-token': apiToken, 'Accept': 'application/json' },
       timeout: 15000,
       httpsAgent: SSL_AGENT,
       validateStatus: () => true,

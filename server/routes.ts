@@ -3639,7 +3639,7 @@ export async function registerRoutes(
         const httpsVitips = new (await import("https")).default.Agent({ rejectUnauthorized: false });
         console.log(`[VITIPS-CITIES-SYNC] Fetching cities for account #${accountId}`);
         const vitipsResp = await axiosVitips.get("https://app.vitipsexpress.com/api/client/villes", {
-          headers: { "API Token": apiKey, "Accept": "application/json" },
+          headers: { "api-token": apiKey, "Accept": "application/json" },
           timeout: 15_000,
           httpsAgent: httpsVitips,
           validateStatus: () => true,
