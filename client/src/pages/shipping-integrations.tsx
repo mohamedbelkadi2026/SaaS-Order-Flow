@@ -47,6 +47,7 @@ const PROVIDERS = [
   { id: "oscario",        name: "Oscario",           cities: 390, logo: null                     },
   { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                             },
   { id: "expresscoursier", name: "Express Coursier", cities: 450, logo: "/carriers/expresscoursier.png" },
+  { id: "vitipsexpress",  name: "Vitips Express",        cities: 200, logo: "/carriers/vitips.png"   },
   { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                         },
 ];
 
@@ -1956,6 +1957,13 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
     errorTitle: "Erreur de synchronisation Ozon Express",
   });
 
+  const vitipsSyncPending = syncingProvider === "vitipsexpress";
+  const handleVitipsSync = () => syncCarrier("vitipsexpress", {
+    endpoint: "/api/shipping/vitips/sync",
+    successTitle: "✅ Statuts Vitipsexpress synchronisés",
+    errorTitle: "Erreur de synchronisation Vitipsexpress",
+  });
+
   const ecSyncPending = syncingProvider === "expresscoursier";
   const handleEcSync = () => syncCarrier("expresscoursier", {
     successTitle: "✅ Statuts Express Coursier synchronisés",
@@ -2141,6 +2149,21 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                           ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
                           : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
                         Synchroniser Express Coursier
+                      </Button>
+                    )}
+                    {providerId === "vitipsexpress" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="border-emerald-200 text-emerald-700 hover:bg-emerald-50 font-semibold"
+                        onClick={handleVitipsSync}
+                        disabled={vitipsSyncPending}
+                        data-testid={`button-vitips-sync-statuses-${acct.id}`}
+                      >
+                        {vitipsSyncPending
+                          ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+                          : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                        Synchroniser Vitips Express
                       </Button>
                     )}
                     {providerId === "digylog" && (

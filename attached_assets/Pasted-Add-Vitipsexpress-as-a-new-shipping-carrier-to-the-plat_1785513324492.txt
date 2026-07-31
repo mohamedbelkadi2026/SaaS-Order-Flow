@@ -1,0 +1,137 @@
+Add Vitipsexpress as a new shipping carrier to the platform, exactly like the existing carriers (Digylog, Ameex, etc.).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VITIPSEXPRESS API DOCUMENTATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Base URL: https://app.vitipsexpress.com/api/client
+Auth: Header "API Token: {token}" + "Accept: application/json"
+
+Endpoints:
+- GET  /colis/track/{code}         → track a package by code
+- POST /post/colis/add-colis       → create a shipment
+- GET  /colis/list-colis-ramassage → list parcels awaiting pickup
+- GET  /colis/list-colis/          → list all parcels
+- GET  /list-status                → list all statuses
+- GET  /villes                     → list cities { data: [{name, abbr}] }
+
+Track response:
+{ "data": [ { "status": "Collected", "Date_Evenement": 1723991095 }, ... ] }
+→ Use the FIRST item in data array as current status
+
+Create shipment (POST /post/colis/add-colis) body:
+{
+  fullname: string,        // customer name (required)
+  phone: string,           // customer phone (required)
+  city: string,            // city abbr from /villes (required)
+  address: string,
+  price: number,           // COD amount (required)
+  product: string,         // product name(s) comma-separated (required)
+  qty: string,             // quantities comma-separated (required)
+  note: string,
+  exchange: 0,             // always 0
+  openpackage: 0,          // always 0
+  from_stock: 0,
+  try_product: 0,
+  internal_id: string      // our order number
+}
+Response: { "code": "ok", "message": "The package has been successfully added" }
+→ The package code returned is in the response — save it as trackNumber
+
+Status mapping from Vitipsexpress → platform status:
+"Delivered" → "delivered"
+"Collected" → "Attente De Ramassage"
+"Awaiting pickup" → "Attente De Ramassage"
+"Waiting for pickup" → "Attente De Ramassage"
+"Received" → "transit"
+"Received by courier" → "transit"
+"Ready for Shipment" → "transit"
+"Shipped" → "transit"
+"Traveling" → "transit"
+"Distribution" → "transit"
+"Distributed" → "transit"
+"Tracking Request" → "transit"
+"Refused" → "refused"
+"Cancel" → "refused"
+"Postponed" → "unreachable"
+"Scheduled" → "unreachable"
+"no response 1" → "unreachable"
+"no response 2" → "unreachable"
+"no response 3" → "unreachable"
+"unreachable" → "unreachable"
+"out of zone" → "unreachable"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPLEMENTATION — follow the EXACT same pattern as Digylog/Ameex:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. SERVER: server/services/carrier-service.ts
+Add these functions:
+
+async function createVitipsShipment(order, apiToken, options):
+  POST https://app.vitipsexpress.com/api/client/post/colis/add-colis
+  Header: { "API Token": apiToken, "Accept": "application/json" }
+  Body: map order fields to Vitips fields
+  Return: { code, trackNumber, error? }
+
+async function trackVitipsShipment(trackingCode, apiToken):
+  GET https://app.vitipsexpress.com/api/client/colis/track/{trackingCode}
+  Header: { "API Token": apiToken, "Accept": "application/json" }
+  Return: { status (mapped), rawStatus, rawResponse, error? }
+
+async function getVitipsCities(apiToken):
+  GET https://app.vitipsexpress.com/api/client/villes
+  Return array of { name, abbr }
+
+2. SERVER: server/routes.ts
+Add these endpoints (same pattern as Digylog):
+
+GET  /api/vitips/cities              → return cities list
+GET  /api/carrier-accounts/vitips/stores  → return store info
+POST /api/shipping/vitips/sync       → sync status for all active vitips orders
+GET  /api/shipping/vitips/track/:code → track single package
+
+For the sync endpoint:
+- Get all orders where shippingProvider = "vitipsexpress" and status not in [delivered, refused, Retour Recu]
+- For each order, call trackVitipsShipment
+- If status changed, update order status and add a follow-up log note
+
+3. DATABASE migration (add to startup migrations in server/index.ts):
+No new columns needed — uses existing carrier_accounts table with:
+  carrierName = "vitipsexpress"
+  apiKey = the API Token
+
+4. CLIENT: Add Vitipsexpress to the carriers list in the Transporteurs page
+Find where Digylog card is defined (client/src/pages/carriers.tsx or similar) and add:
+{
+  id: "vitipsexpress",
+  name: "Vitips Express",
+  logo: "/vitips-logo.png",  // we'll use a placeholder
+  description: "Livraison express au Maroc",
+  cities: 200,
+  connectFields: [
+    { key: "apiToken", label: "API Token", placeholder: "Votre token Vitipsexpress", type: "password" }
+  ]
+}
+
+5. CLIENT: Add "Synchroniser Vitips" button on the Suivi des Colis page
+Same style as the existing "Synchroniser Digylog" button
+Calls POST /api/shipping/vitips/sync
+Shows toast with result: "X commandes mises à jour"
+
+6. CLIENT: When creating a shipment (expédier commande), add Vitipsexpress as option
+When selected, show city dropdown populated from GET /api/vitips/cities
+Map city abbr when sending to API
+
+7. SERVER: server/services/carrier-service.ts
+In the main getCarrierCities() function, add vitipsexpress case:
+if provider includes "vitips": fetch from /api/client/villes and return city names
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT:
+- Store apiToken in carrier_accounts.apiKey field
+- carrierName in DB = "vitipsexpress"
+- shippingProvider on orders = "vitipsexpress"  
+- The sync job should run automatically every 10 minutes alongside the existing WooCommerce sync job
+- Log all API calls with prefix [VITIPS-TRACK] and [VITIPS-SYNC] for Railway debugging
+- Use axios with timeout: 15000 and validateStatus: () => true
+- Wrap all API calls in try/catch

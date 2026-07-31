@@ -306,6 +306,9 @@ const CARRIER_LOGOS_SERVER: Record<string, string> = {
   ql: '/carriers/ql.svg',
   expresscoursier: '/carriers/expresscoursier.png',
   'express coursier': '/carriers/expresscoursier.png',
+  vitipsexpress: '/carriers/vitips.png',
+  'vitips express': '/carriers/vitips.png',
+  vitips: '/carriers/vitips.png',
 };
 
 /** Auto-match a raw city name against a carrier's city list. Returns best match or null. */
@@ -9500,6 +9503,117 @@ function ensureHeaders(sheet) {
     } catch (err: any) {
       console.error('[DIGYLOG-SYNC] fatal', err?.message);
       return safeJson(500, { message: err?.message || 'Sync Digylog failed' });
+    }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // VITIPSEXPRESS ROUTES
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** GET /api/vitips/cities — fetch city list from Vitipsexpress API */
+  app.get("/api/vitips/cities", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "vitipsexpress");
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Vitipsexpress configuré." });
+      const { getVitipsCities } = await import("./services/carrier-service");
+      const cities = await getVitipsCities((account as any).apiKey);
+      res.json({ cities });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Erreur lors de la récupération des villes Vitips" });
+    }
+  });
+
+  /** GET /api/shipping/vitips/track/:code — track a single Vitipsexpress package */
+  app.get("/api/shipping/vitips/track/:code", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { code } = req.params;
+      const accounts = await storage.getCarrierAccounts(storeId, "vitipsexpress");
+      const account = accounts[0];
+      if (!account) return res.status(400).json({ message: "Aucun compte Vitipsexpress configuré." });
+      const { trackVitipsShipment } = await import("./services/carrier-service");
+      const result = await trackVitipsShipment(code, (account as any).apiKey);
+      if (result.error) return res.status(502).json({ message: result.error, rawResponse: result.rawResponse });
+      res.json({ trackingCode: code, rawStatus: result.rawStatus, mappedStatus: result.status, rawResponse: result.rawResponse });
+    } catch (err) { throw err; }
+  });
+
+  /** POST /api/shipping/vitips/sync — sync statuses for all active Vitipsexpress orders */
+  app.post("/api/shipping/vitips/sync", requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    let responded = false;
+    const safeJson = (status: number, body: any) => {
+      if (responded || res.headersSent) return;
+      responded = true;
+      res.status(status).json(body);
+    };
+    try {
+      const storeId = req.user!.storeId!;
+      const accounts = await storage.getCarrierAccounts(storeId, "vitipsexpress");
+      const account = accounts[0];
+      if (!account) return safeJson(400, { message: "Aucun compte Vitipsexpress configuré." });
+      const apiKey = (account as any).apiKey;
+      const { trackVitipsShipment } = await import("./services/carrier-service");
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const vitipsOrders = allOrders.filter((o: any) => {
+        if (!o.trackNumber) return false;
+        if (["delivered", "refused", "Retour Recu"].includes(o.status || "")) return false;
+        return (o.shippingProvider || "").toLowerCase().trim() === "vitipsexpress";
+      });
+      if (vitipsOrders.length === 0) {
+        return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Vitipsexpress à synchroniser." });
+      }
+      const BATCH_SIZE = 10;
+      const BUDGET_MS  = 20_000;
+      const startedAt  = Date.now();
+      const batch      = vitipsOrders.slice(0, BATCH_SIZE);
+      let updated = 0;
+      let processed = 0;
+      for (const order of batch) {
+        if (Date.now() - startedAt > BUDGET_MS) {
+          console.warn(`[VITIPS-SYNC] budget exhausted after ${processed}/${batch.length} orders`);
+          break;
+        }
+        processed++;
+        try {
+          const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+          console.log(`[VITIPS-SYNC] order=#${(order as any).orderNumber} track=${order.trackNumber} → raw="${result.rawStatus}" mapped="${result.status}" err="${result.error}"`);
+          if (result.error || !result.status) continue;
+          const updateData: any = {};
+          if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
+            updateData.commentStatus = result.rawStatus;
+          }
+          if (result.status !== order.status) {
+            await storage.updateOrderStatus(order.id, result.status);
+            await storage.createOrderFollowUpLog({
+              orderId:   order.id,
+              agentId:   null,
+              agentName: 'Vitipsexpress Sync',
+              note:      `📦 Statut synchronisé: ${result.rawStatus} → ${result.status}`,
+            });
+            updated++;
+          }
+          if (Object.keys(updateData).length > 0) {
+            await storage.updateOrder(order.id, updateData);
+          }
+        } catch (e: any) {
+          console.error(`[VITIPS-SYNC] Error for order ${(order as any).orderNumber}: ${e?.message}`);
+        }
+        await new Promise(r => setTimeout(r, 200));
+      }
+      const remaining = vitipsOrders.length - processed;
+      safeJson(200, {
+        synced: processed,
+        updated,
+        remaining,
+        message: remaining > 0
+          ? `${updated} commande(s) mise(s) à jour. Encore ${remaining} en attente — recliquez pour continuer.`
+          : `${updated} commande(s) mise(s) à jour. Toutes les commandes Vitipsexpress sont synchronisées.`,
+      });
+    } catch (err: any) {
+      console.error('[VITIPS-SYNC] fatal', err?.message);
+      return safeJson(500, { message: err?.message || 'Sync Vitipsexpress failed' });
     }
   });
 

@@ -27,6 +27,7 @@ const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
 const CARRIER_ENDPOINTS: Record<string, string> = {
   // Digylog V2.4 official endpoint (verified from API docs)
   digylog:        "https://api.digylog.com/api/v2/seller/orders",
+  vitipsexpress:  "https://app.vitipsexpress.com/api/client/post/colis/add-colis",
   ecotrack:       "https://app.ecotrack.ma/api/v1/orders",
   "eco-track":    "https://app.ecotrack.ma/api/v1/orders",
   cathedis:       "https://app.cathedis.ma/api/v1/parcels",
@@ -573,10 +574,39 @@ const carrierConfigs: Record<string, {
   colisspeed:     { authType: 'bearer' },
 };
 
+/**
+ * Vitipsexpress — POST https://app.vitipsexpress.com/api/client/post/colis/add-colis
+ * Auth: "API Token": {token}
+ * city field = abbr from /villes (stored in input.cityId)
+ */
+function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
+  const phone   = sanitizePhone(input.phone);
+  const priceDH = +(input.totalPrice / 100).toFixed(2);
+  const addr    = (input.address || "").trim() || input.city.trim();
+  const city    = input.cityId || input.city.trim(); // abbr preferred; fall back to city name
+
+  return {
+    fullname:     input.customerName.trim(),
+    phone,
+    city,
+    address:      addr,
+    price:        priceDH,
+    product:      (input.productName || "Produit").trim(),
+    qty:          String(input.quantity ?? 1),
+    note:         input.note || "",
+    exchange:     0,
+    openpackage:  0,
+    from_stock:   0,
+    try_product:  0,
+    internal_id:  input.orderNumber,
+  };
+}
+
 /** Dispatch to the correct builder based on the carrier. */
 function buildPayload(input: CarrierShipInput, providerKey: string, _apiId?: string): Record<string, unknown> {
-  if (providerKey === "digylog") return buildDigylogPayload(input);
-  if (providerKey === "ameex")   return buildAmeexPayload(input);
+  if (providerKey === "digylog")       return buildDigylogPayload(input);
+  if (providerKey === "ameex")         return buildAmeexPayload(input);
+  if (providerKey === "vitipsexpress") return buildVitipsPayload(input);
   return buildGenericPayload(input);
 }
 
@@ -996,6 +1026,9 @@ export async function shipOrderToCarrier(
     const cleanKey = (k: string) => k.replace(/<[^>]*>/g, "").trim();
     if (apiKey)    headers["C-Api-Key"] = cleanKey(apiKey);
     if (apiSecret) headers["C-Api-Id"]  = cleanKey(apiSecret);
+  } else if (providerKey === "vitipsexpress") {
+    // Vitipsexpress uses "API Token" header (not Bearer)
+    if (apiKey) headers["API Token"] = apiKey;
   } else {
     if (apiKey) {
       headers["Authorization"] = `Bearer ${apiKey}`;
@@ -2313,6 +2346,11 @@ export async function trackByCarrier(
     return { status: r.status, rawStatus: r.rawStatus, fee: r.fee, error: r.error };
   }
 
+  if (p === 'vitipsexpress') {
+    const r = await trackVitipsShipment(trackingNumber, apiKey);
+    return { status: r.status, rawStatus: r.rawStatus, error: r.error };
+  }
+
   return { status: null, rawStatus: null, error: `Carrier "${provider}" sync not implemented yet` };
 }
 
@@ -2741,6 +2779,109 @@ export async function probeExpressCoursierEndpoints(
   }
 
   return attempts;
+}
+
+// ─── Vitipsexpress ───────────────────────────────────────────────────────────
+
+export const VITIPS_STATUS_MAP: Record<string, string> = {
+  'Delivered':           'delivered',
+  'Collected':           'Attente De Ramassage',
+  'Awaiting pickup':     'Attente De Ramassage',
+  'Waiting for pickup':  'Attente De Ramassage',
+  'Received':            'transit',
+  'Received by courier': 'transit',
+  'Ready for Shipment':  'transit',
+  'Shipped':             'transit',
+  'Traveling':           'transit',
+  'Distribution':        'transit',
+  'Distributed':         'transit',
+  'Tracking Request':    'transit',
+  'Refused':             'refused',
+  'Cancel':              'refused',
+  'Postponed':           'unreachable',
+  'Scheduled':           'unreachable',
+  'no response 1':       'unreachable',
+  'no response 2':       'unreachable',
+  'no response 3':       'unreachable',
+  'unreachable':         'unreachable',
+  'out of zone':         'unreachable',
+};
+
+export function mapVitipsStatus(raw: string): string | null {
+  if (!raw) return null;
+  const direct = VITIPS_STATUS_MAP[raw];
+  if (direct) return direct;
+  const rawLow = raw.toLowerCase().trim();
+  for (const [key, val] of Object.entries(VITIPS_STATUS_MAP)) {
+    if (key.toLowerCase() === rawLow) return val;
+  }
+  return null;
+}
+
+/**
+ * Track a Vitipsexpress shipment by code.
+ * GET https://app.vitipsexpress.com/api/client/colis/track/{code}
+ * Auth: "API Token": {token}
+ * Response: { "data": [{ "status": "...", "Date_Evenement": ... }, ...] }
+ * → Use the FIRST element of data[] as current status.
+ */
+export async function trackVitipsShipment(
+  trackingCode: string,
+  apiToken: string,
+): Promise<{ status: string | null; rawStatus: string | null; rawResponse: unknown; error?: string }> {
+  const url = `https://app.vitipsexpress.com/api/client/colis/track/${encodeURIComponent(trackingCode)}`;
+  console.log(`[VITIPS-TRACK] ${trackingCode} → GET ${url}`);
+  try {
+    const response = await axios.get(url, {
+      headers: { 'API Token': apiToken, 'Accept': 'application/json' },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+    const body = response.data;
+    console.log(`[VITIPS-TRACK] ${trackingCode} → HTTP ${response.status}: ${JSON.stringify(body).slice(0, 300)}`);
+    if (response.status >= 400) {
+      const errMsg = (body?.message || body?.error || `HTTP ${response.status}`).toString();
+      return { status: null, rawStatus: null, rawResponse: body, error: errMsg };
+    }
+    const events = Array.isArray(body?.data) ? body.data : [];
+    const first  = events[0];
+    const rawStatus: string | null = first?.status || null;
+    const mapped = rawStatus ? mapVitipsStatus(rawStatus) : null;
+    return { status: mapped, rawStatus, rawResponse: body };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    console.error(`[VITIPS-TRACK] Error for ${trackingCode}: ${errMsg}`);
+    return { status: null, rawStatus: null, rawResponse: null, error: errMsg };
+  }
+}
+
+/**
+ * Fetch the city list from Vitipsexpress.
+ * GET https://app.vitipsexpress.com/api/client/villes
+ * Returns [{ name, abbr }]
+ */
+export async function getVitipsCities(
+  apiToken: string,
+): Promise<{ name: string; abbr: string }[]> {
+  const url = 'https://app.vitipsexpress.com/api/client/villes';
+  console.log(`[VITIPS-CITIES] → GET ${url}`);
+  try {
+    const response = await axios.get(url, {
+      headers: { 'API Token': apiToken, 'Accept': 'application/json' },
+      timeout: 15000,
+      httpsAgent: SSL_AGENT,
+      validateStatus: () => true,
+    });
+    const body = response.data;
+    const data = Array.isArray(body?.data) ? body.data : (Array.isArray(body) ? body : []);
+    return data
+      .map((c: any) => ({ name: c.name || c.ville || '', abbr: c.abbr || c.code || c.id || '' }))
+      .filter((c: any) => c.name);
+  } catch (err: any) {
+    console.error(`[VITIPS-CITIES] Error: ${err?.message}`);
+    return [];
+  }
 }
 
 // EC has NO tracking pull endpoint — confirmed from official API docs (2026-07-10).

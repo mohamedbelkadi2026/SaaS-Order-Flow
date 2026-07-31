@@ -757,6 +757,66 @@ app.use((req, res, next) => {
   const autoDigylogSync = setInterval(() => runDigylogSync('interval'), 15 * 60 * 1000);
   intervals.push(autoDigylogSync);
 
+  // ── Auto Vitipsexpress status sync ─────────────────────────────────────────
+  async function runVitipsSync(label: string) {
+    try {
+      const { storage: st } = await import('./storage');
+      const { trackVitipsShipment } = await import('./services/carrier-service');
+      const { db: dbInst } = await import('./db');
+      const { carrierAccounts: caTable } = await import('@shared/schema');
+      const { eq: eqFn } = await import('drizzle-orm');
+
+      const accounts = await dbInst.select().from(caTable)
+        .where(eqFn(caTable.carrierName, 'vitipsexpress'));
+
+      for (const account of accounts) {
+        const storeId = (account as any).storeId;
+        const apiKey  = (account as any).apiKey;
+        const allOrders = await st.getOrdersByStore(storeId);
+        const toSync = allOrders.filter((o: any) =>
+          o.shippingProvider === 'vitipsexpress' &&
+          o.trackNumber &&
+          !['delivered', 'refused', 'Retour Recu'].includes(o.status || '')
+        );
+        if (!toSync.length) continue;
+
+        console.log(`[VITIPS-AUTO-SYNC][${label}] store=${storeId}: syncing ${toSync.length} orders`);
+        for (const order of toSync) {
+          try {
+            const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+            if (result.status && result.status !== order.status) {
+              await st.updateOrderStatus(order.id, result.status);
+              await st.updateOrder(order.id, { commentStatus: result.rawStatus || result.status });
+              await st.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: 'Vitipsexpress Auto-Sync',
+                note:      `📦 Statut mis à jour automatiquement: ${result.rawStatus} → ${result.status}`,
+              });
+              console.log(`[VITIPS-AUTO-SYNC][${label}] Order #${(order as any).orderNumber} → ${result.rawStatus} (${result.status})`);
+              try {
+                const { broadcastToStore } = await import('./sse');
+                broadcastToStore(storeId, 'order_updated', {
+                  orderId: order.id,
+                  status:  result.status,
+                  commentStatus: result.rawStatus,
+                });
+              } catch {}
+            }
+          } catch (e: any) {
+            console.error(`[VITIPS-AUTO-SYNC][${label}] Error for order ${(order as any).orderNumber}: ${e?.message}`);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[VITIPS-AUTO-SYNC][${label}] Error:`, err?.message);
+    }
+  }
+  // Run once after 3 minutes on startup, then every 10 minutes
+  setTimeout(() => runVitipsSync('initial'), 3 * 60 * 1000);
+  const autoVitipsSync = setInterval(() => runVitipsSync('interval'), 10 * 60 * 1000);
+  intervals.push(autoVitipsSync);
+
   // Ozon Express delivers status via WEBHOOK only — polling endpoints return auth errors.
   // No polling job registered; statuses update automatically via
   // POST /api/webhooks/shipping/ozonexpress/:storeId.
