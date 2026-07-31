@@ -47,7 +47,7 @@ const PROVIDERS = [
   { id: "oscario",        name: "Oscario",           cities: 390, logo: null                     },
   { id: "colisspeed",     name: "Colisspeed",        cities: 445, logo: null                             },
   { id: "expresscoursier", name: "Express Coursier", cities: 450, logo: "/carriers/expresscoursier.png" },
-  { id: "vitipsexpress",  name: "Vitips Express",        cities: 200, logo: "/carriers/vitips.png"   },
+  { id: "vitipsexpress",  name: "Vitips Express",        cities: 200, logo: "/carriers/vitips.png", initials: "VE", color: "#FF6B00" },
   { id: "custom",         name: "➕ Autre transporteur", cities: 0, logo: null                         },
 ];
 
@@ -63,7 +63,7 @@ function getWebhookDomain(): string {
 }
 
 /* ─── Logo ───────────────────────────────────────────────────── */
-function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
+function ProviderLogo({ logo, name, initials, color }: { logo: string | null; name: string; initials?: string; color?: string }) {
   const [err, setErr] = useState(false);
   if (logo && !err) {
     return (
@@ -74,10 +74,14 @@ function ProviderLogo({ logo, name }: { logo: string | null; name: string }) {
       />
     );
   }
+  const label = initials || name.slice(0, 2).toUpperCase();
   return (
-    <div className="w-full h-full flex items-center justify-center">
-      <span className="text-xs font-bold text-gray-500 dark:text-gray-300">
-        {name.slice(0, 2).toUpperCase()}
+    <div
+      className="w-full h-full flex items-center justify-center rounded-xl"
+      style={color ? { background: color } : undefined}
+    >
+      <span className={`text-xs font-bold ${color ? "text-white" : "text-gray-500 dark:text-gray-300"}`}>
+        {label}
       </span>
     </div>
   );
@@ -2805,7 +2809,7 @@ export default function ShippingIntegrations() {
                   {/* Logo + info */}
                   <div className="flex items-center gap-3">
                     <div className="w-14 h-14 rounded-xl border border-border/40 bg-gray-50 dark:bg-zinc-800 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
-                      <ProviderLogo logo={provider.logo} name={provider.name} />
+                      <ProviderLogo logo={provider.logo} name={provider.name} initials={(provider as any).initials} color={(provider as any).color} />
                     </div>
                     <div className="min-w-0">
                       <h3 className="font-bold text-[15px] leading-tight text-foreground">

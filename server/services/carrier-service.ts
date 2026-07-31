@@ -690,6 +690,8 @@ function extractTracking(body: any): string | undefined {
   // For non-Digylog carriers, `id` is also excluded — it's typically the
   // carrier's internal DB id, not the customer-facing tracking code.
   const t =
+    body.code_shippment         ||   // Vitipsexpress API typo field
+    body.code_shipment          ||
     body.tracking_number        ||
     body.trackingNumber         ||
     body.barcode                ||
