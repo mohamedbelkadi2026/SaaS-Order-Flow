@@ -2075,6 +2075,13 @@ export default function Orders() {
                               </div>
                               <span className="font-medium">{(order as any).magasin.name}</span>
                             </div>
+                          ) : (order as any).youcanStoreName ? (
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-5 h-5 rounded-md bg-orange-50 flex items-center justify-center shrink-0 text-[9px] font-bold text-orange-500">
+                                YC
+                              </div>
+                              <span className="font-medium">{(order as any).youcanStoreName}</span>
+                            </div>
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}

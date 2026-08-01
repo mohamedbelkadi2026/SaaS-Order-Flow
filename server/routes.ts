@@ -6426,11 +6426,30 @@ function ensureHeaders(sheet) {
   });
 
   // POST /api/integrations/google-sheets/disconnect  (URL-based)
+  // Deactivates (pauses) the sync but keeps all credentials and URL data in the DB
+  // so the user can re-enable without re-entering the sheet URL.
+  // Use DELETE /api/integrations/google-sheets/disconnect to fully remove OAuth credentials.
   app.post("/api/integrations/google-sheets/disconnect", requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     await db.update(storeIntegrations)
-      .set({ status: "inactive", gsheetUrl: null, gsheetId: null, gsheetTabs: null, gsheetSyncState: null })
+      .set({ status: "inactive", isActive: 0 } as any)
       .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")));
+    res.json({ success: true });
+  });
+
+  // POST /api/integrations/google-sheets/reconnect  (URL-based re-enable)
+  // Re-activates a previously paused Google Sheets connection without re-entering setup.
+  app.post("/api/integrations/google-sheets/reconnect", requireAuth, async (req: any, res: any) => {
+    const storeId = req.user!.storeId!;
+    const existing = await db.select().from(storeIntegrations)
+      .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "gsheets")))
+      .limit(1);
+    if (!existing.length || !(existing[0] as any).gsheetId) {
+      return res.status(400).json({ success: false, message: "Aucune connexion Google Sheets à réactiver. Veuillez connecter une nouvelle feuille." });
+    }
+    await db.update(storeIntegrations)
+      .set({ status: "active", isActive: 1 } as any)
+      .where(eq(storeIntegrations.id, existing[0].id));
     res.json({ success: true });
   });
 
@@ -6547,6 +6566,21 @@ function ensureHeaders(sheet) {
         isActive: 1,
       };
       if (tokens.refresh_token) oauthData.oauthRefreshToken = encrypt(tokens.refresh_token);
+
+      // Try to fetch the YouCan shop name and save it as connectionName
+      let youcanStoreName: string | null = null;
+      try {
+        const storeResp = await fetch("https://api.youcan.shop/store", {
+          headers: { Authorization: `Bearer ${tokens.access_token}` },
+        });
+        if (storeResp.ok) {
+          const storeData = await storeResp.json() as any;
+          youcanStoreName = storeData?.name || storeData?.store?.name || storeData?.domain || null;
+        }
+      } catch (storeErr: any) {
+        console.warn("[YOUCAN-OAUTH] Could not fetch store name (non-fatal):", storeErr.message);
+      }
+      if (youcanStoreName) oauthData.connectionName = youcanStoreName;
 
       const existing = await db.select().from(storeIntegrations)
         .where(and(eq(storeIntegrations.storeId, storeId), eq(storeIntegrations.provider, "youcan")))

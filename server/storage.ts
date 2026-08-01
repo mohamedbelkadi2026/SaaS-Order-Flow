@@ -596,14 +596,32 @@ export class DatabaseStorage implements IStorage {
     const agentIds   = Array.from(new Set(allOrders.map(o => o.assignedToId).filter((id): id is number => id != null)));
     const magasinIds = Array.from(new Set(allOrders.map(o => (o as any).magasinId).filter((id): id is number => id != null)));
 
-    // ── 4 batched queries instead of N×3 individual queries ──────────────
-    const [allItems, allAgents, allMagasins] = await Promise.all([
+    // Collect storeIds for YouCan orders that have no magasinId — we'll
+    // look up the integration's connectionName (= YouCan shop name) to
+    // populate the "Boutique" column for those orders.
+    const youcanStoreIds = Array.from(new Set(
+      allOrders
+        .filter(o => (o as any).source === 'youcan' && !(o as any).magasinId)
+        .map(o => o.storeId)
+        .filter((id): id is number => id != null)
+    ));
+
+    // ── batched queries ──────────────────────────────────────────────────
+    const [allItems, allAgents, allMagasins, youcanIntegrations] = await Promise.all([
       db.select().from(orderItems).where(inArray(orderItems.orderId, orderIds)),
       agentIds.length > 0
         ? db.select().from(users).where(inArray(users.id, agentIds))
         : Promise.resolve([]),
       magasinIds.length > 0
         ? db.select({ id: stores.id, name: stores.name }).from(stores).where(inArray(stores.id, magasinIds))
+        : Promise.resolve([]),
+      youcanStoreIds.length > 0
+        ? db.select({ storeId: storeIntegrations.storeId, name: storeIntegrations.connectionName })
+            .from(storeIntegrations)
+            .where(and(
+              inArray(storeIntegrations.storeId, youcanStoreIds),
+              eq(storeIntegrations.provider, 'youcan')
+            ))
         : Promise.resolve([]),
     ]);
 
@@ -622,6 +640,10 @@ export class DatabaseStorage implements IStorage {
     const agentById   = new Map(allAgents.map(a => [a.id, a]));
     const productById = new Map(allProducts.map(p => [p.id, p]));
     const magasinById = new Map(allMagasins.map(m => [m.id, m]));
+    // Map storeId → YouCan shop name (for orders with source='youcan' and no magasinId)
+    const youcanNameByStoreId = new Map(
+      youcanIntegrations.map(i => [i.storeId, i.name])
+    );
 
     // Assemble results
     return allOrders.map(order => {
@@ -631,11 +653,17 @@ export class DatabaseStorage implements IStorage {
         product: item.productId ? productById.get(item.productId) : undefined,
       }));
       const mid = (order as any).magasinId as number | null | undefined;
+      const isYoucan = (order as any).source === 'youcan';
       return {
         ...order,
         agent:   order.assignedToId ? agentById.get(order.assignedToId) ?? null : null,
         magasin: (mid && magasinById.get(mid)) || null,
         items:   itemsWithProducts,
+        // Include the YouCan shop name so the Boutique column can show it
+        // for YouCan orders that have no magasinId association.
+        youcanStoreName: (isYoucan && !mid)
+          ? (youcanNameByStoreId.get(order.storeId!) ?? null)
+          : null,
       } as OrderWithDetails;
     });
   }

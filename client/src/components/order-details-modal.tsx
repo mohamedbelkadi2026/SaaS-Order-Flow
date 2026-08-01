@@ -912,13 +912,19 @@ export function OrderDetailsModal({ order, storeName, onClose, onUpdated }: Orde
               </p>
 
               <Field label="Nom du produit">
-                <Input
+                <ProductCombobox
+                  products={stockProducts}
                   value={fields.rawProductName}
-                  onChange={e => set("rawProductName", e.target.value)}
-                  className={cn(inputCls, "bg-gray-50")}
-                  style={{ color: NAVY }}
-                  placeholder="Auto-rempli depuis la boutique"
-                  dir="rtl"
+                  onChange={(p) => {
+                    set("rawProductName", p.name);
+                    if (p.id !== -1) {
+                      const price = p.sellingPrice ?? p.costPrice;
+                      if (price && !manualPriceOverride) {
+                        set("totalPrice", (price / 100).toFixed(2));
+                      }
+                    }
+                  }}
+                  placeholder="Rechercher dans le stock ou saisir librement..."
                   data-testid="input-product-name"
                 />
               </Field>
