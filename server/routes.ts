@@ -5316,6 +5316,33 @@ export async function registerRoutes(
       const orderRef = payload.ref || payload.id;
       if (!orderRef) return res.status(400).json({ message: "Missing order ref" });
 
+      // Resolve magasinId: prefer the one stored on the integration itself,
+      // then fall back to checking which magasin has this integration's ID
+      // in its linkedPlatforms array (set by the user in the Magasins page).
+      let resolvedMagasinId: number | null = integration.magasinId ?? null;
+      if (!resolvedMagasinId) {
+        try {
+          const storeRow = await db.select({ ownerId: stores.ownerId })
+            .from(stores).where(eq(stores.id, storeId)).limit(1);
+          const ownerId = storeRow[0]?.ownerId;
+          if (ownerId) {
+            const allMagasins = await storage.getStoresByOwner(ownerId);
+            const linked = allMagasins.find((m: any) => {
+              const platforms: any[] = Array.isArray(m.linkedPlatforms) ? m.linkedPlatforms : [];
+              return platforms.some((p: any) =>
+                String(p) === String(integration.id) || p === "youcan"
+              );
+            });
+            if (linked) {
+              resolvedMagasinId = linked.id;
+              console.log(`[YOUCAN-WEBHOOK] Resolved magasinId=${linked.id} ("${linked.name}") from linkedPlatforms`);
+            }
+          }
+        } catch (magasinErr: any) {
+          console.warn("[YOUCAN-WEBHOOK] Could not resolve magasinId from linkedPlatforms (non-fatal):", magasinErr.message);
+        }
+      }
+
       // Duplicate check
       const existingOrder = await storage.getOrderByNumber(storeId, `YC-${orderRef}`);
       if (existingOrder) return res.json({ success: true, orderId: existingOrder.id, duplicate: true });
@@ -5408,7 +5435,7 @@ export async function registerRoutes(
 
       const order = await storage.createOrder({
         storeId,
-        magasinId: integration.magasinId ?? null,
+        magasinId: resolvedMagasinId,
         orderNumber: `YC-${orderRef}`,
         customerName,
         customerPhone,

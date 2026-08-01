@@ -284,20 +284,36 @@ function StoreModal({
     (c, i, arr) => arr.findIndex(x => x.value === c.value) === i
   );
 
-  const platformItems = (storeIntegrationsList || []).map((s: any) => {
-    const magasin = (magasinsList || []).find(
-      (m: any) => Number(m.id) === Number(s.magasinId)
-    );
-    const displayName =
-      (s.connectionName && s.connectionName.trim()) ||
-      (magasin?.name && magasin.name.trim()) ||
-      `${s.provider} #${s.id}`;
-    return {
-      value: String(s.id),
-      label: displayName,
-      provider: s.provider,
-    };
-  });
+  // Human-readable labels for known e-commerce platform providers
+  const PLATFORM_LABELS: Record<string, string> = {
+    youcan:       "YouCan",
+    shopify:      "Shopify",
+    woocommerce:  "WooCommerce",
+    storeep:      "Storeep",
+    lightfunnels: "LightFunnels",
+    magento:      "Magento",
+    gsheets:      "Google Sheets",
+    gsheets_script: "Google Sheets (Script)",
+  };
+  // Only show e-commerce platform integrations (exclude shipping, etc.)
+  const PLATFORM_PROVIDERS = new Set(Object.keys(PLATFORM_LABELS));
+
+  const platformItems = (storeIntegrationsList || [])
+    .filter((s: any) => PLATFORM_PROVIDERS.has(s.provider))
+    .map((s: any) => {
+      // Prefer explicit connection name (e.g. YouCan shop name saved during OAuth),
+      // then a human-readable provider label, then a fallback with ID.
+      const providerLabel = PLATFORM_LABELS[s.provider] || s.provider;
+      const displayName =
+        (s.connectionName && s.connectionName.trim())
+          ? `${s.connectionName} (${providerLabel})`
+          : `${providerLabel} #${s.id}`;
+      return {
+        value: String(s.id),
+        label: displayName,
+        provider: s.provider,
+      };
+    });
 
   const isCreate = !title.includes("Modifier");
 
@@ -570,7 +586,10 @@ function StoreModal({
 export default function Magasins() {
   const { user } = useAuth();
   const { data: agents } = useAgents();
-  const { data: storeIntegrations } = useIntegrations("store");
+  // Fetch ALL integrations (no type filter) — YouCan and gsheets OAuth are
+  // stored with type="webhook", not "store", so filtering by type="store"
+  // would exclude them from the platform dropdown.
+  const { data: storeIntegrations } = useIntegrations();
   const { data: storeData } = useStore();
   const { data: magasins } = useMagasins();
   const { data: activeCarrierAccounts = [] } = useActiveCarrierAccounts();
