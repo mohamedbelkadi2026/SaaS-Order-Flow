@@ -2196,20 +2196,16 @@ export async function registerRoutes(
   app.get(api.products.list.path, requireAuth, async (req, res) => {
     const storeId = req.user!.storeId!;
     const prods = await storage.getProductsByStore(storeId);
-
-    // Attach variants so the Profit Analyzer can use variant-specific costPrice
-    // (e.g. "Sandale Tabac 41" → parent "Sandale Tabac" → variant "41" costPrice)
-    const allVariants = prods.length > 0
-      ? await db.select().from(productVariants)
-          .where(inArray(productVariants.productId, prods.map(p => p.id)))
-      : [];
-
+    if (!prods.length) return res.json([]);
+    const variants = await db
+      .select()
+      .from(productVariants)
+      .where(inArray(productVariants.productId, prods.map(p => p.id)));
     const variantsByProduct = new Map<number, any[]>();
-    for (const v of allVariants) {
+    for (const v of variants) {
       if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
       variantsByProduct.get(v.productId)!.push(v);
     }
-
     res.json(prods.map(p => ({ ...p, variants: variantsByProduct.get(p.id) ?? [] })));
   });
 

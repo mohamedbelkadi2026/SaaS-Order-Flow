@@ -877,50 +877,8 @@ export default function ProfitAnalyzer() {
       const base = words.slice(0, words.length - strip).join(" ");
       const nbBase = norm(base).replace(/\s+/g, " ");
       const parent = active.find(p => norm(p.name || "").replace(/\s+/g, " ") === nbBase);
-      if (parent) {
-        // 4b. If the parent has variant data (now returned by /api/products),
-        //     try to find the specific variant and use its costPrice.
-        //     e.g. "Sandale Tabac 41" → parent "Sandale Tabac" → variant "41"
-        if (parent.variants && parent.variants.length > 0) {
-          const stripped = words.slice(words.length - strip).join(" "); // the stripped suffix, e.g. "41"
-          const sizeToken = words[words.length - 1]; // last word, e.g. "41"
-          const variant = parent.variants.find((v: any) => {
-            const vn = String(v.name || "").trim();
-            return vn === stripped || vn === sizeToken || vn.includes(sizeToken);
-          });
-          if (variant && variant.costPrice && variant.costPrice > 0) {
-            return variant.costPrice / 100;
-          }
-        }
-        // Fall back to parent costPrice
-        return parent.costPrice / 100;
-      }
+      if (parent) return parent.costPrice / 100;
     }
-
-    // 4b. Variant lookup via extracted trailing size number (2-digit) — handles cases where
-    //     progressive stripping alone doesn't find the parent but fuzzy does.
-    //     e.g. "Sandale En Cuir Rf 1012 Noir 42" → size "42", base "Sandale En Cuir Rf 1012 Noir"
-    const sizeMatch = name.match(/\b(\d{2})\b\s*$/);
-    if (sizeMatch) {
-      const size = sizeMatch[1];
-      const nameWithoutSize = name.slice(0, name.lastIndexOf(sizeMatch[0])).trim();
-      const parentProd = active.find(p => {
-        const pn = (p.name || "").toLowerCase();
-        const nn = nameWithoutSize.toLowerCase();
-        return pn === nn || nn.includes(pn) || pn.includes(nn);
-      });
-      if (parentProd) {
-        if (parentProd.variants && parentProd.variants.length > 0) {
-          const variant = parentProd.variants.find((v: any) => {
-            const vn = String(v.name || "").trim();
-            return vn === size || vn.includes(size);
-          });
-          if (variant && variant.costPrice && variant.costPrice > 0) return variant.costPrice / 100;
-        }
-        if (parentProd.costPrice > 0) return parentProd.costPrice / 100;
-      }
-    }
-
     // 5. Fuzzy contains match — item name contains product name, or product name
     //    contains item name with trailing size stripped. Prefer longer (more specific) matches.
     //    e.g. "Sandale En Cuir Rf 1012 Noir 42" matches "Sandale En Cuir Rf 1012 Noir"
@@ -937,7 +895,35 @@ export default function ProfitAnalyzer() {
         );
       })
       .sort((a, b) => b.name.length - a.name.length); // longest (most specific) match first
-    if (fuzzy.length > 0) return fuzzy[0].costPrice / 100;
+    if (fuzzy.length > 0) {
+      const fp = fuzzy[0];
+      // Try to match a variant by size extracted from end of name
+      const sizeMatch = name.match(/\b(\d{2})\b\s*(?:\(non\s+li[eé]\))?\s*$/);
+      const size = sizeMatch?.[1];
+      if (size && Array.isArray((fp as any).variants) && (fp as any).variants.length) {
+        const matchedVariant = (fp as any).variants.find((v: any) =>
+          String(v.name).trim() === size || String(v.name).trim().includes(size)
+        );
+        if (matchedVariant?.costPrice && matchedVariant.costPrice > 0) {
+          return matchedVariant.costPrice / 100;
+        }
+      }
+      if (fp.costPrice > 0) return fp.costPrice / 100;
+    }
+    // Last resort: check all active product variants directly for size match
+    const sizeEnd = name.match(/\b(\d{2})\b\s*(?:\(non\s+li[eé]\))?\s*$/)?.[1];
+    if (sizeEnd) {
+      const nameNoSize = name.replace(/\s*\b\d{2}\b\s*(?:\(non\s+li[eé]\))?\s*$/, "").trim().toLowerCase();
+      for (const p of active) {
+        const pn = (p.name || "").toLowerCase();
+        if (nameNoSize.includes(pn) || pn.includes(nameNoSize)) {
+          const variants: any[] = Array.isArray((p as any).variants) ? (p as any).variants : [];
+          const v = variants.find((vv: any) => String(vv.name).trim() === sizeEnd);
+          if (v?.costPrice && v.costPrice > 0) return v.costPrice / 100;
+          if (p.costPrice > 0) return p.costPrice / 100;
+        }
+      }
+    }
     return null;
   }
 
