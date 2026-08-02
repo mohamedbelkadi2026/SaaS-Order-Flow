@@ -2788,36 +2788,105 @@ export async function probeExpressCoursierEndpoints(
 // ─── Vitipsexpress ───────────────────────────────────────────────────────────
 
 export const VITIPS_STATUS_MAP: Record<string, string> = {
-  'Delivered':           'delivered',
-  'Collected':           'Attente De Ramassage',
-  'Awaiting pickup':     'Attente De Ramassage',
-  'Waiting for pickup':  'Attente De Ramassage',
-  'Received':            'transit',
-  'Received by courier': 'transit',
-  'Ready for Shipment':  'transit',
-  'Shipped':             'transit',
-  'Traveling':           'transit',
-  'Distribution':        'transit',
-  'Distributed':         'transit',
-  'Tracking Request':    'transit',
-  'Refused':             'refused',
-  'Cancel':              'refused',
-  'Postponed':           'unreachable',
-  'Scheduled':           'unreachable',
-  'no response 1':       'unreachable',
-  'no response 2':       'unreachable',
-  'no response 3':       'unreachable',
-  'unreachable':         'unreachable',
-  'out of zone':         'unreachable',
+  // ── English statuses (original) ──────────────────────────────────────────
+  'Delivered':                    'delivered',
+  'Collected':                    'Attente De Ramassage',
+  'Awaiting pickup':              'Attente De Ramassage',
+  'Waiting for pickup':           'Attente De Ramassage',
+  'Received':                     'transit',
+  'Received by courier':          'transit',
+  'Ready for Shipment':           'transit',
+  'Shipped':                      'transit',
+  'Traveling':                    'transit',
+  'Distribution':                 'transit',
+  'Distributed':                  'transit',
+  'Tracking Request':             'transit',
+  'Refused':                      'refused',
+  'Cancel':                       'refused',
+  'Postponed':                    'unreachable',
+  'Scheduled':                    'unreachable',
+  'no response 1':                'unreachable',
+  'no response 2':                'unreachable',
+  'no response 3':                'unreachable',
+  'unreachable':                  'unreachable',
+  'out of zone':                  'unreachable',
+  // ── French statuses (actual API responses) ────────────────────────────────
+  'En attente de ramassage':      'Attente De Ramassage',
+  'En attente':                   'Attente De Ramassage',
+  'Collecté':                     'Attente De Ramassage',
+  'Collecte':                     'Attente De Ramassage',
+  'Ramassé':                      'Attente De Ramassage',
+  'Ramasse':                      'Attente De Ramassage',
+  'En cours de livraison':        'transit',
+  'En livraison':                 'transit',
+  'En transit':                   'transit',
+  'En cours':                     'transit',
+  'Expédié':                      'transit',
+  'Expedie':                      'transit',
+  'Reçu par le coursier':         'transit',
+  'Recu par le coursier':         'transit',
+  'Prêt pour expédition':         'transit',
+  'Pret pour expedition':         'transit',
+  'En distribution':              'transit',
+  'Distribué':                    'transit',
+  'Distribue':                    'transit',
+  'Livré':                        'delivered',
+  'Livre':                        'delivered',
+  'Livrée':                       'delivered',
+  'Livree':                       'delivered',
+  'Refusé':                       'refused',
+  'Refuse':                       'refused',
+  'Refusée':                      'refused',
+  'Annulé':                       'refused',
+  'Annule':                       'refused',
+  'Reporté':                      'unreachable',
+  'Reporte':                      'unreachable',
+  'Planifié':                     'unreachable',
+  'Planifie':                     'unreachable',
+  'Pas de réponse 1':             'unreachable',
+  'Pas de réponse 2':             'unreachable',
+  'Pas de réponse 3':             'unreachable',
+  'Injoignable':                  'unreachable',
+  'Hors zone':                    'unreachable',
+  'Retourné':                     'Retour Recu',
+  'Retourne':                     'Retour Recu',
+  'En cours de retour':           'En Cours De Retour',
+  // ── status_code values (API field) ────────────────────────────────────────
+  'NEW_PARCEL':                   'Attente De Ramassage',
+  'COLLECTED':                    'Attente De Ramassage',
+  'RECEIVED':                     'transit',
+  'IN_TRANSIT':                   'transit',
+  'OUT_FOR_DELIVERY':             'transit',
+  'DELIVERED':                    'delivered',
+  'REFUSED':                      'refused',
+  'CANCELED':                     'refused',
+  'RETURNED':                     'Retour Recu',
+  'UNREACHABLE':                  'unreachable',
+  'POSTPONED':                    'unreachable',
 };
 
-export function mapVitipsStatus(raw: string): string | null {
+export function mapVitipsStatus(raw: string, statusCode?: string): string | null {
+  if (!raw && !statusCode) return null;
+  // 1. Try status_code first (most reliable)
+  if (statusCode) {
+    const byCode = VITIPS_STATUS_MAP[statusCode];
+    if (byCode) return byCode;
+    const byCodeUp = VITIPS_STATUS_MAP[statusCode.toUpperCase()];
+    if (byCodeUp) return byCodeUp;
+  }
   if (!raw) return null;
+  // 2. Try exact match
   const direct = VITIPS_STATUS_MAP[raw];
   if (direct) return direct;
-  const rawLow = raw.toLowerCase().trim();
+  // 3. Try case-insensitive + accent-insensitive match
+  const rawLow = raw.toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   for (const [key, val] of Object.entries(VITIPS_STATUS_MAP)) {
-    if (key.toLowerCase() === rawLow) return val;
+    const keyNorm = key.toLowerCase().trim()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (keyNorm === rawLow) return val;
+    // Partial match for long strings
+    if (rawLow.includes(keyNorm) && keyNorm.length > 4) return val;
   }
   return null;
 }
@@ -2851,8 +2920,10 @@ export async function trackVitipsShipment(
     const events = Array.isArray(body?.data) ? body.data : [];
     const first  = events[0];
     const rawStatus: string | null = first?.status || null;
-    const mapped = rawStatus ? mapVitipsStatus(rawStatus) : null;
-    return { status: mapped, rawStatus, rawResponse: body };
+    const statusCode: string | null = first?.status_code || null;
+    console.log(`[VITIPS-TRACK] ${trackingCode} → rawStatus="${rawStatus}" status_code="${statusCode}"`);
+    const mapped = mapVitipsStatus(rawStatus ?? '', statusCode ?? undefined);
+    return { status: mapped, rawStatus: rawStatus ?? statusCode, rawResponse: body };
   } catch (err: any) {
     const errMsg = err?.message || String(err);
     console.error(`[VITIPS-TRACK] Error for ${trackingCode}: ${errMsg}`);
