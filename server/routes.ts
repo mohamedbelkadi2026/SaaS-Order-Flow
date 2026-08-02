@@ -1810,11 +1810,13 @@ export async function registerRoutes(
                 let vitipsCityAbbr: string | undefined;
                 if (provider.toLowerCase() === 'vitipsexpress') {
                   const resolved = await storage.getVitipsCityAbbr(storeId, resolvedCity);
+                  // Always set vitipsCityAbbr: use the resolved abbr if found, else fall back to
+                  // the raw city name so the shipment is never blocked by a missing mapping.
+                  vitipsCityAbbr = resolved || resolvedCity;
                   if (resolved) {
-                    vitipsCityAbbr = resolved;
                     console.log(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → abbr="${vitipsCityAbbr}"`);
                   } else {
-                    console.warn(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → no abbr found, sending name directly`);
+                    console.warn(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → no abbr found, sending city name directly`);
                   }
                 }
 

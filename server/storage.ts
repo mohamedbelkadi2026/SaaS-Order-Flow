@@ -1513,7 +1513,19 @@ export class DatabaseStorage implements IStorage {
     if (!(cityName || "").trim()) return null;
     const cities = await db.select().from(vitipsCities)
       .where(eq(vitipsCities.storeId, storeId));
-    return matchCityId(cities, cityName);
+
+    // Primary: alias-aware match (accent-insensitive, handles common variants)
+    const matched = matchCityId(cities, cityName);
+    if (matched) return matched;
+
+    // Fallback: direct case-insensitive match on nameNorm, name, or externalId
+    const norm = cityName.toLowerCase().trim();
+    const found = cities.find(c =>
+      c.nameNorm === norm ||
+      (c.name || "").toLowerCase() === norm ||
+      (c.externalId || "").toLowerCase() === norm
+    );
+    return found?.externalId ?? null;
   }
 
   // ── Per-city delivery pricing ─────────────────────────────────────────────

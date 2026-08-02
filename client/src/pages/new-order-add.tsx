@@ -394,8 +394,8 @@ export default function NewOrderAdd() {
             </Button>
           </div>
 
-          {/* Table header */}
-          <div className="grid grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] gap-2 px-2 py-2 bg-gray-50 rounded text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+          {/* Table header — hidden on mobile, visible on sm+ */}
+          <div className="hidden sm:grid sm:grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] gap-2 px-2 py-2 bg-gray-50 rounded text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
             <span>Produit</span>
             <span>Reference (SKU)</span>
             <span>Variant</span>
@@ -405,9 +405,9 @@ export default function NewOrderAdd() {
             <span></span>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             {items.map(item => (
-              <div key={item.id} className="grid grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] gap-2 items-center">
+              <div key={item.id} className="flex flex-col gap-2 sm:grid sm:grid-cols-[2fr_1.5fr_1.5fr_1fr_0.75fr_1fr_auto] sm:items-center border sm:border-0 rounded-lg sm:rounded-none p-3 sm:p-0 bg-gray-50 sm:bg-transparent">
                 <div>
                   <ProductCombobox
                     products={products as ProductOption[]}

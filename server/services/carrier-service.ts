@@ -581,7 +581,8 @@ const carrierConfigs: Record<string, {
  */
 function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone   = sanitizePhone(input.phone);
-  const priceDH = +(input.totalPrice / 100).toFixed(2);
+  // Vitipsexpress requires at least 1 DH — send 1 if price is 0 (free order / price set at delivery)
+  const priceDH = input.totalPrice > 0 ? +(input.totalPrice / 100).toFixed(2) : 1;
   const addr    = (input.address || "").trim() || input.city.trim();
   const city    = input.cityId || input.city.trim(); // abbr preferred; fall back to city name
 
@@ -871,10 +872,11 @@ function preValidate(input: CarrierShipInput, tag: string): string | null {
     return "⚠️ المدينة غير محددة — لم يتم الإرسال.";
   }
 
-  if (input.totalPrice <= 0) {
-    console.error(`${tag} PRE-VALIDATION ❌ Price is 0 or negative: ${input.totalPrice}`);
-    return "⚠️ السعر صفر أو غير محدد — يرجى التحقق من سعر الطلب.";
+  if (input.totalPrice < 0) {
+    console.error(`${tag} PRE-VALIDATION ❌ Price is negative: ${input.totalPrice}`);
+    return "⚠️ السعر غير صحيح.";
   }
+  // 0-price orders are allowed — buildVitipsPayload will send 1 DH as minimum
 
   return null;
 }
