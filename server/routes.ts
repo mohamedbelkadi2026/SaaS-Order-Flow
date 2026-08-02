@@ -8449,6 +8449,111 @@ function ensureHeaders(sheet) {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // GET  /api/stock/fix-historical-shipments/preview
+  // POST /api/stock/fix-historical-shipments/apply
+  //
+  // Finds shipped orders whose stock was never decremented (no stockMovement
+  // with type='shipped' for that orderId) and allows bulk-fixing them.
+  // ─────────────────────────────────────────────────────────────────────────
+  const SHIPPED_ORDER_STATUSES = [
+    'Attente De Ramassage', 'transit', 'delivered',
+    'refused', 'Retour Recu', 'En Cours De Retour',
+  ];
+
+  async function getHistoricalPendingOrders(storeId: number) {
+    // 1. All shipped orders for this store
+    const shippedOrders = await db.select().from(orders)
+      .where(and(
+        eq(orders.storeId, storeId),
+        inArray(orders.status, SHIPPED_ORDER_STATUSES),
+      ));
+    if (!shippedOrders.length) return [];
+
+    // 2. All 'shipped' stock movements for those orderIds
+    const orderIds = shippedOrders.map(o => o.id);
+    const existingMovements = await db.select({ orderId: stockMovements.orderId })
+      .from(stockMovements)
+      .where(and(
+        eq(stockMovements.storeId, storeId),
+        eq(stockMovements.type, 'shipped'),
+        inArray(stockMovements.orderId, orderIds),
+      ));
+    const alreadyDecremented = new Set(existingMovements.map(m => m.orderId));
+
+    // 3. Filter to orders with no 'shipped' movement
+    const pending = shippedOrders.filter(o => !alreadyDecremented.has(o.id));
+    if (!pending.length) return [];
+
+    // 4. Enrich with order items
+    const pendingIds = pending.map(o => o.id);
+    const items = await db.select().from(orderItems)
+      .where(inArray(orderItems.orderId, pendingIds));
+    const itemsByOrder = new Map<number, any[]>();
+    for (const item of items) {
+      if (!itemsByOrder.has(item.orderId)) itemsByOrder.set(item.orderId, []);
+      itemsByOrder.get(item.orderId)!.push(item);
+    }
+
+    return pending.map(o => ({
+      id:           o.id,
+      orderNumber:  (o as any).orderNumber || String(o.id),
+      customerName: (o as any).customerName || '',
+      status:       o.status,
+      items: (itemsByOrder.get(o.id) || []).map((it: any) => ({
+        productName: it.rawProductName || it.productName || 'Produit',
+        qty:         it.quantity || 1,
+        productId:   it.productId || null,
+      })),
+    }));
+  }
+
+  app.get("/api/stock/fix-historical-shipments/preview", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const pending = await getHistoricalPendingOrders(storeId);
+      res.json({ count: pending.length, orders: pending });
+    } catch (err) {
+      console.error('[FIX-HISTORICAL] Preview error:', err);
+      res.status(500).json({ message: 'Erreur lors de la prévisualisation.' });
+    }
+  });
+
+  app.post("/api/stock/fix-historical-shipments/apply", requireAuth, async (req, res) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { orderIds } = z.object({ orderIds: z.array(z.number()).optional() }).parse(req.body);
+
+      let pending = await getHistoricalPendingOrders(storeId);
+      if (orderIds && orderIds.length > 0) {
+        const set = new Set(orderIds);
+        pending = pending.filter(o => set.has(o.id));
+      }
+
+      let applied = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+
+      for (const order of pending) {
+        if (!order.items.length) { skipped++; continue; }
+        try {
+          await storage.decrementStockForOrder(order.id, storeId);
+          applied++;
+          console.log(`[FIX-HISTORICAL] ✅ Decremented stock for order #${order.orderNumber} (id=${order.id})`);
+        } catch (err: any) {
+          errors.push(`#${order.orderNumber}: ${err?.message || String(err)}`);
+          console.error(`[FIX-HISTORICAL] ❌ Failed for order #${order.id}:`, err);
+        }
+      }
+
+      res.json({ applied, skipped, errors });
+    } catch (err) {
+      if (err instanceof z.ZodError) return res.status(400).json({ message: err.errors[0].message });
+      console.error('[FIX-HISTORICAL] Apply error:', err);
+      res.status(500).json({ message: 'Erreur lors de la correction.' });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // GET /api/products/:id/insights
   // Per-product analytics for the inventory side-sheet:
   //   - KPIs (recu / sortie / available / refusal counts)

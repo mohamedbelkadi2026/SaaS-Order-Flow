@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2 } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -874,6 +874,43 @@ export default function Inventory() {
   const [linkAllLoading, setLinkAllLoading] = useState(false);
   const [linkAllResult, setLinkAllResult] = useState<{ linked: number; unmatched: number; total: number } | null>(null);
 
+  // ── Fix historical stock dialog ──────────────────────────────────────────
+  const [fixHistoricalOpen, setFixHistoricalOpen] = useState(false);
+  const [fixPreviewData, setFixPreviewData] = useState<{ count: number; orders: any[] } | null>(null);
+  const [fixPreviewLoading, setFixPreviewLoading] = useState(false);
+  const [fixApplying, setFixApplying] = useState(false);
+
+  const openFixHistorical = async () => {
+    setFixPreviewData(null);
+    setFixHistoricalOpen(true);
+    setFixPreviewLoading(true);
+    try {
+      const res = await apiRequest("GET", "/api/stock/fix-historical-shipments/preview");
+      const data = await res.json();
+      setFixPreviewData(data);
+    } catch {
+      toast({ title: "Erreur lors du chargement de la prévisualisation", variant: "destructive" });
+      setFixHistoricalOpen(false);
+    } finally {
+      setFixPreviewLoading(false);
+    }
+  };
+
+  const applyFixHistorical = async () => {
+    setFixApplying(true);
+    try {
+      const res = await apiRequest("POST", "/api/stock/fix-historical-shipments/apply", {});
+      const data = await res.json();
+      toast({ title: `✅ Stock mis à jour pour ${data.applied} commande${data.applied !== 1 ? "s" : ""}` });
+      setFixHistoricalOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/stats"] });
+    } catch {
+      toast({ title: "Erreur lors de la correction du stock", variant: "destructive" });
+    } finally {
+      setFixApplying(false);
+    }
+  };
+
   const handleLinkAll = async () => {
     setLinkAllLoading(true);
     setLinkAllResult(null);
@@ -1150,6 +1187,9 @@ export default function Inventory() {
           <p className="text-muted-foreground mt-1">Gestion complète des produits et niveaux de stock.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" data-testid="button-fix-historical-stock" onClick={openFixHistorical}>
+            <Wrench className="w-4 h-4 mr-2" /> Corriger l'historique stock
+          </Button>
           <Button variant="outline" data-testid="button-link-all-historical" onClick={() => { setLinkAllResult(null); setLinkAllOpen(true); }}>
             <Link2 className="w-4 h-4 mr-2" /> Lier tout l'historique
           </Button>
@@ -2286,6 +2326,63 @@ export default function Inventory() {
               <Link2 className="w-4 h-4 mr-2" />
               Oui, rattacher les données
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Fix historical stock dialog ── */}
+      <Dialog open={fixHistoricalOpen} onOpenChange={(v) => { if (!fixApplying) setFixHistoricalOpen(v); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Wrench className="w-5 h-5 text-amber-600" />
+              Commandes expédiées sans déduction de stock
+            </DialogTitle>
+            <DialogDescription>
+              {fixPreviewLoading
+                ? "Chargement en cours…"
+                : fixPreviewData
+                  ? fixPreviewData.count === 0
+                    ? "Aucune commande en attente — tout le stock est à jour ✅"
+                    : `${fixPreviewData.count} commande${fixPreviewData.count !== 1 ? "s" : ""} trouvée${fixPreviewData.count !== 1 ? "s" : ""} dont le stock n'a pas été déduit.`
+                  : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          {fixPreviewLoading && (
+            <div className="flex justify-center py-6 text-muted-foreground text-sm">Analyse en cours…</div>
+          )}
+
+          {!fixPreviewLoading && fixPreviewData && fixPreviewData.count > 0 && (
+            <div className="max-h-64 overflow-y-auto border rounded-lg divide-y text-sm">
+              {fixPreviewData.orders.map((o: any) => (
+                <div key={o.id} className="px-3 py-2">
+                  <span className="font-semibold text-foreground">#{o.orderNumber}</span>
+                  {o.customerName && <span className="text-muted-foreground"> — {o.customerName}</span>}
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    {o.items.map((it: any, i: number) => (
+                      <span key={i}>{i > 0 ? ", " : ""}{it.productName} × {it.qty}</span>
+                    ))}
+                    {o.items.length === 0 && <span className="italic">Aucun article lié</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setFixHistoricalOpen(false)} disabled={fixApplying}>
+              Annuler
+            </Button>
+            {!fixPreviewLoading && fixPreviewData && fixPreviewData.count > 0 && (
+              <Button
+                onClick={applyFixHistorical}
+                disabled={fixApplying}
+                style={{ background: "#C5A059", color: "#fff" }}
+              >
+                {fixApplying ? "Application…" : `Déduire le stock (${fixPreviewData.count} commande${fixPreviewData.count !== 1 ? "s" : ""})`}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
