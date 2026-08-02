@@ -1,0 +1,79 @@
+Fix Profit Analyzer — sourcing cost shows 0 DH because /api/products doesn't return variant cost prices.
+
+ROOT CAUSE:
+In server/storage.ts, getProductsByStore() only returns the parent product rows.
+The costPrice on the parent product may be 0 or different from variant-specific costs.
+Profit Analyzer needs variant costPrice to match "Sandale Tabac 41" → variant "41" costPrice.
+
+FIX — In server/routes.ts, update the GET /api/products endpoint to include variants:
+
+Change:
+  app.get(api.products.list.path, requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    res.json(await storage.getProductsByStore(storeId));
+  });
+
+To:
+  app.get(api.products.list.path, requireAuth, async (req, res) => {
+    const storeId = req.user!.storeId!;
+    const prods = await storage.getProductsByStore(storeId);
+    
+    // Attach variants to each product
+    const variants = await db
+      .select()
+      .from(productVariants)
+      .where(inArray(productVariants.productId, prods.map(p => p.id)));
+    
+    const variantsByProduct = new Map<number, any[]>();
+    for (const v of variants) {
+      if (!variantsByProduct.has(v.productId)) variantsByProduct.set(v.productId, []);
+      variantsByProduct.get(v.productId)!.push(v);
+    }
+    
+    const result = prods.map(p => ({
+      ...p,
+      variants: variantsByProduct.get(p.id) ?? [],
+    }));
+    
+    res.json(result);
+  });
+
+Make sure productVariants and inArray are imported from the schema/drizzle-orm.
+
+Then in client/src/pages/profit-analyzer.tsx, update matchSingleItemCost() to also check variants:
+
+In the matchSingleItemCost function, BEFORE the fuzzy match (step 5), add:
+
+// 4b. Check variants of matched parent products
+// e.g. name = "Sandale En Cuir Rf 1012 Noir 42"
+// → finds parent "Sandale En Cuir Rf 1012 Noir"
+// → checks if it has a variant named "42" with costPrice > 0
+
+const sizeFromName = name.match(/\b(\d{2})\b\s*(?:\(non\s+li[eé]\))?\s*$/)?.[1];
+
+if (sizeFromName) {
+  // Find parent product by stripping size from name
+  const nameWithoutSize = name.replace(/\s*\b\d{2}\b\s*(?:\(non\s+li[eé]\))?\s*$/, "").trim();
+  const parentProd = active.find(p => {
+    const pn = (p.name || "").toLowerCase();
+    const nn = nameWithoutSize.toLowerCase();
+    return pn === nn || nn.includes(pn) || pn.includes(nn);
+  });
+  
+  if (parentProd?.variants?.length) {
+    const matchedVariant = parentProd.variants.find((v: any) => 
+      v.name === sizeFromName || 
+      v.name?.includes(sizeFromName) ||
+      String(v.name).trim() === sizeFromName
+    );
+    if (matchedVariant?.costPrice && matchedVariant.costPrice > 0) {
+      return matchedVariant.costPrice / 100;
+    }
+    // Variant exists but no specific cost → use parent costPrice
+    if (parentProd.costPrice > 0) return parentProd.costPrice / 100;
+  }
+}
+
+This fix enables:
+- "Sandale En Cuir Rf 1012 Noir 42 (non lié)" → finds parent "Sandale En Cuir Rf 1012 Noir" → finds variant "42" with costPrice 140 DH → sourcing = 140 DH ✅
+- "Sandale En Cuir Rf 1012 Noir 41" → same logic → 140 DH ✅
