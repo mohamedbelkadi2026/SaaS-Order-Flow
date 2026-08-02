@@ -1867,6 +1867,9 @@ export async function registerRoutes(
                       status:           'Attente De Ramassage',
                     } as any)
                   );
+                  // Decrement stock for shipped order (fire-and-forget, never blocks shipment)
+                  storage.decrementStockForOrder(order.id, storeId)
+                    .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
                   allLogUpdates.push(storage.createIntegrationLog({
                     storeId, integrationId: null, provider,
                     action: 'shipping_sent', status: 'success',
@@ -1890,6 +1893,9 @@ export async function registerRoutes(
                       status:           'Attente De Ramassage',
                     } as any)
                   );
+                  // Decrement stock for shipped order (fire-and-forget, never blocks shipment)
+                  storage.decrementStockForOrder(order.id, storeId)
+                    .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
                   allLogUpdates.push(storage.createIntegrationLog({
                     storeId, integrationId: null, provider,
                     action: 'shipping_sent', status: 'success',
@@ -1916,6 +1922,9 @@ export async function registerRoutes(
                     status:           'Attente De Ramassage',
                   } as any)
                 );
+                // Decrement stock for shipped order (fire-and-forget, never blocks shipment)
+                storage.decrementStockForOrder(order.id, storeId)
+                  .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
                 // Static delivery fee fallback (skipped for EC — per-city table takes priority)
                 const fee = (orderCreds as any).deliveryFee || 0;
                 if (fee > 0 && provider.toLowerCase() !== 'expresscoursier') {

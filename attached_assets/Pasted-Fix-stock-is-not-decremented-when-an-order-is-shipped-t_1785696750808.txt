@@ -1,0 +1,112 @@
+Fix: stock is not decremented when an order is shipped to a carrier.
+
+PROBLEM:
+When clicking "Expédier" and the order is successfully shipped (status → "Attente De Ramassage"),
+the product stock in the inventory is never reduced. Stock only changes via manual edits.
+
+SOLUTION — Add stock decrement after successful shipment:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1: Add decrementStockForOrder() in server/storage.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add this function to the DatabaseStorage class:
+
+async decrementStockForOrder(orderId: number, storeId: number): Promise<void> {
+  // Get order items
+  const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+  if (!items.length) return;
+
+  for (const item of items) {
+    if (!item.productId) continue;
+    const qty = item.quantity || 1;
+
+    // Try to match variant first (by SKU or variant name)
+    const variants = await db.select().from(productVariants)
+      .where(eq(productVariants.productId, item.productId));
+
+    let variantMatched = false;
+    if (variants.length > 0 && item.variantInfo) {
+      // Try to find variant by name match
+      const variantName = (item.variantInfo || '').trim();
+      const matched = variants.find(v =>
+        v.name === variantName ||
+        v.sku === item.sku ||
+        v.name?.includes(variantName) ||
+        variantName.includes(v.name || '')
+      );
+      if (matched) {
+        // Decrement variant stock (don't go below 0)
+        const newStock = Math.max(0, (matched.stock || 0) - qty);
+        await db.update(productVariants)
+          .set({ stock: newStock })
+          .where(eq(productVariants.id, matched.id));
+        // Log stock movement
+        await db.insert(stockMovements).values({
+          storeId,
+          productId: item.productId,
+          type: 'shipped',
+          quantity: -qty,
+          reason: `Expédition commande #${orderId} (variant: ${matched.name})`,
+          orderId,
+        });
+        variantMatched = true;
+      }
+    }
+
+    if (!variantMatched) {
+      // Decrement parent product stock
+      const [product] = await db.select().from(products).where(eq(products.id, item.productId));
+      if (!product) continue;
+      const newStock = Math.max(0, (product.stock || 0) - qty);
+      await db.update(products)
+        .set({ stock: newStock })
+        .where(eq(products.id, item.productId));
+      // Log stock movement
+      await db.insert(stockMovements).values({
+        storeId,
+        productId: item.productId,
+        type: 'shipped',
+        quantity: -qty,
+        reason: `Expédition commande #${orderId}`,
+        orderId,
+      });
+    }
+  }
+}
+
+Also add the interface declaration in the IStorage interface:
+decrementStockForOrder(orderId: number, storeId: number): Promise<void>;
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2: Call decrementStockForOrder after successful shipment in server/routes.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In the POST /api/orders/bulk-ship endpoint, find the 3 places where order status is set to 'Attente De Ramassage' after success.
+
+In EACH success case (trackingNumber found, no tracking + warning, no tracking at all),
+add a stock decrement call AFTER the allDbUpdates.push():
+
+// Decrement stock for shipped order
+storage.decrementStockForOrder(order.id, storeId)
+  .catch(err => console.error(`[STOCK-DECREMENT] Failed for order #${order.id}:`, err));
+
+Search for the 3 patterns and add after each:
+1. After: allDbUpdates.push(storage.updateOrder(order.id, { trackNumber, status: 'Attente De Ramassage' }))
+2. After: allDbUpdates.push(storage.updateOrder(order.id, { status: 'Attente De Ramassage' })) — shipWarning case
+3. After: allDbUpdates.push(storage.updateOrder(order.id, { status: 'Attente De Ramassage' })) — noTrackWarn case
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3: Add to stockMovements schema if 'shipped' type is missing
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In shared/schema.ts, find the stockMovements table.
+Make sure the type field accepts 'shipped' as a valid value (add it to the enum if needed):
+type: text("type").notNull() // 'restock', 'adjustment', 'shipped', 'returned'
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT NOTES:
+- Never let stock go below 0 (use Math.max(0, current - qty))
+- Don't block shipment if stock decrement fails — use .catch() to silently log errors
+- Add console.log: [STOCK-DECREMENT] Order #X → product Y: stock X → Y
+- If order has no items linked (orderItems empty), skip silently

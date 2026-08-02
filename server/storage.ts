@@ -47,6 +47,7 @@ export interface IStorage {
   createProduct(product: InsertProduct): Promise<Product>;
   getOrCreateProductByName(storeId: number, opts: { name: string; sku?: string | null; sellingPrice?: number }): Promise<Product>;
   updateProductStock(id: number, stockDelta: number): Promise<Product | undefined>;
+  decrementStockForOrder(orderId: number, storeId: number): Promise<void>;
   
   getOrdersByStore(storeId: number, status?: string, limit?: number, offset?: number): Promise<OrderWithDetails[]>;
   getOrdersSince(storeId: number, since: Date): Promise<Order[]>;
@@ -485,6 +486,66 @@ export class DatabaseStorage implements IStorage {
       .where(eq(products.id, id))
       .returning();
     return updated;
+  }
+
+  async decrementStockForOrder(orderId: number, storeId: number): Promise<void> {
+    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
+    if (!items.length) return;
+
+    for (const item of items) {
+      if (!item.productId) continue;
+      const qty = item.quantity || 1;
+
+      // Try to match a variant first (by variantInfo name or SKU)
+      const variants = await db.select().from(productVariants)
+        .where(eq(productVariants.productId, item.productId));
+
+      let variantMatched = false;
+      if (variants.length > 0 && item.variantInfo) {
+        const variantName = (item.variantInfo || '').trim();
+        const matched = variants.find(v =>
+          v.name === variantName ||
+          v.sku === item.sku ||
+          v.name?.includes(variantName) ||
+          variantName.includes(v.name || '')
+        );
+        if (matched) {
+          const newStock = Math.max(0, (matched.stock || 0) - qty);
+          console.log(`[STOCK-DECREMENT] Order #${orderId} → variant "${matched.name}" (id=${matched.id}): stock ${matched.stock} → ${newStock}`);
+          await db.update(productVariants)
+            .set({ stock: newStock })
+            .where(eq(productVariants.id, matched.id));
+          await db.insert(stockMovements).values({
+            storeId,
+            productId: item.productId,
+            variantId: matched.id,
+            type: 'shipped',
+            quantity: -qty,
+            reason: `Expédition commande #${orderId} (variant: ${matched.name})`,
+            orderId,
+          });
+          variantMatched = true;
+        }
+      }
+
+      if (!variantMatched) {
+        const [product] = await db.select().from(products).where(eq(products.id, item.productId));
+        if (!product) continue;
+        const newStock = Math.max(0, (product.stock || 0) - qty);
+        console.log(`[STOCK-DECREMENT] Order #${orderId} → product "${product.name}" (id=${product.id}): stock ${product.stock} → ${newStock}`);
+        await db.update(products)
+          .set({ stock: newStock })
+          .where(eq(products.id, item.productId));
+        await db.insert(stockMovements).values({
+          storeId,
+          productId: item.productId,
+          type: 'shipped',
+          quantity: -qty,
+          reason: `Expédition commande #${orderId}`,
+          orderId,
+        });
+      }
+    }
   }
 
   // Lightweight fetch of recent orders for duplicate detection during import.

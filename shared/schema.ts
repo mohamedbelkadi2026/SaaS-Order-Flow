@@ -689,6 +689,7 @@ export type InsertStockLog = z.infer<typeof insertStockLogSchema>;
 // silently inflates historical totals.
 //   type='restock'    → +qty: manual purchase, initial stock, or reorder
 //   type='delivered'  → -qty: order status flipped to delivered
+//   type='shipped'    → -qty: order dispatched to carrier (Attente De Ramassage)
 //   type='returned'   → +qty: carrier returned the goods (refused/retourné)
 //   type='adjustment' → ± qty: manual correction (recount, damage, etc.)
 //   type='reservation'/ 'release' (reserved for future soft-reservation work)
