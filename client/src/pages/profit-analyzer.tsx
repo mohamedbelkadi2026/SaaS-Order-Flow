@@ -183,16 +183,26 @@ interface ParsedEntry {
   error?: string;
 }
 
+/** One line in the sourcing breakdown tooltip (per-item in a bundle). */
+interface CostBreakdownItem {
+  name: string;      // cleaned product / variant name
+  unitCost: number;  // cost in DH per unit
+  qty: number;       // quantity (1 unless embedded "X2" etc.)
+  linked: boolean;   // whether a stock match was found
+}
+
 interface ProductSummary {
   name: string; totalQty: number; totalRevenue: number; totalShipping: number;
   rowCount: number; buyingCost: string; packagingCost: string;
   confirmationFee: string; adSpend: string; suggestedPrice?: number;
+  costBreakdown?: CostBreakdownItem[];
 }
 
 interface ProfitResult {
   name: string; qty: number; commandes: number; caBrut: number;
   shippingFromFile: number; caNet: number; cogs: number; packaging: number;
   confirmation: number; adSpend: number; totalCost: number; netProfit: number; roi: number;
+  costBreakdown?: CostBreakdownItem[];
 }
 
 /** One aggregated campaign from the ad-spend import */
@@ -795,7 +805,7 @@ export default function ProfitAnalyzer() {
       const adS = adMode === "specific" ? toNum(p.adSpend) : totalRevAll > 0 ? globalAd * (caBrut / totalRevAll) : globalAd / products.length;
       const totalCost = shippingFromFile + cogs + packaging + confirmation + adS;
       const netProfit = caBrut - totalCost; const roi = cogs > 0 ? (netProfit / cogs) * 100 : 0;
-      return { name: p.name, qty, commandes, caBrut, shippingFromFile, caNet, cogs, packaging, confirmation, adSpend: adS, totalCost, netProfit, roi };
+      return { name: p.name, qty, commandes, caBrut, shippingFromFile, caNet, cogs, packaging, confirmation, adSpend: adS, totalCost, netProfit, roi, costBreakdown: p.costBreakdown };
     });
     setResults(res); setStep(3);
   }
@@ -845,32 +855,95 @@ export default function ProfitAnalyzer() {
     finally { setSavingReport(false); }
   }
 
-  /** Attempt confident name/SKU match between an imported product name and a stock product.
-   *  Returns costPrice in DH (not centimes), or null if no confident match. */
-  function matchStockPrice(productName: string, stockProds: any[]): number | null {
-    const active = stockProds.filter(p => !p.archivedAt && (p.costPrice ?? 0) > 0);
-    // 1. Exact name
-    const exact = active.find(p => p.name === productName);
+  /**
+   * Match a single (non-bundle) product name to a stock product and return cost in DH.
+   * Tries: exact → normalised → SKU → progressive variant-suffix stripping.
+   */
+  function matchSingleItemCost(name: string, active: any[]): number | null {
+    // 1. Exact
+    const exact = active.find(p => p.name === name);
     if (exact) return exact.costPrice / 100;
-    // 2. Normalized name (accent-insensitive, trim, collapse whitespace, lowercase)
-    const np = norm(productName).replace(/\s+/g, " ");
+    // 2. Normalised (accent-insensitive, whitespace-collapsed)
+    const np = norm(name).replace(/\s+/g, " ");
     const normalized = active.find(p => norm(p.name || "").replace(/\s+/g, " ") === np);
     if (normalized) return normalized.costPrice / 100;
-    // 3. SKU: check if any stock product's SKU equals the imported name (exact or normalized)
-    const bySku = active.find(p => p.sku && (p.sku === productName || norm(p.sku).replace(/\s+/g, " ") === np));
+    // 3. SKU
+    const bySku = active.find(p => p.sku && (p.sku === name || norm(p.sku).replace(/\s+/g, " ") === np));
     if (bySku) return bySku.costPrice / 100;
-    return null;  // no confident match — leave empty
+    // 4. Variant suffix stripping — progressively strip 1-3 trailing words to find parent
+    //    e.g. "Sandale Tabac 41" → try "Sandale Tabac" (strip "41") → try "Sandale" (strip "Tabac 41")
+    const words = name.split(/\s+/);
+    for (let strip = 1; strip <= Math.min(3, words.length - 2); strip++) {
+      const base = words.slice(0, words.length - strip).join(" ");
+      const nbBase = norm(base).replace(/\s+/g, " ");
+      const parent = active.find(p => norm(p.name || "").replace(/\s+/g, " ") === nbBase);
+      if (parent) return parent.costPrice / 100;
+    }
+    return null;
+  }
+
+  /**
+   * Match a product name (which may be a bundle "A + B + C", include embedded
+   * quantities "X2", or carry a "(non lié)" suffix) to stock costs.
+   * Returns the total bundle cost in DH and a per-item breakdown.
+   */
+  function matchStockCost(productName: string, stockProds: any[]): { totalCost: number | null; breakdown: CostBreakdownItem[] } {
+    const active = stockProds.filter(p => !p.archivedAt && (p.costPrice ?? 0) > 0);
+
+    // Split bundles — e.g. "Sandale A + Sandale B + Sandale C (non lié)"
+    const rawParts = productName.split(/\s+\+\s+/);
+    const breakdown: CostBreakdownItem[] = [];
+
+    for (const rawPart of rawParts) {
+      // Strip "(non lié)" suffix — it means the item was not linked to stock in the OMS
+      const isExplicitlyUnlinked = /\(non\s+li[eé]\)/i.test(rawPart);
+      const cleanPart = rawPart.replace(/\s*\(non\s+li[eé]\)\s*/gi, "").trim();
+
+      // Extract embedded quantity "X2" / "x 2"
+      let qty = 1;
+      let nameForMatch = cleanPart;
+      const xMatch = cleanPart.match(/^(.+?)\s+[Xx](\d+)\s*(.*)$/);
+      if (xMatch) {
+        qty = Math.max(1, parseInt(xMatch[2], 10));
+        nameForMatch = (xMatch[1] + (xMatch[3] ? " " + xMatch[3] : "")).trim();
+      }
+
+      let unitCost: number | null = isExplicitlyUnlinked ? null : matchSingleItemCost(nameForMatch, active);
+
+      breakdown.push({
+        name: cleanPart || rawPart,
+        unitCost: unitCost ?? 0,
+        qty,
+        linked: unitCost !== null,
+      });
+    }
+
+    const hasAnyMatch = breakdown.some(b => b.linked);
+    const computedTotal = breakdown.reduce((s, b) => s + b.unitCost * b.qty, 0);
+
+    return {
+      // Return the computed total even for partial matches so the user
+      // gets a useful pre-fill rather than having to start from zero.
+      totalCost: hasAnyMatch ? computedTotal : null,
+      breakdown,
+    };
+  }
+
+  /** Legacy thin wrapper kept for the "auto (stock)" badge logic — prefer matchStockCost. */
+  function matchStockPrice(productName: string, stockProds: any[]): number | null {
+    const { totalCost } = matchStockCost(productName, stockProds);
+    return totalCost;
   }
 
   function applyStockPrices(prods: any[], force = false) {
     const autoMap: Record<string, boolean> = {};
     setProducts(prev => prev.map(p => {
-      const price = matchStockPrice(p.name, prods);
-      if (price === null) return p;
+      const { totalCost, breakdown } = matchStockCost(p.name, prods);
+      if (totalCost === null) return p;
       const alreadyFilled = p.buyingCost && p.buyingCost !== "0" && p.buyingCost !== "";
       if (alreadyFilled && !force) return p;
       autoMap[p.name] = true;
-      return { ...p, buyingCost: String(price) };
+      return { ...p, buyingCost: String(totalCost), costBreakdown: breakdown };
     }));
     setStockAutoFilled(prev => force ? autoMap : { ...prev, ...autoMap });
   }
@@ -1741,14 +1814,42 @@ export default function ProfitAnalyzer() {
                           {results.map((r, i) => {
                             const roiCls  = r.roi >= 50 ? "text-emerald-400" : r.roi >= 20 ? "text-amber-400" : "text-red-400";
                             const profCls = r.netProfit >= 0 ? "text-emerald-400 font-extrabold" : "text-red-400 font-extrabold";
+                            const hasUnlinked = r.costBreakdown?.some(b => !b.linked);
+                            const isBundle    = (r.costBreakdown?.length ?? 0) > 1;
+                            const sourcingTitle = r.costBreakdown && r.costBreakdown.length > 0
+                              ? r.costBreakdown.map(b =>
+                                  b.linked
+                                    ? `${b.name}: ${b.unitCost.toFixed(2)} DH × ${b.qty}`
+                                    : `${b.name}: — (non lié)`
+                                ).join("\n") + `\nTotal sourcing: ${r.cogs.toFixed(2)} DH`
+                              : undefined;
                             return (
                               <TableRow key={i} className="border-white/8 hover:bg-white/4" data-testid={`row-result-${i}`}>
-                                <TableCell className="text-white font-semibold text-sm py-3 whitespace-normal break-words">{r.name}</TableCell>
+                                <TableCell className="text-white font-semibold text-sm py-3 whitespace-normal break-words">
+                                  <span className="flex items-start gap-1.5">
+                                    <span>{r.name}</span>
+                                    {hasUnlinked && (
+                                      <span
+                                        title="Un ou plusieurs produits ne sont pas liés au stock — coût sourcing non calculé pour ces articles"
+                                        className="shrink-0 mt-0.5 cursor-help"
+                                      >
+                                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                                      </span>
+                                    )}
+                                  </span>
+                                </TableCell>
                                 <TableCell className="text-center py-3"><Badge variant="outline" className="border-amber-500/30 text-amber-300 bg-amber-500/8 text-xs">{r.qty}</Badge></TableCell>
                                 <TableCell className="text-right text-emerald-300 font-semibold text-sm py-3">{fmtMAD(r.caBrut)}</TableCell>
                                 <TableCell className="text-right text-red-400 text-sm py-3">−{fmtMAD(r.shippingFromFile)}</TableCell>
                                 <TableCell className="text-right text-cyan-300 font-semibold text-sm py-3">{fmtMAD(r.caNet)}</TableCell>
-                                <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtMAD(r.cogs)}</TableCell>
+                                <TableCell
+                                  className="text-right text-slate-300 text-sm py-3"
+                                  title={sourcingTitle}
+                                >
+                                  <span className={isBundle || hasUnlinked ? "cursor-help underline decoration-dotted decoration-slate-500 underline-offset-2" : ""}>
+                                    −{fmtMAD(r.cogs)}
+                                  </span>
+                                </TableCell>
                                 <TableCell className="text-right text-pink-300 text-sm py-3">−{fmtMAD(r.packaging)}</TableCell>
                                 <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtMAD(r.confirmation)}</TableCell>
                                 <TableCell className="text-right text-slate-300 text-sm py-3">−{fmtMAD(r.adSpend)}</TableCell>
