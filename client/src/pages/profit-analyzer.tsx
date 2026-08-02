@@ -933,7 +933,13 @@ export default function ProfitAnalyzer() {
    * Returns the total bundle cost in DH and a per-item breakdown.
    */
   function matchStockCost(productName: string, stockProds: any[]): { totalCost: number | null; breakdown: CostBreakdownItem[] } {
-    const active = stockProds.filter(p => !p.archivedAt && (p.costPrice ?? 0) > 0);
+    // Include products that have costPrice > 0 OR have at least one variant with costPrice > 0
+    const active = stockProds.filter(p => {
+      if (p.archivedAt) return false;
+      if ((p.costPrice ?? 0) > 0) return true;
+      const vars: any[] = Array.isArray(p.variants) ? p.variants : [];
+      return vars.some((v: any) => (v.costPrice ?? 0) > 0);
+    });
 
     // Split bundles — e.g. "Sandale A + Sandale B + Sandale C (non lié)"
     const rawParts = productName.split(/\s+\+\s+/);
