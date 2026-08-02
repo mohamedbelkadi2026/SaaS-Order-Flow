@@ -316,28 +316,61 @@ export async function computeProfitability(
         ?? 0;
 
       // Fallbacks coût — actifs UNIQUEMENT si tout le reste a donné 0.
-      if (!unitCostCents && item.rawProductName) {
-        const { base, suffix } = splitVariant(item.rawProductName);
-        const suffixGuess = suffix || item.rawProductName.trim().split(' ').pop() || '';
-        const baseGuess   = suffix
-          ? base
-          : item.rawProductName.replace(new RegExp('\\s+' + suffixGuess + '$'), '').trim();
+      if (!unitCostCents) {
+        // Strip "(non lié)" BEFORE extracting suffix — otherwise the suffix
+        // becomes "(non lié)" instead of the actual size/colour number.
+        const rawForMatch = (item.rawProductName || '')
+          .replace(/\s*\(non\s+li[eé]\)\s*/gi, '').trim();
 
-        // 1) Coût d'une variante du produit déjà matché (parent direct + suffixe).
-        if (item.productId && suffixGuess) {
-          const vCost = variantCostByKey.get(`${item.productId}::${norm(suffixGuess)}`);
-          if (vCost) unitCostCents = vCost;
-        }
+        if (rawForMatch) {
+          const { base, suffix } = splitVariant(rawForMatch);
+          const suffixGuess = suffix || rawForMatch.split(' ').pop() || '';
+          const baseGuess   = suffix
+            ? base
+            : rawForMatch.replace(new RegExp('\\s+' + suffixGuess.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'), '').trim();
 
-        // 2) Le produit matché EST LUI-MÊME un catalogue "Nom Taille" (coût à 0) :
-        //    chercher le produit "Nom" seul et emprunter son coût ou celui de sa variante.
-        if (!unitCostCents && baseGuess && baseGuess.toLowerCase() !== item.rawProductName.toLowerCase()) {
-          const altProductId = idByName.get(norm(baseGuess));
-          if (altProductId && altProductId !== item.productId) {
-            const altVariantCost = suffixGuess
-              ? variantCostByKey.get(`${altProductId}::${norm(suffixGuess)}`)
-              : undefined;
-            unitCostCents = altVariantCost || costByName.get(norm(baseGuess)) || 0;
+          // 1) Coût d'une variante du produit déjà matché (parent direct + suffixe).
+          if (item.productId && suffixGuess) {
+            const vCost = variantCostByKey.get(`${item.productId}::${norm(suffixGuess)}`);
+            if (vCost) unitCostCents = vCost;
+          }
+
+          // 2) Le produit matché EST LUI-MÊME un catalogue "Nom Taille" (coût à 0) :
+          //    chercher le produit "Nom" seul et emprunter son coût ou celui de sa variante.
+          if (!unitCostCents && baseGuess && norm(baseGuess) !== norm(rawForMatch)) {
+            const altProductId = idByName.get(norm(baseGuess));
+            if (altProductId && altProductId !== item.productId) {
+              const altVariantCost = suffixGuess
+                ? variantCostByKey.get(`${altProductId}::${norm(suffixGuess)}`)
+                : undefined;
+              unitCostCents = altVariantCost || costByName.get(norm(baseGuess)) || 0;
+            }
+          }
+
+          // 3) Fuzzy contains match — item name contains the product name or vice-versa.
+          //    Handles cases like "Sandale En Cuir Rf 1012 Noir 42" matching the
+          //    catalogue product "Sandale En Cuir Rf 1012 Noir" (no separator, no exact key).
+          if (!unitCostCents) {
+            const rawNorm  = norm(rawForMatch);
+            const baseNorm = norm(baseGuess || rawForMatch);
+            // Prefer the longest (most specific) matching product name.
+            const fuzzy = storeProductsList
+              .filter(p => {
+                const pn = norm(p.name);
+                return pn.length >= 4 && (
+                  rawNorm.includes(pn) ||    // "sandale rf 1012 noir 42" includes "sandale rf 1012 noir"
+                  pn.includes(baseNorm) ||   // product name includes base without size
+                  baseNorm.includes(pn)      // base without size includes product name
+                );
+              })
+              .sort((a, b) => b.name.length - a.name.length)[0];
+
+            if (fuzzy) {
+              const altVariantCost = suffixGuess
+                ? variantCostByKey.get(`${fuzzy.id}::${norm(suffixGuess)}`)
+                : undefined;
+              unitCostCents = altVariantCost || Number(fuzzy.costPrice) || 0;
+            }
           }
         }
       }

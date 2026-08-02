@@ -1,0 +1,93 @@
+Fix Profit Analyzer sourcing cost calculation — currently shows 0 DH for "(non lié)" products even when the product name exists in stock.
+
+CURRENT BEHAVIOR (WRONG):
+- "Sandale En Cuir Rf 1012 Noir 42 (non lié)" → sourcing = 0 DH
+- "Sandale En Cuir Rf 1012 Noir 41" → sourcing = 0 DH
+Even though "Sandale En Cuir Rf 1012 Noir" exists in stock with costPrice = 140 DH
+
+DESIRED BEHAVIOR:
+Calculate sourcing cost using this priority chain:
+
+1. EXACT product link (productId): use product variant cost if variant matches, else product costPrice
+2. FUZZY NAME MATCH: if no productId, search products table by name similarity
+3. VARIANT EXTRACTION: extract size/color from order item name and match to variant
+4. FALLBACK: use parent product costPrice if no variant match
+
+IMPLEMENTATION:
+
+In server/routes.ts or server/storage.ts, find the profit analyzer query.
+
+Replace the sourcing cost calculation with this logic:
+
+For each order item, compute unit_cost as follows:
+
+Step 1 — Try exact product link:
+LEFT JOIN products p ON oi.product_id = p.id
+LEFT JOIN product_variants pv ON pv.product_id = p.id AND (
+  oi.sku = pv.sku
+  OR pv.name = ANY(regexp_matches(oi.product_name, '\d+', 'g'))
+)
+
+Step 2 — Try fuzzy name match if no product linked:
+If oi.product_id IS NULL, do a secondary lookup:
+SELECT id, cost_price, name FROM products 
+WHERE store_id = $storeId 
+AND $orderItemName ILIKE '%' || name || '%'
+   OR name ILIKE '%' || $orderItemName || '%'
+ORDER BY LENGTH(name) DESC
+LIMIT 1
+
+Step 3 — Extract variant from name:
+From the order item name like "Sandale En Cuir Rf 1012 Noir 42":
+- Extract last number(s) as size: "42"
+- Match against product_variants where name = '42' or name LIKE '%42%'
+- Use that variant's cost_price
+
+Step 4 — Final cost:
+unit_cost = COALESCE(matched_variant.cost_price, matched_product.cost_price, 0)
+total_sourcing = unit_cost * oi.quantity
+
+SIMPLEST IMPLEMENTATION (if the above is complex):
+In the profit analyzer endpoint, after fetching order items, do this in JavaScript/TypeScript:
+
+const allProducts = await storage.getProductsByStore(storeId);
+
+function findCostForItem(itemName: string, itemSku: string, productId: number | null, quantity: number): number {
+  // 1. Try exact product link
+  let product = productId ? allProducts.find(p => p.id === productId) : null;
+  
+  // 2. Try fuzzy name match
+  if (!product) {
+    const cleanName = itemName.replace(/\s*\(non lié\)\s*/gi, '').trim();
+    // Remove size number from end for matching
+    const nameWithoutSize = cleanName.replace(/\s+\d+\s*$/, '').trim();
+    product = allProducts.find(p => 
+      cleanName.toLowerCase().includes(p.name.toLowerCase()) ||
+      p.name.toLowerCase().includes(nameWithoutSize.toLowerCase()) ||
+      nameWithoutSize.toLowerCase().includes(p.name.toLowerCase())
+    );
+  }
+  
+  if (!product) return 0;
+  
+  // 3. Try to match variant by size extracted from item name
+  const sizeMatch = itemName.match(/\b(\d{2})\b(?:\s*\(non lié\))?$/);
+  const size = sizeMatch?.[1];
+  
+  if (size && product.variants?.length) {
+    const variant = product.variants.find((v: any) => 
+      v.name === size || v.name?.includes(size)
+    );
+    if (variant?.costPrice && variant.costPrice > 0) {
+      return variant.costPrice * quantity;
+    }
+  }
+  
+  // 4. Fall back to product cost price
+  return (product.costPrice || 0) * quantity;
+}
+
+Apply findCostForItem() for EVERY order item, including "(non lié)" ones.
+Remove "(non lié)" suffix before doing name matching.
+
+This ensures ALL products get their sourcing cost calculated, whether linked or not, as long as a product with a similar name exists in the inventory.

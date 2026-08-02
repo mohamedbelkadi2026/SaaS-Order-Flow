@@ -857,7 +857,7 @@ export default function ProfitAnalyzer() {
 
   /**
    * Match a single (non-bundle) product name to a stock product and return cost in DH.
-   * Tries: exact → normalised → SKU → progressive variant-suffix stripping.
+   * Tries: exact → normalised → SKU → progressive suffix stripping → fuzzy contains.
    */
   function matchSingleItemCost(name: string, active: any[]): number | null {
     // 1. Exact
@@ -879,6 +879,23 @@ export default function ProfitAnalyzer() {
       const parent = active.find(p => norm(p.name || "").replace(/\s+/g, " ") === nbBase);
       if (parent) return parent.costPrice / 100;
     }
+    // 5. Fuzzy contains match — item name contains product name, or product name
+    //    contains item name with trailing size stripped. Prefer longer (more specific) matches.
+    //    e.g. "Sandale En Cuir Rf 1012 Noir 42" matches "Sandale En Cuir Rf 1012 Noir"
+    const nameLow = name.toLowerCase();
+    // Strip trailing standalone number (size) for the contains check
+    const nameNoSize = name.replace(/\s+\d{1,3}\s*$/, "").trim().toLowerCase();
+    const fuzzy = active
+      .filter(p => {
+        const pn = (p.name || "").toLowerCase();
+        return pn.length >= 4 && (
+          nameLow.includes(pn) ||          // "Sandale Rf 1012 Noir 42" includes "Sandale Rf 1012 Noir"
+          pn.includes(nameNoSize) ||        // product name includes base without size
+          nameNoSize.includes(pn)           // base without size includes product name
+        );
+      })
+      .sort((a, b) => b.name.length - a.name.length); // longest (most specific) match first
+    if (fuzzy.length > 0) return fuzzy[0].costPrice / 100;
     return null;
   }
 
@@ -908,7 +925,9 @@ export default function ProfitAnalyzer() {
         nameForMatch = (xMatch[1] + (xMatch[3] ? " " + xMatch[3] : "")).trim();
       }
 
-      let unitCost: number | null = isExplicitlyUnlinked ? null : matchSingleItemCost(nameForMatch, active);
+      // Always try to match even for "(non lié)" items — the suffix just means the OMS
+      // didn't link it to stock automatically, but the product may still exist in inventory.
+      let unitCost: number | null = matchSingleItemCost(nameForMatch, active);
 
       breakdown.push({
         name: cleanPart || rawPart,
