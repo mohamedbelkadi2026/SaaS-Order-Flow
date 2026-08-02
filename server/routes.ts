@@ -932,7 +932,7 @@ export async function registerRoutes(
       // confirme column = ALL confirmed: 'confirme' + 'expédié' + 'delivered'
       if (isConfirmedCumulative(o.status)) rawProductMap[key].confirme++;
       // inProgress = all orders currently with the carrier
-      if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(o.status)) rawProductMap[key].inProgress++;
+      if (['in_progress', 'expédié', 'Attente De Ramassage', 'transit', 'unreachable', 'En Cours De Retour'].includes(o.status)) rawProductMap[key].inProgress++;
       if (isDeliveredStatus(o.status)) rawProductMap[key].delivered++;
     });
     const productPerformance = Object.values(rawProductMap).sort((a, b) => b.total - a.total);

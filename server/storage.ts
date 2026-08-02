@@ -2144,7 +2144,7 @@ export class DatabaseStorage implements IStorage {
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          eq(orders.status, 'delivered')
+          inArray(orders.status, ['delivered', 'Livré', 'livré'])
         ));
 
       const inTransitItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
@@ -2153,7 +2153,10 @@ export class DatabaseStorage implements IStorage {
         .where(and(
           eq(orderItems.productId, p.id),
           eq(orders.storeId, storeId),
-          inArray(orders.status, ['in_progress', 'expédié', 'Attente De Ramassage'])
+          inArray(orders.status, [
+            'in_progress', 'expédié', 'Attente De Ramassage',
+            'transit', 'unreachable', 'En Cours De Retour', 'refused', 'Retour Recu',
+          ])
         ));
 
       const totalOrderItems = await db.select({ qty: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)` })
@@ -2390,7 +2393,7 @@ export class DatabaseStorage implements IStorage {
       if (!productMap[displayKey]) productMap[displayKey] = { total: 0, confirmed: 0, inProgress: 0, delivered: 0 };
       productMap[displayKey].total++;
       if (isConfirmedCumulative(item.orderStatus)) productMap[displayKey].confirmed++;
-      if (['in_progress', 'expédié', 'Attente De Ramassage'].includes(item.orderStatus)) productMap[displayKey].inProgress++;
+      if (['in_progress', 'expédié', 'Attente De Ramassage', 'transit', 'unreachable', 'En Cours De Retour'].includes(item.orderStatus)) productMap[displayKey].inProgress++;
       if (item.orderStatus === DELIVERED_STATUS) productMap[displayKey].delivered++;
     }
     const products = Object.entries(productMap)
