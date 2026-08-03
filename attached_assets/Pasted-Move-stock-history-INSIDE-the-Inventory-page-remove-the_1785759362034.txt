@@ -1,0 +1,53 @@
+Move stock history INSIDE the Inventory page — remove the separate "Historique Stock" page from sidebar.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CHANGE 1: Remove separate page
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Remove "Historique Stock" from the sidebar navigation
+- Remove the route for /stock-history from App.tsx
+- Keep the stock-history.tsx file (we'll reuse its logic)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CHANGE 2: Add history inside each product row in Inventory
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+In client/src/pages/inventory.tsx:
+
+1. Add a history icon button (📋 or clock icon) in the ACTIONS column of each product row
+   - Use the Clock or History icon from lucide-react
+   - Style: small ghost button, same as existing action buttons
+
+2. When clicked → open a Drawer or Sheet from the right side (use shadcn Sheet component)
+   Title: "Historique — {product.name}"
+
+3. Inside the Sheet, show a vertical timeline of stock movements for this product:
+   - Fetch from GET /api/stock-logs/{productId}
+   - Each row shows:
+     * Date (format: "02 Aug · 14:32")
+     * Type badge (colored):
+       - restock → green "↑ Entrée"
+       - shipped → blue "↓ Expédition"  
+       - returned → orange "↩ Retour"
+       - adjustment → purple "✏️ Ajustement"
+       - manual → gray "Manuel"
+     * Quantity: "+50" in green or "-1" in red (bold)
+     * Reason text (small gray)
+     * Order number if exists (clickable link)
+
+4. At top of Sheet, show 2 summary stats:
+   - Total Entrées: sum of all positive quantities
+   - Total Sorties: sum of all negative quantities (show as positive number)
+
+5. Show "Aucun mouvement enregistré" if empty
+
+6. Add loading spinner while fetching
+
+The Sheet should be 480px wide, scroll inside if many movements.
+Use the existing Sheet component from shadcn/ui.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CHANGE 3: Also show history below product details
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When a product row is clicked/expanded in Inventory (if expansion exists),
+show the last 5 stock movements directly inline below the product stats.
+
+If no expansion exists, just use the Sheet from CHANGE 2.

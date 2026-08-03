@@ -78,7 +78,7 @@ const PUBLIC_PATHS: Record<string, React.ComponentType> = {
 // ── Private routes that trigger the email-verification guard ──────────────────
 // "/" (dashboard) is also private — unverified users see LandingPage there instead.
 const PRIVATE_PREFIXES = [
-  "/orders", "/inventory", "/stock-history", "/team", "/clients", "/magasins",
+  "/orders", "/inventory", "/team", "/clients", "/magasins",
   "/invoices", "/billing", "/profitability", "/integrations",
   "/admin", "/media-buyers", "/mes-depenses", "/publicites",
   "/profile", "/calculator", "/checkout", "/automation", "/profit-analyzer",

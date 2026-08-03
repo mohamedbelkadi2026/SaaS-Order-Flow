@@ -46,7 +46,6 @@ import {
   Bot,
   BarChart3,
   Crown,
-  History,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { setLanguage } from "@/i18n";
@@ -68,7 +67,6 @@ const ADMIN_NAV = [
   { name: "Commandes (Toutes)",     href: "/orders/all",    icon: ListOrdered     },
   { name: "Nouvelle commande",      href: "/orders/add",    icon: Upload,         hasSubmenu: true, submenuKey: "nouvelle" },
   { name: "Stock",                  href: "/inventory",     icon: Package         },
-  { name: "Historique Stock",       href: "/stock-history", icon: History         },
   { name: "Magasins",               href: "/magasins",      icon: Store           },
   { name: "List Client",            href: "/clients",       icon: Contact         },
   { name: "Gestion de l'Équipe",    href: "/team",          icon: Users           },
