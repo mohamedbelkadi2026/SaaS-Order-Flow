@@ -9807,8 +9807,8 @@ function ensureHeaders(sheet) {
       if (vitipsOrders.length === 0) {
         return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Vitipsexpress à synchroniser." });
       }
-      const BATCH_SIZE = 10;
-      const BUDGET_MS  = 20_000;
+      const BATCH_SIZE = 50;
+      const BUDGET_MS  = 55_000;
       const startedAt  = Date.now();
       const batch      = vitipsOrders.slice(0, BATCH_SIZE);
       let updated = 0;
@@ -9829,6 +9829,7 @@ function ensureHeaders(sheet) {
           }
           if (result.status !== order.status) {
             await storage.updateOrderStatus(order.id, result.status);
+            console.log(`[VITIPS-SYNC] ✅ Updated order #${(order as any).orderNumber}: ${order.status} → ${result.status}`);
             await storage.createOrderFollowUpLog({
               orderId:   order.id,
               agentId:   null,
@@ -9836,6 +9837,8 @@ function ensureHeaders(sheet) {
               note:      `📦 Statut synchronisé: ${result.rawStatus} → ${result.status}`,
             });
             updated++;
+          } else {
+            console.log(`[VITIPS-SYNC] ⏭ order #${(order as any).orderNumber} already "${order.status}" — no change`);
           }
           if (Object.keys(updateData).length > 0) {
             await storage.updateOrder(order.id, updateData);
@@ -9843,7 +9846,7 @@ function ensureHeaders(sheet) {
         } catch (e: any) {
           console.error(`[VITIPS-SYNC] Error for order ${(order as any).orderNumber}: ${e?.message}`);
         }
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(r => setTimeout(r, 80));
       }
       const remaining = vitipsOrders.length - processed;
       safeJson(200, {
