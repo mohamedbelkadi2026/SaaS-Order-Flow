@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -3169,15 +3170,25 @@ export default function ShippingIntegrations() {
       )}
 
       {viewingProvider && viewingMeta && (
-        <CredentialsModal
-          providerId={viewingProvider}
-          providerName={viewingMeta.name}
-          onClose={() => setViewingProvider(null)}
-          onAddNew={() => {
-            setViewingProvider(null);
-            setAddingProvider(viewingProvider);
-          }}
-        />
+        <ErrorBoundary fallback={
+          <Dialog open onOpenChange={() => setViewingProvider(null)}>
+            <DialogContent className="sm:max-w-lg rounded-2xl">
+              <p className="text-sm text-red-600">
+                Impossible d'afficher les informations de connexion pour <strong>{viewingMeta.name}</strong> — un problème technique empêche l'affichage. Veuillez réessayer ou contacter le support.
+              </p>
+            </DialogContent>
+          </Dialog>
+        }>
+          <CredentialsModal
+            providerId={viewingProvider}
+            providerName={viewingMeta.name}
+            onClose={() => setViewingProvider(null)}
+            onAddNew={() => {
+              setViewingProvider(null);
+              setAddingProvider(viewingProvider);
+            }}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

@@ -1957,19 +1957,14 @@ export async function registerRoutes(
                       .catch(costErr => console.error('[EC-COST] Failed to fetch city price:', costErr))
                   );
                 }
-                // Per-city delivery cost for Vitipsexpress
+                // Per-city delivery cost for Vitips Express (same mechanism as Express Coursier)
                 if (provider.toLowerCase() === 'vitipsexpress') {
                   allDbUpdates.push(
                     storage.getCarrierCityPrice(storeId, 'vitipsexpress', (order as any).customerCity || '')
                       .then(async (cityFee) => {
-                        if (cityFee != null) {
-                          console.log(`[VITIPS-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${cityFee} (per-city table)`);
-                          return storage.updateOrder(order.id, { shippingCost: cityFee });
-                        }
-                        const allRows = await storage.getCarrierCityPricing(storeId, 'vitipsexpress');
-                        const defRow = allRows.find((r: any) => r.cityName === '__default__');
-                        const price = defRow ? defRow.priceDh : 3500; // 35 DH default
-                        console.log(`[VITIPS-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${price} (${defRow ? 'default table' : '35 DH fallback'})`);
+                        const { VITIPS_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/vitips-city-pricing');
+                        const price = cityFee ?? (VITIPS_DEFAULT_CITY_PRICE_DH * 100);
+                        console.log(`[VITIPS-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH fallback'})`);
                         return storage.updateOrder(order.id, { shippingCost: price });
                       })
                       .catch(costErr => console.error('[VITIPS-COST] Failed to fetch city price:', costErr))
@@ -4125,6 +4120,47 @@ export async function registerRoutes(
         count++;
       }
       res.json({ message: `${count} tarifs de ville importés pour Express Coursier`, count });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/carriers/vitipsexpress/import-city-pricing", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { VITIPS_CITY_PRICING_SEED } = await import("./seed-data/vitips-city-pricing");
+      let count = 0;
+      for (const [city, priceDh] of VITIPS_CITY_PRICING_SEED) {
+        await storage.upsertCarrierCityPrice(storeId, "vitipsexpress", city, priceDh * 100, "manual");
+        count++;
+      }
+      res.json({ message: `${count} tarif(s) de ville importé(s) pour Vitips Express`, count });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  app.post("/api/carriers/vitipsexpress/backfill-shipping-cost", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { VITIPS_DEFAULT_CITY_PRICE_DH } = await import("./seed-data/vitips-city-pricing");
+      const orders = await storage.getOrdersByStoreAndCarrier(storeId, "vitipsexpress");
+
+      let updated = 0, skippedNoCity = 0, usedDefault = 0;
+      for (const order of orders) {
+        if ((order as any).shippingCost && (order as any).shippingCost > 0) continue;
+        if (!(order as any).customerCity) { skippedNoCity++; continue; }
+
+        const cityFee = await storage.getCarrierCityPrice(storeId, "vitipsexpress", (order as any).customerCity);
+        const fee = cityFee ?? (VITIPS_DEFAULT_CITY_PRICE_DH * 100);
+        if (!cityFee) usedDefault++;
+
+        await storage.updateOrder(order.id, { shippingCost: fee });
+        updated++;
+      }
+
+      console.log(`[VITIPS-BACKFILL] store=${storeId} total=${orders.length} updated=${updated} usedDefault=${usedDefault} skippedNoCity=${skippedNoCity}`);
+      res.json({ message: `${updated} commandes mises à jour`, updated, usedDefault, skippedNoCity, total: orders.length });
     } catch (err: any) {
       res.status(500).json({ message: err.message });
     }
@@ -10057,6 +10093,13 @@ function ensureHeaders(sheet) {
           const price = cityFee ?? (EC_DEFAULT_CITY_PRICE_DH * 100);
           await storage.updateOrder(order.id, { shippingCost: price });
           console.log(`[FIX-COST] #${(order as any).orderNumber} EC city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH'})`);
+          fixed++;
+        } else if (carrier === 'vitipsexpress') {
+          const { VITIPS_DEFAULT_CITY_PRICE_DH } = await import('./seed-data/vitips-city-pricing');
+          const cityFee = await storage.getCarrierCityPrice(storeId, 'vitipsexpress', (order as any).customerCity || '');
+          const price = cityFee ?? (VITIPS_DEFAULT_CITY_PRICE_DH * 100);
+          await storage.updateOrder(order.id, { shippingCost: price });
+          console.log(`[FIX-COST] #${(order as any).orderNumber} Vitips city="${(order as any).customerCity}" → shippingCost=${price} (${cityFee != null ? 'per-city table' : 'default 35 DH'})`);
           fixed++;
         } else if (carrier) {
           // Any other carrier: try per-city table first
