@@ -1,0 +1,140 @@
+FEATURE — Afficher le même panneau "Tarifs de livraison par ville" (déjà
+existant pour Express Coursier) pour Vitips Express aussi, avec import du
+tarif par défaut 35 DH / Casablanca 20 DH. Les endpoints backend génériques
+existent déjà (`GET/POST /api/carriers/:carrierName/city-pricing`) — seul le
+composant FRONTEND est actuellement câblé en dur sur "expresscoursier".
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — client/src/pages/shipping-integrations.tsx : généraliser
+`EcCityPricingSection` en un composant paramétré par transporteur
+
+Renommer `EcCityPricingSection` en `CarrierCityPricingSection` et lui
+ajouter des props `carrierName` (identifiant technique, ex: "expresscoursier"
+ou "vitipsexpress") et `carrierLabel` (nom affiché, ex: "Express Coursier"
+ou "Vitips Express") :
+
+```tsx
+function CarrierCityPricingSection({ accountId, carrierName, carrierLabel }: { accountId: number; carrierName: string; carrierLabel: string }) {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState<Record<string, string>>({});
+
+  const { data: rows = [], isLoading } = useQuery<any[]>({
+    queryKey: [`/api/carriers/${carrierName}/city-pricing`],
+    queryFn: () => apiRequest("GET", `/api/carriers/${carrierName}/city-pricing`).then(r => r.json ? r.json() : r),
+    staleTime: 30_000,
+  });
+
+  const importMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/carriers/${carrierName}/import-city-pricing`, {}),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: [`/api/carriers/${carrierName}/city-pricing`] });
+      toast({ title: "✅ Tarifs importés", description: `${data?.count ?? "?"} ville(s) importée(s) pour ${carrierLabel}.` });
+    },
+    onError: (e: any) => toast({ title: "Erreur import", description: e.message, variant: "destructive" }),
+  });
+
+  const backfillMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/carriers/${carrierName}/backfill-shipping-cost`, {}),
+    onSuccess: (data: any) => {
+      toast({
+        title: "✅ Frais de livraison corrigés",
+        description: `${data?.updated ?? 0} commandes mises à jour${data?.usedDefault ? ` (${data.usedDefault} au tarif par défaut)` : ""}${data?.skippedNoCity ? ` · ${data.skippedNoCity} sans ville ignorées` : ""}.`,
+      });
+    },
+    onError: (e: any) => toast({ title: "Erreur backfill", description: e.message, variant: "destructive" }),
+  });
+
+  const savePriceMutation = useMutation({
+    mutationFn: ({ cityName, priceDh }: { cityName: string; priceDh: number }) =>
+      apiRequest("POST", `/api/carriers/${carrierName}/city-pricing`, { cityName, priceDh }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [`/api/carriers/${carrierName}/city-pricing`] });
+    },
+    onError: (e: any) => toast({ title: "Erreur sauvegarde", description: e.message, variant: "destructive" }),
+  });
+
+  const handleBlur = (cityName: string, cityNorm: string) => {
+    const draft = editing[cityNorm];
+    if (draft === undefined) return;
+    const val = parseFloat(draft.replace(",", "."));
+    if (isNaN(val) || val < 0) {
+      toast({ title: "Valeur invalide", description: "Entrez un prix en DH (ex : 35)", variant: "destructive" });
+      return;
+    }
+    setEditing(e => { const c = { ...e }; delete c[cityNorm]; return c; });
+    savePriceMutation.mutate({ cityName, priceDh: val });
+  };
+
+  const filtered = search.trim()
+    ? rows.filter((r: any) => r.cityName.toLowerCase().includes(search.toLowerCase()))
+    : rows;
+
+  // ── Le reste du JSX (header, boutons, tarif par défaut, recherche, tableau)
+  // reste EXACTEMENT identique à l'actuel EcCityPricingSection — remplacer
+  // uniquement les data-testid pour inclure carrierName (éviter les doublons
+  // d'id si les deux panneaux sont un jour affichés simultanément) :
+  //   data-testid={`button-import-city-pricing-${carrierName}`}
+  //   data-testid={`button-backfill-shipping-cost-${carrierName}`}
+  // Tout le reste (classes CSS, structure, logique d'affichage) est inchangé.
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Mettre à jour le point d'appel pour couvrir les 2 transporteurs
+
+Remplacer :
+```tsx
+{/* EC per-city delivery pricing */}
+{(acct.carrierName || "").toLowerCase() === "expresscoursier" && (
+  <EcCityPricingSection accountId={acct.id} />
+)}
+```
+
+par :
+```tsx
+{/* Per-city delivery pricing (transporteurs sans coût API par ville) */}
+{["expresscoursier", "vitipsexpress"].includes((acct.carrierName || "").toLowerCase()) && (
+  <CarrierCityPricingSection
+    accountId={acct.id}
+    carrierName={(acct.carrierName || "").toLowerCase()}
+    carrierLabel={(acct.carrierName || "").toLowerCase() === "expresscoursier" ? "Express Coursier" : "Vitips Express"}
+  />
+)}
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Vérifier que les endpoints Vitips nécessaires existent déjà
+
+Ces 2 endpoints ont dû être ajoutés dans un prompt précédent
+("Tarifs de livraison manuels pour Vitips Express") — vérifier qu'ils sont
+bien présents dans server/routes.ts avant de tester cette UI, sinon les
+boutons "Importer tarifs historiques" / "Corriger frais existants" pour
+Vitips échoueront (404) :
+- `POST /api/carriers/vitipsexpress/import-city-pricing`
+- `POST /api/carriers/vitipsexpress/backfill-shipping-cost`
+
+Les endpoints `GET`/`POST` génériques `/api/carriers/:carrierName/city-pricing`
+(liste + édition d'un tarif) existent déjà dans server/routes.ts et
+fonctionnent pour n'importe quel `carrierName`, Vitips inclus — aucune
+modification nécessaire là-dessus.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Generalize per-city pricing UI panel to work for Vitips Express too" && git push
+
+VÉRIFICATION
+1. Ouvrir "Voir" sur Vitips Express → le panneau "Tarifs de livraison par
+   ville" doit apparaître, identique visuellement à celui d'Express
+   Coursier.
+2. Cliquer "Importer tarifs historiques" → doit importer le tarif Casablanca
+   = 20 DH (le seul défini pour l'instant), tarif par défaut affiché = 35 DH.
+3. Cliquer "Corriger frais existants" → les commandes Vitips déjà en base
+   avec shippingCost = 0 doivent être mises à jour (35 DH partout, 20 DH
+   pour Casablanca).
+4. Modifier manuellement le prix d'une ville dans le tableau (ex: taper 40,
+   sortir du champ) → sauvegarde automatique, confirmée par le rafraîchissement
+   de la liste.
+5. Vérifier que le panneau Express Coursier fonctionne toujours EXACTEMENT
+   comme avant (pas de régression suite à la généralisation du composant).
