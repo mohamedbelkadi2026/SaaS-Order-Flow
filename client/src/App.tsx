@@ -61,6 +61,7 @@ import VerifyEmailPage from "@/pages/verify-email";
 import LpView from "@/pages/lp-view";
 import DeliveryStats from "@/pages/delivery-stats";
 import ImportHistory from "@/pages/import-history";
+const StockHistory = lazy(() => import("@/pages/stock-history"));
 
 // ── Purely public paths — always rendered, no auth/verification check ─────────
 // Any path listed here is served directly from AppRouter before any auth logic.
@@ -77,7 +78,7 @@ const PUBLIC_PATHS: Record<string, React.ComponentType> = {
 // ── Private routes that trigger the email-verification guard ──────────────────
 // "/" (dashboard) is also private — unverified users see LandingPage there instead.
 const PRIVATE_PREFIXES = [
-  "/orders", "/inventory", "/team", "/clients", "/magasins",
+  "/orders", "/inventory", "/stock-history", "/team", "/clients", "/magasins",
   "/invoices", "/billing", "/profitability", "/integrations",
   "/admin", "/media-buyers", "/mes-depenses", "/publicites",
   "/profile", "/calculator", "/checkout", "/automation", "/profit-analyzer",
@@ -242,6 +243,7 @@ function ProtectedRoutes() {
               <Route path="/orders" component={Orders} />
               <Route path="/orders/:filter" component={Orders} />
               <Route path="/inventory" component={Inventory} />
+              <Route path="/stock-history" component={StockHistory} />
               <Route path="/team" component={Team} />
               <Route path="/clients" component={Clients} />
               <Route path="/magasins" component={Magasins} />

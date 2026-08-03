@@ -631,6 +631,15 @@ export default function Inventory() {
   // Insights side-sheet
   const [insightsProductId, setInsightsProductId] = useState<number | null>(null);
 
+  // Stock history drawer
+  const [historyProduct, setHistoryProduct] = useState<any | null>(null);
+
+  const { data: historyMovements = [], isLoading: historyLoading } = useQuery<any[]>({
+    queryKey: ["/api/stock-movements", historyProduct?.id],
+    queryFn: () => fetch(`/api/stock-movements/${historyProduct!.id}`, { credentials: "include" }).then(r => r.json()),
+    enabled: historyProduct !== null,
+  });
+
   // Restock dialog
   const [restockProduct, setRestockProduct] = useState<any | null>(null);
   const [restockQty, setRestockQty] = useState<string>("");
@@ -1460,6 +1469,15 @@ export default function Inventory() {
                       </Button>
                       <Button
                         variant="ghost" size="icon"
+                        className="w-8 h-8 text-orange-500 hover:text-orange-700"
+                        title="Historique des mouvements"
+                        data-testid={`button-history-product-${product.id}`}
+                        onClick={() => setHistoryProduct(product)}
+                      >
+                        <History className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost" size="icon"
                         className="w-8 h-8 text-violet-500 hover:text-violet-700"
                         title="Rattacher les commandes historiques"
                         data-testid={`button-link-historical-${product.id}`}
@@ -2130,6 +2148,85 @@ export default function Inventory() {
                     </Table>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* ── Stock history drawer ────────────────────────────────────────── */}
+      <Sheet open={historyProduct !== null} onOpenChange={(v) => { if (!v) setHistoryProduct(null); }}>
+        <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <History className="w-5 h-5 text-orange-500" />
+              Historique — {historyProduct?.name ?? ""}
+            </SheetTitle>
+          </SheetHeader>
+
+          {historyLoading ? (
+            <div className="py-12 text-center text-muted-foreground text-sm">Chargement…</div>
+          ) : historyMovements.length === 0 ? (
+            <div className="py-12 text-center text-muted-foreground text-sm">Aucun mouvement enregistré pour ce produit.</div>
+          ) : (
+            <div className="mt-4 space-y-4">
+              {/* Summary totals */}
+              {(() => {
+                const totalRecu = historyMovements.filter((m: any) => m.type === 'restock').reduce((s: number, m: any) => s + m.quantity, 0);
+                const totalSorti = Math.abs(historyMovements.filter((m: any) => m.quantity < 0).reduce((s: number, m: any) => s + m.quantity, 0));
+                return (
+                  <div className="grid grid-cols-2 gap-3">
+                    <Card className="p-3 rounded-xl">
+                      <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                        <ArrowUpCircle className="w-3 h-3 text-emerald-600" /> Total reçu
+                      </div>
+                      <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400">+{totalRecu}</div>
+                    </Card>
+                    <Card className="p-3 rounded-xl">
+                      <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
+                        <ArrowDownCircle className="w-3 h-3 text-red-500" /> Total sorti
+                      </div>
+                      <div className="text-xl font-bold text-red-600 dark:text-red-400">-{totalSorti}</div>
+                    </Card>
+                  </div>
+                );
+              })()}
+
+              {/* Timeline */}
+              <div className="space-y-2">
+                {historyMovements.map((m: any) => {
+                  const typeMap: Record<string, { label: string; cls: string }> = {
+                    restock:    { label: "Entrée",     cls: "bg-emerald-100 text-emerald-700 border border-emerald-400" },
+                    shipped:    { label: "Expédition", cls: "bg-blue-100 text-blue-700 border border-blue-400" },
+                    returned:   { label: "Retour",     cls: "bg-orange-100 text-orange-700 border border-orange-400" },
+                    delivered:  { label: "Livraison",  cls: "bg-teal-100 text-teal-700 border border-teal-400" },
+                    adjustment: { label: "Ajustement", cls: "bg-purple-100 text-purple-700 border border-purple-400" },
+                    manual:     { label: "Manuel",     cls: "bg-slate-100 text-slate-600 border border-slate-400" },
+                  };
+                  const tc = typeMap[m.type] ?? { label: m.type, cls: "bg-gray-100 text-gray-600 border border-gray-300" };
+                  const d = new Date(m.createdAt);
+                  const dateStr = d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" }) +
+                    " " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+                  return (
+                    <div key={m.id} className="flex items-start gap-3 p-3 rounded-xl border border-border/40 bg-muted/20 hover:bg-muted/40 transition-colors">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${tc.cls}`}>{tc.label}</span>
+                          <span className={`font-bold text-sm font-mono ${m.quantity > 0 ? "text-emerald-600" : "text-red-600"}`}>
+                            {m.quantity > 0 ? "+" : ""}{m.quantity}
+                          </span>
+                          {m.orderId && (
+                            <span className="text-xs text-blue-600 font-medium">#{m.orderId}</span>
+                          )}
+                        </div>
+                        {m.reason && (
+                          <div className="text-xs text-muted-foreground mt-1 truncate">{m.reason}</div>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground whitespace-nowrap shrink-0 mt-0.5">{dateStr}</div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

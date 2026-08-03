@@ -8104,6 +8104,29 @@ function ensureHeaders(sheet) {
     res.json(logs);
   });
 
+  /** GET /api/stock-movements — all stock movements with product name/SKU joined */
+  app.get("/api/stock-movements", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const movements = await storage.getStockMovementsWithProducts(storeId);
+      res.json(movements);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  /** GET /api/stock-movements/:productId — movements for a single product */
+  app.get("/api/stock-movements/:productId", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const productId = Number(req.params.productId);
+      const movements = await storage.getStockMovementsWithProducts(storeId, isNaN(productId) ? undefined : productId);
+      res.json(movements);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // GET /api/products/profitability — per-product revenue, cost, and profit
   // computed directly from orders + order_items (no CSV needed).

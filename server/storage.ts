@@ -1288,6 +1288,30 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(stockLogs).where(and(...conds)).orderBy(desc(stockLogs.createdAt));
   }
 
+  async getStockMovementsWithProducts(storeId: number, productId?: number): Promise<any[]> {
+    const conds: any[] = [eq(stockMovements.storeId, storeId)];
+    if (productId) conds.push(eq(stockMovements.productId, productId));
+    return await db
+      .select({
+        id:          stockMovements.id,
+        storeId:     stockMovements.storeId,
+        productId:   stockMovements.productId,
+        variantId:   stockMovements.variantId,
+        type:        stockMovements.type,
+        quantity:    stockMovements.quantity,
+        reason:      stockMovements.reason,
+        orderId:     stockMovements.orderId,
+        createdAt:   stockMovements.createdAt,
+        productName: products.name,
+        productSku:  products.sku,
+      })
+      .from(stockMovements)
+      .leftJoin(products, eq(stockMovements.productId, products.id))
+      .where(and(...conds))
+      .orderBy(desc(stockMovements.createdAt))
+      .limit(500);
+  }
+
   async assignOrder(id: number, agentId: number | null): Promise<Order | undefined> {
     const [updated] = await db.update(orders)
       .set({ assignedToId: agentId })

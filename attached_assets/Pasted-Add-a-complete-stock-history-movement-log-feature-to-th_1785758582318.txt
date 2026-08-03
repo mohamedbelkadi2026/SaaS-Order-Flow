@@ -1,0 +1,66 @@
+Add a complete stock history/movement log feature to the Inventory page.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKEND
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The stock_movements table already exists with: id, storeId, productId, type, quantity, reason, orderId, createdAt.
+
+Make sure GET /api/stock-logs already returns all movements with product info joined.
+
+Update GET /api/stock-logs to include product name and variant info:
+
+SELECT 
+  sm.*,
+  p.name as product_name,
+  p.sku as product_sku
+FROM stock_movements sm
+LEFT JOIN products p ON sm.product_id = p.id
+WHERE sm.store_id = $storeId
+ORDER BY sm.created_at DESC
+LIMIT 500
+
+Also add GET /api/stock-logs/:productId that filters by product.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FRONTEND — New "Historique Stock" page
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Add a new page: client/src/pages/stock-history.tsx
+
+Add it to the sidebar under "Inventaire" as "📋 Historique Stock"
+
+The page shows a table with:
+- Date & heure (format: "02 Aug 2026 à 14:32")
+- Produit (name + SKU)
+- Type (with colored badge):
+  * "restock" → 🟢 "Entrée stock" (green)
+  * "shipped" → 🔵 "Expédition" (blue)  
+  * "returned" → 🟠 "Retour" (orange)
+  * "adjustment" → 🟣 "Ajustement" (purple)
+  * "manual" → ⚫ "Manuel" (gray)
+- Quantité (show +N in green for positive, -N in red for negative)
+- Raison (the reason text)
+- Commande (clickable order number if orderId exists)
+- Stock après (current stock — not stored, show "—")
+
+At the top:
+- Filter by product (dropdown)
+- Filter by type (restock / shipped / returned / adjustment)
+- Filter by date range
+- Search bar
+
+Summary cards at top:
+- Total entrées (sum of positive movements this month)
+- Total sorties (sum of negative movements this month)  
+- Nombre de mouvements
+
+Also add a small "📋" history icon button on each product row in the Inventory page
+that opens a drawer/modal showing that product's stock history.
+
+The history modal shows:
+- Title: "Historique — [Product Name]"
+- A timeline of all movements for this product
+- Each entry: date | type badge | quantity (+/-) | reason
+- Total reçu (sum of all restocks)
+- Total sorti (sum of all shipments)
