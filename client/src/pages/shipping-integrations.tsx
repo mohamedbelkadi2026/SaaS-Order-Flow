@@ -19,7 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Link2, CheckCircle, Loader2, Eye, EyeOff,
   MapPin, Video, Home, ChevronRight,
-  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw, ShieldCheck, Upload, FileJson,
+  Plus, Copy, Check, Trash2, Pencil, AlertCircle, RefreshCw, ShieldCheck, Upload, FileJson, X,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
