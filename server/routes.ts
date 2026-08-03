@@ -9807,56 +9807,49 @@ function ensureHeaders(sheet) {
       if (vitipsOrders.length === 0) {
         return safeJson(200, { synced: 0, updated: 0, message: "Aucune commande Vitipsexpress à synchroniser." });
       }
-      const BATCH_SIZE = 50;
-      const BUDGET_MS  = 55_000;
-      const startedAt  = Date.now();
-      const batch      = vitipsOrders.slice(0, BATCH_SIZE);
-      let updated = 0;
-      let processed = 0;
-      for (const order of batch) {
-        if (Date.now() - startedAt > BUDGET_MS) {
-          console.warn(`[VITIPS-SYNC] budget exhausted after ${processed}/${batch.length} orders`);
-          break;
-        }
-        processed++;
-        try {
-          const result = await trackVitipsShipment(order.trackNumber!, apiKey);
-          console.log(`[VITIPS-SYNC] order=#${(order as any).orderNumber} track=${order.trackNumber} → raw="${result.rawStatus}" mapped="${result.status}" err="${result.error}"`);
-          if (result.error || !result.status) continue;
-          const updateData: any = {};
-          if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
-            updateData.commentStatus = result.rawStatus;
-          }
-          if (result.status !== order.status) {
-            await storage.updateOrderStatus(order.id, result.status);
-            console.log(`[VITIPS-SYNC] ✅ Updated order #${(order as any).orderNumber}: ${order.status} → ${result.status}`);
-            await storage.createOrderFollowUpLog({
-              orderId:   order.id,
-              agentId:   null,
-              agentName: 'Vitipsexpress Sync',
-              note:      `📦 Statut synchronisé: ${result.rawStatus} → ${result.status}`,
-            });
-            updated++;
-          } else {
-            console.log(`[VITIPS-SYNC] ⏭ order #${(order as any).orderNumber} already "${order.status}" — no change`);
-          }
-          if (Object.keys(updateData).length > 0) {
-            await storage.updateOrder(order.id, updateData);
-          }
-        } catch (e: any) {
-          console.error(`[VITIPS-SYNC] Error for order ${(order as any).orderNumber}: ${e?.message}`);
-        }
-        await new Promise(r => setTimeout(r, 80));
-      }
-      const remaining = vitipsOrders.length - processed;
+
+      // Respond immediately to avoid 504 — run sync in background
       safeJson(200, {
-        synced: processed,
-        updated,
-        remaining,
-        message: remaining > 0
-          ? `${updated} commande(s) mise(s) à jour. Encore ${remaining} en attente — recliquez pour continuer.`
-          : `${updated} commande(s) mise(s) à jour. Toutes les commandes Vitipsexpress sont synchronisées.`,
+        synced:  vitipsOrders.length,
+        updated: 0,
+        message: `Synchronisation démarrée en arrière-plan pour ${vitipsOrders.length} commande(s)…`,
       });
+
+      (async () => {
+        let updated = 0;
+        console.log(`[VITIPS-SYNC] Starting background sync for ${vitipsOrders.length} orders`);
+        for (const order of vitipsOrders) {
+          try {
+            const result = await trackVitipsShipment(order.trackNumber!, apiKey);
+            console.log(`[VITIPS-SYNC] order=#${(order as any).orderNumber} track=${order.trackNumber} → raw="${result.rawStatus}" mapped="${result.status}" err="${result.error}"`);
+            if (result.error || !result.status) continue;
+            const updateData: any = {};
+            if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
+              updateData.commentStatus = result.rawStatus;
+            }
+            if (result.status !== order.status) {
+              await storage.updateOrderStatus(order.id, result.status);
+              console.log(`[VITIPS-SYNC] ✅ #${(order as any).orderNumber}: ${order.status} → ${result.status}`);
+              await storage.createOrderFollowUpLog({
+                orderId:   order.id,
+                agentId:   null,
+                agentName: 'Vitipsexpress Sync',
+                note:      `📦 Statut synchronisé: ${result.rawStatus} → ${result.status}`,
+              });
+              updated++;
+            } else {
+              console.log(`[VITIPS-SYNC] ↔ #${(order as any).orderNumber} already "${order.status}" — no change`);
+            }
+            if (Object.keys(updateData).length > 0) {
+              await storage.updateOrder(order.id, updateData);
+            }
+          } catch (e: any) {
+            console.error(`[VITIPS-SYNC] ❌ #${(order as any).orderNumber}: ${e?.message}`);
+          }
+          await new Promise(r => setTimeout(r, 100));
+        }
+        console.log(`[VITIPS-SYNC] Done — ${updated}/${vitipsOrders.length} updated`);
+      })();
     } catch (err: any) {
       console.error('[VITIPS-SYNC] fatal', err?.message);
       return safeJson(500, { message: err?.message || 'Sync Vitipsexpress failed' });
