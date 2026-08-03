@@ -1,0 +1,85 @@
+FIX — "Profit Net" affiche 985.00 DH sur le Dashboard mais -515.00 DH sur
+"Rentabilité Avancée", pour exactement les mêmes commandes/période. Écart
+exact : 1500 DH = les dépenses publicitaires (Pub), qui ne sont PAS
+déduites côté Dashboard.
+
+CAUSE (confirmée dans le code)
+server/routes.ts, endpoint `/api/stats/filtered` (~ligne 1020-1030) :
+```ts
+const profResult = await computeProfitability(storeId, { ... });
+const netProfit = Math.round(profResult.totals.netProfit * 100);
+```
+`profResult.totals.netProfit` (le champ retourné par `computeProfitability`,
+partagé avec Profit Analyzer Pro) NE SOUSTRAIT PAS les dépenses
+publicitaires — malgré son nom, c'est un profit "avant Pub" (Revenu − Coût
+produits − Frais livraison − Emballage − Commissions). "Rentabilité
+Avancée" soustrait le Pub EN PLUS, séparément, pour obtenir son "Profit Net
+Final" (= Revenu − Coûts livrées − Pub). Résultat : deux définitions
+différentes affichées sous le MÊME libellé "Profit Net" selon la page.
+
+FIX — Faire en sorte que le Dashboard soustraie lui aussi le Pub, pour que
+"Profit Net" représente partout la même définition complète (après
+publicité), cohérente avec Rentabilité Avancée.
+
+────────────────────────────────────────────────────────────────────────────
+server/routes.ts, endpoint `/api/stats/filtered` (~ligne 1020-1037)
+
+Remplacer :
+```ts
+const profResult = await computeProfitability(storeId, {
+  dateFrom:  profDateFrom,
+  dateTo:    profDateTo,
+  dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
+});
+// computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
+const netProfit = Math.round(profResult.totals.netProfit * 100);
+const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
+const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
+```
+
+par :
+```ts
+const profResult = await computeProfitability(storeId, {
+  dateFrom:  profDateFrom,
+  dateTo:    profDateTo,
+  dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
+});
+// computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
+// IMPORTANT : profResult.totals.netProfit est un profit "avant Pub" (n'inclut
+// pas les dépenses publicitaires). On soustrait adSpendTotal (déjà en
+// centimes) pour obtenir le VRAI profit net final, cohérent avec la formule
+// affichée sur Rentabilité Avancée ("= Revenu – Coûts livrées – Pub").
+const profitBeforeAds = Math.round(profResult.totals.netProfit * 100);
+const netProfit = profitBeforeAds - adSpendTotal;
+const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
+const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
+```
+
+(La formule de `roi` reste `netProfit / adSpendTotal`, mais utilise
+maintenant le VRAI net profit après Pub — vérifier que ce chiffre de ROI
+reste cohérent avec l'attente métier ; si besoin d'un ROI basé sur le profit
+AVANT Pub, garder une variable séparée `profitBeforeAds` pour ce calcul
+précis plutôt que `netProfit`.)
+
+────────────────────────────────────────────────────────────────────────────
+VÉRIFIER LES AUTRES ENDROITS QUI AFFICHENT "Profit Net" SUR LE DASHBOARD
+
+client/src/pages/dashboard.tsx utilise aussi `mbProfit.netProfit` (ligne
+~789, carte par media buyer) et `adminPersonalProfit.netProfit` (ligne
+~1440, stats personnelles). Trouver les endpoints backend correspondants
+(probablement `/api/stats/media-buyer` ou similaire) et vérifier s'ils ont
+le MÊME problème (netProfit avant Pub affiché comme "Profit Net" final) —
+si oui, appliquer la même correction (soustraire le adSpend de CE
+media buyer précis, pas le total store, pour rester juste par buyer).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Fix Dashboard Profit Net to include ad spend, matching Rentabilité Avancée's full profit formula" && git push
+
+VÉRIFICATION
+- Dashboard "Profit Net" doit maintenant afficher -515.00 DH (identique à
+  "Rentabilité Avancée" → "Profit Net Final"), pour la même période/filtre.
+- Vérifier avec une période SANS dépense pub (adSpendTotal = 0) que les deux
+  chiffres restent identiques aussi dans ce cas (pas de régression).
+- Vérifier que ROAS/ROI affichés restent des valeurs sensées après le
+  changement (pas de division cassée, pas de valeur aberrante).

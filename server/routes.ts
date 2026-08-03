@@ -1032,7 +1032,11 @@ export async function registerRoutes(
       dateRange: (!profDateFrom && !profDateTo) ? 'all' : undefined,
     });
     // computeProfitability returns values in DH; dashboard formatCurrency expects centimes.
-    const netProfit = Math.round(profResult.totals.netProfit * 100);
+    // IMPORTANT: profResult.totals.netProfit is profit *before* ad spend (Revenue − COGS −
+    // Shipping − Packaging − Commissions). Subtract adSpendTotal (already in centimes) to get
+    // the true net profit after ads, consistent with the Rentabilité Avancée formula.
+    const profitBeforeAds = Math.round(profResult.totals.netProfit * 100);
+    const netProfit = profitBeforeAds - adSpendTotal;
     const roas = adSpendTotal > 0 ? revenue / adSpendTotal : 0;
     const roi = adSpendTotal > 0 ? (netProfit / adSpendTotal) * 100 : 0;
 
