@@ -1,0 +1,81 @@
+Add delivery fees configuration for Vitipsexpress carrier — default 35 DH, Casablanca 20 DH.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BACKEND
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The carrier_city_pricing table already exists with: id, storeId, carrierName, city, deliveryFee, createdAt.
+
+1. Add a startup migration to ensure the table exists:
+In server/index.ts startup migrations, add:
+await db.execute(sql`
+  CREATE TABLE IF NOT EXISTS carrier_city_pricing (
+    id SERIAL PRIMARY KEY,
+    store_id INTEGER NOT NULL,
+    carrier_name TEXT NOT NULL,
+    city TEXT NOT NULL,
+    delivery_fee INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(store_id, carrier_name, city)
+  )
+`);
+
+2. Add endpoint to set Vitipsexpress delivery fees:
+POST /api/carrier-accounts/vitipsexpress/delivery-fees
+Body: { fees: [{ city: string, deliveryFee: number }], defaultFee: number }
+
+This upserts rows in carrier_city_pricing for carrierName = "vitipsexpress".
+Also save defaultFee in a special row with city = "__default__".
+
+GET /api/carrier-accounts/vitipsexpress/delivery-fees
+Returns all city fees + defaultFee for this store.
+
+3. When creating a Vitipsexpress shipment (in the bulk-ship handler),
+automatically set shippingCost on the order:
+
+After resolving city, look up delivery fee:
+const cityFee = await db.select().from(carrierCityPricing)
+  .where(and(
+    eq(carrierCityPricing.storeId, storeId),
+    eq(carrierCityPricing.carrierName, 'vitipsexpress'),
+    ilike(carrierCityPricing.city, resolvedCity)
+  ));
+
+const defaultFeeRow = await db.select().from(carrierCityPricing)
+  .where(and(
+    eq(carrierCityPricing.storeId, storeId),
+    eq(carrierCityPricing.carrierName, 'vitipsexpress'),
+    eq(carrierCityPricing.city, '__default__')
+  ));
+
+const shippingCost = cityFee[0]?.deliveryFee ?? defaultFeeRow[0]?.deliveryFee ?? 3500; // in centimes
+
+await storage.updateOrder(order.id, { shippingCost });
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FRONTEND
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In the Vitipsexpress carrier credentials modal (where user sees "Synchroniser les villes", "Modifier" etc.),
+add a new section: "💰 Frais de livraison"
+
+Show:
+- "Frais par défaut (toutes les villes): [input] DH" → default 35 DH
+- A table of city exceptions:
+  | Ville | Frais (DH) | Supprimer |
+  |-------|-----------|---------|
+  | Casablanca | 20 | ✕ |
+  | + Ajouter une ville |
+
+User can:
+1. Set default fee (applies to all cities not listed)
+2. Add city exceptions with custom fee
+3. Save → calls POST /api/carrier-accounts/vitipsexpress/delivery-fees
+
+Pre-populate on load:
+- defaultFee = 35
+- Casablanca = 20
+
+The city dropdown uses the synced Vitipsexpress cities list.
+
+On save: show toast "✅ Frais de livraison enregistrés"

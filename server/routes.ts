@@ -1957,6 +1957,24 @@ export async function registerRoutes(
                       .catch(costErr => console.error('[EC-COST] Failed to fetch city price:', costErr))
                   );
                 }
+                // Per-city delivery cost for Vitipsexpress
+                if (provider.toLowerCase() === 'vitipsexpress') {
+                  allDbUpdates.push(
+                    storage.getCarrierCityPrice(storeId, 'vitipsexpress', (order as any).customerCity || '')
+                      .then(async (cityFee) => {
+                        if (cityFee != null) {
+                          console.log(`[VITIPS-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${cityFee} (per-city table)`);
+                          return storage.updateOrder(order.id, { shippingCost: cityFee });
+                        }
+                        const allRows = await storage.getCarrierCityPricing(storeId, 'vitipsexpress');
+                        const defRow = allRows.find((r: any) => r.cityName === '__default__');
+                        const price = defRow ? defRow.priceDh : 3500; // 35 DH default
+                        console.log(`[VITIPS-COST] Order #${ref} city="${(order as any).customerCity}" → shippingCost=${price} (${defRow ? 'default table' : '35 DH fallback'})`);
+                        return storage.updateOrder(order.id, { shippingCost: price });
+                      })
+                      .catch(costErr => console.error('[VITIPS-COST] Failed to fetch city price:', costErr))
+                  );
+                }
                 allLogUpdates.push(storage.createIntegrationLog({
                   storeId, integrationId: null, provider,
                   action: 'shipping_sent', status: 'success',
@@ -3534,6 +3552,50 @@ export async function registerRoutes(
   });
 
   // ── Sync carrier cities from live API → carrier_cities table ────────────────
+  /** GET /api/carrier-accounts/vitipsexpress/synced-cities — returns locally stored city list */
+  app.get("/api/carrier-accounts/vitipsexpress/synced-cities", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const cities = await storage.getCarrierCities(storeId, 'vitipsexpress');
+      res.json({ cities });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  /** GET /api/carrier-accounts/vitipsexpress/delivery-fees */
+  app.get("/api/carrier-accounts/vitipsexpress/delivery-fees", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const rows = await storage.getCarrierCityPricing(storeId, 'vitipsexpress');
+      const defaultRow = rows.find((r: any) => r.cityName === '__default__');
+      const cityRows = rows.filter((r: any) => r.cityName !== '__default__');
+      res.json({
+        defaultFee: defaultRow ? defaultRow.priceDh / 100 : 35,
+        fees: cityRows.map((r: any) => ({ city: r.cityName, deliveryFee: r.priceDh / 100 })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
+  /** POST /api/carrier-accounts/vitipsexpress/delivery-fees */
+  app.post("/api/carrier-accounts/vitipsexpress/delivery-fees", requireAuth, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const { fees = [], defaultFee = 35 } = req.body;
+      await storage.upsertCarrierCityPrice(storeId, 'vitipsexpress', '__default__', Math.round(Number(defaultFee) * 100));
+      for (const { city, deliveryFee } of fees) {
+        if (city && deliveryFee !== undefined) {
+          await storage.upsertCarrierCityPrice(storeId, 'vitipsexpress', city, Math.round(Number(deliveryFee) * 100));
+        }
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message });
+    }
+  });
+
   app.post("/api/carrier-accounts/:id/sync-cities", requireAuth, async (req, res) => {
     try {
       const accountId = Number(req.params.id);

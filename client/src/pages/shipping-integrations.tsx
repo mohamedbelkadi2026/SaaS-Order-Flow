@@ -2269,6 +2269,11 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     <EcCityPricingSection accountId={acct.id} />
                   )}
 
+                  {/* Vitipsexpress per-city delivery pricing */}
+                  {(acct.carrierName || "").toLowerCase() === "vitipsexpress" && (
+                    <VitipsCityPricingSection />
+                  )}
+
                   {/* Credential table */}
                   <div className="rounded-xl border border-border/50 overflow-hidden">
                     <table className="w-full text-sm">
@@ -2699,6 +2704,207 @@ function EcCityPricingSection({ accountId, storeId }: { accountId: number; store
             </tbody>
           </table>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Vitipsexpress per-city delivery pricing ───────────────────────────────────
+function VitipsCityPricingSection() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+
+  // Saved fees from the server
+  const { data: saved, isLoading: savedLoading } = useQuery<{ defaultFee: number; fees: { city: string; deliveryFee: number }[] }>({
+    queryKey: ["/api/carrier-accounts/vitipsexpress/delivery-fees"],
+    queryFn: () => fetch("/api/carrier-accounts/vitipsexpress/delivery-fees", { credentials: "include" }).then(r => r.json()),
+    staleTime: 30_000,
+  });
+
+  // Synced city list for the dropdown
+  const { data: citiesData } = useQuery<{ cities: string[] }>({
+    queryKey: ["/api/carrier-accounts/vitipsexpress/synced-cities"],
+    queryFn: () => fetch("/api/carrier-accounts/vitipsexpress/synced-cities", { credentials: "include" }).then(r => r.json()),
+    staleTime: 60_000,
+  });
+
+  const [defaultFee, setDefaultFee] = useState<string>("35");
+  const [rows, setRows] = useState<{ city: string; fee: string }[]>([]);
+  const [addCity, setAddCity] = useState<string>("");
+  const [addFee, setAddFee] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+
+  // Seed local state once saved data arrives
+  const [seeded, setSeeded] = useState(false);
+  if (!seeded && saved && !savedLoading) {
+    setDefaultFee(String(saved.defaultFee ?? 35));
+    const initial = saved.fees.length > 0
+      ? saved.fees.map(f => ({ city: f.city, fee: String(f.deliveryFee) }))
+      : [{ city: "Casablanca", fee: "20" }];
+    setRows(initial);
+    setSeeded(true);
+  }
+
+  const availableCities: string[] = citiesData?.cities ?? [];
+
+  function removeRow(idx: number) {
+    setRows(r => r.filter((_, i) => i !== idx));
+  }
+
+  function addRow() {
+    if (!addCity.trim()) return;
+    const fee = parseFloat(addFee.replace(",", "."));
+    if (isNaN(fee) || fee < 0) { toast({ title: "Frais invalides", description: "Entrez un montant en DH.", variant: "destructive" }); return; }
+    if (rows.some(r => r.city.toLowerCase() === addCity.trim().toLowerCase())) {
+      toast({ title: "Ville déjà ajoutée", variant: "destructive" }); return;
+    }
+    setRows(r => [...r, { city: addCity.trim(), fee: String(fee) }]);
+    setAddCity(""); setAddFee("");
+  }
+
+  async function handleSave() {
+    const def = parseFloat(defaultFee.replace(",", "."));
+    if (isNaN(def) || def < 0) { toast({ title: "Frais par défaut invalides", variant: "destructive" }); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/carrier-accounts/vitipsexpress/delivery-fees", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          defaultFee: def,
+          fees: rows.map(r => ({ city: r.city, deliveryFee: parseFloat(r.fee) || 0 })),
+        }),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.message || `HTTP ${res.status}`); }
+      qc.invalidateQueries({ queryKey: ["/api/carrier-accounts/vitipsexpress/delivery-fees"] });
+      toast({ title: "✅ Frais de livraison enregistrés" });
+    } catch (err: any) {
+      toast({ title: "Erreur", description: err.message, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-orange-200/60 dark:border-orange-800/40 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-orange-50/60 dark:bg-orange-900/10 border-b border-orange-200/60 dark:border-orange-800/40">
+        <div>
+          <span className="text-sm font-bold text-orange-800 dark:text-orange-300">💰 Frais de livraison</span>
+          <span className="ml-2 text-xs text-muted-foreground">Vitipsexpress</span>
+        </div>
+        <Button
+          size="sm"
+          className="bg-orange-600 hover:bg-orange-700 text-white font-semibold text-xs h-7 px-3"
+          onClick={handleSave}
+          disabled={saving}
+          data-testid="button-save-vitips-delivery-fees"
+        >
+          {saving ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : null}
+          Enregistrer
+        </Button>
+      </div>
+
+      {/* Default fee */}
+      <div className="flex items-center gap-3 px-4 py-3 bg-slate-50/60 dark:bg-slate-800/20 border-b border-border/30 text-sm">
+        <span className="text-muted-foreground flex-1">Frais par défaut (toutes les villes)</span>
+        <div className="flex items-center gap-1.5">
+          <input
+            type="number" min="0" step="5"
+            className="w-16 text-right border border-border/60 rounded px-2 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+            value={defaultFee}
+            onChange={e => setDefaultFee(e.target.value)}
+          />
+          <span className="text-xs text-muted-foreground">DH</span>
+        </div>
+      </div>
+
+      {/* City exceptions table */}
+      <div className="max-h-60 overflow-y-auto">
+        {savedLoading ? (
+          <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…
+          </div>
+        ) : rows.length === 0 ? (
+          <div className="py-5 text-center text-sm text-muted-foreground">Aucune exception par ville.</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-muted/40 border-b border-border/30 z-10">
+              <tr>
+                <th className="text-left px-4 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Ville</th>
+                <th className="text-right px-4 py-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Frais (DH)</th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i} className="border-b border-border/10 hover:bg-muted/20 transition-colors">
+                  <td className="px-4 py-2 font-medium">{row.city}</td>
+                  <td className="px-4 py-2 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <input
+                        type="number" min="0" step="5"
+                        className="w-16 text-right border border-border/50 rounded px-2 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+                        value={row.fee}
+                        onChange={e => setRows(rs => rs.map((r, j) => j === i ? { ...r, fee: e.target.value } : r))}
+                      />
+                      <span className="text-xs text-muted-foreground">DH</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      onClick={() => removeRow(i)}
+                      className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/20 text-muted-foreground hover:text-red-500 transition-colors"
+                      title="Supprimer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Add city row */}
+      <div className="px-4 py-3 border-t border-border/30 bg-muted/10 flex items-center gap-2">
+        {availableCities.length > 0 ? (
+          <select
+            className="flex-1 text-sm border border-border/50 rounded-lg px-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+            value={addCity}
+            onChange={e => setAddCity(e.target.value)}
+          >
+            <option value="">Choisir une ville…</option>
+            {availableCities.filter(c => !rows.some(r => r.city.toLowerCase() === c.toLowerCase())).map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type="text"
+            placeholder="Ville (ex : Marrakech)"
+            className="flex-1 text-sm border border-border/50 rounded-lg px-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+            value={addCity}
+            onChange={e => setAddCity(e.target.value)}
+          />
+        )}
+        <input
+          type="number" min="0" step="5"
+          placeholder="Frais DH"
+          className="w-20 text-sm border border-border/50 rounded-lg px-2 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-orange-400"
+          value={addFee}
+          onChange={e => setAddFee(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && addRow()}
+        />
+        <Button
+          size="sm" variant="outline"
+          className="border-orange-300 text-orange-700 hover:bg-orange-50 font-semibold text-xs h-8 px-3"
+          onClick={addRow}
+          data-testid="button-add-vitips-city-fee"
+        >
+          + Ajouter
+        </Button>
       </div>
     </div>
   );
