@@ -1,82 +1,88 @@
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
+// ── Color palette (hex values per design spec) ───────────────────────────────
 const C = {
-  // Blues — nouveau, transit labels
-  amber:        'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-700',
-  emeraldSolid: 'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-700',
-  indigo:       'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-700',
-  rose:         'bg-red-50 text-red-600 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-700',
-  slate:        'bg-gray-50 text-gray-500 border-gray-200 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-600',
-  orange:       'bg-orange-50 text-orange-700 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-700',
-  cyan:         'bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-900/30 dark:text-sky-400 dark:border-sky-700',
   blue:         'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-700',
-  violet:       'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-700',
-  sky:          'bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-900/30 dark:text-sky-400 dark:border-sky-700',
-  teal:         'bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:border-teal-700',
-  emerald:      'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-700',
-  roseDeep:     'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-900/40 dark:text-rose-300 dark:border-rose-700',
+  green:        'bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400 dark:border-green-700',
+  emerald:      'bg-green-50 text-green-600 border-green-300 dark:bg-green-900/30 dark:text-green-400 dark:border-green-700',
+  emeraldDeep:  'bg-emerald-50 text-emerald-600 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-700',
+  orange:       'bg-orange-50 text-orange-600 border-orange-200 dark:bg-orange-900/30 dark:text-orange-400 dark:border-orange-700',
+  orangeDark:   'bg-orange-50 text-amber-700 border-orange-200 dark:bg-orange-900/30 dark:text-amber-400 dark:border-orange-700',
+  sky:          'bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-900/30 dark:text-sky-400 dark:border-sky-700',
+  rose:         'bg-red-50 text-red-600 border-red-200 dark:bg-red-900/30 dark:text-red-400 dark:border-red-700',
+  violet:       'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-700',
+  slate:        'bg-gray-50 text-gray-500 border-gray-200 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-600',
+  amber:        'bg-amber-50 text-amber-600 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-700',
+  grayLight:    'bg-gray-50 text-gray-400 border-gray-200 dark:bg-gray-800/50 dark:text-gray-500 dark:border-gray-600',
+  teal:         'bg-teal-50 text-teal-600 border-teal-200 dark:bg-teal-900/30 dark:text-teal-400 dark:border-teal-700',
+  cyan:         'bg-cyan-50 text-cyan-600 border-cyan-200 dark:bg-cyan-900/30 dark:text-cyan-400 dark:border-cyan-700',
 };
 
 export const ORDER_STATUSES = [
-  // Agent statuses
-  { value: 'nouveau',                           label: 'Nouveau',                       color: C.amber        },
-  { value: 'confirme',                          label: 'Confirmé',                      color: C.emeraldSolid },
+  // ── Agent / platform statuses ─────────────────────────────────────────────
+  { value: 'nouveau',                           label: 'Nouveau',                       color: C.blue         },
+  { value: 'confirme',                          label: 'Confirmé',                      color: C.green        },
   { value: 'rappel',                            label: 'Rappel',                        color: C.orange       },
-  { value: 'Injoignable',                       label: 'Injoignable',                   color: C.indigo       },
-  { value: 'Annulé (fake)',                     label: 'Annulé (fake)',                 color: C.rose         },
-  { value: 'Annulé (faux numéro)',              label: 'Annulé (faux numéro)',          color: C.rose         },
-  { value: 'Annulé (double)',                   label: 'Annulé (double)',               color: C.rose         },
-  { value: 'boite vocale',                      label: 'Boite Vocale',                  color: C.indigo       },
-  { value: 'in_progress',                       label: 'En cours',                      color: C.slate        },
-  { value: 'expédié',                           label: 'Expédié',                       color: C.slate        },
-  { value: 'retourné',                          label: 'Retourné',                      color: C.violet       },
+  { value: 'Injoignable',                       label: 'Injoignable',                   color: C.violet       },
+  { value: 'Annulé (fake)',                     label: 'Annulé (fake)',                 color: C.slate        },
+  { value: 'Annulé (faux numéro)',              label: 'Annulé (faux numéro)',          color: C.slate        },
+  { value: 'Annulé (double)',                   label: 'Annulé (double)',               color: C.slate        },
+  { value: 'boite vocale',                      label: 'Boite Vocale',                  color: C.grayLight    },
+  { value: 'in_progress',                       label: 'En cours',                      color: C.sky          },
+  { value: 'expédié',                           label: 'Expédié',                       color: C.sky          },
+  { value: 'transit',                           label: 'En transit',                    color: C.sky          },
+  { value: 'retourné',                          label: 'Retourné',                      color: C.orange       },
   { value: 'delivered',                         label: 'Livré',                         color: C.emerald      },
   { value: 'refused',                           label: 'Refusé',                        color: C.rose         },
-  { value: 'Pas de réponse 1',                  label: 'Pas de réponse 1',              color: C.indigo       },
-  { value: 'Pas de réponse 2',                  label: 'Pas de réponse 2',              color: C.indigo       },
-  { value: 'Pas de réponse 3',                  label: 'Pas de réponse 3',              color: C.indigo       },
-  { value: 'Pas de réponse 4',                  label: 'Pas de réponse 4',              color: C.indigo       },
+  { value: 'unreachable',                       label: 'Injoignable',                   color: C.violet       },
+  { value: 'injoignable',                       label: 'Injoignable',                   color: C.violet       },
+  { value: 'annule',                            label: 'Annulé',                        color: C.slate        },
+  { value: 'confirme reporte',                  label: 'Confirmé / Reporté',            color: C.emeraldDeep  },
+  { value: 'Pas de réponse 1',                  label: 'Pas de réponse 1',              color: C.grayLight    },
+  { value: 'Pas de réponse 2',                  label: 'Pas de réponse 2',              color: C.grayLight    },
+  { value: 'Pas de réponse 3',                  label: 'Pas de réponse 3',              color: C.grayLight    },
+  { value: 'Pas de réponse 4',                  label: 'Pas de réponse 4',              color: C.grayLight    },
   { value: "Client n'a pas commandé",           label: "Client n'a pas commandé",       color: C.rose         },
   { value: 'Produit non disponible',            label: 'Produit non disponible',        color: C.rose         },
+  { value: 'pas de réponse',                    label: 'Pas de réponse',                color: C.grayLight    },
 
-  // Carrier — Pickup stage
+  // ── Carrier — Pickup stage ────────────────────────────────────────────────
   { value: 'Attente De Ramassage',              label: 'Attente Ramassage',             color: C.orange       },
   { value: 'En attente de ramassage',           label: 'En attente ramassage',          color: C.orange       },
   { value: 'Non Reçu',                          label: 'Non Reçu',                      color: C.orange       },
 
-  // Carrier — Collected / Loaded
-  { value: 'Ramassé',                           label: 'Ramassé',                       color: C.cyan         },
-  { value: 'Collecté',                          label: 'Collecté',                      color: C.cyan         },
-  { value: 'Chargé',                            label: 'Chargé',                        color: C.cyan         },
-  { value: 'Pris en charge',                    label: 'Pris en charge',                color: C.cyan         },
-  { value: 'À préparer',                        label: 'À préparer',                    color: C.cyan         },
+  // ── Carrier — Collected / Loaded ──────────────────────────────────────────
+  { value: 'Ramassé',                           label: 'Ramassé',                       color: C.sky          },
+  { value: 'Collecté',                          label: 'Collecté',                      color: C.sky          },
+  { value: 'Chargé',                            label: 'Chargé',                        color: C.sky          },
+  { value: 'Pris en charge',                    label: 'Pris en charge',                color: C.sky          },
+  { value: 'À préparer',                        label: 'À préparer',                    color: C.sky          },
 
-  // Carrier — In Transit
-  { value: 'En Voyage',                         label: 'En Voyage',                     color: C.blue         },
-  { value: 'En transit',                        label: 'En transit',                    color: C.blue         },
-  { value: 'Arrivé au hub',                     label: 'Arrivé au hub',                 color: C.blue         },
+  // ── Carrier — In Transit ──────────────────────────────────────────────────
+  { value: 'En Voyage',                         label: 'En Voyage',                     color: C.sky          },
+  { value: 'En transit',                        label: 'En transit',                    color: C.sky          },
+  { value: 'Arrivé au hub',                     label: 'Arrivé au hub',                 color: C.sky          },
 
-  // Carrier — At Hub / Processing
-  { value: 'En cours de réception au network',  label: 'En cours de réception',         color: C.violet       },
-  { value: 'Reçu',                              label: 'Reçu',                          color: C.violet       },
-  { value: 'En stock',                          label: 'En stock',                      color: C.violet       },
-  { value: 'En cours de distribution',          label: 'En cours de distribution',      color: C.violet       },
-  { value: 'Changer destinataire',              label: 'Changer destinataire',          color: C.violet       },
+  // ── Carrier — At Hub / Processing ────────────────────────────────────────
+  { value: 'En cours de réception au network',  label: 'En cours de réception',         color: C.sky          },
+  { value: 'Reçu',                              label: 'Reçu',                          color: C.sky          },
+  { value: 'En stock',                          label: 'En stock',                      color: C.sky          },
+  { value: 'En cours de distribution',          label: 'En cours de distribution',      color: C.sky          },
+  { value: 'Changer destinataire',              label: 'Changer destinataire',          color: C.sky          },
 
-  // Carrier — Out for Delivery
+  // ── Carrier — Out for Delivery ────────────────────────────────────────────
   { value: 'En cours de livraison',             label: 'En cours de livraison',         color: C.sky          },
   { value: 'Sorti pour livraison',              label: 'Sorti pour livraison',          color: C.sky          },
-  { value: 'Programmé',                         label: 'Programmé',                     color: C.sky          },
+  { value: 'Programmé',                         label: 'Programmé',                     color: C.violet       },
   { value: 'Reporté',                           label: 'Reporté',                       color: C.violet       },
 
-  // Carrier — Driver Confirmed
+  // ── Carrier — Driver Confirmed ────────────────────────────────────────────
   { value: 'Confirmé par livreur',              label: 'Confirmé par livreur',          color: C.teal         },
   { value: 'Confirmé par livreur *',            label: 'Confirmé par livreur *',        color: C.teal         },
   { value: 'Rappel en cours',                   label: 'Rappel en cours',               color: C.teal         },
   { value: 'Rappel en cours *',                 label: 'Rappel en cours *',             color: C.teal         },
 
-  // Carrier — Delivered
+  // ── Carrier — Delivered ───────────────────────────────────────────────────
   { value: 'Livré',                             label: 'Livré',                         color: C.emerald      },
   { value: 'Livré *',                           label: 'Livré *',                       color: C.emerald      },
   { value: 'Livrée',                            label: 'Livrée',                        color: C.emerald      },
@@ -84,103 +90,75 @@ export const ORDER_STATUSES = [
   { value: 'Livraison effectuée',               label: 'Livraison effectuée',           color: C.emerald      },
   { value: 'Remis au client',                   label: 'Remis au client',               color: C.emerald      },
 
-  // Carrier — Issue / Return
-  { value: 'Tentative échouée',                 label: 'Tentative échouée',             color: C.roseDeep     },
-  { value: 'Retour en cours',                   label: 'Retour en cours',               color: C.roseDeep     },
-  { value: "Retourné à l'expéditeur",           label: 'Retourné expéditeur',           color: C.roseDeep     },
-  { value: 'Retour en route',                   label: 'Retour en route',               color: C.roseDeep     },
-  { value: 'En Cours De Retour',                label: 'Retour en route',               color: C.orange       },
-  { value: 'Retour Recu',                       label: 'Retour reçu',                   color: C.orange       },
-  { value: 'Article retourné',                  label: 'Article retourné',              color: C.roseDeep     },
-  { value: 'Adresse inconnue',                  label: 'Adresse inconnue',              color: C.roseDeep     },
-  { value: "Erreur d'expédition",               label: "Erreur d'expédition",           color: C.roseDeep     },
-  { value: 'Demande retour',                    label: 'Demande retour',                color: C.roseDeep     },
+  // ── Carrier — Issue / Return ──────────────────────────────────────────────
+  { value: 'Tentative échouée',                 label: 'Tentative échouée',             color: C.rose         },
+  { value: 'Retour en cours',                   label: 'Retour en cours',               color: C.orangeDark   },
+  { value: "Retourné à l'expéditeur",           label: 'Retourné expéditeur',           color: C.orange       },
+  { value: 'Retour en route',                   label: 'Retour en route',               color: C.orange       },
+  { value: 'En Cours De Retour',                label: 'Retour en cours',               color: C.orangeDark   },
+  { value: 'Retour Recu',                       label: 'Retour reçu',                   color: C.amber        },
+  { value: 'Article retourné',                  label: 'Article retourné',              color: C.orange       },
+  { value: 'Adresse inconnue',                  label: 'Adresse inconnue',              color: C.rose         },
+  { value: "Erreur d'expédition",               label: "Erreur d'expédition",           color: C.rose         },
+  { value: 'Demande retour',                    label: 'Demande retour',                color: C.orange       },
   { value: 'Client intéressé',                  label: 'Client intéressé',              color: C.rose         },
   { value: 'Remboursé',                         label: 'Remboursé',                     color: C.rose         },
   { value: 'Incompatibilité avec les attentes', label: 'Incompatibilité attentes',      color: C.rose         },
 
-  // Carrier follow-up statuses
-  { value: 'Pas de réponse + SMS',              label: 'Pas de réponse + SMS',          color: C.indigo       },
-  { value: 'Boîte vocale',                      label: 'Boîte vocale',                  color: C.indigo       },
-  { value: 'Pas réponse 1 (Suivi)',             label: 'Pas réponse 1',                 color: C.indigo       },
-  { value: 'Pas réponse 2 (Suivi)',             label: 'Pas réponse 2',                 color: C.indigo       },
-  { value: 'Pas réponse 3 (Suivi)',             label: 'Pas réponse 3',                 color: C.indigo       },
+  // ── Carrier follow-up ─────────────────────────────────────────────────────
+  { value: 'Pas de réponse + SMS',              label: 'Pas de réponse + SMS',          color: C.grayLight    },
+  { value: 'Boîte vocale',                      label: 'Boîte vocale',                  color: C.grayLight    },
+  { value: 'Pas réponse 1 (Suivi)',             label: 'Pas réponse 1',                 color: C.grayLight    },
+  { value: 'Pas réponse 2 (Suivi)',             label: 'Pas réponse 2',                 color: C.grayLight    },
+  { value: 'Pas réponse 3 (Suivi)',             label: 'Pas réponse 3',                 color: C.grayLight    },
 
-  // Special
+  // ── Special ───────────────────────────────────────────────────────────────
   { value: 'Non envoyée',                       label: 'Non envoyée',                   color: C.slate        },
 
-  // ── Express Coursier (EC) carrier statuses ──────────────────────────────────
-  // GREEN — delivered / success
+  // ── Express Coursier (EC) carrier statuses ────────────────────────────────
   { value: 'Livré au client',                   label: 'Livré au client',               color: C.emerald      },
   { value: 'Retour livré au client',            label: 'Retour livré client',           color: C.emerald      },
-
-  // RED — refused / cancelled / lost / damaged
   { value: 'Refusé',                            label: 'Refusé',                        color: C.rose         },
-  { value: 'Annulé',                            label: 'Annulé',                        color: C.rose         },
+  { value: 'Annulé',                            label: 'Annulé',                        color: C.slate        },
   { value: 'Perdu',                             label: 'Perdu',                         color: C.rose         },
   { value: 'Produit endommagé',                 label: 'Produit endommagé',             color: C.rose         },
-
-  // ORANGE/AMBER — returns in progress
   { value: 'Retourné vers agence casa',         label: 'Retourné vers agence',          color: C.orange       },
   { value: 'Colis prêt pour le retour',         label: 'Prêt pour retour',              color: C.orange       },
-  { value: 'Retour reçu par agence',            label: 'Retour reçu agence',            color: C.orange       },
-  { value: 'Retour en cours de la livraison',   label: 'Retour en livraison',           color: C.orange       },
+  { value: 'Retour reçu par agence',            label: 'Retour reçu agence',            color: C.amber        },
+  { value: 'Retour en cours de la livraison',   label: 'Retour en livraison',           color: C.orangeDark   },
   { value: 'Retour débarrasse',                 label: 'Retour débarrasse',             color: C.orange       },
-  { value: 'Retour en stock',                   label: 'Retour en stock',               color: C.orange       },
-  { value: 'Retour reçu par',                   label: 'Retour reçu par',               color: C.orange       },
+  { value: 'Retour en stock',                   label: 'Retour en stock',               color: C.amber        },
+  { value: 'Retour reçu par',                   label: 'Retour reçu par',               color: C.amber        },
   { value: "Retour prét pour l'expedition",     label: 'Prêt pour expédition',          color: C.orange       },
   { value: 'Retour expidié',                    label: 'Retour expédié',                color: C.orange       },
-  { value: 'Demande retour',                    label: 'Demande retour',                color: C.orange       },
-
-  // BLUE — in transit / active / at hub
   { value: 'en cours de livraison',             label: 'En cours de livraison',         color: C.sky          },
-  { value: 'En Transport',                      label: 'En Transport',                  color: C.blue         },
-  { value: 'Recu sur agence',                   label: 'Recu sur agence',               color: C.blue         },
-  { value: 'en cours de preparation',           label: 'En cours de préparation',       color: C.cyan         },
-
-  // PURPLE — postponed / on hold
+  { value: 'En Transport',                      label: 'En Transport',                  color: C.sky          },
+  { value: 'Recu sur agence',                   label: 'Recu sur agence',               color: C.sky          },
+  { value: 'en cours de preparation',           label: 'En cours de préparation',       color: C.sky          },
   { value: 'reportée indéfiniment',             label: 'Reportée indéfiniment',         color: C.violet       },
-
-  // YELLOW/AMBER — unreachable / attention needed
-  { value: 'le client ne répond pas',           label: 'Client ne répond pas',          color: C.amber        },
-  { value: 'Téléphone Injoignable',             label: 'Tél. Injoignable',              color: C.amber        },
-  { value: 'Toujours injoignable',              label: 'Toujours injoignable',          color: C.amber        },
-  { value: 'Hors zone',                         label: 'Hors zone',                     color: C.amber        },
-
-  // GRAY — pending / new / neutral
+  { value: 'le client ne répond pas',           label: 'Client ne répond pas',          color: C.grayLight    },
+  { value: 'Téléphone Injoignable',             label: 'Tél. Injoignable',              color: C.violet       },
+  { value: 'Toujours injoignable',              label: 'Toujours injoignable',          color: C.violet       },
+  { value: 'Hors zone',                         label: 'Hors zone',                     color: C.violet       },
   { value: 'Nouveau colis',                     label: 'Nouveau colis',                 color: C.slate        },
-  { value: 'En attente de ramassage',           label: 'En attente ramassage',          color: C.slate        },
   { value: 'Interessé',                         label: 'Intéressé',                     color: C.slate        },
   { value: 'Colis archivé',                     label: 'Colis archivé',                 color: C.slate        },
   { value: 'Nouvelle info',                     label: 'Nouvelle info',                 color: C.slate        },
   { value: 'Non reçu',                          label: 'Non reçu',                      color: C.slate        },
 
-  // ── Ameex / Olivraison carrier statuses ─────────────────────────────────────
-  // GREEN — delivered
-  // (Livré, Livré au client, Retour livré au client already covered above)
-
-  // BLUE — in transit / active shipping
-  { value: 'Expédié',                           label: 'Expédié',                       color: C.blue         }, // capital-E form from Ameex (distinct from lowercase 'expédié' → slate)
-  { value: "En cours d'expédition",             label: "En cours d'expédition",         color: C.blue         },
-  { value: 'Mise en distribution',              label: 'Mise en distribution',          color: C.blue         },
-  { value: 'Reçu sur agence',                   label: 'Reçu sur agence',               color: C.blue         }, // accented form (Ameex sends with ç)
-  { value: 'Confirmé Par Livreur',              label: 'Confirmé par livreur',          color: C.teal         }, // Ameex capitalization variant
-
-  // PURPLE — postponed / on hold
-  { value: 'Reporté indéfiniment',              label: 'Reporté indéfiniment',          color: C.violet       }, // masculine form from Ameex
-
-  // YELLOW — unreachable / no answer
-  { value: 'Pas de réponse',                    label: 'Pas de réponse',                color: C.amber        }, // base form (Ameex sends without number suffix)
-  { value: 'Pas de réponse - SMS',              label: 'Pas de réponse - SMS',          color: C.amber        },
-
-  // ORANGE — returns in progress
-  { value: 'Retour reçu',                       label: 'Retour reçu',                   color: C.orange       }, // accented form
-  { value: "Retour prêt pour l'expédition",     label: "Prêt pour expédition",          color: C.orange       }, // correct accents
-  { value: 'Retour expédié',                    label: 'Retour expédié',                color: C.orange       }, // correct spelling
-  { value: 'Colis prêt pour le retour',         label: 'Prêt pour retour',              color: C.orange       },
-
-  // RED — failed / cancelled / lost
-  { value: 'Reçu par erreur',                   label: 'Reçu par erreur',               color: C.rose         }, // error receipt → red
+  // ── Ameex / Olivraison carrier statuses ──────────────────────────────────
+  { value: 'Expédié',                           label: 'Expédié',                       color: C.sky          },
+  { value: "En cours d'expédition",             label: "En cours d'expédition",         color: C.sky          },
+  { value: 'Mise en distribution',              label: 'Mise en distribution',          color: C.sky          },
+  { value: 'Reçu sur agence',                   label: 'Reçu sur agence',               color: C.sky          },
+  { value: 'Confirmé Par Livreur',              label: 'Confirmé par livreur',          color: C.teal         },
+  { value: 'Reporté indéfiniment',              label: 'Reporté indéfiniment',          color: C.violet       },
+  { value: 'Pas de réponse',                    label: 'Pas de réponse',                color: C.grayLight    },
+  { value: 'Pas de réponse - SMS',              label: 'Pas de réponse - SMS',          color: C.grayLight    },
+  { value: 'Retour reçu',                       label: 'Retour reçu',                   color: C.amber        },
+  { value: "Retour prêt pour l'expédition",     label: "Prêt pour expédition",          color: C.orange       },
+  { value: 'Retour expédié',                    label: 'Retour expédié',                color: C.orange       },
+  { value: 'Reçu par erreur',                   label: 'Reçu par erreur',               color: C.rose         },
 ] as const;
 
 export const SUIVI_STATUSES = [
@@ -191,7 +169,7 @@ export const SUIVI_STATUSES = [
   'Sorti pour livraison', 'Pris en charge', 'Collecté', 'Chargé',
   'En attente de ramassage', 'Non Reçu', 'Retour en cours',
   "Retourné à l'expéditeur", 'Tentative échouée',
-  'Reporté',
+  'Reporté', 'transit',
 ];
 
 export const REFUSED_GROUP_STATUSES = [
@@ -203,11 +181,9 @@ export const REFUSED_GROUP_STATUSES = [
 ];
 
 const STATUS_MAP = Object.fromEntries(ORDER_STATUSES.map(s => [s.value, s]));
-const CARRIER_DYNAMIC_COLOR = C.blue;
+const CARRIER_DYNAMIC_COLOR = C.sky;
 
 // ── Ameex normalized fallback ────────────────────────────────────────────────
-// Strip {{city}} tokens, NFD-normalize (removes accent combining chars),
-// lowercase, collapse whitespace.
 function normalizeForAmeex(s: string): string {
   return s
     .replace(/\{\{[^}]*\}\}/g, '')
@@ -218,104 +194,84 @@ function normalizeForAmeex(s: string): string {
     .replace(/\s+/g, ' ');
 }
 
-// Central Ameex color map — accent-stripped, lowercased keys.
-// Add new Ameex statuses here as they are discovered.
 const AMEEX_NORM_MAP: Record<string, string> = {
-  // GREEN — delivered / success
   'livre':                              C.emerald,
   'livre au client':                    C.emerald,
   'retour livre au client':             C.emerald,
   'livraison effectuee':                C.emerald,
   'delivered':                          C.emerald,
-
-  // BLUE — in transit / active shipping
-  'expedie':                            C.blue,
-  "en cours d'expedition":              C.blue,
-  'mise en distribution':               C.blue,
+  'expedie':                            C.sky,
+  "en cours d'expedition":              C.sky,
+  'mise en distribution':               C.sky,
   'en cours de livraison':              C.sky,
-  'en transport':                       C.blue,
-  'recu sur agence':                    C.blue,
-  'ramasse':                            C.cyan,
+  'en transport':                       C.sky,
+  'recu sur agence':                    C.sky,
+  'ramasse':                            C.sky,
   'confirme par livreur':               C.teal,
-  'in_progress':                        C.blue,
-  'distribution':                       C.blue,
-
-  // PURPLE — postponed / on hold
+  'in_progress':                        C.sky,
+  'transit':                            C.sky,
+  'distribution':                       C.sky,
   'reporte':                            C.violet,
   'reporte indefiniment':               C.violet,
   'postponed':                          C.violet,
-
-  // YELLOW — unreachable / no answer
-  'pas de reponse':                     C.amber,
-  'injoignable':                        C.amber,
-  'telephone injoignable':              C.amber,
-  'toujours injoignable':               C.amber,
-  'hors zone':                          C.amber,
-  'no_answer_team':                     C.amber,
-
-  // ORANGE — returns in progress
-  'retour recu':                        C.orange,
+  'programme':                          C.violet,
+  'pas de reponse':                     C.grayLight,
+  'injoignable':                        C.violet,
+  'telephone injoignable':              C.violet,
+  'toujours injoignable':               C.violet,
+  'hors zone':                          C.violet,
+  'no_answer_team':                     C.grayLight,
+  'unreachable':                        C.violet,
+  'retour recu':                        C.amber,
   'demande retour':                     C.orange,
   'colis pret pour le retour':          C.orange,
-  'retour en cours':                    C.orange,
-  'retour en stock':                    C.orange,
+  'retour en cours':                    C.orangeDark,
+  'retour en stock':                    C.amber,
   "retour pret pour l'expedition":      C.orange,
   'retour expedie':                     C.orange,
   'retour debarrasse':                  C.orange,
-  'returned':                           C.orange,
-  'rts':                                C.orange,
-
-  // RED — failed / cancelled / lost
+  'returned':                           C.amber,
+  'rts':                                C.amber,
   'refuse':                             C.rose,
   'refused':                            C.rose,
-  'annule':                             C.rose,
-  'canceled':                           C.rose,
+  'annule':                             C.slate,
+  'canceled':                           C.slate,
   'perdu':                              C.rose,
   'produit endommage':                  C.rose,
   'recu par erreur':                    C.rose,
-
-  // GRAY — pending / neutral
   'nouveau colis':                      C.slate,
-  'attente de ramassage':               C.slate,
-  'en stock':                           C.slate,
-  'recu':                               C.slate,
+  'attente de ramassage':               C.orange,
+  'en stock':                           C.sky,
+  'recu':                               C.sky,
   'interesse':                          C.slate,
   'nouvelle info':                      C.slate,
   'colis archive':                      C.slate,
   'non recu':                           C.slate,
-  'changer destinataire':               C.slate,
-  'programme':                          C.slate,
+  'changer destinataire':               C.sky,
 };
 
-/**
- * Returns a Tailwind color class for an Ameex STATUT or STATUT_NAME string,
- * using normalized (accent/case-insensitive) matching.
- * Returns null if the status is not recognized as an Ameex status.
- */
 export function getAmeexStatusColor(status: string): string | null {
   const n = normalizeForAmeex(status);
   if (AMEEX_NORM_MAP[n]) return AMEEX_NORM_MAP[n];
-  // Catchall: any "Retour …" label → orange
   if (n.startsWith('retour')) return C.orange;
-  // "Pas de réponse …" variants → amber
-  if (n.startsWith('pas de reponse')) return C.amber;
+  if (n.startsWith('pas de reponse')) return C.grayLight;
   return null;
 }
 
-export function StatusBadge({ status, displayText, className }: { status: string, displayText?: string, className?: string }) {
+// ── Badge shape ───────────────────────────────────────────────────────────────
+const BADGE_BASE = 'inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold border whitespace-nowrap';
+
+export function StatusBadge({ status, displayText, className }: { status: string; displayText?: string; className?: string }) {
   const knownConfig = STATUS_MAP[status];
-  const label = displayText || status || "—";
-  let color: string;
-  if (knownConfig) {
-    color = knownConfig.color;
-  } else {
-    // Try Ameex normalized fallback before defaulting to carrier-dynamic blue
-    color = getAmeexStatusColor(status) ?? CARRIER_DYNAMIC_COLOR;
-  }
+  const label = displayText || (knownConfig ? knownConfig.label : status) || '—';
+  const color = knownConfig
+    ? knownConfig.color
+    : (getAmeexStatusColor(status) ?? CARRIER_DYNAMIC_COLOR);
+
   return (
-    <Badge variant="outline" className={cn("font-medium px-2.5 py-0.5 rounded-md whitespace-nowrap", color, className)}>
-      {knownConfig ? knownConfig.label : label}
-    </Badge>
+    <span className={cn(BADGE_BASE, color, className)}>
+      {label}
+    </span>
   );
 }
 

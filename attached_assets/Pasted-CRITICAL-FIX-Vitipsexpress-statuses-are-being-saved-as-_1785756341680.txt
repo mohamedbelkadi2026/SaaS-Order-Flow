@@ -1,0 +1,68 @@
+CRITICAL FIX: Vitipsexpress statuses are being saved as RAW French text instead of mapped platform statuses.
+
+Orders show: "Reçu par livreur", "Expédié", "Programmé", "En attente ramassage"
+They should show: "transit", "transit", "unreachable", "Attente De Ramassage"
+
+PROBLEM: In server/routes.ts, POST /api/shipping/vitips/sync,
+the background sync is calling storage.updateOrderStatus() with result.status (which is the mapped status).
+But something is wrong — check if the mapping is returning null and the raw status is being saved instead.
+
+In the sync loop, add this guard:
+  if (!result.status) {
+    console.warn(`[VITIPS-SYNC] ⚠️ No mapping for raw="${result.rawStatus}" — skipping`);
+    continue;
+  }
+
+Also make sure we NEVER save rawStatus to the order.status field.
+Only save result.status (the mapped value like "transit", "delivered", etc.)
+
+ALSO: For existing orders that already have wrong raw statuses in DB,
+add a one-time fix endpoint POST /api/vitips/fix-raw-statuses that:
+1. Finds all orders where status IN ('Reçu par livreur', 'Expédié', 'Programmé', 'En attente ramassage', 'En attente de ramassage', 'Recu par livreur')
+2. Maps them to correct platform status using VITIPS_STATUS_MAP
+3. Updates each order
+
+The mapping for these raw statuses:
+'Reçu par livreur' → 'transit'
+'Recu par livreur' → 'transit'
+'Expédié' → 'transit'
+'Expedie' → 'transit'
+'Programmé' → 'unreachable'
+'Programme' → 'unreachable'
+'En attente ramassage' → 'Attente De Ramassage'
+'En attente de ramassage' → 'Attente De Ramassage'
+'Livré' → 'delivered'
+'Livre' → 'delivered'
+'Refusé' → 'refused'
+'Refuse' → 'refused'
+
+Call this endpoint once after deploy to fix all historical wrong statuses.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STATUS COLORS — Professional Design
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Find the status badge component (search for getStatusColor, StatusBadge, or status-badge in client/src/).
+
+Replace ALL status colors with this professional scheme:
+
+'Nouveau'              → bg=#EFF6FF  text=#1D4ED8  (blue)
+'nouveau'              → bg=#EFF6FF  text=#1D4ED8  (blue)
+'confirme'             → bg=#F0FDF4  text=#15803D  (green)
+'Confirme'             → bg=#F0FDF4  text=#15803D  (green)
+'Attente De Ramassage' → bg=#FFF7ED  text=#EA580C  border=#FED7AA (orange)
+'transit'              → bg=#F0F9FF  text=#0284C7  border=#BAE6FD (sky blue)
+'in_progress'          → bg=#F0F9FF  text=#0284C7  (sky blue)
+'expédié'              → bg=#F0F9FF  text=#0284C7  (sky blue)
+'delivered'            → bg=#F0FDF4  text=#16A34A  border=#86EFAC (green)
+'refused'              → bg=#FEF2F2  text=#DC2626  border=#FECACA (red)
+'unreachable'          → bg=#FDF4FF  text=#9333EA  border=#E9D5FF (purple)
+'injoignable'          → bg=#FDF4FF  text=#9333EA  (purple)
+'annule'               → bg=#F9FAFB  text=#6B7280  border=#E5E7EB (gray)
+'Retour Recu'          → bg=#FFFBEB  text=#D97706  border=#FDE68A (amber)
+'En Cours De Retour'   → bg=#FFF7ED  text=#B45309  border=#FED7AA (dark amber)
+'boite vocale'         → bg=#F9FAFB  text=#9CA3AF  (light gray)
+'pas de réponse'       → bg=#F9FAFB  text=#9CA3AF  (light gray)
+'confirme reporte'     → bg=#ECFDF5  text=#059669  (emerald)
+
+Make each badge: rounded-full, px-3 py-1, text-xs font-semibold, with a subtle border.
+The badge should look clean and modern — not flat gray boxes.

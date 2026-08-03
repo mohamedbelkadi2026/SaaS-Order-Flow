@@ -9822,7 +9822,12 @@ function ensureHeaders(sheet) {
           try {
             const result = await trackVitipsShipment(order.trackNumber!, apiKey);
             console.log(`[VITIPS-SYNC] order=#${(order as any).orderNumber} track=${order.trackNumber} → raw="${result.rawStatus}" mapped="${result.status}" err="${result.error}"`);
-            if (result.error || !result.status) continue;
+            if (result.error || !result.status) {
+              if (!result.error && !result.status) {
+                console.warn(`[VITIPS-SYNC] ⚠️ No mapping for raw="${result.rawStatus}" — skipping order #${(order as any).orderNumber}`);
+              }
+              continue;
+            }
             const updateData: any = {};
             if (result.rawStatus && result.rawStatus !== (order as any).commentStatus) {
               updateData.commentStatus = result.rawStatus;
@@ -9853,6 +9858,55 @@ function ensureHeaders(sheet) {
     } catch (err: any) {
       console.error('[VITIPS-SYNC] fatal', err?.message);
       return safeJson(500, { message: err?.message || 'Sync Vitipsexpress failed' });
+    }
+  });
+
+  /** POST /api/vitips/fix-raw-statuses — one-time fix for orders saved with raw French text as status */
+  app.post('/api/vitips/fix-raw-statuses', requireAuth, requireActiveSubscription, async (req: any, res: any) => {
+    const RAW_TO_PLATFORM: Record<string, string> = {
+      'Reçu par livreur':           'transit',
+      'Recu par livreur':           'transit',
+      'Reçu par le livreur':        'transit',
+      'Recu par le livreur':        'transit',
+      'Expédié':                    'transit',
+      'Expedie':                    'transit',
+      'Programmé':                  'unreachable',
+      'Programme':                  'unreachable',
+      'En attente ramassage':       'Attente De Ramassage',
+      'En attente de ramassage':    'Attente De Ramassage',
+      'Livré':                      'delivered',
+      'Livre':                      'delivered',
+      'Refusé':                     'refused',
+      'Refuse':                     'refused',
+    };
+    try {
+      const storeId = req.user!.storeId!;
+      const rawStatusValues = Object.keys(RAW_TO_PLATFORM);
+      const allOrders = await storage.getOrdersByStore(storeId);
+      const toFix = allOrders.filter((o: any) => rawStatusValues.includes(o.status || ''));
+      if (toFix.length === 0) {
+        return res.json({ fixed: 0, message: 'Aucune commande avec un statut brut incorrectement sauvegardé.' });
+      }
+      let fixed = 0;
+      const details: { orderId: number; orderNumber: string; oldStatus: string; newStatus: string }[] = [];
+      for (const order of toFix) {
+        const mapped = RAW_TO_PLATFORM[order.status!];
+        if (!mapped) continue;
+        await storage.updateOrderStatus(order.id, mapped);
+        await storage.createOrderFollowUpLog({
+          orderId:   order.id,
+          agentId:   null,
+          agentName: 'Fix Raw Statuses',
+          note:      `🔧 Statut brut corrigé: "${order.status}" → "${mapped}"`,
+        });
+        details.push({ orderId: order.id, orderNumber: (order as any).orderNumber, oldStatus: order.status!, newStatus: mapped });
+        fixed++;
+      }
+      console.log(`[FIX-RAW-STATUSES] Fixed ${fixed}/${toFix.length} orders for store ${storeId}`);
+      res.json({ fixed, details });
+    } catch (err: any) {
+      console.error('[FIX-RAW-STATUSES]', err?.message);
+      res.status(500).json({ message: err?.message || 'Erreur lors de la correction des statuts.' });
     }
   });
 
