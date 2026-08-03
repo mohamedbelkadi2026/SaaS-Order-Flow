@@ -2843,6 +2843,8 @@ export const VITIPS_STATUS_MAP: Record<string, string> = {
   'Reporte':                      'unreachable',
   'Planifié':                     'unreachable',
   'Planifie':                     'unreachable',
+  'Programmé':                    'unreachable',
+  'Programme':                    'unreachable',
   'Pas de réponse 1':             'unreachable',
   'Pas de réponse 2':             'unreachable',
   'Pas de réponse 3':             'unreachable',
@@ -2854,6 +2856,7 @@ export const VITIPS_STATUS_MAP: Record<string, string> = {
   // ── status_code values (API field) ────────────────────────────────────────
   'NEW_PARCEL':                   'Attente De Ramassage',
   'COLLECTED':                    'Attente De Ramassage',
+  'SENT':                         'transit',
   'RECEIVED':                     'transit',
   'IN_TRANSIT':                   'transit',
   'OUT_FOR_DELIVERY':             'transit',
@@ -2861,8 +2864,16 @@ export const VITIPS_STATUS_MAP: Record<string, string> = {
   'REFUSED':                      'refused',
   'CANCELED':                     'refused',
   'RETURNED':                     'Retour Recu',
+  'RETURNED_TO_SENDER':           'Retour Recu',
   'UNREACHABLE':                  'unreachable',
   'POSTPONED':                    'unreachable',
+  'SCHEDULED':                    'unreachable',
+  'NO_RESPONSE':                  'unreachable',
+  'NO_RESPONSE_1':                'unreachable',
+  'NO_RESPONSE_2':                'unreachable',
+  'NO_RESPONSE_3':                'unreachable',
+  'OUT_OF_ZONE':                  'unreachable',
+  'RETURN_IN_PROGRESS':           'En Cours De Retour',
 };
 
 export function mapVitipsStatus(raw: string, statusCode?: string): string | null {
