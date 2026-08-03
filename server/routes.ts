@@ -9822,9 +9822,9 @@ function ensureHeaders(sheet) {
           try {
             const result = await trackVitipsShipment(order.trackNumber!, apiKey);
             console.log(`[VITIPS-SYNC] order=#${(order as any).orderNumber} track=${order.trackNumber} → raw="${result.rawStatus}" mapped="${result.status}" err="${result.error}"`);
-            if (result.error || !result.status) {
-              if (!result.error && !result.status) {
-                console.warn(`[VITIPS-SYNC] ⚠️ No mapping for raw="${result.rawStatus}" — skipping order #${(order as any).orderNumber}`);
+            if (result.error || !result.status || result.status === 'null') {
+              if (!result.error) {
+                console.warn(`[VITIPS-SYNC] ⚠️ No mapping found for "${result.rawStatus}" — order #${(order as any).orderNumber} skipped`);
               }
               continue;
             }
@@ -9869,11 +9869,14 @@ function ensureHeaders(sheet) {
       'Reçu par le livreur':        'transit',
       'Recu par le livreur':        'transit',
       'Expédié':                    'transit',
+      'Expedié':                    'transit',
       'Expedie':                    'transit',
       'Programmé':                  'unreachable',
       'Programme':                  'unreachable',
       'En attente ramassage':       'Attente De Ramassage',
       'En attente de ramassage':    'Attente De Ramassage',
+      'Collecté':                   'Attente De Ramassage',
+      'Collecte':                   'Attente De Ramassage',
       'Livré':                      'delivered',
       'Livre':                      'delivered',
       'Refusé':                     'refused',
@@ -9883,7 +9886,10 @@ function ensureHeaders(sheet) {
       const storeId = req.user!.storeId!;
       const rawStatusValues = Object.keys(RAW_TO_PLATFORM);
       const allOrders = await storage.getOrdersByStore(storeId);
-      const toFix = allOrders.filter((o: any) => rawStatusValues.includes(o.status || ''));
+      const toFix = allOrders.filter((o: any) =>
+        rawStatusValues.includes(o.status || '') &&
+        (o.shippingProvider || '').toLowerCase().trim() === 'vitipsexpress'
+      );
       if (toFix.length === 0) {
         return res.json({ fixed: 0, message: 'Aucune commande avec un statut brut incorrectement sauvegardé.' });
       }

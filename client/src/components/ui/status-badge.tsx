@@ -43,7 +43,10 @@ export const ORDER_STATUSES = [
   // Carrier — Pickup stage
   { value: 'Attente De Ramassage',              label: 'Attente Ramassage',             color: C.orange       },
   { value: 'En attente de ramassage',           label: 'En attente ramassage',          color: C.orange       },
+  { value: 'En attente ramassage',              label: 'En attente ramassage',          color: C.orange       },
   { value: 'Non Reçu',                          label: 'Non Reçu',                      color: C.orange       },
+  { value: 'Reçu par livreur',                  label: 'Reçu par livreur',              color: C.cyan         },
+  { value: 'Recu par livreur',                  label: 'Reçu par livreur',              color: C.cyan         },
 
   // Carrier — Collected / Loaded
   { value: 'Ramassé',                           label: 'Ramassé',                       color: C.cyan         },
