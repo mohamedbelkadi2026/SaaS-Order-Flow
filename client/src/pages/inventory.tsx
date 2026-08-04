@@ -714,6 +714,7 @@ export default function Inventory() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [addOpen, setAddOpen] = useState(false);
+  const [newProductStockDate, setNewProductStockDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [importOpen, setImportOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
@@ -771,6 +772,7 @@ export default function Inventory() {
     setHasVariants(false);
     setVariants([]);
     clearFile();
+    setNewProductStockDate(new Date().toISOString().slice(0, 10));
   };
 
   const addVariant = () => {
@@ -808,6 +810,7 @@ export default function Inventory() {
       coutEmballage: parseFloat(form.coutEmballage) || 0,
       coutLivraison: parseFloat(form.coutLivraison) || 0,
       coutConfirmation: parseFloat(form.coutConfirmation) || 0,
+      stockDate: new Date(newProductStockDate + "T12:00:00").toISOString(),
     };
     if (hasVariants && variants.length > 0) {
       payload.hasVariants = 1;
@@ -1562,6 +1565,18 @@ export default function Inventory() {
                 <Label>Stock initial</Label>
                 <Input data-testid="input-product-stock" type="number" value={form.stock} onChange={e => setForm(f => ({ ...f, stock: e.target.value }))} placeholder="0" />
               </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="new-product-stock-date">Date d'entrée en stock</Label>
+              <Input
+                id="new-product-stock-date"
+                type="date"
+                value={newProductStockDate}
+                onChange={(e) => setNewProductStockDate(e.target.value)}
+                max={new Date().toISOString().slice(0, 10)}
+                data-testid="input-new-product-stock-date"
+              />
+              <p className="text-xs text-muted-foreground">Par défaut : aujourd'hui. Change-la si le stock est arrivé à une date antérieure.</p>
             </div>
             <div className="space-y-2">
               <Label className="text-xs font-medium">📦 Frais d'emballage (DH / commande)</Label>

@@ -1,0 +1,132 @@
+FEATURE — Ajouter un champ "Date d'entrée en stock" au formulaire
+"Nouveau Produit", et enregistrer le stock initial dans l'historique
+(stockMovements) — actuellement le "Stock initial" saisi à la création n'est
+PAS journalisé du tout, donc il n'apparaît jamais dans le timeline "Voir les
+insights" (📊) du produit.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/routes.ts : POST /api/products — journaliser le stock
+initial + accepter une date optionnelle
+
+Trouver le schema Zod existant (~ligne 7845) :
+```ts
+const schema = z.object({
+  name: z.string().min(1),
+  sku: z.string().min(1),
+  stock: z.number().min(0).default(0),
+  costPrice: z.number().min(0).default(0),
+  sellingPrice: z.number().min(0).default(0),
+  description: z.string().nullable().optional(),
+  imageUrl: z.string().nullable().optional(),
+  reference: z.string().nullable().optional(),
+  hasVariants: z.number().optional().default(0),
+  variants: z.array(variantSchema).optional(),
+  coutAchat: z.number().min(0).optional(),
+  prixVente: z.number().min(0).optional(),
+  coutEmballage: z.number().min(0).optional(),
+  coutLivraison: z.number().min(0).optional(),
+  coutConfirmation: z.number().min(0).optional(),
+});
+```
+
+Ajouter un champ `stockDate` :
+```ts
+const schema = z.object({
+  // ... champs existants inchangés ...
+  stockDate: z.string().datetime().optional(),   // ISO — date du stock initial, optionnel, défaut = maintenant
+});
+```
+
+Puis, après la création du produit (les deux branches, avec et sans
+variantes), journaliser le stock initial :
+
+```ts
+const data = schema.parse(req.body);
+const storeId = req.user!.storeId!;
+const { variants, coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, stockDate, ...productData } = data;
+const productSettings = { profitDefaults: { coutAchat: coutAchat ?? 0, prixVente: prixVente ?? 0, coutEmballage: coutEmballage ?? 0, coutLivraison: coutLivraison ?? 0, coutConfirmation: coutConfirmation ?? 0 } };
+const movementDate = stockDate ? new Date(stockDate) : new Date();
+
+if (variants && variants.length > 0) {
+  const product = await storage.createProductWithVariants(
+    { ...productData, storeId, hasVariants: 1, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any,
+    variants.map(v => ({ ...v, productId: 0, storeId, imageUrl: v.imageUrl || null }))
+  );
+  // Journaliser le stock initial de CHAQUE variante ayant un stock > 0.
+  for (const v of (product as any).variants || []) {
+    if (v.stock > 0) {
+      await db.insert(stockMovements).values({
+        storeId, productId: product.id, variantId: v.id,
+        type: 'restock', quantity: v.stock, userId: req.user!.id,
+        reason: `Stock initial — variante ${v.name}`,
+        createdAt: movementDate,
+      });
+    }
+  }
+  res.status(201).json(product);
+} else {
+  const product = await storage.createProduct({ ...productData, storeId, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any);
+  if (productData.stock > 0) {
+    await db.insert(stockMovements).values({
+      storeId, productId: product.id,
+      type: 'restock', quantity: productData.stock, userId: req.user!.id,
+      reason: 'Stock initial',
+      createdAt: movementDate,
+    });
+  }
+  res.status(201).json(product);
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — client/src/pages (le composant du modal "Nouveau Produit",
+probablement client/src/pages/inventory.tsx ou un composant dédié —
+chercher le texte "Nouveau Produit" pour le localiser exactement) : ajouter
+le champ date
+
+Ajouter un state, initialisé à aujourd'hui :
+```tsx
+const [newProductStockDate, setNewProductStockDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+```
+
+Ajouter le champ dans le JSX, juste à côté de "Stock initial" (même ligne
+ou juste en dessous) :
+```tsx
+<div className="space-y-1.5">
+  <Label htmlFor="new-product-stock-date">Date d'entrée en stock</Label>
+  <Input
+    id="new-product-stock-date"
+    type="date"
+    value={newProductStockDate}
+    onChange={(e) => setNewProductStockDate(e.target.value)}
+    max={new Date().toISOString().slice(0, 10)}
+    data-testid="input-new-product-stock-date"
+  />
+</div>
+```
+
+L'inclure dans la requête de création (trouver l'appel
+`apiRequest("POST", "/api/products", ...)` existant) :
+```ts
+await apiRequest("POST", "/api/products", {
+  ...existingFields,
+  stockDate: new Date(newProductStockDate + "T12:00:00").toISOString(),
+});
+```
+
+Réinitialiser `newProductStockDate` à aujourd'hui à chaque ouverture de la
+modale "Nouveau Produit" (comme pour le champ date du restock).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add stock entry date field to New Product form, log initial stock in movement history" && git push
+
+VÉRIFICATION
+1. Créer un nouveau produit avec un "Stock initial" > 0 et une date
+   antérieure (ex: il y a 1 mois) → le produit doit être créé normalement.
+2. Cliquer l'icône "Voir les insights" (📊) sur ce nouveau produit → une
+   entrée "Entrée" (+stock initial) doit apparaître avec la DATE CHOISIE.
+3. Créer un produit AVEC variantes, stock initial par variante → chaque
+   variante avec stock > 0 doit avoir sa propre entrée dans l'historique.
+4. Créer un produit avec "Stock initial" = 0 → aucune entrée créée dans
+   l'historique (comportement normal, rien à journaliser).

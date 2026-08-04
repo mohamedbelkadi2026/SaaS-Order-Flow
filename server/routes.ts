@@ -7962,20 +7962,41 @@ function ensureHeaders(sheet) {
         coutEmballage: z.number().min(0).optional(),
         coutLivraison: z.number().min(0).optional(),
         coutConfirmation: z.number().min(0).optional(),
+        stockDate: z.string().datetime().optional(),  // ISO — date du stock initial, défaut = maintenant
       });
       const data = schema.parse(req.body);
       const storeId = req.user!.storeId!;
-      const { variants, coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, ...productData } = data;
+      const { variants, coutAchat, prixVente, coutEmballage, coutLivraison, coutConfirmation, stockDate, ...productData } = data;
       const productSettings = { profitDefaults: { coutAchat: coutAchat ?? 0, prixVente: prixVente ?? 0, coutEmballage: coutEmballage ?? 0, coutLivraison: coutLivraison ?? 0, coutConfirmation: coutConfirmation ?? 0 } };
+      const movementDate = stockDate ? new Date(stockDate) : new Date();
 
       if (variants && variants.length > 0) {
         const product = await storage.createProductWithVariants(
           { ...productData, storeId, hasVariants: 1, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any,
           variants.map(v => ({ ...v, productId: 0, storeId, imageUrl: v.imageUrl || null }))
         );
+        // Journaliser le stock initial de chaque variante ayant un stock > 0
+        for (const v of (product as any).variants || []) {
+          if (v.stock > 0) {
+            await db.insert(stockMovements).values({
+              storeId, productId: product.id, variantId: v.id,
+              type: 'restock', quantity: v.stock, userId: req.user!.id,
+              reason: `Stock initial — variante ${v.name}`,
+              createdAt: movementDate,
+            });
+          }
+        }
         res.status(201).json(product);
       } else {
         const product = await storage.createProduct({ ...productData, storeId, reference: productData.reference || null, description: productData.description || null, imageUrl: productData.imageUrl || null, settings: productSettings } as any);
+        if (productData.stock > 0) {
+          await db.insert(stockMovements).values({
+            storeId, productId: product.id,
+            type: 'restock', quantity: productData.stock, userId: req.user!.id,
+            reason: 'Stock initial',
+            createdAt: movementDate,
+          });
+        }
         res.status(201).json(product);
       }
     } catch (err) {
