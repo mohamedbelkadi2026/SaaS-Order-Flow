@@ -644,6 +644,7 @@ export default function Inventory() {
   const [restockProduct, setRestockProduct] = useState<any | null>(null);
   const [restockQty, setRestockQty] = useState<string>("");
   const [restockReason, setRestockReason] = useState<string>("");
+  const [restockDate, setRestockDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [restockSaving, setRestockSaving] = useState(false);
 
   const handleRestockSave = async () => {
@@ -658,6 +659,7 @@ export default function Inventory() {
       await apiRequest("POST", `/api/products/${restockProduct.id}/restock`, {
         quantity: n,
         reason: restockReason.trim() || undefined,
+        date: new Date(restockDate + "T12:00:00").toISOString(),
       });
       toast({ title: "✅ Stock mis à jour", description: `+${n} unités ajoutées à "${restockProduct.name}".` });
       queryClient.invalidateQueries({ queryKey: ['/api/inventory/stats'] });
@@ -1454,7 +1456,7 @@ export default function Inventory() {
                         className="w-8 h-8 text-emerald-600 hover:text-emerald-700"
                         title="Réapprovisionner"
                         data-testid={`button-restock-product-${product.id}`}
-                        onClick={() => { setRestockProduct(product); setRestockQty(""); setRestockReason(""); }}
+                        onClick={() => { setRestockProduct(product); setRestockQty(""); setRestockReason(""); setRestockDate(new Date().toISOString().slice(0, 10)); }}
                       >
                         <PackagePlus className="w-4 h-4" />
                       </Button>
@@ -2357,6 +2359,18 @@ export default function Inventory() {
                 data-testid="input-restock-quantity"
                 autoFocus
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="restock-date">Date de l'entrée en stock</Label>
+              <Input
+                id="restock-date"
+                type="date"
+                value={restockDate}
+                onChange={(e) => setRestockDate(e.target.value)}
+                max={new Date().toISOString().slice(0, 10)}
+                data-testid="input-restock-date"
+              />
+              <p className="text-xs text-muted-foreground">Par défaut : aujourd'hui. Change-la si le stock est arrivé à une date antérieure.</p>
             </div>
             <div>
               <Label htmlFor="restock-reason">Note (optionnel)</Label>

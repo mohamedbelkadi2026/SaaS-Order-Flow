@@ -8550,8 +8550,10 @@ function ensureHeaders(sheet) {
       const schema = z.object({
         quantity: z.number().int().positive("La quantité doit être > 0"),
         reason:   z.string().max(500).optional(),
+        date:     z.string().datetime().optional(),  // ISO string — optionnel, défaut = maintenant
       });
-      const { quantity, reason } = schema.parse(req.body);
+      const { quantity, reason, date } = schema.parse(req.body);
+      const movementDate = date ? new Date(date) : new Date();
 
       await db.transaction(async (tx) => {
         await tx.update(products)
@@ -8564,6 +8566,7 @@ function ensureHeaders(sheet) {
           quantity,
           userId: req.user!.id,
           reason: reason || 'Réapprovisionnement manuel',
+          createdAt: movementDate,
         });
       });
 

@@ -1,0 +1,113 @@
+FEATURE — Permettre de choisir une date (et heure, optionnel) pour l'entrée
+de stock, au lieu de toujours utiliser "maintenant". L'historique par
+produit (déjà existant — icône "Voir les insights" sur la page Stock)
+affichera alors la vraie date choisie pour chaque réapprovisionnement.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/routes.ts : accepter une date optionnelle dans
+POST /api/products/:id/restock
+
+Remplacer :
+```ts
+const schema = z.object({
+  quantity: z.number().int().positive("La quantité doit être > 0"),
+  reason:   z.string().max(500).optional(),
+});
+const { quantity, reason } = schema.parse(req.body);
+
+await db.transaction(async (tx) => {
+  await tx.update(products)
+    .set({ stock: sql`${products.stock} + ${quantity}` })
+    .where(eq(products.id, productId));
+  await tx.insert(stockMovements).values({
+    storeId: product.storeId!,
+    productId,
+    type: 'restock',
+    quantity,
+    userId: req.user!.id,
+    reason: reason || 'Réapprovisionnement manuel',
+  });
+});
+```
+
+par :
+```ts
+const schema = z.object({
+  quantity: z.number().int().positive("La quantité doit être > 0"),
+  reason:   z.string().max(500).optional(),
+  date:     z.string().datetime().optional(),   // ISO string, ex: "2026-07-15T10:00:00.000Z" — optionnel, défaut = maintenant
+});
+const { quantity, reason, date } = schema.parse(req.body);
+const movementDate = date ? new Date(date) : new Date();
+
+await db.transaction(async (tx) => {
+  await tx.update(products)
+    .set({ stock: sql`${products.stock} + ${quantity}` })
+    .where(eq(products.id, productId));
+  await tx.insert(stockMovements).values({
+    storeId: product.storeId!,
+    productId,
+    type: 'restock',
+    quantity,
+    userId: req.user!.id,
+    reason: reason || 'Réapprovisionnement manuel',
+    createdAt: movementDate,   // ← permet de dater l'entrée dans le passé si besoin
+  });
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — client/src/pages/inventory.tsx : ajouter un champ date dans la
+modale "Ajouter du stock"
+
+Ajouter un state pour la date, initialisé à aujourd'hui :
+```tsx
+const [restockDate, setRestockDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+```
+
+Réinitialiser à aujourd'hui à chaque ouverture de la modale (dans l'onClick
+existant du bouton "Réapprovisionner") :
+```tsx
+onClick={() => { setRestockProduct(product); setRestockQty(""); setRestockReason(""); setRestockDate(new Date().toISOString().slice(0, 10)); }}
+```
+
+Ajouter le champ dans le JSX de la modale, entre la Quantité et la Note :
+```tsx
+<div className="space-y-1.5">
+  <Label htmlFor="restock-date">Date de l'entrée en stock</Label>
+  <Input
+    id="restock-date"
+    type="date"
+    value={restockDate}
+    onChange={(e) => setRestockDate(e.target.value)}
+    max={new Date().toISOString().slice(0, 10)}
+    data-testid="input-restock-date"
+  />
+  <p className="text-xs text-muted-foreground">Par défaut : aujourd'hui. Change-la si le stock est arrivé à une date antérieure.</p>
+</div>
+```
+
+Envoyer la date choisie dans la requête (trouver le `apiRequest("POST", ...)` existant du restock, ~ligne 658) :
+```ts
+await apiRequest("POST", `/api/products/${restockProduct.id}/restock`, {
+  quantity: n,
+  reason: restockReason.trim() || undefined,
+  date: new Date(restockDate + "T12:00:00").toISOString(),   // midi, pour éviter les décalages de fuseau horaire
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add optional backdating date field to stock restock (add inventory) flow" && git push
+
+VÉRIFICATION
+1. Sur la page Stock, cliquer "Réapprovisionner" sur un produit → un champ
+   "Date de l'entrée en stock" doit apparaître, pré-rempli avec la date du
+   jour.
+2. Choisir une date antérieure (ex: il y a 2 semaines), ajouter du stock →
+   confirmer.
+3. Cliquer l'icône "Voir les insights" (📊) sur ce même produit → la nouvelle
+   entrée doit apparaître dans le timeline avec la DATE CHOISIE (pas la date
+   du jour), badge "Entrée" (+quantité).
+4. Sans toucher au champ date (comportement par défaut) → doit continuer de
+   fonctionner exactement comme avant (date du jour).
