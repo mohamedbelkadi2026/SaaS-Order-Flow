@@ -1833,6 +1833,7 @@ export async function registerRoutes(
                   productName:      getProductName(order),
                   quantity:         bulkQty,
                   canOpen:          (order as any).canOpen === 1,
+                  isStock:          (order as any).isStock === 1,
                   orderNumber:      (order as any).orderNumber || String(order.id),
                   orderId:          order.id,
                   storeId,

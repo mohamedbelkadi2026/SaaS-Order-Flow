@@ -294,6 +294,7 @@ export interface CarrierShipInput {
   totalPrice: number;      // in centimes — converted to DH before sending
   productName: string;
   canOpen: boolean;
+  isStock?: boolean;     // "Produit en stock" — wired to orders.isStock
   orderNumber: string;
   orderId: number;
   storeId: number;
@@ -596,8 +597,8 @@ function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
     qty:          String(input.quantity ?? 1),
     note:         input.note || "",
     exchange:     0,
-    openpackage:  0,
-    from_stock:   0,
+    openpackage:  input.canOpen ? 1 : 0,   // branché sur "Autoriser l'ouverture du colis"
+    from_stock:   input.isStock ? 1 : 0,   // branché sur "Produit en stock"
     try_product:  0,
     internal_id:  input.orderNumber,
   };
