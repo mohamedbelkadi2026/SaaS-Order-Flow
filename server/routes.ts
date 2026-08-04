@@ -8599,6 +8599,85 @@ function ensureHeaders(sheet) {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // POST /api/products/backfill-initial-stock-history
+  // Creates a single "restock" ledger entry for every product / variant that
+  // has stock > 0 but no restock row yet, covering the gap between the
+  // recorded movements and the actual current stock level.
+  // ─────────────────────────────────────────────────────────────────────────
+  app.post("/api/products/backfill-initial-stock-history", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const allProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+      const allMovements = await db.select().from(stockMovements).where(eq(stockMovements.storeId, storeId));
+
+      const movementsByProduct: Record<number, typeof allMovements> = {};
+      for (const m of allMovements) {
+        const key = m.productId;
+        if (!movementsByProduct[key]) movementsByProduct[key] = [];
+        movementsByProduct[key].push(m);
+      }
+
+      let created = 0;
+      const details: any[] = [];
+
+      // ── Produits sans variantes ──────────────────────────────────────────
+      for (const p of allProducts) {
+        if (p.hasVariants) continue; // traités séparément ci-dessous
+        const movs = (movementsByProduct[p.id] || []).filter((m) => !m.variantId);
+        const alreadyHasEntry = movs.some((m) => m.type === "restock");
+        if (alreadyHasEntry) continue;
+
+        const netLogged = movs.reduce((s, m) => s + m.quantity, 0);
+        const missing = (p.stock || 0) - netLogged;
+        if (missing <= 0) continue;
+
+        const earliestMovDate = movs.length > 0
+          ? movs.reduce((min, m) => (m.createdAt! < min ? m.createdAt! : min), movs[0].createdAt!)
+          : null;
+        const entryDate = p.createdAt || earliestMovDate || new Date();
+
+        await db.insert(stockMovements).values({
+          storeId, productId: p.id, type: "restock", quantity: missing,
+          reason: "Initial backfill - pre-ledger inventory",
+          createdAt: entryDate,
+        });
+        created++;
+        details.push({ productId: p.id, name: p.name, quantity: missing, date: entryDate });
+      }
+
+      // ── Variantes ────────────────────────────────────────────────────────
+      for (const v of allVariants) {
+        const movs = (movementsByProduct[v.productId] || []).filter((m) => m.variantId === v.id);
+        const alreadyHasEntry = movs.some((m) => m.type === "restock");
+        if (alreadyHasEntry) continue;
+
+        const netLogged = movs.reduce((s, m) => s + m.quantity, 0);
+        const missing = (v.stock || 0) - netLogged;
+        if (missing <= 0) continue;
+
+        const parentProduct = allProducts.find((p) => p.id === v.productId);
+        const earliestMovDate = movs.length > 0
+          ? movs.reduce((min, m) => (m.createdAt! < min ? m.createdAt! : min), movs[0].createdAt!)
+          : null;
+        const entryDate = parentProduct?.createdAt || earliestMovDate || new Date();
+
+        await db.insert(stockMovements).values({
+          storeId, productId: v.productId, variantId: v.id, type: "restock", quantity: missing,
+          reason: `Initial backfill - pre-ledger inventory (variante ${v.name})`,
+          createdAt: entryDate,
+        });
+        created++;
+        details.push({ productId: v.productId, variantId: v.id, name: `${parentProduct?.name || ""} — ${v.name}`, quantity: missing, date: entryDate });
+      }
+
+      res.json({ message: `${created} entrée(s) "Stock initial" créée(s)`, created, details });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // GET  /api/stock/fix-historical-shipments/preview
   // POST /api/stock/fix-historical-shipments/apply
   //

@@ -1,0 +1,118 @@
+FEATURE — Backfill : créer une entrée "Entrée" (stock initial) dans
+l'historique pour TOUS les produits (et variantes) qui n'en ont aucune,
+sur le modèle exact de "Mocassins ANAKIO" (déjà correct : "Entrée +82 —
+Initial backfill - pre-ledger inventory").
+
+LOGIQUE
+Pour chaque produit (et chaque variante s'il y en a) :
+1. Calculer la somme de tous les mouvements déjà enregistrés dans
+   `stockMovements` pour ce produit/variante (net = somme des `quantity`,
+   positifs et négatifs confondus).
+2. Comparer au stock ACTUEL (`products.stock` ou `productVariants.stock`).
+3. Si `stock actuel > somme des mouvements déjà loggés` ET qu'aucune entrée
+   de type `restock` n'existe déjà pour ce produit/variante → créer UNE
+   entrée `restock` couvrant l'écart manquant, datée de la création du
+   produit (`products.createdAt`) si connue, sinon de la date du mouvement
+   le plus ancien déjà loggé pour ce produit, sinon "maintenant" en dernier
+   recours.
+
+────────────────────────────────────────────────────────────────────────────
+server/routes.ts — nouvel endpoint
+
+```ts
+app.post("/api/products/backfill-initial-stock-history", requireAuth, requireAdmin, async (req: any, res: any) => {
+  try {
+    const storeId = req.user!.storeId!;
+    const allProducts = await storage.getProductsByStore(storeId);
+    const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+    const allMovements = await db.select().from(stockMovements).where(eq(stockMovements.storeId, storeId));
+
+    const movementsByProduct: Record<number, typeof allMovements> = {};
+    for (const m of allMovements) {
+      const key = m.productId;
+      if (!movementsByProduct[key]) movementsByProduct[key] = [];
+      movementsByProduct[key].push(m);
+    }
+
+    let created = 0;
+    const details: any[] = [];
+
+    // ── Produits sans variantes ────────────────────────────────────────────
+    for (const p of allProducts) {
+      if (p.hasVariants) continue; // traités séparément ci-dessous
+      const movs = (movementsByProduct[p.id] || []).filter((m) => !m.variantId);
+      const alreadyHasEntry = movs.some((m) => m.type === "restock");
+      if (alreadyHasEntry) continue;
+
+      const netLogged = movs.reduce((s, m) => s + m.quantity, 0);
+      const missing = (p.stock || 0) - netLogged;
+      if (missing <= 0) continue;
+
+      const earliestMovDate = movs.length > 0
+        ? movs.reduce((min, m) => (m.createdAt! < min ? m.createdAt! : min), movs[0].createdAt!)
+        : null;
+      const entryDate = p.createdAt || earliestMovDate || new Date();
+
+      await db.insert(stockMovements).values({
+        storeId, productId: p.id, type: "restock", quantity: missing,
+        reason: "Initial backfill - pre-ledger inventory",
+        createdAt: entryDate,
+      });
+      created++;
+      details.push({ productId: p.id, name: p.name, quantity: missing, date: entryDate });
+    }
+
+    // ── Variantes ────────────────────────────────────────────────────────
+    for (const v of allVariants) {
+      const movs = (movementsByProduct[v.productId] || []).filter((m) => m.variantId === v.id);
+      const alreadyHasEntry = movs.some((m) => m.type === "restock");
+      if (alreadyHasEntry) continue;
+
+      const netLogged = movs.reduce((s, m) => s + m.quantity, 0);
+      const missing = (v.stock || 0) - netLogged;
+      if (missing <= 0) continue;
+
+      const parentProduct = allProducts.find((p) => p.id === v.productId);
+      const earliestMovDate = movs.length > 0
+        ? movs.reduce((min, m) => (m.createdAt! < min ? m.createdAt! : min), movs[0].createdAt!)
+        : null;
+      const entryDate = parentProduct?.createdAt || earliestMovDate || new Date();
+
+      await db.insert(stockMovements).values({
+        storeId, productId: v.productId, variantId: v.id, type: "restock", quantity: missing,
+        reason: `Initial backfill - pre-ledger inventory (variante ${v.name})`,
+        createdAt: entryDate,
+      });
+      created++;
+      details.push({ productId: v.productId, variantId: v.id, name: `${parentProduct?.name || ""} — ${v.name}`, quantity: missing, date: entryDate });
+    }
+
+    res.json({ message: `${created} entrée(s) "Stock initial" créée(s)`, created, details });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+});
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+1. git add -A && git commit -m "Add backfill for missing initial stock history entries across all products/variants" && git push
+2. Une fois déployé, dans la console du navigateur (F12), connecté à la
+   plateforme :
+```js
+fetch('/api/products/backfill-initial-stock-history', { method: 'POST' })
+  .then(r => r.json()).then(d => console.log(d));
+```
+
+VÉRIFICATION
+- Ouvrir "Voir les insights"/Historique sur "كتاب الخط السحري..." (celui qui
+  affichait "Total reçu +0") → doit maintenant afficher une entrée "Entrée"
+  avec la bonne quantité et une date (date de création du produit, ou date
+  du mouvement le plus ancien connu si la date de création n'aide pas).
+- Vérifier 2-3 autres produits au hasard qui semblaient aussi manquer leur
+  entrée initiale → même résultat.
+- "Mocassins ANAKIO" (déjà correct) ne doit PAS être dupliqué (le script
+  saute les produits qui ont déjà une entrée `restock`).
+- Coller-moi la réponse JSON complète (`created` + `details`) après
+  exécution — je pourrai vérifier que les quantités/dates semblent
+  cohérentes avant de considérer que c'est bon.
