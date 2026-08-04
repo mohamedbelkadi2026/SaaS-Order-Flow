@@ -1,0 +1,108 @@
+FEATURE — Ajouter un bouton dans l'interface (page Stock) pour lancer le
+backfill "Stock initial" — pas besoin de la console navigateur. Réutilise
+l'endpoint déjà créé (`POST /api/products/backfill-initial-stock-history`,
+prompt précédent) — vérifier qu'il est bien déployé, sinon l'ajouter d'abord.
+
+RAPPEL DE LA LOGIQUE (déjà spécifiée, à ne pas changer) : pour chaque
+produit ET chaque variante, si aucune entrée "Entrée" n'existe encore dans
+l'historique, en créer une couvrant l'écart entre le stock actuel et les
+mouvements déjà loggés (livraisons, retours...) — les variantes sont bien
+rattachées à leur produit parent via `variantId` sur `stockMovements`, et le
+calcul se fait variante par variante (pas juste au niveau du produit
+parent), donc chaque variante de "Sandale En Cuir Rf 1012 Tabac" (ou tout
+autre produit à variantes) doit recevoir sa propre entrée si elle en a
+besoin.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — client/src/pages/inventory.tsx : bouton + mutation + dialog de
+résultat
+
+Ajouter, à côté du bouton existant "Nettoyage intelligent" (en haut de la
+page Stock, visible dans le screenshot fourni), un nouveau bouton :
+
+```tsx
+const [backfillResult, setBackfillResult] = useState<any>(null);
+const backfillHistoryMutation = useMutation({
+  mutationFn: () => apiRequest("POST", "/api/products/backfill-initial-stock-history", {}).then(r => r.json()),
+  onSuccess: (data) => {
+    setBackfillResult(data);
+    qc.invalidateQueries({ queryKey: ["/api/products"] }); // rafraîchir la liste + les historiques déjà ouverts
+    toast({ title: "✅ Historique réparé", description: data.message });
+  },
+  onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+});
+```
+
+```tsx
+<Button
+  variant="outline"
+  onClick={() => backfillHistoryMutation.mutate()}
+  disabled={backfillHistoryMutation.isPending}
+  data-testid="button-backfill-stock-history"
+>
+  {backfillHistoryMutation.isPending ? (
+    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Réparation en cours...</>
+  ) : (
+    <><History className="w-4 h-4 mr-2" /> Réparer l'historique des stocks</>
+  )}
+</Button>
+```
+
+(Adapter l'import de l'icône `History` depuis `lucide-react` si pas déjà
+importée dans ce fichier — sinon utiliser une icône déjà disponible comme
+`RefreshCw`.)
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Dialog affichant le détail du résultat (produits/variantes
+corrigés)
+
+```tsx
+<Dialog open={!!backfillResult} onOpenChange={(v) => !v && setBackfillResult(null)}>
+  <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+    <DialogHeader>
+      <DialogTitle>Réparation de l'historique des stocks</DialogTitle>
+      <DialogDescription>{backfillResult?.message}</DialogDescription>
+    </DialogHeader>
+    {backfillResult?.details?.length > 0 ? (
+      <div className="space-y-2">
+        {backfillResult.details.map((d: any, i: number) => (
+          <div key={i} className="flex justify-between items-center text-sm border-b pb-1.5">
+            <span className="truncate max-w-[60%]">{d.name}</span>
+            <span className="text-emerald-600 font-semibold">+{d.quantity}</span>
+            <span className="text-xs text-muted-foreground">
+              {new Date(d.date).toLocaleDateString('fr-FR')}
+            </span>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <p className="text-sm text-muted-foreground">Aucune entrée manquante trouvée — tout est déjà à jour.</p>
+    )}
+  </DialogContent>
+</Dialog>
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Vérifier au passage que l'endpoint backend est bien présent
+(du prompt précédent)
+
+Si `POST /api/products/backfill-initial-stock-history` n'existe pas encore
+dans server/routes.ts, l'ajouter maintenant tel que spécifié précédemment
+(calcul produit + variantes séparément, entrée datée de `products.createdAt`
+si connue).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add UI button to run initial-stock-history backfill from the Stock page (no console needed)" && git push
+
+VÉRIFICATION
+1. Page Stock → bouton "Réparer l'historique des stocks" visible à côté de
+   "Nettoyage intelligent".
+2. Cliquer → une boîte de dialogue liste tous les produits/variantes
+   corrigés avec la quantité ajoutée et la date utilisée.
+3. Ouvrir "Voir les insights" sur "Sandale En Cuir Rf 1012 Tabac" → "Total
+   reçu" doit maintenant afficher un chiffre positif cohérent (plus 0), et
+   une ou plusieurs entrées "Entrée" doivent apparaître dans le timeline,
+   une par variante concernée.
+4. Recliquer le bouton une seconde fois → doit dire "Aucune entrée
+   manquante trouvée" (le script ne duplique jamais une entrée déjà créée).

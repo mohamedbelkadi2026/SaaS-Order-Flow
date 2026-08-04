@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { useProducts, useCreateProduct, useUpdateProduct, useDeleteProduct, useInventoryStats } from "@/hooks/use-store-data";
 import { formatCurrency } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
@@ -634,6 +634,18 @@ export default function Inventory() {
   // Stock history drawer
   const [historyProduct, setHistoryProduct] = useState<any | null>(null);
 
+  // Backfill initial-stock-history
+  const [backfillResult, setBackfillResult] = useState<any>(null);
+  const backfillHistoryMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/products/backfill-initial-stock-history", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setBackfillResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      toast({ title: "✅ Historique réparé", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
   const { data: historyMovements = [], isLoading: historyLoading } = useQuery<any[]>({
     queryKey: ["/api/stock-movements", historyProduct?.id],
     queryFn: () => fetch(`/api/stock-movements/${historyProduct!.id}`, { credentials: "include" }).then(r => r.json()),
@@ -1256,6 +1268,20 @@ export default function Inventory() {
           data-testid="button-open-cleanup"
         >
           <Filter className="w-4 h-4" /> Nettoyage intelligent
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => backfillHistoryMutation.mutate()}
+          disabled={backfillHistoryMutation.isPending}
+          data-testid="button-backfill-stock-history"
+        >
+          {backfillHistoryMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> Réparation en cours...</>
+          ) : (
+            <><History className="w-4 h-4" /> Réparer l'historique des stocks</>
+          )}
         </Button>
       </div>
 
@@ -2412,6 +2438,31 @@ export default function Inventory() {
               {restockSaving ? "Sauvegarde..." : "Ajouter au stock"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Backfill result dialog ── */}
+      <Dialog open={!!backfillResult} onOpenChange={(v) => { if (!v) setBackfillResult(null); }}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Réparation de l'historique des stocks</DialogTitle>
+            <DialogDescription>{backfillResult?.message}</DialogDescription>
+          </DialogHeader>
+          {backfillResult?.details?.length > 0 ? (
+            <div className="space-y-2">
+              {backfillResult.details.map((d: any, i: number) => (
+                <div key={i} className="flex justify-between items-center text-sm border-b pb-1.5">
+                  <span className="truncate max-w-[60%]">{d.name}</span>
+                  <span className="text-emerald-600 font-semibold">+{d.quantity}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(d.date).toLocaleDateString('fr-FR')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Aucune entrée manquante trouvée — tout est déjà à jour.</p>
+          )}
         </DialogContent>
       </Dialog>
 
