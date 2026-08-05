@@ -1,0 +1,71 @@
+FEATURE — Donner accès à "Commandes (Toutes)" aux agents (confirmation et
+suivi), scopé automatiquement à LEURS commandes uniquement (pas celles des
+autres agents). Le backend gère déjà ce scoping tout seul — seule la
+protection de route côté frontend bloque l'accès actuellement.
+
+CONFIRMÉ DANS LE CODE
+server/routes.ts, GET /api/orders/all (~ligne 1442) :
+```ts
+const agentOnly = user.role === 'agent' ? user.id : undefined;
+// ...
+const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+```
+Quand l'utilisateur connecté a le rôle `agent`, `getFilteredOrders` ne
+retourne QUE ses propres commandes assignées — c'est déjà le comportement
+souhaité, aucune modification backend nécessaire.
+
+────────────────────────────────────────────────────────────────────────────
+FIX 1 — client/src/App.tsx : retirer `/orders/all` de la liste des chemins
+bloqués pour les agents
+
+Trouver :
+```ts
+const AGENT_BLOCKED_PATHS = [
+  "/inventory", "/magasins", "/team", "/clients",
+  "/invoices", "/billing", "/profitability",
+  "/integrations", "/integrations/shipping", "/integrations/logs",
+  "/orders/all", "/admin", "/calculator", "/automation",
+];
+```
+Retirer `"/orders/all"` de ce tableau :
+```ts
+const AGENT_BLOCKED_PATHS = [
+  "/inventory", "/magasins", "/team", "/clients",
+  "/invoices", "/billing", "/profitability",
+  "/integrations", "/integrations/shipping", "/integrations/logs",
+  "/admin", "/calculator", "/automation",
+];
+```
+
+Ne PAS toucher `MEDIA_BUYER_BLOCKED_PATHS` (qui garde `/orders/all` bloqué
+pour les media buyers — cette demande concerne uniquement les agents
+confirmation/suivi).
+
+────────────────────────────────────────────────────────────────────────────
+FIX 2 — client/src/components/layout/app-layout.tsx : afficher "Commandes
+(Toutes)" dans le menu latéral des agents
+
+Trouver :
+```ts
+const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add'];
+```
+Ajouter `/orders/all` :
+```ts
+const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add', '/orders/all'];
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Allow agents to access their own scoped 'Commandes (Toutes)' view" && git push
+
+VÉRIFICATION
+1. Se connecter avec un compte agent (confirmation ou suivi) → "Commandes
+   (Toutes)" doit apparaître dans le menu latéral.
+2. Cliquer dessus → la page doit s'ouvrir (plus de redirection/blocage).
+3. La liste affichée doit contenir UNIQUEMENT les commandes assignées à CET
+   agent, tous statuts confondus — pas celles des autres agents.
+4. Se connecter avec un compte owner/admin → "Commandes (Toutes)" doit
+   continuer d'afficher TOUTES les commandes de tous les agents, comme
+   avant (comportement inchangé pour les rôles non-agent).
+5. Se connecter avec un compte media buyer → "Commandes (Toutes)" doit
+   rester inaccessible, comme avant (pas concerné par ce changement).

@@ -543,7 +543,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     ? [...ADMIN_NAV, { name: "Super Admin", href: "/super-admin", icon: Shield }]
     : [...ADMIN_NAV];
 
-  const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add'];
+  const AGENT_ALLOWED_HREFS = ['/', '/orders', '/orders/add', '/orders/all'];
 
   const navItems = useMemo(() => {
     if (isMediaBuyer) return [...MEDIA_BUYER_NAV];

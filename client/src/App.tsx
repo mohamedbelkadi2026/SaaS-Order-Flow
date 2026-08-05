@@ -93,7 +93,7 @@ const AGENT_BLOCKED_PATHS = [
   "/inventory", "/magasins", "/team", "/clients",
   "/invoices", "/billing", "/profitability",
   "/integrations", "/integrations/shipping", "/integrations/logs",
-  "/orders/all", "/admin", "/calculator", "/automation",
+  "/admin", "/calculator", "/automation",
 ];
 
 const MEDIA_BUYER_BLOCKED_PATHS = [
