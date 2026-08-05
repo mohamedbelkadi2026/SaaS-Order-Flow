@@ -3672,6 +3672,45 @@ export async function registerRoutes(
     }
   });
 
+  // ── Vitips: diagnostic — inspect raw city list for failing cities ────────────
+  app.get("/api/debug/vitips-city-list", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accts = await db.select().from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+      if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+      const apiKey = (accts[0] as any).apiKey;
+
+      const axios = (await import("axios")).default;
+      const resp = await axios.get("https://app.vitipsexpress.com/api/client/villes", {
+        headers: { "api-token": apiKey, "Accept": "application/json" },
+        timeout: 15_000,
+        validateStatus: () => true,
+      });
+
+      const allCities = resp.data?.data || resp.data || [];
+      const search = ["oujda", "agadir", "laayoun", "mellouk", "sidi"];
+      const matches = Array.isArray(allCities)
+        ? allCities.filter((c: any) => {
+            const name = (typeof c === "string"
+              ? c
+              : (c.name || c.ville || c.title || JSON.stringify(c))
+            ).toLowerCase();
+            return search.some(s => name.includes(s));
+          })
+        : [];
+
+      res.json({
+        httpStatus: resp.status,
+        totalCitiesInVitipsList: Array.isArray(allCities) ? allCities.length : "not an array",
+        rawSampleFirst5: Array.isArray(allCities) ? allCities.slice(0, 5) : allCities,
+        matchingEntries: matches,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── Sync carrier cities from live API → carrier_cities table ────────────────
   /** GET /api/carrier-accounts/vitipsexpress/synced-cities — returns locally stored city list */
   app.get("/api/carrier-accounts/vitipsexpress/synced-cities", requireAuth, async (req: any, res: any) => {

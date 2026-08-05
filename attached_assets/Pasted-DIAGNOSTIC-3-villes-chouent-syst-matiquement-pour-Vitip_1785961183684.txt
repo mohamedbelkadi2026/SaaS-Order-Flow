@@ -1,0 +1,70 @@
+DIAGNOSTIC — 3 villes échouent systématiquement pour Vitips Express (Oujda,
+Agadir, Laayoune Sidi Mellouk), même sur des commandes JAMAIS tentées
+auparavant (donc pas un problème de doublon). Il faut voir EXACTEMENT
+comment Vitips représente ces 3 villes dans SA PROPRE liste (`/villes`) pour
+comprendre pourquoi le matching échoue.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Endpoint de diagnostic : dump complet de la liste de villes Vitips
+
+```ts
+app.get("/api/debug/vitips-city-list", requireAuth, requireAdmin, async (req: any, res: any) => {
+  const storeId = req.user!.storeId!;
+  const accts = await db.select().from(carrierAccounts)
+    .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+  if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+  const apiKey = accts[0].apiKey;
+
+  const axios = (await import("axios")).default;
+  const resp = await axios.get("https://app.vitipsexpress.com/api/client/villes", {
+    headers: { "api-token": apiKey, "Accept": "application/json" },
+    validateStatus: () => true,
+  });
+
+  const allCities = resp.data?.data || resp.data || [];
+  const search = ["oujda", "agadir", "laayoun", "mellouk", "sidi"];
+  const matches = Array.isArray(allCities)
+    ? allCities.filter((c: any) => {
+        const name = (typeof c === "string" ? c : (c.name || c.ville || c.title || JSON.stringify(c))).toLowerCase();
+        return search.some(s => name.includes(s));
+      })
+    : [];
+
+  res.json({
+    totalCitiesInVitipsList: Array.isArray(allCities) ? allCities.length : "not an array",
+    rawSampleFirst5: Array.isArray(allCities) ? allCities.slice(0, 5) : allCities,
+    matchingEntries: matches,
+  });
+});
+```
+
+Appeler une fois déployé :
+```js
+fetch('/api/debug/vitips-city-list').then(r => r.json()).then(d => console.log(JSON.stringify(d, null, 2)));
+```
+
+Coller-moi la réponse complète — en particulier `matchingEntries` (montrera
+EXACTEMENT comment "Oujda", "Agadir" et "Laayoune Sidi Mellouk" (ou une
+variante de leur nom) sont écrits/structurés dans la vraie liste Vitips —
+et `rawSampleFirst5` pour voir la structure générale d'une entrée (nom
+simple ? objet avec id/code/abréviation ?).
+
+────────────────────────────────────────────────────────────────────────────
+CE QUE JE VÉRIFIERAI AVEC CETTE RÉPONSE
+- Si "Agadir"/"Oujda" ont un ORTHOGRAPHE différent côté Vitips (accents,
+  espace, majuscules particulières) que ce qu'on envoie actuellement.
+- Si Vitips exige un CODE/ID plutôt que le nom en clair pour certaines
+  villes (peut-être seulement pour les villes desservies par un partenaire
+  régional différent — cas plausible pour Oujda/Agadir qui sont loin du
+  centre).
+- Si "Laayoune Sidi Mellouk" existe carrément sous un nom complètement
+  différent (ville souvent mal orthographiée/multiple variantes en arabe
+  latinisé).
+
+Une fois ces infos en main, je donnerai le prompt de correction précis
+(ajuster `autoMatchCity` / `getVitipsCityAbbr` pour ces cas, ou toute autre
+cause révélée par les données réelles).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add diagnostic endpoint to inspect Vitips raw city list for failing cities" && git push
