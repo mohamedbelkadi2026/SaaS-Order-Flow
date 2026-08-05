@@ -323,6 +323,20 @@ export const carrierCityPricing = pgTable("carrier_city_pricing", {
 }));
 export type CarrierCityPricing = typeof carrierCityPricing.$inferSelect;
 
+// ─── Manual city-name aliases for Vitips Express ─────────────────────────────
+// Maps a raw city name (as typed in orders) to the exact name expected by Vitips.
+// Takes priority over the automatic fuzzy-matching. One row per store+rawCityName.
+export const vitipsCityAliases = pgTable("vitips_city_aliases", {
+  id:             serial("id").primaryKey(),
+  storeId:        integer("store_id").notNull(),
+  rawCityName:    text("raw_city_name").notNull(),    // e.g. "Laayoune Sidi Mellouk"
+  vitipsCityName: text("vitips_city_name").notNull(), // e.g. "El Aioun Sidi Mellouk"
+  createdAt:      timestamp("created_at").defaultNow(),
+}, (table) => ({
+  uniqueAlias: uniqueIndex("vitips_city_alias_unique").on(table.storeId, table.rawCityName),
+}));
+export type VitipsCityAlias = typeof vitipsCityAliases.$inferSelect;
+
 export const storeIntegrations = pgTable("store_integrations", {
   id: serial("id").primaryKey(),
   storeId: integer("store_id").references(() => stores.id).notNull(),

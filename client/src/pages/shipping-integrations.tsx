@@ -2274,6 +2274,11 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
                     />
                   )}
 
+                  {/* Vitips manual city-name aliases */}
+                  {(acct.carrierName || "").toLowerCase() === "vitipsexpress" && (
+                    <VitipsCityAliasesSection />
+                  )}
+
                   {/* Credential table */}
                   <div className="rounded-xl border border-border/50 overflow-hidden">
                     <table className="w-full text-sm">
@@ -2505,6 +2510,73 @@ function CredentialsModal({ providerId, providerName, onClose, onAddNew }: Crede
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/* ─── Vitips manual city-alias section ─────────────────────────────────────── */
+function VitipsCityAliasesSection() {
+  const { data: aliases = [] } = useQuery<any[]>({ queryKey: ["/api/carriers/vitipsexpress/city-aliases"] });
+  const [rawCity, setRawCity] = useState("");
+  const [vitipsCity, setVitipsCity] = useState("");
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  const addMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/carriers/vitipsexpress/city-aliases", { rawCityName: rawCity, vitipsCityName: vitipsCity }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/carriers/vitipsexpress/city-aliases"] });
+      setRawCity(""); setVitipsCity("");
+      toast({ title: "Alias ajouté" });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => apiRequest("DELETE", `/api/carriers/vitipsexpress/city-aliases/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/carriers/vitipsexpress/city-aliases"] }),
+  });
+
+  return (
+    <div className="mt-4 rounded-xl border p-4">
+      <h4 className="font-bold text-sm mb-1">🗺️ Alias de villes (correction manuelle)</h4>
+      <p className="text-xs text-muted-foreground mb-3">
+        Si une ville échoue toujours malgré la correction automatique (ex : "Laayoune Sidi Mellouk" → en réalité "El Aioun Sidi Mellouk" chez Vitips), ajoute une correspondance manuelle ici — elle sera appliquée en priorité.
+      </p>
+      <div className="flex gap-2 mb-3">
+        <Input
+          placeholder="Ville reçue (ex: Laayoune Sidi Mellouk)"
+          value={rawCity}
+          onChange={e => setRawCity(e.target.value)}
+          className="flex-1"
+          data-testid="input-vitips-alias-raw"
+        />
+        <Input
+          placeholder="Nom exact Vitips (ex: El Aioun Sidi Mellouk)"
+          value={vitipsCity}
+          onChange={e => setVitipsCity(e.target.value)}
+          className="flex-1"
+          data-testid="input-vitips-alias-vitips"
+        />
+        <Button
+          onClick={() => addMutation.mutate()}
+          disabled={!rawCity || !vitipsCity || addMutation.isPending}
+          data-testid="button-vitips-alias-add"
+        >
+          Ajouter
+        </Button>
+      </div>
+      {aliases.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Aucun alias défini.</p>
+      ) : (
+        <div className="space-y-1">
+          {aliases.map((a: any) => (
+            <div key={a.id} className="flex justify-between items-center text-sm border-b pb-1">
+              <span className="truncate">{a.rawCityName} → <strong>{a.vitipsCityName}</strong></span>
+              <Button size="sm" variant="ghost" onClick={() => deleteMutation.mutate(a.id)} data-testid={`button-vitips-alias-delete-${a.id}`}>🗑️</Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

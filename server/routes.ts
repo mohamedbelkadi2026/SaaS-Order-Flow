@@ -12,7 +12,7 @@ import { casablancaTomorrow, countConfirmeReporte } from "./utils/casablanca-tim
 import { DELIVERED_STATUSES, SHIPPED_STATUSES, isConfirmedCumulative, isDeliveredStatus } from "@shared/order-status-sets";
 import { hasFeature } from "./feature-flags";
 import { planDefaults } from "./utils/plan";
-import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap } from "@shared/schema";
+import { users, orders, orderItems, products, productVariants, stockMovements, storeIntegrations, integrationLogs, orderFollowUpLogs, aiConversations, stores, storeAgentSettings, carrierAccounts, adSpendTracking, passwordSchema, adCampaignProductMap, vitipsCityAliases } from "@shared/schema";
 import { PUSH_VAPID_PUBLIC_KEY, notifyNewOrder, notifyStatusUpdate, sendTestPushToUser } from "./services/push-service";
 import { eq, and, gte, lte, lt, count, desc, sql, inArray, sum, or, like } from "drizzle-orm";
 import multer from "multer";
@@ -1746,8 +1746,21 @@ export async function registerRoutes(
         // Pre-load carrier city list for auto-matching
         const bulkCityList: string[] = getDefaultCitiesForProvider(provider);
 
+        // Pre-load city aliases for this store (Vitips only, but harmless for others)
+        const bulkCityAliasRows = provider === 'vitipsexpress'
+          ? await db.select().from(vitipsCityAliases).where(eq(vitipsCityAliases.storeId, storeId))
+          : [];
+        const bulkCityAliasMap = new Map(bulkCityAliasRows.map(a => [a.rawCityName, a.vitipsCityName]));
+
         const getResolvedCity = (order: any): string => {
           const raw = ((order as any).customerCity || '').trim();
+          // Priority 1: manual alias override
+          if (bulkCityAliasMap.has(raw)) {
+            const aliased = bulkCityAliasMap.get(raw)!;
+            console.log(`[VITIPS-CITY-ALIAS] order=${(order as any).orderNumber} city="${raw}" → alias="${aliased}"`);
+            return aliased;
+          }
+          // Priority 2: automatic fuzzy matching
           const matched = autoMatchCity(raw, bulkCityList);
           if (matched && matched !== raw) {
             console.log(`[BulkShip] City auto-corrected: "${raw}" → "${matched}" (#${(order as any).orderNumber})`);
@@ -13908,9 +13921,26 @@ function ensureHeaders(sheet) {
       // ── Auto-match city against carrier's city list ─────────────
       const carrierCityList: string[] = getDefaultCitiesForProvider(provider);
       const rawOrderCity = (order.customerCity || '').trim();
-      const matchedCity = autoMatchCity(rawOrderCity, carrierCityList) || rawOrderCity;
-      if (matchedCity !== rawOrderCity) {
-        console.log(`[Ship] City auto-corrected: "${rawOrderCity}" → "${matchedCity}" for carrier ${provider}`);
+      let matchedCity: string;
+      if (provider === 'vitipsexpress') {
+        // Priority 1: manual alias override
+        const [cityAlias] = await db.select().from(vitipsCityAliases)
+          .where(and(eq(vitipsCityAliases.storeId, storeId), eq(vitipsCityAliases.rawCityName, rawOrderCity)));
+        if (cityAlias) {
+          matchedCity = cityAlias.vitipsCityName;
+          console.log(`[VITIPS-CITY-ALIAS] order=${orderId} city="${rawOrderCity}" → alias="${matchedCity}"`);
+        } else {
+          // Priority 2: automatic fuzzy matching
+          matchedCity = autoMatchCity(rawOrderCity, carrierCityList) || rawOrderCity;
+          if (matchedCity !== rawOrderCity) {
+            console.log(`[Ship] City auto-corrected: "${rawOrderCity}" → "${matchedCity}" for carrier ${provider}`);
+          }
+        }
+      } else {
+        matchedCity = autoMatchCity(rawOrderCity, carrierCityList) || rawOrderCity;
+        if (matchedCity !== rawOrderCity) {
+          console.log(`[Ship] City auto-corrected: "${rawOrderCity}" → "${matchedCity}" for carrier ${provider}`);
+        }
       }
 
       // ── Calculate total quantity — items first, rawQuantity as fallback ──
