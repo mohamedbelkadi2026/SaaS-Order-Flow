@@ -1,0 +1,104 @@
+2 AJOUTS — Profit Analyzer Pro, mode "Import CSV" :
+A) Bouton "← Retour" sur l'étape 3 (Rapport Final) pour revenir corriger
+   l'étape 2 (Saisie des coûts) sans devoir tout recommencer.
+B) Champ "Charges fixes" (loyer, etc.) — un montant global qui se déduit
+   du bénéfice net final, en plus de Pub/Achat/Emballage/Confirmation.
+
+────────────────────────────────────────────────────────────────────────────
+A) client/src/pages/profit-analyzer.tsx — bouton retour sur l'étape 3
+
+Le bloc `{step === 3 && results.length > 0 && (...)}` (~ligne 1806) n'a
+actuellement aucun bouton retour. Ajouter, juste avant la première carte de
+résumé (le bloc "Total unités vendues") :
+
+```tsx
+{step === 3 && results.length > 0 && (
+  <div className="space-y-5">
+    <div className="flex justify-start">
+      <Button variant="outline" size="sm" onClick={() => setStep(2)} className="border-white/20 text-slate-300 hover:bg-white/8 text-xs" data-testid="button-back-step-2">
+        ← Retour à la saisie des coûts
+      </Button>
+    </div>
+    {(() => {
+      const totalUnits = results.reduce((s, r) => s + r.qty, 0);
+      ...
+```
+(Le reste du bloc existant est inchangé, juste envelopper avec ce nouveau
+bouton au-dessus.)
+
+────────────────────────────────────────────────────────────────────────────
+B) Champ "Charges fixes" (loyer, salaires fixes, etc.) — montant global
+déduit UNE SEULE FOIS du bénéfice net total (pas par produit, comme un
+loyer qui n'est pas lié à un produit précis)
+
+1) Ajouter le state, à côté de `globalAdSpend` (~ligne 391) :
+```ts
+const [fixedCharges, setFixedCharges] = useState("0");
+```
+
+2) Ajouter le champ de saisie dans la section "DÉPENSES PUB" de l'étape 2
+   (juste après le champ "Total pub (DH)", ~ligne 1452-1453) :
+```tsx
+<div className="flex items-center gap-2">
+  <label className="text-xs text-slate-400 shrink-0">Charges fixes (DH) <span className="text-slate-500">— loyer, etc.</span></label>
+  <Input value={fixedCharges} onChange={e => setFixedCharges(e.target.value)} type="number" min="0" placeholder="0" className="h-8 w-36 text-xs bg-white/5 border-white/20 text-white" data-testid="input-fixed-charges" />
+</div>
+```
+
+3) Déduire ce montant du bénéfice net total à l'étape 3. Trouver (~ligne
+   1043) :
+```ts
+const totalNet = results.reduce((s, r) => s + r.netProfit, 0);
+```
+Remplacer par :
+```ts
+const totalNetBeforeFixedCharges = results.reduce((s, r) => s + r.netProfit, 0);
+const totalNet = totalNetBeforeFixedCharges - toNum(fixedCharges);
+```
+
+4) Mettre à jour la formule affichée (~ligne 1823) :
+```tsx
+<p className="text-[11px] text-slate-300 mt-0.5 font-mono">Bénéf. = CA Brut − Livr. − (Achat × u) − (Emball. × cmd) − (Conf. × cmd) − Pub − Charges fixes</p>
+```
+
+5) Afficher le détail des charges fixes dans les KPI (à côté de la carte
+   "Bénéfice net", ~ligne 1835) — ajouter une info visible sous la carte ou
+   un sous-texte :
+```tsx
+<KpiCard
+  label="Bénéfice net"
+  value={fmtMAD(totalNet)}
+  sub={`${totalNet >= 0 ? "En bénéfice" : "En déficit"}${toNum(fixedCharges) > 0 ? ` · dont −${fmtMAD(toNum(fixedCharges))} charges fixes` : ""}`}
+  color={totalNet >= 0 ? "#10b981" : "#ef4444"}
+  icon={<Target className="w-5 h-5" />}
+/>
+```
+
+6) Inclure `fixedCharges` dans le payload de sauvegarde du rapport (~ligne
+   845, `const payload = { fileName, products, results, adMode, globalAdSpend, totals };`)
+   pour qu'il soit conservé si le rapport est rechargé plus tard :
+```ts
+const payload = { fileName, products, results, adMode, globalAdSpend, fixedCharges, totals };
+```
+Et, si le rapport peut être rechargé (chercher où `adMode`/`globalAdSpend`
+sont restaurés depuis un rapport sauvegardé, ~ligne 831), restaurer aussi
+`fixedCharges` de la même façon :
+```ts
+setFixedCharges(String(p.fixedCharges ?? "0"));
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add back button on step 3 + global Fixed Charges field deducted from net profit" && git push
+
+VÉRIFICATION
+1. Étape 3 (Rapport Final) → bouton "← Retour à la saisie des coûts" visible
+   en haut → clic → retourne à l'étape 2 avec les coûts déjà saisis
+   conservés (pas de perte de données).
+2. Étape 2 → nouveau champ "Charges fixes (DH)" à côté de "Total pub (DH)"
+   → entrer par exemple 3000 → recalculer.
+3. Étape 3 → "Bénéfice net" doit être inférieur de 3000 DH par rapport à
+   avant (vérifiable : Bénéfice net avant − 3000 = Bénéfice net après).
+4. La formule affichée en haut doit se terminer par "− Charges fixes".
+5. Sauvegarder le rapport puis le recharger → le montant des charges fixes
+   doit être restauré tel quel.

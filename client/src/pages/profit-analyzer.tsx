@@ -390,6 +390,7 @@ export default function ProfitAnalyzer() {
   const [products, setProducts]                 = useState<ProductSummary[]>([]);
   const [adMode, setAdMode]                     = useState<"global" | "specific">("global");
   const [globalAdSpend, setGlobalAdSpend]       = useState("0");
+  const [fixedCharges, setFixedCharges]         = useState("0");
   const [results, setResults]                   = useState<ProfitResult[]>([]);
 
   /* ── Ad Import state (persists across steps) ── */
@@ -829,7 +830,7 @@ export default function ProfitAnalyzer() {
   function openReport(report: any) {
     const p = report.payload ?? report;
     setProducts(p.products ?? []); setResults(p.results ?? []);
-    setAdMode(p.adMode ?? "global"); setGlobalAdSpend(String(p.globalAdSpend ?? "0"));
+    setAdMode(p.adMode ?? "global"); setGlobalAdSpend(String(p.globalAdSpend ?? "0")); setFixedCharges(String(p.fixedCharges ?? "0"));
     setCurrentReportId(report.id); setReportMonth(report.month ?? new Date().toISOString().slice(0, 7));
     setReportTitle(report.title ?? ""); setHasParsed(true);
     if (p.fileName) setParsedEntries([{ id: `rep-${report.id}`, fileName: p.fileName, sheetName: "", totalRows: 0, deliveredRows: 0, headers: [], rawDataRows: [], rows: [], colMap: { product:"",qty:"",cod:"",status:"",shipping:"" } }]);
@@ -843,7 +844,7 @@ export default function ProfitAnalyzer() {
     setSavingReport(true);
     try {
       const totals = { caBrut: totalCaBrut, caNet: totalCaNet, netProfit: totalNet, roi: globalROI };
-      const payload = { fileName, products, results, adMode, globalAdSpend, totals };
+      const payload = { fileName, products, results, adMode, globalAdSpend, fixedCharges, totals };
       const isUpdate = currentReportId != null;
       const url = isUpdate ? `/api/profit-reports/${currentReportId}` : '/api/profit-reports';
       const r = await fetch(url, { method: isUpdate ? 'PATCH' : 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ month: reportMonth, title: reportTitle || null, payload }) });
@@ -1063,7 +1064,8 @@ export default function ProfitAnalyzer() {
   const totalShipFile  = results.reduce((s, r) => s + r.shippingFromFile, 0);
   const totalCaNet     = results.reduce((s, r) => s + r.caNet, 0);
   const totalCost      = results.reduce((s, r) => s + r.totalCost, 0);
-  const totalNet       = results.reduce((s, r) => s + r.netProfit, 0);
+  const totalNetBeforeFixedCharges = results.reduce((s, r) => s + r.netProfit, 0);
+  const totalNet       = totalNetBeforeFixedCharges - toNum(fixedCharges);
   const totalCOGS      = results.reduce((s, r) => s + r.cogs, 0);
   const totalPackaging = results.reduce((s, r) => s + r.packaging, 0);
   const totalConfirm   = results.reduce((s, r) => s + r.confirmation, 0);
@@ -1476,6 +1478,10 @@ export default function ProfitAnalyzer() {
                       <Input value={globalAdSpend} onChange={e => setGlobalAdSpend(e.target.value)} type="number" min="0" placeholder="0" className="h-8 w-36 text-xs bg-white/5 border-white/20 text-white" data-testid="input-global-ad-spend" />
                     </div>
                   )}
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-slate-400 shrink-0">Charges fixes (DH) <span className="text-slate-500">— loyer, etc.</span></label>
+                    <Input value={fixedCharges} onChange={e => setFixedCharges(e.target.value)} type="number" min="0" placeholder="0" className="h-8 w-36 text-xs bg-white/5 border-white/20 text-white" data-testid="input-fixed-charges" />
+                  </div>
 
                   {/* ══ AD IMPORT PANEL ══ */}
                   {adImportOpen && (
@@ -1828,6 +1834,11 @@ export default function ProfitAnalyzer() {
             {/* ══ STEP 3 ══ */}
             {step === 3 && results.length > 0 && (
               <div className="space-y-5">
+                <div className="flex justify-start">
+                  <Button variant="outline" size="sm" onClick={() => setStep(2)} className="border-white/20 text-slate-300 hover:bg-white/10 text-xs" data-testid="button-back-step-2">
+                    ← Retour à la saisie des coûts
+                  </Button>
+                </div>
                 {(() => {
                   const totalUnits = results.reduce((s, r) => s + r.qty, 0);
                   const uniqueProds = results.length;
@@ -1844,7 +1855,7 @@ export default function ProfitAnalyzer() {
                       </div>
                       <div className="sm:ml-auto text-center sm:text-right">
                         <p className="text-[10px] text-slate-500 uppercase tracking-widest">Formule appliquée</p>
-                        <p className="text-[11px] text-slate-300 mt-0.5 font-mono">Bénéf. = CA Brut − Livr. − (Achat × u) − (Emball. × cmd) − (Conf. × cmd) − Pub</p>
+                        <p className="text-[11px] text-slate-300 mt-0.5 font-mono">Bénéf. = CA Brut − Livr. − (Achat × u) − (Emball. × cmd) − (Conf. × cmd) − Pub − Charges fixes</p>
                       </div>
                     </div>
                   );
@@ -1855,7 +1866,7 @@ export default function ProfitAnalyzer() {
                   <KpiCard label="CA Brut (Price)" value={fmtMAD(totalCaBrut)} sub={`${results.reduce((s, r) => s + r.qty, 0)} unités livrées`} color="#10b981" icon={<DollarSign className="w-5 h-5" />} />
                   <KpiCard label="Frais livr. (fichier)" value={fmtMAD(totalShipFile)} sub="Déduit automatiquement" color="#f59e0b" icon={<Truck className="w-5 h-5" />} />
                   <KpiCard label="CA Net" value={fmtMAD(totalCaNet)} sub="Prix − Frais livr." color="#06b6d4" icon={<TrendingUp className="w-5 h-5" />} />
-                  <KpiCard label="Bénéfice net" value={fmtMAD(totalNet)} sub={totalNet >= 0 ? "En bénéfice" : "En déficit"} color={totalNet >= 0 ? "#10b981" : "#ef4444"} icon={<Target className="w-5 h-5" />} />
+                  <KpiCard label="Bénéfice net" value={fmtMAD(totalNet)} sub={`${totalNet >= 0 ? "En bénéfice" : "En déficit"}${toNum(fixedCharges) > 0 ? ` · dont −${fmtMAD(toNum(fixedCharges))} charges fixes` : ""}`} color={totalNet >= 0 ? "#10b981" : "#ef4444"} icon={<Target className="w-5 h-5" />} />
                   <KpiCard label="ROI Global" value={`${globalROI.toFixed(1)}%`} sub="vs coût sourcing" color={globalROI >= 30 ? "#10b981" : globalROI >= 0 ? "#f59e0b" : "#ef4444"} icon={<BarChart3 className="w-5 h-5" />} />
                 </div>
 
