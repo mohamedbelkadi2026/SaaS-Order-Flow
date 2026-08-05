@@ -1,0 +1,85 @@
+REVERT — Annuler les changements du dernier prompt ("Alias de villes
+Vitips" — table `vitipsCityAliases`, endpoints CRUD, priorité alias dans le
+matching de ville, section UI). Remettre exactement l'état d'avant ce
+prompt.
+
+────────────────────────────────────────────────────────────────────────────
+1) shared/schema.ts — retirer la table
+
+Supprimer entièrement ce bloc :
+```ts
+export const vitipsCityAliases = pgTable("vitips_city_aliases", {
+  id: serial("id").primaryKey(),
+  storeId: integer("store_id").notNull(),
+  rawCityName: text("raw_city_name").notNull(),
+  vitipsCityName: text("vitips_city_name").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  uniqueAlias: uniqueIndex("vitips_city_alias_unique").on(table.storeId, table.rawCityName),
+}));
+```
+
+────────────────────────────────────────────────────────────────────────────
+2) server/routes.ts — retirer les 3 endpoints CRUD ajoutés
+
+Supprimer :
+- `GET /api/carriers/vitipsexpress/city-aliases`
+- `POST /api/carriers/vitipsexpress/city-aliases`
+- `DELETE /api/carriers/vitipsexpress/city-aliases/:id`
+
+────────────────────────────────────────────────────────────────────────────
+3) server/routes.ts — remettre le matching de ville à l'état d'origine (sans
+priorité alias), aux 2 endroits modifiés (bulk-ship ~ligne 1682 et
+expédition individuelle ~ligne 13504)
+
+Remplacer :
+```ts
+const [alias] = await db.select().from(vitipsCityAliases)
+  .where(and(eq(vitipsCityAliases.storeId, storeId), eq(vitipsCityAliases.rawCityName, raw)));
+let matched: string;
+if (alias) {
+  matched = alias.vitipsCityName;
+  console.log(`[VITIPS-CITY-ALIAS] order=${(order as any).orderNumber} city="${raw}" → alias="${matched}"`);
+} else {
+  matched = autoMatchCity(raw, bulkCityList);
+  console.log(`[BulkShip] City auto-corrected: "${raw}" → "${matched}" (#${(order as any).orderNumber})`);
+}
+```
+par le comportement d'origine :
+```ts
+const matched = autoMatchCity(raw, bulkCityList);
+console.log(`[BulkShip] City auto-corrected: "${raw}" → "${matched}" (#${(order as any).orderNumber})`);
+```
+(adapter le nom exact de variable au deuxième endroit — probablement
+`matchedCity` d'après le log `[Ship] City auto-corrected: "${rawOrderCity}" → "${matchedCity}"`, remettre cette ligne telle quelle sans le bloc alias).
+
+Retirer aussi l'import de `vitipsCityAliases` depuis `@shared/schema` en
+haut de server/routes.ts s'il n'est plus utilisé ailleurs dans ce fichier.
+
+────────────────────────────────────────────────────────────────────────────
+4) client/src/pages/shipping-integrations.tsx (ou l'équivalent) — retirer le
+composant `VitipsCityAliasesSection` et son appel
+
+Supprimer la définition du composant `VitipsCityAliasesSection` ajoutée, et
+retirer `<VitipsCityAliasesSection />` de l'endroit où il a été inséré (à
+côté du panneau "Tarifs de livraison par ville" Vitips).
+
+────────────────────────────────────────────────────────────────────────────
+NE PAS TOUCHER
+- Le reste de la logique déjà en place avant ce prompt (tarifs par ville,
+  canOpen/isStock, backfill, etc.) reste inchangé — ce revert cible
+  UNIQUEMENT les fichiers/blocs listés ci-dessus.
+- Si une migration `vitips_city_aliases` a déjà été appliquée en base et
+  qu'il y a des données dedans, les garder (ne pas DROP la table en prod)
+  sauf demande explicite — juste arrêter de la lire/écrire depuis le code.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Revert Vitips city-alias table feature" && git push
+
+VÉRIFICATION
+- Le build passe sans erreur (pas de référence cassée à
+  `vitipsCityAliases` / `VitipsCityAliasesSection` qui traîne).
+- Le matching de ville Vitips fonctionne exactement comme avant ce prompt
+  (auto-correction seule, sans alias).
+- La section "Alias de villes" n'apparaît plus dans l'interface.
