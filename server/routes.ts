@@ -1443,6 +1443,66 @@ export async function registerRoutes(
     }
   });
 
+  // ── Excel export — respects the same filters as /api/orders/filtered ────────
+  app.get("/api/orders/export", requireAuth, async (req, res) => {
+    const user = req.user!;
+    const magasinIdRaw = req.query.magasinId as string | undefined;
+    const productIdRaw = req.query.productId as string | undefined;
+    const filters = {
+      status:      req.query.status      as string | undefined,
+      agentId:     req.query.agentId     ? Number(req.query.agentId)  : undefined,
+      city:        req.query.city        as string | undefined,
+      source:      req.query.source      as string | undefined,
+      utmSource:   req.query.utmSource   as string | undefined,
+      utmCampaign: req.query.utmCampaign as string | undefined,
+      magasinId:   magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
+      productId:   productIdRaw && productIdRaw !== 'all' ? Number(productIdRaw) : undefined,
+      dateFrom:    req.query.dateFrom    as string | undefined,
+      dateTo:      req.query.dateTo      as string | undefined,
+      dateType:    req.query.dateType    as string | undefined,
+      search:      req.query.search      as string | undefined,
+      page:  1,
+      limit: 100_000, // no pagination for export — return everything matching the filters
+    };
+    const agentOnly      = user.role === 'agent'       ? user.id : undefined;
+    const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
+    try {
+      const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+      const orders: any[] = result.orders ?? result;
+
+      const XLSX = await import("xlsx");
+      const rows = orders.map((o: any) => ({
+        "Code":               o.trackNumber  || o.orderNumber || "",
+        "Destinataire":       o.customerName  || "",
+        "Téléphone":          o.customerPhone || "",
+        "Ville":              o.customerCity  || "",
+        "Produit":            o.rawProductName || "",
+        "Boutique":           o.magasinName   || o.source || "",
+        "Frais de livraison": o.shippingCost  ? (o.shippingCost / 100).toFixed(2)  : "0.00",
+        "Prix":               o.totalPrice    ? (o.totalPrice   / 100).toFixed(2)  : "0.00",
+        "Adresse":            o.customerAddress || "",
+        "Référence":          o.orderNumber   || "",
+        "Statut":             o.status        || "",
+        "Date":               o.createdAt     ? new Date(o.createdAt).toLocaleString('fr-FR') : "",
+      }));
+
+      const ws  = XLSX.utils.json_to_sheet(rows);
+      const wb  = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Commandes");
+      const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+      const label    = filters.status || 'export';
+      const dateSlug = new Date().toISOString().slice(0, 10);
+      const filename = `commandes_${label}_${dateSlug}.xlsx`;
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.send(buffer);
+    } catch (err: any) {
+      console.error("[ORDERS-EXPORT-ERROR]", err);
+      res.status(500).json({ message: err?.message || "Erreur export" });
+    }
+  });
+
   app.get("/api/orders/all", requireAuth, async (req, res) => {
     const user = req.user!;
     const magasinIdRaw = req.query.magasinId as string | undefined;

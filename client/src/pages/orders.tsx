@@ -1561,7 +1561,19 @@ export default function Orders() {
               >
                 {bulkMarkEcShippedMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PackageCheck className="w-4 h-4" />}
               </Button>
-              <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
+              <Button
+                variant="outline" size="icon"
+                className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50"
+                title="Exporter en Excel"
+                data-testid="button-export"
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  Object.entries(actualFilters || {}).forEach(([k, v]) => {
+                    if (v !== undefined && v !== '' && v !== 'all') params.set(k, String(v));
+                  });
+                  window.open(`/api/orders/export?${params.toString()}`, '_blank');
+                }}
+              >
                 <FileSpreadsheet className="w-4 h-4" />
               </Button>
             </>

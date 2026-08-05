@@ -591,7 +591,19 @@ export default function AllOrders() {
           <Button variant="outline" size="icon" className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50" title="Expédier" onClick={() => { if (selectedIds.size > 0) setShowBulkShipModal(true); else toast({ title: "Sélectionnez des commandes" }); }} data-testid="all-button-bulk-ship">
             <Truck className="w-4 h-4" />
           </Button>
-          <Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="all-button-export">
+          <Button
+            variant="outline" size="icon"
+            className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50"
+            title="Exporter en Excel"
+            data-testid="all-button-export"
+            onClick={() => {
+              const params = new URLSearchParams();
+              Object.entries(filters || {}).forEach(([k, v]) => {
+                if (v !== undefined && v !== '' && v !== 'all') params.set(k, String(v));
+              });
+              window.open(`/api/orders/export?${params.toString()}`, '_blank');
+            }}
+          >
             <FileSpreadsheet className="w-4 h-4" />
           </Button>
           <Popover open={showColMenu} onOpenChange={setShowColMenu}>

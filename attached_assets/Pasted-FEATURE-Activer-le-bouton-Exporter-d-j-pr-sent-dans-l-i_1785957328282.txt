@@ -1,0 +1,134 @@
+FEATURE — Activer le bouton "Exporter" (déjà présent dans l'interface,
+actuellement désactivé avec le tooltip "Exporter (bientôt)") pour
+télécharger un fichier Excel (.xlsx) des commandes actuellement affichées
+(respecte les filtres actifs — ex: "Livrées", ville, dates...), avec toutes
+les infos utiles : code, destinataire, téléphone, ville, produit, boutique,
+frais de livraison, prix, adresse, référence, statut, date.
+
+La librairie `xlsx` est déjà utilisée ailleurs dans le projet (imports de
+commandes) — pas de nouvelle dépendance à installer.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/routes.ts : nouvel endpoint d'export, réutilise EXACTEMENT
+la même logique de filtres que GET /api/orders/filtered (juste au-dessus
+dans le fichier)
+
+```ts
+app.get("/api/orders/export", requireAuth, async (req, res) => {
+  const user = req.user!;
+  const magasinIdRaw = req.query.magasinId as string | undefined;
+  const productIdRaw = req.query.productId as string | undefined;
+  const filters = {
+    status: req.query.status as string | undefined,
+    agentId: req.query.agentId ? Number(req.query.agentId) : undefined,
+    city: req.query.city as string | undefined,
+    source: req.query.source as string | undefined,
+    utmSource: req.query.utmSource as string | undefined,
+    utmCampaign: req.query.utmCampaign as string | undefined,
+    magasinId: magasinIdRaw && magasinIdRaw !== 'all' ? Number(magasinIdRaw) : undefined,
+    productId: productIdRaw && productIdRaw !== 'all' ? Number(productIdRaw) : undefined,
+    dateFrom: req.query.dateFrom as string | undefined,
+    dateTo: req.query.dateTo as string | undefined,
+    dateType: req.query.dateType as string | undefined,
+    search: req.query.search as string | undefined,
+    page: 1,
+    limit: 100000, // pas de pagination pour l'export — tout ce qui matche les filtres
+  };
+  const agentOnly = user.role === 'agent' ? user.id : undefined;
+  const mediaBuyerOnly = user.role === 'media_buyer' ? user.id : undefined;
+
+  try {
+    const result = await storage.getFilteredOrders(user.storeId!, filters, agentOnly, mediaBuyerOnly);
+    const orders = result.orders || result; // adapter selon la forme exacte renvoyée par getFilteredOrders
+
+    const XLSX = await import("xlsx");
+    const rows = orders.map((o: any) => ({
+      "Code":              o.trackNumber || o.orderNumber || "",
+      "Destinataire":      o.customerName || "",
+      "Téléphone":         o.customerPhone || "",
+      "Ville":             o.customerCity || "",
+      "Produit":           o.rawProductName || "",
+      "Boutique":          o.magasinName || o.source || "",
+      "Frais de livraison": o.shippingCost ? (o.shippingCost / 100).toFixed(2) : "0.00",
+      "Prix":              o.totalPrice ? (o.totalPrice / 100).toFixed(2) : "0.00",
+      "Adresse":           o.customerAddress || "",
+      "Référence":         o.orderNumber || "",
+      "Statut":            o.status || "",
+      "Date":              o.createdAt ? new Date(o.createdAt).toLocaleString('fr-FR') : "",
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Commandes");
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+    const filename = `commandes_${filters.status || 'export'}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err: any) {
+    console.error("[ORDERS-EXPORT-ERROR]", err);
+    res.status(500).json({ message: err?.message || "Erreur export" });
+  }
+});
+```
+
+Vérifier la forme exacte de l'objet renvoyé par `storage.getFilteredOrders`
+(`{ orders: [...], total: N }` ou directement un tableau) et ajuster
+`const orders = result.orders || result;` en conséquence — regarder
+comment `/api/orders/filtered` l'utilise juste au-dessus pour confirmer.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — client/src/pages/orders.tsx (~ligne 1564) : activer le bouton
+
+Remplacer :
+```tsx
+<Button variant="outline" size="icon" className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50 opacity-50 cursor-not-allowed" title="Exporter (bientôt)" disabled data-testid="button-export">
+  <FileSpreadsheet className="w-4 h-4" />
+</Button>
+```
+par :
+```tsx
+<Button
+  variant="outline" size="icon"
+  className="h-9 w-9 border-emerald-200 text-emerald-600 hover:bg-emerald-50"
+  title="Exporter en Excel"
+  data-testid="button-export"
+  onClick={() => {
+    const params = new URLSearchParams();
+    Object.entries(actualFilters || {}).forEach(([k, v]) => {
+      if (v !== undefined && v !== '' && v !== 'all') params.set(k, String(v));
+    });
+    window.open(`/api/orders/export?${params.toString()}`, '_blank');
+  }}
+>
+  <FileSpreadsheet className="w-4 h-4" />
+</Button>
+```
+
+Adapter `actualFilters` au nom réel de l'objet de filtres déjà utilisé pour
+`/api/orders/filtered` dans ce même fichier (déjà repéré ~ligne 1229 —
+utiliser exactement la même variable, pour que l'export corresponde
+toujours à ce qui est affiché à l'écran, filtres actifs inclus comme
+"Livrées").
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — client/src/pages/all-orders.tsx (~ligne 594) : même traitement
+
+Même remplacement que l'ÉTAPE 2, en utilisant l'objet `filters` déjà
+existant dans ce fichier (celui passé à `useAllOrders(filters)`).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Enable Excel export for filtered orders list (Livrées, etc.)" && git push
+
+VÉRIFICATION
+1. Aller sur "Mes Commandes → Livrées" → cliquer le bouton "Exporter"
+   (icône tableur, plus grisé) → un fichier .xlsx doit se télécharger.
+2. Ouvrir le fichier → colonnes Code/Destinataire/Téléphone/Ville/Produit/
+   Boutique/Frais de livraison/Prix/Adresse/Référence/Statut/Date, une
+   ligne par commande livrée actuellement affichée.
+3. Changer un filtre (ex: une ville précise) puis exporter à nouveau → le
+   fichier doit refléter UNIQUEMENT les commandes filtrées, pas toutes.
+4. Tester aussi depuis "Commandes (Toutes)" (all-orders.tsx) → même
+   comportement.
