@@ -1,0 +1,116 @@
+FIX DÉFINITIF — Le Profit Analyzer Pro (computeProfitability) ne calcule
+JAMAIS de coût réel pour les commandes sans order_items dont le nom combine
+plusieurs produits ("Sandale En Cuir Rf 207 Tabac 41 + Sandale En Cuir
+Rf210 X2 Noir 43 + Sandale En Cuir Rf 207 Tabac 43 (non lié)") — Sourcing
+reste à "—" tant qu'un backfill manuel n'est pas relancé. Objectif : que le
+Profit Analyzer calcule ça TOUT SEUL, en continu, pour toute nouvelle
+commande dans ce cas — sans dépendre d'un script one-shot.
+
+CAUSE (confirmée dans le code)
+server/services/profit.ts, bloc "Bucket orders that have NO orderItems
+rows" (~ligne 397-427) :
+```ts
+if (isDel) {
+  s.revenue      += Number((order as any).totalPrice   || 0) / 100;
+  s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+  // Fallback COGS from order-level productCost field (centimes)
+  s.productCost  += Number((order as any).productCost  || 0) / 100;
+  ...
+}
+```
+Le coût vient UNIQUEMENT de `order.productCost` (un champ resté à 0 pour ces
+commandes) — ce bloc n'essaie JAMAIS de splitter le `rawProductName` combiné
+("A + B + C") ni de faire correspondre chaque partie à un produit/variante
+du catalogue, contrairement à la boucle `itemRows` juste au-dessus qui,
+elle, a déjà toute cette logique (variantes, correspondance approximative,
+etc.) mais qui ne s'applique qu'aux commandes AVEC des order_items.
+
+FIX — Appliquer la MÊME cascade de correspondance (déjà présente et
+fonctionnelle plus haut dans ce fichier) à CHAQUE partie du nom combiné,
+directement dans ce bloc, pour que le calcul soit correct en continu, sans
+backfill.
+
+────────────────────────────────────────────────────────────────────────────
+server/services/profit.ts — remplacer le bloc `if (isDel) { ... }` de la
+boucle "Bucket orders that have NO orderItems rows" par :
+
+```ts
+if (isDel) {
+  s.revenue      += Number((order as any).totalPrice   || 0) / 100;
+  s.shippingCost += Number((order as any).shippingCost || 0) / 100;
+
+  // ── NOUVEAU : calculer le vrai coût en splittant "A + B + C" et en
+  // faisant correspondre CHAQUE partie à un produit/variante du catalogue,
+  // avec la même cascade que pour les commandes déjà liées (exact → base+
+  // suffixe variante → fuzzy contains → coût de variante en dernier
+  // recours). Remplace le fallback order.productCost (toujours à 0 ici).
+  let computedCost = 0;
+  if (raw) {
+    const parts = raw.split(/\s*\+\s*/).map((p: string) => p.replace(/\s*\(non li[ée]\)\s*$/i, '').trim()).filter(Boolean);
+    for (const part of parts) {
+      let partCost = costByName.get(norm(part)) || 0;
+
+      if (!partCost) {
+        const { base: partBase, suffix: partSuffix } = splitVariant(part);
+        const suffixGuess = partSuffix || part.trim().split(' ').pop();
+        const baseGuess = partSuffix ? partBase : part.replace(new RegExp(`\\s+${suffixGuess}$`), '').trim();
+        if (baseGuess && norm(baseGuess) !== norm(part)) {
+          const altProductId = idByName.get(norm(baseGuess));
+          if (altProductId) {
+            const altVariantCost = suffixGuess ? variantCostByKey.get(`${altProductId}::${norm(suffixGuess)}`) : undefined;
+            partCost = altVariantCost || costByName.get(norm(baseGuess)) || 0;
+          }
+        }
+        // Fuzzy contains match, en dernier recours — même logique que plus haut.
+        if (!partCost) {
+          const partNorm = norm(part);
+          const baseNorm = norm(baseGuess || part);
+          const fuzzy = storeProductsList
+            .filter(p => {
+              const pn = norm(p.name);
+              return pn.length >= 4 && (partNorm.includes(pn) || pn.includes(baseNorm) || baseNorm.includes(pn));
+            })
+            .sort((a, b) => b.name.length - a.name.length)[0];
+          if (fuzzy) {
+            const altVariantCost = suffixGuess ? variantCostByKey.get(`${fuzzy.id}::${norm(suffixGuess)}`) : undefined;
+            partCost = altVariantCost || Number(fuzzy.costPrice) || 0;
+          }
+        }
+      }
+      computedCost += Number(partCost) || 0;
+    }
+  }
+  // Si rien n'a matché (vrai "— Sans produit —" sans nom du tout, ou aucune
+  // partie reconnue), garder le fallback existant order.productCost.
+  s.productCost += computedCost > 0 ? (computedCost / 100) : (Number((order as any).productCost || 0) / 100);
+
+  const agentDH   = agentRateMap.get((order as any).assignedToId) ?? 0;
+  s.confirmationCost += agentDH;
+}
+```
+
+Ce fix réutilise `costByName`, `idByName`, `variantCostByKey`,
+`storeProductsList` et `splitVariant` déjà chargés/importés plus haut dans
+le même fichier — aucune nouvelle requête DB, aucun nouvel import
+nécessaire.
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Compute real cost for multi-part unlinked orders directly in Profit Analyzer (no backfill needed)" && git push
+
+VÉRIFICATION
+1. Rentabilité Avancée / Profit Analyzer Pro → la ligne "Sandale En Cuir Rf
+   207 Tabac 41 + Sandale En Cuir Rf210 X2 Noir 43 + Sandale En Cuir Rf 207
+   Tabac 43 (non lié)" doit maintenant avoir un Sourcing Total non-nul
+   (somme des coûts des 3 parties reconnues), plus de "—".
+2. La marge de cette ligne doit descendre à une valeur réaliste (pas
+   90%+ comme avant, où le coût était ignoré).
+3. Vérifier 2-3 autres lignes "(non lié)" avec plusieurs "+" → même
+   comportement.
+4. Vérifier qu'aucune commande déjà correctement liée (avec order_items)
+   n'est affectée — ce fix ne touche QUE le bloc des commandes sans
+   order_items.
+5. Comme ce calcul se fait maintenant à la volée à chaque chargement du
+   Profit Analyzer, AUCUN backfill/bouton à recliquer n'est nécessaire pour
+   que de nouvelles commandes de ce type soient correctement comptées dans
+   le futur.

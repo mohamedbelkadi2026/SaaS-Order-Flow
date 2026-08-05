@@ -421,8 +421,67 @@ export async function computeProfitability(
     if (isDel) {
       s.revenue      += Number((order as any).totalPrice   || 0) / 100;
       s.shippingCost += Number((order as any).shippingCost || 0) / 100;
-      // Fallback COGS from order-level productCost field (centimes)
-      s.productCost  += Number((order as any).productCost  || 0) / 100;
+
+      // ── Real COGS: split "A + B + C (non lié)" and match each part to the
+      // catalogue using the same cascade as the itemRows loop above
+      // (exact → base+variant suffix → fuzzy contains).
+      // Falls back to order.productCost only when nothing matches at all.
+      let computedCost = 0;
+      if (raw) {
+        const parts = raw
+          .split(/\s*\+\s*/)
+          .map((p: string) => p.replace(/\s*\(non li[ée]\)\s*$/i, '').trim())
+          .filter(Boolean);
+
+        for (const part of parts) {
+          let partCost = costByName.get(norm(part)) || 0;
+
+          if (!partCost) {
+            const { base: partBase, suffix: partSuffix } = splitVariant(part);
+            const suffixGuess = partSuffix || part.trim().split(' ').pop();
+            const baseGuess   = partSuffix
+              ? partBase
+              : part.replace(new RegExp(`\\s+${suffixGuess}$`), '').trim();
+
+            if (baseGuess && norm(baseGuess) !== norm(part)) {
+              const altProductId = idByName.get(norm(baseGuess));
+              if (altProductId) {
+                const altVariantCost = suffixGuess
+                  ? variantCostByKey.get(`${altProductId}::${norm(suffixGuess)}`)
+                  : undefined;
+                partCost = altVariantCost || costByName.get(norm(baseGuess)) || 0;
+              }
+            }
+
+            // Fuzzy contains match — last resort, same logic as itemRows loop
+            if (!partCost) {
+              const partNorm = norm(part);
+              const baseNorm = norm(baseGuess || part);
+              const fuzzy = storeProductsList
+                .filter(p => {
+                  const pn = norm(p.name);
+                  return pn.length >= 4 && (
+                    partNorm.includes(pn) || pn.includes(baseNorm) || baseNorm.includes(pn)
+                  );
+                })
+                .sort((a, b) => b.name.length - a.name.length)[0];
+              if (fuzzy) {
+                const altVariantCost = suffixGuess
+                  ? variantCostByKey.get(`${fuzzy.id}::${norm(suffixGuess)}`)
+                  : undefined;
+                partCost = altVariantCost || Number(fuzzy.costPrice) || 0;
+              }
+            }
+          }
+          computedCost += Number(partCost) || 0;
+        }
+      }
+      // If nothing matched (truly nameless order or no part recognised),
+      // fall back to the order-level productCost field (centimes).
+      s.productCost += computedCost > 0
+        ? (computedCost / 100)
+        : (Number((order as any).productCost || 0) / 100);
+
       const agentDH   = agentRateMap.get((order as any).assignedToId) ?? 0;
       s.confirmationCost += agentDH;
     }
