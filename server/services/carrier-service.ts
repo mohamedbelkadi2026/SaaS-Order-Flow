@@ -754,8 +754,10 @@ function extractLabelUrl(body: any): string | undefined {
  */
 function extractCarrierErrorMsg(body: any): string | null {
   if (!body) return null;
-  if (typeof body === "string") return body.slice(0, 400);
-  if (typeof body !== "object") return String(body).slice(0, 400);
+  // No truncation — carrier messages (especially city-validation errors from Vitips)
+  // can be long and must be shown in full to the user and in logs.
+  if (typeof body === "string") return body;
+  if (typeof body !== "object") return String(body);
 
   const msg =
     body.message          ||
@@ -771,8 +773,8 @@ function extractCarrierErrorMsg(body: any): string | null {
     null;
 
   if (!msg) return null;
-  if (typeof msg === "object") return JSON.stringify(msg).slice(0, 400);
-  return String(msg).slice(0, 400);
+  if (typeof msg === "object") return JSON.stringify(msg);
+  return String(msg);
 }
 
 /**

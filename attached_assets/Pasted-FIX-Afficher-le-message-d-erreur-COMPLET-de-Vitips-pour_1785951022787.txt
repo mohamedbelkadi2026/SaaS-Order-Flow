@@ -1,0 +1,46 @@
+FIX — Afficher le message d'erreur COMPLET de Vitips pour les échecs liés à
+la ville (actuellement tronqué dans l'interface : "La ville du client
+destinataire" sans la suite), pour pouvoir diagnostiquer précisément.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/routes.ts : ne plus tronquer le message d'erreur affiché
+à l'utilisateur
+
+Trouver où le message d'échec par commande est construit pour l'affichage
+dans la modale "Expédition terminée" (probablement dans le même bloc que
+`console.error(`[SHIPPING-LOG]: ❌ Order #${ref} failed — HTTP ${httpCode}: ${errMsg}`)`,
+~ligne 1974 et ~ligne 13608) — vérifier si `errMsg` est tronqué quelque part
+(ex: `.slice(0, N)` ou une limite de longueur côté frontend) et retirer
+toute troncature. Le message doit être stocké et renvoyé EN ENTIER, tel que
+reçu de Vitips.
+
+Vérifier aussi côté frontend (le composant qui affiche "Expédition
+terminée" avec la liste des échecs, ex: dans all-orders.tsx ou un composant
+dédié BulkShipModal) s'il y a une classe CSS `truncate` ou un
+`text-ellipsis` qui coupe visuellement le texte — si oui, soit l'enlever
+pour ce message précis, soit ajouter un `title={fullMessage}` (tooltip au
+survol) pour voir le texte complet sans casser la mise en page.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Logger aussi la réponse BRUTE complète de Vitips (pas juste le
+champ `error`) pour ces échecs, au cas où il y aurait plus d'info utile
+ailleurs dans la réponse JSON :
+
+Dans le bloc qui traite la réponse de Vitips (`buildVitipsPayload` /
+l'appel HTTP vers `add-colis`), s'assurer que ce log existe déjà tel quel
+(vérifier qu'il n'est pas tronqué non plus) :
+```ts
+console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — HTTP ${status} — response:`, JSON.stringify(vitipsData));
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Show full untruncated Vitips error messages (city errors were cut off)" && git push
+
+VÉRIFICATION
+1. Réessayer d'expédier la commande #YC-39428 (ou une autre en échec ville).
+2. Dans la modale "Expédition terminée" ET dans les logs Railway, le
+   message d'erreur complet doit être visible (pas coupé après "La ville du
+   client destinataire").
+3. Copier-coller-moi ce message complet — je te dirai précisément ce qu'il
+   faut corriger (orthographe de ville, format attendu, etc.).

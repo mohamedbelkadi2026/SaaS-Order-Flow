@@ -3048,7 +3048,7 @@ export default function Orders() {
             const failures = shipProgress.results.filter(r => r.status === 'failed');
             const blacklisted        = failures.filter(r => r.error?.includes('blacklist') || r.error?.includes('liste noire') || r.error?.includes('🚫'));
             const duplicates         = failures.filter(r => r.error?.includes('double') || r.error?.includes('existe déjà') || r.error?.includes('⚠️ Commande'));
-            const addressBad         = failures.filter(r => r.error?.includes('Adresse') || r.error?.includes('Ville') || r.error?.includes('📍'));
+            const addressBad         = failures.filter(r => /adresse|ville/i.test(r.error || '') || r.error?.includes('📍'));
             const validationFailures = failures.filter(r => /Données manquantes|Destinataire.*obligatoire/i.test(r.error || ''));
             const transient          = failures.filter(r =>
               !blacklisted.includes(r) && !duplicates.includes(r) && !addressBad.includes(r) && !validationFailures.includes(r)
@@ -3065,7 +3065,7 @@ export default function Orders() {
                     </p>
                     <ul className="space-y-0.5 max-h-32 overflow-y-auto">
                       {blacklisted.map(r => (
-                        <li key={r.orderId} className="text-[10px] text-red-700 dark:text-red-300">
+                        <li key={r.orderId} className="text-[10px] text-red-700 dark:text-red-300" title={r.error}>
                           <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
                         </li>
                       ))}
@@ -3080,7 +3080,7 @@ export default function Orders() {
                     </p>
                     <ul className="space-y-0.5 max-h-28 overflow-y-auto">
                       {duplicates.map(r => (
-                        <li key={r.orderId} className="text-[10px] text-orange-700 dark:text-orange-300">
+                        <li key={r.orderId} className="text-[10px] text-orange-700 dark:text-orange-300" title={r.error}>
                           <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
                         </li>
                       ))}
@@ -3095,7 +3095,7 @@ export default function Orders() {
                     </p>
                     <ul className="space-y-0.5 max-h-28 overflow-y-auto">
                       {addressBad.map(r => (
-                        <li key={r.orderId} className="text-[10px] text-yellow-700 dark:text-yellow-300">
+                        <li key={r.orderId} className="text-[10px] text-yellow-700 dark:text-yellow-300" title={r.error}>
                           <span className="font-mono font-bold">#{r.orderNumber}</span> — {r.error}
                         </li>
                       ))}
