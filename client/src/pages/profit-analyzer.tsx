@@ -535,7 +535,7 @@ export default function ProfitAnalyzer() {
       qty:      detectCol(headers, ["qte", "qty", "quantite", "quantity", "nbre", "nombre", "nbr colis"]),
       cod:      detectCol(headers, ["price", "cod", "montant cod", "prix", "montant", "amount", "valeur", "revenue", "total", "tarif"]),
       status:   detectCol(headers, ["status", "statut", "etat", "livraison", "situation"]),
-      shipping: detectCol(headers, ["shipping cost", "frais livr", "frais exp", "cout livr", "shipping", "frais port", "frais transport", "delivery cost"]),
+      shipping: detectCol(headers, ["frais de livraison", "frais de livr", "shipping cost", "frais livr", "frais exp", "cout livr", "shipping", "frais port", "frais transport", "delivery cost"]),
     };
     if (!detected.product) detected.product = detectProductColFromData(headers, dataRows);
     if (!detected.product) return { id, fileName, sheetName, totalRows: 0, deliveredRows: 0, headers, rawDataRows: dataRows, colMap: detected, rows: [], error: "Colonne Produit non détectée." };

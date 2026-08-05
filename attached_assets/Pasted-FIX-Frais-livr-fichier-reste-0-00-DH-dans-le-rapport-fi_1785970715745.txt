@@ -1,0 +1,56 @@
+FIX — "Frais livr. (fichier)" reste à 0,00 DH dans le rapport final du mode
+"Import CSV" même quand le fichier importé a bien une colonne de frais de
+livraison, parce que celle-ci s'appelle très probablement "FRAIS DE
+LIVRAISON" (le nom exact utilisé partout ailleurs dans la plateforme, y
+compris dans l'export commandes) — et aucun des mots-clés de détection
+automatique ne matche ce nom précis.
+
+CAUSE (confirmée dans le code)
+client/src/pages/profit-analyzer.tsx, ~ligne 536 :
+```ts
+shipping: detectCol(headers, ["shipping cost", "frais livr", "frais exp", "cout livr", "shipping", "frais port", "frais transport", "delivery cost"]),
+```
+`detectCol` (ligne 42-54) essaie d'abord une correspondance EXACTE, puis un
+`includes()` en repli. Aucun mot-clé de la liste n'est un sous-texte
+contigu de "frais de livraison" — le mot "DE" entre "FRAIS" et "LIVRAISON"
+casse la correspondance substring ("frais livr" n'apparaît PAS tel quel
+dans "frais de livraison"). Résultat : la colonne n'est jamais détectée
+automatiquement, `shipping` reste vide dans `colMap`, donc chaque ligne est
+parsée avec `shipping: 0`.
+
+FIX — Ajouter "frais de livraison" (et quelques variantes courantes) à la
+liste de mots-clés :
+
+```ts
+shipping: detectCol(headers, [
+  "frais de livraison",   // ← AJOUTÉ, nom exact utilisé dans la plateforme
+  "frais de livr",        // ← AJOUTÉ, variante tronquée
+  "shipping cost",
+  "frais livr",
+  "frais exp",
+  "cout livr",
+  "shipping",
+  "frais port",
+  "frais transport",
+  "delivery cost",
+]),
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add 'FRAIS DE LIVRAISON' to shipping column auto-detection keywords for CSV import" && git push
+
+VÉRIFICATION
+1. Étape 1 (Import Fichier) → réimporter le même fichier CSV → dans le
+   mapping de colonnes affiché, "Frais livr." doit maintenant pointer
+   automatiquement vers la colonne "FRAIS DE LIVRAISON" du fichier (plus
+   besoin de la sélectionner à la main).
+2. Étape 3 (Rapport Final) → "Frais livr. (fichier)" doit afficher un
+   montant non-nul, cohérent avec les frais de livraison réels des
+   commandes importées.
+3. "CA Net" (= CA Brut − Frais livr.) doit baisser en conséquence, et
+   "Bénéfice net" doit refléter ce coût réel.
+4. Si le mapping de colonnes est modifiable manuellement dans l'interface
+   et qu'un utilisateur avait déjà sélectionné la bonne colonne à la main
+   pour contourner ce bug, vérifier que ça continue de fonctionner
+   normalement (pas de régression sur la sélection manuelle).
