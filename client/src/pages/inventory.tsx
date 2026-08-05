@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench } from "lucide-react";
+import { Plus, Package, PackagePlus, Pencil, Trash2, Search, AlertTriangle, TrendingUp, Boxes, PackageX, BarChart3, X, History, Brain, Sparkles, ImageUp, CheckCircle2, MapPin, AlertCircle, ArrowUpCircle, ArrowDownCircle, RotateCcw, Archive, Filter, ShieldAlert, CheckSquare, Link2, Wrench, Copy } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -797,6 +797,15 @@ export default function Inventory() {
 
   const updateVariant = (idx: number, field: keyof VariantForm, value: string) => {
     setVariants(v => v.map((vr, i) => i === idx ? { ...vr, [field]: value } : vr));
+  };
+
+  const applyCostToAllVariants = () => {
+    if (!form.costPrice) {
+      toast({ title: "Entrez d'abord le Prix coûtant du produit", variant: "destructive" });
+      return;
+    }
+    setVariants(v => v.map(vr => ({ ...vr, costPrice: form.costPrice })));
+    toast({ title: `Prix coûtant (${form.costPrice} DH) appliqué à toutes les variantes` });
   };
 
   const handleCreate = async () => {
@@ -1666,9 +1675,14 @@ export default function Inventory() {
               <div className="space-y-3 p-4 rounded-xl bg-muted/30 border">
                 <div className="flex items-center justify-between">
                   <h4 className="font-semibold text-sm">Variantes</h4>
-                  <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-add-variant">
-                    <Plus className="w-3 h-3 mr-1" /> Ajouter
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost" onClick={applyCostToAllVariants} data-testid="button-apply-cost-all-variants" title="Copier le Prix coûtant du produit vers toutes les variantes">
+                      <Copy className="w-3 h-3 mr-1" /> Appliquer le coûtant à toutes
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-add-variant">
+                      <Plus className="w-3 h-3 mr-1" /> Ajouter
+                    </Button>
+                  </div>
                 </div>
                 {variants.length === 0 && (
                   <p className="text-sm text-muted-foreground text-center py-4">Aucune variante. Cliquez sur "Ajouter" pour commencer.</p>
@@ -1856,9 +1870,14 @@ export default function Inventory() {
               <div className="space-y-3 p-4 rounded-xl bg-muted/30 border">
                 <div className="flex items-center justify-between">
                   <h4 className="font-semibold text-sm">Variantes</h4>
-                  <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-edit-add-variant">
-                    <Plus className="w-3 h-3 mr-1" /> Ajouter
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost" onClick={applyCostToAllVariants} data-testid="button-edit-apply-cost-all-variants" title="Copier le Prix coûtant du produit vers toutes les variantes">
+                      <Copy className="w-3 h-3 mr-1" /> Appliquer le coûtant à toutes
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={addVariant} data-testid="button-edit-add-variant">
+                      <Plus className="w-3 h-3 mr-1" /> Ajouter
+                    </Button>
+                  </div>
                 </div>
                 {variants.length === 0 && (
                   <p className="text-sm text-muted-foreground text-center py-4">Aucune variante. Cliquez sur "Ajouter" pour commencer.</p>
