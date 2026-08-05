@@ -1636,11 +1636,18 @@ export async function registerRoutes(
         if (blockedOrders.length > 0) broadcastProgress();
 
         // ── Helpers ─────────────────────────────────────────────────
-        const getProductName = (order: any) =>
-          order.rawProductName ||
-          (order.items?.length > 0
-            ? (order.items[0].rawProductName || order.items[0].product?.name || 'Produit')
-            : 'Produit');
+        // Returns a product name string, or null if no resolvable name exists.
+        // Uses ALL items (not just the first) so multi-item orders get a complete label.
+        // Returns null instead of the generic "Produit" fallback — callers that require
+        // a real product name (e.g. Vitips) should fail-fast rather than sending "Produit".
+        const getProductName = (order: any): string | null => {
+          if (order.rawProductName) return order.rawProductName;
+          if (!order.items || order.items.length === 0) return null;
+          const names = order.items
+            .map((it: any) => it.rawProductName || it.product?.name)
+            .filter(Boolean);
+          return names.length > 0 ? names.join(" + ") : null;
+        };
 
         // Resolve credentials per-order:
         // if user pinned an account → always use it; otherwise use city routing
@@ -1821,6 +1828,23 @@ export async function registerRoutes(
                     console.log(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → abbr="${vitipsCityAbbr}"`);
                   } else {
                     console.warn(`[VITIPS-CITY] order=${order.id} city="${resolvedCity}" → no abbr found, sending city name directly`);
+                  }
+
+                  // Fail-fast: Vitips rejects shipments with a generic product name.
+                  // If no real product name can be resolved, surface a clear error immediately.
+                  const resolvedProductName = getProductName(order);
+                  if (!resolvedProductName) {
+                    const ref = (order as any).orderNumber || order.id;
+                    const errMsg = `Commande #${ref} — aucun produit identifiable, impossible d'expédier via Vitips. Rattachez la commande à un produit du catalogue ou renseignez le nom du produit.`;
+                    console.error(`[VITIPS-SHIP] ❌ ${errMsg}`);
+                    return {
+                      success:        false,
+                      error:          errMsg,
+                      carrierMessage: errMsg,
+                      httpStatus:     0,
+                      rawResponse:    null,
+                      permanent:      true,
+                    };
                   }
                 }
 

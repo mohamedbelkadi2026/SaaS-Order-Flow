@@ -587,7 +587,7 @@ function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
   const addr    = (input.address || "").trim() || input.city.trim();
   const city    = input.cityId || input.city.trim(); // abbr preferred; fall back to city name
 
-  return {
+  const payload = {
     fullname:     input.customerName.trim(),
     phone,
     city,
@@ -602,6 +602,8 @@ function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
     try_product:  0,
     internal_id:  input.orderNumber,
   };
+  console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — payload: ${JSON.stringify(payload)}`);
+  return payload;
 }
 
 /** Dispatch to the correct builder based on the carrier. */
@@ -1594,6 +1596,8 @@ export async function shipOrderToCarrier(
       // Full pretty-printed body so we can see exactly what Digylog returns
       console.log(`[DIGYLOG-RESP]: HTTP ${httpStatus}`);
       console.log(`[DIGYLOG-RESP-FULL]: ${JSON.stringify(rawBody, null, 2)}`);
+    } else if (providerKey === "vitipsexpress") {
+      console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — HTTP ${httpStatus} — response: ${JSON.stringify(rawBody)}`);
     } else {
       console.log(`${tag} Body: ${JSON.stringify(rawBody)}`);
     }
