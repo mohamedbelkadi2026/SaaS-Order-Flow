@@ -8844,6 +8844,35 @@ function ensureHeaders(sheet) {
     }
   });
 
+  app.post("/api/products/bulk-apply-cost-to-variants", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const allProducts = await storage.getProductsByStore(storeId);
+      const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+
+      let updatedVariants = 0;
+      const details: { productName: string; variantsUpdated: number }[] = [];
+
+      for (const p of allProducts) {
+        if (!p.hasVariants || !p.costPrice || p.costPrice <= 0) continue;
+        const variants = allVariants.filter(v => v.productId === p.id);
+        let countForThisProduct = 0;
+        for (const v of variants) {
+          if (!v.costPrice || v.costPrice <= 0) {
+            await db.update(productVariants).set({ costPrice: p.costPrice }).where(eq(productVariants.id, v.id));
+            countForThisProduct++;
+            updatedVariants++;
+          }
+        }
+        if (countForThisProduct > 0) details.push({ productName: p.name, variantsUpdated: countForThisProduct });
+      }
+
+      res.json({ message: `${updatedVariants} variante(s) mises à jour sur ${details.length} produit(s)`, updatedVariants, productsAffected: details.length, details });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // GET  /api/stock/fix-historical-shipments/preview
   // POST /api/stock/fix-historical-shipments/apply

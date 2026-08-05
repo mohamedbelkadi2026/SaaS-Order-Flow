@@ -636,12 +636,23 @@ export default function Inventory() {
 
   // Backfill initial-stock-history
   const [backfillResult, setBackfillResult] = useState<any>(null);
+  const [bulkCostResult, setBulkCostResult] = useState<any>(null);
   const backfillHistoryMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/products/backfill-initial-stock-history", {}).then((r: any) => r.json ? r.json() : r),
     onSuccess: (data: any) => {
       setBackfillResult(data);
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       toast({ title: "✅ Historique réparé", description: data.message });
+    },
+    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+  });
+
+  const bulkApplyCostMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/products/bulk-apply-cost-to-variants", {}).then((r: any) => r.json ? r.json() : r),
+    onSuccess: (data: any) => {
+      setBulkCostResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      toast({ title: "✅ Coûtants appliqués", description: data.message });
     },
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
@@ -1290,6 +1301,20 @@ export default function Inventory() {
             <><Loader2 className="w-4 h-4 animate-spin" /> Réparation en cours...</>
           ) : (
             <><History className="w-4 h-4" /> Réparer l'historique des stocks</>
+          )}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-2"
+          onClick={() => bulkApplyCostMutation.mutate()}
+          disabled={bulkApplyCostMutation.isPending}
+          data-testid="button-bulk-apply-cost-variants"
+        >
+          {bulkApplyCostMutation.isPending ? (
+            <><Loader2 className="w-4 h-4 animate-spin" /> En cours...</>
+          ) : (
+            <><Copy className="w-4 h-4" /> Appliquer coûtant à toutes les variantes</>
           )}
         </Button>
       </div>
@@ -2481,6 +2506,27 @@ export default function Inventory() {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">Aucune entrée manquante trouvée — tout est déjà à jour.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!bulkCostResult} onOpenChange={(v) => !v && setBulkCostResult(null)}>
+        <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Coûtants appliqués aux variantes</DialogTitle>
+            <DialogDescription>{bulkCostResult?.message}</DialogDescription>
+          </DialogHeader>
+          {bulkCostResult?.details?.length > 0 ? (
+            <div className="space-y-2">
+              {bulkCostResult.details.map((d: any, i: number) => (
+                <div key={i} className="flex justify-between items-center text-sm border-b pb-1.5">
+                  <span className="truncate max-w-[70%]">{d.productName}</span>
+                  <span className="text-emerald-600 font-semibold">{d.variantsUpdated} variante(s)</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Aucune variante à compléter — tout est déjà renseigné.</p>
           )}
         </DialogContent>
       </Dialog>

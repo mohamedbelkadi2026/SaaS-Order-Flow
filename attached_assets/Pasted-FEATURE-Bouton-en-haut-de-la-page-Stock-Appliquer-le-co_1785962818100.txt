@@ -1,0 +1,121 @@
+FEATURE — Bouton en haut de la page Stock : "Appliquer le coûtant à toutes
+les variantes (tous produits)" — applique en UNE FOIS, sur les 93 produits
+(et plus), la règle "variante sans Coûtant renseigné → prend le Coûtant du
+produit parent", au lieu de le faire manuellement produit par produit.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/routes.ts : endpoint bulk
+
+```ts
+app.post("/api/products/bulk-apply-cost-to-variants", requireAuth, requireAdmin, async (req: any, res: any) => {
+  try {
+    const storeId = req.user!.storeId!;
+    const allProducts = await storage.getProductsByStore(storeId);
+    const allVariants = await db.select().from(productVariants).where(eq(productVariants.storeId, storeId));
+
+    let updatedVariants = 0;
+    const details: { productName: string; variantsUpdated: number }[] = [];
+
+    for (const p of allProducts) {
+      if (!p.hasVariants || !p.costPrice || p.costPrice <= 0) continue; // rien à copier si le parent n'a pas de coût
+      const variants = allVariants.filter(v => v.productId === p.id);
+      let countForThisProduct = 0;
+      for (const v of variants) {
+        if (!v.costPrice || v.costPrice <= 0) { // ne touche QUE les variantes sans coût déjà renseigné
+          await db.update(productVariants).set({ costPrice: p.costPrice }).where(eq(productVariants.id, v.id));
+          countForThisProduct++;
+          updatedVariants++;
+        }
+      }
+      if (countForThisProduct > 0) details.push({ productName: p.name, variantsUpdated: countForThisProduct });
+    }
+
+    res.json({ message: `${updatedVariants} variante(s) mises à jour sur ${details.length} produit(s)`, updatedVariants, productsAffected: details.length, details });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+});
+```
+
+Ce endpoint est VOLONTAIREMENT prudent : il ne touche QUE les variantes dont
+le Coûtant est vide/0 — il n'écrase JAMAIS une variante qui a déjà un coût
+différent renseigné manuellement (ex: "Sandale En Cuir Rf 1012 Noir", où les
+tailles 42/43 ont déjà 140 DH — celles-là restent inchangées, seules 40/41/44
+à 0 seraient complétées).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — client/src/pages/inventory.tsx : bouton en haut de la page + dialog
+de résultat (même pattern que "Réparer l'historique des stocks" déjà ajouté)
+
+```tsx
+const [bulkCostResult, setBulkCostResult] = useState<any>(null);
+const bulkApplyCostMutation = useMutation({
+  mutationFn: () => apiRequest("POST", "/api/products/bulk-apply-cost-to-variants", {}).then(r => r.json()),
+  onSuccess: (data) => {
+    setBulkCostResult(data);
+    qc.invalidateQueries({ queryKey: ["/api/products"] });
+    toast({ title: "✅ Coûtants appliqués", description: data.message });
+  },
+  onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
+});
+```
+
+Bouton, à côté de "Nettoyage intelligent" / "Réparer l'historique des
+stocks" existants en haut de la page Stock :
+```tsx
+<Button
+  variant="outline"
+  onClick={() => bulkApplyCostMutation.mutate()}
+  disabled={bulkApplyCostMutation.isPending}
+  data-testid="button-bulk-apply-cost-variants"
+>
+  {bulkApplyCostMutation.isPending ? (
+    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> En cours...</>
+  ) : (
+    <><Copy className="w-4 h-4 mr-2" /> Appliquer coûtant à toutes les variantes</>
+  )}
+</Button>
+```
+
+Dialog de résultat (même structure que celui de "Réparer l'historique") :
+```tsx
+<Dialog open={!!bulkCostResult} onOpenChange={(v) => !v && setBulkCostResult(null)}>
+  <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+    <DialogHeader>
+      <DialogTitle>Coûtants appliqués aux variantes</DialogTitle>
+      <DialogDescription>{bulkCostResult?.message}</DialogDescription>
+    </DialogHeader>
+    {bulkCostResult?.details?.length > 0 ? (
+      <div className="space-y-2">
+        {bulkCostResult.details.map((d: any, i: number) => (
+          <div key={i} className="flex justify-between items-center text-sm border-b pb-1.5">
+            <span className="truncate max-w-[70%]">{d.productName}</span>
+            <span className="text-emerald-600 font-semibold">{d.variantsUpdated} variante(s)</span>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <p className="text-sm text-muted-foreground">Aucune variante à compléter — tout est déjà renseigné.</p>
+    )}
+  </DialogContent>
+</Dialog>
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add bulk button to apply parent cost price to all variants across all products" && git push
+
+VÉRIFICATION
+1. Page Stock → bouton "Appliquer coûtant à toutes les variantes" visible
+   en haut.
+2. Cliquer → dialog liste tous les produits où au moins une variante a été
+   complétée, avec le nombre de variantes par produit.
+3. Ouvrir un produit qui avait des variantes à 0 (ex: "Sandale En Cuir Rf
+   1012 Marron", variantes 41/42/43/44 vides) → doit maintenant afficher
+   140,00 DH partout.
+4. Ouvrir un produit où certaines variantes avaient DÉJÀ un coût différent
+   (ex: "Rf 1012 Noir", tailles 42/43 à 140 DH) → celles-là ne doivent PAS
+   avoir changé, seules les variantes qui étaient à 0 doivent être
+   complétées.
+5. Recliquer le bouton une seconde fois → "Aucune variante à compléter" (le
+   script ne re-modifie jamais une variante déjà traitée).
