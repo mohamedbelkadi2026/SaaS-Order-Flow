@@ -189,6 +189,7 @@ interface CostBreakdownItem {
   unitCost: number;  // cost in DH per unit
   qty: number;       // quantity (1 unless embedded "X2" etc.)
   linked: boolean;   // whether a stock match was found
+  matchedProductId?: number | null; // catalogue product id that was matched
 }
 
 interface ProductSummary {
@@ -859,17 +860,17 @@ export default function ProfitAnalyzer() {
    * Match a single (non-bundle) product name to a stock product and return cost in DH.
    * Tries: exact → normalised → SKU → progressive suffix stripping → fuzzy contains.
    */
-  function matchSingleItemCost(name: string, active: any[]): number | null {
+  function matchSingleItemProduct(name: string, active: any[]): { product: any; unitCost: number } | null {
     // 1. Exact
     const exact = active.find(p => p.name === name);
-    if (exact) return exact.costPrice / 100;
+    if (exact) return { product: exact, unitCost: exact.costPrice / 100 };
     // 2. Normalised (accent-insensitive, whitespace-collapsed)
     const np = norm(name).replace(/\s+/g, " ");
     const normalized = active.find(p => norm(p.name || "").replace(/\s+/g, " ") === np);
-    if (normalized) return normalized.costPrice / 100;
+    if (normalized) return { product: normalized, unitCost: normalized.costPrice / 100 };
     // 3. SKU
     const bySku = active.find(p => p.sku && (p.sku === name || norm(p.sku).replace(/\s+/g, " ") === np));
-    if (bySku) return bySku.costPrice / 100;
+    if (bySku) return { product: bySku, unitCost: bySku.costPrice / 100 };
     // 4. Variant suffix stripping — progressively strip 1-3 trailing words to find parent
     //    e.g. "Sandale Tabac 41" → try "Sandale Tabac" (strip "41") → try "Sandale" (strip "Tabac 41")
     const words = name.split(/\s+/);
@@ -877,7 +878,7 @@ export default function ProfitAnalyzer() {
       const base = words.slice(0, words.length - strip).join(" ");
       const nbBase = norm(base).replace(/\s+/g, " ");
       const parent = active.find(p => norm(p.name || "").replace(/\s+/g, " ") === nbBase);
-      if (parent) return parent.costPrice / 100;
+      if (parent) return { product: parent, unitCost: parent.costPrice / 100 };
     }
     // 5. Fuzzy contains match — item name contains product name, or product name
     //    contains item name with trailing size stripped. Prefer longer (more specific) matches.
@@ -905,26 +906,31 @@ export default function ProfitAnalyzer() {
           String(v.name).trim() === size || String(v.name).trim().includes(size)
         );
         if (matchedVariant?.costPrice && matchedVariant.costPrice > 0) {
-          return matchedVariant.costPrice / 100;
+          return { product: fp, unitCost: matchedVariant.costPrice / 100 };
         }
       }
-      if (fp.costPrice > 0) return fp.costPrice / 100;
+      if (fp.costPrice > 0) return { product: fp, unitCost: fp.costPrice / 100 };
     }
     // Last resort: check all active product variants directly for size match
     const sizeEnd = name.match(/\b(\d{2})\b\s*(?:\(non\s+li[eé]\))?\s*$/)?.[1];
     if (sizeEnd) {
-      const nameNoSize = name.replace(/\s*\b\d{2}\b\s*(?:\(non\s+li[eé]\))?\s*$/, "").trim().toLowerCase();
+      const nameNoSz = name.replace(/\s*\b\d{2}\b\s*(?:\(non\s+li[eé]\))?\s*$/, "").trim().toLowerCase();
       for (const p of active) {
         const pn = (p.name || "").toLowerCase();
-        if (nameNoSize.includes(pn) || pn.includes(nameNoSize)) {
+        if (nameNoSz.includes(pn) || pn.includes(nameNoSz)) {
           const variants: any[] = Array.isArray((p as any).variants) ? (p as any).variants : [];
           const v = variants.find((vv: any) => String(vv.name).trim() === sizeEnd);
-          if (v?.costPrice && v.costPrice > 0) return v.costPrice / 100;
-          if (p.costPrice > 0) return p.costPrice / 100;
+          if (v?.costPrice && v.costPrice > 0) return { product: p, unitCost: v.costPrice / 100 };
+          if (p.costPrice > 0) return { product: p, unitCost: p.costPrice / 100 };
         }
       }
     }
     return null;
+  }
+
+  /** Thin wrapper — returns only the unit cost for callers that don't need the product. */
+  function matchSingleItemCost(name: string, active: any[]): number | null {
+    return matchSingleItemProduct(name, active)?.unitCost ?? null;
   }
 
   /**
@@ -950,24 +956,37 @@ export default function ProfitAnalyzer() {
       const isExplicitlyUnlinked = /\(non\s+li[eé]\)/i.test(rawPart);
       const cleanPart = rawPart.replace(/\s*\(non\s+li[eé]\)\s*/gi, "").trim();
 
-      // Extract embedded quantity "X2" / "x 2"
+      // Extract embedded quantity "X2" / "x 2" — BUT only as a last resort.
+      // Try the name as-is first: "X2" may be part of the model name (e.g. "Rf210 X2"),
+      // not a quantity multiplier. Only strip it if the direct match fails AND the
+      // stripped name actually matches something.
       let qty = 1;
       let nameForMatch = cleanPart;
-      const xMatch = cleanPart.match(/^(.+?)\s+[Xx](\d+)\s*(.*)$/);
-      if (xMatch) {
-        qty = Math.max(1, parseInt(xMatch[2], 10));
-        nameForMatch = (xMatch[1] + (xMatch[3] ? " " + xMatch[3] : "")).trim();
+
+      const directResult = matchSingleItemProduct(cleanPart, active);
+      if (directResult === null) {
+        const xMatch = cleanPart.match(/^(.+?)\s+[Xx](\d+)\s*(.*)$/);
+        if (xMatch) {
+          const candidateName = (xMatch[1] + (xMatch[3] ? " " + xMatch[3] : "")).trim();
+          // Only treat it as a quantity if the stripped name actually finds a product
+          if (matchSingleItemProduct(candidateName, active) !== null) {
+            qty = Math.max(1, parseInt(xMatch[2], 10));
+            nameForMatch = candidateName;
+          }
+        }
       }
 
       // Always try to match even for "(non lié)" items — the suffix just means the OMS
       // didn't link it to stock automatically, but the product may still exist in inventory.
-      let unitCost: number | null = matchSingleItemCost(nameForMatch, active);
+      const matched = matchSingleItemProduct(nameForMatch, active);
+      let unitCost: number | null = matched?.unitCost ?? null;
 
       breakdown.push({
         name: cleanPart || rawPart,
         unitCost: unitCost ?? 0,
         qty,
         linked: unitCost !== null,
+        matchedProductId: matched?.product?.id ?? null,
       });
     }
 
@@ -1018,11 +1037,15 @@ export default function ProfitAnalyzer() {
         applyStockPrices(apiProds ?? []);
 
         // ── Priority 2 (fallback): profitDefaults from product settings ──
-        const defaultsMap = new Map<string, any>();
-        for (const p of apiProds || []) { const key = norm(p.name || ""); const d = (p.settings as any)?.profitDefaults; if (key && d) defaultsMap.set(key, d); }
-        if (defaultsMap.size && !cancelled) {
+        // Use the same variant-aware matching as cost lookup (not exact name) so that
+        // products like "Rf210 X2 Noir - 43" resolve correctly after the X2 fix.
+        if (!cancelled) {
           setProducts(prev => prev.map(p => {
-            const d = defaultsMap.get(norm(p.name)); if (!d) return p;
+            const { breakdown } = matchStockCost(p.name, apiProds || []);
+            const matchedProductId = breakdown.find(b => (b as any).matchedProductId)?.matchedProductId as number | null | undefined;
+            const matchedProduct = matchedProductId != null ? (apiProds || []).find((ap: any) => ap.id === matchedProductId) : null;
+            const d = (matchedProduct?.settings as any)?.profitDefaults;
+            if (!d) return p;
             return { ...p,
               buyingCost:      (!p.buyingCost      || p.buyingCost      === "0") ? String(d.coutAchat      || "") : p.buyingCost,
               packagingCost:   (!p.packagingCost   || p.packagingCost   === "0") ? String(d.coutEmballage  || "") : p.packagingCost,
