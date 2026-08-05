@@ -3551,6 +3551,43 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
+  // ── Vitips: diagnostic — discover products endpoint ──────────────────────────
+  app.get("/api/debug/vitips-discover-products-endpoint", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accts = await db.select().from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+      if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+      const apiKey = (accts[0] as any).apiKey;
+
+      const axios = (await import("axios")).default;
+      const https = new (await import("https")).default.Agent({ rejectUnauthorized: false });
+      const candidateUrls = [
+        "https://app.vitipsexpress.com/api/client/produits",
+        "https://app.vitipsexpress.com/api/client/products",
+        "https://app.vitipsexpress.com/api/client/produit",
+        "https://app.vitipsexpress.com/api/client/get/produits",
+        "https://app.vitipsexpress.com/api/client/list/produits",
+      ];
+
+      const results: any[] = [];
+      for (const url of candidateUrls) {
+        try {
+          const resp = await axios.get(url, {
+            headers: { "api-token": apiKey, "Accept": "application/json" },
+            timeout: 10_000, httpsAgent: https, validateStatus: () => true,
+          });
+          results.push({ url, status: resp.status, dataPreview: JSON.stringify(resp.data).slice(0, 500) });
+        } catch (err: any) {
+          results.push({ url, error: err.message });
+        }
+      }
+      res.json({ results });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── Sync carrier cities from live API → carrier_cities table ────────────────
   /** GET /api/carrier-accounts/vitipsexpress/synced-cities — returns locally stored city list */
   app.get("/api/carrier-accounts/vitipsexpress/synced-cities", requireAuth, async (req: any, res: any) => {

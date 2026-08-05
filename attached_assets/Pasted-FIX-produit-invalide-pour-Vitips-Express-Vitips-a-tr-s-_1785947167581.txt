@@ -1,0 +1,92 @@
+FIX — "produit invalide" pour Vitips Express : Vitips a très probablement
+un système de PRODUITS PRÉ-ENREGISTRÉS chez eux, exactement comme pour les
+villes (voir `getVitipsCityAbbr` / sync `/api/client/villes` déjà en place
+dans le code) — mais ÉQUIVALENT INEXISTANT pour les produits. Un nom de
+produit envoyé en texte libre ("شريط مقاوم إصلاح للماء التشققات") qui ne
+correspond à AUCUN produit déjà connu côté Vitips se fait rejeter.
+
+Comme il n'y a pas de documentation publique Vitips, ÉTAPE 1 sert à
+DÉCOUVRIR le bon endpoint produits (par symétrie avec `/villes`), avant de
+construire le système complet à l'ÉTAPE 2.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Découvrir l'endpoint produits de Vitips (essai de plusieurs URLs
+plausibles, par symétrie avec /villes)
+
+Ajouter un endpoint de diagnostic temporaire dans server/routes.ts :
+
+```ts
+app.get("/api/debug/vitips-discover-products-endpoint", requireAuth, requireAdmin, async (req: any, res: any) => {
+  const storeId = req.user!.storeId!;
+  const accts = await db.select().from(carrierAccounts)
+    .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+  if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+  const apiKey = accts[0].apiKey;
+
+  const axios = (await import("axios")).default;
+  const https = new (await import("https")).default.Agent({ rejectUnauthorized: false });
+  const candidateUrls = [
+    "https://app.vitipsexpress.com/api/client/produits",
+    "https://app.vitipsexpress.com/api/client/products",
+    "https://app.vitipsexpress.com/api/client/produit",
+    "https://app.vitipsexpress.com/api/client/get/produits",
+    "https://app.vitipsexpress.com/api/client/list/produits",
+  ];
+
+  const results: any[] = [];
+  for (const url of candidateUrls) {
+    try {
+      const resp = await axios.get(url, {
+        headers: { "api-token": apiKey, "Accept": "application/json" },
+        timeout: 10_000, httpsAgent: https, validateStatus: () => true,
+      });
+      results.push({ url, status: resp.status, dataPreview: JSON.stringify(resp.data).slice(0, 500) });
+    } catch (err: any) {
+      results.push({ url, error: err.message });
+    }
+  }
+  res.json({ results });
+});
+```
+
+Appeler cet endpoint une fois déployé (console navigateur, connecté à la
+plateforme) :
+```js
+fetch('/api/debug/vitips-discover-products-endpoint').then(r => r.json()).then(d => console.log(JSON.stringify(d, null, 2)));
+```
+
+Coller-moi la réponse complète — je repérerai laquelle des URLs renvoie un
+HTTP 200 avec une vraie liste de produits (structure similaire à celle des
+villes : `{ data: [{ name: "...", ... }] }`), et son format exact.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Une fois le bon endpoint confirmé (à faire dans un prompt suivant
+avec la réponse réelle) : construire le système complet, à l'identique du
+système déjà en place pour les villes
+
+Aperçu de ce qui sera fait (structure calquée sur l'existant, à adapter
+avec les vrais noms de champs une fois l'ÉTAPE 1 confirmée) :
+1. Table `vitipsProducts` (storeId, name, externalId/code Vitips) — comme
+   `vitipsCities`.
+2. `storage.getVitipsProductAbbr(storeId, productName)` — comme
+   `getVitipsCityAbbr`, avec matching insensible à la casse/accents.
+3. Endpoint `POST /api/carriers/vitipsexpress/sync-products` — comme
+   `sync-cities`, avec bouton "Synchroniser produits" dans l'UI à côté de
+   "Synchroniser Vitips Express".
+4. Dans `buildVitipsPayload` / le flux d'expédition (là où
+   `vitipsCityAbbr` est résolu avant construction du payload, ~ligne 1810),
+   résoudre de la même façon un `vitipsProductCode` et l'utiliser à la
+   place du texte libre pour le champ `product` du payload — avec log
+   `[VITIPS-PRODUCT] order=X product="Y" → code="Z"` ou
+   `→ no match found, sending name directly` (même pattern que
+   `[VITIPS-CITY]`).
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT (ÉTAPE 1 uniquement pour l'instant)
+git add -A && git commit -m "Add diagnostic endpoint to discover Vitips products API endpoint" && git push
+
+VÉRIFICATION
+1. Appeler `/api/debug/vitips-discover-products-endpoint` comme indiqué
+   ci-dessus.
+2. Coller-moi la réponse JSON complète — je te donnerai le prompt final
+   (ÉTAPE 2 complète, avec le vrai schéma de données) dans la foulée.
