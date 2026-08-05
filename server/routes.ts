@@ -4306,7 +4306,8 @@ export async function registerRoutes(
     carrierNameRaw: string,
     body: Record<string, any>,
   ): Promise<{ tracked: boolean; orderId?: number; newStatus?: string; matchedBy?: string }> {
-    const rawPayload = JSON.stringify(body);
+    body = body || {};   // guard against undefined when caller has no body (e.g. GET ping)
+    const rawPayload = JSON.stringify(body) || '{}';   // JSON.stringify(undefined) → undefined, not a string
     const carrierName = CARRIER_NAME_ALIASES[(carrierNameRaw || '').toLowerCase().trim()] || carrierNameRaw;
     if (carrierName !== carrierNameRaw) {
       console.log(`[WEBHOOK-ALIAS]: carrierName "${carrierNameRaw}" normalized to "${carrierName}"`);
@@ -4954,12 +4955,18 @@ export async function registerRoutes(
   // Accept all HTTP methods — Digylog uses PUT, others use POST:
   app.all("/api/webhooks/carrier/:storeId/:carrierName", async (req, res) => {
     // ── STEP 0: Log every hit immediately — even before validation ────────
+    const safeBody = req.body || {};   // guard: GET pings / non-JSON POSTs arrive with no body
     console.log('--- INCOMING WEBHOOK DATA ---');
-    console.log(JSON.stringify(req.body, null, 2));
+    console.log(JSON.stringify(safeBody, null, 2));
     console.log(`[DEBUG-WEBHOOK]: Params — storeId=${req.params.storeId} carrier=${req.params.carrierName}`);
 
     const storeId     = Number(req.params.storeId);
     const carrierName = req.params.carrierName.toLowerCase();
+
+    // ── GET = carrier ping / URL verification — respond immediately ───────
+    if (req.method === "GET") {
+      return res.status(200).json({ status: "ok", message: "Webhook endpoint alive" });
+    }
 
     // ── Webhook auth (P0-7) ─────────────────────────────────────────────────
     // For carriers that support a webhook token (Ameex), require it to be
@@ -5047,12 +5054,12 @@ export async function registerRoutes(
           storeId, integrationId: null, provider: carrierName,
           action: 'webhook_ping', status: 'fail',
           message: `⚠️ Aucun compte transporteur actif trouvé pour ce magasin (carrier: ${carrierName})`,
-          payload: JSON.stringify(req.body).slice(0, 1000),
+          payload: JSON.stringify(safeBody).slice(0, 1000),
         });
         return res.status(404).json({ message: "Aucun compte transporteur trouvé pour ce magasin" });
       }
 
-      const body = req.body;
+      const body = safeBody;
 
       // ── Ameex/olivraison payload detection ──────────────────────────────────
       // Ameex and Express Coursier BOTH post to .../olivraison but with totally
