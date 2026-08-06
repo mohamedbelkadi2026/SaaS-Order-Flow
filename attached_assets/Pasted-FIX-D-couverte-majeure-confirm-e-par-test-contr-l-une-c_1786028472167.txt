@@ -1,0 +1,108 @@
+FIX — Découverte majeure confirmée par test contrôlé : une commande créée
+MANUELLEMENT dans la plateforme avec exactement le même produit/ville/prix
+qu'une commande YouCan RÉUSSIT chez Vitips, alors que la commande YouCan
+échoue systématiquement avec "produit invalide" — texte visuellement
+identique dans les deux cas. Le problème n'est donc PAS l'enregistrement du
+produit chez Vitips (il fonctionne pour la version manuelle du même
+produit), mais très probablement des CARACTÈRES INVISIBLES dans le texte
+arabe importé depuis YouCan (marques de direction RTL/LTR, caractères de
+largeur nulle, espaces insécables, ou normalisation Unicode différente —
+NFC vs NFD) qui rendent la chaîne différente BYTE PAR BYTE de ce qu'un
+opérateur tape à la main, tout en étant visuellement identique à l'écran et
+dans les logs.
+
+────────────────────────────────────────────────────────────────────────────
+FIX — Nettoyer systématiquement le nom du produit (et par précaution le nom
+du client / l'adresse, mêmes risques) avant de les envoyer à Vitips
+
+Dans server/services/carrier-service.ts, fonction `buildVitipsPayload`,
+ajouter une fonction de nettoyage et l'appliquer aux champs texte :
+
+```ts
+function sanitizeArabicText(input: string | null | undefined): string {
+  if (!input) return "";
+  return input
+    // Retire les marques de direction de texte (RTL/LTR marks) et autres
+    // caractères de contrôle Unicode invisibles souvent injectés par des
+    // exports/API tierces (YouCan, etc.).
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, "")
+    // Normalise Unicode en forme composée (NFC) — élimine les différences
+    // entre lettre+diacritique combiné vs décomposé, invisibles à l'affichage.
+    .normalize("NFC")
+    // Espaces insécables / espaces Unicode variés → espace normal.
+    .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ")
+    // Espaces multiples → un seul, trim.
+    .replace(/\s+/g, " ")
+    .trim();
+}
+```
+
+Puis, dans le payload construit par `buildVitipsPayload` (déjà modifié par
+les fixes précédents) :
+
+```ts
+return {
+  fullname:     sanitizeArabicText(input.customerName).trim(),   // ← nettoyé
+  phone,
+  city,
+  address:      sanitizeArabicText(addr),                        // ← nettoyé
+  price:        priceDH,
+  product:      sanitizeArabicText(input.productName || "Produit"), // ← nettoyé, LE PLUS IMPORTANT
+  qty:          String(input.quantity ?? 1),
+  note:         input.note || "",
+  exchange:     0,
+  openpackage:  input.canOpen ? 1 : 0,
+  from_stock:   input.isStock ? 1 : 0,
+  try_product:  0,
+  internal_id:  input.orderNumber,
+};
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Log de vérification (pour confirmer visuellement la différence
+avant/après, utile pour valider l'hypothèse)
+
+Juste avant l'envoi, logger la longueur ET le code des caractères du nom du
+produit brut vs nettoyé — si l'hypothèse est juste, les longueurs vont
+différer :
+```ts
+const rawName = input.productName || "Produit";
+const cleanName = sanitizeArabicText(rawName);
+if (rawName.length !== cleanName.length) {
+  console.log(`[VITIPS-SANITIZE] Order ${input.orderNumber} — nettoyage a retiré ${rawName.length - cleanName.length} caractère(s) invisible(s) du nom produit`);
+  console.log(`[VITIPS-SANITIZE] Avant (${rawName.length} car.):`, JSON.stringify(rawName));
+  console.log(`[VITIPS-SANITIZE] Après (${cleanName.length} car.):`, JSON.stringify(cleanName));
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Appliquer aussi ce nettoyage à l'endroit où le produit YouCan est
+enregistré/matché initialement (server/routes.ts, webhook YouCan,
+`rawProductName` extrait de `payload.variants[].variant.product.name`),
+pour que le nom nettoyé soit utilisé PARTOUT en aval (Profit Analyzer,
+historique, etc.), pas seulement au moment de l'envoi à Vitips :
+```ts
+const rawName = sanitizeArabicText(v.variant?.product?.name) || "Produit YouCan";
+```
+(Importer `sanitizeArabicText` depuis carrier-service.ts, ou dupliquer la
+fonction dans un fichier utilitaire partagé si plus simple.)
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Sanitize invisible Unicode characters from Arabic text before sending to Vitips (fixes produit invalide for YouCan-sourced orders)" && git push
+
+VÉRIFICATION
+1. Réessayer d'expédier #YC-39464 et #YC-39459 (les 2 en échec) vers
+   Vitips → doivent maintenant réussir.
+2. Vérifier les logs `[VITIPS-SANITIZE]` — s'ils affichent effectivement
+   une différence de longueur avant/après pour ces commandes, ça confirme
+   définitivement la cause.
+3. Si le nettoyage NE change PAS la longueur (0 caractère retiré) pour ces
+   commandes précises, c'est que l'hypothèse "caractères invisibles" est
+   fausse pour ce cas — dans ce cas, coller-moi le log `[VITIPS-SANITIZE]
+   Avant` de la commande en échec (le JSON.stringify affichera les
+   caractères spéciaux sous forme d'échappement `\uXXXX` s'il y en a) pour
+   qu'on identifie précisément ce qui cloche.
+4. Tester aussi une commande YouCan qui marchait déjà (aucune régression
+   attendue) pour confirmer que le nettoyage ne casse rien sur les cas déjà
+   fonctionnels.

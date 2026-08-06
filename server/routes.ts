@@ -20,7 +20,7 @@ import path from "path";
 import archiver from "archiver";
 import { addSSEClient, broadcastToStore } from "./sse";
 import { triggerAIForNewOrder, handleIncomingMessage } from "./ai-agent";
-import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable } from "./services/carrier-service";
+import { shipOrderToCarrier, mapAmeexStatus, getDigylogDeliveryCost, mapOzonStatus, mapEcStatus, mapEcNumericStatus, mapEcDeliveryStatus, getEcStatusName, fetchEcStatusTable, sanitizeArabicText } from "./services/carrier-service";
 import { emitNewOrder, emitOrderUpdated } from "./socket";
 import { pushOrderToSheet } from "./services/gsheets-push";
 import { computeProfitability, resolveDateRange } from "./services/profit";
@@ -5736,7 +5736,7 @@ export async function registerRoutes(
       let orderProductCost = 0;
 
       for (const v of lineItems) {
-        const rawName = v.variant?.product?.name || v.name || v.title || "Produit YouCan";
+        const rawName = sanitizeArabicText(v.variant?.product?.name || v.name || v.title) || "Produit YouCan";
         const sku = v.variant?.sku || v.sku || "";
         let matchedProduct = storeProducts.find(p => sku && p.sku === sku);
         let resolvedVariantName: string | null = null;

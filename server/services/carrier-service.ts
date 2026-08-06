@@ -580,6 +580,26 @@ const carrierConfigs: Record<string, {
  * Auth: "API Token": {token}
  * city field = abbr from /villes (stored in input.cityId)
  */
+/**
+ * Strip invisible Unicode characters that frequently appear in text imported
+ * from third-party platforms (YouCan, Shopify, etc.) and cause byte-level
+ * mismatches even when the string looks identical on screen.
+ * Exported so the YouCan webhook can sanitize rawProductName at ingestion time.
+ */
+export function sanitizeArabicText(input: string | null | undefined): string {
+  if (!input) return "";
+  return input
+    // RTL/LTR direction marks and other invisible control characters
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, "")
+    // Normalise to NFC — eliminates composed vs decomposed diacritic differences
+    .normalize("NFC")
+    // Non-breaking and exotic Unicode spaces → regular space
+    .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ")
+    // Collapse multiple spaces, trim
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
   const phone   = sanitizePhone(input.phone);
   // Vitipsexpress requires at least 1 DH — send 1 if price is 0 (free order / price set at delivery)
@@ -587,13 +607,21 @@ function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
   const addr    = (input.address || "").trim() || input.city.trim();
   const city    = input.cityId || input.city.trim(); // abbr preferred; fall back to city name
 
+  const rawName   = input.productName || "Produit";
+  const cleanName = sanitizeArabicText(rawName);
+  if (rawName.length !== cleanName.length) {
+    console.log(`[VITIPS-SANITIZE] Order ${input.orderNumber} — nettoyage a retiré ${rawName.length - cleanName.length} caractère(s) invisible(s) du nom produit`);
+    console.log(`[VITIPS-SANITIZE] Avant (${rawName.length} car.):`, JSON.stringify(rawName));
+    console.log(`[VITIPS-SANITIZE] Après (${cleanName.length} car.):`, JSON.stringify(cleanName));
+  }
+
   const payload = {
-    fullname:     input.customerName.trim(),
+    fullname:     sanitizeArabicText(input.customerName),
     phone,
     city,
-    address:      addr,
+    address:      sanitizeArabicText(addr),
     price:        priceDH,
-    product:      (input.productName || "Produit").trim(),
+    product:      cleanName || "Produit",
     qty:          String(input.quantity ?? 1),
     note:         input.note || "",
     exchange:     0,
