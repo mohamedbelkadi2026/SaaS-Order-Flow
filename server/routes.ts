@@ -3711,6 +3711,42 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/debug/vitips-try-create-product", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+      const accts = await db.select().from(carrierAccounts)
+        .where(and(eq(carrierAccounts.storeId, storeId), eq(carrierAccounts.carrierName, "vitipsexpress")));
+      if (accts.length === 0) return res.status(404).json({ message: "Aucun compte Vitips connecté" });
+      const apiKey = (accts[0] as any).apiKey;
+      const testProductName = String(req.body.productName || "Produit Test API");
+
+      const axios = (await import("axios")).default;
+      const candidates = [
+        { url: "https://app.vitipsexpress.com/api/client/post/produit/add-produit", body: { title: testProductName, code: "TEST-API-001" } },
+        { url: "https://app.vitipsexpress.com/api/client/post/produit/add-produit", body: { name: testProductName, code: "TEST-API-001" } },
+        { url: "https://app.vitipsexpress.com/api/client/post/product/add-product", body: { title: testProductName, reference: "TEST-API-001" } },
+        { url: "https://app.vitipsexpress.com/api/client/produit/add", body: { title: testProductName } },
+        { url: "https://app.vitipsexpress.com/api/client/product/add", body: { title: testProductName } },
+      ];
+
+      const results: any[] = [];
+      for (const c of candidates) {
+        try {
+          const resp = await axios.post(c.url, c.body, {
+            headers: { "api-token": apiKey, "Accept": "application/json", "Content-Type": "application/json" },
+            timeout: 10_000, validateStatus: () => true,
+          });
+          results.push({ url: c.url, sentBody: c.body, status: resp.status, response: resp.data });
+        } catch (err: any) {
+          results.push({ url: c.url, sentBody: c.body, error: err.message });
+        }
+      }
+      res.json({ results });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   // ── Sync carrier cities from live API → carrier_cities table ────────────────
   /** GET /api/carrier-accounts/vitipsexpress/synced-cities — returns locally stored city list */
   app.get("/api/carrier-accounts/vitipsexpress/synced-cities", requireAuth, async (req: any, res: any) => {
