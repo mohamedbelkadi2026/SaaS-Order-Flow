@@ -1,0 +1,63 @@
+TEST D'HYPOTHÈSE — "produit invalide" pourrait être un message d'erreur
+GÉNÉRIQUE/TROMPEUR de Vitips, et le vrai problème serait le champ
+`internal_id`, pas le produit. Les commandes qui réussissent ("MAN-...")
+ont un internal_id long (ex: "MAN-1786028188688", 18 caractères) ; celles
+qui échouent ("YC-...") ont un internal_id court (ex: "YC-39459", 8
+caractères). À tester directement — c'est rapide et ça éliminera ou
+confirmera cette piste en un seul essai.
+
+────────────────────────────────────────────────────────────────────────────
+TEST — server/services/carrier-service.ts, fonction `buildVitipsPayload`
+
+Modifier temporairement `internal_id` pour une commande en échec connue
+(YC-39459 ou YC-39464), en le remplaçant par un format qui ressemble à ceux
+qui réussissent, PUIS réessayer l'expédition :
+
+```ts
+// TEST TEMPORAIRE — à retirer une fois l'hypothèse confirmée ou infirmée.
+// On teste si le format/la longueur de internal_id est la vraie cause de
+// "produit invalide" (message potentiellement trompeur de Vitips).
+const testInternalId = `TEST-${Date.now()}`; // long, format proche de MAN-XXXXXXXXXXXXX
+console.log(`[VITIPS-TEST] Order ${input.orderNumber} — testing with internal_id="${testInternalId}" instead of "${input.orderNumber}"`);
+
+return {
+  fullname:     input.customerName.trim(),
+  phone,
+  city,
+  address:      addr,
+  price:        priceDH,
+  product:      input.productName || "Produit",
+  qty:          String(input.quantity ?? 1),
+  note:         input.note || "",
+  exchange:     0,
+  openpackage:  input.canOpen ? 1 : 0,
+  from_stock:   input.isStock ? 1 : 0,
+  try_product:  0,
+  internal_id:  testInternalId,   // ← MODIFIÉ TEMPORAIREMENT POUR LE TEST (au lieu de input.orderNumber)
+};
+```
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "TEST: try alternate internal_id format to isolate produit invalide cause" && git push
+
+VÉRIFICATION — réessayer d'expédier #YC-39459 ou #YC-39464 après ce
+déploiement, et regarder le résultat :
+
+- **Si ça RÉUSSIT maintenant** → confirmé : le vrai problème était le format
+  de `internal_id` (probablement la longueur, ou le préfixe "YC-"), pas le
+  produit. Dans ce cas, dis-le-moi et je préparerai le fix définitif :
+  générer un internal_id suffisamment long/conforme pour toutes les
+  commandes Vitips (ex: `VT-${order.id}-${Date.now()}` ou similaire), tout
+  en gardant une trace vers la vraie commande côté plateforme.
+
+- **Si ça échoue TOUJOURS avec "produit invalide"** → cette piste est
+  écartée, `internal_id` n'est pas la cause. Dans ce cas, coller-moi le
+  message d'erreur complet de cette nouvelle tentative (pour voir si le
+  texte a changé ne serait-ce que légèrement) et on isolera la prochaine
+  variable à tester (ex: `qty`, `openpackage`/`from_stock` à 1 vs 0, ou la
+  structure globale du JSON).
+
+Cette approche "changer une seule variable à la fois et observer" va
+converger vers la cause réelle plus vite que d'essayer de deviner
+directement.
