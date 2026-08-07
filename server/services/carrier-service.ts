@@ -17,8 +17,8 @@
 import axios, { AxiosError } from "axios";
 import https from "https";
 import { db } from "../db";
-import { orderItems } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { orderItems, vitipsCities } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 
 // ── SSL agent — bypasses self-signed / expired certs (common in .ma APIs) ────
 const SSL_AGENT = new https.Agent({ rejectUnauthorized: false });
@@ -1536,6 +1536,123 @@ export async function shipOrderToCarrier(
       externalRef: `TJG-${input.orderNumber}`,
     };
   }
+
+  // ── Vitips: auto-retry with city-format cascade ─────────────────────────────
+  // Vitips is very picky about city spelling. Instead of failing immediately,
+  // try several plausible representations until one succeeds or we run out.
+  // On success with a non-primary format, cache the working spelling back to
+  // vitipsCities.externalId so future orders skip the retry entirely.
+  if (providerKey === "vitipsexpress") {
+    const rawCity     = input.city;
+    const primaryCity = String((payload as any).city || rawCity); // resolved by buildVitipsPayload
+
+    const seen            = new Set<string>();
+    const cityCandidates: string[] = [];
+    const addCity = (v?: string) => {
+      const t = (v || "").trim();
+      if (t && !seen.has(t)) { seen.add(t); cityCandidates.push(t); }
+    };
+    addCity(primaryCity);                                                                    // synced abbr (first priority)
+    addCity(rawCity);                                                                        // raw order city
+    addCity(rawCity.toUpperCase());                                                          // MAJUSCULES
+    addCity(rawCity.charAt(0).toUpperCase() + rawCity.slice(1).toLowerCase());              // Première lettre
+    addCity(rawCity.replace(/-/g, " "));                                                    // tirets → espaces
+    addCity(rawCity.replace(/\s+/g, "-"));                                                  // espaces → tirets
+    if (input.cityId) {
+      addCity(input.cityId);
+      addCity(input.cityId.toUpperCase());
+      addCity(input.cityId.charAt(0).toUpperCase() + input.cityId.slice(1).toLowerCase());
+    }
+
+    let vitipsHttp = 0;
+    let vitipsBody: any = null;
+    let finalCity  = cityCandidates[0] ?? rawCity;
+
+    for (let ci = 0; ci < cityCandidates.length; ci++) {
+      const cityCandidate = cityCandidates[ci];
+      const tryPayload    = { ...payload, city: cityCandidate };
+      console.log(`[VITIPS-CITY-RETRY] Order ${input.orderNumber} — trying city="${cityCandidate}" (${ci + 1}/${cityCandidates.length})`);
+
+      let resp: any;
+      try {
+        resp = await axios.post(apiUrl, tryPayload, {
+          headers,
+          timeout:     TIMEOUT_MS,
+          httpsAgent:  SSL_AGENT,
+          validateStatus: () => true,
+        });
+      } catch (netErr: any) {
+        console.error(`[VITIPS-CITY-RETRY] Network error on city="${cityCandidate}": ${netErr?.message}`);
+        throw netErr; // bubble up to outer catch
+      }
+
+      vitipsHttp  = resp.status;
+      vitipsBody  = resp.data;
+      finalCity   = cityCandidate;
+
+      const body      = resp.data || {};
+      const isVitipsOk =
+        body?.code    === "ok"      ||
+        body?.status  === "ok"      ||
+        body?.success === true      ||
+        !!extractTracking(body);
+
+      if (isVitipsOk) {
+        console.log(`[VITIPS-CITY-RETRY] ✅ Order ${input.orderNumber} — accepted with city="${cityCandidate}"`);
+        // Cache the working format so the NEXT order to this city goes straight through
+        if (cityCandidate !== cityCandidates[0]) {
+          try {
+            await db.update(vitipsCities)
+              .set({ externalId: cityCandidate })
+              .where(and(
+                eq(vitipsCities.storeId,    input.storeId),
+                eq(vitipsCities.externalId, cityCandidates[0]),
+              ));
+            console.log(`[VITIPS-CITY-CACHE] storeId=${input.storeId} — externalId updated "${cityCandidates[0]}" → "${cityCandidate}"`);
+          } catch (dbErr: any) {
+            console.warn(`[VITIPS-CITY-CACHE] DB update skipped (non-fatal): ${dbErr?.message}`);
+          }
+        }
+        break;
+      }
+
+      const errMsg       = String(body?.error || body?.message || "").toLowerCase();
+      const isCityRelated = errMsg.includes("ville") || errMsg.includes("city") || errMsg.includes("wilaya") || errMsg.length === 0;
+      if (!isCityRelated) {
+        console.log(`[VITIPS-CITY-RETRY] ⛔ Order ${input.orderNumber} — non-city error ("${body?.error || body?.message}") — halting retry`);
+        break; // no point trying other city formats
+      }
+      if (ci < cityCandidates.length - 1) {
+        console.log(`[VITIPS-CITY-RETRY] ❌ city="${cityCandidate}" rejected: "${body?.error || body?.message}" — trying next...`);
+      } else {
+        console.log(`[VITIPS-CITY-RETRY] ❌ All ${cityCandidates.length} city formats exhausted for "${rawCity}" — last error: "${body?.error || body?.message}"`);
+      }
+    }
+
+    console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — finalCity="${finalCity}" HTTP ${vitipsHttp} — response: ${JSON.stringify(vitipsBody)}`);
+
+    // ── Vitips response processing ───────────────────────────────────────────
+    if (vitipsHttp >= 400) {
+      const errMsg = extractCarrierErrorMsg(vitipsBody) || `HTTP ${vitipsHttp}`;
+      console.error(`${tag} ❌ Vitips HTTP ${vitipsHttp}: ${errMsg}`);
+      return { success: false, httpStatus: vitipsHttp, rawResponse: vitipsBody, error: errMsg, carrierMessage: errMsg };
+    }
+    const vitipsLogicalErr = detectLogicalError(vitipsBody);
+    if (vitipsLogicalErr) {
+      console.error(`${tag} ❌ Vitips logical error: ${vitipsLogicalErr}`);
+      return { success: false, httpStatus: vitipsHttp, rawResponse: vitipsBody, error: vitipsLogicalErr, carrierMessage: vitipsLogicalErr };
+    }
+    const vitipsTracking = extractTracking(vitipsBody);
+    if (!vitipsTracking) {
+      const noTrack = `Vitipsexpress n'a pas retourné de numéro de suivi. La commande reste Confirmée — vérifiez le portail Vitips.`;
+      console.error(`${tag} ❌ ${noTrack}`);
+      return { success: false, error: noTrack, carrierMessage: noTrack, httpStatus: vitipsHttp, rawResponse: vitipsBody };
+    }
+    const vitipsLabel = extractLabelUrl(vitipsBody) || `/api/labels/${vitipsTracking}.pdf`;
+    console.log(`${tag} ✅ Vitips SUCCESS! tracking=${vitipsTracking}`);
+    return { success: true, trackingNumber: vitipsTracking, labelUrl: vitipsLabel, httpStatus: vitipsHttp, rawResponse: vitipsBody };
+  }
+  // ── END Vitips city-retry block ──────────────────────────────────────────────
 
   // Inner helper — runs one attempt and throws on network error (non-Ameex carriers)
   const timeoutMs = TIMEOUT_MS;

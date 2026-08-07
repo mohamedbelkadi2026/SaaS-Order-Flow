@@ -1,0 +1,120 @@
+FIX AUTONOME — Au lieu de deviner à l'avance le format exact attendu par
+Vitips pour une ville, essayer AUTOMATIQUEMENT plusieurs représentations
+plausibles au moment de l'envoi, et retenir celle qui fonctionne — sans
+avoir besoin de connaître le format à l'avance.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — server/services/carrier-service.ts (ou server/routes.ts, à
+l'endroit où le payload Vitips est envoyé) : fonction de retry avec
+variantes de ville
+
+```ts
+function generateCityCandidates(rawCity: string, syncedCityEntry: { name: string; abbr: string } | null): string[] {
+  const candidates = new Set<string>();
+  if (syncedCityEntry) {
+    candidates.add(syncedCityEntry.abbr);   // ex: "Agadir"
+    candidates.add(syncedCityEntry.name);   // ex: "AGADIR"
+  }
+  candidates.add(rawCity);                                          // tel quel
+  candidates.add(rawCity.toUpperCase());                            // MAJUSCULES
+  candidates.add(rawCity.charAt(0).toUpperCase() + rawCity.slice(1).toLowerCase()); // Première lettre en majuscule
+  candidates.add(rawCity.replace(/-/g, " "));                       // tirets → espaces
+  candidates.add(rawCity.replace(/\s+/g, "-"));                     // espaces → tirets
+  candidates.add(rawCity.trim());
+  return Array.from(candidates).filter(Boolean);
+}
+
+async function shipToVitipsWithCityRetry(basePayload: any, apiKey: string, rawCity: string, syncedCityEntry: any): Promise<{ resp: any; usedCity: string }> {
+  const candidates = generateCityCandidates(rawCity, syncedCityEntry);
+  let lastResp: any = null;
+
+  for (const cityCandidate of candidates) {
+    const payload = { ...basePayload, city: cityCandidate };
+    const resp = await axios.post("https://app.vitipsexpress.com/api/client/post/colis/add-colis", payload, {
+      headers: { "api-token": apiKey, "Content-Type": "application/json" },
+      validateStatus: () => true,
+    });
+    lastResp = resp;
+
+    if (resp.data?.code === "ok") {
+      console.log(`[VITIPS-CITY-RETRY] Succès avec city="${cityCandidate}" (candidat ${candidates.indexOf(cityCandidate) + 1}/${candidates.length})`);
+      return { resp, usedCity: cityCandidate };
+    }
+
+    // Si l'erreur n'est PAS liée à la ville (ex: "produit invalide"), inutile
+    // de réessayer d'autres formats de ville — ça ne changera rien.
+    const errMsg = (resp.data?.error || "").toLowerCase();
+    if (!errMsg.includes("ville")) {
+      console.log(`[VITIPS-CITY-RETRY] Erreur non liée à la ville ("${resp.data?.error}") — arrêt des essais.`);
+      return { resp, usedCity: cityCandidate };
+    }
+    console.log(`[VITIPS-CITY-RETRY] Échec avec city="${cityCandidate}" — essai suivant...`);
+  }
+
+  console.log(`[VITIPS-CITY-RETRY] Aucun des ${candidates.length} formats de ville testés n'a fonctionné pour "${rawCity}".`);
+  return { resp: lastResp, usedCity: candidates[candidates.length - 1] };
+}
+```
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Utiliser cette fonction à la place de l'appel direct, aux 2
+endroits d'expédition (bulk-ship et individuel)
+
+Remplacer :
+```ts
+const resp = await axios.post("https://app.vitipsexpress.com/api/client/post/colis/add-colis", payload, {
+  headers: { "api-token": apiKey, "Content-Type": "application/json" },
+  validateStatus: () => true,
+});
+```
+
+par :
+```ts
+const syncedCityEntry = bulkCityList.find((c: any) => norm(c.name) === norm(raw) || norm(c.abbr) === norm(raw)) || null;
+const { resp, usedCity } = await shipToVitipsWithCityRetry(payload, apiKey, raw, syncedCityEntry);
+if (resp.data?.code === "ok") {
+  console.log(`[VITIPS-CITY-RETRY] Ville finalement acceptée : "${usedCity}" pour la commande ${payload.internal_id}`);
+}
+```
+
+(Adapter `bulkCityList`/`raw`/`payload`/`apiKey` aux noms de variables
+réellement disponibles à cet endroit précis du code.)
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Enregistrer le format qui a fonctionné pour ne plus jamais avoir
+à réessayer cette ville
+
+Une fois qu'un format fonctionne pour une ville donnée, l'enregistrer
+automatiquement dans une petite table de cache (`vitipsWorkingCityFormats`
+ou réutiliser la table `vitipsCityAliases` si elle existe encore) pour que
+les PROCHAINES commandes vers cette même ville utilisent directement le bon
+format sans repasser par tous les essais :
+
+```ts
+if (resp.data?.code === "ok" && usedCity !== candidates[0]) {
+  await db.insert(vitipsCityAliases).values({ storeId, rawCityName: raw, vitipsCityName: usedCity })
+    .onConflictDoUpdate({ target: [vitipsCityAliases.storeId, vitipsCityAliases.rawCityName], set: { vitipsCityName: usedCity } });
+}
+```
+(Si la table `vitipsCityAliases` a été retirée par un revert précédent, la
+recréer — voir le prompt "vitips_city_alias_table" pour son schéma exact.)
+
+────────────────────────────────────────────────────────────────────────────
+DÉPLOIEMENT
+git add -A && git commit -m "Add automatic city-format retry cascade for Vitips shipping (no need to know exact expected spelling in advance)" && git push
+
+VÉRIFICATION
+1. Réessayer d'expédier #YC-39484 (Agadir) → observer les logs
+   `[VITIPS-CITY-RETRY]` — doit montrer chaque tentative jusqu'à trouver
+   le bon format, puis réussir.
+2. Faire pareil pour "RAS EL AIN" et "TLETA SIDI BOUGUEDRA".
+3. Si TOUS les formats échouent pour une ville précise (log "Aucun des N
+   formats n'a fonctionné") → cette ville n'est probablement simplement
+   PAS couverte par Vitips (hors de leur zone de service), pas un problème
+   de format — dans ce cas, coller-moi la liste des candidats essayés pour
+   confirmer, et il faudra soit exclure Vitips pour cette ville
+   (utiliser un autre transporteur), soit contacter leur support pour
+   confirmer la couverture.
+4. Réexpédier une seconde commande vers la même ville déjà résolue → doit
+   réussir directement au premier essai (grâce au cache de l'ÉTAPE 3), sans
+   repasser par tous les candidats.
