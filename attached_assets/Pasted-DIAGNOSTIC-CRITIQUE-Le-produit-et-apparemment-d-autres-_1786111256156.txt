@@ -1,0 +1,99 @@
+DIAGNOSTIC CRITIQUE — Le produit "شريط مقاوم للماء لإصلاح التشققات" (et
+apparemment d'autres) expédiait normalement vers Vitips Express pendant le
+mois dernier, et a cessé de fonctionner il y a environ 5 jours. Vitips n'a
+probablement RIEN changé de leur côté — c'est très probablement une
+RÉGRESSION introduite par l'un des nombreux correctifs appliqués à
+`buildVitipsPayload` / au flux d'expédition Vitips ces derniers jours
+(ajout canOpen/isStock, sanitizeArabicText, tests internal_id, etc.).
+Objectif : comparer le code ACTUEL à celui d'il y a ~5-7 jours pour
+identifier exactement ce qui a changé dans le chemin Vitips.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 1 — Historique Git : voir tous les commits touchant le code
+d'expédition Vitips sur les 7 derniers jours
+
+```bash
+git log --oneline --since="7 days ago" -- server/services/carrier-service.ts server/routes.ts | grep -i vitips
+```
+
+Puis, pour CHAQUE commit trouvé qui touche Vitips, voir le diff exact :
+```bash
+git log --oneline --since="7 days ago" -p -- server/services/carrier-service.ts | grep -A 30 -i "vitips"
+```
+
+Lister tous ces commits avec leur date et leur message.
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 2 — Comparer `buildVitipsPayload` AVANT/APRÈS
+
+Trouver la version de `buildVitipsPayload` (et de la fonction qui envoie la
+requête HTTP vers `add-colis`) telle qu'elle existait il y a 7 jours :
+```bash
+git log --since="8 days ago" --until="6 days ago" --oneline -- server/services/carrier-service.ts
+# noter le dernier hash de commit trouvé, puis :
+git show <hash>:server/services/carrier-service.ts | grep -A 40 "function buildVitipsPayload"
+```
+
+Comparer ligne par ligne avec la version ACTUELLE de la même fonction.
+Lister explicitement CHAQUE différence trouvée (champs ajoutés/modifiés,
+fonctions de nettoyage ajoutées comme `sanitizeArabicText`, changement de
+valeurs par défaut pour `openpackage`/`from_stock`/`exchange`, etc.).
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 3 — Suspects prioritaires à vérifier en particulier
+
+1. `sanitizeArabicText` (ajoutée récemment) — vérifier qu'elle ne modifie
+   PAS accidentellement le texte arabe de façon visible (ex: la
+   normalisation NFC pourrait changer la représentation de certains
+   caractères arabes composés d'une manière qui casse la correspondance
+   côté Vitips, même si "visuellement identique"). Tester manuellement :
+   ```ts
+   console.log(sanitizeArabicText("شريط مقاوم للماء لإصلاح التشققات"));
+   // Comparer OCTET PAR OCTET (pas juste visuellement) avec l'original
+   ```
+   Si le résultat diffère de l'original ne serait-ce que par la
+   normalisation Unicode, c'est un suspect direct — la fonction pourrait
+   "corriger" le texte vers une forme que VITIPS NE RECONNAÎT PAS, alors
+   que le texte "brut" (avant nettoyage) était justement celui qu'ils
+   attendaient.
+
+2. `openpackage`/`from_stock` — avant le fix "canOpen/isStock", ces champs
+   étaient à `0` en dur pour TOUTES les commandes. Depuis le fix, ils
+   valent `1` quand `order.canOpen`/`order.isStock` sont vrais. Si Vitips
+   a une règle métier du type "produit invalide" quand `from_stock: 1` est
+   envoyé pour un produit qui n'est PAS marqué en stock de LEUR côté (ce
+   qui rejoint l'hypothèse "produit non enregistré chez eux", mais
+   déclenchée maintenant par un champ qu'on envoie nouvellement à 1 au lieu
+   de 0) → ce serait exactement le genre de règle qui expliquerait
+   "ça marchait quand from_stock était toujours à 0, ça casse depuis qu'on
+   l'envoie à 1".
+
+────────────────────────────────────────────────────────────────────────────
+ÉTAPE 4 — Test ciblé basé sur l'ÉTAPE 3.2 (rapide, un seul changement)
+
+Avant de conclure quoi que ce soit, tester DIRECTEMENT l'hypothèse
+`from_stock` : forcer temporairement `from_stock: 0` (et `openpackage: 0`)
+pour une commande en échec connue, sans toucher au reste, et réessayer :
+
+```ts
+// TEST TEMPORAIRE
+from_stock: 0,   // au lieu de (input.isStock ? 1 : 0)
+openpackage: 0,  // au lieu de (input.canOpen ? 1 : 0)
+```
+
+Si ça RÉUSSIT avec ces valeurs forcées à 0 → confirmé, la régression vient
+du fix canOpen/isStock (Vitips refuse `from_stock: 1` ou `openpackage: 1`
+pour ce produit précis, probablement parce que ce produit n'est pas
+réellement en stock/configuré comme tel chez eux). Dans ce cas, la vraie
+question devient : pourquoi `order.isStock`/`order.canOpen` valent-ils
+`true` pour ces commandes YouCan alors qu'ils ne devraient peut-être pas ?
+
+────────────────────────────────────────────────────────────────────────────
+NE RIEN DÉPLOYER DÉFINITIVEMENT À CETTE ÉTAPE (sauf le test ÉTAPE 4, qui est
+volontairement temporaire/réversible) — revenir avec :
+1. La liste des commits/changements trouvés (ÉTAPE 1-2).
+2. Le résultat exact de sanitizeArabicText sur le texte du produit (ÉTAPE 3.1).
+3. Le résultat du test from_stock/openpackage à 0 (ÉTAPE 4).
+
+Avec ces 3 informations, la cause sera quasi certainement identifiée et je
+pourrai donner le fix permanent et définitif immédiatement après.

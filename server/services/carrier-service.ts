@@ -625,15 +625,15 @@ function buildVitipsPayload(input: CarrierShipInput): Record<string, unknown> {
     qty:          String(input.quantity ?? 1),
     note:         input.note || "",
     exchange:     0,
-    openpackage:  input.canOpen ? 1 : 0,   // branché sur "Autoriser l'ouverture du colis"
-    from_stock:   input.isStock ? 1 : 0,   // branché sur "Produit en stock"
+    // TEST TEMPORAIRE étape 4 — forcer à 0 pour isoler si from_stock/openpackage
+    // dynamiques sont la cause de "produit invalide". À retirer après confirmation.
+    openpackage:  0,   // était: input.canOpen ? 1 : 0
+    from_stock:   0,   // était: input.isStock ? 1 : 0
     try_product:  0,
-    // TEST TEMPORAIRE — à retirer une fois l'hypothèse confirmée ou infirmée.
-    // On teste si le format/la longueur de internal_id est la vraie cause de
-    // "produit invalide" (message potentiellement trompeur de Vitips).
+    // TEST TEMPORAIRE internal_id — également actif (étape précédente).
     internal_id:  `TEST-${Date.now()}`,
   };
-  console.log(`[VITIPS-TEST] Order ${input.orderNumber} — testing with internal_id="${payload.internal_id}" instead of "${input.orderNumber}"`);
+  console.log(`[VITIPS-TEST] Order ${input.orderNumber} — openpackage=0 from_stock=0 forced (step4 test), internal_id="${payload.internal_id}"`);
   console.log(`[VITIPS-SHIP] Order ${input.orderNumber} — payload: ${JSON.stringify(payload)}`);
   return payload;
 }
