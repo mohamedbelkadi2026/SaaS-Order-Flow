@@ -41,6 +41,7 @@ export default function Profitability() {
   const [dateTo, setDateTo] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("all");
   const [selectedBuyer, setSelectedBuyer] = useState("all");
+  const [selectedSource, setSelectedSource] = useState("all");
 
   const isAdmin = user?.role === "owner" || user?.role === "admin";
   const isMediaBuyer = user?.role === "media_buyer";
@@ -52,15 +53,16 @@ export default function Profitability() {
   });
   const mediaBuyers = (storeUsers ?? []).filter((u: any) => u.role === "media_buyer" || u.role === "owner" || u.role === "admin");
 
-  // Admin summary — respects product + buyer + date filters
+  // Admin summary — respects product + buyer + source + date filters
   const { data: summary, isLoading } = useQuery<AdminSummary>({
-    queryKey: ["/api/profit/admin-summary", dateFrom, dateTo, selectedProduct, selectedBuyer],
+    queryKey: ["/api/profit/admin-summary", dateFrom, dateTo, selectedProduct, selectedBuyer, selectedSource],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dateFrom) p.set("dateFrom", dateFrom);
       if (dateTo) p.set("dateTo", dateTo);
       if (selectedProduct && selectedProduct !== "all") p.set("productId", selectedProduct);
       if (selectedBuyer && selectedBuyer !== "all") p.set("mediaBuyerId", selectedBuyer);
+      if (selectedSource && selectedSource !== "all") p.set("source", selectedSource);
       const res = await fetch(`/api/profit/admin-summary${p.toString() ? `?${p}` : ""}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed");
       return res.json();
@@ -68,13 +70,16 @@ export default function Profitability() {
     enabled: isAdmin,
   });
 
-  // Team profitability (admin only)
+  // Team profitability (admin only) — now respects all active filters
   const { data: teamSummary, isLoading: teamLoading } = useQuery<{ rows: TeamRow[] }>({
-    queryKey: ["/api/profit/team-summary", dateFrom, dateTo],
+    queryKey: ["/api/profit/team-summary", dateFrom, dateTo, selectedProduct, selectedBuyer, selectedSource],
     queryFn: async () => {
       const p = new URLSearchParams();
       if (dateFrom) p.set("dateFrom", dateFrom);
       if (dateTo) p.set("dateTo", dateTo);
+      if (selectedProduct && selectedProduct !== "all") p.set("productId", selectedProduct);
+      if (selectedBuyer && selectedBuyer !== "all") p.set("mediaBuyerId", selectedBuyer);
+      if (selectedSource && selectedSource !== "all") p.set("source", selectedSource);
       const res = await fetch(`/api/profit/team-summary${p.toString() ? `?${p}` : ""}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed");
       return res.json();
@@ -265,6 +270,18 @@ export default function Profitability() {
               {mediaBuyers.map((u: any) => (
                 <SelectItem key={u.id} value={u.id.toString()}>{u.username}</SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+          <Select value={selectedSource} onValueChange={setSelectedSource}>
+            <SelectTrigger className="w-[150px] h-9 text-sm" data-testid="select-profit-source">
+              <SelectValue placeholder="Toutes les sources" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Toutes les sources</SelectItem>
+              <SelectItem value="facebook">Facebook</SelectItem>
+              <SelectItem value="google">Google</SelectItem>
+              <SelectItem value="tiktok">TikTok</SelectItem>
+              <SelectItem value="snapchat">Snapchat</SelectItem>
             </SelectContent>
           </Select>
         </div>

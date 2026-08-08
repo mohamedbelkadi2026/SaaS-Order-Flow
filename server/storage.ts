@@ -210,7 +210,7 @@ export interface IStorage {
   upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry>;
   deleteAdSpendEntry(id: number, storeId: number): Promise<void>;
   getAdminAdSpendList(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]>;
-  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number): Promise<{
+  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number, source?: string): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
     byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
@@ -221,7 +221,7 @@ export interface IStorage {
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }>;
-  getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+  getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number, source?: string): Promise<{
     rows: { userId: number; userName: string; role: string; totalLeads: number; deliveredCount: number; revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; totalCosts: number; netProfit: number; }[];
   }>;
 
@@ -3974,6 +3974,7 @@ export class DatabaseStorage implements IStorage {
     productId?: number,
     mediaBuyerIdFilter?: number,
     magasinId?: number,
+    source?: string,
   ): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
@@ -3997,6 +3998,14 @@ export class DatabaseStorage implements IStorage {
         .where(eq(orderItems.productId, productId));
       const matchingOrderIds = new Set(matchingItems.map(i => i.orderId));
       deliveredOrders = deliveredOrders.filter(o => matchingOrderIds.has(o.id));
+    }
+    // Source filter (utmSource / source column, case-insensitive substring match)
+    if (source) {
+      const s = source.toLowerCase();
+      deliveredOrders = deliveredOrders.filter(o => {
+        const raw = ((o as any).utmSource || (o as any).source || "").toLowerCase();
+        return raw.includes(s);
+      });
     }
 
     // --- COGS: use order_items × products.cost_price (ground truth), fallback to orders.product_cost ---
@@ -4240,7 +4249,15 @@ export class DatabaseStorage implements IStorage {
     return s === 'delivered' || s === 'livré' || s === 'livre' || s === 'livrée' || s === 'livree';
   }
 
-  async getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
+  async getTeamProfitSummary(
+    storeId: number,
+    dateFrom?: string,
+    dateTo?: string,
+    productId?: number,
+    mediaBuyerIdFilter?: number,
+    magasinId?: number,
+    source?: string,
+  ): Promise<{
     rows: {
       userId: number; userName: string; role: string;
       totalLeads: number; deliveredCount: number;
@@ -4257,7 +4274,34 @@ export class DatabaseStorage implements IStorage {
     const orderConditions: any[] = [eq(orders.storeId, storeId)];
     if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
     if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
-    const allOrders = await db.select().from(orders).where(and(...orderConditions));
+    let allOrders = await db.select().from(orders).where(and(...orderConditions));
+
+    // ── Apply filters in the same order as getAdminProfitSummary ─────────────
+    // Product filter: keep only orders that have an item for the given product
+    if (productId) {
+      const matchingItems = await db
+        .select({ orderId: orderItems.orderId })
+        .from(orderItems)
+        .where(eq(orderItems.productId, productId));
+      const matchingOrderIds = new Set(matchingItems.map(i => i.orderId));
+      allOrders = allOrders.filter(o => matchingOrderIds.has(o.id));
+    }
+    // Media buyer filter
+    if (mediaBuyerIdFilter) {
+      allOrders = allOrders.filter(o => (o as any).mediaBuyerId === mediaBuyerIdFilter);
+    }
+    // Magasin filter
+    if (magasinId) {
+      allOrders = allOrders.filter(o => (o as any).magasinId === magasinId);
+    }
+    // Source filter (utmSource / source column, case-insensitive substring match)
+    if (source) {
+      const s = source.toLowerCase();
+      allOrders = allOrders.filter(o => {
+        const raw = ((o as any).utmSource || (o as any).source || "").toLowerCase();
+        return raw.includes(s);
+      });
+    }
 
     // Real COGS: order_items × products.cost_price (fallback: orders.product_cost)
     const allDelivered = allOrders.filter(o => this.isDeliveredStatus(o.status));
