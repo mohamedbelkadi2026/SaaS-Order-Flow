@@ -742,6 +742,91 @@ export async function initializeDatabase(): Promise<void> {
     `);
     console.log('[Migration] users.last_seen_at ensured ✅');
 
+    // ── One-shot: backfill missing stock_movements for historical orders ────────
+    // Orders imported/webhookedirectly in an advanced status (delivered, shipped,
+    // confirmed) never passed through updateOrderStatus, so RULE 0 / RULE 0.5 /
+    // RULE 1 never fired and no stock_movements rows were created for them.
+    // This migration inserts the missing ledger rows (AUDIT TRAIL ONLY — no
+    // products.stock change, since previous fixes already corrected the number).
+    // Also removes any manual "Ajustement" movement whose removal still leaves
+    // the product balance matching products.stock, since the real movements now
+    // explain the full history.
+    const smBackfillKey = 'stock_movements_backfill_v1';
+    const { rows: smBackfillDone } = await pool.query(
+      `SELECT 1 FROM public._migration_state WHERE key = $1 LIMIT 1`,
+      [smBackfillKey],
+    );
+    if (smBackfillDone.length === 0) {
+      // Insert missing shipped/delivered movements for historical orders
+      const inserted = await pool.query(`
+        INSERT INTO public.stock_movements
+          (store_id, product_id, type, quantity, order_id, reason, created_at)
+        SELECT
+          o.store_id,
+          oi.product_id,
+          CASE
+            WHEN o.status IN ('delivered','livré','livre','livrée','Livré','Livrée')
+            THEN 'delivered'
+            ELSE 'shipped'
+          END,
+          -(oi.quantity),
+          o.id,
+          CASE
+            WHEN o.status IN ('delivered','livré','livre','livrée','Livré','Livrée')
+            THEN 'Commande #' || o.order_number || ' livrée'
+            ELSE 'Expédition commande #' || o.order_number
+          END,
+          COALESCE(o.updated_at, o.created_at)
+        FROM public.orders o
+        JOIN public.order_items oi ON oi.order_id = o.id
+        WHERE o.status IN (
+          'delivered','livré','livre','livrée','Livré','Livrée',
+          'in_progress','expédié','Attente De Ramassage','transit',
+          'unreachable','En Cours De Retour','refused','Retour Recu',
+          'confirme','confirme_reporte'
+        )
+        AND oi.product_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM public.stock_movements sm
+          WHERE sm.order_id = o.id
+            AND sm.product_id = oi.product_id
+            AND sm.type IN ('shipped','delivered')
+        )
+      `);
+
+      // Remove manual "Ajustement" movements that are now redundant:
+      // safe to delete only when (sum of all other movements) = products.stock,
+      // meaning the real movements fully explain the current balance.
+      const cleaned = await pool.query(`
+        DELETE FROM public.stock_movements sm
+        USING public.products p
+        WHERE sm.product_id = p.id
+          AND (
+            sm.type = 'adjustment'
+            OR (sm.reason ILIKE '%édition manuelle%')
+            OR (sm.reason ILIKE '%ajustement%manuel%')
+          )
+          AND (
+            SELECT COALESCE(SUM(sm2.quantity), 0)
+            FROM public.stock_movements sm2
+            WHERE sm2.product_id = p.id
+              AND sm2.id <> sm.id
+          ) = p.stock
+      `);
+
+      await pool.query(
+        `INSERT INTO public._migration_state (key) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [smBackfillKey],
+      );
+      console.log(
+        `[Migration] stock_movements backfill ✅ — ` +
+        `${inserted.rowCount ?? 0} movement(s) created, ` +
+        `${cleaned.rowCount ?? 0} redundant manual adjustment(s) removed`
+      );
+    } else {
+      console.log('[Migration] stock_movements backfill already applied (skipped)');
+    }
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);
