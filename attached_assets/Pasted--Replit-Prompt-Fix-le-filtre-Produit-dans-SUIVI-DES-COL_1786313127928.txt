@@ -1,0 +1,55 @@
+# Replit Prompt — Fix: le filtre "Produit" dans SUIVI DES COLIS renvoie des commandes d'un AUTRE produit
+
+## Bug confirmé (avec repro exacte)
+
+Sur la page **Commandes → Suivi des colis** (`client/src/pages/orders.tsx`), filtre **Produit = "الشريط اللاصق مطاطي القوي"** (scotch/ruban adhésif).
+
+Résultat : 1 commande (**CL-623194508**), mais la colonne **PRODUIT** de cette commande affiche **"ميزان الكتروني"** (balance électronique) — un produit complètement différent de celui sélectionné dans le filtre.
+
+C'est un bug d'intégrité produit/filtre, potentiellement grave : soit le filtre matche le mauvais produit, soit l'affichage montre le mauvais produit — dans les deux cas l'utilisateur ne peut plus faire confiance au filtre Produit sur cette page (et probablement ailleurs, si la même logique est réutilisée).
+
+## Où regarder
+
+1. **`server/storage.ts`**, fonction `getFilteredOrders` (~ligne 868) : le filtre productId fonctionne par sous-requête —
+```ts
+if (filters.productId) {
+  conditions.push(sql`${orders.id} IN (
+    SELECT DISTINCT ${orderItems.orderId}
+    FROM ${orderItems}
+    WHERE ${orderItems.productId} = ${filters.productId}
+  )`);
+}
+```
+Cette logique en elle-même est correcte SI `filters.productId` correspond bien à l'ID du produit "الشريط اللاصق مطاطي القوي" tel qu'attendu par l'utilisateur.
+
+2. **`hydrateOrders`** (~ligne 653-730) : reconstruit `order.items[].product` via `productById.get(item.productId)`, où `productById` vient d'une requête `SELECT * FROM products WHERE id IN (...)`. Ça aussi est correct EN SOI si `item.productId` (stocké réellement dans `order_items`) correspond au bon produit.
+
+3. **`client/src/pages/orders.tsx`**, ~ligne 1476-1485 : le chip affiché pour le filtre actif fait :
+```ts
+const product = (filterOptions?.products || []).find((p: any) => String(p.id) === filters.productId);
+```
+Si `filterOptions.products` (liste des produits utilisée pour peupler le dropdown ET pour afficher le nom du chip) est **mise en cache côté client (React Query) avec un `staleTime` long**, et que le catalogue produit a changé depuis (produit supprimé puis recréé, ID réutilisé, ou produit renommé) entre le moment où la liste a été chargée et maintenant, le chip peut afficher un ANCIEN nom pour un ID qui pointe aujourd'hui vers un produit totalement différent.
+
+## Deux hypothèses à vérifier en premier (avant de coder quoi que ce soit)
+
+**Hypothèse A — Donnée réellement incohérente en base** : requêter directement en base pour la commande CL-623194508 :
+```sql
+SELECT oi.id, oi.order_id, oi.product_id, p.name
+FROM order_items oi
+JOIN products p ON p.id = oi.product_id
+WHERE oi.order_id = (SELECT id FROM orders WHERE order_number = 'CL-623194508' OR code = 'CL-623194508');
+```
+→ Si le résultat montre `product_id` pointant vers "ميزان الكتروني" (la balance), alors le vrai bug est que la commande a été mal liée au mauvais produit à la création (webhook d'import Shopify/EasyOrders/YouCan mal mappé, ou upsell mal enregistré) — le filtre et l'affichage sont corrects, c'est la DONNÉE source qui est fausse. Chercher du côté de l'endpoint d'import qui a créé cette commande (webhook, mapping SKU→productId) pour un bug de mapping produit.
+
+**Hypothèse B — Le filtre envoie le mauvais `productId`** : dans les DevTools réseau, vérifier la requête `GET /api/orders/filtered?...productId=XXX...` quand "الشريط اللاصق مطاطي القوي" est sélectionné dans le dropdown. Comparer XXX avec l'ID réel de ce produit dans la table `products` (`SELECT id, name FROM products WHERE name = 'الشريط اللاصق مطاطي القوي'`). Si XXX ne correspond PAS → bug côté frontend : le `<Select>` du filtre Produit (`client/src/pages/orders.tsx` ~ligne 1694) envoie une valeur désynchronisée de `filterOptions.products` (cache stale, doublon de produits avec le même nom mais des IDs différents, ou état React qui n'a pas été remis à jour après un changement de produit sélectionné).
+
+## Fix selon le cas confirmé
+
+- Si **Hypothèse A** : corriger le mapping à l'import/webhook pour cette commande (et auditer s'il y a d'autres commandes touchées par le même bug de mapping — requête pour lister les commandes dont `order_items.product_id` ne correspond à aucun SKU/nom cohérent avec `rawProductName`).
+- Si **Hypothèse B** : réduire le `staleTime` de la query `filterOptions.products` (ou l'invalidation) pour qu'elle se resynchronise après toute mutation produit, et/ou dédupliquer les produits ayant le même nom mais des IDs différents dans la liste du dropdown (afficher un identifiant distinctif, ex: SKU, si deux produits partagent le même nom).
+
+## Testing checklist
+1. Reproduire exactement le cas ci-dessus (filtre = "الشريط اللاصق مطاطي القوي") → la seule commande retournée doit avoir ce produit (ou l'inclure, si commande multi-articles) dans sa colonne PRODUIT — jamais un autre produit sans lien.
+2. Tester avec 2-3 autres produits différents (y compris des produits ayant des noms proches ou dupliqués s'il y en a) pour confirmer qu'aucun autre cas de mismatch n'existe.
+3. Vérifier que `/api/orders/export` (qui réutilise les mêmes filtres) est cohérent avec ce qui s'affiche à l'écran.
+4. Si Hypothèse A confirmée, vérifier combien de commandes existantes sont affectées par ce mauvais mapping produit avant de décider s'il faut une migration de correction en masse.

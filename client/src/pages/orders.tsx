@@ -1971,14 +1971,19 @@ export default function Orders() {
                     productName = order.rawProductName;
                   } else if (items.length > 1) {
                     productName = items.map((it) => {
-                      const name = it.rawProductName || it.product?.name || '';
+                      // Prefer catalog name so the displayed product matches the filter
+                      const name = it.product?.name || it.rawProductName || '';
                       const v = (it.variantInfo || '').trim();
                       const vClean = (v && v !== 'Default Title' && v !== 'null' && !name.includes(v)) ? ` - ${v}` : '';
                       const qty = (it.quantity || 1) > 1 ? ` (x${it.quantity})` : '';
                       return `${name}${vClean}${qty}`;
                     }).filter(Boolean).join(' + ');
                   } else {
-                    const rawName = order.rawProductName || items[0]?.rawProductName || items[0]?.product?.name || '-';
+                    // Prefer the linked catalog product name over the raw webhook name:
+                    // the filter matches on order_items.product_id (catalog), so the display
+                    // must be consistent — if a catalog product is linked, show its name.
+                    // Fall back to rawProductName only when no catalog product is linked.
+                    const rawName = items[0]?.product?.name || items[0]?.rawProductName || order.rawProductName || '-';
                     const rawVariant = items[0]?.variantInfo || '';
                     const variantAlreadyInName = rawVariant && rawName.includes(rawVariant);
                     const displayName = (rawVariant && rawVariant !== 'Default Title' && rawVariant !== 'null' && !variantAlreadyInName) ? `${rawName} - ${rawVariant}` : rawName;
@@ -2436,7 +2441,8 @@ export default function Orders() {
           <div className="space-y-2.5">
             {filteredOrders.map((order: any) => {
               const itemCount = (order.items?.length) || 1;
-              const _baseCardName = order.rawProductName || order.items?.[0]?.rawProductName || order.items?.[0]?.product?.name || '—';
+              // Prefer catalog product name (matches filter logic) over raw webhook name
+              const _baseCardName = order.items?.[0]?.product?.name || order.items?.[0]?.rawProductName || order.rawProductName || '—';
               const _cardVariant = order.items?.[0]?.variantInfo || '';
               const _cardVariantInName = _cardVariant && _baseCardName.includes(_cardVariant);
               const productName = (_cardVariant && _cardVariant !== 'Default Title' && _cardVariant !== 'null' && !_cardVariantInName) ? `${_baseCardName} - ${_cardVariant}` : _baseCardName;
