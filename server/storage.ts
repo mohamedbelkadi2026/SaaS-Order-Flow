@@ -210,7 +210,7 @@ export interface IStorage {
   upsertMediaBuyerAdSpend(entry: InsertAdSpend & { mediaBuyerId: number }): Promise<AdSpendEntry>;
   deleteAdSpendEntry(id: number, storeId: number): Promise<void>;
   getAdminAdSpendList(storeId: number, dateFrom?: string, dateTo?: string): Promise<any[]>;
-  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number, source?: string): Promise<{
+  getAdminProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
     byBuyer: { buyerId: number; buyerName: string; adSpend: number; revenue: number; netProfit: number }[];
@@ -221,7 +221,7 @@ export interface IStorage {
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number; roi: number; deliveredCount: number; totalLeads: number;
   }>;
-  getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string, productId?: number, mediaBuyerIdFilter?: number, magasinId?: number, source?: string): Promise<{
+  getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
     rows: { userId: number; userName: string; role: string; totalLeads: number; deliveredCount: number; revenue: number; productCost: number; shippingCost: number; packagingCost: number; agentCommissions: number; adSpend: number; totalCosts: number; netProfit: number; }[];
   }>;
 
@@ -3974,7 +3974,6 @@ export class DatabaseStorage implements IStorage {
     productId?: number,
     mediaBuyerIdFilter?: number,
     magasinId?: number,
-    source?: string,
   ): Promise<{
     revenue: number; productCost: number; shippingCost: number; packagingCost: number;
     agentCommissions: number; adSpend: number; netProfit: number;
@@ -3998,10 +3997,6 @@ export class DatabaseStorage implements IStorage {
         .where(eq(orderItems.productId, productId));
       const matchingOrderIds = new Set(matchingItems.map(i => i.orderId));
       deliveredOrders = deliveredOrders.filter(o => matchingOrderIds.has(o.id));
-    }
-    // Source filter — checks BOTH utmSource AND source fields (see isOrderFromPlatform)
-    if (source) {
-      deliveredOrders = deliveredOrders.filter(o => this.isOrderFromPlatform(o, source));
     }
 
     // --- COGS: use order_items × products.cost_price (ground truth), fallback to orders.product_cost ---
@@ -4068,12 +4063,7 @@ export class DatabaseStorage implements IStorage {
     if (productId) legacyConds.push(eq(adSpendTracking.productId, productId));
     // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
     if (magasinId) legacyConds.push(eq((adSpendTracking as any).magasinId, magasinId));
-    let legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId, source: adSpendTracking.source }).from(adSpendTracking).where(and(...legacyConds));
-    // Source filter: substring match insensible à la casse ("google" matches "Google Ads", etc.)
-    if (source) {
-      const s = source.toLowerCase();
-      legacyAdSpend = legacyAdSpend.filter(e => ((e as any).source || "").toLowerCase().includes(s));
-    }
+    const legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId }).from(adSpendTracking).where(and(...legacyConds));
     // Legacy adSpendTracking amounts are stored in DH → multiply by 100 to convert to centimes
     const legacyTotal = legacyAdSpend.reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
 
@@ -4086,12 +4076,7 @@ export class DatabaseStorage implements IStorage {
     if (productId) newAdConds.push(eq(adSpend.productId, productId));
     // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
     if (magasinId) newAdConds.push(eq((adSpend as any).magasinId, magasinId));
-    let newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId, source: (adSpend as any).source }).from(adSpend).where(and(...newAdConds));
-    // Source filter: substring match insensible à la casse
-    if (source) {
-      const s = source.toLowerCase();
-      newAdEntries = newAdEntries.filter(e => ((e as any).source || "").toLowerCase().includes(s));
-    }
+    const newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId }).from(adSpend).where(and(...newAdConds));
     const newAdTotal = newAdEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
     const totalAdSpend = legacyTotal + newAdTotal;
@@ -4255,31 +4240,7 @@ export class DatabaseStorage implements IStorage {
     return s === 'delivered' || s === 'livré' || s === 'livre' || s === 'livrée' || s === 'livree';
   }
 
-  /**
-   * Unified platform/source matching — checks BOTH utmSource AND source fields
-   * with case-insensitive substring, so a "facebook" filter catches:
-   *   - utmSource = "Facebook Ads"  (YouCan UTM)
-   *   - source    = "facebook"      (manual/legacy)
-   * regardless of which field is populated.
-   * Used by getAdminProfitSummary, getTeamProfitSummary and any future summary
-   * that must be consistent with the Dashboard filter logic.
-   */
-  private isOrderFromPlatform(order: any, platform: string): boolean {
-    const p = platform.toLowerCase();
-    const byUtm = (order.utmSource || '').toLowerCase().includes(p);
-    const bySrc = (order.source || '').toLowerCase().includes(p);
-    return byUtm || bySrc;
-  }
-
-  async getTeamProfitSummary(
-    storeId: number,
-    dateFrom?: string,
-    dateTo?: string,
-    productId?: number,
-    mediaBuyerIdFilter?: number,
-    magasinId?: number,
-    source?: string,
-  ): Promise<{
+  async getTeamProfitSummary(storeId: number, dateFrom?: string, dateTo?: string): Promise<{
     rows: {
       userId: number; userName: string; role: string;
       totalLeads: number; deliveredCount: number;
@@ -4296,30 +4257,7 @@ export class DatabaseStorage implements IStorage {
     const orderConditions: any[] = [eq(orders.storeId, storeId)];
     if (dateFrom) orderConditions.push(sql`${orders.createdAt} >= ${dateFrom}::timestamp`);
     if (dateTo) orderConditions.push(sql`${orders.createdAt} <= ${dateTo}::timestamp`);
-    let allOrders = await db.select().from(orders).where(and(...orderConditions));
-
-    // ── Apply filters in the same order as getAdminProfitSummary ─────────────
-    // Product filter: keep only orders that have an item for the given product
-    if (productId) {
-      const matchingItems = await db
-        .select({ orderId: orderItems.orderId })
-        .from(orderItems)
-        .where(eq(orderItems.productId, productId));
-      const matchingOrderIds = new Set(matchingItems.map(i => i.orderId));
-      allOrders = allOrders.filter(o => matchingOrderIds.has(o.id));
-    }
-    // Media buyer filter
-    if (mediaBuyerIdFilter) {
-      allOrders = allOrders.filter(o => (o as any).mediaBuyerId === mediaBuyerIdFilter);
-    }
-    // Magasin filter
-    if (magasinId) {
-      allOrders = allOrders.filter(o => (o as any).magasinId === magasinId);
-    }
-    // Source filter — checks BOTH utmSource AND source fields (see isOrderFromPlatform)
-    if (source) {
-      allOrders = allOrders.filter(o => this.isOrderFromPlatform(o, source));
-    }
+    const allOrders = await db.select().from(orders).where(and(...orderConditions));
 
     // Real COGS: order_items × products.cost_price (fallback: orders.product_cost)
     const allDelivered = allOrders.filter(o => this.isDeliveredStatus(o.status));
@@ -4329,22 +4267,12 @@ export class DatabaseStorage implements IStorage {
     const adDateConds: any[] = [eq(adSpend.storeId, storeId)];
     if (dateFrom) adDateConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adDateConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
-    let allNewAdSpend = await db.select({ userId: (adSpend as any).userId, amount: adSpend.amount, source: (adSpend as any).source }).from(adSpend).where(and(...adDateConds));
-    // Source filter: substring match insensible à la casse
-    if (source) {
-      const s = source.toLowerCase();
-      allNewAdSpend = allNewAdSpend.filter(e => ((e as any).source || "").toLowerCase().includes(s));
-    }
+    const allNewAdSpend = await db.select({ userId: (adSpend as any).userId, amount: adSpend.amount }).from(adSpend).where(and(...adDateConds));
 
     const legDateConds: any[] = [eq(adSpendTracking.storeId, storeId)];
     if (dateFrom) legDateConds.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) legDateConds.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
-    let allLegacyAdSpend = await db.select().from(adSpendTracking).where(and(...legDateConds));
-    // Source filter: substring match insensible à la casse
-    if (source) {
-      const s = source.toLowerCase();
-      allLegacyAdSpend = allLegacyAdSpend.filter(e => ((e as any).source || "").toLowerCase().includes(s));
-    }
+    const allLegacyAdSpend = await db.select().from(adSpendTracking).where(and(...legDateConds));
 
     // Determine fallback user (owner first, then first admin)
     const ownerUser = allUsers.find(u => u.role === 'owner') ?? allUsers.find(u => u.role === 'admin') ?? null;
@@ -4362,11 +4290,9 @@ export class DatabaseStorage implements IStorage {
         revenue += Number(o.totalPrice ?? 0);
         productCost += Number(teamCogsMap.get(o.id) ?? 0);
         shippingCost += Number(o.shippingCost ?? 0);
-        // Explicit Number() coercion on both sides to avoid string vs integer mismatch
         if (o.assignedToId) {
-          const assignedAgentId = Number(o.assignedToId);
-          const agentSetting = agentSettingsAll.find(as => Number(as.agentId) === assignedAgentId);
-          agentCommissions += Number(agentSetting?.commissionRate ?? 0) * 100;
+          const s = agentSettingsAll.find(s => s.agentId === o.assignedToId);
+          agentCommissions += Number(s?.commissionRate ?? 0) * 100;
         }
       }
       const packagingCost = deliveredOrders.length * storePackaging;
