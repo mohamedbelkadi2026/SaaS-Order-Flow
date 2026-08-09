@@ -6,13 +6,23 @@
 // Normalise: strip diacritics, collapse all whitespace variants, lowercase.
 // Handles double spaces, non-breaking spaces (U+00A0), unicode spaces, tabs
 // so "Cuir  Rf" (double espace catalogue) === "Cuir Rf" (commande espace simple).
+//
+// Arabic-safe: preserves Arabic script (U+0600–U+06FF and supplemental blocks)
+// while stripping harakat/tashkeel (vowel marks) and tatweel so that the same
+// word with/without short vowels still matches — analogous to stripping Latin
+// accents above.  The old `/[^a-z0-9]+/g` regex dropped ALL Arabic characters,
+// causing every Arabic product name to normalise to "" and resolveProductId()
+// to return the first catalogue product instead of the correct one.
 export function normStr(s: string): string {
   return (s || '')
     .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')          // strip combining diacritics
-    .replace(/[\u00A0\u2000-\u200B\t\n\r]/g, ' ') // non-breaking / unicode spaces → normal space
+    .replace(/[\u0300-\u036f]/g, '')                      // strip Latin combining diacritics
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')          // strip Arabic tashkeel / tatweel
+    .replace(/[\u00A0\u2000-\u200B\t\n\r]/g, ' ')        // non-breaking / unicode spaces → space
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')              // punctuation & repeated spaces → single space
+    // Keep: Latin letters + digits + Arabic (standard + supplement + extended-A/B +
+    //       presentation forms A/B).  Everything else (punctuation, symbols…) → space.
+    .replace(/[^a-z0-9\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ');
 }
