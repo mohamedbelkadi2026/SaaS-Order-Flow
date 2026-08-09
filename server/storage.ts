@@ -1210,17 +1210,59 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      // ── RULE 0.5: First-time shipped transition → write stock_movements ───
+      // Covers every transition INTO a shipped/in-transit status that is NOT
+      // 'delivered' (RULE 1 handles that), and only the FIRST such transition
+      // (shipped→shipped carrier updates don't re-fire).
+      // Physical stock is only decremented if RULE 0 didn't already do it
+      // (i.e., if prev status was NOT in CONFIRMED_FOR_STOCK).
+      const isFirstShippedTransition = SHIPPED_STATUS_SET.has(status) &&
+        status !== 'delivered' &&
+        !SHIPPED_STATUS_SET.has(prevStatus ?? '');
+      if (isFirstShippedTransition) {
+        const skipStockDeductionShip = this.CONFIRMED_FOR_STOCK.has(prevStatus ?? '');
+        for (const item of items) {
+          if (!item.productId) continue;
+          const qty = Number(item.quantity);
+          if (!skipStockDeductionShip) {
+            await tx.update(products)
+              .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
+              .where(eq(products.id, item.productId));
+            await tx.insert(stockLogs).values({
+              storeId: currentOrder.storeId!,
+              productId: item.productId,
+              orderId: id,
+              changeAmount: -qty,
+              reason: `Commande #${id} expédiée`,
+            });
+          }
+          await tx.insert(stockMovements).values({
+            storeId: currentOrder.storeId!,
+            productId: item.productId,
+            type: 'shipped',
+            quantity: -qty,
+            orderId: id,
+            userId: actorId ?? null,
+            reason: skipStockDeductionShip
+              ? `Commande #${id} expédiée (stock déjà déduit à la confirmation)`
+              : `Commande #${id} expédiée`,
+          });
+        }
+      }
+
       // ── RULE 1: First-time delivery ────────────────────────────────────
       // The ledger MUST log every transition into 'delivered', regardless of
       // what the prev status was — that's the whole point of "sortie" in the
       // insights view (units actually shipped to customers).
       // Physical stock subtraction is conditional: if the prev status was
-      // already stock-deducting (RULE 0 ran on confirme), we skip the
-      // subtraction but still write the ledger row so the audit trail is
-      // accurate. The legacy stock_logs row only fires on the path that also
-      // touches physical stock to preserve old behavior.
+      // already stock-deducting (RULE 0 ran on confirme or RULE 0.5 ran on
+      // expédié), we skip the subtraction but still write the ledger row so
+      // the audit trail is accurate.
       if (status === 'delivered' && prevStatus !== 'delivered') {
-        const skipStockDeduction = this.CONFIRMED_FOR_STOCK.has(prevStatus);
+        // Skip deduction if: came from confirme (RULE 0) OR from any shipped
+        // status (RULE 0.5 handled it, or RULE 0 ran before the ship step).
+        const skipStockDeduction = this.CONFIRMED_FOR_STOCK.has(prevStatus ?? '') ||
+          (SHIPPED_STATUS_SET.has(prevStatus ?? '') && prevStatus !== 'delivered');
         for (const item of items) {
           if (!item.productId) continue;
           const qty = Number(item.quantity);

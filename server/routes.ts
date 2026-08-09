@@ -8892,21 +8892,23 @@ function ensureHeaders(sheet) {
 
   // ─────────────────────────────────────────────────────────────────────────
   // POST /api/products/backfill-missing-stock-movements
-  // Retroactively creates stock_movements rows for orders that are already in
-  // a delivered/shipped/confirmed status but were NEVER processed through
-  // updateOrderStatus (e.g. imported directly via webhook or import-bulk).
+  // One-shot audit repair: retroactively creates stock_movements ledger rows
+  // for orders whose products.stock was already adjusted (by a previous run or
+  // by RULE 0/RULE 1) but that have NO corresponding row in stock_movements.
   //
-  // Safety rule: if stock_logs already has an entry for the order+product
-  // (RULE 0 / RULE 1 ran at confirm time), we create the movement ledger row
-  // WITHOUT touching products.stock (it was already decremented).
-  // If neither stock_logs nor stock_movements has an entry, we create the row
-  // AND decrement products.stock — that's the "truly missed" case.
+  // This endpoint NEVER touches products.stock — it is purely an audit/history
+  // repair. All physical stock adjustments are now done automatically at
+  // status-transition time (RULE 0 / RULE 0.5 / RULE 1 in updateOrderStatus,
+  // and decrementStockForOrder in import-bulk).
+  //
+  // createdAt of each inserted movement is set to the order's updatedAt (or
+  // createdAt), NOT the current timestamp, so the Historique panel shows the
+  // real delivery/ship date rather than today.
   // ─────────────────────────────────────────────────────────────────────────
   app.post("/api/products/backfill-missing-stock-movements", requireAuth, requireAdmin, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;
 
-      // Statuses that should have a stock movement but often don't for imported orders
       const ADVANCED_DELIVERED = ['delivered', 'livré', 'livre', 'livrée', 'Livré', 'Livrée'];
       const ADVANCED_SHIPPED   = [
         'in_progress', 'expédié', 'Attente De Ramassage', 'transit',
@@ -8916,7 +8918,7 @@ function ensureHeaders(sheet) {
       const ALL_ADVANCED = [...ADVANCED_DELIVERED, ...ADVANCED_SHIPPED];
       const deliveredSet = new Set<string>(ADVANCED_DELIVERED);
 
-      // 1. Fetch all orders in advanced statuses for this store
+      // 1. All orders in advanced statuses for this store
       const advancedOrders = await db
         .select({ id: orders.id, status: orders.status, updatedAt: orders.updatedAt, createdAt: orders.createdAt })
         .from(orders)
@@ -8927,9 +8929,9 @@ function ensureHeaders(sheet) {
       }
 
       const advancedIds = advancedOrders.map(o => o.id);
-      const orderMeta = new Map(advancedOrders.map(o => [o.id, o]));
+      const orderMeta  = new Map(advancedOrders.map(o => [o.id, o]));
 
-      // 2. Fetch all order_items for those orders (with a product)
+      // 2. All order_items for those orders that are linked to a product
       const allItems = await db
         .select()
         .from(orderItems)
@@ -8942,7 +8944,8 @@ function ensureHeaders(sheet) {
         return res.json({ message: "Aucun article de commande trouvé.", created: 0, byProduct: [] });
       }
 
-      // 3. Existing stock_movements (shipped / delivered) for these orders → no double-create
+      // 3. Existing stock_movements (shipped / delivered / returned) for these orders
+      //    → we never insert a duplicate for the same (orderId, productId) pair.
       const existingMovs = await db
         .select({ orderId: stockMovements.orderId, productId: stockMovements.productId })
         .from(stockMovements)
@@ -8953,33 +8956,22 @@ function ensureHeaders(sheet) {
         ));
       const movKey = new Set(existingMovs.map(m => `${m.orderId}:${m.productId}`));
 
-      // 4. Existing stock_logs entries for these orders → stock already deducted via RULE 0/1
-      const existingLogs = await db
-        .select({ orderId: (stockLogs as any).orderId, productId: (stockLogs as any).productId })
-        .from(stockLogs as any)
-        .where(and(
-          eq((stockLogs as any).storeId, storeId),
-          inArray((stockLogs as any).orderId, advancedIds),
-        ));
-      const logKey = new Set(existingLogs.map((l: any) => `${l.orderId}:${l.productId}`));
-
-      // 5. Build missing movements
+      // 4. Create missing movements — movement-only, NO products.stock change
+      //    (stock was already corrected by a previous run or by RULE 0/0.5/1).
       let created = 0;
-      // productId → total qty to subtract from products.stock (only "truly missed" ones)
-      const stockDeductions = new Map<number, number>();
-      const byProduct: Record<number, { productId: number; movements: number; qtyLogged: number; stockDeducted: number }> = {};
+      const byProduct: Record<number, { productId: number; movements: number; qtyLogged: number }> = {};
 
       for (const item of allItems) {
         if (!item.productId) continue;
         const key = `${item.orderId}:${item.productId}`;
-        if (movKey.has(key)) continue; // movement already exists
+        if (movKey.has(key)) continue; // already has a movement — skip
 
-        const meta  = orderMeta.get(item.orderId)!;
-        const qty   = item.quantity || 1;
+        const meta    = orderMeta.get(item.orderId)!;
+        const qty     = item.quantity || 1;
         const isDelivered = deliveredSet.has(meta.status);
         const movType = isDelivered ? 'delivered' : 'shipped';
-        const movDate = meta.updatedAt || meta.createdAt || new Date();
-        const alreadyDeducted = logKey.has(key); // RULE 0 already ran → don't touch stock again
+        // Use the order's own date, not NOW — so the Historique reflects reality.
+        const movDate = (meta.updatedAt || meta.createdAt) ?? new Date();
 
         await db.insert(stockMovements).values({
           storeId,
@@ -8987,37 +8979,22 @@ function ensureHeaders(sheet) {
           type: movType,
           quantity: -qty,
           orderId: item.orderId,
-          reason: alreadyDeducted
-            ? `Backfill: commande #${item.orderId} ${isDelivered ? 'livrée' : 'expédiée'} (stock déjà déduit à la confirmation)`
-            : `Backfill: commande #${item.orderId} ${isDelivered ? 'livrée' : 'expédiée'} (mouvement manquant)`,
+          reason: `Backfill: commande #${item.orderId} ${isDelivered ? 'livrée' : 'expédiée'} (historique manquant)`,
           createdAt: movDate,
         });
-        movKey.add(key); // prevent double-insert within the same run
-
-        if (!alreadyDeducted) {
-          // Truly missing deduction — accumulate for batch update below
-          stockDeductions.set(item.productId, (stockDeductions.get(item.productId) ?? 0) + qty);
-        }
+        movKey.add(key); // guard against duplicates within this run
 
         created++;
-        if (!byProduct[item.productId]) byProduct[item.productId] = { productId: item.productId, movements: 0, qtyLogged: 0, stockDeducted: 0 };
+        if (!byProduct[item.productId]) byProduct[item.productId] = { productId: item.productId, movements: 0, qtyLogged: 0 };
         byProduct[item.productId].movements++;
         byProduct[item.productId].qtyLogged += qty;
-        if (!alreadyDeducted) byProduct[item.productId].stockDeducted += qty;
-      }
-
-      // 6. Apply stock deductions in batch (products only; variants not adjusted here
-      //    because decrementStockForOrder already handles variant-level via shipped flow)
-      for (const [productId, qty] of stockDeductions) {
-        await db.update(products)
-          .set({ stock: sql`GREATEST(0, ${products.stock} - ${qty})` })
-          .where(eq(products.id, productId));
       }
 
       res.json({
-        message: `${created} mouvement(s) rétroactif(s) créé(s), ${stockDeductions.size} produit(s) décrémenté(s)`,
+        message: created > 0
+          ? `${created} mouvement(s) d'historique créé(s) — stock non modifié`
+          : "Aucun mouvement manquant — historique déjà complet",
         created,
-        stockAdjusted: stockDeductions.size,
         byProduct: Object.values(byProduct),
       });
     } catch (err: any) {

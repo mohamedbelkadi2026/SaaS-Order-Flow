@@ -647,17 +647,6 @@ export default function Inventory() {
     onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
   });
 
-  // Backfill missing shipped/delivered stock movements (for orders imported directly at advanced status)
-  const [backfillMovResult, setBackfillMovResult] = useState<any>(null);
-  const backfillMovementsMutation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/products/backfill-missing-stock-movements", {}).then((r: any) => r.json ? r.json() : r),
-    onSuccess: (data: any) => {
-      setBackfillMovResult(data);
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: "✅ Mouvements réconciliés", description: data.message });
-    },
-    onError: (e: any) => toast({ title: "Erreur", description: e.message, variant: "destructive" }),
-  });
 
   const bulkApplyCostMutation = useMutation({
     mutationFn: () => apiRequest("POST", "/api/products/bulk-apply-cost-to-variants", {}).then((r: any) => r.json ? r.json() : r),
@@ -1313,21 +1302,6 @@ export default function Inventory() {
             <><Loader2 className="w-4 h-4 animate-spin" /> Réparation en cours...</>
           ) : (
             <><History className="w-4 h-4" /> Réparer l'historique des stocks</>
-          )}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-2 border-blue-300 text-blue-600 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-950/30"
-          onClick={() => backfillMovementsMutation.mutate()}
-          disabled={backfillMovementsMutation.isPending}
-          data-testid="button-backfill-missing-movements"
-          title="Crée les mouvements manquants pour les commandes importées directement en statut livré/expédié, et corrige le stock Disponible"
-        >
-          {backfillMovementsMutation.isPending ? (
-            <><Loader2 className="w-4 h-4 animate-spin" /> Réconciliation en cours...</>
-          ) : (
-            <><History className="w-4 h-4" /> Réconcilier stock livrées/expédiées</>
           )}
         </Button>
         <Button

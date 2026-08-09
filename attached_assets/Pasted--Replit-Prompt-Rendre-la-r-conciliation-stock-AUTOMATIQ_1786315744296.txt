@@ -1,0 +1,31 @@
+# Replit Prompt — Rendre la réconciliation stock AUTOMATIQUE (retirer le bouton manuel) + corriger l'Historique toujours vide
+
+## Contexte
+
+Le dernier fix a ajouté un bouton manuel **"Réconcilier stock livrées/expédiées"** sur `/inventory`. Il a corrigé le chiffre "Disponible" (20 → 15, correct maintenant), mais deux problèmes restent :
+
+1. Ce n'est PAS censé être une action manuelle — le stock doit se décrémenter **automatiquement, au moment exact où une commande passe à un statut "sorti" (expédiée/livrée)**, sans qu'un admin ait besoin de cliquer sur quoi que ce soit.
+2. Le panneau **"Historique"** du produit affiche toujours SEULEMENT "Stock initial +20" — aucune ligne pour les 2 commandes livrées ni les 3 en cours, alors que "Disponible" est maintenant correct (15). Ça veut dire que le bouton de réconciliation a modifié `products.stock` directement (probablement via un simple `UPDATE ... SET stock = stock - N`) SANS insérer les lignes correspondantes dans `stock_movements` — donc l'audit trail reste incomplet et incohérent avec le chiffre affiché.
+
+## Fix demandé
+
+### 1. Retirer le bouton manuel, garder la logique mais la déclencher automatiquement
+- Dans **`client/src/pages/inventory.tsx`** : supprimer le bouton **"Réconcilier stock livrées/expédiées"** de la barre d'actions (`/inventory`), et le mutation/query associée si elle n'est plus utilisée ailleurs.
+- Le code backend derrière ce bouton (l'endpoint qui a corrigé 20→15) NE DOIT PAS être supprimé : il doit être **réutilisé comme la logique canonique de décrément de stock**, appelée automatiquement à chaque fois qu'une commande transite vers un statut "sorti" (livrée) ou "en cours" (expédiée), directement dans le code qui gère les changements de statut de commande (`updateOrderStatus` dans `server/storage.ts`, et tout endpoint qui crée une commande directement avec un statut déjà avancé — webhooks YouCan/Shopify, `/api/orders/import`, `/api/orders/import-bulk`, `/api/orders/manual`).
+- Objectif final : plus aucun bouton manuel nécessaire pour que "Disponible" soit toujours juste — ça doit être vrai en continu, automatiquement.
+
+### 2. Corriger l'endpoint pour qu'il écrive AUSSI dans `stock_movements` (pas juste `products.stock`)
+Quel que soit l'endroit où cette logique de réconciliation vit maintenant (fonction partagée réutilisée par les transitions ET par un backfill historique une fois), elle doit, pour CHAQUE commande/ligne d'article concernée :
+- Insérer une ligne dans `stock_movements` avec `type` = `'delivered'` (si statut livré) ou `'shipped'` (si en cours/expédiée), `quantity` = `-qty`, `orderId` = l'id de la commande, `productId`/`variantId` correspondant, et `createdAt` = la date réelle de la commande (`orders.updatedAt` ou `orders.createdAt`), PAS la date du jour où le fix tourne — sinon l'historique va afficher "aujourd'hui" pour des livraisons d'il y a plusieurs jours, ce qui est trompeur.
+- Ne JAMAIS faire `UPDATE products SET stock = stock - N` sans écrire la ligne `stock_movements` correspondante — les deux doivent toujours être faits ensemble, dans la même transaction.
+- Avant d'insérer, vérifier qu'une ligne équivalente n'existe pas déjà pour cette commande/ce produit (`WHERE order_id = X AND product_id = Y AND type IN ('shipped','delivered')`) pour éviter les doublons si la réconciliation tourne plusieurs fois.
+
+### 3. Réparer les 5 mouvements déjà "perdus" pour ce produit test
+Pour "الشريط اللاصق مطاطي القوي" (et tout produit dans le même cas), écrire un script/endpoint one-shot (peut être lancé manuellement UNE fois par l'admin, ou automatiquement au déploiement) qui, pour les commandes déjà livrées/en cours dont `products.stock` a déjà été ajusté mais qui n'ont AUCUNE ligne dans `stock_movements` : crée rétroactivement les lignes manquantes (sans re-décrémenter le stock une deuxième fois, puisqu'il l'a déjà été par le bouton manuel) — uniquement à but d'audit/historique cette fois-ci.
+
+## Testing checklist
+1. Le bouton "Réconcilier stock livrées/expédiées" n'apparaît plus dans `/inventory`.
+2. Ouvrir l'Historique de "الشريط اللاصق مطاطي القوي" → doit maintenant afficher "Stock initial +20" PLUS 5 lignes (2 `delivered`, 3 `shipped`) avec les bonnes dates et numéros de commande, total sorti = -5, cohérent avec Disponible = 15.
+3. Faire passer une NOUVELLE commande de ce produit au statut "Livré" dans l'app → sans rien cliquer d'autre, vérifier que Disponible baisse immédiatement de la quantité livrée ET qu'une nouvelle ligne apparaît dans l'Historique.
+4. Simuler une commande importée/webhookée directement avec statut déjà "Livré" ou "Attente De Ramassage" → même vérification, sans intervention manuelle.
+5. Refaire passer une commande par tout le cycle confirme → expédié → livré et vérifier qu'il n'y a pas de double-décrément (un seul décrément net par commande, comme déjà validé dans le fix précédent).
