@@ -3999,13 +3999,9 @@ export class DatabaseStorage implements IStorage {
       const matchingOrderIds = new Set(matchingItems.map(i => i.orderId));
       deliveredOrders = deliveredOrders.filter(o => matchingOrderIds.has(o.id));
     }
-    // Source filter (utmSource / source column, case-insensitive substring match)
+    // Source filter — checks BOTH utmSource AND source fields (see isOrderFromPlatform)
     if (source) {
-      const s = source.toLowerCase();
-      deliveredOrders = deliveredOrders.filter(o => {
-        const raw = ((o as any).utmSource || (o as any).source || "").toLowerCase();
-        return raw.includes(s);
-      });
+      deliveredOrders = deliveredOrders.filter(o => this.isOrderFromPlatform(o, source));
     }
 
     // --- COGS: use order_items × products.cost_price (ground truth), fallback to orders.product_cost ---
@@ -4259,6 +4255,22 @@ export class DatabaseStorage implements IStorage {
     return s === 'delivered' || s === 'livré' || s === 'livre' || s === 'livrée' || s === 'livree';
   }
 
+  /**
+   * Unified platform/source matching — checks BOTH utmSource AND source fields
+   * with case-insensitive substring, so a "facebook" filter catches:
+   *   - utmSource = "Facebook Ads"  (YouCan UTM)
+   *   - source    = "facebook"      (manual/legacy)
+   * regardless of which field is populated.
+   * Used by getAdminProfitSummary, getTeamProfitSummary and any future summary
+   * that must be consistent with the Dashboard filter logic.
+   */
+  private isOrderFromPlatform(order: any, platform: string): boolean {
+    const p = platform.toLowerCase();
+    const byUtm = (order.utmSource || '').toLowerCase().includes(p);
+    const bySrc = (order.source || '').toLowerCase().includes(p);
+    return byUtm || bySrc;
+  }
+
   async getTeamProfitSummary(
     storeId: number,
     dateFrom?: string,
@@ -4304,13 +4316,9 @@ export class DatabaseStorage implements IStorage {
     if (magasinId) {
       allOrders = allOrders.filter(o => (o as any).magasinId === magasinId);
     }
-    // Source filter (utmSource / source column, case-insensitive substring match)
+    // Source filter — checks BOTH utmSource AND source fields (see isOrderFromPlatform)
     if (source) {
-      const s = source.toLowerCase();
-      allOrders = allOrders.filter(o => {
-        const raw = ((o as any).utmSource || (o as any).source || "").toLowerCase();
-        return raw.includes(s);
-      });
+      allOrders = allOrders.filter(o => this.isOrderFromPlatform(o, source));
     }
 
     // Real COGS: order_items × products.cost_price (fallback: orders.product_cost)
@@ -4354,9 +4362,11 @@ export class DatabaseStorage implements IStorage {
         revenue += Number(o.totalPrice ?? 0);
         productCost += Number(teamCogsMap.get(o.id) ?? 0);
         shippingCost += Number(o.shippingCost ?? 0);
+        // Explicit Number() coercion on both sides to avoid string vs integer mismatch
         if (o.assignedToId) {
-          const s = agentSettingsAll.find(s => s.agentId === o.assignedToId);
-          agentCommissions += Number(s?.commissionRate ?? 0) * 100;
+          const assignedAgentId = Number(o.assignedToId);
+          const agentSetting = agentSettingsAll.find(as => Number(as.agentId) === assignedAgentId);
+          agentCommissions += Number(agentSetting?.commissionRate ?? 0) * 100;
         }
       }
       const packagingCost = deliveredOrders.length * storePackaging;
