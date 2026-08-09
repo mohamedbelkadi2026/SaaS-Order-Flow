@@ -1,0 +1,23 @@
+# Replit Prompt — Revert : annuler les 3 derniers fixes et revenir à l'état stable précédent
+
+Les 3 derniers changements appliqués (dans l'ordre) :
+1. Fix "Rentabilité par Utilisateur (Team)" ignore le filtre Produit + ajout du filtre Source (Facebook/Google/TikTok).
+2. Fix filtre Source qui n'affectait pas la Pub (dépenses publicitaires) dans Rentabilité Avancée.
+3. Fix réconciliation Dashboard vs Rentabilité Avancée (Livrées) + commissions agents manquantes dans Total Coûts de la table Team.
+4. (Si déjà appliqué) Fix `normStr()` dans `server/services/variants.ts` pour le matching produit en arabe.
+
+Ces changements n'ont pas résolu le problème correctement / ont introduit un comportement pire. Je veux revenir à l'état du code **juste avant le tout premier de ces fixes**, sans perdre le reste du projet.
+
+## Ce qu'il faut faire
+
+1. **Regarder l'historique Git** (`git log --oneline -20`) et identifier les commits correspondant à ces 3-4 fixes (chercher les messages de commit récents mentionnant "Rentabilité", "team-summary", "filtre source", "Pub", "commissions agents", "normStr"/"variants arabe" — ou se baser sur les dates/heures des dernières sessions de travail).
+2. Si Replit utilise le système de **Checkpoints** (historique des versions dans l'interface Replit, panneau "History" / icône horloge) : ouvrir l'historique, trouver le checkpoint juste avant le premier de ces fixes, et cliquer sur **"Restore this checkpoint"** (ou équivalent) plutôt que de faire un revert Git manuel — c'est plus fiable et ça restaure aussi la base de données si Replit le gère.
+3. Si c'est du Git classique sans checkpoints Replit : faire un `git revert` (pas un `git reset --hard`, pour garder l'historique et pouvoir annuler le revert si besoin) sur chacun des commits identifiés, du plus récent au plus ancien, puis committer.
+4. Après le revert (par checkpoint ou Git), **redéployer sur Railway** pour que le changement soit effectif en production.
+
+## Vérification après le revert
+1. Confirmer que `server/services/variants.ts` → `normStr()` est revenu à sa version originale (sans les plages Unicode arabes) SI on veut annuler aussi ce fix-là — sinon préciser explicitement de le garder s'il n'est pas en cause.
+2. Ouvrir `/profitability` et `/dashboard` et vérifier que l'affichage revient au comportement d'avant (celui qu'on avait avant de commencer cette série de fixes), même s'il contient les anciens bugs — l'objectif ici est juste de repartir d'un état connu et stable.
+3. Confirmer avec moi (capture d'écran) que la plateforme est revenue à l'état d'avant, avant de retenter quoi que ce soit.
+
+⚠️ Ne pas toucher aux données déjà en base (order_items.product_id déjà modifiées, s'il y a eu une migration de correction) sans confirmation explicite — le revert doit porter sur le CODE, pas sur des données déjà corrigées manuellement en base si une telle migration a été lancée.
