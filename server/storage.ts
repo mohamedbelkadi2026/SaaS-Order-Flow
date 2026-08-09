@@ -4072,7 +4072,12 @@ export class DatabaseStorage implements IStorage {
     if (productId) legacyConds.push(eq(adSpendTracking.productId, productId));
     // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
     if (magasinId) legacyConds.push(eq((adSpendTracking as any).magasinId, magasinId));
-    const legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId }).from(adSpendTracking).where(and(...legacyConds));
+    let legacyAdSpend = await db.select({ amount: adSpendTracking.amount, mediaBuyerId: adSpendTracking.mediaBuyerId, source: adSpendTracking.source }).from(adSpendTracking).where(and(...legacyConds));
+    // Source filter: substring match insensible à la casse ("google" matches "Google Ads", etc.)
+    if (source) {
+      const s = source.toLowerCase();
+      legacyAdSpend = legacyAdSpend.filter(e => ((e as any).source || "").toLowerCase().includes(s));
+    }
     // Legacy adSpendTracking amounts are stored in DH → multiply by 100 to convert to centimes
     const legacyTotal = legacyAdSpend.reduce((s, e) => s + Math.round(Number(e.amount ?? 0) * 100), 0);
 
@@ -4085,7 +4090,12 @@ export class DatabaseStorage implements IStorage {
     if (productId) newAdConds.push(eq(adSpend.productId, productId));
     // When a magasin is selected, scope ad spend to that magasin (legacy NULL rows excluded)
     if (magasinId) newAdConds.push(eq((adSpend as any).magasinId, magasinId));
-    const newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId }).from(adSpend).where(and(...newAdConds));
+    let newAdEntries = await db.select({ amount: adSpend.amount, mediaBuyerId: (adSpend as any).userId, source: (adSpend as any).source }).from(adSpend).where(and(...newAdConds));
+    // Source filter: substring match insensible à la casse
+    if (source) {
+      const s = source.toLowerCase();
+      newAdEntries = newAdEntries.filter(e => ((e as any).source || "").toLowerCase().includes(s));
+    }
     const newAdTotal = newAdEntries.reduce((s, e) => s + Number(e.amount ?? 0), 0);
 
     const totalAdSpend = legacyTotal + newAdTotal;
@@ -4311,12 +4321,22 @@ export class DatabaseStorage implements IStorage {
     const adDateConds: any[] = [eq(adSpend.storeId, storeId)];
     if (dateFrom) adDateConds.push(sql`${adSpend.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) adDateConds.push(sql`${adSpend.date} <= ${dateTo.substring(0, 10)}`);
-    const allNewAdSpend = await db.select({ userId: (adSpend as any).userId, amount: adSpend.amount }).from(adSpend).where(and(...adDateConds));
+    let allNewAdSpend = await db.select({ userId: (adSpend as any).userId, amount: adSpend.amount, source: (adSpend as any).source }).from(adSpend).where(and(...adDateConds));
+    // Source filter: substring match insensible à la casse
+    if (source) {
+      const s = source.toLowerCase();
+      allNewAdSpend = allNewAdSpend.filter(e => ((e as any).source || "").toLowerCase().includes(s));
+    }
 
     const legDateConds: any[] = [eq(adSpendTracking.storeId, storeId)];
     if (dateFrom) legDateConds.push(sql`${adSpendTracking.date} >= ${dateFrom.substring(0, 10)}`);
     if (dateTo) legDateConds.push(sql`${adSpendTracking.date} <= ${dateTo.substring(0, 10)}`);
-    const allLegacyAdSpend = await db.select().from(adSpendTracking).where(and(...legDateConds));
+    let allLegacyAdSpend = await db.select().from(adSpendTracking).where(and(...legDateConds));
+    // Source filter: substring match insensible à la casse
+    if (source) {
+      const s = source.toLowerCase();
+      allLegacyAdSpend = allLegacyAdSpend.filter(e => ((e as any).source || "").toLowerCase().includes(s));
+    }
 
     // Determine fallback user (owner first, then first admin)
     const ownerUser = allUsers.find(u => u.role === 'owner') ?? allUsers.find(u => u.role === 'admin') ?? null;
