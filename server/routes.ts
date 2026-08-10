@@ -9008,6 +9008,119 @@ function ensureHeaders(sheet) {
     }
   });
 
+  // GET /api/products/audit-product-links
+  // READ-ONLY audit: finds order_items where the current product_id does NOT match what
+  // resolveProductId() (with the corrected normStr) would compute from raw_product_name.
+  // Call this BEFORE running any data repair. Returns a JSON report — never writes anything.
+  app.get("/api/products/audit-product-links", requireAuth, requireAdmin, async (req: any, res: any) => {
+    try {
+      const storeId = req.user!.storeId!;
+
+      // Load all products (with variants) for this store
+      const storeProducts = await storage.getProductsByStore(storeId);
+      const storeProdsWithVariants = await Promise.all(
+        storeProducts.map(async (p: any) => ({
+          id: p.id,
+          name: p.name,
+          variants: await db.select({ name: productVariants.name })
+            .from(productVariants)
+            .where(eq(productVariants.productId, p.id)),
+        }))
+      );
+
+      // Load all order_items for this store that have a raw_product_name
+      const items = await db
+        .select({
+          oi_id: orderItems.id,
+          orderId: orderItems.orderId,
+          rawProductName: orderItems.rawProductName,
+          currentProductId: orderItems.productId,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(
+          and(
+            eq(orders.storeId, storeId),
+            sql`${orderItems.rawProductName} IS NOT NULL`,
+            sql`${orderItems.rawProductName} != ''`,
+          )
+        );
+
+      if (items.length === 0) {
+        return res.json({
+          total: 0,
+          mismatches: 0,
+          unresolved: 0,
+          rows: [],
+          message: "Aucun order_item avec raw_product_name trouvé dans ce store.",
+        });
+      }
+
+      // Build lookup maps
+      const productNameById = new Map(storeProducts.map((p: any) => [p.id, p.name]));
+
+      const rows: {
+        oi_id: number; orderId: number; rawProductName: string;
+        currentProductId: number | null; currentProductName: string | null;
+        computedProductId: number | null; computedProductName: string | null;
+        status: 'ok' | 'mismatch' | 'unresolved_now' | 'unresolved_before';
+      }[] = [];
+
+      let mismatches = 0;
+      let unresolved = 0;
+
+      for (const item of items) {
+        const { productId: computedId } = resolveProductId(item.rawProductName || '', storeProdsWithVariants);
+        const currentName = item.currentProductId ? (productNameById.get(item.currentProductId) ?? null) : null;
+        const computedName = computedId ? (productNameById.get(computedId) ?? null) : null;
+
+        let status: 'ok' | 'mismatch' | 'unresolved_now' | 'unresolved_before';
+        if (!computedId && !item.currentProductId) {
+          status = 'unresolved_before'; // was already unresolved, still unresolved — no change
+        } else if (!computedId && item.currentProductId) {
+          // Previously resolved (possibly wrong), now correctly unresolved — this IS a mismatch type
+          status = 'mismatch';
+          mismatches++;
+        } else if (computedId && !item.currentProductId) {
+          // Was unresolved before, now resolves correctly
+          status = 'unresolved_now';
+          unresolved++;
+        } else if (computedId !== item.currentProductId) {
+          status = 'mismatch';
+          mismatches++;
+        } else {
+          status = 'ok';
+        }
+
+        if (status !== 'ok') {
+          rows.push({
+            oi_id: item.oi_id,
+            orderId: item.orderId,
+            rawProductName: item.rawProductName || '',
+            currentProductId: item.currentProductId ?? null,
+            currentProductName: currentName ?? null,
+            computedProductId: computedId,
+            computedProductName: computedName,
+            status,
+          });
+        }
+      }
+
+      res.json({
+        total: items.length,
+        mismatches,
+        unresolved,
+        rows,
+        message: mismatches === 0 && unresolved === 0
+          ? `✅ Tous les ${items.length} order_items sont correctement liés.`
+          : `⚠️ ${mismatches} mismatch(es) détecté(s) sur ${items.length} lignes. Validez ce rapport avant toute correction automatique.`,
+      });
+    } catch (err: any) {
+      console.error("[AuditProductLinks]", err);
+      res.status(500).json({ message: err.message });
+    }
+  });
+
   app.post("/api/products/bulk-apply-cost-to-variants", requireAuth, requireAdmin, async (req: any, res: any) => {
     try {
       const storeId = req.user!.storeId!;

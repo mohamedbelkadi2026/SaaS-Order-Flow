@@ -950,6 +950,17 @@ export default function AllOrders() {
                       {isColVisible('produit') && (
                         <TableCell className="text-[11px] align-top" title={productName} data-testid={`all-text-product-${order.id}`}>
                           <div className="max-w-[200px] line-clamp-2 break-words">{productName}</div>
+                          {/* Badge "Produit non reconnu" : visible quand aucun item n'a de productId résolu */}
+                          {items.length > 0 && items.every((it: any) => !it.productId) && (
+                            <Badge
+                              variant="outline"
+                              className="mt-0.5 px-1 py-0 h-4 text-[9px] border-amber-400 text-amber-600 dark:text-amber-400 cursor-default"
+                              title="Le nom du produit n'a pas pu être associé à un article du catalogue. Vérifiez et liez manuellement via l'édition de commande."
+                              data-testid={`badge-unresolved-product-${order.id}`}
+                            >
+                              ⚠️ Produit non reconnu
+                            </Badge>
+                          )}
                         </TableCell>
                       )}
                       {isColVisible('boutique') && (

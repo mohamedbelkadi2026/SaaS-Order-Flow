@@ -1,0 +1,56 @@
+# Replit Prompt — 🔴🔴 URGENT : correction DÉFINITIVE du mismatch produit (impacte tout le catalogue, pas juste 1 produit)
+
+## Gravité
+
+Produit "الشريط اللاصق مطاطي القوي" (SKU 0013) : "En cours" est passé de 3 à **56**, "Disponible" est tombé à **0 (Rupture)**. En filtrant les commandes par ce produit, on voit des commandes d'AUTRES produits complètement différents : "مشد الجسم", "حامل هاتف السيارة", "المروحة الذكية", "جهاز شفط الحليب", "شريط مقاوم للماء", "مشط"... Ce n'est plus un cas isolé, c'est un mismatch massif et actif qui continue de s'aggraver à chaque nouvelle commande.
+
+## Cause : le bug `normStr()` (déjà identifié précédemment) n'est probablement toujours pas corrigé en production, ou pas correctement
+
+Rappel du bug : dans **`server/services/variants.ts`**, `normStr()` supprime tout caractère non-latin (`.replace(/[^a-z0-9]+/g, ' ')`), donc TOUS les noms de produits arabes se normalisent vers la même chaîne (vide/espaces). `resolveProductId()` matche alors n'importe quel produit arabe au hasard (le premier trouvé) au lieu du bon.
+
+**Avant de faire quoi que ce soit d'autre : vérifier en premier si ce fix a bien été appliqué et déployé.** Si oui, il y a un AUTRE bug qui produit le même symptôme (voir section "Si le fix normStr est déjà en place" plus bas) — ne pas réappliquer le même patch en boucle sans vérifier l'état actuel du fichier.
+
+### Fix `normStr()` à confirmer/appliquer :
+```ts
+export function normStr(s: string): string {
+  return (s || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')  // strip Arabic tashkeel/tatweel
+    .replace(/[\u00A0\u2000-\u200B\t\n\r]/g, ' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+```
+
+## Garde-fou supplémentaire — INDISPENSABLE pour empêcher que ça recommence
+
+Peu importe le bug exact, le vrai problème de fond est que `resolveProductId()` **ne doit JAMAIS lier une commande à un produit "par défaut"/au hasard** quand il ne trouve pas de correspondance fiable. Modifier `resolveProductId()` (`server/services/variants.ts`) pour que :
+1. Si `normStr(rawName)` est vide ou trop courte (ex: < 2 caractères utiles) après normalisation → NE PAS matcher, retourner `null`/`undefined` explicitement.
+2. Si plusieurs produits du catalogue partagent EXACTEMENT le même `normStr()` (ambiguïté réelle, pas un bug de regex) → NE PAS choisir le premier au hasard ; soit utiliser un critère de départage plus fort (SKU exact si fourni par le webhook, prix, variante), soit retourner `null` et laisser la commande dans un état "produit à confirmer manuellement" plutôt que de deviner.
+3. Toute commande dont le produit n'a pas pu être résolu avec confiance doit être visible quelque part dans l'app (ex: badge "Produit non reconnu" dans Suivi des Colis) pour qu'un humain la lie manuellement — plutôt que de silencieusement associer un mauvais produit qui fausse ensuite tout le stock et la rentabilité.
+
+## Réparation des données déjà corrompues (TOUT le catalogue, pas que ce produit)
+
+1. Écrire un script d'audit en lecture seule (à faire tourner et à me montrer le résultat AVANT toute correction automatique) :
+```sql
+SELECT oi.id, oi.order_id, o.order_number, oi.raw_product_name, oi.product_id, p.name AS linked_product_name
+FROM order_items oi
+JOIN orders o ON o.id = oi.order_id
+JOIN products p ON p.id = oi.product_id
+WHERE oi.raw_product_name IS NOT NULL AND oi.raw_product_name != ''
+ORDER BY o.created_at DESC;
+```
+2. Pour chaque ligne, recalculer quel serait le bon `product_id` avec le `normStr()` corrigé (comparer `raw_product_name` normalisé à `products.name` normalisé pour tout le catalogue du store). Générer un rapport : combien de lignes ont un `product_id` actuel différent du produit recalculé.
+3. Ne PAS appliquer les corrections automatiquement sur toute la base sans validation — proposer d'abord la liste des changements prévus (ex: export CSV ou tableau dans les logs), pour que je puisse valider avant d'écraser des `product_id` en masse.
+4. Une fois validé, appliquer la correction : mettre à jour `order_items.product_id` vers le bon produit pour les lignes concernées, PUIS recalculer le stock de TOUS les produits touchés (recompter les mouvements `stock_movements` existants + réappliquer le backfill des mouvements manquants comme fait précédemment pour "الشريط اللاصق مطاطي القوي", mais cette fois pour tout le catalogue).
+5. Après correction, ré-exécuter le calcul "Disponible/En cours/Sortie" pour tous les 16 produits du store et vérifier que les totaux (quantité totale, ruptures de stock) redeviennent cohérents.
+
+## Testing checklist
+1. `resolveProductId("الشريط اللاصق مطاطي القوي", storeProducts)` et `resolveProductId("مشد الجسم", storeProducts)` doivent retourner deux IDs différents et corrects.
+2. Filtrer Suivi des Colis par "الشريط اللاصق مطاطي القوي" → toutes les commandes retournées doivent réellement concerner ce produit (vérifier le nom dans le modal d'édition ET dans la colonne PRODUIT, comme testé précédemment).
+3. "En cours" pour ce produit doit redescendre à un nombre cohérent avec la réalité (pas 56), "Disponible" ne doit plus être à 0 sauf si c'est vraiment le cas.
+4. Vérifier 2-3 autres produits arabes du catalogue (les 16 au total) pour confirmer que leurs propres compteurs (Reçu/Sortie/En cours/Disponible) sont redevenus cohérents après la correction en masse.
+5. Créer une commande de test avec un nom de produit qui n'existe PAS dans le catalogue → confirmer qu'elle n'est PAS silencieusement liée à un produit au hasard, et qu'elle apparaît comme "non reconnue" quelque part pour révision manuelle.
