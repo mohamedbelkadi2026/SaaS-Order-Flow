@@ -1,0 +1,55 @@
+# Replit Prompt — Root cause localisée avec certitude : le filtre Dashboard fait confiance à `order_items.product_id` qui est encore corrompu
+
+## Preuve définitive
+
+Deux vues du MÊME produit "الشريط اللاصق مطاطي القوي", même moment :
+- **Table "PRODUITS COMMANDÉS"** (Dashboard, section stats) : **Total = 20**, Confirmés = 12, En cours = 11, Livrées = 0.
+- **Cartes filtrées du Dashboard** (filtre Produit = ce produit) : **COMMANDES = 101**, CONFIRMÉES = 57, EN COURS = 52, LIVRÉES = 2.
+
+Écart énorme (20 vs 101) pour EXACTEMENT le même produit, à cause d'une différence de méthode de calcul entre les deux :
+
+- La table "PRODUITS COMMANDÉS" (`server/routes.ts`, section `rawProductMap`, ~ligne 904-931) groupe les commandes **uniquement par le texte `rawProductName`** — elle n'utilise JAMAIS `order_items.product_id`. C'est pour ça qu'elle donne le bon chiffre (20) : elle est immunisée contre le bug de liaison produit qu'on chasse depuis plusieurs fixes.
+- Le filtre Produit des cartes du haut du Dashboard (`server/routes.ts`, `/api/stats/filtered`, ~ligne 640) utilise cette condition :
+```ts
+if (productId && productId !== 'all') {
+  const pid = Number(productId);
+  const productRecord = await db.select({ name: products.name })
+    .from(products).where(eq(products.id, pid)).limit(1);
+  const productName = productRecord[0]?.name?.toLowerCase().trim() || '';
+  // ...
+  i.productId === pid ||
+  (productName && (i.rawProductName || '').toLowerCase().trim().includes(productName)) ||
+  (productName && (o as any).rawProductName && (o as any).rawProductName.toLowerCase().trim().includes(productName))
+}
+```
+Cette condition inclut une commande si `i.productId === pid` **OU** si le nom brut contient le nom du produit. Le `OR` sur `productId === pid` est le problème : si `order_items.product_id` est encore massivement mal lié à ce produit pour des commandes qui n'ont RIEN à voir avec lui (le bug de fallback qu'on chasse depuis le dernier prompt), ce filtre les inclut quand même — d'où le total gonflé à 101.
+
+**Conclusion : la correction précédente (chasse au fallback codé en dur + garde-fou dans `resolveProductId`) a peut-être empêché de NOUVELLES commandes de mal se lier, mais les données déjà en base (commandes existantes dont `order_items.product_id` pointe encore à tort vers ce produit) n'ont toujours PAS été corrigées.** Le filtre Dashboard expose ce résidu parce qu'il fait confiance à `product_id` ; la table "Produits Commandés" le masque parce qu'elle l'ignore complètement.
+
+## Fix demandé
+
+### 1. Confirmer si la migration de réparation des données a été faite
+Redemander explicitement : est-ce que le script d'audit + correction en masse de `order_items.product_id` (proposé dans le prompt "URGENT fix définitif") a été EXÉCUTÉ sur les données existantes, ou seulement le code du fallback a été corrigé pour l'avenir ? Si la migration n'a pas tourné, c'est très probablement toute l'explication du problème actuel.
+
+### 2. Lancer (ou relancer) la migration de données
+```sql
+-- Identifie les order_items dont le produit lié ne correspond pas du tout au nom brut
+SELECT oi.id, oi.order_id, oi.raw_product_name, oi.product_id, p.name AS linked_product_name
+FROM order_items oi
+JOIN products p ON p.id = oi.product_id
+WHERE oi.raw_product_name IS NOT NULL AND oi.raw_product_name != ''
+  AND LOWER(TRIM(p.name)) != LOWER(TRIM(oi.raw_product_name));
+```
+Pour chaque ligne trouvée, re-résoudre le bon `product_id` à partir de `raw_product_name` (avec `resolveProductId()` maintenant corrigé), et mettre à jour `order_items.product_id` en conséquence — ou le laisser `NULL`/marqué "non reconnu" si aucun match fiable n'existe dans le catalogue actuel.
+
+### 3. Une fois la migration faite, ré-vérifier la cohérence
+Refaire exactement la comparaison ci-dessus (table "Produits Commandés" vs cartes filtrées du Dashboard) pour "الشريط اللاصق مطاطي القوي" — les deux DOIVENT maintenant donner le même total (20, ou le nouveau total correct après correction).
+
+### 4. Fiabiliser le filtre lui-même (optionnel mais recommandé)
+Une fois les données propres, envisager de retirer la condition `OR productName.includes(...)` du filtre Dashboard (ou de la restreindre à une égalité stricte plutôt qu'un `.includes()`), pour ne plus dépendre que de `product_id` — MAIS seulement après avoir confirmé que `product_id` est fiable à 100% partout, sinon ça peut re-casser des commandes légitimes qui n'ont pas de `product_id` du tout (anciennes commandes jamais liées).
+
+## Testing checklist
+1. Après la migration : table "Produits Commandés" et cartes filtrées du Dashboard doivent afficher EXACTEMENT le même total pour "الشريط اللاصق مطاطي القوي" (et pour 3-4 autres produits choisis au hasard).
+2. Refaire le test Suivi des Colis (filtre par ce produit) → toutes les commandes retournées doivent vraiment concerner ce produit.
+3. Vérifier Rentabilité Avancée (`/profitability`) avec ce produit filtré → le nombre de "Livrées" doit lui aussi être cohérent avec les 20/0 observés ailleurs, pas un ancien chiffre gonflé.
+4. Confirmer qu'aucune commande n'a été perdue/orpheline après la migration (compter le nombre total de commandes avant/après, doit rester identique — seul le `product_id` de certaines lignes doit changer).

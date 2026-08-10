@@ -827,6 +827,121 @@ export async function initializeDatabase(): Promise<void> {
       console.log('[Migration] stock_movements backfill already applied (skipped)');
     }
 
+    // ─── product_link_repair_v1 ──────────────────────────────────────────────
+    // Root cause: the old normStr() regex stripped all Arabic characters so every
+    // Arabic product name normalised to "". resolveProductId() then matched ALL
+    // Arabic orders to the first Arabic product in the store (smallest id).
+    // This one-shot migration re-resolves every order_item with a raw_product_name,
+    // fixes order_items.product_id, reassigns stock_movements, and recomputes stock.
+    const plrKey = 'product_link_repair_v1';
+    const { rows: plrDone } = await pool.query(
+      `SELECT 1 FROM public._migration_state WHERE key = $1 LIMIT 1`,
+      [plrKey],
+    );
+    if (plrDone.length === 0) {
+      // Dynamic import to avoid circular deps at module load time
+      const { resolveProductId } = await import('./services/variants');
+      let plrFixed = 0;
+
+      // Get all store IDs that have order_items with raw_product_name
+      const { rows: storeRows } = await pool.query(`
+        SELECT DISTINCT o.store_id
+        FROM public.order_items oi
+        JOIN public.orders o ON o.id = oi.order_id
+        WHERE oi.raw_product_name IS NOT NULL AND oi.raw_product_name != ''
+      `);
+
+      for (const { store_id: storeId } of storeRows) {
+        // Load products + variants for this store
+        const { rows: prodRows } = await pool.query(
+          `SELECT id, name FROM public.products WHERE store_id = $1`, [storeId]
+        );
+        const { rows: varRows } = await pool.query(
+          `SELECT product_id, name FROM public.product_variants WHERE store_id = $1`, [storeId]
+        );
+        const variantsByProd = new Map<number, { name: string }[]>();
+        for (const v of varRows) {
+          if (!variantsByProd.has(v.product_id)) variantsByProd.set(v.product_id, []);
+          variantsByProd.get(v.product_id)!.push({ name: v.name });
+        }
+        const storeProds = prodRows.map((p: any) => ({
+          id: p.id, name: p.name, variants: variantsByProd.get(p.id) || [],
+        }));
+
+        // Load all order_items with raw_product_name for this store
+        const { rows: itemRows } = await pool.query(`
+          SELECT oi.id, oi.order_id, oi.raw_product_name, oi.product_id AS current_product_id
+          FROM public.order_items oi
+          JOIN public.orders o ON o.id = oi.order_id
+          WHERE o.store_id = $1
+            AND oi.raw_product_name IS NOT NULL
+            AND oi.raw_product_name != ''
+        `, [storeId]);
+
+        const affectedProductIds = new Set<number>();
+
+        for (const item of itemRows) {
+          const { productId: computedId } = resolveProductId(item.raw_product_name, storeProds);
+          const currentId: number | null = item.current_product_id ?? null;
+          if (computedId === currentId) continue;              // already correct
+          if (!computedId && !currentId) continue;             // both null — no change
+
+          // Update order_items.product_id
+          await pool.query(
+            `UPDATE public.order_items SET product_id = $1 WHERE id = $2`,
+            [computedId, item.id],
+          );
+          plrFixed++;
+
+          if (currentId !== null) {
+            affectedProductIds.add(currentId);
+            if (computedId !== null) {
+              // Reassign stock_movements to correct product
+              await pool.query(`
+                UPDATE public.stock_movements
+                SET product_id = $1
+                WHERE store_id = $2 AND order_id = $3 AND product_id = $4
+              `, [computedId, storeId, item.order_id, currentId]);
+            } else {
+              // No valid product → remove bogus movement
+              await pool.query(`
+                DELETE FROM public.stock_movements
+                WHERE store_id = $1 AND order_id = $2 AND product_id = $3
+              `, [storeId, item.order_id, currentId]);
+            }
+          }
+          if (computedId !== null) affectedProductIds.add(computedId);
+        }
+
+        // Recalculate products.stock from movements for all touched products
+        for (const pid of affectedProductIds) {
+          const { rows: movRows } = await pool.query(
+            `SELECT type, quantity FROM public.stock_movements WHERE store_id = $1 AND product_id = $2`,
+            [storeId, pid],
+          );
+          let newStock = 0;
+          for (const m of movRows) {
+            const qty = Number(m.quantity ?? 1);
+            if (m.type === 'shipped' || m.type === 'delivered') newStock -= qty;
+            else newStock += qty;
+          }
+          newStock = Math.max(0, newStock);
+          await pool.query(
+            `UPDATE public.products SET stock = $1 WHERE id = $2 AND store_id = $3`,
+            [newStock, pid, storeId],
+          );
+        }
+      }
+
+      await pool.query(
+        `INSERT INTO public._migration_state (key) VALUES ($1) ON CONFLICT DO NOTHING`,
+        [plrKey],
+      );
+      console.log(`[Migration] product_link_repair_v1 ✅ — ${plrFixed} order_item(s) corrected`);
+    } else {
+      console.log('[Migration] product_link_repair_v1 already applied (skipped)');
+    }
+
   } catch (err: any) {
     console.error("[DATABASE] initializeDatabase error:", err.message);
     console.error("[DATABASE] Full error:", err);
