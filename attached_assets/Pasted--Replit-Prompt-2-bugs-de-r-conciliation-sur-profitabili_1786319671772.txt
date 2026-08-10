@@ -1,0 +1,35 @@
+# Replit Prompt — 2 bugs de réconciliation sur `/profitability` (données Facebook / Mois dernier)
+
+Cas de reproduction exact (à garder pour valider le fix): Date = **Mois dernier** (01/07/2026 → 31/07/2026), filtre plateforme = **Facebook**, un seul utilisateur actif (Rachid tazit / agent Naima).
+
+## Bug 1 — "Livrées" ne correspond pas entre Dashboard et Rentabilité Avancée
+
+- **Dashboard** (`/dashboard`, filtre "UTM Source"/plateforme = facebook, Mois dernier) → **LIVRÉES = 157**
+- **Rentabilité Avancée** (`/profitability`, Source = Facebook, mêmes dates) → **150 commandes livrées**
+
+Écart de 7 commandes pour EXACTEMENT le même filtre logique (date + plateforme Facebook). Ça veut dire que les deux pages n'utilisent pas la même définition de "commande Facebook" et/ou pas les mêmes bornes de dates.
+
+### À vérifier et aligner
+1. **`server/routes.ts`**, endpoint du Dashboard (`/api/stats/filtered`) : comment le filtre plateforme/UTM Source est-il appliqué aux commandes livrées ? (probablement sur `orders.utmSource` brut, avec un matching différent — voir la logique `platformKey` vers la ligne ~1005 qui teste `.includes('facebook')` sur `o.utmSource || o.source`).
+2. **`server/storage.ts`**, `getAdminProfitSummary` / `getTeamProfitSummary` : quelle est la condition exacte utilisée pour le paramètre `source` (ajoutée dans le fix précédent) ? Vérifier qu'elle matche EXACTEMENT la même logique que le Dashboard (même casse, même champ `utmSource`/`source`/`trafficPlatform`, même sous-chaîne `'facebook'`).
+3. Vérifier aussi les **bornes de dates** : est-ce que les deux requêtes utilisent le même filtre (`createdAt >= dateFrom AND createdAt <= dateTo`) avec la même timezone (Africa/Casablanca) et la même inclusion/exclusion du dernier jour ? Un décalage d'un jour peut suffire à expliquer 7 commandes de différence sur un mois.
+4. Objectif : unifier la logique de détection "commande = Facebook" dans une seule fonction/helper partagée (ex: `isOrderFromPlatform(order, platform)`) réutilisée par le Dashboard ET par Rentabilité Avancée (admin-summary + team-summary), pour qu'un même filtre donne TOUJOURS le même nombre de commandes livrées sur les deux pages.
+
+## Bug 2 — Table "Rentabilité par Utilisateur (Team)" oublie les commissions agents dans Total Coûts
+
+Sur la même vue (Source=Facebook, Mois dernier) :
+- Carte du haut **"Profit Net Global" = 576.00 DH** (correct : Revenu 56837 − Coûts livrées 26761 − Pub 29500 = 576, et "Coûts livrées" inclut bien "Commissions agents -1200.00 DH")
+- Table **"Rentabilité par Utilisateur (Team)"**, ligne Rachid tazit / "Totaux Équipe" : **Total Coûts = -55061.00 DH**, **Profit Net = 1776.00 DH**
+
+Différence: `56261 (Total Coûts correct) − 55061 (affiché) = 1200`, ce qui correspond EXACTEMENT aux commissions agents (Naima, 150 livrées × 8 DH = 1200 DH, visible dans la table "Commissions par Agent (Livrées)" juste en dessous).
+
+⇒ Dans **`server/storage.ts`**, fonction `getTeamProfitSummary`, le calcul de `totalCosts` par utilisateur (ligne ~4303 dans la version de base : `const totalCosts = productCost + shippingCost + packagingCost + agentCommissions + totalAdSpend;`) — vérifier que `agentCommissions` est bien:
+1. Calculé pour CHAQUE ligne utilisateur (boucle sur `deliveredOrders` de cet utilisateur, en cherchant `o.assignedToId` dans `agentSettingsAll`) — pas juste calculé une fois globalement et oublié dans la somme.
+2. Bien additionné dans `totalCosts` (pas juste calculé et non utilisé) — regarder si un fix précédent (ajout du filtre `source`/`productId`) a par erreur cassé cette ligne, par exemple si le filtre par source a été appliqué à `deliveredOrders` mais que `agentCommissions` est calculé sur un tableau d'orders non filtré (ou l'inverse), ou si une variable a été mal renommée pendant le refactor.
+3. Comparer avec `getAdminProfitSummary` qui produit le bon chiffre (1200 DH) pour rester cohérent — idéalement réutiliser exactement le même bout de code / la même boucle de calcul des commissions agents entre les deux fonctions plutôt que de le dupliquer.
+
+## Testing checklist
+1. Dashboard filtre Facebook + Mois dernier → X livrées. Rentabilité Avancée, Source=Facebook, mêmes dates → doit afficher le MÊME nombre de commandes livrées (actuellement 157 vs 150, doit devenir identique).
+2. Rentabilité Avancée : "Profit Net Global" (carte du haut) doit toujours être égal à la somme des "Profit Net" de la table "Rentabilité par Utilisateur (Team)" (ligne "Totaux Équipe"), pour n'importe quelle combinaison de filtres (produit, buyer, source, dates). Actuellement 576 ≠ 1776, doit devenir 576 = 576.
+3. Refaire le test avec "Toutes les sources" (sans filtre plateforme) pour confirmer qu'aucune régression n'a été introduite sur le cas déjà validé précédemment.
+4. Refaire le test avec un autre buyer/produit qui a des commissions agents différentes de zéro, pour confirmer que le fix n'est pas spécifique à ce cas précis.

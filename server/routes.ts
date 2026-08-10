@@ -2668,7 +2668,8 @@ export async function registerRoutes(
     const productId = req.query.productId && req.query.productId !== 'all' ? Number(req.query.productId) : undefined;
     const mediaBuyerIdFilter = req.query.mediaBuyerId && req.query.mediaBuyerId !== 'all' ? Number(req.query.mediaBuyerId) : undefined;
     const magasinIdFilter = req.query.magasinId && req.query.magasinId !== 'all' ? Number(req.query.magasinId) : undefined;
-    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter));
+    const source = req.query.source && req.query.source !== 'all' ? (req.query.source as string) : undefined;
+    res.json(await storage.getAdminProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter, source));
   });
 
   // ── Shopify junk-order cleanup ────────────────────────────────────────────
@@ -2933,7 +2934,11 @@ export async function registerRoutes(
     const storeId = req.user!.storeId!;
     const dateFrom = req.query.dateFrom as string | undefined;
     const dateTo = req.query.dateTo as string | undefined;
-    res.json(await storage.getTeamProfitSummary(storeId, dateFrom, dateTo));
+    const productId = req.query.productId && req.query.productId !== 'all' ? Number(req.query.productId) : undefined;
+    const mediaBuyerIdFilter = req.query.mediaBuyerId && req.query.mediaBuyerId !== 'all' ? Number(req.query.mediaBuyerId) : undefined;
+    const magasinIdFilter = req.query.magasinId && req.query.magasinId !== 'all' ? Number(req.query.magasinId) : undefined;
+    const source = req.query.source && req.query.source !== 'all' ? (req.query.source as string) : undefined;
+    res.json(await storage.getTeamProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter, source));
   });
 
   app.get("/api/media-buyer/profit", requireAuth, async (req, res) => {

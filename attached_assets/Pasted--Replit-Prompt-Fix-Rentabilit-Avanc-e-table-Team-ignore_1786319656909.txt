@@ -1,0 +1,100 @@
+# Replit Prompt — Fix "Rentabilité Avancée": table Team ignore le filtre Produit + Ajout filtre Source
+
+## Bug confirmé (root cause)
+
+Sur `/profitability`, le filtre produit ("5 الشاحن العجيب") applique correctement le filtre sur:
+- Les cartes du haut (Profit Net, Revenu, Total Coûts, ROAS)
+- Le "Compte de Résultat (COD)"
+- "Pub par Media Buyer"
+- "Commissions par Agent"
+
+...car tout ça vient de `/api/profit/admin-summary` → `storage.getAdminProfitSummary()` (server/storage.ts), qui reçoit bien `productId` et filtre les commandes livrées via `orderItems`.
+
+**MAIS** la carte "Rentabilité par Utilisateur (Team)" (et son footer "Totaux Équipe") vient d'un **autre** endpoint, `/api/profit/team-summary` → `storage.getTeamProfitSummary()`, qui:
+1. Ne reçoit **aucun** paramètre `productId` / `mediaBuyerId` / `magasinId` (ni côté route `server/routes.ts` ligne ~2932, ni côté frontend `client/src/pages/profitability.tsx` ligne ~72-83, où la `queryKey`/`queryFn` de `teamSummary` n'envoie que `dateFrom`/`dateTo`).
+2. Calcule donc TOUJOURS les livrées/revenu/profit sur **toutes** les commandes du store pour la période, sans tenir compte du produit sélectionné.
+
+C'est exactement pour ça que "Livrées" affiche 68 dans la table Team alors que le reste de la page affiche 21 (le vrai total livré pour ce produit).
+
+## Fix Part A — Le bug (priorité)
+
+**1. `server/storage.ts`** — modifier la signature de `getTeamProfitSummary`:
+```ts
+async getTeamProfitSummary(
+  storeId: number,
+  dateFrom?: string,
+  dateTo?: string,
+  productId?: number,
+  mediaBuyerIdFilter?: number,
+  magasinId?: number,
+): Promise<{ rows: [...] }>
+```
+Dans le corps de la fonction:
+- Après avoir chargé `allOrders`, si `productId` est fourni: charger les `orderItems` correspondants (`eq(orderItems.productId, productId)`) et filtrer `allOrders` pour ne garder que les commandes ayant un item de ce produit — exactement la même logique déjà utilisée dans `getAdminProfitSummary` (lignes ~3993-4000).
+- Si `mediaBuyerIdFilter` est fourni: filtrer `allOrders` sur `eq(orders.mediaBuyerId, mediaBuyerIdFilter)`.
+- Si `magasinId` est fourni: filtrer `allOrders` sur `eq(orders.magasinId, magasinId)`.
+- Faire ce filtrage **avant** de calculer `allDelivered`, `teamCogsMap`, l'attribution map, et avant les boucles ad spend, pour que `totalLeads`, `deliveredCount`, `revenue`, `productCost`, etc. par utilisateur reflètent bien le produit/buyer/magasin choisis.
+- Aussi mettre à jour l'interface `getTeamProfitSummary` déclarée en haut de `storage.ts` (ligne ~224) avec les mêmes nouveaux paramètres optionnels.
+
+**2. `server/routes.ts`** (route `/api/profit/team-summary`, ligne ~2932):
+```ts
+app.get("/api/profit/team-summary", requireAdmin, async (req, res) => {
+  const storeId = req.user!.storeId!;
+  const dateFrom = req.query.dateFrom as string | undefined;
+  const dateTo = req.query.dateTo as string | undefined;
+  const productId = req.query.productId && req.query.productId !== 'all' ? Number(req.query.productId) : undefined;
+  const mediaBuyerIdFilter = req.query.mediaBuyerId && req.query.mediaBuyerId !== 'all' ? Number(req.query.mediaBuyerId) : undefined;
+  const magasinIdFilter = req.query.magasinId && req.query.magasinId !== 'all' ? Number(req.query.magasinId) : undefined;
+  res.json(await storage.getTeamProfitSummary(storeId, dateFrom, dateTo, productId, mediaBuyerIdFilter, magasinIdFilter));
+});
+```
+
+**3. `client/src/pages/profitability.tsx`** (query `teamSummary`, ligne ~72-83): envoyer les mêmes filtres que `summary`, et les inclure dans la `queryKey` pour que React Query refetch bien quand on change de produit:
+```ts
+const { data: teamSummary, isLoading: teamLoading } = useQuery<{ rows: TeamRow[] }>({
+  queryKey: ["/api/profit/team-summary", dateFrom, dateTo, selectedProduct, selectedBuyer],
+  queryFn: async () => {
+    const p = new URLSearchParams();
+    if (dateFrom) p.set("dateFrom", dateFrom);
+    if (dateTo) p.set("dateTo", dateTo);
+    if (selectedProduct && selectedProduct !== "all") p.set("productId", selectedProduct);
+    if (selectedBuyer && selectedBuyer !== "all") p.set("mediaBuyerId", selectedBuyer);
+    const res = await fetch(`/api/profit/team-summary${p.toString() ? `?${p}` : ""}`, { credentials: "include" });
+    if (!res.ok) throw new Error("Failed");
+    return res.json();
+  },
+  enabled: isAdmin,
+});
+```
+
+Résultat attendu: quand un produit est sélectionné, "Livrées" dans la table Team et dans "Totaux Équipe" doit correspondre exactement au nombre affiché dans "Revenu (Livrées)" en haut de page (ex: 21, pas 68).
+
+## Fix Part B — Nouveau filtre "Source" (Facebook / Google / TikTok)
+
+Ajouter un filtre Source sur `/profitability`, à côté du filtre Produit, avec options: Toutes les sources / Facebook / Google / TikTok / Snapchat. La détection de plateforme existe déjà ailleurs dans le code (`server/routes.ts`, section `/api/stats/filtered`, ~ligne 1005): elle regarde `order.utmSource || order.source` et matche par sous-chaîne insensible à la casse (`.includes('facebook')`, `'tiktok'`, `'google'`, `'snapchat'`). Réutiliser exactement cette même logique pour rester cohérent avec le Dashboard.
+
+**1. `client/src/pages/profitability.tsx`**:
+- Ajouter `const [selectedSource, setSelectedSource] = useState("all");`
+- Ajouter un `<Select>` avec les options `all | facebook | google | tiktok | snapchat`, à côté du sélecteur produit (ligne ~248).
+- Ajouter `selectedSource` à la `queryKey` ET au `URLSearchParams` (`p.set("source", selectedSource)` si différent de `"all"`) pour **les deux** requêtes: `summary` (`/api/profit/admin-summary`) et `teamSummary` (`/api/profit/team-summary`).
+
+**2. `server/routes.ts`**: dans les deux routes (`/api/profit/admin-summary` et `/api/profit/team-summary`), lire `const source = req.query.source as string | undefined;` et le passer aux fonctions storage correspondantes.
+
+**3. `server/storage.ts`**: dans `getAdminProfitSummary` et `getTeamProfitSummary`, ajouter un paramètre optionnel `source?: string`. Après avoir chargé les commandes (avant le filtre produit), si `source` est fourni:
+```ts
+if (source) {
+  const s = source.toLowerCase();
+  orders = orders.filter(o => {
+    const raw = (o.utmSource || o.source || "").toLowerCase();
+    return raw.includes(s);
+  });
+}
+```
+(adapter le nom de variable selon le fix Part A). Appliquer ce filtre à la fois sur le calcul des revenus/coûts ET sur le filtrage des `adSpend`/`adSpendTracking` par `source` — ces deux tables ont déjà une colonne `source`, donc filtrer aussi `legacyConds`/`newAdConds` avec `eq(adSpendTracking.source, source)` / `eq(adSpend.source, source)` (ou équivalent `.includes`) pour que la Pub affichée corresponde à la bonne plateforme.
+
+## Testing checklist
+1. Sélectionner un produit précis sur `/profitability` → "Livrées" dans la table Team + "Totaux Équipe" == "X commandes livrées" affiché en haut de page. Plus aucune divergence 68 vs 21.
+2. Changer de produit → la table Team se met à jour immédiatement (React Query refetch grâce à la queryKey).
+3. Sélectionner "Facebook" dans le nouveau filtre Source → revenu/coûts/profit ne comptent que les commandes dont `utmSource`/`source` contient "facebook", cohérent avec le Dashboard.
+4. Remettre "Toutes les sources" et "Tous les produits" → les chiffres redeviennent identiques à l'état actuel (pas de régression).
+5. Vérifier qu'aucune autre page (Dashboard, Profit Analyzer) n'est cassée par ces changements de signature (les nouveaux paramètres sont tous optionnels).

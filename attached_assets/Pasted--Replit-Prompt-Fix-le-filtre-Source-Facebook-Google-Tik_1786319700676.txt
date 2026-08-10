@@ -1,0 +1,51 @@
+# Replit Prompt — Fix: le filtre "Source" (Facebook/Google/TikTok) sur `/profitability` n'affecte pas la Pub
+
+## Bug confirmé
+
+Sur `/profitability`, produit = "5 الشاحن العجيب" :
+- Source = **Google** → "Dépenses publicitaires (Pub)" = **-3600.00 DH**
+- Source = **Facebook** → "Dépenses publicitaires (Pub)" = **-3600.00 DH** (identique)
+
+Or dans "Publicités → Par Produit", ce produit n'a QU'UNE seule entrée de dépense, taguée **"Facebook Ads"** (3600.00 DH, le 2026-08-03). Donc en sélectionnant "Google" le Pub affiché devrait être **0 DH / "—"** (aucune dépense Google pour ce produit), pas -3600.
+
+⇒ Le paramètre `source` envoyé par le frontend **n'est pas appliqué** (ou est mal comparé) sur les requêtes des tables `adSpendTracking` et `adSpend` dans `getAdminProfitSummary` / `getTeamProfitSummary` (`server/storage.ts`). Il est probablement bien appliqué sur `orders` (revenu/livrées changent déjà correctement selon les screenshots précédents), mais pas — ou mal — sur la Pub.
+
+## Piste très probable : mismatch de format
+
+Le dropdown Source envoie une valeur courte en minuscule (`"google"`, `"facebook"`, `"tiktok"`, `"snapchat"`), alors que la colonne `source` dans `adSpendTracking`/`adSpend` stocke des libellés du type **"Google Ads"**, **"Facebook Ads"**, **"TikTok Ads"** (voir badge dans la page Publicités). Une comparaison stricte type `eq(adSpendTracking.source, source)` ne matchera JAMAIS ("google" ≠ "Google Ads"), donc soit ce filtre est absent, soit il élimine tout silencieusement.
+
+## Fix à appliquer
+
+Dans **`server/storage.ts`**, pour `getAdminProfitSummary` (et `getTeamProfitSummary` si le paramètre `source` y a été ajouté aussi) :
+
+1. Vérifier que le paramètre `source` est bien lu et transmis jusqu'aux requêtes ad spend (legacy `adSpendTracking` ET nouvelle table `adSpend`).
+2. Remplacer toute comparaison stricte (`eq(...source, source)`) par une comparaison **insensible à la casse par sous-chaîne**, cohérente avec la logique déjà utilisée ailleurs dans `server/routes.ts` (section `/api/stats/filtered`, ~ligne 1005) qui détecte la plateforme via `.toLowerCase().includes('facebook' | 'google' | 'tiktok' | 'snapchat')`. Exemple :
+
+```ts
+// legacy adSpendTracking
+if (source) {
+  const s = source.toLowerCase();
+  legacyAdSpend = legacyAdSpend.filter(e => (e.source || "").toLowerCase().includes(s));
+}
+
+// new adSpend table
+if (source) {
+  const s = source.toLowerCase();
+  newAdEntries = newAdEntries.filter(e => (e.source || "").toLowerCase().includes(s));
+}
+```
+(Si le filtrage est fait au niveau SQL avec `and(...)`, faire le filtre en SQL avec `sql\`LOWER(${adSpendTracking.source}) LIKE ${'%' + s + '%'}\`` plutôt qu'un `eq` strict — le principe reste: comparaison par sous-chaîne insensible à la casse, pas égalité stricte.)
+
+3. Appliquer ce même filtre `source` aux **deux** endroits où l'ad spend est agrégé :
+   - Le total global (`totalAdSpend` dans `getAdminProfitSummary`) → carte "Total Coûts" / "Profit Net Global" / "ROAS".
+   - Le détail "Pub par Media Buyer" (`buyerAdSpendMap`) → doit aussi refléter uniquement le spend de la source sélectionnée.
+   - Si `getTeamProfitSummary` a aussi reçu le paramètre `source` lors du fix précédent, appliquer le même filtre à `allNewAdSpend`/`allLegacyAdSpend` là-bas aussi (colonne "Pub (DH)" de la table Team).
+
+4. Double-vérifier que le **frontend** (`client/src/pages/profitability.tsx`) envoie bien `source` en minuscule simple (`"google"`, `"facebook"`, `"tiktok"`, `"snapchat"`) et pas le libellé affiché dans le `<Select>` (ex: pas `"Google"` avec majuscule ou `"Google Ads"`) — sinon adapter le `.toLowerCase()` en conséquence des deux côtés pour qu'ils matchent.
+
+## Testing checklist
+1. Produit = "5 الشاحن العجيب", Source = **Google** → Pub = **0 DH / "—"**, Total Coûts baisse de 3600 DH, Profit Net Global remonte en conséquence (plus proche de 0 ou positif), ROAS recalculé sans la dépense Facebook.
+2. Même produit, Source = **Facebook** → Pub reste **-3600.00 DH** (c'est correct, c'est la vraie source de cette dépense).
+3. Source = **Toutes les sources** (reset) → Pub redevient -3600.00 DH (total, identique à Facebook ici puisqu'il n'y a que du Facebook Ads sur ce produit).
+4. Refaire le test sur "قطرات العسل والزيت" (aussi 100% Facebook Ads, 2900 DH) : Source=Google → Pub=0 ; Source=Facebook → Pub=-2900.
+5. Vérifier que le tableau "Rentabilité par Utilisateur (Team)" et "Pub par Media Buyer" reflètent aussi le bon montant filtré, pas l'ancien total non filtré.
